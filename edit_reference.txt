@@ -1,0 +1,197 @@
+DeepWiki
+
+Stirling-Tools/Stirling-PDF
+在編輯文字時清除舊有文字的做法
+Fast
+在 Stirling-PDF 的文字編輯器中，清除舊有文字的做法是透過點擊文字框右上角的 X 按鈕來實現的 PdfTextEditorView.tsx:1373-1395 。
+
+清除文字的實作機制
+主要邏輯
+當用戶點擊 X 按鈕時，系統會執行以下邏輯：
+
+檢查文字是否為空：首先獲取當前文字框的內容並檢查是否為空 PdfTextEditorView.tsx:1379-1382
+
+兩種清除方式：
+
+如果文字已經為空：直接移除整個文字框 PdfTextEditorView.tsx:1383-1388
+如果文字不為空：清除文字內容但保留文字框 PdfTextEditorView.tsx:1389-1393
+事件處理
+清除功能透過 onMouseDown 事件處理器實現，包含以下關鍵步驟：
+
+阻止事件冒泡和預設行為
+執行清除邏輯
+更新編輯狀態
+UI 反饋
+系統會在控制台輸出操作日誌，顯示清除操作的執行狀況 PdfTextEditorView.tsx:1374-1394 。
+
+Notes
+這個清除機制是 PDF 文字編輯器的一部分，主要用於處理文字框的內容管理。相關的 UI 文字在多語言翻譯檔案中也有對應的標示，如繁體中文的「移除文字」 viewer.ftl:310-312 。
+
+
+
+
+Stirling-Tools/Stirling-PDF
+frontend/src/core/components/tools/pdfTextEditor/PdfTextEditorView.tsx
+
+
+            cursor: 'pointer',
+            pointerEvents: 'auto',
+          }}
+          onMouseDown={(event) => {
+            console.log(`❌ MOUSEDOWN on X button for group ${groupId}`);
+            event.stopPropagation();
+            event.preventDefault();
+
+            // Find the current group to check if it's already empty
+            const currentGroups = groupsByPage[pageIndex] ?? [];
+            const currentGroup = currentGroups.find(g => g.id === groupId);
+            const currentText = (currentGroup?.text ?? '').trim();
+
+            if (currentText.length === 0) {
+              // Already empty - remove the textbox entirely
+              console.log(`   Text already empty, removing textbox`);
+              onGroupDelete(pageIndex, groupId);
+              setActiveGroupId(null);
+              setEditingGroupId(null);
+            } else {
+              // Has text - clear it but keep the textbox
+              console.log(`   Clearing text (textbox remains)`);
+              onGroupEdit(pageIndex, groupId, '');
+            }
+            console.log(`   Operation completed`);
+          }}
+          onClick={(event) => {
+            console.log(`❌ X button ONCLICK fired for group ${groupId} on page ${pageIndex}`);
+            event.stopPropagation();
+
+
+Stirling-Tools/Stirling-PDF
+app/core/src/main/resources/static/pdfjs-legacy/locale/zh-TW/viewer.ftl
+
+
+
+pdfjs-editor-remove-ink-button =
+    .title = 移除繪圖
+pdfjs-editor-remove-freetext-button =
+    .title = 移除文字
+pdfjs-editor-remove-stamp-button =
+    .title = 移除圖片
+pdfjs-editor-remove-highlight-button =
+    .title = 移除強調範圍
+
+Stirling-Tools/Stirling-PDF
+在新增文字時不會影響到原有文字的做法
+Fast
+View as codemap
+在 Stirling-PDF 的文字編輯器中，新增文字時不會影響原有文字的做法是透過獨立的文字元素管理系統來實現的 PdfTextEditorView.tsx:1033-1039 。
+
+新增文字的獨立性機制
+文字群組管理
+系統將每個文字元素作為獨立的群組（group）進行管理，每個群組都有唯一的 ID 和獨立的狀態 PdfTextEditorView.tsx:1034-1038 。這種設計確保了：
+
+原有文字保持不變：現有文字群組的狀態和內容不會因為新增文字而改變
+新文字獨立運作：新增的文字會創建新的群組，與現有群組分開管理
+頁面狀態隔離
+當切換頁面時，系統會重設活動群組和編輯狀態，但保留各頁面的文字內容 PdfTextEditorView.tsx:1033-1039 。這確保了：
+
+不同頁面的文字不會相互影響
+同一頁面內的新舊文字可以並存
+自動縮放保護
+系統的自動縮放功能會跳過正在編輯的文字群組，避免對正在操作的文字進行調整 PdfTextEditorView.tsx:1066-1069 。同時，對於已經修改過的文字，系統會保持其狀態不變 PdfTextEditorView.tsx:1071-1076 。
+
+使用者介面設計
+新增文字功能提供獨立的介面流程，包含配置文字和放置文字兩個步驟 translation.toml:6019-6025 。使用者可以先設定文字內容、字型、大小等屬性，然後在 PDF 任意位置點擊放置，這個過程不會影響現有的文字元素。
+
+Notes
+這種獨立性設計是 PDF 文字編輯器的核心架構特點，確保了文字操作的隔離性。系統透過群組管理和狀態隔離來保護原有文字，同時提供靈活的新增文字功能。相關的功能在多語言檔案中都有完整的翻譯支援 translation.toml:6005-6030 。
+
+
+
+
+
+Stirling-Tools/Stirling-PDF
+frontend/src/core/components/tools/pdfTextEditor/PdfTextEditorView.tsx
+
+
+    }
+  }, [hasDocument, hasVectorPreview, selectedPage, scale, pages.length, requestPagePreview]);
+  useEffect(() => {
+    setActiveGroupId(null);
+    setEditingGroupId(null);
+    setActiveImageId(null);
+    setTextScales(new Map());
+    measurementKeyRef.current = '';
+  }, [selectedPage]);
+
+  // Measure text widths once per page/configuration and apply static scaling
+  useLayoutEffect(() => {
+
+
+      const newScales = new Map<string, number>();
+
+      visibleGroups.forEach(({ group }) => {
+        // Skip groups that are being edited
+        if (editingGroupId === group.id) {
+          return;
+        }
+ 
+        // Only apply auto-scaling to unchanged text
+        const hasChanges = group.text !== group.originalText;
+        if (hasChanges) {
+          newScales.set(group.id, 1);
+          return;
+        }
+
+        const lineCount = (group.text || '').split('\n').length;
+
+
+Stirling-Tools/Stirling-PDF
+frontend/public/locales/zh-TW/translation.toml
+
+
+fontSizePlaceholder = "輸入或選擇字型大小 (8-200)"
+colorLabel = "文字顏色"
+[addText.steps]
+configure = "設定文字"
+
+[addText.step]
+createDesc = "輸入要新增的文字"
+place = "放置文字"
+placeDesc = "在 PDF 上點擊以加入文字"
+
+[addText.instructions]
+title = "如何新增文字"
+
+
+Stirling-Tools/Stirling-PDF
+frontend/public/locales/zh-CN/translation.toml
+
+
+accessDenied = "拒绝访问"
+insufficientPermissions = "您没有执行此操作的权限。"
+[addText]
+title = "添加文本"
+header = "向PDF添加文本"
+tags = "文本,注释,标签"
+applySignatures = "应用文本"
+
+[addText.text]
+name = "文本内容"
+placeholder = "输入要添加的文本"
+fontLabel = "字体"
+fontSizeLabel = "字体大小"
+fontSizePlaceholder = "输入或选择字体大小（8-200）"
+colorLabel = "文本颜色"
+
+[addText.steps]
+configure = "配置文本"
+
+[addText.step]
+createDesc = "输入要添加的文本"
+place = "放置文本"
+placeDesc = "在PDF上点击以添加文本"
+
+[addText.instructions]
+title = "如何添加文本"
+text = "在上方输入文本后，点击PDF任意位置进行放置。"
+paused = "放置已暂停"
