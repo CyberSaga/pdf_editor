@@ -1,0 +1,17 @@
+# Python 檔案
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 開發環境
+.venv/
+venv/
+env/
+.env
+
+# PDF 測試檔
+*.pdf
+
+# Cursor 相關
+.cursor/
