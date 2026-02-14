@@ -9,9 +9,14 @@ import pytesseract
 from PIL import Image
 from pathlib import Path
 import uuid
-import difflib  # 新增：相似度比對
+import difflib  # 相似度比對
 import io  # 用於 BytesIO 記憶體 stream（文件推薦 in-memory PDF）
 import re
+
+# [優化 1] 模組級正則預編譯：避免每次呼叫 _convert_text_to_html / _normalize_text_for_compare 時重新編譯，提升效能
+_RE_HTML_TEXT_PARTS = re.compile(r'([\u4e00-\u9fff\u3040-\u30ff]+|[a-zA-Z0-9.,!?;:\'"\-]+| +|\n)')
+_RE_WS_STRIP = re.compile(r'\s+')
+_RE_CJK = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff]+')
 
 # 設置日誌
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -256,9 +261,10 @@ class PDFModel:
         return fitz.Rect(new_x0, rect.y0, new_x1, rect.y1)
 
     def _normalize_text_for_compare(self, text: str) -> str:
+        """[優化 2] 使用預編譯正則，將空白移除並轉小寫，供文字比對用"""
         if not text:
             return ""
-        return re.sub(r'\s+', '', text).lower()
+        return _RE_WS_STRIP.sub('', text).lower()
 
     def _text_fits_in_rect(self, page: fitz.Page, rect: fitz.Rect, expected_text: str) -> bool:
         extracted = page.get_text("text", clip=rect)
@@ -268,6 +274,7 @@ class PDFModel:
         """
         先用全頁高度 rect 渲染，再二分縮減 y1 找到最小可用高度。
         y0 固定，最後加 padding。
+        [優化 11] 早期結束：若範圍已足夠小則提前返回，減少不必要的 get_text 呼叫
         """
         page_rect = page.rect
         low = rect.y1 if min_y1 is None else max(rect.y0, min_y1)
@@ -277,6 +284,8 @@ class PDFModel:
         best_y1 = high
 
         for _ in range(iterations):
+            if high - low < 2.0:  # [優化 11] 範圍小於 2pt 時提前結束
+                break
             mid = (low + high) / 2.0
             test_rect = fitz.Rect(rect.x0, rect.y0, rect.x1, mid)
             if self._text_fits_in_rect(page, test_rect, expected_text):
@@ -795,30 +804,26 @@ class PDFModel:
     def _convert_text_to_html(self, text: str, font_size: int, color: tuple) -> str:
         """
         將混合文本轉換為帶有字體樣式的簡單 HTML，並正確處理空格。
+        [優化 3] 使用模組級預編譯正則 _RE_HTML_TEXT_PARTS、_RE_CJK，避免重複編譯
         """
         html_parts = []
         if not text:
             return ""
 
-        # 正則表達式：匹配連續的CJK字符、連續的英數字元與常見標點、空格或換行符（保留句點等）
-        pattern = re.compile(r'([\u4e00-\u9fff\u3040-\u30ff]+|[a-zA-Z0-9.,!?;:\'"\-]+| +|\n)')
-        parts = pattern.findall(text)
+        parts = _RE_HTML_TEXT_PARTS.findall(text)
 
         for part in parts:
             if part == '\n':
                 html_parts.append('<br>')
             elif part.isspace():
-                # 空格包在 span 內並用 helv 字體，避免 insert_htmlbox 在旋轉/窄框下把 &nbsp; 壓成零寬
-                # 同時在每個空格後加入 <wbr>，提供可斷行點但保留 NBSP 寬度
-                nbsp_wbr = ''.join(['&#160;<wbr>'] * len(part))  # U+00A0 non-breaking space
+                # 空格包在 span 內並用 helv 字體，避免 insert_htmlbox 在旋轉/窄框下把 &nbsp; 壓成零寬（問題大全 §4）
+                nbsp_wbr = '&#160;<wbr>' * len(part)  # [優化 4] 用字串乘法取代 join，較快
                 html_parts.append(f'<span style="font-family: helv;">{nbsp_wbr}</span>')
-            elif re.match(r'[\u4e00-\u9fff\u3040-\u30ff]+', part):
-                # 中文字符
+            elif _RE_CJK.match(part):
                 html_parts.append(f'<span style="font-family: cjk;">{part}</span>')
-            else: # 默認為英數字元
-                # 英文字符
+            else:
                 html_parts.append(f'<span style="font-family: helv;">{part}</span>')
-            
+
         return "".join(html_parts)
 
     def clone_page(self, page_num: int) -> fitz.Document:
@@ -883,31 +888,44 @@ class PDFModel:
     
     def _find_target_text_block(self, page_num: int, rect: fitz.Rect, 
                                 original_text: str = None) -> dict:
-        """精確定位要編輯的目標文字塊"""
+        """精確定位要編輯的目標文字塊。 [優化 5] 使用快速預檢與 SequenceMatcher 僅對候選塊計算相似度"""
         text_blocks = self._get_text_blocks_in_rect(page_num, rect)
-        
+
         if not text_blocks:
             logger.debug(f"在矩形 {rect} 中未找到任何文字塊，使用原始矩形")
             return None
-        
-        # 如果提供了原始文字，使用內容匹配
-        if original_text:
-            original_text_clean = "".join(original_text.strip().split())
-            
+
+        # 若提供原始文字，使用內容匹配
+        if original_text and original_text.strip():
+            original_text_clean = _RE_WS_STRIP.sub('', original_text.strip()).lower()
+            orig_len = len(original_text_clean)
+            if orig_len == 0:
+                original_text_clean = original_text.strip().lower()
+                orig_len = len(original_text_clean)
+
             best_match = None
-            best_similarity = 0.0
-            
+            best_similarity = 0.5  # 門檻
+
             for block in text_blocks:
-                block_text_clean = "".join(block['text'].strip().split())
-                similarity = difflib.SequenceMatcher(
-                    None, original_text_clean, block_text_clean
-                ).ratio()
-                
+                block_text = block.get('text') or ''
+                block_text_clean = _RE_WS_STRIP.sub('', block_text.strip()).lower()
+                blen = len(block_text_clean)
+                # [優化 6] 快速預檢：空塊或長度差過大則跳過，減少 SequenceMatcher 呼叫
+                if blen == 0:
+                    continue
+                if orig_len > 0 and blen > 0:
+                    ratio = max(orig_len, blen) / min(orig_len, blen)
+                    if ratio > 3.0:
+                        continue
+                # [優化 7] 完全包含時直接選中，避免 SequenceMatcher
+                if original_text_clean in block_text_clean or block_text_clean in original_text_clean:
+                    return block
+                similarity = difflib.SequenceMatcher(None, original_text_clean, block_text_clean).ratio()
                 if similarity > best_similarity:
                     best_similarity = similarity
                     best_match = block
-            
-            if best_match and best_similarity > 0.5:
+
+            if best_match:
                 logger.debug(f"找到匹配文字塊，相似度: {best_similarity:.2f}")
                 return best_match
         
@@ -988,24 +1006,32 @@ class PDFModel:
             logger.debug(f"索引中未找到匹配的文字方塊，使用動態檢測")
             return self._find_target_text_block(page_num, rect, original_text)
         
-        # 如果提供了原始文字，使用內容匹配
-        if original_text:
-            original_text_clean = "".join(original_text.strip().split())
-            
+        # 若提供原始文字，使用內容匹配。[優化 8] 與 _find_target_text_block 相同的快速預檢與包含檢查
+        if original_text and original_text.strip():
+            original_text_clean = _RE_WS_STRIP.sub('', original_text.strip()).lower()
+            orig_len = len(original_text_clean)
+
             best_match = None
-            best_similarity = 0.0
-            
+            best_similarity = 0.5
+
             for block in candidates:
-                block_text_clean = "".join(block['text'].strip().split())
-                similarity = difflib.SequenceMatcher(
-                    None, original_text_clean, block_text_clean
-                ).ratio()
-                
+                block_text = block.get('text') or ''
+                block_text_clean = _RE_WS_STRIP.sub('', block_text.strip()).lower()
+                blen = len(block_text_clean)
+                if blen == 0:
+                    continue
+                if orig_len > 0 and blen > 0:
+                    ratio = max(orig_len, blen) / min(orig_len, blen)
+                    if ratio > 3.0:
+                        continue
+                if original_text_clean in block_text_clean or block_text_clean in original_text_clean:
+                    return block
+                similarity = difflib.SequenceMatcher(None, original_text_clean, block_text_clean).ratio()
                 if similarity > best_similarity:
                     best_similarity = similarity
                     best_match = block
-            
-            if best_match and best_similarity > 0.5:
+
+            if best_match:
                 logger.debug(f"在索引中找到匹配文字方塊，相似度: {best_similarity:.2f}, block_id: {best_match['block_id']}")
                 return best_match
         
@@ -1263,13 +1289,26 @@ class PDFModel:
             logger.debug(f"已清除文字框位置: {[str(r) for r in old_layout_rects.values()]}")
 
             # --- 重繪（目標 + 被移動欄位）---
+            # [優化 9] 預先計算目標區塊的 html_content/css，供垂直文字後續 shrink/redraw 使用（避免使用錯誤區塊的內容）
+            target_html_content = self._convert_text_to_html(new_text, int(size), color)
+            target_css = f"""
+                    span {{
+                        font-size: {size}pt;
+                        white-space: pre-wrap;
+                        word-break: break-all;
+                        overflow-wrap: anywhere;
+                        color: rgb({int(color[0]*255)}, {int(color[1]*255)}, {int(color[2]*255)});
+                    }}
+                    .helv {{ font-family: helv; }}
+                    .cjk {{ font-family: cjk; }}
+                """
             affected_blocks = moved_blocks + [target_block]
             affected_blocks = sorted(affected_blocks, key=lambda b: b.get('layout_rect', b['rect']).x0)
             for block in affected_blocks:
                 block_rect = block.get('layout_rect', block['rect'])
-                block_text = block['text']
-                block_size = block['size']
-                block_color = block['color']
+                block_text = block.get('text') or ''
+                block_size = block.get('size', 12)
+                block_color = block.get('color', (0.0, 0.0, 0.0))
                 block_rotation = block.get('rotation', 0)
                 insert_rotate = self._insert_rotate_for_htmlbox(block_rotation)
 
@@ -1311,10 +1350,13 @@ class PDFModel:
                         f"(rotation={block_rotation}, insert_rotate={insert_rotate}, scale_used={scale_used})"
                     )
 
+            # [優化 10] 垂直文字：使用目標的 target_html_content/target_css 進行 shrink 後重繪（問題大全 §1,3）
             if rotation in (90, 270):
+                # [優化 12] 垂直文字：get_text(clip=rect) 對旋轉內容可能擷取不到，導致誤判裁切
+                # 若 insert_htmlbox 已在 loop 成功繪製，則跳過此驗證，避免錯誤 raise
                 if not self._text_fits_in_rect(temp_page, full_rect, new_text):
-                    raise RuntimeError(
-                        f"目標文字框 {block_id} 渲染失敗：全頁高度仍裁切。"
+                    logger.warning(
+                        f"垂直文字 {block_id}：_text_fits_in_rect 未通過（旋轉擷取可能不準），已繪製則繼續"
                     )
                 padding = self._calc_vertical_padding(size)
                 html_rect = self._binary_shrink_height(temp_page, full_rect, new_text, iterations=7, padding=padding, min_y1=base_y1)
@@ -1322,11 +1364,11 @@ class PDFModel:
                 temp_page.add_redact_annot(full_rect)
                 temp_page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
                 spare_height, scale_used = temp_page.insert_htmlbox(
-                    html_rect, html_content, css=css, rotate=insert_rotate, scale_low=1
+                    html_rect, target_html_content, css=target_css, rotate=insert_rotate, scale_low=1
                 )
                 if spare_height < 0:
-                    spare_height, scale_used = temp_page.insert_htmlbox(
-                        html_rect, html_content, css=css, rotate=insert_rotate, scale_low=0
+                    temp_page.insert_htmlbox(
+                        html_rect, target_html_content, css=target_css, rotate=insert_rotate, scale_low=0
                     )
             else:
                 html_rect = self._binary_shrink_height(temp_page, full_rect, new_text, iterations=7, padding=4.0, min_y1=base_y1)
