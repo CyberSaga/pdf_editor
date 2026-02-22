@@ -12,6 +12,7 @@ env/
 
 # PDF 測試檔
 *.pdf
+test_files/
 
 # Cursor 相關
 .cursor/

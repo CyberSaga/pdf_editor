@@ -92,7 +92,18 @@ class PDFModel:
     def __del__(self):
         self.close()
 
-    def open_pdf(self, path: str):
+    def open_pdf(self, path: str, password: Optional[str] = None):
+        """
+        開啟 PDF 檔案並建立文字塊索引。
+
+        Args:
+            path: PDF 檔案路徑
+            password: 可選密碼（支援 user password 與 owner/permission password）。
+                      PyMuPDF authenticate() 會自動嘗試兩種類型：
+                        回傳 2 = user password 認證成功（可讀取內容）
+                        回傳 4 = owner password 認證成功（可讀取並修改權限）
+                        回傳 6 = 兩者皆成功
+        """
         logger.debug(f"嘗試開啟PDF: {path}")
         self.original_path = path
         try:
@@ -118,6 +129,22 @@ class PDFModel:
 
             # 直接從原始路徑開啟（以便存檔時可選用增量更新）
             self.doc = fitz.open(str(src_path))
+
+            # 若 PDF 需要密碼，嘗試認證（支援 user 與 owner password）
+            if self.doc.needs_pass:
+                if password is None:
+                    raise RuntimeError("document closed or encrypted — 需要密碼")
+                auth_result = self.doc.authenticate(password)
+                if auth_result == 0:
+                    raise RuntimeError(
+                        f"PDF 密碼驗證失敗（authenticate 回傳 0）: {path}"
+                    )
+                # auth_result: 2=user, 4=owner, 6=both — 均允許繼續
+                logger.debug(
+                    f"PDF 密碼驗證成功 (auth_level={auth_result}，"
+                    f"2=user/4=owner/6=both): {src_path}"
+                )
+
             logger.debug(f"成功開啟PDF: {src_path}")
 
             # 建立文字方塊索引（Phase 1: TextBlockManager）
@@ -821,14 +848,43 @@ class PDFModel:
     # ──────────────────────────────────────────────────────────────────────────
 
     def _capture_page_snapshot(self, page_num_0based: int) -> bytes:
-        """擷取指定頁面的 bytes 快照，供 undo / rollback 使用"""
-        tmp_doc = fitz.open()
-        tmp_doc.insert_pdf(self.doc, from_page=page_num_0based, to_page=page_num_0based)
-        stream = io.BytesIO()
-        tmp_doc.save(stream, garbage=0)
-        data = stream.getvalue()
-        tmp_doc.close()
-        return data
+        """
+        擷取指定頁面的 bytes 快照，供 undo / rollback 使用。
+        Fallback 策略（依序）：
+          1. 正常 insert_pdf（含 annotations）
+          2. insert_pdf annots=False（含跨頁 annotation 引用的 PDF）
+          3. 整份文件快照（最保守）
+        """
+        # 嘗試 1：完整頁面（含 annotations）
+        try:
+            tmp_doc = fitz.open()
+            tmp_doc.insert_pdf(self.doc, from_page=page_num_0based, to_page=page_num_0based)
+            stream = io.BytesIO()
+            tmp_doc.save(stream, garbage=0)
+            data = stream.getvalue()
+            tmp_doc.close()
+            return data
+        except Exception as e1:
+            logger.debug(f"_capture_page_snapshot 完整複製失敗 (p{page_num_0based+1}): {e1}，嘗試 annots=False")
+
+        # 嘗試 2：不含 annotations（避免跨頁 xref 無效引用）
+        try:
+            tmp_doc = fitz.open()
+            tmp_doc.insert_pdf(
+                self.doc, from_page=page_num_0based, to_page=page_num_0based,
+                annots=False
+            )
+            stream = io.BytesIO()
+            tmp_doc.save(stream, garbage=0)
+            data = stream.getvalue()
+            tmp_doc.close()
+            logger.debug(f"_capture_page_snapshot: 使用 annots=False 快照 (p{page_num_0based+1})")
+            return data
+        except Exception as e2:
+            logger.debug(f"_capture_page_snapshot annots=False 亦失敗: {e2}，改用文件級快照")
+
+        # 嘗試 3：整份文件快照（最保守，undo 效果較差但不崩潰）
+        return self._capture_doc_snapshot()
 
     def _restore_page_from_snapshot(self, page_num_0based: int, snapshot_bytes: bytes) -> None:
         """用 bytes 快照替換 doc 中指定頁面（undo / rollback 時呼叫）"""

@@ -1,0 +1,9 @@
+test_all_pdfs error log — 2942 個 PDF
+測試時間：2026-02-22 23:01:26
+=================================================================
+
+（無錯誤）
+
+─────────────────────────────────────────────────────────────────
+超過 2s 的檔案：
+  veraPDF-corpus-staging\Isartor test files\PDFA-1b\6.1 File structure\6.1.12 Implementation Limits\isartor-6-1-12-t01-fail-a.pdf (2128ms)
