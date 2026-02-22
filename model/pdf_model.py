@@ -907,6 +907,134 @@ class PDFModel:
             .cjk {{ font-family: cjk; }}
         """
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Bug fix: apply_redactions 會誤刪與 redact_rect 重疊的非文字 annot（FreeText 等）。
+    # 在呼叫前儲存重疊 annot，呼叫後還原。
+    # ──────────────────────────────────────────────────────────────────────────
+
+    _ANNOT_FREE_TEXT = 2    # fitz.PDF_ANNOT_FREE_TEXT
+    _ANNOT_HIGHLIGHT = 8
+    _ANNOT_SQUARE    = 4
+    _ANNOT_CIRCLE    = 5
+    _ANNOT_UNDERLINE = 9
+    _ANNOT_STRIKEOUT = 10
+    _ANNOT_REDACT    = 12   # fitz.PDF_ANNOT_REDACT — 不保留
+
+    def _save_overlapping_annots(self, page: fitz.Page, redact_rect: fitz.Rect) -> list:
+        """
+        擷取頁面中與 redact_rect 重疊的非 redact 類型 annot 資訊。
+        apply_redactions 後呼叫 _restore_annots() 還原。
+
+        對壞損 xref / NoneType 等 PyMuPDF 異常做 graceful 跳過，不讓單一
+        損壞 annotation 阻斷整個 edit_text 流程。
+        """
+        saved = []
+        try:
+            annot_iter = list(page.annots())
+        except Exception as e:
+            logger.warning(f"_save_overlapping_annots: page.annots() 失敗（壞損 annot xref？）: {e}")
+            return saved
+
+        for annot in annot_iter:
+            try:
+                if annot is None:
+                    continue
+                if annot.type[0] == self._ANNOT_REDACT:
+                    continue
+                if not fitz.Rect(annot.rect).intersects(redact_rect):
+                    continue
+                entry = {
+                    "type_code": annot.type[0],
+                    "type_name": annot.type[1],
+                    "rect":      fitz.Rect(annot.rect),
+                    "info":      dict(annot.info),
+                    "colors":    annot.colors,
+                    "opacity":   annot.opacity,
+                    "border":    annot.border,
+                    "vertices":  annot.vertices,
+                }
+                saved.append(entry)
+                logger.debug(f"_save_overlapping_annots: 儲存 {annot.type[1]} @ {annot.rect}")
+            except Exception as e:
+                logger.warning(f"_save_overlapping_annots: 跳過損壞 annot: {e}")
+                continue
+        return saved
+
+    def _restore_annots(self, page: fitz.Page, saved: list) -> None:
+        """
+        還原 _save_overlapping_annots 儲存的 annot。
+        僅支援常見類型；不支援的類型記錄 warning。
+        """
+        for a in saved:
+            tc = a["type_code"]
+            rect = a["rect"]
+            info = a["info"]
+            colors = a["colors"] or {}
+            stroke = colors.get("stroke") or (0, 0, 0)
+            fill   = colors.get("fill")
+
+            try:
+                if tc == self._ANNOT_FREE_TEXT:
+                    new_a = page.add_freetext_annot(
+                        rect,
+                        info.get("content", ""),
+                        fontname="helv",
+                        fontsize=10.5,
+                        text_color=stroke if stroke else (0, 0, 0),
+                        fill_color=fill if fill else (1, 1, 0.8),
+                        rotate=page.rotation,
+                    )
+                    new_a.update()
+
+                elif tc == self._ANNOT_HIGHLIGHT:
+                    verts = a.get("vertices")
+                    if verts:
+                        new_a = page.add_highlight_annot(quads=verts)
+                    else:
+                        new_a = page.add_highlight_annot(rect)
+                    if stroke:
+                        new_a.set_colors(stroke=stroke)
+                    if a["opacity"] is not None:
+                        new_a.set_opacity(a["opacity"])
+                    new_a.update()
+
+                elif tc == self._ANNOT_SQUARE:
+                    new_a = page.add_rect_annot(rect)
+                    new_a.set_colors(stroke=stroke, fill=fill)
+                    if a["opacity"] is not None:
+                        new_a.set_opacity(a["opacity"])
+                    new_a.update()
+
+                elif tc == self._ANNOT_CIRCLE:
+                    new_a = page.add_circle_annot(rect)
+                    new_a.set_colors(stroke=stroke, fill=fill)
+                    if a["opacity"] is not None:
+                        new_a.set_opacity(a["opacity"])
+                    new_a.update()
+
+                elif tc in (self._ANNOT_UNDERLINE, self._ANNOT_STRIKEOUT):
+                    verts = a.get("vertices")
+                    if tc == self._ANNOT_UNDERLINE:
+                        new_a = page.add_underline_annot(quads=verts) if verts else page.add_underline_annot(rect)
+                    else:
+                        new_a = page.add_strikeout_annot(quads=verts) if verts else page.add_strikeout_annot(rect)
+                    if stroke:
+                        new_a.set_colors(stroke=stroke)
+                    if a["opacity"] is not None:
+                        new_a.set_opacity(a["opacity"])
+                    new_a.update()
+
+                else:
+                    logger.warning(
+                        f"_restore_annots: 不支援的 annot 類型 {a['type_name']} ({tc})，跳過還原"
+                    )
+                    continue
+
+                logger.debug(f"_restore_annots: 已還原 {a['type_name']} @ {rect}")
+
+            except Exception as e:
+                logger.warning(f"_restore_annots: 還原 {a['type_name']} 失敗: {e}")
+
     def apply_pending_redactions(self) -> None:
         """
         批次清理所有已修改頁面的 content stream（Phase 6 效能優化）。
@@ -1033,10 +1161,15 @@ class PDFModel:
             # ═══════════ Step 2: 安全 Redaction ═══════════
             # apply_redactions 必須在 insert_htmlbox 之前立即執行（確保舊文字已清除），
             # pending_edits 僅追蹤已修改的頁面，供 apply_pending_redactions() 批次 clean_contents。
+            # [Bug fix] 在 redaction 前先儲存重疊的非文字 annot，redaction 後還原，
+            # 避免 PyMuPDF apply_redactions 誤刪 FreeText 等 annotation。
+            _saved_annots = self._save_overlapping_annots(page, redact_rect)
             page.add_redact_annot(redact_rect)
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+            if _saved_annots:
+                self._restore_annots(page, _saved_annots)
             self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(redact_rect)})
-            logger.debug(f"已安全清除目標文字框: {redact_rect}")
+            logger.debug(f"已安全清除目標文字框: {redact_rect}，還原 {len(_saved_annots)} 個 annot")
 
             # ═══════════ Step 3: 智能插入（三策略）═══════════
             html_content = self._convert_text_to_html(new_text, int(size), color)
@@ -1161,8 +1294,11 @@ class PDFModel:
                     iterations=7, padding=padding, min_y1=base_y1
                 )
                 shrunk_rect = self._clamp_rect_to_page(shrunk_rect, page_rect)
+                _saved_annots_v = self._save_overlapping_annots(page, insert_rect)
                 page.add_redact_annot(insert_rect)
                 page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+                if _saved_annots_v:
+                    self._restore_annots(page, _saved_annots_v)
                 spare_height, scale_used = page.insert_htmlbox(
                     shrunk_rect, html_content, css=css,
                     rotate=insert_rotate, scale_low=1
