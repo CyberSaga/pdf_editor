@@ -4,13 +4,14 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QWidget, QVBoxLayout, QPushButton, QLabel, QFontComboBox,
     QComboBox, QDoubleSpinBox, QTextEdit, QGraphicsProxyWidget, QLineEdit, QHBoxLayout,
     QStackedWidget, QDialog, QSpinBox, QDialogButtonBox, QFormLayout,
-    QScrollArea
+    QScrollArea, QCheckBox
 )
-from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QTransform, QAction, QCloseEvent
+from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QCloseEvent, QTextOption
 from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint
 from typing import List, Tuple
 from utils.helpers import pixmap_to_qpixmap, parse_pages, show_error
 import logging
+import warnings
 import fitz
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -154,7 +155,7 @@ class PDFView(QMainWindow):
     sig_export_pages = Signal(list, str, bool)
     sig_add_highlight = Signal(int, object, object)
     sig_add_rect = Signal(int, object, object, bool)
-    sig_edit_text = Signal(int, object, str, str, int, tuple, str)  # 最後一個參數是 original_text (可選)
+    sig_edit_text = Signal(int, object, str, str, int, tuple, str, bool)  # original_text, vertical_shift_left
     sig_jump_to_result = Signal(int, object)
     sig_search = Signal(str)
     sig_ocr = Signal(list)
@@ -231,6 +232,9 @@ class PDFView(QMainWindow):
         self.editing_rect: fitz.Rect = None
         self.current_search_results = []
         self.current_search_index = -1
+        # Phase 5: edit_text 模式下的 hover 文字塊高亮
+        self._hover_highlight_item = None       # QGraphicsRectItem | None
+        self._last_hover_scene_pos = None       # QPointF | None（節流用）
         
         self.graphics_view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
@@ -311,6 +315,10 @@ class PDFView(QMainWindow):
         self.text_font = QFontComboBox(); self.text_font.setCurrentFont(QFont("Source Han Serif TC"))
         self.text_size = QComboBox(); self.text_size.addItems([str(i) for i in range(8, 30, 2)]); self.text_size.setCurrentText("12")
         layout.addWidget(QLabel("文字設定")); layout.addWidget(QLabel("字型")); layout.addWidget(self.text_font); layout.addWidget(QLabel("字級大小")); layout.addWidget(self.text_size)
+        self.vertical_shift_left_cb = QCheckBox("垂直文字擴展時左移左側文字（關閉則右移右側）")
+        self.vertical_shift_left_cb.setChecked(True)
+        self.vertical_shift_left_cb.setToolTip("垂直文字編輯擴展時：勾選=左側文字往左移（預設）；不勾選=右側文字往右移")
+        layout.addWidget(self.vertical_shift_left_cb)
 
         layout.addStretch()
         container.setLayout(layout)
@@ -414,14 +422,19 @@ class PDFView(QMainWindow):
         self.toolbar.addAction("快照", self._snapshot_page)
         self.toolbar.addSeparator()
 
-        # Undo/Redo
-        actions_undo = [("復原", self.sig_undo.emit, QKeySequence.Undo), ("重做", self.sig_redo.emit, QKeySequence.Redo)]
-        for name, func, *sc in actions_undo:
-            action = self.toolbar.addAction(name, func)
-            if sc: action.setShortcut(sc[0])
+        # Undo/Redo（Phase 6：儲存 action 引用以便動態更新 tooltip）
+        self._action_undo = self.toolbar.addAction("復原", self.sig_undo.emit)
+        self._action_undo.setShortcut(QKeySequence.Undo)
+        self._action_undo.setToolTip("復原（無可撤銷操作）")
+        self._action_redo = self.toolbar.addAction("重做", self.sig_redo.emit)
+        self._action_redo.setShortcut(QKeySequence.Redo)
+        self._action_redo.setToolTip("重做（無可重做操作）")
 
     def set_mode(self, mode: str):
         if self.text_editor: self._finalize_text_edit()
+        # Phase 5: 離開 edit_text 模式時清除 hover 高亮
+        if mode != 'edit_text':
+            self._clear_hover_highlight()
         self.current_mode = mode
         self.sig_mode_changed.emit(mode)
         
@@ -434,6 +447,13 @@ class PDFView(QMainWindow):
             self.graphics_view.setDragMode(QGraphicsView.ScrollHandDrag)
             self.graphics_view.viewport().setCursor(Qt.ArrowCursor)
 
+    def update_undo_redo_tooltips(self, undo_tip: str, redo_tip: str) -> None:
+        """Phase 6：更新復原/重做按鈕的 tooltip，顯示下一步操作描述。"""
+        if hasattr(self, '_action_undo'):
+            self._action_undo.setToolTip(undo_tip)
+        if hasattr(self, '_action_redo'):
+            self._action_redo.setToolTip(redo_tip)
+
     def update_thumbnails(self, thumbnails: List[QPixmap]):
         self.thumbnail_list.clear()
         for i, pix in enumerate(thumbnails):
@@ -444,6 +464,9 @@ class PDFView(QMainWindow):
         """建立連續頁面場景：所有頁面由上到下排列，可捲動切換。"""
         if self.text_editor:
             self._finalize_text_edit()
+        # Phase 5: scene.clear() 會銷毀所有場景物件，必須先重置 hover item 引用，
+        #          否則後續 setRect() 會操作已刪除的 C++ 物件，拋出 RuntimeError。
+        self._clear_hover_highlight()
         self._disconnect_scroll_handler()
         self.scene.clear()
         self.page_items.clear()
@@ -560,6 +583,7 @@ class PDFView(QMainWindow):
         if self.text_editor:
             self._finalize_text_edit()
         if not pix.isNull() and self.continuous_pages and self.page_items:
+            # 連續模式：update_page_in_scene 不清場景，hover item 仍有效，不需重置
             self.update_page_in_scene(page_num, pix)
             self.scroll_to_page(page_num)
             if highlight_rect:
@@ -578,6 +602,8 @@ class PDFView(QMainWindow):
                 self.graphics_view.centerOn(QPointF(cx, cy))
                 QTimer.singleShot(1500, lambda: self.scene.removeItem(temp_rect_item) if temp_rect_item.scene() else None)
             return
+        # 單頁模式重建場景：同樣需要先清除 hover item 引用，避免懸空指標
+        self._clear_hover_highlight()
         self.scene.clear()
         self.page_items.clear()
         self.page_y_positions.clear()
@@ -653,6 +679,8 @@ class PDFView(QMainWindow):
                 return
 
             if self.current_mode == 'edit_text':
+                # Phase 5: 點擊時立即清除 hover 高亮，避免高亮殘留在編輯框後方
+                self._clear_hover_highlight()
                 page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
                 try:
                     info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
@@ -669,8 +697,61 @@ class PDFView(QMainWindow):
         QGraphicsView.mousePressEvent(self.graphics_view, event)
 
     def _mouse_move(self, event):
-        # Placeholder for potential drawing preview
+        # Phase 5: edit_text 模式下顯示 hover 高亮（未開編輯框時）
+        if self.current_mode == 'edit_text' and not self.text_editor:
+            scene_pos = self.graphics_view.mapToScene(event.pos())
+            # 節流：移動超過 6px 才重新查詢，避免每像素都呼叫 get_text_info_at_point
+            if (self._last_hover_scene_pos is None or
+                    abs(scene_pos.x() - self._last_hover_scene_pos.x()) > 6 or
+                    abs(scene_pos.y() - self._last_hover_scene_pos.y()) > 6):
+                self._last_hover_scene_pos = scene_pos
+                self._update_hover_highlight(scene_pos)
         QGraphicsView.mouseMoveEvent(self.graphics_view, event)
+
+    def _update_hover_highlight(self, scene_pos: QPointF) -> None:
+        """查詢滑鼠下方的文字塊，以半透明藍框標示可點擊範圍。"""
+        try:
+            if not hasattr(self, 'controller') or not self.controller.model.doc:
+                self._clear_hover_highlight()
+                return
+            page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
+            info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
+            if info:
+                doc_rect: fitz.Rect = info[0]
+                y0 = (self.page_y_positions[page_idx]
+                      if (self.continuous_pages and page_idx < len(self.page_y_positions))
+                      else 0.0)
+                scene_rect = QRectF(
+                    doc_rect.x0 * self.scale,
+                    y0 + doc_rect.y0 * self.scale,
+                    doc_rect.width * self.scale,
+                    doc_rect.height * self.scale,
+                )
+                pen = QPen(QColor(30, 120, 255, 200), 2)
+                brush = QBrush(QColor(30, 120, 255, 35))
+                if self._hover_highlight_item is None:
+                    self._hover_highlight_item = self.scene.addRect(scene_rect, pen, brush)
+                    self._hover_highlight_item.setZValue(10)   # 浮在頁面圖像上方
+                else:
+                    self._hover_highlight_item.setRect(scene_rect)
+                    self._hover_highlight_item.setPen(pen)
+                    self._hover_highlight_item.setBrush(brush)
+            else:
+                self._clear_hover_highlight()
+        except Exception as e:
+            logger.debug(f"hover highlight update failed: {e}")
+            self._clear_hover_highlight()
+
+    def _clear_hover_highlight(self) -> None:
+        """移除 hover 高亮框並重置節流快取。"""
+        if self._hover_highlight_item is not None:
+            try:
+                if self._hover_highlight_item.scene():
+                    self.scene.removeItem(self._hover_highlight_item)
+            except Exception:
+                pass
+            self._hover_highlight_item = None
+        self._last_hover_scene_pos = None
 
     def _mouse_release(self, event):
         if not self.drawing_start or self.current_mode not in ['rect', 'highlight']:
@@ -697,27 +778,35 @@ class PDFView(QMainWindow):
         self.set_mode('browse')
         QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
 
-    def _create_text_editor(self, rect: fitz.Rect, text: str, font_name: str, font_size: float, color: tuple = (0,0,0)):
-        if self.text_editor: self._finalize_text_edit()
-        
-        scaled_rect = rect * self.scale
-        self.editing_rect = rect
+    def _create_text_editor(self, rect: fitz.Rect, text: str, font_name: str, font_size: float, color: tuple = (0,0,0), rotation: int = 0):
+        """建立文字編輯框，設定寬度與換行以預覽渲染後的排版（與 PDF insert_htmlbox 一致）。"""
+        if self.text_editor:
+            self._finalize_text_edit()
+
         page_idx = getattr(self, '_editing_page_idx', self.current_page)
+        render_width_pt = self.controller.model.get_render_width_for_edit(page_idx + 1, rect, rotation, font_size)
+        scaled_width = int(render_width_pt * self.scale)
+        scaled_rect = rect * self.scale
+
+        self.editing_rect = rect
         y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0
         pos_x = scaled_rect.x0
         pos_y = y0 + scaled_rect.y0
 
         editor = QTextEdit(text)
         editor.setProperty("original_text", text)
-        
-        default_font = QFont(font_name, font_size)
-        editor.setFont(default_font)
-        
+        self._editing_rotation = rotation
+
+        qt_font = self._pdf_font_to_qt(font_name)
+        editor.setFont(QFont(qt_font, int(font_size)))
+
         r, g, b = [int(c * 255) for c in color]
         editor.setStyleSheet(f"background-color: rgba(255, 255, 150, 0.8); border: 1px solid blue; color: rgb({r},{g},{b});")
-        
-        editor.setMinimumWidth(max(scaled_rect.width, 100))
-        editor.setMinimumHeight(max(scaled_rect.height, 50))
+
+        editor.setFixedWidth(max(scaled_width, 80))
+        editor.setMinimumHeight(max(scaled_rect.height, 40))
+        editor.setLineWrapMode(QTextEdit.WidgetWidth)
+        editor.setWordWrapMode(QTextOption.WrapAnywhere)
 
         size_str = str(round(font_size))
         if self.text_size.findText(size_str) == -1:
@@ -726,11 +815,32 @@ class PDFView(QMainWindow):
             self.text_size.clear()
             self.text_size.addItems(items)
         self.text_size.setCurrentText(size_str)
+        if not getattr(self, '_edit_font_size_connected', False):
+            self.text_size.currentTextChanged.connect(self._on_edit_font_size_changed)
+            self._edit_font_size_connected = True
 
         self.text_editor = self.scene.addWidget(editor)
         self.text_editor.setPos(pos_x, pos_y)
         editor.focusOutEvent = lambda event: self._finalize_text_edit()
         editor.setFocus()
+
+    def _pdf_font_to_qt(self, font_name: str) -> str:
+        """將 PDF 字型名稱映射為 Qt 可用字型，使預覽與渲染外觀相近。"""
+        m = {"helv": "Arial", "cour": "Courier New", "times": "Times New Roman", "cjk": "Microsoft JhengHei"}
+        return m.get((font_name or "").lower(), font_name or "Arial")
+
+    def _on_edit_font_size_changed(self, size_str: str):
+        """編輯中變更字級時，更新編輯框字型以即時預覽。"""
+        if not self.text_editor or not self.text_editor.widget():
+            return
+        try:
+            sz = int(size_str)
+        except (ValueError, TypeError):
+            return
+        editor = self.text_editor.widget()
+        f = editor.font()
+        f.setPointSize(sz)
+        editor.setFont(f)
 
     def _finalize_text_edit(self):
         if not self.text_editor or not self.text_editor.widget(): return
@@ -751,13 +861,22 @@ class PDFView(QMainWindow):
             self.scene.removeItem(self.text_editor)
         self.text_editor = None
         self.editing_rect = None
+        if getattr(self, '_edit_font_size_connected', False):
+            try:
+                self.text_size.currentTextChanged.disconnect(self._on_edit_font_size_changed)
+            except (TypeError, RuntimeError):
+                pass
+            self._edit_font_size_connected = False
         if hasattr(self, 'editing_font_name'): del self.editing_font_name
         if hasattr(self, 'editing_color'): del self.editing_color
         if hasattr(self, '_editing_page_idx'): del self._editing_page_idx
+        if hasattr(self, '_editing_rotation'): del self._editing_rotation
 
         if text_changed and current_rect:
             try:
                 original_text = getattr(self, 'editing_original_text', None)
+                vertical_shift_left = getattr(self, 'vertical_shift_left_cb', None)
+                vsl = vertical_shift_left.isChecked() if vertical_shift_left else True
                 self.sig_edit_text.emit(
                     edit_page + 1,
                     current_rect,
@@ -765,7 +884,8 @@ class PDFView(QMainWindow):
                     original_font,
                     current_size,
                     original_color,
-                    original_text  # 傳遞原始文字以幫助精確定位
+                    original_text,
+                    vsl
                 )
             except Exception as e:
                 logger.error(f"發送編輯信號時出錯: {e}")

@@ -4,6 +4,7 @@ import os
 import shutil
 import logging
 import math
+import time
 from typing import List, Tuple, Optional
 import pytesseract
 from PIL import Image
@@ -12,11 +13,28 @@ import uuid
 import difflib  # 相似度比對
 import io  # 用於 BytesIO 記憶體 stream（文件推薦 in-memory PDF）
 import re
+import html as _html_mod
+
+from model.text_block import TextBlock, TextBlockManager, rotation_degrees_from_dir
+from model.edit_commands import CommandManager, EditTextCommand
 
 # [優化 1] 模組級正則預編譯：避免每次呼叫 _convert_text_to_html / _normalize_text_for_compare 時重新編譯，提升效能
-_RE_HTML_TEXT_PARTS = re.compile(r'([\u4e00-\u9fff\u3040-\u30ff]+|[a-zA-Z0-9.,!?;:\'"\-]+| +|\n)')
+_RE_HTML_TEXT_PARTS = re.compile(r'([\u4e00-\u9fff\u3040-\u30ff]+|[^\u4e00-\u9fff\u3040-\u30ff\n ]+| +|\n)')
 _RE_WS_STRIP = re.compile(r'\s+')
 _RE_CJK = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff]+')
+
+# Unicode ligature → 分解字元對照表
+# PyMuPDF 的 insert_htmlbox 渲染會將字母組合替換為 Unicode 合字（如 fi→ﬁ），
+# 導致 get_text() 擷取結果與原始字串比對失敗。此表供 _normalize_text_for_compare 展開用。
+_LIGATURE_MAP = {
+    '\ufb00': 'ff',   # ﬀ
+    '\ufb01': 'fi',   # ﬁ
+    '\ufb02': 'fl',   # ﬂ
+    '\ufb03': 'ffi',  # ﬃ
+    '\ufb04': 'ffl',  # ﬄ
+    '\ufb05': 'st',   # ﬅ (long s + t)
+    '\ufb06': 'st',   # ﬆ
+}
 
 # 設置日誌
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -28,11 +46,16 @@ class PDFModel:
         self.temp_dir = None
         self.original_path: str = None
         self.saved_path: str = None  # 追蹤最後儲存的路徑
-        self.saved_undo_stack_size: int = 0  # 追蹤儲存時的undo_stack大小
-        self.undo_stack = []
-        self.redo_stack = []
-        # 文字方塊索引：{page_num: [{block_id, rect, text, font, size, color, ...}, ...]}
-        self.text_block_index: dict = {}
+        # Phase 1 & 2: 新管理器取代舊 text_block_index dict
+        self.block_manager = TextBlockManager()
+        self.command_manager = CommandManager()
+        # Phase 6: 效能優化 — 公開計數器 + 延遲清理追蹤
+        self.edit_count: int = 0
+        # pending_edits 記錄每次 edit_text 修改過的頁面資訊，
+        # apply_pending_redactions() 儲存前呼叫 page.clean_contents() 壓縮 content stream。
+        # 注意：apply_redactions() 本身仍在 Step 2 立即執行（插入前必須先清除舊文字），
+        # pending_edits 提供的是儲存時的批次 clean_contents 優化。
+        self.pending_edits: list = []          # [{"page_idx": int, "rect": fitz.Rect}]
         # 浮水印列表（僅存於本階段，不寫入 PDF 直到儲存）：[{id, pages, text, angle, opacity, font_size, color, font}, ...]
         self.watermark_list: List[dict] = []
         self._watermark_modified = False
@@ -69,15 +92,6 @@ class PDFModel:
     def __del__(self):
         self.close()
 
-    def _clear_temp_files(self):
-        """清理臨時目錄中的所有檔案，但不刪除目錄本身。"""
-        if self.temp_dir and Path(self.temp_dir.name).exists():
-            for item in Path(self.temp_dir.name).iterdir():
-                try:
-                    if item.is_file(): item.unlink()
-                except OSError as e:
-                    logger.warning(f"無法刪除臨時檔案 {item}: {e}")
-
     def open_pdf(self, path: str):
         logger.debug(f"嘗試開啟PDF: {path}")
         self.original_path = path
@@ -94,120 +108,26 @@ class PDFModel:
             # 為新文件會話清理狀態
             if self.doc:
                 self.doc.close()
-            self._clear_temp_files()
-            self.undo_stack.clear()
-            self.redo_stack.clear()
-            self.saved_path = None  # 重置儲存路徑
-            self.saved_undo_stack_size = 0  # 重置儲存時的undo_stack大小
-            self.text_block_index.clear()  # 清除文字方塊索引
+            self.saved_path = None
+            self.block_manager.clear()
+            self.command_manager.clear()
             self.watermark_list.clear()
             self._watermark_modified = False
+            self.edit_count = 0
+            self.pending_edits.clear()
 
             # 直接從原始路徑開啟（以便存檔時可選用增量更新）
             self.doc = fitz.open(str(src_path))
             logger.debug(f"成功開啟PDF: {src_path}")
-            
-            # 建立文字方塊索引
-            self._build_text_block_index()
-            
-            # 將初始狀態寫入臨時檔作為撤銷堆疊的第一個狀態
-            temp_initial = Path(self.temp_dir.name) / f"initial_{uuid.uuid4()}.pdf"
-            self.doc.save(str(temp_initial), garbage=0)
-            self.undo_stack.append(str(temp_initial))
-            self.saved_undo_stack_size = len(self.undo_stack)  # 初始化時視為已儲存
-            logger.debug(f"初始狀態已儲存: {temp_initial}。撤銷堆疊大小: {len(self.undo_stack)}")
+
+            # 建立文字方塊索引（Phase 1: TextBlockManager）
+            self.block_manager.build_index(self.doc)
         except PermissionError as e:
             logger.error(f"無權限存取檔案: {str(e)}")
             raise PermissionError(f"無權限存取檔案: {str(e)}")
         except Exception as e:
             logger.error(f"開啟PDF失敗: {str(e)}")
             raise RuntimeError(f"開啟PDF失敗: {str(e)}")
-
-    def _build_text_block_index(self):
-        """
-        建立文字方塊索引，記錄每個文字方塊的內容和位置
-        索引結構：{page_num: [{block_id, rect, text, font, size, color, block_index}, ...]}
-        """
-        if not self.doc:
-            return
-        
-        self.text_block_index.clear()
-        
-        for page_num in range(len(self.doc)):
-            page = self.doc[page_num]
-            blocks = page.get_text("dict", flags=0)["blocks"]
-            
-            page_blocks = []
-            for i, block in enumerate(blocks):
-                if block.get('type') == 0:  # 文字塊
-                    block_rect = fitz.Rect(block["bbox"])
-                    
-                    # 提取文字內容
-                    text_content = []
-                    font_name = "helv"
-                    font_size = 12.0
-                    color_int = 0
-                    
-                    if block.get("lines"):
-                        for line in block["lines"]:
-                            for span in line.get("spans", []):
-                                text_content.append(span.get("text", ""))
-                                # 獲取第一個span的字體資訊
-                                if font_name == "helv" and "font" in span:
-                                    font_name = span.get("font", "helv")
-                                    font_size = span.get("size", 12.0)
-                                    color_int = span.get("color", 0)
-                    
-                    text = "".join(text_content)
-                    
-                    # 轉換顏色
-                    rgb_int = fitz.sRGB_to_rgb(color_int) if color_int else (0, 0, 0)
-                    color = tuple(c / 255.0 for c in rgb_int)
-                    
-                    # 從第一行的 dir（方向向量）計算文字旋轉角度（CTM），保留非水平文字方向
-                    rotation = 0
-                    if block.get("lines"):
-                        first_line = block["lines"][0]
-                        dir_vec = first_line.get("dir")
-                        if dir_vec is not None:
-                            rotation = self._rotation_degrees_from_dir(dir_vec)
-                    
-                    # 生成唯一的 block_id
-                    block_id = f"page_{page_num}_block_{i}"
-                    
-                    page_blocks.append({
-                        'block_id': block_id,
-                        'rect': block_rect,
-                        'layout_rect': block_rect,  # 佈局位置（可移動/擴欄），rect 保留原始 bbox
-                        'text': text,
-                        'font': font_name,
-                        'size': font_size,
-                        'color': color,
-                        'block_index': i,  # 原始PDF中的塊索引
-                        'rotation': rotation  # 文字方向（0/90/180/270），供 insert_htmlbox(rotate=...) 使用
-                    })
-            
-            self.text_block_index[page_num] = page_blocks
-            logger.debug(f"頁面 {page_num + 1} 建立了 {len(page_blocks)} 個文字方塊索引")
-        
-        total_blocks = sum(len(blocks) for blocks in self.text_block_index.values())
-        logger.info(f"文字方塊索引建立完成，共 {total_blocks} 個文字方塊")
-
-    def _rotation_degrees_from_dir(self, dir_tuple) -> int:
-        """
-        從 get_text(\"dict\") 中 line 的 dir 方向向量計算旋轉角度（CTM 文字方向）。
-        dir 為 (dx, dy)，例如 (1,0)=水平、(0,1)=垂直向下、(0,-1)=垂直向上。
-        回傳 0、90、180、270 其中之一（內部儲存用）。
-        """
-        if not dir_tuple or len(dir_tuple) < 2:
-            return 0
-        dx, dy = float(dir_tuple[0]), float(dir_tuple[1])
-        # atan2(dy, dx): (1,0)->0°, (0,1)->90°, (-1,0)->180°, (0,-1)->270°
-        rad = math.atan2(dy, dx)
-        deg = (math.degrees(rad) + 360) % 360
-        # 取最接近的 90 的倍數
-        nearest = round(deg / 90) * 90
-        return int(nearest % 360)
 
     def _insert_rotate_for_htmlbox(self, rotation: int) -> int:
         """
@@ -216,11 +136,12 @@ class PDFModel:
         """
         return (360 - rotation) % 360
 
-    def _vertical_html_rect(self, base_rect: fitz.Rect, text: str, size: float, font_name: str, page_rect: fitz.Rect) -> fitz.Rect:
+    def _vertical_html_rect(self, base_rect: fitz.Rect, text: str, size: float, font_name: str, page_rect: fitz.Rect, anchor_right: bool = True) -> fitz.Rect:
         """
         垂直文字：估算「需要的 x 方向寬度（列數 × 行高）」。
-        以原 rect 高度估算每列可容納字數，再推回列數。
-        以「第一行」為基準：向左擴寬（x1 固定、x0 往左），y 保持原位置。
+        anchor_right=True（預設）：固定右緣 x1，向左擴展（x0 往左）→ 左側文字需左移。
+        anchor_right=False：固定左緣 x0，向右擴展（x1 往右）→ 右側文字需右移。
+        不超出頁面邊界。
         """
         line_gap = 1.1
         try:
@@ -238,33 +159,78 @@ class PDFModel:
         max_width = max(1.0, page_rect.width * 0.98)
         needed_width = min(needed_width, max_width)
 
-        new_x1 = base_rect.x1
-        new_x0 = new_x1 - needed_width
-        if new_x0 < page_rect.x0:
-            new_x0 = page_rect.x0
+        if anchor_right:
+            # 固定 x1，向左擴展
+            new_x1 = base_rect.x1
+            new_x0 = new_x1 - needed_width
+            if new_x0 < page_rect.x0:
+                new_x0 = page_rect.x0
+                new_x1 = min(new_x0 + needed_width, page_rect.x1)
+        else:
+            # 固定 x0，向右擴展
+            new_x0 = base_rect.x0
             new_x1 = new_x0 + needed_width
-        return fitz.Rect(new_x0, base_rect.y0, new_x1, base_rect.y1)
+            if new_x1 > page_rect.x1:
+                new_x1 = page_rect.x1
+                new_x0 = max(new_x1 - needed_width, page_rect.x0)
+        # 夾緊 y 於頁面內，避免超出頁面
+        y0 = max(base_rect.y0, page_rect.y0)
+        y1 = min(base_rect.y1, page_rect.y1)
+        if y0 >= y1:
+            y1 = y0 + max(1.0, base_rect.height)
+        return fitz.Rect(new_x0, y0, new_x1, min(y1, page_rect.y1))
+
+    def _clamp_rect_to_page(self, rect: fitz.Rect, page_rect: fitz.Rect) -> fitz.Rect:
+        """將矩形夾在頁面邊界內，確保文字不會超出頁面。"""
+        x0 = max(rect.x0, page_rect.x0)
+        y0 = max(rect.y0, page_rect.y0)
+        x1 = min(rect.x1, page_rect.x1)
+        y1 = min(rect.y1, page_rect.y1)
+        if x0 >= x1 or y0 >= y1:
+            return fitz.Rect(page_rect.x0, page_rect.y0, page_rect.x0 + 1, page_rect.y0 + 1)
+        return fitz.Rect(x0, y0, x1, y1)
 
     def _y_overlaps(self, rect_a: fitz.Rect, rect_b: fitz.Rect) -> bool:
         return not (rect_a.y1 <= rect_b.y0 or rect_b.y1 <= rect_a.y0)
 
     def _shift_rect_left(self, rect: fitz.Rect, target_right_x0: float, min_gap: float, page_rect: fitz.Rect) -> fitz.Rect:
+        """將矩形左移，使右緣不超過 target_right_x0 - min_gap。若會移出頁面則不移動。"""
         width = rect.width
         new_x1 = min(rect.x1, target_right_x0 - min_gap)
         shift = rect.x1 - new_x1
         if shift <= 0:
             return rect
         new_x0 = rect.x0 - shift
-        if new_x0 < page_rect.x0:
-            new_x0 = page_rect.x0
-            new_x1 = new_x0 + width
+        new_x1 = new_x0 + width
+        if new_x0 < page_rect.x0 or new_x1 > page_rect.x1:
+            return rect
+        return fitz.Rect(new_x0, rect.y0, new_x1, rect.y1)
+
+    def _shift_rect_right(self, rect: fitz.Rect, target_left_x1: float, min_gap: float, page_rect: fitz.Rect) -> fitz.Rect:
+        """將矩形右移，使左緣至少為 target_left_x1 + min_gap。若會移出頁面則不移動。"""
+        width = rect.width
+        new_x0 = max(rect.x0, target_left_x1 + min_gap)
+        if new_x0 <= rect.x0:
+            return rect
+        new_x1 = new_x0 + width
+        if new_x0 < page_rect.x0 or new_x1 > page_rect.x1:
+            return rect
         return fitz.Rect(new_x0, rect.y0, new_x1, rect.y1)
 
     def _normalize_text_for_compare(self, text: str) -> str:
-        """[優化 2] 使用預編譯正則，將空白移除並轉小寫，供文字比對用"""
+        """
+        將空白移除、轉小寫、展開 Unicode ligature，供文字比對用。
+        PyMuPDF 的 insert_htmlbox 渲染時會將 fi→ﬁ (U+FB01) 等字母合字替換，
+        導致 get_text() 擷取結果與原始字串不一致；此處統一展開後再比對。
+        """
         if not text:
             return ""
-        return _RE_WS_STRIP.sub('', text).lower()
+        # 展開常見 Unicode ligatures（PyMuPDF 渲染產生的合字）
+        result = text
+        for lig, expanded in _LIGATURE_MAP.items():
+            if lig in result:
+                result = result.replace(lig, expanded)
+        return _RE_WS_STRIP.sub('', result).lower()
 
     def _text_fits_in_rect(self, page: fitz.Page, rect: fitz.Rect, expected_text: str) -> bool:
         extracted = page.get_text("text", clip=rect)
@@ -309,8 +275,11 @@ class PDFModel:
             except Exception as e:
                 logger.warning(f"關閉PDF失敗: {str(e)}")
             self.doc = None
-        self.text_block_index.clear()
+        self.block_manager.clear()
+        self.command_manager.clear()
         self.watermark_list.clear()
+        self.pending_edits.clear()
+        self.edit_count = 0
         if self.temp_dir:
             self.temp_dir.cleanup()
             logger.debug("臨時目錄已清理")
@@ -319,13 +288,11 @@ class PDFModel:
     def delete_pages(self, pages: List[int]):
         for page_num in sorted(pages, reverse=True):
             self.doc.delete_page(page_num - 1)
-        self._save_state()
 
     def rotate_pages(self, pages: List[int], degrees: int):
         for page_num in pages:
             page = self.doc[page_num - 1]
             page.set_rotation((page.rotation + degrees) % 360)
-        self._save_state()
 
     def export_pages(self, pages: List[int], output_path: str, as_image: bool = False):
         base_path = Path(output_path).with_suffix('')
@@ -375,7 +342,6 @@ class PDFModel:
         # 插入空白頁面
         self.doc.new_page(insert_at, width=width, height=height)
         logger.debug(f"在位置 {insert_at + 1} 插入空白頁面，尺寸: {width}x{height}")
-        self._save_state()
 
     def insert_pages_from_file(self, source_file: str, source_pages: List[int], position: int):
         """從其他PDF檔案插入頁面到當前文件
@@ -416,8 +382,7 @@ class PDFModel:
                     logger.warning(f"來源檔案頁碼 {page_num} 超出範圍（總頁數: {len(source_doc)}）")
             
             source_doc.close()
-            self._save_state()
-            
+
         except Exception as e:
             logger.error(f"從檔案插入頁面失敗: {e}")
             raise RuntimeError(f"從檔案插入頁面失敗: {e}")
@@ -429,7 +394,6 @@ class PDFModel:
         annot.set_opacity(color[3])
         annot.update()
         logger.debug(f"新增螢光筆: 頁面 {page_num}, 矩形 {rect}, 顏色 {color}")
-        self._save_state()
 
     def get_text_bounds(self, page_num: int, rough_rect: fitz.Rect) -> fitz.Rect:
         """獲取文字精準邊界"""
@@ -454,7 +418,6 @@ class PDFModel:
         annot.set_opacity(color[3])
         annot.update()
         logger.debug(f"新增矩形: 頁面 {page_num}, 矩形 {rect}, 顏色 {color}, 填滿={fill}")
-        self._save_state()
 
     def add_annotation(self, page_num: int, point: fitz.Point, text: str) -> int:
         """在指定頁面和位置新增文字註解"""
@@ -485,8 +448,6 @@ class PDFModel:
         annot.update()
         
         logger.debug(f"新增註解: 頁面 {page_num}, 最終矩形 {annot.rect}, xref: {annot.xref}")
-        
-        self._save_state()
         return annot.xref
 
     def get_all_annotations(self) -> List[dict]:
@@ -529,7 +490,6 @@ class PDFModel:
                     annot.update()
         
         logger.debug(f"註解可見性設定為: {visible}")
-        self._save_state()
 
     # --- 浮水印相關 ---
 
@@ -764,12 +724,12 @@ class PDFModel:
     def get_thumbnail(self, page_num: int) -> fitz.Pixmap:
         return self.get_page_pixmap(page_num, scale=0.2)
 
-    def get_text_info_at_point(self, page_num: int, point: fitz.Point) -> Tuple[fitz.Rect, str, str, float, tuple] | None:
-        """獲取指定點下方的文字區塊、內容、字型、大小與顏色（轉 0-1 float）"""
+    def get_text_info_at_point(self, page_num: int, point: fitz.Point) -> Tuple[fitz.Rect, str, str, float, tuple, int] | None:
+        """獲取指定點下方的文字區塊、內容、字型、大小、顏色與旋轉角度。回傳 (rect, text, font_name, font_size, color, rotation)。"""
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             return None
         page = self.doc[page_num - 1]
-        
+
         blocks = page.get_text("dict", flags=0)["blocks"]
         for b in blocks:
             if b['type'] == 0:
@@ -779,14 +739,16 @@ class PDFModel:
                     font_name = "helv"
                     font_size = 12.0
                     color_int = 0
+                    rotation = 0
 
                     if b["lines"] and b["lines"][0]["spans"]:
                         first_span = b["lines"][0]["spans"][0]
                         font_name = first_span["font"]
                         font_size = first_span["size"]
                         color_int = first_span.get("color", 0)
+                    if b.get("lines") and b["lines"][0].get("dir") is not None:
+                        rotation = rotation_degrees_from_dir(b["lines"][0]["dir"])
 
-                    # 轉 0-255 int RGB，再轉 0-1 float（文件：insert_textbox 需 0-1）
                     rgb_int = fitz.sRGB_to_rgb(color_int) if color_int else (0, 0, 0)
                     color = tuple(c / 255.0 for c in rgb_int)
 
@@ -794,12 +756,25 @@ class PDFModel:
                         for s in l["spans"]:
                             full_text.append(s["text"])
                         full_text.append("\n")
-                    
-                    text_content = "".join(full_text).rstrip("\n")
 
-                    logger.debug(f"找到文字區塊: {rect}, 字型: {font_name}, 大小: {font_size}, 顏色: {color} (from {color_int})")
-                    return rect, text_content, font_name, font_size, color
+                    text_content = "".join(full_text).rstrip("\n")
+                    logger.debug(f"找到文字區塊: {rect}, 字型: {font_name}, 大小: {font_size}, rotation: {rotation}")
+                    return rect, text_content, font_name, font_size, color, rotation
         return None
+
+    def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect, rotation: int = 0, font_size: float = 12) -> float:
+        """取得編輯時會使用的換行寬度（points），供編輯框預覽與 PDF 渲染一致。"""
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return rect.width
+        page = self.doc[page_num - 1]
+        page_rect = page.rect
+        margin = 15
+        right_margin_pt = max(60.0, min(120.0, float(font_size) * 2.0))
+        right_safe = page_rect.x1 - right_margin_pt
+        if rotation in (90, 270):
+            return rect.width
+        max_w = right_safe - max(rect.x0, page_rect.x0) - margin
+        return max(rect.width, min(max_w, page_rect.width * 0.98))
 
     def _convert_text_to_html(self, text: str, font_size: int, color: tuple) -> str:
         """
@@ -816,629 +791,429 @@ class PDFModel:
             if part == '\n':
                 html_parts.append('<br>')
             elif part.isspace():
-                # 空格包在 span 內並用 helv 字體，避免 insert_htmlbox 在旋轉/窄框下把 &nbsp; 壓成零寬（問題大全 §4）
-                nbsp_wbr = '&#160;<wbr>' * len(part)  # [優化 4] 用字串乘法取代 join，較快
-                html_parts.append(f'<span style="font-family: helv;">{nbsp_wbr}</span>')
-            elif _RE_CJK.match(part):
-                html_parts.append(f'<span style="font-family: cjk;">{part}</span>')
-            else:
                 html_parts.append(f'<span style="font-family: helv;">{part}</span>')
+            elif _RE_CJK.match(part):
+                html_parts.append(f'<span style="font-family: cjk;">{_html_mod.escape(part)}</span>')
+            else:
+                html_parts.append(f'<span style="font-family: helv;">{_html_mod.escape(part)}</span>')
 
         return "".join(html_parts)
 
-    def clone_page(self, page_num: int) -> fitz.Document:
-        """優化單頁快照：用 insert_pdf + save(stream, garbage=0) 記憶體提取（文件推薦，防空 bytes）"""
-        if not self.doc or page_num < 1 or page_num > len(self.doc):
-            raise ValueError(f"無效頁碼: {page_num}")
-        
-        # 新 doc + 插入單頁
-        clone_doc = fitz.open()
-        clone_doc.insert_pdf(self.doc, from_page=page_num - 1, to_page=page_num - 1)
-        
-        # --- 策略修改：棄用 tobytes()，改用 save() 存入記憶體流 ---
-        # 1. 創建一個記憶體流
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Phase 6: 文件整體快照（供 SnapshotCommand undo/redo 使用）
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _capture_doc_snapshot(self) -> bytes:
+        """擷取整份文件的 bytes 快照（SnapshotCommand before/after 用）。"""
         stream = io.BytesIO()
-        # 2. 明確指定 garbage=0 (int) 存入流
-        clone_doc.save(stream, garbage=0)
-        # 3. 從流中獲取 bytes
-        page_bytes = stream.getvalue()
-        # ---------------------------------------------------------
-        
-        clone_doc.close()
-        
-        if not page_bytes:
-            raise RuntimeError(f"頁面 {page_num} 提取 bytes 失敗 (空 bytes)")
-        
-        final_clone = fitz.open("pdf", page_bytes)  # 從 bytes 開新 doc
-        logger.debug(f"成功 clone 頁面 {page_num} 到新 doc (頁數: {len(final_clone)}, bytes: {len(page_bytes)})")
-        return final_clone
+        self.doc.save(stream, garbage=0)
+        return stream.getvalue()
 
-    def _get_text_blocks_in_rect(self, page_num: int, rect: fitz.Rect) -> List[dict]:
-        """獲取矩形區域內的所有文字塊"""
-        page = self.doc[page_num - 1]
-        blocks = page.get_text("dict", flags=0)["blocks"]
-        
-        text_blocks = []
-        for i, block in enumerate(blocks):
-            if block.get('type') == 0:  # 文字塊
-                block_rect = fitz.Rect(block["bbox"])
-                if block_rect.intersects(rect):
-                    text_content = []
-                    words = []
-                    rotation = 0
-                    lines_list = block.get("lines", [])
-                    if lines_list and lines_list[0].get("dir") is not None:
-                        rotation = self._rotation_degrees_from_dir(lines_list[0]["dir"])
-                    for line in lines_list:
-                        for span in line.get("spans", []):
-                            text_content.append(span.get("text", ""))
-                            # 收集單詞位置（如果可用）
-                            if "bbox" in span:
-                                words.append(span["bbox"])
-                    
-                    text_blocks.append({
-                        'rect': block_rect,
-                        'text': "".join(text_content),
-                        'words': words,
-                        'block_index': i,
-                        'rotation': rotation
-                    })
-        
-        return text_blocks
-    
-    def _find_target_text_block(self, page_num: int, rect: fitz.Rect, 
-                                original_text: str = None) -> dict:
-        """精確定位要編輯的目標文字塊。 [優化 5] 使用快速預檢與 SequenceMatcher 僅對候選塊計算相似度"""
-        text_blocks = self._get_text_blocks_in_rect(page_num, rect)
+    def _restore_doc_from_snapshot(self, snapshot_bytes: bytes) -> None:
+        """用 bytes 快照替換整份文件（SnapshotCommand undo/redo 時呼叫）。"""
+        self.doc.close()
+        self.doc = fitz.open("pdf", snapshot_bytes)
+        logger.debug(f"_restore_doc_from_snapshot: 已還原文件（{len(snapshot_bytes)} bytes）")
 
-        if not text_blocks:
-            logger.debug(f"在矩形 {rect} 中未找到任何文字塊，使用原始矩形")
-            return None
+    # ──────────────────────────────────────────────────────────────────────────
+    # Phase 3: 頁面快照（取代 clone_page）
+    # ──────────────────────────────────────────────────────────────────────────
 
-        # 若提供原始文字，使用內容匹配
-        if original_text and original_text.strip():
-            original_text_clean = _RE_WS_STRIP.sub('', original_text.strip()).lower()
-            orig_len = len(original_text_clean)
-            if orig_len == 0:
-                original_text_clean = original_text.strip().lower()
-                orig_len = len(original_text_clean)
+    def _capture_page_snapshot(self, page_num_0based: int) -> bytes:
+        """擷取指定頁面的 bytes 快照，供 undo / rollback 使用"""
+        tmp_doc = fitz.open()
+        tmp_doc.insert_pdf(self.doc, from_page=page_num_0based, to_page=page_num_0based)
+        stream = io.BytesIO()
+        tmp_doc.save(stream, garbage=0)
+        data = stream.getvalue()
+        tmp_doc.close()
+        return data
 
-            best_match = None
-            best_similarity = 0.5  # 門檻
+    def _restore_page_from_snapshot(self, page_num_0based: int, snapshot_bytes: bytes) -> None:
+        """用 bytes 快照替換 doc 中指定頁面（undo / rollback 時呼叫）"""
+        snapshot_doc = fitz.open("pdf", snapshot_bytes)
+        self.doc.delete_page(page_num_0based)
+        self.doc.insert_pdf(snapshot_doc, from_page=0, to_page=0, start_at=page_num_0based)
+        snapshot_doc.close()
 
-            for block in text_blocks:
-                block_text = block.get('text') or ''
-                block_text_clean = _RE_WS_STRIP.sub('', block_text.strip()).lower()
-                blen = len(block_text_clean)
-                # [優化 6] 快速預檢：空塊或長度差過大則跳過，減少 SequenceMatcher 呼叫
-                if blen == 0:
-                    continue
-                if orig_len > 0 and blen > 0:
-                    ratio = max(orig_len, blen) / min(orig_len, blen)
-                    if ratio > 3.0:
-                        continue
-                # [優化 7] 完全包含時直接選中，避免 SequenceMatcher
-                if original_text_clean in block_text_clean or block_text_clean in original_text_clean:
-                    return block
-                similarity = difflib.SequenceMatcher(None, original_text_clean, block_text_clean).ratio()
-                if similarity > best_similarity:
-                    best_similarity = similarity
-                    best_match = block
+    def _build_insert_css(self, size: float, color: tuple) -> str:
+        """建構 insert_htmlbox 所需的 CSS 樣式字串"""
+        return f"""
+            span {{
+                font-size: {size}pt;
+                white-space: pre-wrap;
+                word-break: break-all;
+                overflow-wrap: anywhere;
+                color: rgb({int(color[0]*255)}, {int(color[1]*255)}, {int(color[2]*255)});
+            }}
+            .helv {{ font-family: helv; }}
+            .cjk {{ font-family: cjk; }}
+        """
 
-            if best_match:
-                logger.debug(f"找到匹配文字塊，相似度: {best_similarity:.2f}")
-                return best_match
-        
-        # 選擇與矩形中心最接近的文字塊
-        rect_center = fitz.Point(rect.x0 + rect.width/2, rect.y0 + rect.height/2)
-        best_block = None
-        min_distance = float('inf')
-        
-        for block in text_blocks:
-            block_center = fitz.Point(
-                block['rect'].x0 + block['rect'].width/2,
-                block['rect'].y0 + block['rect'].height/2
-            )
-            distance = abs(block_center.x - rect_center.x) + abs(block_center.y - rect_center.y)
-            
-            if distance < min_distance:
-                min_distance = distance
-                best_block = block
-        
-        return best_block
-    
-    def _get_precise_text_bounds(self, page_num: int, text_block: dict) -> fitz.Rect:
-        """獲取文字塊的精確邊界"""
-        if text_block and text_block.get('words'):
-            # 使用單詞位置計算精確邊界
+    def apply_pending_redactions(self) -> None:
+        """
+        批次清理所有已修改頁面的 content stream（Phase 6 效能優化）。
+        對每個 pending_edit 中記錄的頁面呼叫 page.clean_contents()，
+        壓縮 content stream、移除孤立資源，可降低 PDF 大小 10-30%。
+        應在 save() 前或每 5 次編輯時呼叫。
+        """
+        if not self.pending_edits or not self.doc:
+            return
+        unique_pages = {e["page_idx"] for e in self.pending_edits}
+        cleaned = 0
+        for page_idx in sorted(unique_pages):
+            if 0 <= page_idx < len(self.doc):
+                try:
+                    self.doc[page_idx].clean_contents()
+                    cleaned += 1
+                except Exception as e:
+                    logger.warning(f"clean_contents 失敗（頁面 {page_idx + 1}）: {e}")
+        logger.debug(
+            f"apply_pending_redactions: 已清理 {cleaned}/{len(unique_pages)} 頁的 content stream"
+        )
+        self.pending_edits.clear()
+
+    def _maybe_garbage_collect(self) -> None:
+        """
+        分層垃圾回收策略（Phase 6）：
+          - 每 5 次編輯：呼叫 apply_pending_redactions()（輕量，clean_contents）
+          - 每 20 次編輯：tobytes(garbage=4) + 重新載入（完整 GC，清孤立 xref）
+        閾值從 10 提高到 20，降低 live editing 時的全量序列化頻率。
+        """
+        if self.edit_count <= 0:
+            return
+        # 輕量層：每 5 次清理 content stream
+        if self.edit_count % 5 == 0:
+            self.apply_pending_redactions()
+        # 完整層：每 20 次重建文件以清孤立物件
+        if self.edit_count % 20 == 0:
             try:
-                x0 = min(word[0] for word in text_block['words'] if len(word) >= 4)
-                y0 = min(word[1] for word in text_block['words'] if len(word) >= 4)
-                x1 = max(word[2] for word in text_block['words'] if len(word) >= 4)
-                y1 = max(word[3] for word in text_block['words'] if len(word) >= 4)
-                return fitz.Rect(x0, y0, x1, y1)
-            except (ValueError, IndexError):
-                pass
-        
-        # 回退到文字塊邊界
-        if text_block:
-            return text_block['rect']
-        else:
-            # 如果沒有文字塊，返回一個空矩形（這不應該發生，但作為安全措施）
-            logger.warning("無法獲取文字塊邊界，返回空矩形")
-            return fitz.Rect(0, 0, 0, 0)
-    
-    def _find_text_block_by_id(self, page_num: int, block_id: str) -> dict:
-        """根據 block_id 查找文字方塊
-        
-        Args:
-            page_num: 頁碼（1-based）
-            block_id: 文字方塊的唯一標識符
-        """
-        page_idx = page_num - 1  # 轉換為 0-based
-        if page_idx not in self.text_block_index:
-            return None
-        for block in self.text_block_index[page_idx]:
-            if block['block_id'] == block_id:
-                return block
-        return None
-    
-    def _find_text_block_by_rect(self, page_num: int, rect: fitz.Rect, 
-                                 original_text: str = None) -> dict:
-        """
-        根據矩形和文字內容查找文字方塊（使用索引）
-        優先使用索引，如果找不到則回退到動態檢測
-        """
-        page_idx = page_num - 1  # 轉換為 0-based
-        
-        if page_idx not in self.text_block_index:
-            logger.warning(f"頁面 {page_num} 沒有索引，使用動態檢測")
-            return self._find_target_text_block(page_num, rect, original_text)
-        
-        # 在索引中查找
-        candidates = []
-        for block in self.text_block_index[page_idx]:
-            block_rect = block.get('layout_rect', block['rect'])
-            if block_rect.intersects(rect):
-                candidates.append(block)
-        
-        if not candidates:
-            logger.debug(f"索引中未找到匹配的文字方塊，使用動態檢測")
-            return self._find_target_text_block(page_num, rect, original_text)
-        
-        # 若提供原始文字，使用內容匹配。[優化 8] 與 _find_target_text_block 相同的快速預檢與包含檢查
-        if original_text and original_text.strip():
-            original_text_clean = _RE_WS_STRIP.sub('', original_text.strip()).lower()
-            orig_len = len(original_text_clean)
-
-            best_match = None
-            best_similarity = 0.5
-
-            for block in candidates:
-                block_text = block.get('text') or ''
-                block_text_clean = _RE_WS_STRIP.sub('', block_text.strip()).lower()
-                blen = len(block_text_clean)
-                if blen == 0:
-                    continue
-                if orig_len > 0 and blen > 0:
-                    ratio = max(orig_len, blen) / min(orig_len, blen)
-                    if ratio > 3.0:
-                        continue
-                if original_text_clean in block_text_clean or block_text_clean in original_text_clean:
-                    return block
-                similarity = difflib.SequenceMatcher(None, original_text_clean, block_text_clean).ratio()
-                if similarity > best_similarity:
-                    best_similarity = similarity
-                    best_match = block
-
-            if best_match:
-                logger.debug(f"在索引中找到匹配文字方塊，相似度: {best_similarity:.2f}, block_id: {best_match['block_id']}")
-                return best_match
-        
-        # 選擇與矩形中心最接近的文字方塊
-        rect_center = fitz.Point(rect.x0 + rect.width/2, rect.y0 + rect.height/2)
-        best_block = None
-        min_distance = float('inf')
-        
-        for block in candidates:
-            block_rect = block.get('layout_rect', block['rect'])
-            block_center = fitz.Point(
-                block_rect.x0 + block_rect.width/2,
-                block_rect.y0 + block_rect.height/2
-            )
-            distance = abs(block_center.x - rect_center.x) + abs(block_center.y - rect_center.y)
-            
-            if distance < min_distance:
-                min_distance = distance
-                best_block = block
-        
-        if best_block:
-            logger.debug(f"在索引中找到最接近的文字方塊，block_id: {best_block['block_id']}")
-        
-        return best_block
-
-    def _render_text_blocks_from_index(self, page_num: int) -> fitz.Document:
-        """
-        從索引渲染所有文字方塊到PDF頁面
-        
-        Args:
-            page_num: 頁碼（1-based）
-        
-        Returns:
-            包含渲染後頁面的臨時文檔
-        """
-        page_idx = page_num - 1
-        if page_idx not in self.text_block_index:
-            logger.warning(f"頁面 {page_num} 沒有索引，無法渲染")
-            return None
-        
-        # 克隆頁面
-        temp_doc = self.clone_page(page_num)
-        temp_page = temp_doc[0]
-        
-        # 清除頁面上的所有文字塊（使用 redaction）
-        page_rect = temp_page.rect
-        blocks = temp_page.get_text("dict", flags=0)["blocks"]
-        
-        # 清除所有文字塊
-        for block in blocks:
-            if block.get('type') == 0:  # 文字塊
-                block_rect = fitz.Rect(block["bbox"])
-                temp_page.add_redact_annot(block_rect)
-        
-        temp_page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-        logger.debug(f"已清除頁面 {page_num} 上的所有文字塊")
-        
-        # 從索引渲染所有文字方塊
-        page_width = temp_page.rect.width
-        margin = 15
-        
-        for block in self.text_block_index[page_idx]:
-            block_rect = block.get('layout_rect', block['rect'])
-            text = block['text']
-            font = block['font']
-            size = block['size']
-            color = block['color']
-            rotation = block.get('rotation', 0)
-            
-            if not text.strip():
-                continue  # 跳過空文字
-            
-            # 準備HTML內容
-            html_content = self._convert_text_to_html(text, int(size), color)
-            
-            # 定義CSS樣式
-            css = f"""
-                span {{
-                    font-size: {size}pt;
-                    white-space: pre-wrap;
-                    word-break: break-all;
-                    overflow-wrap: anywhere;
-                    color: rgb({int(color[0]*255)}, {int(color[1]*255)}, {int(color[2]*255)});
-                }}
-                .helv {{ font-family: helv; }}
-                .cjk {{ font-family: cjk; }}
-            """
-            
-            # 全部用 HTML 渲染。垂直：以列數估算所需寬度，對稱擴展 x；水平維持原邏輯。
-            insert_rotate = self._insert_rotate_for_htmlbox(rotation)
-            if rotation in (90, 270):
-                base_rect = self._vertical_html_rect(block_rect, text, size, font, temp_page.rect)
-                base_y1 = base_rect.y1
-                html_rect = fitz.Rect(base_rect.x0, block_rect.y0, base_rect.x1, temp_page.rect.y1)
-            else:
-                max_allowed_width = page_width - block_rect.x0 - margin
-                line_count = max(1, len(text.split('\n')))
-                estimated_height = line_count * size * 2 + size * 2
-                base_rect = fitz.Rect(
-                    block_rect.x0,
-                    block_rect.y0,
-                    block_rect.x0 + max_allowed_width,
-                    block_rect.y0 + max(block_rect.height, estimated_height)
+                data = self.doc.tobytes(garbage=4, deflate=True)
+                self.doc.close()
+                self.doc = fitz.open("pdf", data)
+                self.block_manager.build_index(self.doc)
+                logger.info(
+                    f"完整 GC 完成（第 {self.edit_count} 次編輯後），已重新載入文件"
                 )
-                html_rect = fitz.Rect(base_rect.x0, base_rect.y0, base_rect.x1, temp_page.rect.y1)
-            
-            # 垂直文字：先全頁高度渲染，再二分縮減 y1
-            try:
-                if rotation in (90, 270):
-                    full_rect = html_rect
-                    spare_height, scale_used = temp_page.insert_htmlbox(
-                        full_rect, html_content, css=css, rotate=insert_rotate, scale_low=1
-                    )
-                    if spare_height < 0:
-                        temp_page.insert_htmlbox(
-                            full_rect, html_content, css=css, rotate=insert_rotate, scale_low=0
-                        )
-                    if not self._text_fits_in_rect(temp_page, full_rect, text):
-                        raise RuntimeError(
-                            f"渲染文字方塊 {block['block_id']} 失敗：全頁高度仍裁切。"
-                        )
-                    padding = self._calc_vertical_padding(size)
-                    html_rect = self._binary_shrink_height(temp_page, full_rect, text, iterations=7, padding=padding, min_y1=base_y1)
-                    temp_page.add_redact_annot(full_rect)
-                    temp_page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-                    spare_height, scale_used = temp_page.insert_htmlbox(
-                        html_rect, html_content, css=css, rotate=insert_rotate, scale_low=1
-                    )
-                    if spare_height < 0:
-                        temp_page.insert_htmlbox(
-                            html_rect, html_content, css=css, rotate=insert_rotate, scale_low=0
-                        )
-                    logger.debug(f"已渲染文字方塊 {block['block_id']}: '{text[:30]}...' (rotation={rotation}, insert_rotate={insert_rotate})")
-                else:
-                    spare_height, scale_used = temp_page.insert_htmlbox(
-                        html_rect, html_content, css=css, rotate=insert_rotate, scale_low=1
-                    )
-                    if spare_height < 0:
-                        logger.error(
-                            f"渲染文字方塊 {block['block_id']} 失敗：字級 {size}pt 下無法完整塞入 (spare_height={spare_height})，不縮小字級故未繪製。"
-                        )
-                    else:
-                        logger.debug(f"已渲染文字方塊 {block['block_id']}: '{text[:30]}...' (rotation={rotation}, insert_rotate={insert_rotate})")
             except Exception as e:
-                logger.warning(f"渲染文字方塊 {block['block_id']} 失敗: {e}")
-        
-        # 注意：PyMuPDF 的 Page 物件沒有 update() 方法
-        # insert_htmlbox 和 apply_redactions 會自動更新頁面
-        return temp_doc
+                logger.warning(f"完整 GC 失敗，繼續使用現有文件: {e}")
 
-    def edit_text(self, page_num: int, rect: fitz.Rect, new_text: str, font: str = "helv", size: int = 12, color: tuple = (0.0, 0.0, 0.0), original_text: str = None):
+    # ──────────────────────────────────────────────────────────────────────────
+    # Phase 3: 五步流程 + 三策略 edit_text
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def edit_text(self, page_num: int, rect: fitz.Rect, new_text: str,
+                  font: str = "helv", size: int = 12,
+                  color: tuple = (0.0, 0.0, 0.0),
+                  original_text: str = None,
+                  vertical_shift_left: bool = True):
         """
-        編輯文字（模仿 Stirling-PDF：只清除目標文字框，不影響其他文字）
-        
+        編輯文字：五步流程 + 三策略智能插入。
+
+        流程：
+          1. 驗證：從 TextBlockManager 取出 TextBlock，比對原文字
+          2. 安全 Redaction：只清除目標 block 的 layout_rect
+          3. 智能插入：策略 A (htmlbox) → B (auto-expand) → C (fallback)
+          4. 驗證與回滾：difflib.ratio > 0.92，否則 page-level snapshot 回滾
+          5. 更新索引：block_manager.update_block()
+
         Args:
             page_num: 頁碼（1-based）
-            rect: 粗略的矩形區域
+            rect: 使用者選取的粗略矩形
             new_text: 新文字內容
             font: 字體名稱
             size: 字體大小
             color: 文字顏色 (0-1 float tuple)
             original_text: 原始文字內容（可選，用於精確定位）
+            vertical_shift_left: 垂直文字擴展方向（True=左移，False=右移）
         """
         if not new_text.strip():
             logger.warning("文字內容為空，跳過編輯")
             return
 
-        # --- 步驟 1: 使用索引查找目標文字方塊 ---
-        target_block = self._find_text_block_by_rect(page_num, rect, original_text)
-        
-        if not target_block:
-            logger.warning(f"無法找到目標文字方塊，使用回退方法")
-            # 回退到原來的編輯方式
-            return
-        
-        block_id = target_block['block_id']
+        _t0 = time.perf_counter()  # Phase 6: 效能計時
         page_idx = page_num - 1
-        target_layout_rect = target_block.get('layout_rect', target_block['rect'])
-        redact_rect = target_layout_rect
-        
-        # --- 步驟 2: 更新索引中的文字內容 ---
-        if page_idx in self.text_block_index:
-            for block in self.text_block_index[page_idx]:
-                if block['block_id'] == block_id:
-                    # 更新索引中的文字內容
-                    old_text = block['text']
-                    block['text'] = new_text
-                    block['font'] = font
-                    block['size'] = size
-                    block['color'] = color
-                    logger.debug(f"已更新索引中的文字方塊 {block_id}: '{old_text[:30]}...' -> '{new_text[:30]}...'")
-                    break
-        
-        # --- 步驟 3: 只清除目標文字框，然後重新渲染該文字框 ---
-        success_snapshot = None
+        page = self.doc[page_idx]
+        page_rect = page.rect
+
+        # ── Step 0: 擷取 page-level 快照，供回滾使用 ──
+        snapshot_bytes = self._capture_page_snapshot(page_idx)
+
         try:
-            # 克隆頁面
-            temp_doc = self.clone_page(page_num)
-            temp_page = temp_doc[0]
-            
-            # --- 計算目標文字框位置 ---
-            rotation = target_block.get('rotation', 0)
-            page_width = temp_page.rect.width
-            margin = 15
-            if rotation in (90, 270):
-                base_rect = self._vertical_html_rect(target_layout_rect, new_text, size, font, temp_page.rect)
-                base_y1 = base_rect.y1
-                html_rect = fitz.Rect(base_rect.x0, target_layout_rect.y0, base_rect.x1, temp_page.rect.y1)
-            else:
-                max_allowed_width = page_width - target_layout_rect.x0 - margin
-                line_count = max(1, len(new_text.split('\n')))
-                estimated_height = line_count * size * 2 + size * 2
-                base_rect = fitz.Rect(
-                    target_layout_rect.x0,
-                    target_layout_rect.y0,
-                    target_layout_rect.x0 + max_allowed_width,
-                    target_layout_rect.y0 + max(target_layout_rect.height, estimated_height)
-                )
-                base_y1 = base_rect.y1
-                html_rect = fitz.Rect(base_rect.x0, base_rect.y0, base_rect.x1, temp_page.rect.y1)
+            # ═══════════ Step 1: 驗證 ═══════════
+            target = self.block_manager.find_by_rect(
+                page_idx, rect, original_text=original_text, doc=self.doc
+            )
+            if not target:
+                logger.warning(f"無法找到目標文字方塊，頁面 {page_num} 矩形 {rect}")
+                return
 
-            full_rect = html_rect
-
-            # --- 欄位碰撞檢測 + 左移連動 + 全頁高度起步 + 二分縮減 ---
-            old_layout_rects = {block_id: target_layout_rect}
-            moved_blocks = []
-            threshold = 4.0
-            if rotation in (90, 270) and html_rect.x0 < target_layout_rect.x0:
-                for block in self.text_block_index[page_idx]:
-                    if block['block_id'] == block_id:
-                        continue
-                    if block.get('rotation', 0) not in (90, 270):
-                        continue
-                    other_rect = block.get('layout_rect', block['rect'])
-                    if not self._y_overlaps(other_rect, target_layout_rect):
-                        continue
-                    if other_rect.x1 > (html_rect.x0 - threshold) and other_rect.x0 < target_layout_rect.x0:
-                        moved_blocks.append(block)
-
-                moved_blocks.sort(key=lambda b: b.get('layout_rect', b['rect']).x1, reverse=True)
-                next_right_x0 = html_rect.x0
-                for block in moved_blocks:
-                    other_rect = block.get('layout_rect', block['rect'])
-                    old_layout_rects.setdefault(block['block_id'], other_rect)
-                    new_rect = self._shift_rect_left(other_rect, next_right_x0, threshold, temp_page.rect)
-                    block['layout_rect'] = new_rect
-                    next_right_x0 = new_rect.x0
-
-            target_block['layout_rect'] = html_rect
-
-            # --- 清除舊位置 ---
-            for old_rect in old_layout_rects.values():
-                temp_page.add_redact_annot(old_rect)
-            temp_page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-            logger.debug(f"已清除文字框位置: {[str(r) for r in old_layout_rects.values()]}")
-
-            # --- 重繪（目標 + 被移動欄位）---
-            # [優化 9] 預先計算目標區塊的 html_content/css，供垂直文字後續 shrink/redraw 使用（避免使用錯誤區塊的內容）
-            target_html_content = self._convert_text_to_html(new_text, int(size), color)
-            target_css = f"""
-                    span {{
-                        font-size: {size}pt;
-                        white-space: pre-wrap;
-                        word-break: break-all;
-                        overflow-wrap: anywhere;
-                        color: rgb({int(color[0]*255)}, {int(color[1]*255)}, {int(color[2]*255)});
-                    }}
-                    .helv {{ font-family: helv; }}
-                    .cjk {{ font-family: cjk; }}
-                """
-            affected_blocks = moved_blocks + [target_block]
-            affected_blocks = sorted(affected_blocks, key=lambda b: b.get('layout_rect', b['rect']).x0)
-            for block in affected_blocks:
-                block_rect = block.get('layout_rect', block['rect'])
-                block_text = block.get('text') or ''
-                block_size = block.get('size', 12)
-                block_color = block.get('color', (0.0, 0.0, 0.0))
-                block_rotation = block.get('rotation', 0)
-                insert_rotate = self._insert_rotate_for_htmlbox(block_rotation)
-
-                if not block_text.strip():
-                    continue
-
-                html_content = self._convert_text_to_html(block_text, int(block_size), block_color)
-                css = f"""
-                    span {{
-                        font-size: {block_size}pt;
-                        white-space: pre-wrap;
-                        word-break: break-all;
-                        overflow-wrap: anywhere;
-                        color: rgb({int(block_color[0]*255)}, {int(block_color[1]*255)}, {int(block_color[2]*255)});
-                    }}
-                    .helv {{ font-family: helv; }}
-                    .cjk {{ font-family: cjk; }}
-                """
-
-                spare_height, scale_used = temp_page.insert_htmlbox(
-                    block_rect, html_content, css=css, rotate=insert_rotate, scale_low=1
-                )
-                if spare_height < 0:
-                    if block_rotation in (90, 270):
-                        spare_height, scale_used = temp_page.insert_htmlbox(
-                            block_rect, html_content, css=css, rotate=insert_rotate, scale_low=0
-                        )
-                    if spare_height < 0 and block_rotation not in (90, 270):
-                        fail_reason = (
-                            f"文字框內容在字級 {block_size}pt 下無法完整塞入 (spare_height={spare_height})，不縮小字級故未繪製。"
-                            "（insert_htmlbox 必須傳入 rect；若需「只算位置再放文字」可改為 insert_text + morph，但不支援 HTML。）"
-                        )
-                        logger.error(f"文字框 {block['block_id']} 渲染失敗：{fail_reason}")
-                        raise RuntimeError(fail_reason)
-
-                if block['block_id'] == block_id:
+            clip_text = page.get_text("text", clip=target.rect).strip()
+            norm_clip = self._normalize_text_for_compare(clip_text)
+            norm_block = self._normalize_text_for_compare(target.text)
+            if norm_block and norm_clip:
+                match_ratio = difflib.SequenceMatcher(
+                    None, norm_block, norm_clip
+                ).ratio()
+                if match_ratio < 0.5:
                     logger.debug(
-                        f"已重新渲染目標文字框 {block_id}: '{new_text[:30]}...' "
-                        f"(rotation={block_rotation}, insert_rotate={insert_rotate}, scale_used={scale_used})"
+                        f"索引文字與頁面文字不匹配 (ratio={match_ratio:.2f})，"
+                        "重建該頁索引"
+                    )
+                    self.block_manager.rebuild_page(page_idx, self.doc)
+                    target = self.block_manager.find_by_rect(
+                        page_idx, rect, original_text=original_text, doc=self.doc
+                    )
+                    if not target:
+                        logger.warning("重建索引後仍找不到目標文字方塊")
+                        return
+
+            rotation = target.rotation
+            is_vertical = target.is_vertical
+            insert_rotate = self._insert_rotate_for_htmlbox(rotation)
+            redact_rect = fitz.Rect(target.layout_rect)
+
+            # ═══════════ Step 2: 安全 Redaction ═══════════
+            # apply_redactions 必須在 insert_htmlbox 之前立即執行（確保舊文字已清除），
+            # pending_edits 僅追蹤已修改的頁面，供 apply_pending_redactions() 批次 clean_contents。
+            page.add_redact_annot(redact_rect)
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+            self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(redact_rect)})
+            logger.debug(f"已安全清除目標文字框: {redact_rect}")
+
+            # ═══════════ Step 3: 智能插入（三策略）═══════════
+            html_content = self._convert_text_to_html(new_text, int(size), color)
+            css = self._build_insert_css(size, color)
+
+            # --- 計算初始插入矩形 ---
+            if is_vertical:
+                base_rect = self._vertical_html_rect(
+                    target.layout_rect, new_text, size, font,
+                    page_rect, anchor_right=vertical_shift_left
+                )
+                base_y1 = base_rect.y1
+                insert_rect = fitz.Rect(
+                    base_rect.x0, base_rect.y0, base_rect.x1, page_rect.y1
+                )
+            else:
+                margin = 15
+                right_margin_pt = max(60.0, min(120.0, float(size) * 2.0))
+                right_safe = page_rect.x1 - right_margin_pt
+                x0 = max(target.layout_rect.x0, page_rect.x0)
+                max_w = max(0, min(
+                    page_rect.width - margin,
+                    right_safe - x0 - margin
+                ))
+                x1 = min(x0 + max(target.layout_rect.width, max_w), right_safe)
+                y0 = max(target.layout_rect.y0, page_rect.y0)
+                line_count = max(1, len(new_text.split('\n')))
+                est_height = line_count * size * 2 + size * 2
+                base_y1 = y0 + max(target.layout_rect.height, est_height)
+                insert_rect = fitz.Rect(x0, y0, x1, page_rect.y1)
+
+            insert_rect = self._clamp_rect_to_page(insert_rect, page_rect)
+
+            # ── 策略 A: insert_htmlbox (scale_low=1) ──
+            spare_height, scale_used = page.insert_htmlbox(
+                insert_rect, html_content, css=css,
+                rotate=insert_rotate, scale_low=1
+            )
+            new_layout_rect = fitz.Rect(insert_rect)
+            logger.debug(f"策略 A: spare_height={spare_height}, scale={scale_used}")
+
+            if spare_height < 0:
+                # ── 策略 B: 自動擴寬 + 再試 ──
+                logger.debug("策略 A 失敗，嘗試策略 B（自動擴寬）")
+                try:
+                    font_for_measure = (
+                        "china-ts" if self._needs_cjk_font(new_text) else font
+                    )
+                    try:
+                        font_obj = fitz.Font(font_for_measure)
+                    except Exception:
+                        font_for_measure = "helv"
+                        font_obj = fitz.Font(font_for_measure)
+                    text_width = font_obj.text_length(
+                        new_text.replace('\n', ''), fontsize=size
+                    )
+                    expanded_width = max(
+                        insert_rect.width, text_width * 1.15 + size
                     )
 
-            # [優化 10] 垂直文字：使用目標的 target_html_content/target_css 進行 shrink 後重繪（問題大全 §1,3）
-            if rotation in (90, 270):
-                # [優化 12] 垂直文字：get_text(clip=rect) 對旋轉內容可能擷取不到，導致誤判裁切
-                # 若 insert_htmlbox 已在 loop 成功繪製，則跳過此驗證，避免錯誤 raise
-                if not self._text_fits_in_rect(temp_page, full_rect, new_text):
-                    logger.warning(
-                        f"垂直文字 {block_id}：_text_fits_in_rect 未通過（旋轉擷取可能不準），已繪製則繼續"
+                    if is_vertical:
+                        expanded_rect = fitz.Rect(
+                            insert_rect.x0 - (expanded_width - insert_rect.width),
+                            insert_rect.y0, insert_rect.x1, insert_rect.y1
+                        )
+                    else:
+                        expanded_rect = fitz.Rect(
+                            insert_rect.x0, insert_rect.y0,
+                            min(insert_rect.x0 + expanded_width,
+                                page_rect.x1 - 10),
+                            insert_rect.y1
+                        )
+                    expanded_rect = self._clamp_rect_to_page(
+                        expanded_rect, page_rect
                     )
+                    spare_height, scale_used = page.insert_htmlbox(
+                        expanded_rect, html_content, css=css,
+                        rotate=insert_rotate, scale_low=1
+                    )
+                    new_layout_rect = fitz.Rect(expanded_rect)
+                    logger.debug(
+                        f"策略 B: spare_height={spare_height}, scale={scale_used}"
+                    )
+                except Exception as ex_b:
+                    logger.debug(f"策略 B 失敗: {ex_b}")
+
+            if spare_height < 0:
+                # ── 策略 C: fallback ──
+                if is_vertical:
+                    spare_height, scale_used = page.insert_htmlbox(
+                        new_layout_rect, html_content, css=css,
+                        rotate=insert_rotate, scale_low=0
+                    )
+                    logger.debug(
+                        f"策略 C（垂直, scale_low=0）: "
+                        f"spare_height={spare_height}"
+                    )
+                else:
+                    # 水平文字：允許最低縮放 0.5 倍來塞入，避免直接放棄
+                    spare_height, scale_used = page.insert_htmlbox(
+                        new_layout_rect, html_content, css=css,
+                        rotate=insert_rotate, scale_low=0.5
+                    )
+                    if spare_height < 0:
+                        self._restore_page_from_snapshot(page_idx, snapshot_bytes)
+                        self.block_manager.rebuild_page(page_idx, self.doc)
+                        raise RuntimeError(
+                            f"文字框內容在字級 {size}pt 下無法完整塞入 "
+                            f"(spare_height={spare_height})，"
+                            "策略 A/B/C 均失敗，已回滾。"
+                        )
+                    logger.debug(
+                        f"策略 C（水平, scale_low=0.5）: "
+                        f"spare_height={spare_height}, scale={scale_used}"
+                    )
+
+            # --- 垂直文字：binary shrink height ---
+            if is_vertical:
                 padding = self._calc_vertical_padding(size)
-                html_rect = self._binary_shrink_height(temp_page, full_rect, new_text, iterations=7, padding=padding, min_y1=base_y1)
-                target_block['layout_rect'] = html_rect
-                temp_page.add_redact_annot(full_rect)
-                temp_page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-                spare_height, scale_used = temp_page.insert_htmlbox(
-                    html_rect, target_html_content, css=target_css, rotate=insert_rotate, scale_low=1
+                shrunk_rect = self._binary_shrink_height(
+                    page, insert_rect, new_text,
+                    iterations=7, padding=padding, min_y1=base_y1
+                )
+                shrunk_rect = self._clamp_rect_to_page(shrunk_rect, page_rect)
+                page.add_redact_annot(insert_rect)
+                page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+                spare_height, scale_used = page.insert_htmlbox(
+                    shrunk_rect, html_content, css=css,
+                    rotate=insert_rotate, scale_low=1
                 )
                 if spare_height < 0:
-                    temp_page.insert_htmlbox(
-                        html_rect, target_html_content, css=target_css, rotate=insert_rotate, scale_low=0
+                    page.insert_htmlbox(
+                        shrunk_rect, html_content, css=css,
+                        rotate=insert_rotate, scale_low=0
                     )
+                new_layout_rect = fitz.Rect(shrunk_rect)
             else:
-                html_rect = self._binary_shrink_height(temp_page, full_rect, new_text, iterations=7, padding=4.0, min_y1=base_y1)
-                target_block['layout_rect'] = html_rect
-            
-            success_snapshot = temp_doc
-            
-            # --- 步驟 4: 應用更改並更新索引中的 rect（若已擴展文字框）---
-            if success_snapshot:
-                self.doc.delete_page(page_num - 1)
-                self.doc.insert_pdf(success_snapshot, from_page=0, to_page=0, start_at=page_num - 1)
-                if page_idx in self.text_block_index:
-                    for block in self.text_block_index[page_idx]:
-                        if block['block_id'] == block_id:
-                            # 垂直文字保持原始 rect，避免逐次編輯造成 bbox 漂移
-                            if rotation not in (90, 270):
-                                block['rect'] = html_rect
-                                block['layout_rect'] = html_rect
-                            break
-                logger.debug(f"編輯文字成功: 頁面 {page_num}, 文字='{new_text[:50]}...'")
+                # spare_height 直接告訴我們文字實際佔用高度（比 binary search + get_text probe 更可靠），
+                # 避免 _text_fits_in_rect 因 HTML escape / 字型差異導致全部 probe 失敗，
+                # 進而使 new_layout_rect 退化成整頁高度、抓到其他 block 的文字。
+                text_used_height = new_layout_rect.height - spare_height
+                computed_y1 = new_layout_rect.y0 + text_used_height + 4.0
+                # 至少覆蓋原始 block 高度，避免 layout_rect 過小
+                computed_y1 = max(computed_y1, base_y1)
+                shrunk_rect = fitz.Rect(
+                    new_layout_rect.x0, new_layout_rect.y0,
+                    new_layout_rect.x1, computed_y1
+                )
+                shrunk_rect = self._clamp_rect_to_page(shrunk_rect, page_rect)
+                new_layout_rect = fitz.Rect(shrunk_rect)
+
+            # ═══════════ Step 4: 驗證與回滾 ═══════════
+            # 使用全頁文字做 substring check，避免 clip 邊界截斷或抓到鄰近 block：
+            #   - 若 norm_new 是全頁文字的子字串 → ratio=1.0
+            #   - 否則 fallback 到 SequenceMatcher（仍用全頁文字，容許輕微差異）
+            full_page_text = page.get_text("text")
+            norm_new = self._normalize_text_for_compare(new_text)
+            norm_page = self._normalize_text_for_compare(full_page_text)
+
+            if norm_new and norm_new in norm_page:
+                sim_ratio = 1.0
+            elif norm_new and norm_page:
+                sim_ratio = difflib.SequenceMatcher(
+                    None, norm_new, norm_page
+                ).ratio()
             else:
-                raise RuntimeError("未知錯誤，未能生成成功快照")
+                sim_ratio = 1.0 if not norm_new else 0.0
 
-        except Exception as render_e:
-            logger.error(f"編輯文字失敗，已回滾: {render_e}")
-            # 回滾索引更改
-            if page_idx in self.text_block_index:
-                for block in self.text_block_index[page_idx]:
-                    if block['block_id'] == block_id:
-                        # 恢復原來的文字（如果可能）
-                        block['text'] = original_text if original_text else target_block['text']
-                        block['font'] = target_block['font']
-                        block['size'] = target_block['size']
-                        block['color'] = target_block['color']
-                        break
-                if 'old_layout_rects' in locals():
-                    for block in self.text_block_index[page_idx]:
-                        if block['block_id'] in old_layout_rects:
-                            block['layout_rect'] = old_layout_rects[block['block_id']]
-            raise # 重新拋出錯誤，讓 Controller 捕捉並顯示
-        finally:
-            # --- 清理 ---
-            if success_snapshot and not success_snapshot.is_closed:
-                success_snapshot.close()
+            logger.debug(
+                f"Step4 驗證: ratio={sim_ratio:.2f}, "
+                f"layout_rect={new_layout_rect}, "
+                f"norm_new[:{min(40, len(norm_new))}]={norm_new[:40]!r}"
+            )
 
-        # --- 儲存狀態 ---
-        self._save_state()
+            # 垂直文字 get_text(clip=) 對旋轉內容擷取不準確，跳過嚴格驗證
+            # 閾值 0.80：容許 get_text clip 邊界截斷、字型差異等正常偏差（<20%）
+            if sim_ratio < 0.80 and not is_vertical:
+                logger.warning(
+                    f"插入後驗證失敗 (ratio={sim_ratio:.2f})，"
+                    f"正在回滾頁面 {page_num}"
+                )
+                self._restore_page_from_snapshot(page_idx, snapshot_bytes)
+                self.block_manager.rebuild_page(page_idx, self.doc)
+                raise RuntimeError(
+                    f"文字編輯驗證失敗：difflib.ratio="
+                    f"{sim_ratio:.2f} < 0.80，已回滾。"
+                )
 
-    def _save_state(self):
-        """儲存狀態到undo堆疊"""
-        if not self.doc:
-            return
+            # ═══════════ Step 5: 更新索引 ═══════════
+            update_kwargs = dict(
+                text=new_text,
+                font=font,
+                size=float(size),
+                color=color,
+            )
+            # 垂直文字保持原始 rect/layout_rect，避免逐次編輯造成 bbox 漂移
+            if not is_vertical:
+                update_kwargs['layout_rect'] = new_layout_rect
+            self.block_manager.update_block(target, **update_kwargs)
+            logger.debug(
+                f"編輯文字成功: 頁面 {page_num}, "
+                f"block_id={target.block_id}, "
+                f"text='{new_text[:30]}...'"
+            )
 
-        # 為新狀態創建一個唯一的臨時檔案路徑
-        new_path = Path(self.temp_dir.name) / f"state_{uuid.uuid4()}.pdf"
+            # ── Phase 6: GC + 效能計時 ──
+            self.edit_count += 1
+            self._maybe_garbage_collect()
 
-        # 將當前文件狀態保存到新路徑
-        self.doc.save(str(new_path), garbage=0)
+            _duration = time.perf_counter() - _t0
+            if _duration > 0.3:
+                logger.warning(
+                    f"單次編輯過慢：{_duration:.3f}s，頁面 {page_num}，"
+                    f"text='{new_text[:20]}…'"
+                )
+            else:
+                logger.debug(f"編輯完成，耗時 {_duration:.3f}s，頁面 {page_num}")
 
-        # 將新狀態的路徑推入撤銷堆疊
-        self.undo_stack.append(str(new_path))
-
-        # 清理重做堆疊中的舊狀態檔案
-        for path in self.redo_stack:
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.error(f"編輯文字時發生非預期錯誤: {e}")
             try:
-                os.unlink(path)
-            except OSError as e:
-                logger.warning(f"無法刪除重做狀態檔案 {path}: {e}")
-        self.redo_stack.clear()
-        logger.debug(f"狀態已儲存至 {new_path}。撤銷堆疊大小: {len(self.undo_stack)}")
+                self._restore_page_from_snapshot(page_idx, snapshot_bytes)
+                self.block_manager.rebuild_page(page_idx, self.doc)
+            except Exception:
+                pass
+            raise RuntimeError(f"編輯文字失敗: {e}") from e
+
+        # Phase 4: undo/redo 已由 CommandManager (EditTextCommand) 全權負責，
+        #          此處不再呼叫 _save_state()，避免雙重儲存浪費 I/O。
+
+    # _save_state() 已於 Phase 6 移除，所有 undo/redo 由 CommandManager 統一管理。
     
     def _full_save_to_path(self, path: str):
         """
@@ -1470,6 +1245,8 @@ class PDFModel:
         """另存 PDF（含浮水印）。若存回原檔且支援增量更新，則使用 incremental=True。"""
         if not self.doc:
             return
+        # Phase 6: 儲存前批次清理已修改頁面的 content stream，壓縮 PDF 大小
+        self.apply_pending_redactions()
         new_path_resolved = Path(new_path).resolve()
         original_resolved = Path(self.original_path).resolve() if self.original_path else None
         doc_name_resolved = Path(self.doc.name).resolve() if self.doc.name else None
@@ -1523,36 +1300,16 @@ class PDFModel:
         else:
             self._full_save_to_path(new_path)
         self.saved_path = new_path
-        self.saved_undo_stack_size = len(self.undo_stack)
+        self.command_manager.mark_saved()
+        self.edit_count = 0
         self._watermark_modified = False
     
     def has_unsaved_changes(self) -> bool:
-        """檢查是否有未儲存的變更
-        
-        比較當前undo_stack大小與儲存時的大小，如果不同則表示有未儲存的變更。
-        浮水印的增刪改也會視為未儲存變更。
-        """
+        """檢查是否有未儲存的變更（Phase 6：統一由 command_manager 管理）。"""
         if not self.doc:
             return False
         if getattr(self, '_watermark_modified', False):
             return True
-        if self.saved_path is None:
-            return len(self.undo_stack) > 1
-        return len(self.undo_stack) != self.saved_undo_stack_size
+        return self.command_manager.has_pending_changes()
 
-    def undo(self):
-        if len(self.undo_stack) > 1:
-            current_path = self.undo_stack.pop()
-            self.redo_stack.append(current_path)
-            prev_path = self.undo_stack[-1]
-            self.doc.close()
-            self.doc = fitz.open(prev_path)
-            logger.debug(f"撤銷至 {prev_path}。重做堆疊大小: {len(self.redo_stack)}")
-
-    def redo(self):
-        if self.redo_stack:
-            next_path = self.redo_stack.pop()
-            self.undo_stack.append(next_path)
-            self.doc.close()
-            self.doc = fitz.open(next_path)
-            logger.debug(f"重做至 {next_path}。撤銷堆疊大小: {len(self.undo_stack)}")
+    # undo() / redo() 已於 Phase 6 移除，改由 Controller 呼叫 model.command_manager.undo/redo()。

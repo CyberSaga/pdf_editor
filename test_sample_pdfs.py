@@ -24,26 +24,27 @@ def test_pdf(path: Path) -> tuple[bool, str]:
     try:
         model.open_pdf(str(path))
         n_pages = len(model.doc)
-        total_blocks = sum(len(b) for b in model.text_block_index.values())
+        all_page_indices = list(model.block_manager._index.keys())
+        total_blocks = sum(len(model.block_manager.get_blocks(p)) for p in all_page_indices)
         if total_blocks == 0:
             model.close()
             return True, f"OK (無文字塊, {n_pages} 頁)"
-        # 找第一頁第一個非空文字塊，嘗試編輯
-        for page_idx, blocks in model.text_block_index.items():
+        for page_idx in all_page_indices:
+            blocks = model.block_manager.get_blocks(page_idx)
             for block in blocks:
-                text = block.get('text', '').strip()
+                text = block.text.strip()
                 if not text or len(text) < 2:
                     continue
-                rect = block.get('layout_rect', block['rect'])
+                rect = block.layout_rect
                 try:
                     new_text = "[TEST]" + text[:20] + ("..." if len(text) > 20 else "")
                     model.edit_text(
                         page_num=page_idx + 1,
                         rect=rect,
                         new_text=new_text,
-                        font=block.get('font', 'helv'),
-                        size=int(block.get('size', 12)),
-                        color=block.get('color', (0.0, 0.0, 0.0)),
+                        font=block.font,
+                        size=int(block.size),
+                        color=block.color,
                         original_text=text,
                     )
                     model.close()

@@ -41,45 +41,41 @@ def main():
             model.open_pdf(str(pdf_path))
             print("2. 成功開啟 PDF")
             print(f"   - 頁數: {len(model.doc)}")
-            print(f"   - 文字方塊數: {sum(len(b) for b in model.text_block_index.values())}")
+            all_pages = list(model.block_manager._index.keys())
+            total_blocks = sum(len(model.block_manager.get_blocks(p)) for p in all_pages)
+            print(f"   - 文字方塊數: {total_blocks}")
 
-            # 取得第一頁文字塊的 rect
             page_idx = 0
-            if page_idx not in model.text_block_index:
-                print("   [失敗] 無文字方塊索引")
-                return 1
-            blocks = model.text_block_index[page_idx]
+            blocks = model.block_manager.get_blocks(page_idx)
             if not blocks:
                 print("   [失敗] 無文字方塊")
                 return 1
 
-            # 找 "Original text to edit" 區塊
             target = None
             for b in blocks:
-                if "Original" in (b.get('text') or ''):
+                if "Original" in b.text:
                     target = b
                     break
             if not target:
-                target = blocks[-1]  # 用最後一個
-            rect = target.get('layout_rect', target['rect'])
-            original = target.get('text', '')
+                target = blocks[-1]
+            rect = target.layout_rect
+            original = target.text
             print(f"3. 目標區塊: rect={rect}, text='{original[:30]}...'")
 
-            # 執行編輯
             model.edit_text(
                 page_num=1,
                 rect=rect,
                 new_text="Edited successfully! 編輯成功！",
-                font=target.get('font', 'helv'),
-                size=int(target.get('size', 12)),
-                color=target.get('color', (0.0, 0.0, 0.0)),
+                font=target.font,
+                size=int(target.size),
+                color=target.color,
                 original_text=original,
             )
             print("4. 編輯成功完成")
 
-            # 驗證：從索引取得更新後的 rect，再擷取文字
-            updated_block = next((b for b in model.text_block_index[0] if b.get('text', '').startswith('Edited')), None)
-            clip_rect = updated_block['layout_rect'] if updated_block else rect
+            updated_blocks = model.block_manager.get_blocks(0)
+            updated_block = next((b for b in updated_blocks if b.text.startswith('Edited')), None)
+            clip_rect = updated_block.layout_rect if updated_block else rect
             page = model.doc[0]
             extracted = page.get_text("text", clip=clip_rect)
             print(f"5. 重新擷取文字: '{extracted.strip()[:50]}...'")

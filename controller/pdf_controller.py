@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import QMessageBox, QApplication, QFileDialog
 from model.pdf_model import PDFModel
+from model.edit_commands import EditTextCommand, SnapshotCommand
 from view.pdf_view import PDFView
 from typing import List, Tuple
 from utils.helpers import parse_pages, pixmap_to_qpixmap, show_error
@@ -85,41 +86,111 @@ class PDFController:
             show_error(self.view, f"儲存失敗: {e}")
 
     def delete_pages(self, pages: List[int]):
+        before = self.model._capture_doc_snapshot()
         self.model.delete_pages(pages)
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="delete_pages",
+            affected_pages=pages,
+            before_bytes=before,
+            after_bytes=after,
+            description=f"刪除頁面 {pages}",
+        )
+        self.model.command_manager.record(cmd)
         self._update_thumbnails()
         self._rebuild_continuous_scene(min(self.view.current_page, len(self.model.doc) - 1))
+        self._update_undo_redo_tooltips()
 
     def rotate_pages(self, pages: List[int], degrees: int):
+        before = self.model._capture_doc_snapshot()
         self.model.rotate_pages(pages, degrees)
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="rotate_pages",
+            affected_pages=pages,
+            before_bytes=before,
+            after_bytes=after,
+            description=f"旋轉頁面 {pages} {degrees}°",
+        )
+        self.model.command_manager.record(cmd)
         self._update_thumbnails()
         self._rebuild_continuous_scene(self.view.current_page)
+        self._update_undo_redo_tooltips()
 
     def export_pages(self, pages: List[int], path: str, as_image: bool):
         self.model.export_pages(pages, path, as_image)
 
     def add_highlight(self, page: int, rect: fitz.Rect, color: Tuple[float, float, float, float]):
+        before = self.model._capture_doc_snapshot()
         self.model.add_highlight(page, rect, color)
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="add_highlight",
+            affected_pages=[page],
+            before_bytes=before,
+            after_bytes=after,
+            description=f"新增螢光筆（頁面 {page}）",
+        )
+        self.model.command_manager.record(cmd)
         self.show_page(page - 1)
+        self._update_undo_redo_tooltips()
 
     def get_text_bounds(self, page: int, rough_rect: fitz.Rect) -> fitz.Rect:
         return self.model.get_text_bounds(page, rough_rect)
 
     def add_rect(self, page: int, rect: fitz.Rect, color: Tuple[float, float, float, float], fill: bool):
+        before = self.model._capture_doc_snapshot()
         self.model.add_rect(page, rect, color, fill)
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="add_rect",
+            affected_pages=[page],
+            before_bytes=before,
+            after_bytes=after,
+            description=f"新增矩形（頁面 {page}）",
+        )
+        self.model.command_manager.record(cmd)
         self.show_page(page - 1)
+        self._update_undo_redo_tooltips()
 
-    def edit_text(self, page: int, rect: fitz.Rect, new_text: str, font: str, size: int, color: tuple, original_text: str = None):
+    def edit_text(self, page: int, rect: fitz.Rect, new_text: str, font: str, size: int, color: tuple, original_text: str = None, vertical_shift_left: bool = True):
         if not new_text.strip(): return
         if not self.model.doc or page < 1 or page > len(self.model.doc): return
         try:
-            # 如果沒有提供原始文字，嘗試從矩形區域獲取
-            if original_text is None:
-                # 嘗試從點擊位置獲取原始文字
-                # 這會在 view 中處理，這裡只是備用
-                pass
-            
-            self.model.edit_text(page, rect, new_text, font, size, color, original_text)
-            self.show_page(page - 1)
+            page_idx = page - 1
+
+            # Phase 4: 透過 CommandManager 執行，支援頁面快照 undo/redo
+            snapshot = self.model._capture_page_snapshot(page_idx)
+
+            # 找目標 block 以填入 old_block_id（僅供 log，不影響執行）
+            blocks = self.model.block_manager.get_blocks(page_idx)
+            target = next(
+                (b for b in blocks
+                 if fitz.Rect(b.layout_rect).intersects(rect) or fitz.Rect(b.rect).intersects(rect)),
+                None
+            )
+
+            cmd = EditTextCommand(
+                model=self.model,
+                page_num=page,
+                rect=rect,
+                new_text=new_text,
+                font=font,
+                size=size,
+                color=color,
+                original_text=original_text,
+                vertical_shift_left=vertical_shift_left,
+                page_snapshot_bytes=snapshot,
+                old_block_id=target.block_id if target else None,
+                old_block_text=original_text,
+            )
+            self.model.command_manager.execute(cmd)
+            self.show_page(page_idx)
+            self._update_undo_redo_tooltips()
         except Exception as e:
             logger.error(f"編輯文字失敗: {e}")
             show_error(self.view, f"編輯失敗: {e}")
@@ -140,16 +211,48 @@ class PDFController:
         self.model.ocr_pages(pages)
 
     def undo(self):
-        self.model.undo()
-        self._update_thumbnails()
-        self._rebuild_continuous_scene(min(self.view.current_page, len(self.model.doc) - 1))
-        self.load_annotations()
+        """
+        Phase 6: 統一使用 CommandManager。
+        SnapshotCommand（結構性操作）→ 全量重建縮圖與場景。
+        EditTextCommand / 非結構性 SnapshotCommand → 僅刷新受影響頁面。
+        """
+        if not self.model.command_manager.can_undo():
+            return
+        last_cmd = self.model.command_manager._undo_stack[-1]
+        self.model.command_manager.undo()
+        self._refresh_after_command(last_cmd)
+        self._update_undo_redo_tooltips()
 
     def redo(self):
-        self.model.redo()
-        self._update_thumbnails()
-        self._rebuild_continuous_scene(min(self.view.current_page, len(self.model.doc) - 1))
-        self.load_annotations()
+        """Phase 6: 統一使用 CommandManager。"""
+        if not self.model.command_manager.can_redo():
+            return
+        next_cmd = self.model.command_manager._redo_stack[-1]
+        self.model.command_manager.redo()
+        self._refresh_after_command(next_cmd)
+        self._update_undo_redo_tooltips()
+
+    def _refresh_after_command(self, cmd) -> None:
+        """undo/redo 後，依指令類型決定重新整理範圍。"""
+        is_structural = getattr(cmd, 'is_structural', False)
+        if is_structural:
+            page_idx = min(self.view.current_page, len(self.model.doc) - 1)
+            self._update_thumbnails()
+            self._rebuild_continuous_scene(page_idx)
+            self.load_annotations()
+        else:
+            # 精準刷新：找出受影響的頁碼
+            if hasattr(cmd, '_page_num'):
+                page_idx = cmd._page_num - 1        # EditTextCommand
+            elif hasattr(cmd, 'affected_pages') and cmd.affected_pages:
+                page_idx = cmd.affected_pages[0] - 1
+            else:
+                page_idx = self.view.current_page
+            page_idx = min(page_idx, len(self.model.doc) - 1)
+            self.show_page(page_idx)
+            # 非結構性但包含 FreeText 的操作（add_annotation）需更新列表
+            if getattr(cmd, '_command_type', '') == 'add_annotation':
+                self.load_annotations()
 
     def change_page(self, page_idx: int):
         if not self.model.doc or page_idx < 0 or page_idx >= len(self.model.doc):
@@ -191,6 +294,21 @@ class PDFController:
     def get_text_info_at_point(self, page_num: int, point: fitz.Point):
         return self.model.get_text_info_at_point(page_num, point)
 
+    def _update_undo_redo_tooltips(self) -> None:
+        """更新 View 的 undo/redo 按鈕 tooltip，顯示下一步操作描述。"""
+        cm = self.model.command_manager
+        if cm.can_undo():
+            last = cm._undo_stack[-1]
+            undo_tip = f"復原：{last.description}"
+        else:
+            undo_tip = "復原（無可撤銷操作）"
+        if cm.can_redo():
+            nxt = cm._redo_stack[-1]
+            redo_tip = f"重做：{nxt.description}"
+        else:
+            redo_tip = "重做（無可重做操作）"
+        self.view.update_undo_redo_tooltips(undo_tip, redo_tip)
+
     def _update_mode(self, mode: str):
         pass
 
@@ -208,17 +326,24 @@ class PDFController:
         if not self.model.doc: return
         
         try:
+            before = self.model._capture_doc_snapshot()
             # Model expects 1-based page number
             new_annot_xref = self.model.add_annotation(page_idx + 1, doc_point, text)
-            
-            # Refresh page to show the new annotation
+            after = self.model._capture_doc_snapshot()
+            cmd = SnapshotCommand(
+                model=self.model,
+                command_type="add_annotation",
+                affected_pages=[page_idx + 1],
+                before_bytes=before,
+                after_bytes=after,
+                description=f"新增註解（頁面 {page_idx + 1}）",
+            )
+            self.model.command_manager.record(cmd)
+
             self.show_page(page_idx)
-            
-            # Reload all annotations to update the list
             self.load_annotations()
-            
-            # Switch to annotation panel
             self.view._show_annotation_panel()
+            self._update_undo_redo_tooltips()
 
         except Exception as e:
             logger.error(f"新增註解失敗: {e}")
@@ -275,10 +400,22 @@ class PDFController:
             return
         
         try:
+            before = self.model._capture_doc_snapshot()
             self.model.insert_blank_page(position)
+            after = self.model._capture_doc_snapshot()
+            cmd = SnapshotCommand(
+                model=self.model,
+                command_type="insert_blank_page",
+                affected_pages=[position],
+                before_bytes=before,
+                after_bytes=after,
+                description=f"插入空白頁（位置 {position}）",
+            )
+            self.model.command_manager.record(cmd)
             self._update_thumbnails()
             new_page_idx = min(position - 1, len(self.model.doc) - 1)
             self._rebuild_continuous_scene(new_page_idx)
+            self._update_undo_redo_tooltips()
             QMessageBox.information(self.view, "插入成功", f"已在位置 {position} 插入空白頁面")
         except Exception as e:
             logger.error(f"插入空白頁面失敗: {e}")
@@ -291,10 +428,22 @@ class PDFController:
             return
         
         try:
+            before = self.model._capture_doc_snapshot()
             self.model.insert_pages_from_file(source_file, source_pages, position)
+            after = self.model._capture_doc_snapshot()
+            cmd = SnapshotCommand(
+                model=self.model,
+                command_type="insert_pages_from_file",
+                affected_pages=source_pages,
+                before_bytes=before,
+                after_bytes=after,
+                description=f"從 {Path(source_file).name} 插入 {len(source_pages)} 頁（位置 {position}）",
+            )
+            self.model.command_manager.record(cmd)
             self._update_thumbnails()
             new_page_idx = min(position - 1, len(self.model.doc) - 1)
             self._rebuild_continuous_scene(new_page_idx)
+            self._update_undo_redo_tooltips()
             QMessageBox.information(self.view, "插入成功", f"已從 {Path(source_file).name} 插入 {len(source_pages)} 個頁面到位置 {position}")
         except Exception as e:
             logger.error(f"從檔案插入頁面失敗: {e}")
