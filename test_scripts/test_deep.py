@@ -42,17 +42,20 @@ logging.disable(logging.CRITICAL)
 
 import fitz
 
-sys.path.insert(0, os.path.dirname(__file__))
+_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT))
 from model.pdf_model import PDFModel
 from model.edit_commands import EditTextCommand, SnapshotCommand
 
 # ──────────────────────────────────────────────────────────────
 # 設定
 # ──────────────────────────────────────────────────────────────
-TEST_FILES_ROOT = Path(__file__).parent / "test_files"
+TEST_FILES_ROOT = _ROOT / "test_files"
+if not TEST_FILES_ROOT.exists():
+    TEST_FILES_ROOT = Path(__file__).parent / "test_files"
 SAMPLE_DIR      = TEST_FILES_ROOT / "sample-files-main"
 VERA_DIR        = TEST_FILES_ROOT / "veraPDF-corpus-staging"
-REPORT_DEFAULT  = Path(__file__).parent / "deep_test_report.txt"
+REPORT_DEFAULT  = _ROOT / "deep_test_report.txt"
 
 KNOWN_PASSWORDS = {
     "encrypted.pdf": "kanbanery",
