@@ -1084,6 +1084,212 @@ class PDFModel:
                 logger.warning(f"完整 GC 失敗，繼續使用現有文件: {e}")
 
     # ──────────────────────────────────────────────────────────────────────────
+    # Push-Down 輔助方法：換行溢出時保留並推移下方文字塊
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _resolve_font_for_push(self, raw_font_name: str) -> str:
+        """
+        將 get_text("dict") 返回的字體名稱（如 'ABCDEF+ArialMT'）轉為
+        page.insert_text() 可接受的名稱。若原字體不可用則回退至最接近的
+        PyMuPDF 內建字體（helv / tiro / cour 系列）。
+        """
+        # 去除嵌入子集前綴（如 "ABCDEF+Arial" → "Arial"）
+        base = raw_font_name.split("+", 1)[-1] if "+" in raw_font_name else raw_font_name
+
+        # 嘗試直接使用原名稱
+        try:
+            fitz.Font(base)
+            return base
+        except Exception:
+            pass
+
+        # 依字體名稱特徵回退至 PyMuPDF 內建字體
+        low = base.lower()
+        is_bold   = "bold"   in low
+        is_italic = "italic" in low or "oblique" in low
+        is_mono   = "courier" in low or "mono" in low or "typewriter" in low
+        is_serif  = "times" in low or "roman" in low or "georgia" in low
+
+        if is_mono:
+            if is_bold and is_italic: return "cour-bi"
+            if is_bold:               return "cour-b"
+            if is_italic:             return "cour-i"
+            return "cour"
+        if is_serif:
+            if is_bold and is_italic: return "tibo"
+            if is_bold:               return "tib"
+            if is_italic:             return "tiit"
+            return "tiro"
+        # sans-serif (Helvetica / Arial / 其他)
+        if is_bold and is_italic: return "heit"
+        if is_bold:               return "hebo"
+        if is_italic:             return "heit"
+        return "helv"
+
+    def _push_down_overlapping_text(
+        self,
+        page: fitz.Page,
+        page_rect: fitz.Rect,
+        above_y: float,
+        new_bottom: float,
+        edit_x0: float,
+        edit_x1: float,
+    ) -> None:
+        """
+        換行溢出修正：將位於 [above_y, new_bottom] Y 區間內（且與
+        [edit_x0, edit_x1] X 範圍有重疊）的文字塊向下推移，使它們
+        落在 new_bottom 之後，保留原有文字內容，不重疊於新插入的文字。
+
+        支援 cascade：每個 block 推移後，若與下一個 block 仍有重疊，
+        自動繼續推移，直到頁面底部。
+
+        Args:
+            page       : 當前頁面物件
+            page_rect  : 頁面邊界 Rect
+            above_y    : 原始 block 的底部 Y（= redact_rect.y1）
+            new_bottom : 新插入文字的底部 Y（= shrunk_rect.y1）
+            edit_x0    : 編輯區 X 左邊界
+            edit_x1    : 編輯區 X 右邊界
+        """
+        GAP   = 2.0   # 推移後與上方文字的最小間距
+        X_TOL = 5.0   # X 方向重疊容差
+        page_idx = page.number
+
+        # ── 1. 取得整頁文字結構 ──
+        raw = page.get_text(
+            "dict",
+            flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES,
+        )
+
+        # ── 2. 找出溢出區間內且 X 重疊的文字 block ──
+        candidates: list[tuple[fitz.Rect, dict]] = []
+        for block in raw.get("blocks", []):
+            if block.get("type") != 0:      # 只處理純文字 block
+                continue
+            bbox = fitz.Rect(block["bbox"])
+            # Y 範圍：必須在 above_y 和 new_bottom + margin 之間開始
+            if bbox.y0 < above_y - 1.0:
+                continue
+            if bbox.y0 > new_bottom + 5.0:
+                continue
+            # X 重疊：至少有部分與編輯欄重疊
+            if bbox.x1 < edit_x0 - X_TOL or bbox.x0 > edit_x1 + X_TOL:
+                continue
+            candidates.append((fitz.Rect(bbox), block))
+
+        if not candidates:
+            logger.debug("_push_down_overlapping_text: 溢出區內無需推移的文字塊")
+            return
+
+        # ── 3. 按 y0 排序，cascade 計算各 block 的 delta_y ──
+        candidates.sort(key=lambda c: c[0].y0)
+        push_floor = new_bottom + GAP   # 目前可用的最低安全邊界
+
+        plan: list[tuple[fitz.Rect, dict, float]] = []   # (bbox, block, delta_y)
+        for bbox, block in candidates:
+            delta_y = max(0.0, push_floor - bbox.y0)
+            new_y1  = bbox.y1 + delta_y
+            if new_y1 > page_rect.y1 + 5.0:
+                logger.warning(
+                    f"_push_down: block [y={bbox.y0:.0f}~{bbox.y1:.0f}] "
+                    f"推移 {delta_y:.1f}pt 後超出頁面，跳過"
+                )
+                push_floor = max(push_floor, bbox.y1 + GAP)
+                continue
+            plan.append((fitz.Rect(bbox), block, delta_y))
+            push_floor = new_y1 + GAP   # cascade：更新安全邊界
+
+        if not plan:
+            return
+
+        # ── 4. 預先收集所有 span 資料（讀），避免 redact 後影響 get_text ──
+        insert_tasks: list[dict] = []
+        redact_rects: list[fitz.Rect] = []
+        shifted_annots: list[dict] = []
+
+        for bbox, block, delta_y in plan:
+            redact_rects.append(fitz.Rect(bbox))
+            # 儲存此 block 上的 annotation 並計算推移後位置
+            for saved_a in self._save_overlapping_annots(page, bbox):
+                r = fitz.Rect(saved_a["rect"])
+                shifted_annots.append(dict(
+                    saved_a,
+                    rect=fitz.Rect(r.x0, r.y0 + delta_y, r.x1, r.y1 + delta_y),
+                ))
+            # 收集 span 資訊
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    orig = span.get("origin")
+                    if not orig:
+                        continue
+                    c_int = span.get("color", 0)
+                    insert_tasks.append({
+                        "origin": fitz.Point(orig[0], orig[1] + delta_y),
+                        "text":   span.get("text", ""),
+                        "font":   span.get("font", "helv"),
+                        "size":   float(span.get("size", 12)),
+                        "color":  (
+                            ((c_int >> 16) & 0xFF) / 255.0,
+                            ((c_int >>  8) & 0xFF) / 255.0,
+                            ( c_int        & 0xFF) / 255.0,
+                        ),
+                    })
+
+        # ── 5. 批次 Redact（一次 apply，減少 PDF stream 操作次數）──
+        for rect in redact_rects:
+            page.add_redact_annot(rect)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+        # 在推移後的位置還原 annotation
+        if shifted_annots:
+            self._restore_annots(page, shifted_annots)
+
+        # ── 6. 批次 Insert（span 逐一插入，字體回退）──
+        inserted = 0
+        for task in insert_tasks:
+            if not task["text"].strip():
+                continue
+            font_name = self._resolve_font_for_push(task["font"])
+            try:
+                page.insert_text(
+                    task["origin"], task["text"],
+                    fontname=font_name,
+                    fontsize=task["size"],
+                    color=task["color"],
+                )
+                inserted += 1
+            except Exception as e_main:
+                logger.debug(
+                    f"_push_down insert_text({font_name}) 失敗: {e_main}，改用 helv"
+                )
+                try:
+                    page.insert_text(
+                        task["origin"], task["text"],
+                        fontname="helv",
+                        fontsize=task["size"],
+                        color=task["color"],
+                    )
+                    inserted += 1
+                except Exception as e2:
+                    logger.warning(
+                        f"_push_down: span '{task['text'][:20]}' 無法插入: {e2}"
+                    )
+
+        # ── 7. 更新 TextBlockManager 索引中被推移 block 的 layout_rect ──
+        for bbox, _block, delta_y in plan:
+            new_rect = fitz.Rect(
+                bbox.x0, bbox.y0 + delta_y,
+                bbox.x1, bbox.y1 + delta_y,
+            )
+            tb = self.block_manager.find_by_rect(page_idx, bbox)
+            if tb:
+                self.block_manager.update_block(tb, layout_rect=new_rect)
+
+        logger.debug(
+            f"_push_down_overlapping_text: 推移了 {len(plan)} 個 block，"
+            f"插入 {inserted} 個 span"
+        )
+
+    # ──────────────────────────────────────────────────────────────────────────
     # Phase 3: 五步流程 + 三策略 edit_text
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -1202,6 +1408,44 @@ class PDFModel:
                 insert_rect = fitz.Rect(x0, y0, x1, page_rect.y1)
 
             insert_rect = self._clamp_rect_to_page(insert_rect, page_rect)
+
+            # ── Pre-push Probe（水平文字）：預估換行高度，預先推移下方文字塊 ──────
+            # 重要：Push-Down 必須在 insert_htmlbox「之前」執行。
+            # 原因：apply_redactions() 清除舊 block 時，若 Form XObject 已存在，
+            #       會同時抹去 Form XObject 內落在同一矩形的新文字（PyMuPDF 預設行為），
+            #       導致新插入的文字在驗證時消失（ratio 暴跌）。
+            #
+            # 做法：先用臨時頁面 probe 估算換行高度，若預測會溢出則先推移，
+            #       再對乾淨的頁面執行正式 insert_htmlbox。
+            if not is_vertical:
+                try:
+                    _probe_doc = fitz.open()
+                    _probe_page = _probe_doc.new_page(
+                        width=page_rect.width, height=page_rect.height
+                    )
+                    _probe_spare, _ = _probe_page.insert_htmlbox(
+                        insert_rect, html_content, css=css,
+                        rotate=0, scale_low=1,
+                    )
+                    _probe_doc.close()
+                    _probe_used_h = insert_rect.height - _probe_spare
+                    _probe_y1 = insert_rect.y0 + _probe_used_h + 4.0
+                    _probe_y1 = float(min(max(_probe_y1, base_y1), page_rect.y1))
+                    if _probe_y1 > redact_rect.y1 + 2.0:
+                        logger.debug(
+                            f"換行預估溢出 {_probe_y1 - redact_rect.y1:.1f}pt，"
+                            "預先推移下方文字塊（pre-push）"
+                        )
+                        self._push_down_overlapping_text(
+                            page, page_rect,
+                            above_y=redact_rect.y1,
+                            new_bottom=_probe_y1,
+                            edit_x0=x0,
+                            edit_x1=x1,
+                        )
+                except Exception as _probe_err:
+                    logger.debug(f"Pre-push probe 失敗（忽略）: {_probe_err}")
+            # ── End of pre-push probe ──────────────────────────────────────────
 
             # ── 策略 A: insert_htmlbox (scale_low=1) ──
             spare_height, scale_used = page.insert_htmlbox(
@@ -1323,6 +1567,7 @@ class PDFModel:
                 )
                 shrunk_rect = self._clamp_rect_to_page(shrunk_rect, page_rect)
                 new_layout_rect = fitz.Rect(shrunk_rect)
+
 
             # ═══════════ Step 4: 驗證與回滾 ═══════════
             # 使用全頁文字做 substring check，避免 clip 邊界截斷或抓到鄰近 block：

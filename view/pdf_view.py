@@ -679,6 +679,17 @@ class PDFView(QMainWindow):
                 return
 
             if self.current_mode == 'edit_text':
+                # 若已有開啟的編輯框，先判斷點擊位置是否在框內
+                if self.text_editor:
+                    editor_scene_rect = self.text_editor.mapRectToScene(self.text_editor.boundingRect())
+                    if editor_scene_rect.contains(scene_pos):
+                        # 點擊在編輯框內：讓事件穿透，QTextEdit 自行處理游標定位
+                        QGraphicsView.mousePressEvent(self.graphics_view, event)
+                        return
+                    else:
+                        # 點擊在編輯框外：結束編輯，再繼續處理是否開啟新編輯框
+                        self._finalize_text_edit()
+
                 # Phase 5: 點擊時立即清除 hover 高亮，避免高亮殘留在編輯框後方
                 self._clear_hover_highlight()
                 page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
@@ -857,9 +868,10 @@ class PDFView(QMainWindow):
         current_size = int(self.text_size.currentText())
         edit_page = getattr(self, '_editing_page_idx', self.current_page)
 
-        if self.text_editor.scene():
-            self.scene.removeItem(self.text_editor)
-        self.text_editor = None
+        proxy_to_remove = self.text_editor
+        self.text_editor = None  # 先清除，防止 focusOutEvent 遞迴呼叫
+        if proxy_to_remove.scene():
+            self.scene.removeItem(proxy_to_remove)
         self.editing_rect = None
         if getattr(self, '_edit_font_size_connected', False):
             try:
