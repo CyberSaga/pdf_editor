@@ -60,16 +60,42 @@ class PDFController:
         self.view.sig_request_rerender.connect(self._on_request_rerender)
 
     def open_pdf(self, path: str):
-        try:
-            self.model.open_pdf(path)
-            self.view.total_pages = len(self.model.doc)
-            self._update_thumbnails()
-            self._rebuild_continuous_scene(0)
-            self.load_annotations()
-            self.load_watermarks()
-        except Exception as e:
-            logger.error(f"打開 PDF 失敗: {e}")
-            show_error(self.view, f"打開 PDF 失敗: {e}")
+        password = None
+        while True:
+            try:
+                self.model.open_pdf(path, password=password)
+                self.view.total_pages = len(self.model.doc)
+                self._update_thumbnails()
+                self._rebuild_continuous_scene(0)
+                self.load_annotations()
+                self.load_watermarks()
+                break
+            except RuntimeError as e:
+                err_msg = str(e)
+                # 加密 PDF 需要密碼：彈出密碼框後重試
+                if "需要密碼" in err_msg or "encrypted" in err_msg.lower():
+                    pw = self.view.ask_pdf_password(path)
+                    if pw is None:
+                        show_error(self.view, "已取消開啟 PDF。")
+                        break
+                    password = pw
+                    continue
+                # 密碼驗證失敗：提示後再次詢問密碼
+                if "密碼驗證失敗" in err_msg:
+                    show_error(self.view, "密碼錯誤，請重試。")
+                    pw = self.view.ask_pdf_password(path)
+                    if pw is None:
+                        break
+                    password = pw
+                    continue
+                # 其他 RuntimeError
+                logger.error(f"打開 PDF 失敗: {e}")
+                show_error(self.view, f"打開 PDF 失敗: {e}")
+                break
+            except Exception as e:
+                logger.error(f"打開 PDF 失敗: {e}")
+                show_error(self.view, f"打開 PDF 失敗: {e}")
+                break
 
     def save_as(self, path: str):
         self.model.save_as(path)
