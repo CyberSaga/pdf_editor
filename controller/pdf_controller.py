@@ -157,7 +157,7 @@ class PDFController:
         self.show_page(page - 1)
         self._update_undo_redo_tooltips()
 
-    def edit_text(self, page: int, rect: fitz.Rect, new_text: str, font: str, size: int, color: tuple, original_text: str = None, vertical_shift_left: bool = True):
+    def edit_text(self, page: int, rect: fitz.Rect, new_text: str, font: str, size: int, color: tuple, original_text: str = None, vertical_shift_left: bool = True, new_rect=None):
         if not new_text.strip(): return
         if not self.model.doc or page < 1 or page > len(self.model.doc): return
         try:
@@ -187,6 +187,7 @@ class PDFController:
                 page_snapshot_bytes=snapshot,
                 old_block_id=target.block_id if target else None,
                 old_block_text=original_text,
+                new_rect=new_rect,
             )
             self.model.command_manager.execute(cmd)
             self.show_page(page_idx)

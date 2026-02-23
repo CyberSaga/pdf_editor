@@ -1324,7 +1324,8 @@ class PDFModel:
                   font: str = "helv", size: int = 12,
                   color: tuple = (0.0, 0.0, 0.0),
                   original_text: str = None,
-                  vertical_shift_left: bool = True):
+                  vertical_shift_left: bool = True,
+                  new_rect: fitz.Rect = None):
         """
         編輯文字：五步流程 + 三策略智能插入。
 
@@ -1409,29 +1410,56 @@ class PDFModel:
             css = self._build_insert_css(size, color)
 
             # --- 計算初始插入矩形 ---
+            # 若有指定 new_rect（拖曳移動），以 new_rect 為插入基準；否則沿用原本位置計算。
+            # 若 new_rect 完全在頁面外，需 clamp 以防反轉矩形
+            if new_rect is not None:
+                clamped_new = fitz.Rect(
+                    max(float(new_rect.x0), page_rect.x0),
+                    max(float(new_rect.y0), page_rect.y0),
+                    min(float(new_rect.x1), page_rect.x1 - 5),
+                    min(float(new_rect.y1), page_rect.y1 - 5),
+                )
+                if clamped_new.is_empty or clamped_new.is_infinite or clamped_new.width < 5:
+                    logger.warning(f"new_rect {new_rect} clamped 後為空，退回原位插入")
+                    clamped_new = fitz.Rect(target.layout_rect)
+                base_layout = clamped_new
+            else:
+                base_layout = fitz.Rect(target.layout_rect)
+
             if is_vertical:
-                base_rect = self._vertical_html_rect(
-                    target.layout_rect, new_text, size, font,
-                    page_rect, anchor_right=vertical_shift_left
-                )
-                base_y1 = base_rect.y1
-                insert_rect = fitz.Rect(
-                    base_rect.x0, base_rect.y0, base_rect.x1, page_rect.y1
-                )
+                if new_rect is not None:
+                    # 拖曳移動：直接以 new_rect 為垂直插入區
+                    base_y1 = float(base_layout.y1)
+                    insert_rect = fitz.Rect(
+                        base_layout.x0, base_layout.y0, base_layout.x1, page_rect.y1
+                    )
+                else:
+                    base_rect = self._vertical_html_rect(
+                        target.layout_rect, new_text, size, font,
+                        page_rect, anchor_right=vertical_shift_left
+                    )
+                    base_y1 = base_rect.y1
+                    insert_rect = fitz.Rect(
+                        base_rect.x0, base_rect.y0, base_rect.x1, page_rect.y1
+                    )
             else:
                 margin = 15
                 right_margin_pt = max(60.0, min(120.0, float(size) * 2.0))
                 right_safe = page_rect.x1 - right_margin_pt
-                x0 = max(target.layout_rect.x0, page_rect.x0)
-                max_w = max(0, min(
-                    page_rect.width - margin,
-                    right_safe - x0 - margin
-                ))
-                x1 = min(x0 + max(target.layout_rect.width, max_w), right_safe)
-                y0 = max(target.layout_rect.y0, page_rect.y0)
+                x0 = max(float(base_layout.x0), page_rect.x0)
+                if new_rect is not None:
+                    # 拖曳移動：以 new_rect 的寬度為準，避免被原文字框寬度覆蓋
+                    x1 = min(float(base_layout.x1), page_rect.x1 - 10)
+                else:
+                    max_w = max(0, min(
+                        page_rect.width - margin,
+                        right_safe - x0 - margin
+                    ))
+                    x1 = min(x0 + max(target.layout_rect.width, max_w), right_safe)
+                y0 = max(float(base_layout.y0), page_rect.y0)
                 line_count = max(1, len(new_text.split('\n')))
                 est_height = line_count * size * 2 + size * 2
-                base_y1 = y0 + max(target.layout_rect.height, est_height)
+                base_y1 = y0 + max(float(base_layout.height), est_height)
                 insert_rect = fitz.Rect(x0, y0, x1, page_rect.y1)
 
             insert_rect = self._clamp_rect_to_page(insert_rect, page_rect)

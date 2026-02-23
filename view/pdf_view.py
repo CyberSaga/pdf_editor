@@ -155,7 +155,7 @@ class PDFView(QMainWindow):
     sig_export_pages = Signal(list, str, bool)
     sig_add_highlight = Signal(int, object, object)
     sig_add_rect = Signal(int, object, object, bool)
-    sig_edit_text = Signal(int, object, str, str, int, tuple, str, bool)  # original_text, vertical_shift_left
+    sig_edit_text = Signal(int, object, str, str, int, tuple, str, bool, object)  # ..., new_rect(optional)
     sig_jump_to_result = Signal(int, object)
     sig_search = Signal(str)
     sig_ocr = Signal(list)
@@ -230,6 +230,13 @@ class PDFView(QMainWindow):
         self.drawing_start = None
         self.text_editor: QGraphicsProxyWidget = None
         self.editing_rect: fitz.Rect = None
+        self._editing_original_rect: fitz.Rect = None  # 編輯開始時的原始 rect，拖曳期間不變
+        # 拖曳移動文字框的狀態機
+        self._drag_pending: bool = False        # 滑鼠已按下在文字塊，尚未判定點擊或拖曳
+        self._drag_active: bool = False         # 正在拖曳中
+        self._drag_start_scene_pos = None       # 按下時的場景座標（QPointF）
+        self._drag_editor_start_pos = None      # 按下時 proxy widget 的位置（QPointF）
+        self._pending_text_info = None          # 待定狀態下存放的文字塊資訊（drag_pending 且無編輯框時）
         self.current_search_results = []
         self.current_search_index = -1
         # Phase 5: edit_text 模式下的 hover 文字塊高亮
@@ -432,6 +439,12 @@ class PDFView(QMainWindow):
 
     def set_mode(self, mode: str):
         if self.text_editor: self._finalize_text_edit()
+        # 切換模式時清除所有拖曳/待定狀態
+        self._drag_pending = False
+        self._drag_active = False
+        self._drag_start_scene_pos = None
+        self._drag_editor_start_pos = None
+        self._pending_text_info = None
         # Phase 5: 離開 edit_text 模式時清除 hover 高亮
         if mode != 'edit_text':
             self._clear_hover_highlight()
@@ -679,45 +692,125 @@ class PDFView(QMainWindow):
                 return
 
             if self.current_mode == 'edit_text':
-                # 若已有開啟的編輯框，先判斷點擊位置是否在框內
+                # ── 若已有開啟的編輯框 ──
                 if self.text_editor:
                     editor_scene_rect = self.text_editor.mapRectToScene(self.text_editor.boundingRect())
                     if editor_scene_rect.contains(scene_pos):
-                        # 點擊在編輯框內：讓事件穿透，QTextEdit 自行處理游標定位
-                        QGraphicsView.mousePressEvent(self.graphics_view, event)
+                        # 點擊在編輯框內：進入待定狀態（等 release/move 決定是游標定位還是拖曳）
+                        self._drag_pending = True
+                        self._drag_active = False
+                        self._pending_text_info = None  # 已有編輯框，不需 pending_text_info
+                        self._drag_start_scene_pos = scene_pos
+                        self._drag_editor_start_pos = self.text_editor.pos()
                         return
                     else:
-                        # 點擊在編輯框外：結束編輯，再繼續處理是否開啟新編輯框
+                        # 點擊在編輯框外：先結束編輯
+                        self._drag_pending = False
+                        self._drag_active = False
+                        self._pending_text_info = None
                         self._finalize_text_edit()
+                        # Fall through：繼續判斷是否點到了新文字塊
 
-                # Phase 5: 點擊時立即清除 hover 高亮，避免高亮殘留在編輯框後方
+                # ── 沒有編輯框（或剛結束），查詢點擊位置是否有文字塊 ──
                 self._clear_hover_highlight()
                 page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
                 try:
                     info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
                     if info:
-                        self.editing_font_name, self.editing_color = info[2], info[4]
+                        # 存下文字塊資訊，但先不開啟編輯框（等 release 或 drag 決定）
+                        self.editing_font_name = info[2]
+                        self.editing_color = info[4]
                         self.editing_original_text = info[1]
                         self._editing_page_idx = page_idx
-                        self._create_text_editor(*info)
+                        self._pending_text_info = info
+                        self._drag_pending = True
+                        self._drag_active = False
+                        self._drag_start_scene_pos = scene_pos
+                        self._drag_editor_start_pos = None  # 尚無編輯框
                         return
-                except Exception as e: logger.error(f"開啟編輯框失敗: {e}")
+                except Exception as e:
+                    logger.error(f"開啟編輯框失敗: {e}")
 
         if self.current_mode in ['rect', 'highlight']:
             self.drawing_start = scene_pos
         QGraphicsView.mousePressEvent(self.graphics_view, event)
 
     def _mouse_move(self, event):
-        # Phase 5: edit_text 模式下顯示 hover 高亮（未開編輯框時）
-        if self.current_mode == 'edit_text' and not self.text_editor:
-            scene_pos = self.graphics_view.mapToScene(event.pos())
-            # 節流：移動超過 6px 才重新查詢，避免每像素都呼叫 get_text_info_at_point
-            if (self._last_hover_scene_pos is None or
-                    abs(scene_pos.x() - self._last_hover_scene_pos.x()) > 6 or
-                    abs(scene_pos.y() - self._last_hover_scene_pos.y()) > 6):
-                self._last_hover_scene_pos = scene_pos
-                self._update_hover_highlight(scene_pos)
+        scene_pos = self.graphics_view.mapToScene(event.pos())
+
+        if self.current_mode == 'edit_text':
+            # ── 待定狀態：判斷是否超過拖曳閾值 ──
+            if self._drag_pending and self._drag_start_scene_pos is not None:
+                dx = scene_pos.x() - self._drag_start_scene_pos.x()
+                dy = scene_pos.y() - self._drag_start_scene_pos.y()
+                if dx * dx + dy * dy > 25:  # 超過 5px → 確認為拖曳
+                    self._drag_pending = False
+                    self._drag_active = True
+                    self.graphics_view.viewport().setCursor(Qt.ClosedHandCursor)
+
+                    # 若尚無編輯框（點的是新文字塊），此時才建立並進入拖曳
+                    if not self.text_editor and self._pending_text_info:
+                        self._create_text_editor(*self._pending_text_info)
+                        self._pending_text_info = None
+                        # 記錄剛建立的編輯框初始位置，並立即套用當前偏移量
+                        self._drag_editor_start_pos = self.text_editor.pos()
+                        page_idx = getattr(self, '_editing_page_idx', self.current_page)
+                        clamped_x, clamped_y = self._clamp_editor_pos_to_page(
+                            self._drag_editor_start_pos.x() + dx,
+                            self._drag_editor_start_pos.y() + dy,
+                            page_idx
+                        )
+                        self.text_editor.setPos(clamped_x, clamped_y)
+                        return
+
+            # ── 拖曳中：持續更新位置（含頁面邊界限制）──
+            if self._drag_active and self.text_editor and self._drag_editor_start_pos is not None:
+                dx = scene_pos.x() - self._drag_start_scene_pos.x()
+                dy = scene_pos.y() - self._drag_start_scene_pos.y()
+                raw_x = self._drag_editor_start_pos.x() + dx
+                raw_y = self._drag_editor_start_pos.y() + dy
+                page_idx = getattr(self, '_editing_page_idx', self.current_page)
+                new_x, new_y = self._clamp_editor_pos_to_page(raw_x, raw_y, page_idx)
+                self.text_editor.setPos(new_x, new_y)
+                return  # 拖曳中不觸發 ScrollHandDrag
+
+            # ── hover 高亮（無編輯框且非拖曳/待定狀態）──
+            if not self.text_editor and not self._drag_pending and not self._drag_active:
+                if (self._last_hover_scene_pos is None or
+                        abs(scene_pos.x() - self._last_hover_scene_pos.x()) > 6 or
+                        abs(scene_pos.y() - self._last_hover_scene_pos.y()) > 6):
+                    self._last_hover_scene_pos = scene_pos
+                    self._update_hover_highlight(scene_pos)
+
         QGraphicsView.mouseMoveEvent(self.graphics_view, event)
+
+    def _clamp_editor_pos_to_page(self, x: float, y: float, page_idx: int):
+        """將編輯框的場景座標（左上角）限制在指定頁面的邊界內，回傳 (x, y)。"""
+        try:
+            page = self.controller.model.doc[page_idx]
+            page_w_scene = page.rect.width * self.scale
+            page_h_scene = page.rect.height * self.scale
+        except Exception:
+            page_w_scene = 595 * self.scale
+            page_h_scene = 842 * self.scale
+
+        page_x0 = 0.0
+        page_y0 = (self.page_y_positions[page_idx]
+                   if (self.continuous_pages and page_idx < len(self.page_y_positions))
+                   else 0.0)
+        page_x1 = page_x0 + page_w_scene
+        page_y1 = page_y0 + page_h_scene
+
+        # 取得編輯框的視覺尺寸（若尚未建立則用預設值）
+        if self.text_editor:
+            w = self.text_editor.widget().width()
+            h = self.text_editor.widget().height()
+        else:
+            w, h = 100.0, 30.0
+
+        clamped_x = max(page_x0, min(x, page_x1 - w))
+        clamped_y = max(page_y0, min(y, page_y1 - h))
+        return clamped_x, clamped_y
 
     def _update_hover_highlight(self, scene_pos: QPointF) -> None:
         """查詢滑鼠下方的文字塊，以半透明藍框標示可點擊範圍。"""
@@ -765,6 +858,46 @@ class PDFView(QMainWindow):
         self._last_hover_scene_pos = None
 
     def _mouse_release(self, event):
+        # ── 拖曳移動文字框的放開處理 ──
+        if self.current_mode == 'edit_text' and event.button() == Qt.LeftButton:
+            scene_pos = self.graphics_view.mapToScene(event.pos())
+
+            if self._drag_pending:
+                self._drag_pending = False
+                if self.text_editor:
+                    # 已開啟編輯框（點的是框內）→ 定位游標
+                    editor = self.text_editor.widget()
+                    local_pt = self.text_editor.mapFromScene(scene_pos).toPoint()
+                    cursor = editor.cursorForPosition(local_pt)
+                    editor.setTextCursor(cursor)
+                    editor.setFocus()
+                elif self._pending_text_info:
+                    # 無編輯框（點的是新文字塊）→ 開啟編輯框
+                    try:
+                        self._create_text_editor(*self._pending_text_info)
+                    except Exception as e:
+                        logger.error(f"開啟編輯框失敗: {e}")
+                    self._pending_text_info = None
+                return
+
+            if self._drag_active:
+                # 拖曳結束 → 更新 editing_rect 為新的 PDF 座標（已被 clamp 在頁內）
+                self._drag_active = False
+                self._pending_text_info = None
+                self.graphics_view.viewport().setCursor(Qt.ArrowCursor)
+                if self.text_editor:
+                    proxy_pos = self.text_editor.pos()
+                    page_idx = getattr(self, '_editing_page_idx', self.current_page)
+                    y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0
+                    orig = self._editing_original_rect
+                    orig_w = orig.width if orig else 100 / self.scale
+                    orig_h = orig.height if orig else 30 / self.scale
+                    new_x0 = proxy_pos.x() / self.scale
+                    new_y0 = (proxy_pos.y() - y0) / self.scale
+                    self.editing_rect = fitz.Rect(new_x0, new_y0, new_x0 + orig_w, new_y0 + orig_h)
+                    logger.debug(f"文字框拖曳完成，新 rect={self.editing_rect}")
+                return
+
         if not self.drawing_start or self.current_mode not in ['rect', 'highlight']:
             QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
             return
@@ -800,6 +933,7 @@ class PDFView(QMainWindow):
         scaled_rect = rect * self.scale
 
         self.editing_rect = rect
+        self._editing_original_rect = fitz.Rect(rect)  # 保存原始位置，拖曳時不覆蓋
         y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0
         pos_x = scaled_rect.x0
         pos_y = y0 + scaled_rect.y0
@@ -859,20 +993,36 @@ class PDFView(QMainWindow):
         # 1. Get all necessary data out of the editor
         editor = self.text_editor.widget()
         new_text = editor.toPlainText()
-        original_text = editor.property("original_text")
-        text_changed = new_text != original_text
-        
-        current_rect = self.editing_rect
+        original_text_prop = editor.property("original_text")
+        text_changed = new_text != original_text_prop
+
+        # 取得原始 rect（用於在 PDF 中找到舊文字塊）與當前 rect（拖曳後的新位置）
+        original_rect = self._editing_original_rect  # 編輯開始時的原始位置
+        current_rect = self.editing_rect              # 可能已被拖曳更新
+        position_changed = (
+            original_rect is not None and current_rect is not None and
+            (abs(current_rect.x0 - original_rect.x0) > 0.5 or
+             abs(current_rect.y0 - original_rect.y0) > 0.5)
+        )
+
         original_font = getattr(self, 'editing_font_name', 'helv')
         original_color = getattr(self, 'editing_color', (0,0,0))
         current_size = int(self.text_size.currentText())
         edit_page = getattr(self, '_editing_page_idx', self.current_page)
+
+        # 重置拖曳狀態
+        self._drag_pending = False
+        self._drag_active = False
+        self._drag_start_scene_pos = None
+        self._drag_editor_start_pos = None
+        self._pending_text_info = None
 
         proxy_to_remove = self.text_editor
         self.text_editor = None  # 先清除，防止 focusOutEvent 遞迴呼叫
         if proxy_to_remove.scene():
             self.scene.removeItem(proxy_to_remove)
         self.editing_rect = None
+        self._editing_original_rect = None
         if getattr(self, '_edit_font_size_connected', False):
             try:
                 self.text_size.currentTextChanged.disconnect(self._on_edit_font_size_changed)
@@ -884,20 +1034,23 @@ class PDFView(QMainWindow):
         if hasattr(self, '_editing_page_idx'): del self._editing_page_idx
         if hasattr(self, '_editing_rotation'): del self._editing_rotation
 
-        if text_changed and current_rect:
+        if (text_changed or position_changed) and original_rect:
             try:
                 original_text = getattr(self, 'editing_original_text', None)
                 vertical_shift_left = getattr(self, 'vertical_shift_left_cb', None)
                 vsl = vertical_shift_left.isChecked() if vertical_shift_left else True
+                # 若位置有變動，傳入 new_rect；否則傳 None（維持原位）
+                new_rect_arg = current_rect if position_changed else None
                 self.sig_edit_text.emit(
                     edit_page + 1,
-                    current_rect,
+                    original_rect,      # 原始位置（供模型找到舊文字塊）
                     new_text,
                     original_font,
                     current_size,
                     original_color,
                     original_text,
-                    vsl
+                    vsl,
+                    new_rect_arg        # 目標新位置（None = 不移動）
                 )
             except Exception as e:
                 logger.error(f"發送編輯信號時出錯: {e}")

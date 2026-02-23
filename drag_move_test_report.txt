@@ -1,0 +1,28 @@
+========================================================================
+Drag-Move Text Box Feature Test Report
+Time: 2026-02-23 14:41:39
+========================================================================
+
+Concept                                      OK  FAIL   ERR  SKIP    Rate    Time
+------------------------------------------------------------------------
+A Basic Move                                  1     0     0     0  100.0%   0.04s
+B Move + Edit Text                            1     0     0     0  100.0%   0.03s
+C Moved Block Not Lost                        1     0     0     0  100.0%   0.04s
+D Other Block Not Lost                        1     0     0     0  100.0%   0.04s
+E Vertical Text Move                          1     0     0     0  100.0%   0.03s
+F Boundary Clamp                              1     0     0     0  100.0%   0.03s
+G sample-files-main (32 PDFs)                20     0     0    12  100.0%   2.01s
+H veraPDF representative (6 PDFs)             4     0     0     2  100.0%   0.07s
+I Logic Simulation                            2     0     0     0  100.0%   0.06s
+------------------------------------------------------------------------
+Total                                        32     0     0    14  100.0%   2.34s
+
+========================================================================
+Conclusion
+========================================================================
+All effective tests passed. Feature can be considered STABLE.
+Remaining suggestions:
+  1. Manual end-to-end testing with real CJK PDFs.
+  2. Add undo/redo coverage for drag-move operations.
+  3. Consider visual drag feedback (border color change).
+========================================================================

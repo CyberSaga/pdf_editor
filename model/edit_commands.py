@@ -110,6 +110,7 @@ class EditTextCommand(EditCommand):
         page_snapshot_bytes: bytes,         # execute() 前擷取的頁面 bytes 快照
         old_block_id: Optional[str],        # 目標 block 的 ID（供 undo 後索引驗證用）
         old_block_text: Optional[str],      # 目標 block 修改前的文字（Log / debug 用）
+        new_rect: Optional[Any] = None,     # 拖曳移動後的目標位置（None = 不移動）
     ):
         self._model = model
         self._page_num = page_num
@@ -123,6 +124,7 @@ class EditTextCommand(EditCommand):
         self._page_snapshot_bytes = page_snapshot_bytes
         self._old_block_id = old_block_id
         self._old_block_text = old_block_text
+        self._new_rect = fitz.Rect(new_rect) if new_rect is not None else None
         self._executed = False              # 防止在未 execute 前呼叫 undo
 
     @property
@@ -148,6 +150,7 @@ class EditTextCommand(EditCommand):
             self._color,
             self._original_text,
             self._vertical_shift_left,
+            new_rect=self._new_rect,
         )
         self._executed = True
         logger.debug(f"EditTextCommand.execute(): {self.description}")
