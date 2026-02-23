@@ -423,9 +423,8 @@ def run_conflict_multi_undo_redo(pdfs: List[Path]) -> ConceptResult:
 
 
 def run_save_with_watermark(pdfs: List[Path]) -> ConceptResult:
-    r = ConceptResult("C6", "浮水印後 save_as 再開檔驗證（儲存後可開檔且可渲染）")
-    # 設計說明：浮水印在 save_as 時會繪入 PDF 內容，但 watermark_list 僅為記憶體狀態，
-    # 重新開檔後不會還原為 get_watermarks()。此測試驗證「含浮水印儲存 → 再開檔 → 可正常渲染」。
+    r = ConceptResult("C6", "浮水印後 save_as 再開檔驗證（元數據還原，可編輯）")
+    # 方案 B：浮水印元數據寫入 PDF 內嵌檔案，開檔時還原；驗證重新開檔後 get_watermarks() 有值。
     for p in pdfs[:4]:
         t0 = _ms()
         try:
@@ -438,12 +437,12 @@ def run_save_with_watermark(pdfs: List[Path]) -> ConceptResult:
             m.close()
             m2 = PDFModel()
             m2.open_pdf(tmp)
+            wl = m2.get_watermarks()
             pix = m2.get_page_pixmap(1, scale=0.2)
-            n_pages = len(m2.doc)
             m2.close()
             os.unlink(tmp)
-            ok = pix.width > 0 and pix.height > 0 and n_pages >= 1
-            r.cases.append(CaseResult(p.name, ok, _ms() - t0, f"pages={n_pages} pix={pix.width}x{pix.height}", "" if ok else "open or render failed"))
+            ok = len(wl) >= 1 and pix.width > 0 and pix.height > 0
+            r.cases.append(CaseResult(p.name, ok, _ms() - t0, f"watermarks={len(wl)}", "" if ok else "get_watermarks empty or render failed"))
         except Exception as e:
             r.cases.append(CaseResult(p.name, False, _ms() - t0, "", str(e)[:150]))
     r.total_ms = sum(c.duration_ms for c in r.cases)
@@ -487,12 +486,9 @@ def generate_report(concepts: List[ConceptResult], total_ms: float) -> str:
             lines.append(f"    - {x.name}: {x.error or x.detail}")
 
     lines.append(f"\n{'═'*W}")
-    lines.append("【修正說明與根因分析】")
-    lines.append("  C6 初測失敗：原測試期待「save_as 後重新開檔，get_watermarks() 有值」。")
-    lines.append("  根因：浮水印在 save_as 時會繪入 PDF 內容流，但 watermark_list 僅為 Model 記憶體狀態，")
-    lines.append("  重新開檔不會從 PDF 還原該列表（目前設計未將浮水印元數據寫入 PDF）。")
-    lines.append("  修正方式：改為驗證「含浮水印儲存 → 再開檔 → get_page_pixmap 可正常渲染」，不依賴 get_watermarks()。")
-    lines.append("  改動範圍：僅 test_feature_conflict.py 內 C6 案例邏輯，無需改 model/controller/view。")
+    lines.append("【浮水印持久化說明】")
+    lines.append("  方案 B 已實作：Model 在 save 時將浮水印元數據寫入 PDF 內嵌檔案（__pdf_editor_watermarks），")
+    lines.append("  開檔時還原 watermark_list，支援「重新開檔後仍可編輯浮水印」。C6 驗證 save_as 後重開 get_watermarks() 有值。")
 
     lines.append(f"\n{'═'*W}")
     lines.append("【穩定性結論】")
@@ -505,7 +501,7 @@ def generate_report(concepts: List[ConceptResult], total_ms: float) -> str:
     lines.append("\n【建議】")
     lines.append("  1. 定期執行本腳本與 test_deep.py，回歸驗證。")
     lines.append("  2. 新增功能時補上對應概念測試與衝突情境。")
-    lines.append("  3. 若需「重新開檔後仍可編輯浮水印」，可考慮將浮水印元數據寫入 PDF 自訂屬性或 XMP，開檔時還原 watermark_list。")
+    lines.append("  3. 浮水印元數據已透過 PDF 內嵌檔案持久化，重新開檔後可編輯（方案 B）。")
     lines.append("")
     lines.append("【綜合驗證】")
     lines.append("  建議同時執行 test_scripts/test_deep.py --quick（深度壓力與邊界測試）。")

@@ -80,8 +80,10 @@
 
 | 功能 | Model | Controller | View（觸發/顯示） |
 |------|-------|------------|-------------------|
-| **添加浮水印** | 浮水印參數加入 `watermark_list`（儲存時才寫入 PDF） | `add_watermark(pages, text, angle, opacity, font_size, color, font, ...)` | 工具列「添加浮水印」→ 浮水印對話框（文字、頁面、角度、透明度、字級、顏色、字型、偏移、行距）→ `sig_add_watermark` |
-| **浮水印列表** | `watermark_list` | `load_watermarks()` 提供給 View | 工具列「浮水印列表」→ 列表面板；編輯/刪除 → `sig_update_watermark` / `sig_remove_watermark` |
+| **添加浮水印** | 浮水印參數加入 `watermark_list`（儲存時繪入 PDF 並寫入元數據） | `add_watermark(pages, text, angle, opacity, font_size, color, font, ...)` | 工具列「添加浮水印」→ 浮水印對話框（文字、頁面、角度、透明度、字級、顏色、字型、偏移、行距）→ `sig_add_watermark` |
+| **浮水印列表** | `watermark_list`、`get_watermarks()` | `load_watermarks()` 提供給 View | 工具列「浮水印列表」→ 列表面板；編輯/刪除 → `sig_update_watermark` / `sig_remove_watermark` |
+
+- **持久化**：儲存時將浮水印元數據寫入 PDF 內嵌檔案（`__pdf_editor_watermarks`），開檔時還原 `watermark_list`，重新開檔後仍可編輯/刪除浮水印。見 `pdf_model._load_watermarks_from_doc`、`_write_watermarks_embed`。
 
 ---
 

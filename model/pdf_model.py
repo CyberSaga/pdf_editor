@@ -5,6 +5,7 @@ import shutil
 import logging
 import math
 import time
+import json
 from typing import List, Tuple, Optional
 import pytesseract
 from PIL import Image
@@ -149,6 +150,8 @@ class PDFModel:
 
             # 建立文字方塊索引（Phase 1: TextBlockManager）
             self.block_manager.build_index(self.doc)
+            # 方案 B：從 PDF 內嵌檔案還原浮水印列表（支援重新開檔後仍可編輯浮水印）
+            self._load_watermarks_from_doc(self.doc)
         except PermissionError as e:
             logger.error(f"無權限存取檔案: {str(e)}")
             raise PermissionError(f"無權限存取檔案: {str(e)}")
@@ -629,6 +632,48 @@ class PDFModel:
         self._watermark_modified = True
         logger.debug(f"新增浮水印: {wm_id}, 頁面 {wm['pages']}")
         return wm_id
+
+    # 方案 B：浮水印元數據寫入 PDF 內嵌檔案，開檔時還原，以支援「重新開檔後仍可編輯浮水印」
+    WATERMARK_EMBED_NAME = "__pdf_editor_watermarks"
+
+    def _load_watermarks_from_doc(self, doc: fitz.Document) -> None:
+        """從 PDF 內嵌檔案還原 watermark_list。若無或解析失敗則維持空列表。"""
+        self.watermark_list.clear()
+        try:
+            names = doc.embfile_names()
+            if not names or self.WATERMARK_EMBED_NAME not in names:
+                return
+            raw = doc.embfile_get(self.WATERMARK_EMBED_NAME)
+            if not raw:
+                return
+            data = json.loads(raw.decode("utf-8"))
+            if not isinstance(data, list):
+                return
+            for wm in data:
+                if not isinstance(wm, dict) or "id" not in wm or "pages" not in wm:
+                    continue
+                # 還原 color 為 tuple（JSON 會變成 list）
+                if "color" in wm and isinstance(wm["color"], list):
+                    wm["color"] = tuple(wm["color"])
+                self.watermark_list.append(wm)
+            logger.debug(f"已從 PDF 還原 {len(self.watermark_list)} 個浮水印")
+        except Exception as e:
+            logger.warning(f"還原浮水印元數據失敗: {e}")
+
+    def _write_watermarks_embed(self, doc: fitz.Document) -> None:
+        """將當前 watermark_list 寫入文件的內嵌檔案（儲存前呼叫）。"""
+        payload = json.dumps(self.watermark_list, ensure_ascii=False).encode("utf-8")
+        try:
+            names = doc.embfile_names()
+            if names and self.WATERMARK_EMBED_NAME in names:
+                doc.embfile_del(self.WATERMARK_EMBED_NAME)
+        except Exception as e:
+            logger.debug(f"刪除舊浮水印附件時忽略: {e}")
+        try:
+            doc.embfile_add(self.WATERMARK_EMBED_NAME, payload)
+            logger.debug(f"已寫入浮水印元數據（{len(self.watermark_list)} 筆）")
+        except Exception as e:
+            logger.warning(f"寫入浮水印元數據失敗: {e}")
 
     def get_watermarks(self) -> List[dict]:
         """取得所有浮水印"""
@@ -1761,6 +1806,7 @@ class PDFModel:
                 for p in wm.get("pages", []):
                     if 1 <= p <= len(tmp_doc):
                         self._apply_watermarks_to_page(tmp_doc[p - 1], [wm])
+            self._write_watermarks_embed(tmp_doc)
             # 若目標路徑為目前開啟的檔案，先寫暫存再覆蓋，避免 Windows Permission denied
             if doc_name_resolved is not None and new_path_resolved == doc_name_resolved:
                 temp_save = Path(self.temp_dir.name) / f"save_{uuid.uuid4()}.pdf"
@@ -1779,6 +1825,7 @@ class PDFModel:
                 tmp_doc.save(new_path, garbage=0)
                 tmp_doc.close()
         elif use_incremental:
+            self._write_watermarks_embed(self.doc)
             # 增量更新時使用與 doc.name 一致的路徑格式，避免 PyMuPDF 判定為非原檔
             try:
                 save_target = self.doc.name if self.doc.name else new_path
@@ -1788,6 +1835,7 @@ class PDFModel:
                 logger.warning(f"增量更新儲存失敗，改為完整儲存: {e}")
                 self._full_save_to_path(new_path)
         else:
+            self._write_watermarks_embed(self.doc)
             self._full_save_to_path(new_path)
         self.saved_path = new_path
         self.command_manager.mark_saved()

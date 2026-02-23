@@ -1,0 +1,15 @@
+pdf_editor/
+├── main.py                 # 入口點，初始化 MVC
+├── model/
+│   ├── pdf_model.py        # PDF 邏輯（開檔/存檔/編輯/頁面/註解/浮水印/搜尋/OCR）
+│   ├── text_block.py       # 文字塊索引（TextBlock, TextBlockManager）
+│   └── edit_commands.py    # Undo/Redo（EditTextCommand, SnapshotCommand, CommandManager）
+├── view/
+│   └── pdf_view.py         # UI（工具列、縮圖、畫布、繪製設定、對話框）
+├── controller/
+│   └── pdf_controller.py   # 事件處理，串接 View 訊號與 Model
+├── utils/
+│   └── helpers.py          # 輔助（頁碼解析、pixmap 轉 QPixmap、錯誤提示）
+├── docs/                   # 文件與測試報告（README、ARCHITECTURE、FEATURES）
+├── test_scripts/           # 測試（test_feature_conflict、test_deep、test_all_pdfs 等）
+└── requirements.txt        # PySide6, PyMuPDF, Pillow, pytesseract

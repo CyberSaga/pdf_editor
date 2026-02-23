@@ -1,4 +1,7 @@
-PySide6
-PyMuPDF
-pytesseract
-Pillow
+# 視覺化 PDF 編輯器 — 執行與測試依賴
+# Python 3.9+ 建議
+
+PySide6>=6.4
+PyMuPDF>=1.23
+Pillow>=9.0
+pytesseract>=0.3.10
