@@ -1156,9 +1156,12 @@ class PDFModel:
         page_idx = page.number
 
         # ── 1. 取得整頁文字結構 ──
+        # 不使用 TEXT_PRESERVE_LIGATURES：確保 span 文字中的 ﬁ/ﬀ/ﬂ 等合字
+        # 已被展開（ﬁ→fi、ﬀ→ff 等），避免 insert_text(helv) 因字型不支援合字
+        # 而靜默丟棄字元，導致 push-down 後文字殘缺。
         raw = page.get_text(
             "dict",
-            flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES,
+            flags=fitz.TEXT_PRESERVE_WHITESPACE,
         )
 
         # ── 2. 找出溢出區間內且 X 重疊的文字 block ──
@@ -1243,30 +1246,54 @@ class PDFModel:
         if shifted_annots:
             self._restore_annots(page, shifted_annots)
 
-        # ── 6. 批次 Insert（span 逐一插入，字體回退）──
+        # ── 6. 批次 Insert（使用 insert_htmlbox 確保 Unicode 完整保留）──
+        # 改用 insert_htmlbox（而非 insert_text）的原因：
+        # insert_text(fontname="helv") 會靜默丟棄 helv 不支援的字元（如 €、emoji），
+        # 導致 push-down 後文字殘缺。insert_htmlbox 使用 CSS 渲染引擎，
+        # 完整支援 Unicode，確保 € 等特殊字元能被正確插入與還原。
+        import html as _html_module
         inserted = 0
         for task in insert_tasks:
             if not task["text"].strip():
                 continue
-            font_name = self._resolve_font_for_push(task["font"])
+            x  = float(task["origin"].x)
+            y  = float(task["origin"].y)  # baseline
+            sz = float(task["size"])
+            r, g, b = task["color"]
+            # 估算文字寬度（保守估計）
+            est_w  = max(sz * len(task["text"]) * 0.75, sz * 2)
+            _pr    = page.rect
+            x0     = max(x, _pr.x0)
+            x1     = min(x + est_w, _pr.x1)
+            y0     = max(y - sz * 1.15, _pr.y0)  # 基線上方（ascender）
+            y1     = min(y + sz * 0.40, _pr.y1)  # 基線下方（descender）
+            if x1 <= x0 or y1 <= y0:
+                continue
+            color_hex = f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+            html_str = (
+                f'<span style="color:{color_hex}">'
+                f'{_html_module.escape(task["text"])}</span>'
+            )
+            css_str = (
+                f"* {{ font-size: {sz}pt; white-space: pre; "
+                f"margin:0; padding:0; }}"
+            )
             try:
-                page.insert_text(
-                    task["origin"], task["text"],
-                    fontname=font_name,
-                    fontsize=task["size"],
-                    color=task["color"],
+                page.insert_htmlbox(
+                    fitz.Rect(x0, y0, x1, y1),
+                    html_str, css=css_str,
                 )
                 inserted += 1
-            except Exception as e_main:
+            except Exception as e_html:
+                # 最後回退：仍嘗試 insert_text（可能丟字元，但不會崩潰）
                 logger.debug(
-                    f"_push_down insert_text({font_name}) 失敗: {e_main}，改用 helv"
+                    f"_push_down insert_htmlbox 失敗，回退 insert_text: {e_html}"
                 )
                 try:
                     page.insert_text(
                         task["origin"], task["text"],
                         fontname="helv",
-                        fontsize=task["size"],
-                        color=task["color"],
+                        fontsize=sz, color=task["color"],
                     )
                     inserted += 1
                 except Exception as e2:
@@ -1447,72 +1474,94 @@ class PDFModel:
                     logger.debug(f"Pre-push probe 失敗（忽略）: {_probe_err}")
             # ── End of pre-push probe ──────────────────────────────────────────
 
-            # ── 策略 A: insert_htmlbox (scale_low=1) ──
-            spare_height, scale_used = page.insert_htmlbox(
-                insert_rect, html_content, css=css,
-                rotate=insert_rotate, scale_low=1
-            )
-            new_layout_rect = fitz.Rect(insert_rect)
-            logger.debug(f"策略 A: spare_height={spare_height}, scale={scale_used}")
-
-            if spare_height < 0:
-                # ── 策略 B: 自動擴寬 + 再試 ──
-                logger.debug("策略 A 失敗，嘗試策略 B（自動擴寬）")
+            if is_vertical:
+                # ── 垂直文字：臨時頁面量測最小 rect，再單次插入主頁面 ──────────────
+                # 關鍵：不在主頁面執行 Strategy A + 清除再插入的模式，
+                # 因為 apply_redactions(insert_rect) 的 X 範圍可能延伸至
+                # 周圍其他文字（如水平參考文字），誤刪其字元。
+                # 改用臨時頁面做 binary_shrink_height 量測，主頁面只執行一次正式插入。
                 try:
-                    font_for_measure = (
-                        "china-ts" if self._needs_cjk_font(new_text) else font
+                    _shrink_doc = fitz.open()
+                    _shrink_page = _shrink_doc.new_page(
+                        width=page_rect.width, height=page_rect.height
                     )
-                    try:
-                        font_obj = fitz.Font(font_for_measure)
-                    except Exception:
-                        font_for_measure = "helv"
-                        font_obj = fitz.Font(font_for_measure)
-                    text_width = font_obj.text_length(
-                        new_text.replace('\n', ''), fontsize=size
+                    _shrink_page.insert_htmlbox(
+                        insert_rect, html_content, css=css,
+                        rotate=insert_rotate, scale_low=1
                     )
-                    expanded_width = max(
-                        insert_rect.width, text_width * 1.15 + size
+                    padding = self._calc_vertical_padding(size)
+                    shrunk_rect = self._binary_shrink_height(
+                        _shrink_page, insert_rect, new_text,
+                        iterations=7, padding=padding, min_y1=base_y1
                     )
+                    _shrink_doc.close()
+                except Exception as _shrink_err:
+                    logger.debug(f"垂直 binary_shrink 失敗，回退 insert_rect: {_shrink_err}")
+                    shrunk_rect = fitz.Rect(insert_rect)
+                shrunk_rect = self._clamp_rect_to_page(shrunk_rect, page_rect)
+                spare_height, scale_used = page.insert_htmlbox(
+                    shrunk_rect, html_content, css=css,
+                    rotate=insert_rotate, scale_low=1
+                )
+                if spare_height < 0:
+                    page.insert_htmlbox(
+                        shrunk_rect, html_content, css=css,
+                        rotate=insert_rotate, scale_low=0
+                    )
+                new_layout_rect = fitz.Rect(shrunk_rect)
+                logger.debug(
+                    f"垂直策略（臨時頁量測）: spare_height={spare_height}, "
+                    f"shrunk_rect={shrunk_rect}"
+                )
+            else:
+                # ── 策略 A: insert_htmlbox (scale_low=1) ──
+                spare_height, scale_used = page.insert_htmlbox(
+                    insert_rect, html_content, css=css,
+                    rotate=insert_rotate, scale_low=1
+                )
+                new_layout_rect = fitz.Rect(insert_rect)
+                logger.debug(f"策略 A: spare_height={spare_height}, scale={scale_used}")
 
-                    if is_vertical:
-                        expanded_rect = fitz.Rect(
-                            insert_rect.x0 - (expanded_width - insert_rect.width),
-                            insert_rect.y0, insert_rect.x1, insert_rect.y1
+                if spare_height < 0:
+                    # ── 策略 B: 自動擴寬 + 再試 ──
+                    logger.debug("策略 A 失敗，嘗試策略 B（自動擴寬）")
+                    try:
+                        font_for_measure = (
+                            "china-ts" if self._needs_cjk_font(new_text) else font
                         )
-                    else:
+                        try:
+                            font_obj = fitz.Font(font_for_measure)
+                        except Exception:
+                            font_for_measure = "helv"
+                            font_obj = fitz.Font(font_for_measure)
+                        text_width = font_obj.text_length(
+                            new_text.replace('\n', ''), fontsize=size
+                        )
+                        expanded_width = max(
+                            insert_rect.width, text_width * 1.15 + size
+                        )
                         expanded_rect = fitz.Rect(
                             insert_rect.x0, insert_rect.y0,
                             min(insert_rect.x0 + expanded_width,
                                 page_rect.x1 - 10),
                             insert_rect.y1
                         )
-                    expanded_rect = self._clamp_rect_to_page(
-                        expanded_rect, page_rect
-                    )
-                    spare_height, scale_used = page.insert_htmlbox(
-                        expanded_rect, html_content, css=css,
-                        rotate=insert_rotate, scale_low=1
-                    )
-                    new_layout_rect = fitz.Rect(expanded_rect)
-                    logger.debug(
-                        f"策略 B: spare_height={spare_height}, scale={scale_used}"
-                    )
-                except Exception as ex_b:
-                    logger.debug(f"策略 B 失敗: {ex_b}")
+                        expanded_rect = self._clamp_rect_to_page(
+                            expanded_rect, page_rect
+                        )
+                        spare_height, scale_used = page.insert_htmlbox(
+                            expanded_rect, html_content, css=css,
+                            rotate=insert_rotate, scale_low=1
+                        )
+                        new_layout_rect = fitz.Rect(expanded_rect)
+                        logger.debug(
+                            f"策略 B: spare_height={spare_height}, scale={scale_used}"
+                        )
+                    except Exception as ex_b:
+                        logger.debug(f"策略 B 失敗: {ex_b}")
 
-            if spare_height < 0:
-                # ── 策略 C: fallback ──
-                if is_vertical:
-                    spare_height, scale_used = page.insert_htmlbox(
-                        new_layout_rect, html_content, css=css,
-                        rotate=insert_rotate, scale_low=0
-                    )
-                    logger.debug(
-                        f"策略 C（垂直, scale_low=0）: "
-                        f"spare_height={spare_height}"
-                    )
-                else:
-                    # 水平文字：允許最低縮放 0.5 倍來塞入，避免直接放棄
+                if spare_height < 0:
+                    # ── 策略 C: 水平 fallback ──
                     spare_height, scale_used = page.insert_htmlbox(
                         new_layout_rect, html_content, css=css,
                         rotate=insert_rotate, scale_low=0.5
@@ -1530,30 +1579,6 @@ class PDFModel:
                         f"spare_height={spare_height}, scale={scale_used}"
                     )
 
-            # --- 垂直文字：binary shrink height ---
-            if is_vertical:
-                padding = self._calc_vertical_padding(size)
-                shrunk_rect = self._binary_shrink_height(
-                    page, insert_rect, new_text,
-                    iterations=7, padding=padding, min_y1=base_y1
-                )
-                shrunk_rect = self._clamp_rect_to_page(shrunk_rect, page_rect)
-                _saved_annots_v = self._save_overlapping_annots(page, insert_rect)
-                page.add_redact_annot(insert_rect)
-                page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-                if _saved_annots_v:
-                    self._restore_annots(page, _saved_annots_v)
-                spare_height, scale_used = page.insert_htmlbox(
-                    shrunk_rect, html_content, css=css,
-                    rotate=insert_rotate, scale_low=1
-                )
-                if spare_height < 0:
-                    page.insert_htmlbox(
-                        shrunk_rect, html_content, css=css,
-                        rotate=insert_rotate, scale_low=0
-                    )
-                new_layout_rect = fitz.Rect(shrunk_rect)
-            else:
                 # spare_height 直接告訴我們文字實際佔用高度（比 binary search + get_text probe 更可靠），
                 # 避免 _text_fits_in_rect 因 HTML escape / 字型差異導致全部 probe 失敗，
                 # 進而使 new_layout_rect 退化成整頁高度、抓到其他 block 的文字。
