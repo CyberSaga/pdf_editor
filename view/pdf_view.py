@@ -173,6 +173,9 @@ class PDFView(QMainWindow):
     
     # --- Snapshot Signal ---
     sig_snapshot_page = Signal(int)
+
+    # --- Zoom Re-render Signal ---
+    sig_request_rerender = Signal()
     
     # --- Insert Pages Signals ---
     sig_insert_blank_page = Signal(int)  # position (1-based)
@@ -227,6 +230,14 @@ class PDFView(QMainWindow):
         self.current_mode = 'browse'
         self.current_page = 0
         self.scale = 1.0
+        # 記錄目前場景內 pixmap 實際渲染時所使用的 scale。
+        # self.scale 代表「期望的總縮放」，可能因 wheel zoom 超前於重渲；
+        # _render_scale 追蹤已實際渲染進場景的 scale，供座標轉換使用。
+        self._render_scale: float = 1.0
+        # debounce timer：wheel 停止後 300ms 再觸發重渲，避免連續滾動時每幀都重渲
+        self._zoom_debounce_timer = QTimer(self)
+        self._zoom_debounce_timer.setSingleShot(True)
+        self._zoom_debounce_timer.timeout.connect(self._on_zoom_debounce)
         self.drawing_start = None
         self.text_editor: QGraphicsProxyWidget = None
         self.editing_rect: fitz.Rect = None
@@ -502,6 +513,10 @@ class PDFView(QMainWindow):
             y += h + self.PAGE_GAP
         self.scene.setSceneRect(0, 0, max(1, max_w), max(1, y))
         self.current_page = 0
+        # pixmap 已以 self.scale 渲染完畢 → 更新 _render_scale
+        self._render_scale = self.scale
+        # view transform 重設為 identity：scale 已烘焙進 pixmap，不需再疊加 view 縮放
+        self.graphics_view.setTransform(QTransform())
         self._connect_scroll_handler()
         self.scroll_to_page(0)
         self._sync_thumbnail_selection()
@@ -549,13 +564,18 @@ class PDFView(QMainWindow):
         return len(self.page_y_positions) - 1
 
     def _scene_pos_to_page_and_doc_point(self, scene_pos: QPointF) -> Tuple[int, fitz.Point]:
-        """將場景座標轉為 (頁索引, 文件座標)。連續模式會扣掉頁頂偏移。"""
+        """將場景座標轉為 (頁索引, 文件座標)。連續模式會扣掉頁頂偏移。
+        
+        注意：scene 座標 = PDF_points × _render_scale（pixmap 實際渲染 scale），
+        與 self.scale（UI 期望縮放）可能不同（wheel debounce 尚未重渲時）。
+        """
+        rs = self._render_scale if self._render_scale > 0 else 1.0
         if self.continuous_pages and self.page_y_positions and self.page_heights:
             idx = self._scene_y_to_page_index(scene_pos.y())
             y0 = self.page_y_positions[idx]
-            doc_y = (scene_pos.y() - y0) / self.scale
-            return idx, fitz.Point(scene_pos.x() / self.scale, doc_y)
-        return self.current_page, fitz.Point(scene_pos.x() / self.scale, scene_pos.y() / self.scale)
+            doc_y = (scene_pos.y() - y0) / rs
+            return idx, fitz.Point(scene_pos.x() / rs, doc_y)
+        return self.current_page, fitz.Point(scene_pos.x() / rs, scene_pos.y() / rs)
 
     def _sync_thumbnail_selection(self):
         """依 current_page 同步縮圖列表選取。"""
@@ -675,10 +695,17 @@ class PDFView(QMainWindow):
             if self.text_editor: self._finalize_text_edit()
             factor = 1.1 if event.angleDelta().y() > 0 else 0.9
             self.scale *= factor
+            # 即時套用 view transform，提供流暢的視覺縮放預覽（此時 pixmap 尚未重渲，畫面模糊屬正常）
             self.graphics_view.setTransform(self.graphics_view.transform().scale(factor, factor))
+            # debounce：wheel 停止後 300ms 再重渲，避免連續滾動時每幀都重渲
+            self._zoom_debounce_timer.start(300)
             event.accept()
         else:
             QGraphicsView.wheelEvent(self.graphics_view, event)
+
+    def _on_zoom_debounce(self):
+        """wheel 縮放停止後觸發：重新以當前 self.scale 渲染所有頁面，確保清晰顯示。"""
+        self.sig_request_rerender.emit()
 
     def _mouse_press(self, event):
         scene_pos = self.graphics_view.mapToScene(event.pos())
@@ -786,13 +813,14 @@ class PDFView(QMainWindow):
 
     def _clamp_editor_pos_to_page(self, x: float, y: float, page_idx: int):
         """將編輯框的場景座標（左上角）限制在指定頁面的邊界內，回傳 (x, y)。"""
+        rs = self._render_scale if self._render_scale > 0 else 1.0
         try:
             page = self.controller.model.doc[page_idx]
-            page_w_scene = page.rect.width * self.scale
-            page_h_scene = page.rect.height * self.scale
+            page_w_scene = page.rect.width * rs
+            page_h_scene = page.rect.height * rs
         except Exception:
-            page_w_scene = 595 * self.scale
-            page_h_scene = 842 * self.scale
+            page_w_scene = 595 * rs
+            page_h_scene = 842 * rs
 
         page_x0 = 0.0
         page_y0 = (self.page_y_positions[page_idx]
@@ -825,11 +853,12 @@ class PDFView(QMainWindow):
                 y0 = (self.page_y_positions[page_idx]
                       if (self.continuous_pages and page_idx < len(self.page_y_positions))
                       else 0.0)
+                rs = self._render_scale if self._render_scale > 0 else 1.0
                 scene_rect = QRectF(
-                    doc_rect.x0 * self.scale,
-                    y0 + doc_rect.y0 * self.scale,
-                    doc_rect.width * self.scale,
-                    doc_rect.height * self.scale,
+                    doc_rect.x0 * rs,
+                    y0 + doc_rect.y0 * rs,
+                    doc_rect.width * rs,
+                    doc_rect.height * rs,
                 )
                 pen = QPen(QColor(30, 120, 255, 200), 2)
                 brush = QBrush(QColor(30, 120, 255, 35))
@@ -890,10 +919,11 @@ class PDFView(QMainWindow):
                     page_idx = getattr(self, '_editing_page_idx', self.current_page)
                     y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0
                     orig = self._editing_original_rect
-                    orig_w = orig.width if orig else 100 / self.scale
-                    orig_h = orig.height if orig else 30 / self.scale
-                    new_x0 = proxy_pos.x() / self.scale
-                    new_y0 = (proxy_pos.y() - y0) / self.scale
+                    rs = self._render_scale if self._render_scale > 0 else 1.0
+                    orig_w = orig.width if orig else 100 / rs
+                    orig_h = orig.height if orig else 30 / rs
+                    new_x0 = proxy_pos.x() / rs
+                    new_y0 = (proxy_pos.y() - y0) / rs
                     self.editing_rect = fitz.Rect(new_x0, new_y0, new_x0 + orig_w, new_y0 + orig_h)
                     logger.debug(f"文字框拖曳完成，新 rect={self.editing_rect}")
                 return
@@ -929,8 +959,9 @@ class PDFView(QMainWindow):
 
         page_idx = getattr(self, '_editing_page_idx', self.current_page)
         render_width_pt = self.controller.model.get_render_width_for_edit(page_idx + 1, rect, rotation, font_size)
-        scaled_width = int(render_width_pt * self.scale)
-        scaled_rect = rect * self.scale
+        rs = self._render_scale if self._render_scale > 0 else 1.0
+        scaled_width = int(render_width_pt * rs)
+        scaled_rect = rect * rs
 
         self.editing_rect = rect
         self._editing_original_rect = fitz.Rect(rect)  # 保存原始位置，拖曳時不覆蓋

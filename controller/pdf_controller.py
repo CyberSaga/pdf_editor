@@ -56,6 +56,9 @@ class PDFController:
         self.view.sig_remove_watermark.connect(self.remove_watermark)
         self.view.sig_load_watermarks.connect(self.load_watermarks)
 
+        # Zoom re-render connection
+        self.view.sig_request_rerender.connect(self._on_request_rerender)
+
     def open_pdf(self, path: str):
         try:
             self.model.open_pdf(path)
@@ -270,6 +273,12 @@ class PDFController:
     def _update_thumbnails(self):
         thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i+1)) for i in range(len(self.model.doc))]
         self.view.update_thumbnails(thumbs)
+
+    def _on_request_rerender(self):
+        """觸控板縮放停止後的重渲回呼：以 self.view.scale 重新渲染所有頁面，確保清晰顯示。"""
+        if not self.model.doc:
+            return
+        self._rebuild_continuous_scene(self.view.current_page)
 
     def _rebuild_continuous_scene(self, scroll_to_page_idx: int = 0):
         """重建連續頁面場景並捲動至指定頁。"""
