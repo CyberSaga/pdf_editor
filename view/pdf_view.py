@@ -452,9 +452,10 @@ class PDFView(QMainWindow):
         self.toolbar_tabs.addTab(tab_convert, "轉換")
 
         bar_layout.addWidget(self.toolbar_tabs, 1)  # 讓分頁區優先取得水平空間
-        # Fixed right section: 頁 X / Y, Zoom, 適應畫面, 復原, 重做（固定寬度，避免壓縮標籤）
+        # Fixed right section: 頁 X / Y, Zoom, 適應畫面, 復原, 重做
+        # 根因 1 排除：放寬上限，避免整區過窄導致 QToolBar 溢出（»）
         right_widget = QWidget()
-        right_widget.setMaximumWidth(320)
+        right_widget.setMaximumWidth(420)
         right_layout = QHBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
         self.page_counter_label = QLabel("頁 1 / 1")
@@ -475,12 +476,16 @@ class PDFView(QMainWindow):
         right_layout.addWidget(QLabel(" "))
         right_layout.addWidget(self.zoom_combo)
         right_layout.addWidget(fit_btn)
-        right_layout.addWidget(QWidget(), 1)
+        # 根因 2 排除：移除 stretch，避免佔滿剩餘空間、把 QToolBar 擠成只顯示溢出
+        # right_layout.addWidget(QWidget(), 1) 已移除
         toolbar_right = QToolBar()
         toolbar_right.addAction(self._action_undo_right)
         toolbar_right.addAction(self._action_redo_right)
+        # 根因 3 排除：確保「復原」「重做」兩顆按鈕都有空間，不進溢出選單
+        toolbar_right.setMinimumWidth(100)
         right_layout.addWidget(toolbar_right)
         bar_layout.addWidget(right_widget)
+        bar_layout.addSpacing(12)
 
         self._action_undo.setToolTip("復原（無可撤銷操作）")
         self._action_redo.setToolTip("重做（無可重做操作）")
