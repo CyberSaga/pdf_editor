@@ -1,10 +1,11 @@
 from PySide6.QtWidgets import (
     QColorDialog, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QListWidget, QToolBar, QInputDialog, QMessageBox, QMenu, QDockWidget, QFileDialog,
+    QListWidget, QToolBar, QInputDialog, QMessageBox, QMenu, QFileDialog,
     QListWidgetItem, QWidget, QVBoxLayout, QPushButton, QLabel, QFontComboBox,
     QComboBox, QDoubleSpinBox, QTextEdit, QGraphicsProxyWidget, QLineEdit, QHBoxLayout,
     QStackedWidget, QDialog, QSpinBox, QDialogButtonBox, QFormLayout,
-    QScrollArea, QCheckBox
+    QScrollArea, QCheckBox, QTabWidget, QSplitter, QFrame, QSizePolicy, QSlider,
+    QStatusBar, QGroupBox
 )
 from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QCloseEvent, QTextOption
 from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint
@@ -229,42 +230,64 @@ class PDFView(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("視覺化PDF編輯器")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setWindowTitle("視覺化 PDF 編輯器")
+        self.setMinimumSize(1280, 800)
+        self.setGeometry(100, 100, 1280, 800)
         self.total_pages = 0
         self.controller = None
 
-        # --- Left Dock (Thumbnails and Search) ---
-        self.left_stacked_widget = QStackedWidget()
-        self._setup_thumbnail_panel()
-        self._setup_search_panel()
-        
-        self.left_dock = QDockWidget("縮圖", self)
-        self.left_dock.setWidget(self.left_stacked_widget)
-        self.left_dock.setFixedWidth(200)
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.left_dock)
+        # --- Central container: top toolbar area + main splitter ---
+        central_container = QWidget(self)
+        self.setCentralWidget(central_container)
+        main_layout = QVBoxLayout(central_container)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # --- Central Graphics View ---
+        # --- Top Toolbar (ToolbarTabs): 48px height ---
+        self._build_toolbar_tabs()
+        main_layout.addWidget(self._toolbar_container)
+
+        # --- Main content: QSplitter (Left 260px | Center | Right 280px) ---
+        self.main_splitter = QSplitter(Qt.Horizontal)
+
+        # Left sidebar: 260px, QTabWidget (縮圖 / 搜尋 / 註解列表 / 浮水印列表)
+        self.left_sidebar = QTabWidget()
+        self.left_sidebar.setMinimumWidth(200)
+        self.left_sidebar.setMaximumWidth(400)
+        self._setup_left_sidebar()
+        self.left_sidebar_widget = QWidget()
+        left_sidebar_layout = QVBoxLayout(self.left_sidebar_widget)
+        left_sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        left_sidebar_layout.addWidget(self.left_sidebar)
+        self.main_splitter.addWidget(self.left_sidebar_widget)
+
+        # Center: QGraphicsView (canvas)
         self.graphics_view = QGraphicsView(self)
         self.scene = QGraphicsScene(self)
         self.graphics_view.setScene(self.scene)
-        self.setCentralWidget(self.graphics_view)
+        self.main_splitter.addWidget(self.graphics_view)
 
-        # --- Toolbar ---
-        self.toolbar = QToolBar(self)
-        self.addToolBar(self.toolbar)
-        self._add_toolbar_actions()
-
-        # --- Right Dock (Color Settings, Annotations, Watermarks) ---
+        # Right sidebar: 280px, "屬性" dynamic inspector
+        self.right_sidebar = QWidget()
+        right_sidebar_layout = QVBoxLayout(self.right_sidebar)
+        right_sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        right_title = QLabel("屬性")
+        right_title.setStyleSheet("font-weight: bold; padding: 8px;")
+        right_sidebar_layout.addWidget(right_title)
         self.right_stacked_widget = QStackedWidget()
-        self._setup_color_panel()
-        self._setup_annotation_panel()
-        self._setup_watermark_panel()
+        self._setup_property_inspector()
+        right_sidebar_layout.addWidget(self.right_stacked_widget)
+        self.right_sidebar.setMinimumWidth(240)
+        self.right_sidebar.setMaximumWidth(400)
+        self.main_splitter.addWidget(self.right_sidebar)
 
-        self.right_dock = QDockWidget("繪製設定", self)
-        self.right_dock.setWidget(self.right_stacked_widget)
-        self.right_dock.setFixedWidth(200)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.right_dock)
+        # Set splitter sizes: left 260, center flexible, right 280
+        self.main_splitter.setSizes([260, 740, 280])  # 1280 total approx
+        main_layout.addWidget(self.main_splitter)
+
+        # --- Status Bar ---
+        self.status_bar = QStatusBar(self)
+        self.setStatusBar(self.status_bar)
 
         # --- State Variables ---
         self.current_mode = 'browse'
@@ -317,22 +340,197 @@ class PDFView(QMainWindow):
         self.graphics_view.customContextMenuRequested.connect(self._show_context_menu)
         
         self.resizeEvent = self._resize_event
-        self.set_mode('browse')
+        self.set_mode("browse")
         self._apply_scale()
+        self._update_status_bar()
+        # Fluent-style: light background, rounded corners (spec §10)
+        self.setStyleSheet("""
+            QMainWindow { background: #F8FAFC; }
+            QGroupBox { border: 1px solid #E2E8F0; border-radius: 8px; margin-top: 8px; padding-top: 8px; }
+            QPushButton { border-radius: 6px; padding: 6px 12px; }
+            QLineEdit, QComboBox { border-radius: 6px; padding: 4px 8px; border: 1px solid #E2E8F0; }
+        """)
+        self.graphics_view.setStyleSheet("QGraphicsView { background: #F1F5F9; border: none; }")
 
-    def _setup_thumbnail_panel(self):
+    def _build_toolbar_tabs(self):
+        """Top toolbar: 高度依字型與內距計算 — 標籤列 ~26px + 工具列 ~26px + 邊距 8px ≈ 60px，避免過窄截斷或過高留白。"""
+        self._toolbar_container = QFrame()
+        # 約 9–10pt 字型行高 ~14–16px，標籤一行 ~26px、工具列一行 ~26px、上下邊距 8px → 60px
+        # 固定高度 60px，避免佈局依子元件 sizeHint 分配更多垂直空間導致頂端列過高
+        self._toolbar_container.setFixedHeight(60)
+        self._toolbar_container.setStyleSheet("QFrame { background: #F1F5F9; border-bottom: 1px solid #E2E8F0; }")
+        bar_layout = QHBoxLayout(self._toolbar_container)
+        bar_layout.setContentsMargins(6, 4, 6, 4)
+        bar_layout.setSpacing(6)
+
+        self.toolbar_tabs = QTabWidget()
+        self.toolbar_tabs.setDocumentMode(True)
+        # 標籤：緊湊內距，不省略文字，最小寬度避免截斷
+        self.toolbar_tabs.setStyleSheet("""
+            QTabWidget::pane { border: none; background: transparent; top: 0px; }
+            QTabBar::tab { min-width: 52px; padding: 5px 10px; margin-right: 2px; background: transparent; }
+            QTabBar::tab:selected { background: #0078D4; color: white; border-radius: 4px; }
+        """)
+        tab_bar = self.toolbar_tabs.tabBar()
+        tab_bar.setElideMode(Qt.ElideNone)
+        tab_bar.setMinimumHeight(26)
+        # 工具列按鈕：緊湊內距，仍保留 min-width 避免文字截斷
+        toolbar_style = "QToolBar { spacing: 4px; padding: 2px 0; } QToolButton { min-width: 52px; padding: 4px 8px; }"
+        # 檔案
+        tab_file = QWidget()
+        tb_file = QToolBar()
+        tb_file.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        tb_file.setStyleSheet(toolbar_style)
+        tb_file.addAction("開啟", self._open_file)
+        tb_file.addAction("儲存", self._save).setShortcut(QKeySequence.Save)
+        tb_file.addAction("另存新檔", self._save_as)
+        layout_file = QVBoxLayout(tab_file)
+        layout_file.setContentsMargins(4, 0, 0, 0)
+        layout_file.addWidget(tb_file)
+        self.toolbar_tabs.addTab(tab_file, "檔案")
+        # 常用
+        tab_common = QWidget()
+        tb_common = QToolBar()
+        tb_common.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        tb_common.setStyleSheet(toolbar_style)
+        tb_common.addAction("瀏覽模式", lambda: self.set_mode("browse"))
+        self._action_undo = tb_common.addAction("復原", self.sig_undo.emit)
+        self._action_undo.setShortcut(QKeySequence.Undo)
+        self._action_redo = tb_common.addAction("重做", self.sig_redo.emit)
+        self._action_redo.setShortcut(QKeySequence.Redo)
+        tb_common.addAction("縮圖", self._show_thumbnails_tab)
+        tb_common.addAction("搜尋", self._show_search_tab)
+        tb_common.addAction("快照", self._snapshot_page)
+        layout_common = QVBoxLayout(tab_common)
+        layout_common.setContentsMargins(4, 0, 0, 0)
+        layout_common.addWidget(tb_common)
+        self.toolbar_tabs.addTab(tab_common, "常用")
+        # 編輯
+        tab_edit = QWidget()
+        tb_edit = QToolBar()
+        tb_edit.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        tb_edit.setStyleSheet(toolbar_style)
+        tb_edit.addAction("編輯文字", lambda: self.set_mode("edit_text")).setShortcut(QKeySequence(Qt.Key_F2))
+        tb_edit.addAction("矩形", lambda: self.set_mode("rect"))
+        tb_edit.addAction("螢光筆", lambda: self.set_mode("highlight"))
+        tb_edit.addAction("新增註解", lambda: self.set_mode("add_annotation"))
+        tb_edit.addAction("註解列表", self._show_annotations_tab)
+        tb_edit.addAction("添加浮水印", self._show_add_watermark_dialog)
+        tb_edit.addAction("浮水印列表", self._show_watermarks_tab)
+        toggle_annot = QAction("顯示/隱藏註解", self)
+        toggle_annot.setCheckable(True)
+        toggle_annot.setChecked(True)
+        toggle_annot.triggered.connect(self.sig_toggle_annotations_visibility)
+        tb_edit.addAction(toggle_annot)
+        layout_edit = QVBoxLayout(tab_edit)
+        layout_edit.setContentsMargins(4, 0, 0, 0)
+        layout_edit.addWidget(tb_edit)
+        self.toolbar_tabs.addTab(tab_edit, "編輯")
+        # 頁面
+        tab_page = QWidget()
+        tb_page = QToolBar()
+        tb_page.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        tb_page.setStyleSheet(toolbar_style)
+        tb_page.addAction("刪除頁", self._delete_pages)
+        tb_page.addAction("旋轉頁", self._rotate_pages)
+        tb_page.addAction("匯出頁", self._export_pages)
+        tb_page.addAction("插入空白頁", self._insert_blank_page)
+        tb_page.addAction("從檔案插入頁", self._insert_pages_from_file)
+        layout_page = QVBoxLayout(tab_page)
+        layout_page.setContentsMargins(4, 0, 0, 0)
+        layout_page.addWidget(tb_page)
+        self.toolbar_tabs.addTab(tab_page, "頁面")
+        # 轉換
+        tab_convert = QWidget()
+        tb_convert = QToolBar()
+        tb_convert.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        tb_convert.setStyleSheet(toolbar_style)
+        tb_convert.addAction("OCR（文字辨識）", self._ocr_pages)
+        layout_convert = QVBoxLayout(tab_convert)
+        layout_convert.setContentsMargins(4, 0, 0, 0)
+        layout_convert.addWidget(tb_convert)
+        self.toolbar_tabs.addTab(tab_convert, "轉換")
+
+        bar_layout.addWidget(self.toolbar_tabs, 1)  # 讓分頁區優先取得水平空間
+        # Fixed right section: 頁 X / Y, Zoom, 適應畫面, 復原, 重做（固定寬度，避免壓縮標籤）
+        right_widget = QWidget()
+        right_widget.setMaximumWidth(320)
+        right_layout = QHBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        self.page_counter_label = QLabel("頁 1 / 1")
+        self.zoom_combo = QComboBox()
+        self.zoom_combo.setEditable(True)
+        for pct in [50, 75, 100, 125, 150, 200]:
+            self.zoom_combo.addItem(f"{pct}%")
+        self.zoom_combo.setCurrentText("100%")
+        self.zoom_combo.currentTextChanged.connect(self._on_zoom_combo_changed)
+        fit_btn = QPushButton("適應畫面")
+        fit_btn.clicked.connect(self._fit_to_view)
+        self._action_undo_right = QAction("↺ 復原", self)
+        self._action_undo_right.triggered.connect(self.sig_undo.emit)
+        self._action_redo_right = QAction("↻ 重做", self)
+        self._action_redo_right.triggered.connect(self.sig_redo.emit)
+        right_layout.addWidget(self.page_counter_label)
+        right_layout.addWidget(QLabel(" "))
+        right_layout.addWidget(self.zoom_combo)
+        right_layout.addWidget(fit_btn)
+        right_layout.addWidget(QWidget(), 1)
+        toolbar_right = QToolBar()
+        toolbar_right.addAction(self._action_undo_right)
+        toolbar_right.addAction(self._action_redo_right)
+        right_layout.addWidget(toolbar_right)
+        bar_layout.addWidget(right_widget)
+
+        self._action_undo.setToolTip("復原（無可撤銷操作）")
+        self._action_redo.setToolTip("重做（無可重做操作）")
+
+    def _on_zoom_combo_changed(self, text: str):
+        try:
+            pct = float(str(text).replace("%", "").strip())
+            if 10 <= pct <= 400:
+                self.sig_scale_changed.emit(self.current_page, pct / 100.0)
+        except ValueError:
+            pass
+
+    def _fit_to_view(self):
+        if not self.scene.sceneRect().isValid() or not self.page_items:
+            return
+        self.graphics_view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+        if self.page_items:
+            self.graphics_view.centerOn(self.scene.itemsBoundingRect().center())
+
+    def _show_thumbnails_tab(self):
+        self.left_sidebar.setCurrentIndex(0)
+
+    def _show_search_tab(self):
+        self.left_sidebar.setCurrentIndex(1)
+        self.search_input.setFocus()
+        self.search_input.selectAll()
+
+    def _show_annotations_tab(self):
+        self.left_sidebar.setCurrentIndex(2)
+
+    def _show_watermarks_tab(self):
+        self.left_sidebar.setCurrentIndex(3)
+        self.sig_load_watermarks.emit()
+
+    def _setup_left_sidebar(self):
+        """Left sidebar: QTabWidget with 縮圖 / 搜尋 / 註解列表 / 浮水印列表. 260px."""
+        # 縮圖 (default)
         self.thumbnail_list = QListWidget(self)
         self.thumbnail_list.setViewMode(QListWidget.IconMode)
         self.thumbnail_list.itemClicked.connect(self._on_thumbnail_clicked)
-        self.left_stacked_widget.addWidget(self.thumbnail_list)
+        self.left_sidebar.addTab(self.thumbnail_list, "縮圖")
 
-    def _setup_search_panel(self):
+        # 搜尋 (on-demand)
         self.search_panel = QWidget()
         search_layout = QVBoxLayout(self.search_panel)
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("輸入關鍵字後按 Enter")
+        self.search_input.setPlaceholderText("輸入文字搜尋...")
         self.search_input.returnPressed.connect(self._trigger_search)
-        
+        self.search_status_label = QLabel("找到 0 個結果")
+        self.search_results_list = QListWidget()
+        self.search_results_list.itemClicked.connect(self._on_search_result_clicked)
         nav_layout = QHBoxLayout()
         self.prev_btn = QPushButton("上一個")
         self.prev_btn.clicked.connect(self._navigate_search_previous)
@@ -340,65 +538,26 @@ class PDFView(QMainWindow):
         self.next_btn.clicked.connect(self._navigate_search_next)
         nav_layout.addWidget(self.prev_btn)
         nav_layout.addWidget(self.next_btn)
-
-        self.search_status_label = QLabel("請開始搜尋")
-        self.search_results_list = QListWidget()
-        self.search_results_list.itemClicked.connect(self._on_search_result_clicked)
-        
         search_layout.addWidget(self.search_input)
-        search_layout.addLayout(nav_layout)
         search_layout.addWidget(self.search_status_label)
         search_layout.addWidget(self.search_results_list)
-        self.left_stacked_widget.addWidget(self.search_panel)
+        search_layout.addLayout(nav_layout)
+        self.left_sidebar.addTab(self.search_panel, "搜尋")
 
-    def _setup_color_panel(self):
-        container = QWidget()
-        layout = QVBoxLayout(container)
-
-        self.rect_color = QColor(255, 0, 0, 255)
-        self.rect_color_btn = QPushButton("矩形顏色")
-        self.rect_color_btn.setStyleSheet(f"background-color: {self.rect_color.name()};")
-        self.rect_color_btn.clicked.connect(self._choose_rect_color)
-        self.rect_opacity = QDoubleSpinBox()
-        self.rect_opacity.setRange(0.0, 1.0); self.rect_opacity.setSingleStep(0.1); self.rect_opacity.setValue(self.rect_color.alphaF())
-        self.rect_opacity.valueChanged.connect(self._update_rect_opacity)
-        layout.addWidget(QLabel("矩形設定")); layout.addWidget(self.rect_color_btn); layout.addWidget(QLabel("矩形透明度")); layout.addWidget(self.rect_opacity)
-
-        self.highlight_color = QColor(255, 255, 0, 128)
-        self.highlight_color_btn = QPushButton("螢光筆顏色")
-        self.highlight_color_btn.setStyleSheet(f"background-color: {self.highlight_color.name()};")
-        self.highlight_color_btn.clicked.connect(self._choose_highlight_color)
-        layout.addWidget(QLabel("螢光筆設定")); layout.addWidget(self.highlight_color_btn)
-
-        self.text_font = QFontComboBox(); self.text_font.setCurrentFont(QFont("Source Han Serif TC"))
-        self.text_size = QComboBox(); self.text_size.addItems([str(i) for i in range(8, 30, 2)]); self.text_size.setCurrentText("12")
-        layout.addWidget(QLabel("文字設定")); layout.addWidget(QLabel("字型")); layout.addWidget(self.text_font); layout.addWidget(QLabel("字級大小")); layout.addWidget(self.text_size)
-        self.vertical_shift_left_cb = QCheckBox("垂直文字擴展時左移左側文字（關閉則右移右側）")
-        self.vertical_shift_left_cb.setChecked(True)
-        self.vertical_shift_left_cb.setToolTip("垂直文字編輯擴展時：勾選=左側文字往左移（預設）；不勾選=右側文字往右移")
-        layout.addWidget(self.vertical_shift_left_cb)
-
-        layout.addStretch()
-        container.setLayout(layout)
-        self.right_stacked_widget.addWidget(container)
-
-    def _setup_annotation_panel(self):
+        # 註解列表
         self.annotation_panel = QWidget()
-        layout = QVBoxLayout(self.annotation_panel)
-        layout.addWidget(QLabel("註解列表"))
+        annot_layout = QVBoxLayout(self.annotation_panel)
         self.annotation_list = QListWidget()
         self.annotation_list.itemClicked.connect(self._on_annotation_selected)
-        layout.addWidget(self.annotation_list)
-        self.right_stacked_widget.addWidget(self.annotation_panel)
+        annot_layout.addWidget(self.annotation_list)
+        self.left_sidebar.addTab(self.annotation_panel, "註解列表")
 
-    def _setup_watermark_panel(self):
-        """浮水印列表面板"""
+        # 浮水印列表
         self.watermark_panel = QWidget()
-        layout = QVBoxLayout(self.watermark_panel)
-        layout.addWidget(QLabel("浮水印列表"))
+        wm_layout = QVBoxLayout(self.watermark_panel)
         self.watermark_list_widget = QListWidget()
         self.watermark_list_widget.itemClicked.connect(self._on_watermark_selected)
-        layout.addWidget(self.watermark_list_widget)
+        wm_layout.addWidget(self.watermark_list_widget)
         btn_layout = QHBoxLayout()
         self.watermark_edit_btn = QPushButton("編輯")
         self.watermark_edit_btn.clicked.connect(self._edit_selected_watermark)
@@ -406,18 +565,87 @@ class PDFView(QMainWindow):
         self.watermark_remove_btn.clicked.connect(self._remove_selected_watermark)
         btn_layout.addWidget(self.watermark_edit_btn)
         btn_layout.addWidget(self.watermark_remove_btn)
-        layout.addLayout(btn_layout)
-        self.right_stacked_widget.addWidget(self.watermark_panel)
+        wm_layout.addLayout(btn_layout)
+        self.left_sidebar.addTab(self.watermark_panel, "浮水印列表")
+
+    def _setup_property_inspector(self):
+        """Right sidebar: 屬性 — dynamic inspector by mode (page info / 矩形設定 / 螢光筆顏色 / 文字設定). Apply/Cancel."""
+        # Page info (no selection)
+        self.page_info_card = QWidget()
+        page_layout = QVBoxLayout(self.page_info_card)
+        self.page_info_label = QLabel("頁面資訊\n尺寸、旋轉等")
+        self.page_info_label.setWordWrap(True)
+        page_layout.addWidget(self.page_info_label)
+        page_layout.addStretch()
+        self.right_stacked_widget.addWidget(self.page_info_card)
+
+        # 矩形設定 (rect mode): Color #0078D4 default, opacity 0-1
+        self.rect_card = QWidget()
+        rect_layout = QVBoxLayout(self.rect_card)
+        rect_layout.addWidget(QLabel("矩形設定"))
+        self.rect_color = QColor(0, 120, 212, 255)  # #0078D4
+        self.rect_color_btn = QPushButton("矩形顏色")
+        self.rect_color_btn.setStyleSheet(f"background-color: #0078D4; color: white;")
+        self.rect_color_btn.clicked.connect(self._choose_rect_color)
+        rect_layout.addWidget(self.rect_color_btn)
+        rect_layout.addWidget(QLabel("透明度"))
+        self.rect_opacity = QSlider(Qt.Horizontal)
+        self.rect_opacity.setRange(0, 100)
+        self.rect_opacity.setValue(100)
+        self.rect_opacity.valueChanged.connect(self._update_rect_opacity)
+        rect_layout.addWidget(self.rect_opacity)
+        self.rect_apply_btn = QPushButton("套用")
+        self.rect_cancel_btn = QPushButton("取消")
+        rect_layout.addWidget(self.rect_apply_btn)
+        rect_layout.addWidget(self.rect_cancel_btn)
+        rect_layout.addStretch()
+        self.right_stacked_widget.addWidget(self.rect_card)
+
+        # 螢光筆顏色 (#FFFF00)
+        self.highlight_card = QWidget()
+        hl_layout = QVBoxLayout(self.highlight_card)
+        hl_layout.addWidget(QLabel("螢光筆顏色"))
+        self.highlight_color = QColor(255, 255, 0, 128)
+        self.highlight_color_btn = QPushButton("■ 螢光筆顏色")
+        self.highlight_color_btn.setStyleSheet("background-color: #FFFF00;")
+        self.highlight_color_btn.clicked.connect(self._choose_highlight_color)
+        hl_layout.addWidget(self.highlight_color_btn)
+        hl_layout.addStretch()
+        self.right_stacked_widget.addWidget(self.highlight_card)
+
+        # 文字設定: Font Source Han Serif TC, size 12pt, checkbox 垂直文字擴展時左移
+        self.text_card = QWidget()
+        text_layout = QVBoxLayout(self.text_card)
+        text_layout.addWidget(QLabel("文字設定"))
+        self.text_font = QFontComboBox()
+        self.text_font.setCurrentFont(QFont("Source Han Serif TC"))
+        self.text_size = QComboBox()
+        self.text_size.addItems([str(i) for i in range(8, 30, 2)])
+        self.text_size.setCurrentText("12")
+        text_layout.addWidget(QLabel("字型"))
+        text_layout.addWidget(self.text_font)
+        text_layout.addWidget(QLabel("字級大小 (pt)"))
+        text_layout.addWidget(self.text_size)
+        self.vertical_shift_left_cb = QCheckBox("垂直文字擴展時左移")
+        self.vertical_shift_left_cb.setChecked(True)
+        text_layout.addWidget(self.vertical_shift_left_cb)
+        self.text_apply_btn = QPushButton("套用")
+        self.text_cancel_btn = QPushButton("取消")
+        text_layout.addWidget(self.text_apply_btn)
+        text_layout.addWidget(self.text_cancel_btn)
+        text_layout.addStretch()
+        self.right_stacked_widget.addWidget(self.text_card)
 
     def _choose_rect_color(self):
         color = QColorDialog.getColor(self.rect_color, self, "選擇矩形顏色")
         if color.isValid():
-            color.setAlphaF(self.rect_opacity.value())
             self.rect_color = color
-            self.rect_color_btn.setStyleSheet(f"background-color: {color.name()};")
+            self.rect_opacity.setValue(int(color.alphaF() * 100))
+            self.rect_color_btn.setStyleSheet(f"background-color: {color.name()}; color: white;")
+            self._update_rect_opacity()
 
     def _update_rect_opacity(self):
-        self.rect_color.setAlphaF(self.rect_opacity.value())
+        self.rect_color.setAlphaF(self.rect_opacity.value() / 100.0)
 
     def _choose_highlight_color(self):
         color = QColorDialog.getColor(self.highlight_color, self, "選擇螢光筆顏色")
@@ -425,68 +653,23 @@ class PDFView(QMainWindow):
             self.highlight_color = color
             self.highlight_color_btn.setStyleSheet(f"background-color: {color.name()};")
 
-    def _add_toolbar_actions(self):
-        # File Operations
-        action_save = self.toolbar.addAction("儲存", self._save)
-        action_save.setShortcut(QKeySequence.Save)  # Ctrl+S
-        actions_file = [("開啟", self._open_file), ("另存", self._save_as), ("刪除頁", self._delete_pages), ("旋轉頁", self._rotate_pages), ("匯出頁", self._export_pages)]
-        for name, func in actions_file: self.toolbar.addAction(name, func)
-        self.toolbar.addSeparator()
-        
-        # Insert Pages Operations
-        self.toolbar.addAction("插入空白頁", self._insert_blank_page)
-        self.toolbar.addAction("從檔案插入頁", self._insert_pages_from_file)
-        self.toolbar.addSeparator()
-
-        # View/Mode Switching
-        actions_mode = [
-            ("瀏覽", lambda: self.set_mode('browse')),
-            ("縮圖", self._show_thumbnails),
-            ("搜尋", self._show_search_panel, QKeySequence.Find)
-        ]
-        for name, func, *sc in actions_mode:
-            action = self.toolbar.addAction(name, func)
-            if sc: action.setShortcut(sc[0])
-        self.toolbar.addSeparator()
-
-        # Editing Tools
-        actions_edit = [
-            ("編輯文字", lambda: self.set_mode('edit_text'), Qt.Key_F2),
-            ("矩形", lambda: self.set_mode('rect')),
-            ("螢光筆", lambda: self.set_mode('highlight')),
-        ]
-        for name, func, *sc in actions_edit: 
-            action = self.toolbar.addAction(name, func)
-            if sc: action.setShortcut(QKeySequence(sc[0]))
-        self.toolbar.addSeparator()
-
-        # Annotation Tools
-        self.toolbar.addAction("新增註解", lambda: self.set_mode('add_annotation'))
-        self.toolbar.addAction("註解列表", self._show_annotation_panel)
-        self.toolbar.addSeparator()
-
-        # Watermark Tools
-        self.toolbar.addAction("添加浮水印", self._show_add_watermark_dialog)
-        self.toolbar.addAction("浮水印列表", self._show_watermark_panel)
-        toggle_annot_action = QAction("顯示/隱藏註解", self)
-        toggle_annot_action.setCheckable(True)
-        toggle_annot_action.setChecked(True)
-        toggle_annot_action.triggered.connect(self.sig_toggle_annotations_visibility)
-        self.toolbar.addAction(toggle_annot_action)
-        self.toolbar.addSeparator()
-
-        # Other Tools
-        self.toolbar.addAction("OCR", self._ocr_pages)
-        self.toolbar.addAction("快照", self._snapshot_page)
-        self.toolbar.addSeparator()
-
-        # Undo/Redo（Phase 6：儲存 action 引用以便動態更新 tooltip）
-        self._action_undo = self.toolbar.addAction("復原", self.sig_undo.emit)
-        self._action_undo.setShortcut(QKeySequence.Undo)
-        self._action_undo.setToolTip("復原（無可撤銷操作）")
-        self._action_redo = self.toolbar.addAction("重做", self.sig_redo.emit)
-        self._action_redo.setShortcut(QKeySequence.Redo)
-        self._action_redo.setToolTip("重做（無可重做操作）")
+    def _update_status_bar(self):
+        """更新狀態列：已修改、模式、快捷鍵、頁/縮放；搜尋模式時顯示找到 X 個結果 • 按 Esc 關閉搜尋."""
+        scale = getattr(self, "scale", 1.0)
+        total = getattr(self, "total_pages", 0)
+        cur = getattr(self, "current_page", 0)
+        parts = []
+        if getattr(self.controller, "model", None) and self.controller.model.has_unsaved_changes():
+            parts.append("已修改")
+        if getattr(self, "left_sidebar", None) and self.left_sidebar.currentIndex() == 1 and getattr(self, "current_search_results", None) and self.current_search_results:
+            parts.append(f"找到 {len(self.current_search_results)} 個結果 • 按 Esc 關閉搜尋")
+        parts.append("連續捲動")
+        if total > 0:
+            parts.append(f"頁面 {cur + 1}/{total}")
+        parts.append(f"縮放 {int(scale * 100)}%")
+        parts.append("Ctrl+K 快速指令")
+        if getattr(self, "status_bar", None):
+            self.status_bar.showMessage(" • ".join(parts))
 
     def set_mode(self, mode: str):
         if self.text_editor: self._finalize_text_edit()
@@ -505,24 +688,62 @@ class PDFView(QMainWindow):
         if mode in ['rect', 'highlight', 'add_annotation']:
             self.graphics_view.setDragMode(QGraphicsView.NoDrag)
             self.graphics_view.viewport().setCursor(Qt.CrossCursor)
-            if mode in ['rect', 'highlight']:
-                self._show_color_panel()
+            if mode == 'rect':
+                self.right_stacked_widget.setCurrentWidget(self.rect_card)
+            elif mode == 'highlight':
+                self.right_stacked_widget.setCurrentWidget(self.highlight_card)
+            else:
+                self.right_stacked_widget.setCurrentWidget(self.page_info_card)
+        elif mode == 'edit_text':
+            self.right_stacked_widget.setCurrentWidget(self.text_card)
         else:
             self.graphics_view.setDragMode(QGraphicsView.ScrollHandDrag)
             self.graphics_view.viewport().setCursor(Qt.ArrowCursor)
+            self.right_stacked_widget.setCurrentWidget(self.page_info_card)
+        self._update_status_bar()
 
     def update_undo_redo_tooltips(self, undo_tip: str, redo_tip: str) -> None:
-        """Phase 6：更新復原/重做按鈕的 tooltip，顯示下一步操作描述。"""
-        if hasattr(self, '_action_undo'):
-            self._action_undo.setToolTip(undo_tip)
-        if hasattr(self, '_action_redo'):
-            self._action_redo.setToolTip(redo_tip)
+        """更新復原/重做按鈕的 tooltip，顯示下一步操作描述。"""
+        for action in (getattr(self, '_action_undo', None), getattr(self, '_action_undo_right', None)):
+            if action:
+                action.setToolTip(undo_tip)
+        for action in (getattr(self, '_action_redo', None), getattr(self, '_action_redo_right', None)):
+            if action:
+                action.setToolTip(redo_tip)
+
+    def _update_page_counter(self):
+        n = max(1, self.total_pages)
+        cur = min(self.current_page + 1, n)
+        self.page_counter_label.setText(f"頁 {cur} / {n}")
+        pct = int(round(self.scale * 100))
+        text = f"{pct}%"
+        if self.zoom_combo.currentText() != text:
+            self.zoom_combo.blockSignals(True)
+            if self.zoom_combo.findText(text) < 0:
+                self.zoom_combo.addItem(text)
+            self.zoom_combo.setCurrentText(text)
+            self.zoom_combo.blockSignals(False)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            if self.left_sidebar.currentIndex() == 1:
+                self.left_sidebar.setCurrentIndex(0)
+                self._update_status_bar()
+            event.accept()
+            return
+        if event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_F:
+            self._show_search_tab()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def update_thumbnails(self, thumbnails: List[QPixmap]):
         self.thumbnail_list.clear()
         for i, pix in enumerate(thumbnails):
-            self.thumbnail_list.addItem(QListWidgetItem(QIcon(pix), f"{i+1}"))
+            self.thumbnail_list.addItem(QListWidgetItem(QIcon(pix), f"頁{i+1}"))
         self.total_pages = len(thumbnails)
+        self._update_page_counter()
+        self._update_status_bar()
 
     def display_all_pages_continuous(self, pixmaps: List[QPixmap]):
         """建立連續頁面場景：所有頁面由上到下排列，可捲動切換。"""
@@ -639,6 +860,8 @@ class PDFView(QMainWindow):
             self.graphics_view.centerOn(QPointF(cx, cy))
             self.current_page = page_idx
             self._sync_thumbnail_selection()
+            self._update_page_counter()
+            self._update_status_bar()
         finally:
             self._scroll_block = False
 
@@ -698,7 +921,8 @@ class PDFView(QMainWindow):
             QTimer.singleShot(1500, lambda: self.scene.removeItem(temp_rect_item) if temp_rect_item.scene() else None)
 
     def _on_thumbnail_clicked(self, item):
-        self.sig_page_changed.emit(int(item.text()) - 1)
+        row = self.thumbnail_list.row(item)
+        self.sig_page_changed.emit(row)
 
     def _on_search_result_clicked(self, item):
         data = item.data(Qt.UserRole)
@@ -1180,30 +1404,21 @@ class PDFView(QMainWindow):
                 except ValueError: show_error(self, "頁碼格式錯誤")
 
     def _show_search_panel(self):
-        self.left_dock.show()
-        self.left_dock.setWindowTitle("搜尋")
-        self.left_stacked_widget.setCurrentWidget(self.search_panel)
+        """Trigger search mode: switch left sidebar to Search tab, focus input (e.g. from Controller)."""
+        self.left_sidebar.setCurrentIndex(1)
         self.search_input.setFocus()
+        self.search_input.selectAll()
 
     def _show_thumbnails(self):
-        self.left_dock.show()
-        self.left_dock.setWindowTitle("縮圖")
-        self.left_stacked_widget.setCurrentWidget(self.thumbnail_list)
-
-    def _show_color_panel(self):
-        self.right_dock.show()
-        self.right_dock.setWindowTitle("繪製設定")
-        self.right_stacked_widget.setCurrentIndex(0) # Index 0 is color panel
+        self.left_sidebar.setCurrentIndex(0)
 
     def _show_annotation_panel(self):
-        self.right_dock.show()
-        self.right_dock.setWindowTitle("註解列表")
-        self.right_stacked_widget.setCurrentIndex(1) # Index 1 is annotation panel
+        """Toggle annotations panel in left sidebar (e.g. from Controller after add)."""
+        self.left_sidebar.setCurrentIndex(2)
 
     def _show_watermark_panel(self):
-        self.right_dock.show()
-        self.right_dock.setWindowTitle("浮水印列表")
-        self.right_stacked_widget.setCurrentIndex(2)  # Index 2 is watermark panel
+        """Toggle watermarks panel in left sidebar."""
+        self.left_sidebar.setCurrentIndex(3)
         self.sig_load_watermarks.emit()
 
     def _show_add_watermark_dialog(self):
@@ -1267,6 +1482,7 @@ class PDFView(QMainWindow):
         self.current_search_index = -1
         self.search_results_list.clear()
         self.search_status_label.setText(f"找到 {len(results)} 個結果")
+        self._update_status_bar()
         has_results = bool(results)
         self.prev_btn.setEnabled(has_results)
         self.next_btn.setEnabled(has_results)
@@ -1383,6 +1599,8 @@ class PDFView(QMainWindow):
     def _apply_scale(self):
         transform = QTransform().scale(self.scale, self.scale)
         self.graphics_view.setTransform(transform)
+        self._update_page_counter()
+        self._update_status_bar()
 
     def _resize_event(self, event):
         super().resizeEvent(event)
