@@ -291,10 +291,18 @@ class PDFController:
         self.show_page(page_idx)
         
     def change_scale(self, page_idx: int, scale: float):
-        if not self.model.doc or page_idx < 0 or page_idx >= len(self.model.doc): return
-        pix = self.model.get_page_pixmap(page_idx + 1, scale)
-        qpix = pixmap_to_qpixmap(pix)
-        self.view.display_page(page_idx, qpix)
+        """設定縮放比例：更新 view.scale，連續模式時所有頁面等齊重繪，並同步右上角縮放選單。"""
+        if not self.model.doc or page_idx < 0 or page_idx >= len(self.model.doc):
+            return
+        self.view.scale = scale
+        if self.view.continuous_pages:
+            self._rebuild_continuous_scene(page_idx)
+        else:
+            pix = self.model.get_page_pixmap(page_idx + 1, scale)
+            qpix = pixmap_to_qpixmap(pix)
+            self.view.display_page(page_idx, qpix)
+            self.view._update_page_counter()
+            self.view._update_status_bar()
 
     def _update_thumbnails(self):
         thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i+1)) for i in range(len(self.model.doc))]

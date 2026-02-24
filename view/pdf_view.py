@@ -460,6 +460,7 @@ class PDFView(QMainWindow):
         self.page_counter_label = QLabel("頁 1 / 1")
         self.zoom_combo = QComboBox()
         self.zoom_combo.setEditable(True)
+        self.zoom_combo.setMinimumWidth(88)  # 放寬以完整顯示「100%」「200%」等縮放數字
         for pct in [50, 75, 100, 125, 150, 200]:
             self.zoom_combo.addItem(f"{pct}%")
         self.zoom_combo.setCurrentText("100%")
