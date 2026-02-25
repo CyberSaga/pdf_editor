@@ -10,6 +10,7 @@ from typing import List, Optional
 from .base_driver import PrintJobOptions, PrintJobResult, PrinterDevice, PrinterDriver
 from .errors import PrintJobSubmissionError, PrinterUnavailableError
 from .pdf_renderer import PDFRenderer
+from .page_selection import resolve_page_indices
 from .platforms.linux_driver import LinuxPrinterDriver
 from .platforms.mac_driver import MacPrinterDriver
 from .platforms.win_driver import WindowsPrinterDriver
@@ -45,21 +46,30 @@ class PrintDispatcher:
     def get_printer_status(self, printer_name: str) -> str:
         return self.driver.get_printer_status(printer_name)
 
-    def _resolve_pages(self, pdf_path: str, page_ranges: str | None) -> List[int]:
-        page_count = self.renderer.get_page_count(pdf_path)
+    def resolve_page_indices_for_count(self, total_pages: int, options: PrintJobOptions) -> List[int]:
+        normalized = options.normalized()
         try:
-            page_indices = self.renderer.parse_page_ranges(page_ranges, page_count)
+            page_indices = resolve_page_indices(
+                total_pages=total_pages,
+                page_ranges=normalized.page_ranges,
+                page_subset=normalized.page_subset,
+                reverse_order=normalized.reverse_order,
+            )
         except ValueError as exc:
             raise PrintJobSubmissionError(
-                f"Invalid page range format: {page_ranges!r}"
+                f"Invalid page range format: {normalized.page_ranges!r}"
             ) from exc
         if not page_indices:
             raise PrintJobSubmissionError("Page range resolved to empty set.")
         return page_indices
 
+    def resolve_page_indices_for_file(self, pdf_path: str, options: PrintJobOptions) -> List[int]:
+        page_count = self.renderer.get_page_count(pdf_path)
+        return self.resolve_page_indices_for_count(page_count, options)
+
     def print_pdf_file(self, pdf_path: str, options: PrintJobOptions) -> PrintJobResult:
         normalized = options.normalized()
-        page_indices = self._resolve_pages(pdf_path, normalized.page_ranges)
+        page_indices = self.resolve_page_indices_for_file(pdf_path, normalized)
 
         if normalized.output_pdf_path:
             target_parent = Path(normalized.output_pdf_path).expanduser().resolve().parent

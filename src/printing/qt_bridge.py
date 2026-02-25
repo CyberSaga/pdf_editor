@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List
 
-from PySide6.QtCore import QPointF, QRectF, QSizeF, Qt
+from PySide6.QtCore import QRectF, QSizeF
 from PySide6.QtGui import QPainter
 from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import QApplication
@@ -12,6 +12,11 @@ from PySide6.QtGui import QPageLayout, QPageSize
 
 from .base_driver import PrintJobOptions, PrintJobResult
 from .errors import PrintJobSubmissionError
+from .layout import (
+    compute_target_draw_rect,
+    resolve_orientation,
+    resolve_paper_size_points,
+)
 from .pdf_renderer import PDFRenderer, RenderedPage
 
 _APP_INSTANCE = None
@@ -34,15 +39,43 @@ def _to_duplex_mode(duplex: str) -> QPrinter.DuplexMode:
     return QPrinter.DuplexNone
 
 
-def _set_page_layout_from_pdf_rect(printer: QPrinter, page_rect: QRectF) -> None:
-    width_pt = max(1.0, page_rect.width())
-    height_pt = max(1.0, page_rect.height())
-    page_size = QPageSize(QSizeF(width_pt, height_pt), QPageSize.Point, "pdf-source-page")
-    orientation = (
-        QPageLayout.Landscape if width_pt > height_pt else QPageLayout.Portrait
+def _to_q_orientation(orientation: str) -> QPageLayout.Orientation:
+    return QPageLayout.Landscape if orientation == "landscape" else QPageLayout.Portrait
+
+
+def _to_q_page_size(
+    paper_size: str,
+    source_rect: QRectF,
+) -> QPageSize:
+    paper = (paper_size or "auto").lower()
+    if paper == "a4":
+        return QPageSize(QPageSize.A4)
+    if paper == "letter":
+        return QPageSize(QPageSize.Letter)
+    if paper == "legal":
+        return QPageSize(QPageSize.Legal)
+
+    width_pt, height_pt = resolve_paper_size_points(
+        paper_size,
+        source_rect.width(),
+        source_rect.height(),
     )
+    return QPageSize(QSizeF(width_pt, height_pt), QPageSize.Point, "pdf-source-page")
+
+
+def _set_page_layout(
+    printer: QPrinter,
+    page_rect: QRectF,
+    options: PrintJobOptions,
+) -> None:
+    resolved_orientation = resolve_orientation(
+        options.orientation,
+        page_rect.width(),
+        page_rect.height(),
+    )
+    page_size = _to_q_page_size(options.paper_size, page_rect)
     layout = printer.pageLayout()
-    layout.setOrientation(orientation)
+    layout.setOrientation(_to_q_orientation(resolved_orientation))
     layout.setPageSize(page_size)
     printer.setPageLayout(layout)
 
@@ -68,22 +101,21 @@ def _draw_page_image(
     painter: QPainter,
     printer: QPrinter,
     rendered: RenderedPage,
-    fit_to_page: bool,
+    options: PrintJobOptions,
 ) -> None:
     target_rect = QRectF(printer.pageRect(QPrinter.Unit.DevicePixel))
     image = rendered.image
-
-    if fit_to_page:
-        scaled = image.scaled(
-            target_rect.size().toSize(),
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
-        )
-        x = target_rect.x() + (target_rect.width() - scaled.width()) / 2.0
-        y = target_rect.y() + (target_rect.height() - scaled.height()) / 2.0
-        painter.drawImage(QPointF(x, y), scaled)
-    else:
-        painter.drawImage(QPointF(target_rect.x(), target_rect.y()), image)
+    x, y, width, height = compute_target_draw_rect(
+        target_width=target_rect.width(),
+        target_height=target_rect.height(),
+        source_width=image.width(),
+        source_height=image.height(),
+        scale_mode=options.scale_mode,
+        scale_percent=options.scale_percent,
+        fit_to_page=options.fit_to_page,
+    )
+    draw_rect = QRectF(target_rect.x() + x, target_rect.y() + y, width, height)
+    painter.drawImage(draw_rect, image)
 
 
 def raster_print_pdf(
@@ -115,7 +147,7 @@ def raster_print_pdf(
     except StopIteration as exc:
         raise PrintJobSubmissionError("No rendered pages available.") from exc
 
-    _set_page_layout_from_pdf_rect(printer, _fitz_rect_to_qrectf(first.page_rect))
+    _set_page_layout(printer, _fitz_rect_to_qrectf(first.page_rect), normalized)
 
     painter = QPainter()
     if not painter.begin(printer):
@@ -124,14 +156,15 @@ def raster_print_pdf(
         )
 
     try:
-        _draw_page_image(painter, printer, first, normalized.fit_to_page)
+        _draw_page_image(painter, printer, first, normalized)
         for rendered in pages_iter:
-            _set_page_layout_from_pdf_rect(
+            _set_page_layout(
                 printer,
                 _fitz_rect_to_qrectf(rendered.page_rect),
+                normalized,
             )
             printer.newPage()
-            _draw_page_image(painter, printer, rendered, normalized.fit_to_page)
+            _draw_page_image(painter, printer, rendered, normalized)
     except Exception as exc:
         raise PrintJobSubmissionError(f"Raster print failed: {exc}") from exc
     finally:

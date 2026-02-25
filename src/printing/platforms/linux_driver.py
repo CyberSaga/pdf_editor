@@ -213,9 +213,15 @@ class LinuxPrinterDriver(PrinterDriver):
         options: PrintJobOptions,
     ) -> PrintJobResult:
         normalized = options.normalized()
+        requires_exact_page_order = (
+            normalized.page_subset != "all" or normalized.reverse_order
+        )
+        requires_custom_scaling = normalized.scale_mode == "custom"
         direct_path_allowed = (
             normalized.transport in ("auto", "direct_pdf")
             and normalized.output_pdf_path is None
+            and not requires_exact_page_order
+            and not requires_custom_scaling
         )
 
         if direct_path_allowed and self.supports_direct_pdf:
@@ -232,4 +238,3 @@ class LinuxPrinterDriver(PrinterDriver):
 
         # Fallback route: reliable raster stream into Qt print backend.
         return raster_print_pdf(pdf_path, page_indices, normalized)
-

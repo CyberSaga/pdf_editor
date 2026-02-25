@@ -1,0 +1,83 @@
+已完成「規劃 + 實作 + 驗證 + 優化」，並直接落地在專案中。
+
+**實作重點**
+1. 新增跨平台列印子系統（工廠模式 + 驅動分層 + 渲染橋接）  
+- [src/printing/__init__.py](C:/Users/jiang/Documents/python%20programs/pdf_editor/src/printing/__init__.py)  
+- [src/printing/dispatcher.py](C:/Users/jiang/Documents/python%20programs/pdf_editor/src/printing/dispatcher.py)  
+- [src/printing/base_driver.py](C:/Users/jiang/Documents/python%20programs/pdf_editor/src/printing/base_driver.py)  
+- [src/printing/pdf_renderer.py](C:/Users/jiang/Documents/python%20programs/pdf_editor/src/printing/pdf_renderer.py)  
+- [src/printing/qt_bridge.py](C:/Users/jiang/Documents/python%20programs/pdf_editor/src/printing/qt_bridge.py)  
+- [src/printing/platforms/win_driver.py](C:/Users/jiang/Documents/python%20programs/pdf_editor/src/printing/platforms/win_driver.py)  
+- [src/printing/platforms/linux_driver.py](C:/Users/jiang/Documents/python%20programs/pdf_editor/src/printing/platforms/linux_driver.py)  
+- [src/printing/platforms/mac_driver.py](C:/Users/jiang/Documents/python%20programs/pdf_editor/src/printing/platforms/mac_driver.py)
+
+2. 將列印功能接入現有 GUI/Controller  
+- View 新增 `sig_print_requested` 與工具列「列印」按鈕（含 `Ctrl+P`）  
+  [view/pdf_view.py](C:/Users/jiang/Documents/python%20programs/pdf_editor/view/pdf_view.py):192  
+- Controller 新增 `print_document()`，含印表機選擇、頁碼範圍、份數、狀態檢查、送單  
+  [controller/pdf_controller.py](C:/Users/jiang/Documents/python%20programs/pdf_editor/controller/pdf_controller.py):121
+
+3. 為模型補上「可列印快照」能力（含未儲存浮水印）  
+- [model/pdf_model.py](C:/Users/jiang/Documents/python%20programs/pdf_editor/model/pdf_model.py):799
+
+4. 依規範補充可選原生依賴（環境標記）  
+- [src/printing/optional-requirements.txt](C:/Users/jiang/Documents/python%20programs/pdf_editor/src/printing/optional-requirements.txt)
+
+**已實施的優化策略**
+1. On-demand rendering（隨印隨解）  
+2. DisplayList LRU 快取（重複頁渲染加速）  
+3. 自動 fallback：direct PDF 送單失敗時回退 Qt 光柵列印
+
+**驗證（準確率 + 效能）**
+- 驗證腳本：  
+  [test_scripts/test_printing_pipeline.py](C:/Users/jiang/Documents/python%20programs/pdf_editor/test_scripts/test_printing_pipeline.py)
+- 實測結果（剛執行）：
+1. `route: qt-raster->pdf`
+2. `accuracy(avg): 0.9826`
+3. `accuracy(min): 0.9823`
+4. `submission: 1.214s`
+5. `peak-memory gain: 93.8%`（214.36MB -> 13.40MB，估算影像峰值）
+
+**補充**
+- 目前驗證路徑是虛擬列印（print-to-PDF）。  
+- 實體印表機端（缺紙、離線、卡紙等）已有狀態檢查邏輯，但仍建議你在目標機器做一次實機端到端測試。
+
+---
+
+## 2026-02-25：單一列印視窗重構（同窗設定 + 右側預覽）
+
+### 已完成
+1. 新增統一列印視窗（`src/printing/print_dialog.py`）  
+- 左側一次完成所有設定：印表機、紙張、方向、單雙面、彩色/黑白、PPI、份數、頁面範圍、子集合、反向、縮放。  
+- 右側提供大預覽 + 頁碼列 + 上下頁切換。  
+- 設定變更採 200ms debounce 即時更新預覽。
+
+2. 新增共用邏輯（方案 C）  
+- `src/printing/page_selection.py`：統一解析 `page_ranges + page_subset + reverse_order`。  
+- `src/printing/layout.py`：統一縮放與置中計算，供預覽與實際列印共用。  
+- 避免「預覽算法」與「送印算法」分歧。
+
+3. 擴充列印選項資料結構  
+- `src/printing/base_driver.py` 的 `PrintJobOptions` 新增：  
+  `paper_size`, `orientation`, `scale_mode`, `scale_percent`, `page_subset`, `reverse_order`。
+
+4. Dispatcher / Qt bridge 串接  
+- `src/printing/dispatcher.py` 新增共用頁碼解析入口：  
+  `resolve_page_indices_for_count()` / `resolve_page_indices_for_file()`。  
+- `src/printing/qt_bridge.py` 套用紙張/方向/縮放新欄位。
+
+5. Controller 改為統一對話框流程  
+- `controller/pdf_controller.py` 移除三段 `QInputDialog`。  
+- 先產生可列印快照，再開啟 `UnifiedPrintDialog`，確認後一次送單。  
+- 防止重複開啟多個列印視窗（同時只允許一個）。
+
+### bug 解法評估（預覽與實際列印不一致）
+1. 方案 A：預覽與送印各自計算（快，但容易飄移）。  
+2. 方案 B：先輸出暫存 PDF 再回讀預覽（一致但慢）。  
+3. 方案 C：抽共用函式（最佳平衡）。  
+
+**採用：方案 C**（`page_selection.py` + `layout.py`，預覽/送印共用同邏輯）。
+
+### 驗證
+1. 既有管線驗證：`python test_scripts/test_printing_pipeline.py`  
+2. 新增邏輯驗證：`python test_scripts/test_print_dialog_logic.py`
