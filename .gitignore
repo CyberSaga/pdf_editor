@@ -16,3 +16,6 @@ test_files/
 
 # Cursor 相關
 .cursor/
+
+# 編譯後的執行檔
+.exe
