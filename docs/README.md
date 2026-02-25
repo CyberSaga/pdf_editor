@@ -18,6 +18,8 @@
 
 ```bash
 pip install -r requirements.txt
+# Printing Backends: Vary between different Platforms
+pip install -r optional-requirements.txt
 ```
 
 - OCR 功能需本機安裝 Tesseract；未安裝時 OCR 可能失敗，其餘功能不受影響。
@@ -27,6 +29,21 @@ pip install -r requirements.txt
 - **啟動程式**：`python main.py`
 - **核心模組**：`model/pdf_model.py`、`controller/pdf_controller.py`、`view/pdf_view.py`
 - **輔助**：`model/text_block.py`（文字塊索引）、`model/edit_commands.py`（Undo/Redo）、`utils/helpers.py`（工具函式）
+
+## 列印功能更新（2026-02）
+
+- 列印流程已改為單一對話視窗，不再使用三段式 `QInputDialog`。
+- 同一視窗內可完成設定：印表機、紙張、方向、雙面、彩色/黑白、PPI、份數、頁面範圍、奇偶頁、反向、縮放。
+- 右側提供即時預覽（大預覽 + 頁碼清單 + 上下頁切換）。
+- 預覽區支援滑鼠滾輪切頁：上滾上一頁、下滾下一頁。
+- `PPI` 預設值為 `300`。
+- 按鈕樣式：`列印` 白底、`取消` 灰底。
+
+相關檔案：
+- `src/printing/print_dialog.py`
+- `src/printing/layout.py`
+- `src/printing/page_selection.py`
+- `controller/pdf_controller.py`
 
 ## 測試
 

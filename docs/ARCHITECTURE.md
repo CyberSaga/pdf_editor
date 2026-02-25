@@ -61,6 +61,22 @@
 |------|------|
 | `utils/helpers.py` | `parse_pages`（頁碼字串解析）、`pixmap_to_qpixmap`（fitz.Pixmap→QPixmap）、`show_error`、`choose_color` |
 
+### 2.5 列印子系統（Printing）
+
+| 檔案 | 職責 |
+|------|------|
+| `src/printing/print_dialog.py` | 統一列印視窗（左側設定 + 右側預覽），包含頁碼清單、上下頁、滾輪切頁與按鈕樣式。 |
+| `src/printing/dispatcher.py` | 跨平台列印調度；提供 `resolve_page_indices_for_count()` / `resolve_page_indices_for_file()`。 |
+| `src/printing/page_selection.py` | 共用頁碼計算：`page_ranges + page_subset + reverse_order`。 |
+| `src/printing/layout.py` | 共用紙張/方向/縮放定位計算，供預覽與列印共用。 |
+| `src/printing/qt_bridge.py` | 將渲染頁面輸出到 `QPrinter`，套用紙張、方向、縮放。 |
+
+列印流程（2026-02 重構）：
+1. `controller/pdf_controller.py::print_document()` 先由 model 產生可列印快照。
+2. 開啟 `UnifiedPrintDialog`，收集使用者設定與最終頁碼。
+3. `PrintDispatcher` 依平台驅動送印；必要時 fallback 到 Qt raster 路徑。
+4. 預覽與實際列印共用 `page_selection.py`、`layout.py`，避免結果漂移。
+
 ## 3. 資料流（以「編輯文字」為例）
 
 1. 使用者點擊工具列「編輯文字」→ View 切換為 `edit_text` 模式。
@@ -79,3 +95,4 @@
 - **View** 依賴 PySide6 與 `utils.helpers`，透過 `controller` 引用呼叫少數 Controller 方法（若需由 View 主動觸發的邏輯），主要單向透過 Signal 通知 Controller。
 
 此架構利於單元測試（Model 可獨立測試）、替換 UI（View 可重寫而保持訊號契約）以及維護業務邏輯集中於 Controller 與 Model。
+
