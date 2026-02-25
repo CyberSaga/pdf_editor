@@ -5,11 +5,12 @@ pdf_editor/
 │   ├── text_block.py       # 文字塊索引（TextBlock, TextBlockManager）
 │   └── edit_commands.py    # Undo/Redo（EditTextCommand, SnapshotCommand, CommandManager）
 ├── view/
-│   └── pdf_view.py         # UI（工具列、縮圖、畫布、繪製設定、對話框）
+│   └── pdf_view.py         # UI（頂部 Tab 工具列、左側欄縮圖/搜尋/註解/浮水印、中央畫布、右側屬性、狀態列）
 ├── controller/
-│   └── pdf_controller.py   # 事件處理，串接 View 訊號與 Model
+│   └── pdf_controller.py   # 事件處理，串接 View 訊號與 Model（含縮放全頁等齊、更新選單）
 ├── utils/
 │   └── helpers.py          # 輔助（頁碼解析、pixmap 轉 QPixmap、錯誤提示）
 ├── docs/                   # 文件與測試報告（README、ARCHITECTURE、FEATURES）
 ├── test_scripts/           # 測試（test_feature_conflict、test_deep、test_all_pdfs 等）
+├── UI Specification.md     # UI 規格（三欄佈局、工具列、屬性面板等）
 └── requirements.txt        # PySide6, PyMuPDF, Pillow, pytesseract

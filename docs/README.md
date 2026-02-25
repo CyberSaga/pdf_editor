@@ -7,12 +7,12 @@
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 專案架構（MVC）、模組職責與資料流 |
 | [FEATURES.md](FEATURES.md) | 功能清單與對應的 Model / Controller / View |
 
-
 ## 專案概覽
 
 - **技術棧**：Python 3.9+、PySide6（Qt）、PyMuPDF（fitz）、Pillow、pytesseract（OCR 選用）
 - **架構**：MVC（Model–View–Controller），訊號/槽連接 View 與 Controller
 - **入口**：`main.py` 建立 `PDFModel`、`PDFView`、`PDFController` 並綁定
+- **UI 佈局**：三欄式（左側欄 260px：縮圖/搜尋/註解/浮水印；中央畫布；右側屬性 280px）；頂部 Tab 工具列（檔案/常用/編輯/頁面/轉換）與右側固定區（頁碼、縮放、適應畫面、復原/重做）；詳見專案根目錄 `UI Specification.md`
 
 ## 依賴與安裝
 
