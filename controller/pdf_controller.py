@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QMessageBox, QApplication, QFileDialog
+from PySide6.QtWidgets import QMessageBox, QApplication, QFileDialog, QInputDialog
 from model.pdf_model import PDFModel
 from model.edit_commands import EditTextCommand, SnapshotCommand
 from view.pdf_view import PDFView
@@ -8,6 +8,8 @@ from pathlib import Path
 import logging
 import fitz
 
+from src.printing import PrintDispatcher, PrintJobOptions, PrintingError
+
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -16,11 +18,13 @@ class PDFController:
         self.model = model
         self.view = view
         self.annotations = []
+        self.print_dispatcher = PrintDispatcher()
         self._connect_signals()
 
     def _connect_signals(self):
         # Existing connections
         self.view.sig_open_pdf.connect(self.open_pdf)
+        self.view.sig_print_requested.connect(self.print_document)
         self.view.sig_save_as.connect(self.save_as)
         self.view.sig_save.connect(self.save)
         self.view.sig_delete_pages.connect(self.delete_pages)
@@ -113,6 +117,89 @@ class PDFController:
         except Exception as e:
             logger.error(f"儲存失敗: {e}")
             show_error(self.view, f"儲存失敗: {e}")
+
+    def print_document(self):
+        """列印當前文件（跨平台 dispatcher）。"""
+        if not self.model.doc:
+            show_error(self.view, "沒有可列印的 PDF 文件")
+            return
+
+        try:
+            printers = self.print_dispatcher.list_printers()
+            if not printers:
+                show_error(self.view, "系統未偵測到可用印表機")
+                return
+
+            labels = []
+            default_index = 0
+            for idx, printer in enumerate(printers):
+                tag = "（預設）" if printer.is_default else ""
+                labels.append(f"{printer.name} {tag}".strip())
+                if printer.is_default:
+                    default_index = idx
+
+            selected_label, ok = QInputDialog.getItem(
+                self.view,
+                "選擇印表機",
+                "請選擇目標印表機:",
+                labels,
+                default_index,
+                False,
+            )
+            if not ok:
+                return
+            selected_printer = printers[labels.index(selected_label)].name
+
+            page_ranges, ok = QInputDialog.getText(
+                self.view,
+                "列印頁面",
+                "頁碼範圍（留空=全部，例如 1,3,5-10）:",
+            )
+            if not ok:
+                return
+
+            copies, ok = QInputDialog.getInt(
+                self.view,
+                "列印份數",
+                "請輸入份數:",
+                1,
+                1,
+                99,
+                1,
+            )
+            if not ok:
+                return
+
+            status = self.print_dispatcher.get_printer_status(selected_printer)
+            if status in {"offline", "stopped"}:
+                show_error(self.view, f"印表機狀態異常：{status}")
+                return
+
+            snapshot_bytes = self.model.build_print_snapshot()
+            options = PrintJobOptions(
+                printer_name=selected_printer,
+                page_ranges=(page_ranges or None),
+                copies=copies,
+                collate=True,
+                dpi=300,
+                fit_to_page=True,
+                color_mode="color",
+                duplex="none",
+                job_name=Path(self.model.original_path or "pdf_editor_job").name,
+                transport="auto",
+            )
+            result = self.print_dispatcher.print_pdf_bytes(snapshot_bytes, options)
+            QMessageBox.information(
+                self.view,
+                "列印送出",
+                f"{result.message}\n路徑: {result.route}",
+            )
+        except PrintingError as e:
+            logger.error(f"列印失敗: {e}")
+            show_error(self.view, f"列印失敗: {e}")
+        except Exception as e:
+            logger.error(f"列印發生非預期錯誤: {e}")
+            show_error(self.view, f"列印發生非預期錯誤: {e}")
 
     def delete_pages(self, pages: List[int]):
         before = self.model._capture_doc_snapshot()

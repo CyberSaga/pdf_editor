@@ -1,0 +1,6 @@
+# Optional native print backends for enhanced platform integration.
+# Core printing works without these via Qt raster bridge.
+
+pywin32>=306; platform_system == "Windows"
+pycups>=2.0.4; platform_system == "Linux" or platform_system == "Darwin"
+

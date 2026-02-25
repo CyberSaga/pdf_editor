@@ -796,6 +796,32 @@ class PDFModel:
     def get_thumbnail(self, page_num: int) -> fitz.Pixmap:
         return self.get_page_pixmap(page_num, scale=0.2)
 
+    def build_print_snapshot(self) -> bytes:
+        """
+        產生可列印的 PDF 快照 bytes（包含尚未儲存的浮水印覆蓋）。
+        不會變更 command_manager 的儲存狀態。
+        """
+        if not self.doc:
+            raise RuntimeError("沒有開啟的 PDF 文件")
+
+        # 無浮水印時可直接快速輸出當前文件快照。
+        if not self.watermark_list:
+            return self._capture_doc_snapshot()
+
+        tmp_doc = fitz.open()
+        try:
+            tmp_doc.insert_pdf(self.doc)
+            for wm in self.watermark_list:
+                for p in wm.get("pages", []):
+                    if 1 <= p <= len(tmp_doc):
+                        self._apply_watermarks_to_page(tmp_doc[p - 1], [wm])
+
+            stream = io.BytesIO()
+            tmp_doc.save(stream, garbage=0)
+            return stream.getvalue()
+        finally:
+            tmp_doc.close()
+
     def get_text_info_at_point(self, page_num: int, point: fitz.Point) -> Tuple[fitz.Rect, str, str, float, tuple, int] | None:
         """獲取指定點下方的文字區塊、內容、字型、大小、顏色與旋轉角度。回傳 (rect, text, font_name, font_size, color, rotation)。"""
         if not self.doc or page_num < 1 or page_num > len(self.doc):

@@ -189,6 +189,7 @@ class WatermarkDialog(QDialog):
 class PDFView(QMainWindow):
     # --- Existing Signals ---
     sig_open_pdf = Signal(str)
+    sig_print_requested = Signal()
     sig_save_as = Signal(str)
     sig_save = Signal()  # 存回原檔（Ctrl+S，使用增量更新若適用）
     sig_delete_pages = Signal(list)
@@ -382,6 +383,7 @@ class PDFView(QMainWindow):
         tb_file.setToolButtonStyle(Qt.ToolButtonTextOnly)
         tb_file.setStyleSheet(toolbar_style)
         tb_file.addAction("開啟", self._open_file)
+        tb_file.addAction("列印", self._print_document).setShortcut(QKeySequence.Print)
         tb_file.addAction("儲存", self._save).setShortcut(QKeySequence.Save)
         tb_file.addAction("另存新檔", self._save_as)
         layout_file = QVBoxLayout(tab_file)
@@ -1364,6 +1366,12 @@ class PDFView(QMainWindow):
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "開啟PDF", "", "PDF (*.pdf)")
         if path: self.sig_open_pdf.emit(path)
+
+    def _print_document(self):
+        if self.total_pages == 0:
+            show_error(self, "沒有可列印的 PDF 文件")
+            return
+        self.sig_print_requested.emit()
 
     def ask_pdf_password(self, path: str) -> Optional[str]:
         """開啟加密 PDF 時彈出密碼輸入框，回傳使用者輸入的密碼；若取消則回傳 None。"""
