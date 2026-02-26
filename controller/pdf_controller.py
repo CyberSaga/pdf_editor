@@ -280,7 +280,19 @@ class PDFController:
         self.show_page(page - 1)
         self._update_undo_redo_tooltips()
 
-    def edit_text(self, page: int, rect: fitz.Rect, new_text: str, font: str, size: int, color: tuple, original_text: str = None, vertical_shift_left: bool = True, new_rect=None):
+    def edit_text(
+        self,
+        page: int,
+        rect: fitz.Rect,
+        new_text: str,
+        font: str,
+        size: int,
+        color: tuple,
+        original_text: str = None,
+        vertical_shift_left: bool = True,
+        new_rect=None,
+        target_span_id: str = None,
+    ):
         if not new_text.strip(): return
         if not self.model.doc or page < 1 or page > len(self.model.doc): return
         try:
@@ -288,14 +300,6 @@ class PDFController:
 
             # Phase 4: 透過 CommandManager 執行，支援頁面快照 undo/redo
             snapshot = self.model._capture_page_snapshot(page_idx)
-
-            # 找目標 block 以填入 old_block_id（僅供 log，不影響執行）
-            blocks = self.model.block_manager.get_blocks(page_idx)
-            target = next(
-                (b for b in blocks
-                 if fitz.Rect(b.layout_rect).intersects(rect) or fitz.Rect(b.rect).intersects(rect)),
-                None
-            )
 
             cmd = EditTextCommand(
                 model=self.model,
@@ -308,9 +312,10 @@ class PDFController:
                 original_text=original_text,
                 vertical_shift_left=vertical_shift_left,
                 page_snapshot_bytes=snapshot,
-                old_block_id=target.block_id if target else None,
+                old_block_id=target_span_id,
                 old_block_text=original_text,
                 new_rect=new_rect,
+                target_span_id=target_span_id,
             )
             self.model.command_manager.execute(cmd)
             self.show_page(page_idx)
