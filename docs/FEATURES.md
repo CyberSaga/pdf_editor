@@ -46,11 +46,13 @@
 
 | 功能 | Model | Controller | View（觸發/顯示） |
 |------|-------|------------|-------------------|
-| **縮圖** | 無（由 Controller 用 Model 取得頁面 pixmap） | `_update_thumbnails()`、`_rebuild_continuous_scene()` | 頂部「常用」→「縮圖」、左側縮圖分頁；點縮圖 → `sig_page_changed` |
+| **縮圖** | 無（由 Controller 用 Model 取得頁面 pixmap） | 開檔：`set_thumbnail_placeholders(n)` 後以 QTimer 分批 `_schedule_thumbnail_batch`；結構變更後 `_update_thumbnails()`、`_rebuild_continuous_scene()` | 頂部「常用」→「縮圖」、左側縮圖分頁；點縮圖 → `sig_page_changed`；`update_thumbnail_batch(start_index, pixmaps)` 分批更新圖示 |
 | **瀏覽模式** | 無 | `_update_mode('browse')` | 頂部「常用」→「瀏覽模式」→ `sig_mode_changed` |
 | **縮放** | 無 | `change_scale(page_idx, scale)`：設定 `view.scale`，連續模式時 `_rebuild_continuous_scene` 所有頁面等齊重繪 | 右上角縮放選單（100% 等）→ `sig_scale_changed`；Ctrl+滾輪縮放後 debounce 觸發 `sig_request_rerender`；選單與狀態列會同步顯示當前比例 |
-| **連續捲動** | 無 | 依目前 scale 重建場景（`_rebuild_continuous_scene`） | View 管理 `QGraphicsView` 與 `QGraphicsScene`，捲動時更新當前頁與頁碼 |
+| **連續捲動** | 無 | 開檔：首頁以低解析度預覽後，QTimer 分批 `_schedule_scene_batch` 建立連續場景；場景載完後才啟動 `_schedule_index_batch`；結構變更後 `_rebuild_continuous_scene` | View：`display_all_pages_continuous` / `append_pages_continuous` 建立/追加頁面；**每次更新場景 rect 後呼叫 `graphics_view.setSceneRect(scene.sceneRect())`**，確保捲軸與可見區域對應整份文件，捲動與點縮圖跳頁可用 |
 | **適應畫面** | 無 | 無 | 右上角「適應畫面」→ `fitInView` 主畫布 |
+
+- **大 PDF 開檔效能**：開檔時先顯示首頁低解析度預覽（`FIRST_PAGE_PREVIEW_SCALE`），左側縮圖為佔位（頁 1…n），再以 QTimer 分批載入縮圖與連續場景（縮圖每批 10 頁、場景每批 3 頁），**文字塊索引延後至場景載完後**才分批建立，避免 main thread 長時間阻塞；使用者可較快開始操作，捲動與點縮圖跳頁在場景載入後即可使用；若點選的頁尚未載入則捲動至最後已載入頁。
 
 ---
 
@@ -130,7 +132,7 @@
 ## 11. 小結
 
 - **檔案與頁面**：開啟、儲存、另存、刪除頁、旋轉頁、匯出頁、插入空白頁、從檔案插入頁。
-- **檢視**：縮圖、瀏覽、縮放、連續捲動。
+- **檢視**：縮圖（開檔時佔位後分批載入）、瀏覽、縮放、連續捲動（開檔時首頁預覽後分批載入場景，場景與 view rect 同步以支援捲動與縮圖跳頁；索引延後至場景載完）。
 - **文字**：編輯文字（含 Undo/Redo）、搜尋與跳轉。
 - **繪圖與註解**：矩形、螢光筆、FreeText 註解、註解列表、顯示/隱藏註解。
 - **浮水印**：添加、列表、編輯、刪除。

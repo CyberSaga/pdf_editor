@@ -9,6 +9,7 @@ __pycache__/
 venv/
 env/
 .env
+.pytest_cache/
 
 # PDF 測試檔
 *.pdf
@@ -16,3 +17,7 @@ test_files/
 
 # Cursor 相關
 .cursor/
+
+# 單一程式
+for_Linux/
+for_Windows/

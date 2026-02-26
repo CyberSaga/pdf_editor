@@ -11,4 +11,6 @@ if __name__ == "__main__":
     controller = PDFController(model, view)
     view.controller = controller
     view.show()
+    if len(sys.argv) > 1:
+        controller.open_pdf(sys.argv[1])
     sys.exit(app.exec())

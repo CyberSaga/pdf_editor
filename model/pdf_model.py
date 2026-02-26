@@ -148,8 +148,8 @@ class PDFModel:
 
             logger.debug(f"成功開啟PDF: {src_path}")
 
-            # 建立文字方塊索引（Phase 1: TextBlockManager）
-            self.block_manager.build_index(self.doc)
+            # 文字方塊索引改由 Controller 分批建立（方向 B），開檔不阻塞
+            # self.block_manager.build_index(self.doc)
             # 方案 B：從 PDF 內嵌檔案還原浮水印列表（支援重新開檔後仍可編輯浮水印）
             self._load_watermarks_from_doc(self.doc)
         except PermissionError as e:
@@ -158,6 +158,14 @@ class PDFModel:
         except Exception as e:
             logger.error(f"開啟PDF失敗: {str(e)}")
             raise RuntimeError(f"開啟PDF失敗: {str(e)}")
+
+    def ensure_page_index_built(self, page_num: int) -> None:
+        """若該頁尚未建立文字塊索引則建立（供編輯／搜尋前呼叫）。"""
+        page_idx = page_num - 1
+        if page_idx < 0 or not self.doc or page_idx >= len(self.doc):
+            return
+        if page_idx not in self.block_manager._index:
+            self.block_manager.rebuild_page(page_idx, self.doc)
 
     def _insert_rotate_for_htmlbox(self, rotation: int) -> int:
         """
@@ -318,11 +326,14 @@ class PDFModel:
     def delete_pages(self, pages: List[int]):
         for page_num in sorted(pages, reverse=True):
             self.doc.delete_page(page_num - 1)
+        self.block_manager.build_index(self.doc)
 
     def rotate_pages(self, pages: List[int], degrees: int):
         for page_num in pages:
             page = self.doc[page_num - 1]
             page.set_rotation((page.rotation + degrees) % 360)
+        for page_num in pages:
+            self.block_manager.rebuild_page(page_num - 1, self.doc)
 
     def export_pages(self, pages: List[int], output_path: str, as_image: bool = False):
         base_path = Path(output_path).with_suffix('')
@@ -372,6 +383,7 @@ class PDFModel:
         # 插入空白頁面
         self.doc.new_page(insert_at, width=width, height=height)
         logger.debug(f"在位置 {insert_at + 1} 插入空白頁面，尺寸: {width}x{height}")
+        self.block_manager.build_index(self.doc)
 
     def insert_pages_from_file(self, source_file: str, source_pages: List[int], position: int):
         """從其他PDF檔案插入頁面到當前文件
@@ -412,6 +424,7 @@ class PDFModel:
                     logger.warning(f"來源檔案頁碼 {page_num} 超出範圍（總頁數: {len(source_doc)}）")
             
             source_doc.close()
+            self.block_manager.build_index(self.doc)
 
         except Exception as e:
             logger.error(f"從檔案插入頁面失敗: {e}")
@@ -1423,6 +1436,7 @@ class PDFModel:
 
         _t0 = time.perf_counter()  # Phase 6: 效能計時
         page_idx = page_num - 1
+        self.ensure_page_index_built(page_num)
         page = self.doc[page_idx]
         page_rect = page.rect
 
