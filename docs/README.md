@@ -4,8 +4,6 @@ PDF editor desktop app written in Python with a Qt UI. It provides
 page management, annotations, text editing (via redaction + reinsert),
 watermarks, search, and optional OCR.
 
-This document follows the structure of `PDF4QT-README.md`.
-
 ## 2. LEGAL ISSUES
 
 No license is declared in this repository. If you need licensing
