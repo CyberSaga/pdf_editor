@@ -21,6 +21,7 @@ from model.text_block import (
     TextBlock,
     TextBlockManager,
     EditableSpan,
+    EditableParagraph,
     rotation_degrees_from_dir,
 )
 from model.edit_commands import CommandManager, EditTextCommand
@@ -58,6 +59,8 @@ class TextHit:
     color: tuple
     rotation: int
     cluster_span_ids: list[str]
+    target_mode: str = "run"
+    target_paragraph_id: Optional[str] = None
 
     # Keep tuple compatibility for existing callers/tests.
     def _legacy(self) -> tuple:
@@ -100,6 +103,8 @@ class PDFModel:
         self._watermark_modified = False
         # 是否在「存回原檔」時使用增量更新（Incremental Update），以減少對數位簽章與大檔的影響
         self.use_incremental_save: bool = True
+        # Text target granularity: "run" (default) or "paragraph".
+        self.text_target_mode: str = "run"
         self._initialize_temp_dir()
         # 全局 glyph 高度調整（文件推薦，import 後設定一次）
         try:
@@ -107,6 +112,14 @@ class PDFModel:
             logger.debug("已設定 PyMuPDF TOOLS.set_small_glyph_heights(True)")
         except AttributeError:
             logger.warning("PyMuPDF 版本無 TOOLS 支援，跳過 glyph 調整")
+
+    def set_text_target_mode(self, mode: str) -> None:
+        normalized = (mode or "").strip().lower()
+        if normalized not in {"run", "paragraph"}:
+            logger.warning("invalid text target mode: %s (keep %s)", mode, self.text_target_mode)
+            return
+        self.text_target_mode = normalized
+        logger.debug("text_target_mode set to %s", self.text_target_mode)
 
     def _initialize_temp_dir(self):
         """初始化臨時目錄，確保可寫入"""
@@ -306,7 +319,124 @@ class PDFModel:
         for lig, expanded in _LIGATURE_MAP.items():
             if lig in result:
                 result = result.replace(lig, expanded)
+        # Drop unstable extraction artifacts and normalize common punctuation variants.
+        result = (
+            result.replace("\ufffd", "")
+            .replace("\u200b", "")
+            .replace("\ufeff", "")
+            .replace("\u2019", "'")
+            .replace("\u2018", "'")
+            .replace("\u201c", '"')
+            .replace("\u201d", '"')
+        )
         return _RE_WS_STRIP.sub('', result).lower()
+
+    def _token_coverage_ratio(self, source_text: str, haystack_norm: str) -> float:
+        """Return token hit ratio (0..1) using normalized token containment with 1-char tolerance."""
+        if not source_text:
+            return 1.0
+        if not haystack_norm:
+            return 0.0
+        raw_tokens = [tok for tok in re.split(r"\s+", source_text) if tok]
+        tokens = [self._normalize_text_for_compare(tok) for tok in raw_tokens]
+        tokens = [tok for tok in tokens if tok]
+        if not tokens:
+            return 1.0
+        hit = 0
+        for tok in tokens:
+            if tok in haystack_norm:
+                hit += 1
+                continue
+            if len(tok) >= 4 and (tok[1:] in haystack_norm or tok[:-1] in haystack_norm):
+                hit += 1
+        return hit / len(tokens)
+
+    def _normalized_similarity(self, left: str, right: str) -> float:
+        """Similarity score on normalized strings (0..1)."""
+        norm_left = self._normalize_text_for_compare(left)
+        norm_right = self._normalize_text_for_compare(right)
+        if not norm_left and not norm_right:
+            return 1.0
+        if not norm_left or not norm_right:
+            return 0.0
+        if norm_left in norm_right or norm_right in norm_left:
+            return 1.0
+        return difflib.SequenceMatcher(None, norm_left, norm_right).ratio()
+
+    def _rect_overlap_ratio(self, a: fitz.Rect, b: fitz.Rect) -> float:
+        """Area overlap ratio against the smaller rect (0..1)."""
+        if a.is_empty or b.is_empty:
+            return 0.0
+        inter = fitz.Rect(a)
+        inter.intersect(b)
+        if inter.is_empty:
+            return 0.0
+        inter_area = max(0.0, inter.width * inter.height)
+        min_area = max(1.0, min(a.width * a.height, b.width * b.height))
+        return inter_area / min_area
+
+    def _resolve_paragraph_candidate(
+        self,
+        page_idx: int,
+        probe_rect: fitz.Rect,
+        original_text: Optional[str],
+        preferred_run_id: Optional[str] = None,
+    ) -> Optional[EditableParagraph]:
+        """Resolve the best paragraph target by geometry + text similarity.
+
+        This is used to recover from stale run IDs after page rebuilds.
+        """
+        paragraphs = self.block_manager.get_paragraphs(page_idx)
+        if not paragraphs:
+            return None
+
+        expanded = fitz.Rect(
+            probe_rect.x0 - 1.0,
+            probe_rect.y0 - 1.0,
+            probe_rect.x1 + 1.0,
+            probe_rect.y1 + 1.0,
+        )
+        candidates = [
+            para
+            for para in paragraphs
+            if fitz.Rect(para.bbox).intersects(expanded)
+        ]
+        if not candidates:
+            candidates = paragraphs
+
+        has_probe_text = bool(self._normalize_text_for_compare(original_text or ""))
+        best_para: Optional[EditableParagraph] = None
+        best_key = None
+
+        for para in candidates:
+            para_rect = fitz.Rect(para.bbox)
+            overlap_score = self._rect_overlap_ratio(para_rect, probe_rect)
+            text_score = (
+                self._normalized_similarity(original_text or "", para.text)
+                if has_probe_text
+                else 0.0
+            )
+            preferred_score = 1.0 if preferred_run_id and preferred_run_id in para.run_ids else 0.0
+
+            if has_probe_text:
+                key = (
+                    round(text_score, 6),
+                    round(overlap_score, 6),
+                    preferred_score,
+                    -abs(para_rect.y0 - probe_rect.y0),
+                )
+            else:
+                key = (
+                    round(overlap_score, 6),
+                    preferred_score,
+                    -abs(para_rect.y0 - probe_rect.y0),
+                )
+
+            if best_key is None or key > best_key:
+                best_key = key
+                best_para = para
+
+        return best_para
 
     def _text_fits_in_rect(self, page: fitz.Page, rect: fitz.Rect, expected_text: str) -> bool:
         extracted = page.get_text("text", clip=rect)
@@ -874,18 +1004,35 @@ class PDFModel:
             tmp_doc.close()
 
     def get_text_info_at_point(self, page_num: int, point: fitz.Point) -> Optional[TextHit]:
-        """Return topmost editable span info at point using stable span identity."""
+        """Return topmost editable run info at point using stable run/span identity."""
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             return None
 
         page_idx = page_num - 1
         self.ensure_page_index_built(page_num)
+        mode = (self.text_target_mode or "run").lower()
 
-        spans = self.block_manager.get_spans(page_idx)
+        spans = self.block_manager.get_runs(page_idx)
         hit_spans = [s for s in spans if point in fitz.Rect(s.bbox)]
         if hit_spans:
             target = hit_spans[-1]  # Topmost = last extracted/drawn.
-            cluster = self.block_manager.find_overlapping_spans(page_idx, target.bbox, tol=0.5)
+            if mode == "paragraph":
+                para = self.block_manager.find_paragraph_for_run(page_idx, target.span_id)
+                if para is not None:
+                    cluster = self.block_manager.find_overlapping_runs(page_idx, para.bbox, tol=0.5)
+                    return TextHit(
+                        target_span_id=target.span_id,
+                        target_bbox=fitz.Rect(para.bbox),
+                        target_text=para.text,
+                        font=para.font,
+                        size=float(para.size),
+                        color=tuple(para.color),
+                        rotation=int(para.rotation),
+                        cluster_span_ids=[s.span_id for s in cluster],
+                        target_mode="paragraph",
+                        target_paragraph_id=para.paragraph_id,
+                    )
+            cluster = self.block_manager.find_overlapping_runs(page_idx, target.bbox, tol=0.5)
             return TextHit(
                 target_span_id=target.span_id,
                 target_bbox=fitz.Rect(target.bbox),
@@ -895,6 +1042,7 @@ class PDFModel:
                 color=tuple(target.color),
                 rotation=int(target.rotation),
                 cluster_span_ids=[s.span_id for s in cluster],
+                target_mode="run",
             )
 
         # Backward-compatible fallback if span extraction misses the point.
@@ -939,6 +1087,7 @@ class PDFModel:
                 color=color,
                 rotation=rotation,
                 cluster_span_ids=[fallback_span_id],
+                target_mode=mode if mode in {"run", "paragraph"} else "run",
             )
         return None
 
@@ -1556,7 +1705,8 @@ class PDFModel:
                   original_text: str = None,
                   vertical_shift_left: bool = True,
                   new_rect: fitz.Rect = None,
-                  target_span_id: Optional[str] = None):
+                  target_span_id: Optional[str] = None,
+                  target_mode: Optional[str] = None):
         """
         編輯文字：五步流程 + 三策略智能插入。
 
@@ -1588,6 +1738,9 @@ class PDFModel:
         page_rect = page.rect
         rollback_flag = False
         resolved_target_span_id = target_span_id
+        effective_target_mode = (target_mode or self.text_target_mode or "run").strip().lower()
+        if effective_target_mode not in {"run", "paragraph"}:
+            effective_target_mode = "run"
         overlap_cluster: list[EditableSpan] = []
         protected_spans: list[EditableSpan] = []
 
@@ -1598,7 +1751,7 @@ class PDFModel:
             # ═══════════ Step 1: 驗證 / 以 span_id 鎖定目標 ═══════════
             target_span = None
             if resolved_target_span_id:
-                target_span = self.block_manager.find_span_by_id(page_idx, resolved_target_span_id)
+                target_span = self.block_manager.find_run_by_id(page_idx, resolved_target_span_id)
                 if target_span is None:
                     logger.debug("target_span_id not found in current index: %s", resolved_target_span_id)
 
@@ -1628,7 +1781,7 @@ class PDFModel:
                             logger.warning("重建索引後仍找不到目標文字方塊")
                             return
 
-                candidate_spans = self.block_manager.find_overlapping_spans(page_idx, target.layout_rect, tol=0.5)
+                candidate_spans = self.block_manager.find_overlapping_runs(page_idx, target.layout_rect, tol=0.5)
                 if candidate_spans:
                     text_probe = self._normalize_text_for_compare(original_text or target.text or "")
                     if text_probe:
@@ -1650,31 +1803,64 @@ class PDFModel:
             if not resolved_target_span_id:
                 resolved_target_span_id = target_span.span_id
 
-            overlap_cluster = self.block_manager.find_overlapping_spans(
+            target_member_span_ids: set[str] = {resolved_target_span_id}
+            target_bbox_for_cluster = fitz.Rect(target_span.bbox)
+            target_block_idx = target_span.block_idx
+            target_rotation = int(target_span.rotation)
+            if effective_target_mode == "paragraph":
+                para = self._resolve_paragraph_candidate(
+                    page_idx=page_idx,
+                    probe_rect=fitz.Rect(rect),
+                    original_text=original_text,
+                    preferred_run_id=target_span.span_id,
+                )
+                if para is not None:
+                    target_member_span_ids = set(para.run_ids)
+                    target_bbox_for_cluster = fitz.Rect(para.bbox)
+                    target_block_idx = para.block_idx
+                    target_rotation = int(para.rotation)
+                    # Keep logging / downstream selection deterministic even when the
+                    # caller passes a stale run id from a previous page state.
+                    if para.run_ids:
+                        if resolved_target_span_id not in target_member_span_ids:
+                            resolved_target_span_id = para.run_ids[0]
+                else:
+                    logger.debug(
+                        "paragraph mode requested but paragraph not resolved for run=%s; fallback to run mode",
+                        target_span.span_id,
+                    )
+                    effective_target_mode = "run"
+
+            overlap_cluster = self.block_manager.find_overlapping_runs(
                 page_idx,
-                target_span.bbox,
+                target_bbox_for_cluster,
                 tol=0.5,
             )
+            if not overlap_cluster:
+                overlap_cluster = [
+                    s for s in self.block_manager.get_runs(page_idx)
+                    if s.span_id in target_member_span_ids
+                ]
             if not overlap_cluster:
                 overlap_cluster = [target_span]
 
             # Keep extraction order deterministic; target is removed from protected set.
-            protected_spans = [s for s in overlap_cluster if s.span_id != resolved_target_span_id]
+            protected_spans = [s for s in overlap_cluster if s.span_id not in target_member_span_ids]
             cluster_union = self._rect_union([fitz.Rect(s.bbox) for s in overlap_cluster])
 
             target = self.block_manager.find_by_id(
                 page_idx,
-                f"page_{page_idx}_block_{target_span.block_idx}",
+                f"page_{page_idx}_block_{target_block_idx}",
             )
             if not target:
                 target = self.block_manager.find_by_rect(
-                    page_idx, fitz.Rect(target_span.bbox), original_text=original_text, doc=self.doc
+                    page_idx, fitz.Rect(target_bbox_for_cluster), original_text=original_text, doc=self.doc
                 )
             if not target:
                 logger.warning("unable to resolve target block for span %s", resolved_target_span_id)
                 return
 
-            rotation = int(target_span.rotation)
+            rotation = int(target_rotation)
             is_vertical = rotation in (90, 270)
             insert_rotate = self._insert_rotate_for_htmlbox(rotation)
             redact_rect = fitz.Rect(cluster_union if not cluster_union.is_empty else target.layout_rect)
@@ -1693,9 +1879,10 @@ class PDFModel:
                 self._replay_protected_spans(page, protected_spans)
             self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(redact_rect)})
             logger.debug(
-                "overlap_redaction page=%s target_span_id=%s cluster_size=%s protected_count=%s redact_rect=%s",
+                "overlap_redaction page=%s target_span_id=%s target_mode=%s cluster_size=%s protected_count=%s redact_rect=%s",
                 page_num,
                 resolved_target_span_id,
+                effective_target_mode,
                 len(overlap_cluster),
                 len(protected_spans),
                 redact_rect,
@@ -1768,7 +1955,8 @@ class PDFModel:
             #
             # 做法：先用臨時頁面 probe 估算換行高度，若預測會溢出則先推移，
             #       再對乾淨的頁面執行正式 insert_htmlbox。
-            if not is_vertical:
+            skip_prepush = effective_target_mode == "paragraph" and new_rect is not None
+            if not is_vertical and not skip_prepush:
                 try:
                     _probe_doc = fitz.open()
                     _probe_page = _probe_doc.new_page(
@@ -1796,6 +1984,8 @@ class PDFModel:
                         )
                 except Exception as _probe_err:
                     logger.debug(f"Pre-push probe 失敗（忽略）: {_probe_err}")
+            elif skip_prepush:
+                logger.debug("Pre-push probe skipped (paragraph mode with dragged new_rect)")
             # ── End of pre-push probe ──────────────────────────────────────────
 
             if is_vertical:
@@ -1941,7 +2131,56 @@ class PDFModel:
                 f"norm_new[:{min(40, len(norm_new))}]={norm_new[:40]!r}"
             )
 
-            target_present = (not norm_new) or (norm_new in norm_page)
+            norm_clip = ""
+            clip_ratio = 0.0
+            clip_token_coverage = 0.0
+            if not new_layout_rect.is_empty:
+                try:
+                    clipped = page.get_text("text", clip=self._clamp_rect_to_page(new_layout_rect, page_rect))
+                    norm_clip = self._normalize_text_for_compare(clipped)
+                    if norm_new and norm_clip:
+                        if norm_new in norm_clip:
+                            clip_ratio = 1.0
+                        else:
+                            clip_ratio = difflib.SequenceMatcher(None, norm_new, norm_clip).ratio()
+                        clip_token_coverage = self._token_coverage_ratio(new_text, norm_clip)
+                except Exception as e_clip:
+                    logger.debug("Step4 clip probe failed: %s", e_clip)
+
+            page_token_coverage = self._token_coverage_ratio(new_text, norm_page)
+            exact_present = (norm_new in norm_page) or (bool(norm_clip) and norm_new in norm_clip)
+            if not norm_new:
+                target_present = True
+            elif exact_present:
+                target_present = True
+            elif effective_target_mode == "paragraph":
+                # Paragraph edits may interleave with protected replay text, so allow robust fuzzy checks.
+                target_present = (
+                    sim_ratio >= 0.88
+                    or clip_ratio >= 0.84
+                    or page_token_coverage >= 0.78
+                    or clip_token_coverage >= 0.72
+                )
+            elif len(norm_new) >= 48:
+                # Long run text can include extraction artifacts; use tighter fuzzy fallback.
+                target_present = (
+                    sim_ratio >= 0.90
+                    or clip_ratio >= 0.86
+                    or page_token_coverage >= 0.85
+                )
+            else:
+                target_present = False
+
+            logger.debug(
+                "target_presence page=%s mode=%s exact=%s sim_ratio=%.2f clip_ratio=%.2f token_page=%.2f token_clip=%.2f",
+                page_num,
+                effective_target_mode,
+                exact_present,
+                sim_ratio,
+                clip_ratio,
+                page_token_coverage,
+                clip_token_coverage,
+            )
             protected_ok = self._validate_protected_spans(page, protected_spans)
             if not target_present or not protected_ok:
                 rollback_flag = True
@@ -1954,9 +2193,10 @@ class PDFModel:
 
             # 垂直文字 get_text(clip=) 對旋轉內容擷取不準確，跳過嚴格驗證
             # 閾值 0.80：容許 get_text clip 邊界截斷、字型差異等正常偏差（<20%）
-            if sim_ratio < 0.80 and not is_vertical:
+            strict_ratio = max(sim_ratio, clip_ratio)
+            if effective_target_mode != "paragraph" and strict_ratio < 0.80 and not is_vertical:
                 logger.warning(
-                    f"插入後驗證失敗 (ratio={sim_ratio:.2f})，"
+                    f"插入後驗證失敗 (ratio={strict_ratio:.2f})，"
                     f"正在回滾頁面 {page_num}"
                 )
                 rollback_flag = True
@@ -1964,7 +2204,7 @@ class PDFModel:
                 self.block_manager.rebuild_page(page_idx, self.doc)
                 raise RuntimeError(
                     f"文字編輯驗證失敗：difflib.ratio="
-                    f"{sim_ratio:.2f} < 0.80，已回滾。"
+                    f"{strict_ratio:.2f} < 0.80，已回滾。"
                 )
 
             # ═══════════ Step 5: 更新索引 ═══════════
@@ -1992,9 +2232,10 @@ class PDFModel:
 
             _duration = time.perf_counter() - _t0
             logger.debug(
-                "edit_transaction page=%s target_span_id=%s cluster_size=%s protected_count=%s rollback_flag=%s duration_ms=%s",
+                "edit_transaction page=%s target_span_id=%s target_mode=%s cluster_size=%s protected_count=%s rollback_flag=%s duration_ms=%s",
                 page_num,
                 resolved_target_span_id,
+                effective_target_mode,
                 len(overlap_cluster),
                 len(protected_spans),
                 rollback_flag,
@@ -2007,9 +2248,10 @@ class PDFModel:
             rollback_flag = True
             _duration = time.perf_counter() - _t0
             logger.debug(
-                "edit_transaction page=%s target_span_id=%s cluster_size=%s protected_count=%s rollback_flag=%s duration_ms=%s",
+                "edit_transaction page=%s target_span_id=%s target_mode=%s cluster_size=%s protected_count=%s rollback_flag=%s duration_ms=%s",
                 page_num,
                 resolved_target_span_id,
+                effective_target_mode,
                 len(overlap_cluster),
                 len(protected_spans),
                 rollback_flag,
@@ -2026,9 +2268,10 @@ class PDFModel:
                 pass
             _duration = time.perf_counter() - _t0
             logger.debug(
-                "edit_transaction page=%s target_span_id=%s cluster_size=%s protected_count=%s rollback_flag=%s duration_ms=%s",
+                "edit_transaction page=%s target_span_id=%s target_mode=%s cluster_size=%s protected_count=%s rollback_flag=%s duration_ms=%s",
                 page_num,
                 resolved_target_span_id,
+                effective_target_mode,
                 len(overlap_cluster),
                 len(protected_spans),
                 rollback_flag,
