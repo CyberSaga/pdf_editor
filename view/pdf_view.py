@@ -197,13 +197,14 @@ class PDFView(QMainWindow):
     sig_export_pages = Signal(list, str, bool)
     sig_add_highlight = Signal(int, object, object)
     sig_add_rect = Signal(int, object, object, bool)
-    sig_edit_text = Signal(int, object, str, str, int, tuple, str, bool, object)  # ..., new_rect(optional)
+    sig_edit_text = Signal(int, object, str, str, int, tuple, str, bool, object, object, str)  # ..., new_rect(optional), target_span_id(optional), target_mode
     sig_jump_to_result = Signal(int, object)
     sig_search = Signal(str)
     sig_ocr = Signal(list)
     sig_undo = Signal()
     sig_redo = Signal()
     sig_mode_changed = Signal(str)
+    sig_text_target_mode_changed = Signal(str)
     sig_page_changed = Signal(int)
     sig_scale_changed = Signal(int, float)
 
@@ -637,6 +638,13 @@ class PDFView(QMainWindow):
         self.vertical_shift_left_cb = QCheckBox("垂直文字擴展時左移")
         self.vertical_shift_left_cb.setChecked(True)
         text_layout.addWidget(self.vertical_shift_left_cb)
+        self.text_target_mode_combo = QComboBox()
+        self.text_target_mode_combo.addItem("詞 / Run（精準）", "run")
+        self.text_target_mode_combo.addItem("段落（整段）", "paragraph")
+        self.text_target_mode_combo.setCurrentIndex(0)
+        self.text_target_mode_combo.currentIndexChanged.connect(self._on_text_target_mode_changed)
+        text_layout.addWidget(QLabel("文字選取粒度"))
+        text_layout.addWidget(self.text_target_mode_combo)
         self.text_apply_btn = QPushButton("套用")
         self.text_cancel_btn = QPushButton("取消")
         text_layout.addWidget(self.text_apply_btn)
@@ -660,6 +668,17 @@ class PDFView(QMainWindow):
         if color.isValid():
             self.highlight_color = color
             self.highlight_color_btn.setStyleSheet(f"background-color: {color.name()};")
+
+    def _on_text_target_mode_changed(self):
+        combo = getattr(self, "text_target_mode_combo", None)
+        if combo is None:
+            return
+        mode = combo.currentData()
+        if mode not in ("run", "paragraph"):
+            mode = "run"
+        self.sig_text_target_mode_changed.emit(mode)
+        # force hover target refresh under new granularity
+        self._last_hover_scene_pos = None
 
     def _update_status_bar(self):
         """更新狀態列：已修改、模式、快捷鍵、頁/縮放；搜尋模式時顯示找到 X 個結果 • 按 Esc 關閉搜尋."""
@@ -1068,11 +1087,20 @@ class PDFView(QMainWindow):
                     info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
                     if info:
                         # 存下文字塊資訊，但先不開啟編輯框（等 release 或 drag 決定）
-                        self.editing_font_name = info[2]
-                        self.editing_color = info[4]
-                        self.editing_original_text = info[1]
+                        self.editing_font_name = info.font
+                        self.editing_color = info.color
+                        self.editing_original_text = info.target_text
                         self._editing_page_idx = page_idx
-                        self._pending_text_info = info
+                        self._pending_text_info = (
+                            info.target_bbox,
+                            info.target_text,
+                            info.font,
+                            info.size,
+                            info.color,
+                            info.rotation,
+                            info.target_span_id,
+                            getattr(info, "target_mode", "run"),
+                        )
                         self._drag_pending = True
                         self._drag_active = False
                         self._drag_start_scene_pos = scene_pos
@@ -1172,7 +1200,7 @@ class PDFView(QMainWindow):
             page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
             info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
             if info:
-                doc_rect: fitz.Rect = info[0]
+                doc_rect: fitz.Rect = info.target_bbox
                 y0 = (self.page_y_positions[page_idx]
                       if (self.continuous_pages and page_idx < len(self.page_y_positions))
                       else 0.0)
@@ -1275,7 +1303,7 @@ class PDFView(QMainWindow):
         self.set_mode('browse')
         QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
 
-    def _create_text_editor(self, rect: fitz.Rect, text: str, font_name: str, font_size: float, color: tuple = (0,0,0), rotation: int = 0):
+    def _create_text_editor(self, rect: fitz.Rect, text: str, font_name: str, font_size: float, color: tuple = (0,0,0), rotation: int = 0, target_span_id: str = None, target_mode: str = "run"):
         """建立文字編輯框，設定寬度與換行以預覽渲染後的排版（與 PDF insert_htmlbox 一致）。"""
         if self.text_editor:
             self._finalize_text_edit()
@@ -1295,6 +1323,8 @@ class PDFView(QMainWindow):
         editor = QTextEdit(text)
         editor.setProperty("original_text", text)
         self._editing_rotation = rotation
+        self.editing_target_span_id = target_span_id
+        self.editing_target_mode = target_mode if target_mode in ("run", "paragraph") else "run"
 
         qt_font = self._pdf_font_to_qt(font_name)
         editor.setFont(QFont(qt_font, int(font_size)))
@@ -1387,6 +1417,10 @@ class PDFView(QMainWindow):
         if hasattr(self, 'editing_color'): del self.editing_color
         if hasattr(self, '_editing_page_idx'): del self._editing_page_idx
         if hasattr(self, '_editing_rotation'): del self._editing_rotation
+        target_span_id = getattr(self, 'editing_target_span_id', None)
+        if hasattr(self, 'editing_target_span_id'): del self.editing_target_span_id
+        target_mode = getattr(self, 'editing_target_mode', 'run')
+        if hasattr(self, 'editing_target_mode'): del self.editing_target_mode
 
         if (text_changed or position_changed) and original_rect:
             try:
@@ -1404,7 +1438,9 @@ class PDFView(QMainWindow):
                     original_color,
                     original_text,
                     vsl,
-                    new_rect_arg        # 目標新位置（None = 不移動）
+                    new_rect_arg,       # 目標新位置（None = 不移動）
+                    target_span_id,
+                    target_mode,
                 )
             except Exception as e:
                 logger.error(f"發送編輯信號時出錯: {e}")

@@ -60,12 +60,16 @@
 
 | 功能 | Model | Controller | View（觸發/顯示） |
 |------|-------|------------|-------------------|
-| **編輯文字** | `edit_text(page_num, rect, new_text, font, size, color, original_text, vertical_shift_left)`；內含 redaction + 三策略插入（htmlbox / 擴寬 / textbox）+ 驗證與索引更新 | 擷取頁面快照、建立 `EditTextCommand`、`command_manager.execute(cmd)`、更新畫面與 Undo/Redo 狀態 | 頂部「編輯」→「編輯文字」、F2 → `edit_text` 模式；框選後彈出編輯器，送出 → `sig_edit_text` |
+| **編輯文字** | `edit_text(page_num, rect, new_text, font, size, color, original_text, vertical_shift_left, new_rect=None, target_span_id=None, target_mode=None)`；內含 redaction + 三策略插入（htmlbox / 擴寬 / textbox）+ 驗證與索引更新 | 擷取頁面快照、建立 `EditTextCommand`（包含 `target_span_id` / `target_mode`）、`command_manager.execute(cmd)`、更新畫面與 Undo/Redo 狀態 | 頂部「編輯」→「編輯文字」、F2 → `edit_text` 模式；框選後彈出編輯器，送出 → `sig_edit_text`（含 `target_span_id` / `target_mode`） |
 | **復原** | `command_manager.undo()` | `undo()`，依指令類型刷新畫布/縮圖 | 頂部「常用」或右上角「↺ 復原」、Ctrl+Z → `sig_undo` |
 | **重做** | `command_manager.redo()` | `redo()`，同上 | 頂部「常用」或右上角「↻ 重做」、Ctrl+Y → `sig_redo` |
 
 - 文字塊由 `TextBlockManager` 管理；編輯後只更新該 block，不重建整份索引。
 - 垂直文字、CJK、自動換行、ligature 正規化等均在 Model 內處理。
+- 編輯目標以 `target_span_id`（span-level identity）定位，避免重疊文字在同一位置/區域時被一起清除。
+- 支援 `target_mode=run|paragraph` 的混合定位：`run` 偏向精準；`paragraph` 偏向整段一起重排（避免把單字切成多個 textbox）。
+- 文字抽取採用 rawdict 的 char-level reconstruction（以字元重建 runs/paragraph），降低「young 被拆成 y / oung」等不合理分割。
+- 若目標與其他文字重疊：會建立 overlap cluster，對 cluster 做 redaction，並重播（replay）非目標文字；若驗證失敗會以 page snapshot 回滾。
 
 ---
 

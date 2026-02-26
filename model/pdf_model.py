@@ -1,4 +1,4 @@
-import fitz
+﻿import fitz
 import tempfile
 import os
 import shutil
@@ -6,6 +6,7 @@ import logging
 import math
 import time
 import json
+from dataclasses import dataclass
 from typing import List, Tuple, Optional
 import pytesseract
 from PIL import Image
@@ -16,7 +17,13 @@ import io  # 用於 BytesIO 記憶體 stream（文件推薦 in-memory PDF）
 import re
 import html as _html_mod
 
-from model.text_block import TextBlock, TextBlockManager, rotation_degrees_from_dir
+from model.text_block import (
+    TextBlock,
+    TextBlockManager,
+    EditableSpan,
+    EditableParagraph,
+    rotation_degrees_from_dir,
+)
 from model.edit_commands import CommandManager, EditTextCommand
 
 # [優化 1] 模組級正則預編譯：避免每次呼叫 _convert_text_to_html / _normalize_text_for_compare 時重新編譯，提升效能
@@ -41,6 +48,40 @@ _LIGATURE_MAP = {
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
+@dataclass
+class TextHit:
+    target_span_id: str
+    target_bbox: fitz.Rect
+    target_text: str
+    font: str
+    size: float
+    color: tuple
+    rotation: int
+    cluster_span_ids: list[str]
+    target_mode: str = "run"
+    target_paragraph_id: Optional[str] = None
+
+    # Keep tuple compatibility for existing callers/tests.
+    def _legacy(self) -> tuple:
+        return (
+            self.target_bbox,
+            self.target_text,
+            self.font,
+            self.size,
+            self.color,
+            self.rotation,
+        )
+
+    def __getitem__(self, idx: int):
+        return self._legacy()[idx]
+
+    def __iter__(self):
+        return iter(self._legacy())
+
+    def __len__(self):
+        return len(self._legacy())
+
 class PDFModel:
     def __init__(self):
         self.doc: fitz.Document = None
@@ -62,6 +103,8 @@ class PDFModel:
         self._watermark_modified = False
         # 是否在「存回原檔」時使用增量更新（Incremental Update），以減少對數位簽章與大檔的影響
         self.use_incremental_save: bool = True
+        # Text target granularity: "run" (default) or "paragraph".
+        self.text_target_mode: str = "run"
         self._initialize_temp_dir()
         # 全局 glyph 高度調整（文件推薦，import 後設定一次）
         try:
@@ -69,6 +112,14 @@ class PDFModel:
             logger.debug("已設定 PyMuPDF TOOLS.set_small_glyph_heights(True)")
         except AttributeError:
             logger.warning("PyMuPDF 版本無 TOOLS 支援，跳過 glyph 調整")
+
+    def set_text_target_mode(self, mode: str) -> None:
+        normalized = (mode or "").strip().lower()
+        if normalized not in {"run", "paragraph"}:
+            logger.warning("invalid text target mode: %s (keep %s)", mode, self.text_target_mode)
+            return
+        self.text_target_mode = normalized
+        logger.debug("text_target_mode set to %s", self.text_target_mode)
 
     def _initialize_temp_dir(self):
         """初始化臨時目錄，確保可寫入"""
@@ -268,7 +319,124 @@ class PDFModel:
         for lig, expanded in _LIGATURE_MAP.items():
             if lig in result:
                 result = result.replace(lig, expanded)
+        # Drop unstable extraction artifacts and normalize common punctuation variants.
+        result = (
+            result.replace("\ufffd", "")
+            .replace("\u200b", "")
+            .replace("\ufeff", "")
+            .replace("\u2019", "'")
+            .replace("\u2018", "'")
+            .replace("\u201c", '"')
+            .replace("\u201d", '"')
+        )
         return _RE_WS_STRIP.sub('', result).lower()
+
+    def _token_coverage_ratio(self, source_text: str, haystack_norm: str) -> float:
+        """Return token hit ratio (0..1) using normalized token containment with 1-char tolerance."""
+        if not source_text:
+            return 1.0
+        if not haystack_norm:
+            return 0.0
+        raw_tokens = [tok for tok in re.split(r"\s+", source_text) if tok]
+        tokens = [self._normalize_text_for_compare(tok) for tok in raw_tokens]
+        tokens = [tok for tok in tokens if tok]
+        if not tokens:
+            return 1.0
+        hit = 0
+        for tok in tokens:
+            if tok in haystack_norm:
+                hit += 1
+                continue
+            if len(tok) >= 4 and (tok[1:] in haystack_norm or tok[:-1] in haystack_norm):
+                hit += 1
+        return hit / len(tokens)
+
+    def _normalized_similarity(self, left: str, right: str) -> float:
+        """Similarity score on normalized strings (0..1)."""
+        norm_left = self._normalize_text_for_compare(left)
+        norm_right = self._normalize_text_for_compare(right)
+        if not norm_left and not norm_right:
+            return 1.0
+        if not norm_left or not norm_right:
+            return 0.0
+        if norm_left in norm_right or norm_right in norm_left:
+            return 1.0
+        return difflib.SequenceMatcher(None, norm_left, norm_right).ratio()
+
+    def _rect_overlap_ratio(self, a: fitz.Rect, b: fitz.Rect) -> float:
+        """Area overlap ratio against the smaller rect (0..1)."""
+        if a.is_empty or b.is_empty:
+            return 0.0
+        inter = fitz.Rect(a)
+        inter.intersect(b)
+        if inter.is_empty:
+            return 0.0
+        inter_area = max(0.0, inter.width * inter.height)
+        min_area = max(1.0, min(a.width * a.height, b.width * b.height))
+        return inter_area / min_area
+
+    def _resolve_paragraph_candidate(
+        self,
+        page_idx: int,
+        probe_rect: fitz.Rect,
+        original_text: Optional[str],
+        preferred_run_id: Optional[str] = None,
+    ) -> Optional[EditableParagraph]:
+        """Resolve the best paragraph target by geometry + text similarity.
+
+        This is used to recover from stale run IDs after page rebuilds.
+        """
+        paragraphs = self.block_manager.get_paragraphs(page_idx)
+        if not paragraphs:
+            return None
+
+        expanded = fitz.Rect(
+            probe_rect.x0 - 1.0,
+            probe_rect.y0 - 1.0,
+            probe_rect.x1 + 1.0,
+            probe_rect.y1 + 1.0,
+        )
+        candidates = [
+            para
+            for para in paragraphs
+            if fitz.Rect(para.bbox).intersects(expanded)
+        ]
+        if not candidates:
+            candidates = paragraphs
+
+        has_probe_text = bool(self._normalize_text_for_compare(original_text or ""))
+        best_para: Optional[EditableParagraph] = None
+        best_key = None
+
+        for para in candidates:
+            para_rect = fitz.Rect(para.bbox)
+            overlap_score = self._rect_overlap_ratio(para_rect, probe_rect)
+            text_score = (
+                self._normalized_similarity(original_text or "", para.text)
+                if has_probe_text
+                else 0.0
+            )
+            preferred_score = 1.0 if preferred_run_id and preferred_run_id in para.run_ids else 0.0
+
+            if has_probe_text:
+                key = (
+                    round(text_score, 6),
+                    round(overlap_score, 6),
+                    preferred_score,
+                    -abs(para_rect.y0 - probe_rect.y0),
+                )
+            else:
+                key = (
+                    round(overlap_score, 6),
+                    preferred_score,
+                    -abs(para_rect.y0 - probe_rect.y0),
+                )
+
+            if best_key is None or key > best_key:
+                best_key = key
+                best_para = para
+
+        return best_para
 
     def _text_fits_in_rect(self, page: fitz.Page, rect: fitz.Rect, expected_text: str) -> bool:
         extracted = page.get_text("text", clip=rect)
@@ -835,42 +1003,92 @@ class PDFModel:
         finally:
             tmp_doc.close()
 
-    def get_text_info_at_point(self, page_num: int, point: fitz.Point) -> Tuple[fitz.Rect, str, str, float, tuple, int] | None:
-        """獲取指定點下方的文字區塊、內容、字型、大小、顏色與旋轉角度。回傳 (rect, text, font_name, font_size, color, rotation)。"""
+    def get_text_info_at_point(self, page_num: int, point: fitz.Point) -> Optional[TextHit]:
+        """Return topmost editable run info at point using stable run/span identity."""
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             return None
-        page = self.doc[page_num - 1]
 
+        page_idx = page_num - 1
+        self.ensure_page_index_built(page_num)
+        mode = (self.text_target_mode or "run").lower()
+
+        spans = self.block_manager.get_runs(page_idx)
+        hit_spans = [s for s in spans if point in fitz.Rect(s.bbox)]
+        if hit_spans:
+            target = hit_spans[-1]  # Topmost = last extracted/drawn.
+            if mode == "paragraph":
+                para = self.block_manager.find_paragraph_for_run(page_idx, target.span_id)
+                if para is not None:
+                    cluster = self.block_manager.find_overlapping_runs(page_idx, para.bbox, tol=0.5)
+                    return TextHit(
+                        target_span_id=target.span_id,
+                        target_bbox=fitz.Rect(para.bbox),
+                        target_text=para.text,
+                        font=para.font,
+                        size=float(para.size),
+                        color=tuple(para.color),
+                        rotation=int(para.rotation),
+                        cluster_span_ids=[s.span_id for s in cluster],
+                        target_mode="paragraph",
+                        target_paragraph_id=para.paragraph_id,
+                    )
+            cluster = self.block_manager.find_overlapping_runs(page_idx, target.bbox, tol=0.5)
+            return TextHit(
+                target_span_id=target.span_id,
+                target_bbox=fitz.Rect(target.bbox),
+                target_text=target.text,
+                font=target.font,
+                size=float(target.size),
+                color=tuple(target.color),
+                rotation=int(target.rotation),
+                cluster_span_ids=[s.span_id for s in cluster],
+                target_mode="run",
+            )
+
+        # Backward-compatible fallback if span extraction misses the point.
+        page = self.doc[page_idx]
         blocks = page.get_text("dict", flags=0)["blocks"]
-        for b in blocks:
-            if b['type'] == 0:
-                rect = fitz.Rect(b["bbox"])
-                if point in rect:
-                    full_text = []
-                    font_name = "helv"
-                    font_size = 12.0
-                    color_int = 0
-                    rotation = 0
+        for block_idx, block in enumerate(blocks):
+            if block.get("type") != 0:
+                continue
+            rect = fitz.Rect(block["bbox"])
+            if point not in rect:
+                continue
 
-                    if b["lines"] and b["lines"][0]["spans"]:
-                        first_span = b["lines"][0]["spans"][0]
-                        font_name = first_span["font"]
-                        font_size = first_span["size"]
-                        color_int = first_span.get("color", 0)
-                    if b.get("lines") and b["lines"][0].get("dir") is not None:
-                        rotation = rotation_degrees_from_dir(b["lines"][0]["dir"])
+            full_text = []
+            font_name = "helv"
+            font_size = 12.0
+            color_int = 0
+            rotation = 0
 
-                    rgb_int = fitz.sRGB_to_rgb(color_int) if color_int else (0, 0, 0)
-                    color = tuple(c / 255.0 for c in rgb_int)
+            if block.get("lines") and block["lines"][0].get("spans"):
+                first_span = block["lines"][0]["spans"][0]
+                font_name = first_span.get("font", "helv")
+                font_size = float(first_span.get("size", 12.0))
+                color_int = int(first_span.get("color", 0))
+            if block.get("lines") and block["lines"][0].get("dir") is not None:
+                rotation = rotation_degrees_from_dir(block["lines"][0]["dir"])
 
-                    for l in b["lines"]:
-                        for s in l["spans"]:
-                            full_text.append(s["text"])
-                        full_text.append("\n")
+            rgb_int = fitz.sRGB_to_rgb(color_int) if color_int else (0, 0, 0)
+            color = tuple(c / 255.0 for c in rgb_int)
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    full_text.append(span.get("text", ""))
+                full_text.append("\n")
 
-                    text_content = "".join(full_text).rstrip("\n")
-                    logger.debug(f"找到文字區塊: {rect}, 字型: {font_name}, 大小: {font_size}, rotation: {rotation}")
-                    return rect, text_content, font_name, font_size, color, rotation
+            text_content = "".join(full_text).rstrip("\n")
+            fallback_span_id = f"p{page_idx}_b{block_idx}_l0_s0"
+            return TextHit(
+                target_span_id=fallback_span_id,
+                target_bbox=rect,
+                target_text=text_content,
+                font=font_name,
+                size=font_size,
+                color=color,
+                rotation=rotation,
+                cluster_span_ids=[fallback_span_id],
+                target_mode=mode if mode in {"run", "paragraph"} else "run",
+            )
         return None
 
     def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect, rotation: int = 0, font_size: float = 12) -> float:
@@ -1400,6 +1618,83 @@ class PDFModel:
             f"插入 {inserted} 個 span"
         )
 
+    def _rect_union(self, rects: list[fitz.Rect]) -> fitz.Rect:
+        if not rects:
+            return fitz.Rect()
+        u = fitz.Rect(rects[0])
+        for r in rects[1:]:
+            u.include_rect(r)
+        return u
+
+    def _replay_protected_spans(self, page: fitz.Page, spans: list[EditableSpan]) -> None:
+        for span in spans:
+            text = (span.text or "").rstrip("\n")
+            if not text:
+                continue
+            fontsize = max(1.0, float(span.size))
+            color = tuple(span.color) if span.color else (0.0, 0.0, 0.0)
+            rotate = int(span.rotation) if span.rotation in (0, 90, 180, 270) else 0
+            raw_font = span.font or "helv"
+            fontname = self._resolve_font_for_push(raw_font)
+            candidates = [fontname]
+            if self._needs_cjk_font(text):
+                candidates.extend(["china-ts", "helv"])
+            else:
+                candidates.extend(["helv", "tiro", "cour"])
+
+            inserted = False
+            tried: list[str] = []
+            for cand in candidates:
+                if cand in tried:
+                    continue
+                tried.append(cand)
+                try:
+                    page.insert_text(
+                        fitz.Point(span.origin.x, span.origin.y),
+                        text,
+                        fontname=cand,
+                        fontsize=fontsize,
+                        color=color,
+                        rotate=rotate,
+                    )
+                    inserted = True
+                    break
+                except Exception as e_font:
+                    logger.debug(
+                        "protected replay fallback failed span=%s font=%s err=%s",
+                        span.span_id,
+                        cand,
+                        e_font,
+                    )
+
+            if inserted:
+                continue
+
+            # Last fallback: htmlbox path is more tolerant for non-base14 fonts.
+            bbox = fitz.Rect(span.bbox)
+            if bbox.width < 2:
+                bbox.x1 = bbox.x0 + max(2.0, fontsize * 0.8)
+            if bbox.height < 2:
+                bbox.y1 = bbox.y0 + max(2.0, fontsize * 1.2)
+            html_content = self._convert_text_to_html(text, int(round(fontsize)), color)
+            css = self._build_insert_css(fontsize, color)
+            page.insert_htmlbox(
+                self._clamp_rect_to_page(bbox, page.rect),
+                html_content,
+                css=css,
+                rotate=rotate,
+                scale_low=0,
+            )
+
+    def _validate_protected_spans(self, page: fitz.Page, protected_spans: list[EditableSpan]) -> bool:
+        full_page = self._normalize_text_for_compare(page.get_text("text"))
+        for span in protected_spans:
+            probe = self._normalize_text_for_compare(span.text)
+            if probe and probe not in full_page:
+                logger.warning("protected span missing after replay: %s", span.span_id)
+                return False
+        return True
+
     # ──────────────────────────────────────────────────────────────────────────
     # Phase 3: 五步流程 + 三策略 edit_text
     # ──────────────────────────────────────────────────────────────────────────
@@ -1409,7 +1704,9 @@ class PDFModel:
                   color: tuple = (0.0, 0.0, 0.0),
                   original_text: str = None,
                   vertical_shift_left: bool = True,
-                  new_rect: fitz.Rect = None):
+                  new_rect: fitz.Rect = None,
+                  target_span_id: Optional[str] = None,
+                  target_mode: Optional[str] = None):
         """
         編輯文字：五步流程 + 三策略智能插入。
 
@@ -1439,43 +1736,134 @@ class PDFModel:
         self.ensure_page_index_built(page_num)
         page = self.doc[page_idx]
         page_rect = page.rect
+        rollback_flag = False
+        resolved_target_span_id = target_span_id
+        effective_target_mode = (target_mode or self.text_target_mode or "run").strip().lower()
+        if effective_target_mode not in {"run", "paragraph"}:
+            effective_target_mode = "run"
+        overlap_cluster: list[EditableSpan] = []
+        protected_spans: list[EditableSpan] = []
 
         # ── Step 0: 擷取 page-level 快照，供回滾使用 ──
         snapshot_bytes = self._capture_page_snapshot(page_idx)
 
         try:
-            # ═══════════ Step 1: 驗證 ═══════════
-            target = self.block_manager.find_by_rect(
-                page_idx, rect, original_text=original_text, doc=self.doc
-            )
-            if not target:
-                logger.warning(f"無法找到目標文字方塊，頁面 {page_num} 矩形 {rect}")
+            # ═══════════ Step 1: 驗證 / 以 span_id 鎖定目標 ═══════════
+            target_span = None
+            if resolved_target_span_id:
+                target_span = self.block_manager.find_run_by_id(page_idx, resolved_target_span_id)
+                if target_span is None:
+                    logger.debug("target_span_id not found in current index: %s", resolved_target_span_id)
+
+            if target_span is None:
+                # Fallback: legacy rect/text block resolution then map to nearest overlapping span.
+                target = self.block_manager.find_by_rect(
+                    page_idx, rect, original_text=original_text, doc=self.doc
+                )
+                if not target:
+                    logger.warning(f"無法找到目標文字方塊，頁面 {page_num} 矩形 {rect}")
+                    return
+
+                clip_text = page.get_text("text", clip=target.rect).strip()
+                norm_clip = self._normalize_text_for_compare(clip_text)
+                norm_block = self._normalize_text_for_compare(target.text)
+                if norm_block and norm_clip:
+                    match_ratio = difflib.SequenceMatcher(None, norm_block, norm_clip).ratio()
+                    if match_ratio < 0.5:
+                        logger.debug(
+                            f"索引文字與頁面文字不匹配 (ratio={match_ratio:.2f})，重建該頁索引"
+                        )
+                        self.block_manager.rebuild_page(page_idx, self.doc)
+                        target = self.block_manager.find_by_rect(
+                            page_idx, rect, original_text=original_text, doc=self.doc
+                        )
+                        if not target:
+                            logger.warning("重建索引後仍找不到目標文字方塊")
+                            return
+
+                candidate_spans = self.block_manager.find_overlapping_runs(page_idx, target.layout_rect, tol=0.5)
+                if candidate_spans:
+                    text_probe = self._normalize_text_for_compare(original_text or target.text or "")
+                    if text_probe:
+                        scored = sorted(
+                            candidate_spans,
+                            key=lambda sp: difflib.SequenceMatcher(
+                                None, text_probe, self._normalize_text_for_compare(sp.text)
+                            ).ratio(),
+                        )
+                        target_span = scored[-1]
+                    else:
+                        target_span = candidate_spans[-1]
+                    resolved_target_span_id = target_span.span_id
+
+            if target_span is None:
+                logger.warning("unable to resolve target span for edit on page %s", page_num)
                 return
 
-            clip_text = page.get_text("text", clip=target.rect).strip()
-            norm_clip = self._normalize_text_for_compare(clip_text)
-            norm_block = self._normalize_text_for_compare(target.text)
-            if norm_block and norm_clip:
-                match_ratio = difflib.SequenceMatcher(
-                    None, norm_block, norm_clip
-                ).ratio()
-                if match_ratio < 0.5:
-                    logger.debug(
-                        f"索引文字與頁面文字不匹配 (ratio={match_ratio:.2f})，"
-                        "重建該頁索引"
-                    )
-                    self.block_manager.rebuild_page(page_idx, self.doc)
-                    target = self.block_manager.find_by_rect(
-                        page_idx, rect, original_text=original_text, doc=self.doc
-                    )
-                    if not target:
-                        logger.warning("重建索引後仍找不到目標文字方塊")
-                        return
+            if not resolved_target_span_id:
+                resolved_target_span_id = target_span.span_id
 
-            rotation = target.rotation
-            is_vertical = target.is_vertical
+            target_member_span_ids: set[str] = {resolved_target_span_id}
+            target_bbox_for_cluster = fitz.Rect(target_span.bbox)
+            target_block_idx = target_span.block_idx
+            target_rotation = int(target_span.rotation)
+            if effective_target_mode == "paragraph":
+                para = self._resolve_paragraph_candidate(
+                    page_idx=page_idx,
+                    probe_rect=fitz.Rect(rect),
+                    original_text=original_text,
+                    preferred_run_id=target_span.span_id,
+                )
+                if para is not None:
+                    target_member_span_ids = set(para.run_ids)
+                    target_bbox_for_cluster = fitz.Rect(para.bbox)
+                    target_block_idx = para.block_idx
+                    target_rotation = int(para.rotation)
+                    # Keep logging / downstream selection deterministic even when the
+                    # caller passes a stale run id from a previous page state.
+                    if para.run_ids:
+                        if resolved_target_span_id not in target_member_span_ids:
+                            resolved_target_span_id = para.run_ids[0]
+                else:
+                    logger.debug(
+                        "paragraph mode requested but paragraph not resolved for run=%s; fallback to run mode",
+                        target_span.span_id,
+                    )
+                    effective_target_mode = "run"
+
+            overlap_cluster = self.block_manager.find_overlapping_runs(
+                page_idx,
+                target_bbox_for_cluster,
+                tol=0.5,
+            )
+            if not overlap_cluster:
+                overlap_cluster = [
+                    s for s in self.block_manager.get_runs(page_idx)
+                    if s.span_id in target_member_span_ids
+                ]
+            if not overlap_cluster:
+                overlap_cluster = [target_span]
+
+            # Keep extraction order deterministic; target is removed from protected set.
+            protected_spans = [s for s in overlap_cluster if s.span_id not in target_member_span_ids]
+            cluster_union = self._rect_union([fitz.Rect(s.bbox) for s in overlap_cluster])
+
+            target = self.block_manager.find_by_id(
+                page_idx,
+                f"page_{page_idx}_block_{target_block_idx}",
+            )
+            if not target:
+                target = self.block_manager.find_by_rect(
+                    page_idx, fitz.Rect(target_bbox_for_cluster), original_text=original_text, doc=self.doc
+                )
+            if not target:
+                logger.warning("unable to resolve target block for span %s", resolved_target_span_id)
+                return
+
+            rotation = int(target_rotation)
+            is_vertical = rotation in (90, 270)
             insert_rotate = self._insert_rotate_for_htmlbox(rotation)
-            redact_rect = fitz.Rect(target.layout_rect)
+            redact_rect = fitz.Rect(cluster_union if not cluster_union.is_empty else target.layout_rect)
 
             # ═══════════ Step 2: 安全 Redaction ═══════════
             # apply_redactions 必須在 insert_htmlbox 之前立即執行（確保舊文字已清除），
@@ -1487,8 +1875,18 @@ class PDFModel:
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
             if _saved_annots:
                 self._restore_annots(page, _saved_annots)
+            if protected_spans:
+                self._replay_protected_spans(page, protected_spans)
             self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(redact_rect)})
-            logger.debug(f"已安全清除目標文字框: {redact_rect}，還原 {len(_saved_annots)} 個 annot")
+            logger.debug(
+                "overlap_redaction page=%s target_span_id=%s target_mode=%s cluster_size=%s protected_count=%s redact_rect=%s",
+                page_num,
+                resolved_target_span_id,
+                effective_target_mode,
+                len(overlap_cluster),
+                len(protected_spans),
+                redact_rect,
+            )
 
             # ═══════════ Step 3: 智能插入（三策略）═══════════
             html_content = self._convert_text_to_html(new_text, int(size), color)
@@ -1557,7 +1955,8 @@ class PDFModel:
             #
             # 做法：先用臨時頁面 probe 估算換行高度，若預測會溢出則先推移，
             #       再對乾淨的頁面執行正式 insert_htmlbox。
-            if not is_vertical:
+            skip_prepush = effective_target_mode == "paragraph" and new_rect is not None
+            if not is_vertical and not skip_prepush:
                 try:
                     _probe_doc = fitz.open()
                     _probe_page = _probe_doc.new_page(
@@ -1585,6 +1984,8 @@ class PDFModel:
                         )
                 except Exception as _probe_err:
                     logger.debug(f"Pre-push probe 失敗（忽略）: {_probe_err}")
+            elif skip_prepush:
+                logger.debug("Pre-push probe skipped (paragraph mode with dragged new_rect)")
             # ── End of pre-push probe ──────────────────────────────────────────
 
             if is_vertical:
@@ -1730,18 +2131,80 @@ class PDFModel:
                 f"norm_new[:{min(40, len(norm_new))}]={norm_new[:40]!r}"
             )
 
+            norm_clip = ""
+            clip_ratio = 0.0
+            clip_token_coverage = 0.0
+            if not new_layout_rect.is_empty:
+                try:
+                    clipped = page.get_text("text", clip=self._clamp_rect_to_page(new_layout_rect, page_rect))
+                    norm_clip = self._normalize_text_for_compare(clipped)
+                    if norm_new and norm_clip:
+                        if norm_new in norm_clip:
+                            clip_ratio = 1.0
+                        else:
+                            clip_ratio = difflib.SequenceMatcher(None, norm_new, norm_clip).ratio()
+                        clip_token_coverage = self._token_coverage_ratio(new_text, norm_clip)
+                except Exception as e_clip:
+                    logger.debug("Step4 clip probe failed: %s", e_clip)
+
+            page_token_coverage = self._token_coverage_ratio(new_text, norm_page)
+            exact_present = (norm_new in norm_page) or (bool(norm_clip) and norm_new in norm_clip)
+            if not norm_new:
+                target_present = True
+            elif exact_present:
+                target_present = True
+            elif effective_target_mode == "paragraph":
+                # Paragraph edits may interleave with protected replay text, so allow robust fuzzy checks.
+                target_present = (
+                    sim_ratio >= 0.88
+                    or clip_ratio >= 0.84
+                    or page_token_coverage >= 0.78
+                    or clip_token_coverage >= 0.72
+                )
+            elif len(norm_new) >= 48:
+                # Long run text can include extraction artifacts; use tighter fuzzy fallback.
+                target_present = (
+                    sim_ratio >= 0.90
+                    or clip_ratio >= 0.86
+                    or page_token_coverage >= 0.85
+                )
+            else:
+                target_present = False
+
+            logger.debug(
+                "target_presence page=%s mode=%s exact=%s sim_ratio=%.2f clip_ratio=%.2f token_page=%.2f token_clip=%.2f",
+                page_num,
+                effective_target_mode,
+                exact_present,
+                sim_ratio,
+                clip_ratio,
+                page_token_coverage,
+                clip_token_coverage,
+            )
+            protected_ok = self._validate_protected_spans(page, protected_spans)
+            if not target_present or not protected_ok:
+                rollback_flag = True
+                self._restore_page_from_snapshot(page_idx, snapshot_bytes)
+                self.block_manager.rebuild_page(page_idx, self.doc)
+                raise RuntimeError(
+                    "overlap edit verification failed: "
+                    f"target_present={target_present}, protected_ok={protected_ok}"
+                )
+
             # 垂直文字 get_text(clip=) 對旋轉內容擷取不準確，跳過嚴格驗證
             # 閾值 0.80：容許 get_text clip 邊界截斷、字型差異等正常偏差（<20%）
-            if sim_ratio < 0.80 and not is_vertical:
+            strict_ratio = max(sim_ratio, clip_ratio)
+            if effective_target_mode != "paragraph" and strict_ratio < 0.80 and not is_vertical:
                 logger.warning(
-                    f"插入後驗證失敗 (ratio={sim_ratio:.2f})，"
+                    f"插入後驗證失敗 (ratio={strict_ratio:.2f})，"
                     f"正在回滾頁面 {page_num}"
                 )
+                rollback_flag = True
                 self._restore_page_from_snapshot(page_idx, snapshot_bytes)
                 self.block_manager.rebuild_page(page_idx, self.doc)
                 raise RuntimeError(
                     f"文字編輯驗證失敗：difflib.ratio="
-                    f"{sim_ratio:.2f} < 0.80，已回滾。"
+                    f"{strict_ratio:.2f} < 0.80，已回滾。"
                 )
 
             # ═══════════ Step 5: 更新索引 ═══════════
@@ -1755,6 +2218,8 @@ class PDFModel:
             if not is_vertical:
                 update_kwargs['layout_rect'] = new_layout_rect
             self.block_manager.update_block(target, **update_kwargs)
+            # Transactional overlap flow always rebuilds the edited page once.
+            self.block_manager.rebuild_page(page_idx, self.doc)
             logger.debug(
                 f"編輯文字成功: 頁面 {page_num}, "
                 f"block_id={target.block_id}, "
@@ -1766,23 +2231,52 @@ class PDFModel:
             self._maybe_garbage_collect()
 
             _duration = time.perf_counter() - _t0
+            logger.debug(
+                "edit_transaction page=%s target_span_id=%s target_mode=%s cluster_size=%s protected_count=%s rollback_flag=%s duration_ms=%s",
+                page_num,
+                resolved_target_span_id,
+                effective_target_mode,
+                len(overlap_cluster),
+                len(protected_spans),
+                rollback_flag,
+                round(_duration * 1000, 2),
+            )
             if _duration > 0.3:
-                logger.warning(
-                    f"單次編輯過慢：{_duration:.3f}s，頁面 {page_num}，"
-                    f"text='{new_text[:20]}…'"
-                )
-            else:
-                logger.debug(f"編輯完成，耗時 {_duration:.3f}s，頁面 {page_num}")
+                logger.warning("單次編輯過慢：%.3fs，頁面 %s", _duration, page_num)
 
         except RuntimeError:
+            rollback_flag = True
+            _duration = time.perf_counter() - _t0
+            logger.debug(
+                "edit_transaction page=%s target_span_id=%s target_mode=%s cluster_size=%s protected_count=%s rollback_flag=%s duration_ms=%s",
+                page_num,
+                resolved_target_span_id,
+                effective_target_mode,
+                len(overlap_cluster),
+                len(protected_spans),
+                rollback_flag,
+                round(_duration * 1000, 2),
+            )
             raise
         except Exception as e:
             logger.error(f"編輯文字時發生非預期錯誤: {e}")
             try:
+                rollback_flag = True
                 self._restore_page_from_snapshot(page_idx, snapshot_bytes)
                 self.block_manager.rebuild_page(page_idx, self.doc)
             except Exception:
                 pass
+            _duration = time.perf_counter() - _t0
+            logger.debug(
+                "edit_transaction page=%s target_span_id=%s target_mode=%s cluster_size=%s protected_count=%s rollback_flag=%s duration_ms=%s",
+                page_num,
+                resolved_target_span_id,
+                effective_target_mode,
+                len(overlap_cluster),
+                len(protected_spans),
+                rollback_flag,
+                round(_duration * 1000, 2),
+            )
             raise RuntimeError(f"編輯文字失敗: {e}") from e
 
         # Phase 4: undo/redo 已由 CommandManager (EditTextCommand) 全權負責，

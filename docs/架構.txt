@@ -1,39 +1,32 @@
 pdf_editor/
-├── main.py                      # 入口點，初始化 MVC
-├── model/
-│   ├── pdf_model.py             # PDF 邏輯（開檔/存檔/編輯/頁面/註解/浮水印/搜尋/OCR）
-│   ├── text_block.py             # 文字塊索引（TextBlock, TextBlockManager）
-│   └── edit_commands.py         # Undo/Redo（EditTextCommand, SnapshotCommand, CommandManager）
-├── view/
-│   └── pdf_view.py              # UI（頂部 Tab 工具列、左側欄縮圖/搜尋/註解/浮水印、中央畫布、右側屬性、狀態列）
-├── controller/
-│   └── pdf_controller.py        # 事件處理，串接 View 訊號與 Model（開檔分批縮圖/場景/索引、縮放全頁等齊）
-├── utils/
-│   └── helpers.py               # 輔助（頁碼解析、pixmap 轉 QPixmap、錯誤提示）
-├── src/
-│   └── printing/                # 列印子系統
-│       ├── __init__.py
-│       ├── print_dialog.py      # 統一列印視窗（左側設定、右側預覽）
-│       ├── dispatcher.py        # 跨平台列印調度
-│       ├── page_selection.py     # 頁碼解析（ranges/subset/reverse）
-│       ├── layout.py             # 紙張/方向/縮放定位，供預覽與列印共用
-│       ├── pdf_renderer.py      # 頁面渲染
-│       ├── qt_bridge.py         # 輸出至 QPrinter
-│       ├── errors.py            # 列印錯誤定義
-│       ├── base_driver.py       # 列印驅動基底
-│       └── platforms/
-│           ├── __init__.py
-│           ├── win_driver.py    # Windows 列印驅動
-│           ├── linux_driver.py  # Linux 列印驅動
-│           └── mac_driver.py    # macOS 列印驅動
-├── docs/                        # 文件
-│   ├── README.md                # 專案說明（英文）
-│   ├── README.zh-TW.md          # 專案說明（繁中）
-│   ├── ARCHITECTURE.md          # MVC 架構與模組職責
-│   ├── FEATURES.md              # 功能清單與對照
-│   └── 架構.txt                 # 本檔：程式目錄結構
-├── test_scripts/                # 測試腳本（test_*.py、報表、generate_large_pdf 等）
-├── requirements.txt             # PySide6, PyMuPDF, Pillow, pytesseract
-├── optional-requirements.txt     # 選用列印後端
-├── .gitignore
-└── run.bat                      # Windows 快速啟動
+  main.py                        # 程式入口：建立 Model / View / Controller
+  model/
+    pdf_model.py                  # PDF 核心：開檔/存檔、頁面操作、文字編輯、註解、水印、搜尋、OCR
+    text_block.py                 # 文字索引：TextBlock / EditableSpan(run) / EditableParagraph(paragraph)
+    edit_commands.py              # Undo/Redo：EditTextCommand、SnapshotCommand、CommandManager
+  view/
+    pdf_view.py                   # UI：頁面預覽、縮圖、連續捲動、文字編輯框、註解面板、水印面板
+  controller/
+    pdf_controller.py             # Controller：連接 View Signals 與 Model API，並觸發畫面更新
+  utils/
+    helpers.py                    # 共用工具：對話框、座標/像素轉換等
+  src/
+    printing/                     # 列印管線：對話框、分派器、版面計算、driver 等
+      print_dialog.py
+      dispatcher.py
+      page_selection.py
+      layout.py
+      pdf_renderer.py
+      qt_bridge.py
+      errors.py
+      base_driver.py
+      platforms/
+        win_driver.py
+        linux_driver.py
+        mac_driver.py
+  docs/
+    README.md                     # English README
+    README.zh-TW.md               # 繁體中文 README
+    ARCHITECTURE.md               # 架構說明（含文字編輯流程）
+    FEATURES.md                   # 功能與主要流程
+  test_scripts/

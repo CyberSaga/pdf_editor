@@ -80,13 +80,17 @@
 ## 3. 資料流（以「編輯文字」為例）
 
 1. 使用者點擊工具列「編輯文字」→ View 切換為 `edit_text` 模式。
-2. 使用者在畫布上框選文字區域 → View 取得場景座標，換算成 PDF 座標，透過 `sig_edit_text` 送出（page, rect, new_text, font, size, color, original_text 等）。
+2. 使用者在畫布上框選文字區域 → View 取得場景座標，換算成 PDF 座標；同時做 hit-test 取得 `TextHit`（包含 `target_span_id` 與建議 `target_mode`），透過 `sig_edit_text` 送出（page, rect, new_text, font, size, color, original_text, vertical_shift_left, new_rect, target_span_id, target_mode 等）。
 3. Controller 收到 `sig_edit_text`：
    - 呼叫 `model._capture_page_snapshot(page_idx)` 擷取頁面快照；
-   - 建立 `EditTextCommand`，再呼叫 `model.command_manager.execute(cmd)`；
+   - 建立 `EditTextCommand`（包含 `target_span_id` / `target_mode`），再呼叫 `model.command_manager.execute(cmd)`；
    - `EditTextCommand.execute()` 內部呼叫 `model.edit_text(...)` 完成 redaction + 插入新文字 + 更新索引；
    - 呼叫 `show_page(page_idx)` 更新畫面並更新 Undo/Redo 按鈕狀態。
 4. 若使用者點「復原」→ View 發出 `sig_undo` → Controller 呼叫 `model.command_manager.undo()`，再依指令類型刷新畫布/縮圖。
+
+- `target_span_id` 是 span-level 的穩定識別（格式：`p{page}_b{block}_l{line}_s{span}`），用來避免「同一位置重疊文字」在編輯時被一起清除。
+- `target_mode` 用於控制定位/編輯粒度（`run` 或 `paragraph`）；其中 runs/paragraph 由 rawdict 的 char-level reconstruction 建立，降低不合理切分造成的誤選與誤刪。
+- `model.edit_text(...)` 會以 `target_span_id` 優先定位目標，建立重疊 cluster，對 cluster 做 redaction，並重播（replay）非目標的 protected spans；若驗證失敗則用 page snapshot 回滾，避免破壞原頁面內容。
 
 ## 4. 依賴關係
 
