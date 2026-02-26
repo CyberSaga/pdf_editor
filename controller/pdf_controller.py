@@ -1,4 +1,6 @@
 from PySide6.QtWidgets import QMessageBox, QApplication, QFileDialog, QDialog
+from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QTimer
 from model.pdf_model import PDFModel
 from model.edit_commands import EditTextCommand, SnapshotCommand
 from view.pdf_view import PDFView
@@ -8,6 +10,14 @@ from pathlib import Path
 import logging
 import tempfile
 import fitz
+
+THUMB_BATCH_SIZE = 10
+SCENE_BATCH_SIZE = 3
+THUMB_BATCH_INTERVAL_MS = 30
+SCENE_BATCH_INTERVAL_MS = 0
+INDEX_BATCH_SIZE = 5
+INDEX_BATCH_INTERVAL_MS = 50
+FIRST_PAGE_PREVIEW_SCALE = 0.25
 
 from src.printing import PrintDispatcher, PrintingError
 from src.printing.print_dialog import UnifiedPrintDialog
@@ -22,6 +32,7 @@ class PDFController:
         self.annotations = []
         self.print_dispatcher = PrintDispatcher()
         self._print_dialog = None
+        self._load_gen = 0
         self._connect_signals()
 
     def _connect_signals(self):
@@ -71,11 +82,20 @@ class PDFController:
         while True:
             try:
                 self.model.open_pdf(path, password=password)
-                self.view.total_pages = len(self.model.doc)
-                self._update_thumbnails()
-                self._rebuild_continuous_scene(0)
+                n = len(self.model.doc)
+                self.view.total_pages = n
+                self._load_gen += 1
+                gen = self._load_gen
+                first_pix = self.model.get_page_pixmap(1, FIRST_PAGE_PREVIEW_SCALE)
+                qpix = pixmap_to_qpixmap(first_pix)
+                self.view.display_page(0, qpix)
+                self.view.set_thumbnail_placeholders(n)
                 self.load_annotations()
                 self.load_watermarks()
+                QTimer.singleShot(0, lambda: self._schedule_thumbnail_batch(0, gen))
+                QTimer.singleShot(0, lambda: self._start_continuous_scene_loading(gen))
+                # Index 延後至場景載完後再分批建立，避免與 scene 搶 main thread 導致約 30s 無法操作
+                # QTimer.singleShot(0, lambda: self._schedule_index_batch(0, gen))
                 break
             except RuntimeError as e:
                 err_msg = str(e)
@@ -382,6 +402,44 @@ class PDFController:
         thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i+1)) for i in range(len(self.model.doc))]
         self.view.update_thumbnails(thumbs)
 
+    def _schedule_thumbnail_batch(self, start: int, gen: int):
+        if gen != self._load_gen or not self.model.doc:
+            return
+        n = len(self.model.doc)
+        end = min(start + THUMB_BATCH_SIZE, n)
+        thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i + 1)) for i in range(start, end)]
+        self.view.update_thumbnail_batch(start, thumbs)
+        if end < n:
+            QTimer.singleShot(THUMB_BATCH_INTERVAL_MS, lambda e=end: self._schedule_thumbnail_batch(e, gen))
+
+    def _start_continuous_scene_loading(self, gen: int):
+        if gen != self._load_gen or not self.model.doc or not self.view.continuous_pages:
+            return
+        QTimer.singleShot(0, lambda: self._schedule_scene_batch(0, gen))
+
+    def _schedule_scene_batch(self, start: int, gen: int):
+        if gen != self._load_gen or not self.model.doc or not self.view.continuous_pages:
+            return
+        n = len(self.model.doc)
+        end = min(start + SCENE_BATCH_SIZE, n)
+        pixmaps = [pixmap_to_qpixmap(self.model.get_page_pixmap(i + 1, self.view.scale)) for i in range(start, end)]
+        self.view.append_pages_continuous(pixmaps, start)
+        if end < n:
+            QTimer.singleShot(SCENE_BATCH_INTERVAL_MS, lambda e=end: self._schedule_scene_batch(e, gen))
+        else:
+            # 場景載完後才開始分批建立索引，避免開檔時 main thread 被 index 阻塞
+            QTimer.singleShot(0, lambda: self._schedule_index_batch(0, gen))
+
+    def _schedule_index_batch(self, start: int, gen: int):
+        if gen != self._load_gen or not self.model.doc:
+            return
+        n = len(self.model.doc)
+        end = min(start + INDEX_BATCH_SIZE, n)
+        for i in range(start, end):
+            self.model.ensure_page_index_built(i + 1)
+        if end < n:
+            QTimer.singleShot(INDEX_BATCH_INTERVAL_MS, lambda e=end: self._schedule_index_batch(e, gen))
+
     def _on_request_rerender(self):
         """觸控板縮放停止後的重渲回呼：以 self.view.scale 重新渲染所有頁面，確保清晰顯示。"""
         if not self.model.doc:
@@ -400,6 +458,10 @@ class PDFController:
         if not self.model.doc or page_idx < 0 or page_idx >= len(self.model.doc):
             return
         if self.view.continuous_pages and self.view.page_items:
+            n_loaded = len(self.view.page_items)
+            if page_idx >= n_loaded:
+                self.view.scroll_to_page(n_loaded - 1)
+                return
             pix = self.model.get_page_pixmap(page_idx + 1, self.view.scale)
             qpix = pixmap_to_qpixmap(pix)
             self.view.update_page_in_scene(page_idx, qpix)

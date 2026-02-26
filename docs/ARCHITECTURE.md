@@ -29,9 +29,9 @@
                             └───────────────┘
 ```
 
-- **Model**：持有 PDF 文件（`fitz.Document`）、文字塊索引（`TextBlockManager`）、編輯歷史（`CommandManager`），不依賴 UI。
-- **View**：負責所有 UI（工具列、縮圖、主畫布、右側繪製設定、對話框），透過 **Qt Signal** 把使用者操作往外送。
-- **Controller**：訂閱 View 的訊號，呼叫 Model API，再驅動 View 更新（例如換頁、重繪、更新 Undo/Redo 按鈕狀態）。
+- **Model**：持有 PDF 文件（`fitz.Document`）、文字塊索引（`TextBlockManager`）、編輯歷史（`CommandManager`），不依賴 UI。開檔時不主動建立整份文字塊索引，改由 Controller 分批呼叫 `ensure_page_index_built`；編輯/結構變更時才呼叫 `build_index` 或 `rebuild_page`。
+- **View**：負責所有 UI（工具列、縮圖、主畫布、右側繪製設定、對話框），透過 **Qt Signal** 把使用者操作往外送；連續模式時須同步 `graphics_view.setSceneRect` 與場景 rect，以支援捲動與縮圖跳頁。
+- **Controller**：訂閱 View 的訊號，呼叫 Model API，再驅動 View 更新（例如換頁、重繪、更新 Undo/Redo 按鈕狀態）；開檔流程為首頁預覽 → 分批縮圖/場景 → 場景完成後分批索引，以利大 PDF 下儘早可操作。
 
 ## 2. 模組職責
 
@@ -47,13 +47,13 @@
 
 | 檔案 | 職責 |
 |------|------|
-| `controller/pdf_controller.py` | 連接 View 訊號與 Model 方法；處理開檔/儲存/另存、刪除頁/旋轉頁/匯出頁、插入空白頁/從檔案插入頁、編輯文字、搜尋/跳轉、OCR、Undo/Redo、註解、浮水印、快照、顯示模式切換與縮圖/場景重建 |
+| `controller/pdf_controller.py` | 連接 View 訊號與 Model 方法；處理開檔/儲存/另存、刪除頁/旋轉頁/匯出頁、插入空白頁/從檔案插入頁、編輯文字、搜尋/跳轉、OCR、Undo/Redo、註解、浮水印、快照、顯示模式切換與縮圖/場景重建；開檔時首頁低解析度預覽、QTimer 分批載入縮圖與連續場景、場景載完後才分批建立文字塊索引（`_schedule_thumbnail_batch` / `_schedule_scene_batch` / `_schedule_index_batch`） |
 
 ### 2.3 View 層
 
 | 檔案 | 職責 |
 |------|------|
-| `view/pdf_view.py` | 主視窗（QMainWindow，最小 1280×800，標題「視覺化 PDF 編輯器」）；頂部工具列（QTabWidget：檔案/常用/編輯/頁面/轉換，各分頁內 QToolBar；右側固定區：頁 X/Y、縮放選單、適應畫面、↺復原/↻重做）；中央 QSplitter（左 260px 左側欄 QTabWidget：縮圖/搜尋/註解列表/浮水印列表、中央 QGraphicsView 連續捲動畫布、右 280px「屬性」QStackedWidget 依模式顯示頁面資訊/矩形設定/螢光筆顏色/文字設定）；底部 QStatusBar；搜尋 Ctrl+F、Esc 關閉搜尋；右鍵選單；發出各類 Signal 給 Controller |
+| `view/pdf_view.py` | 主視窗（QMainWindow，最小 1280×800，標題「視覺化 PDF 編輯器」）；頂部工具列（QTabWidget：檔案/常用/編輯/頁面/轉換，各分頁內 QToolBar；右側固定區：頁 X/Y、縮放選單、適應畫面、↺復原/↻重做）；中央 QSplitter（左 260px 左側欄 QTabWidget：縮圖/搜尋/註解列表/浮水印列表、中央 QGraphicsView 連續捲動畫布、右 280px「屬性」QStackedWidget 依模式顯示頁面資訊/矩形設定/螢光筆顏色/文字設定）；底部 QStatusBar；搜尋 Ctrl+F、Esc 關閉搜尋；右鍵選單；發出各類 Signal 給 Controller；連續模式時 `display_all_pages_continuous` / `append_pages_continuous` 建立/追加頁面後會呼叫 `graphics_view.setSceneRect(scene.sceneRect())` 以保持捲軸與可見區域正確，`scroll_to_page` 在目標頁未載入時會捲動至最後已載入頁 |
 
 ### 2.4 工具層
 

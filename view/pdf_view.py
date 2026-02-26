@@ -746,12 +746,32 @@ class PDFView(QMainWindow):
         super().keyPressEvent(event)
 
     def update_thumbnails(self, thumbnails: List[QPixmap]):
+        """一次設定全部縮圖（相容舊流程）。"""
         self.thumbnail_list.clear()
         for i, pix in enumerate(thumbnails):
             self.thumbnail_list.addItem(QListWidgetItem(QIcon(pix), f"頁{i+1}"))
         self.total_pages = len(thumbnails)
         self._update_page_counter()
         self._update_status_bar()
+
+    def set_thumbnail_placeholders(self, total: int):
+        """僅建立縮圖列表佔位（頁碼），供後續分批更新圖示。"""
+        self.thumbnail_list.clear()
+        for i in range(total):
+            self.thumbnail_list.addItem(QListWidgetItem(f"頁{i+1}"))
+        self.total_pages = total
+        self._update_page_counter()
+        self._update_status_bar()
+
+    def update_thumbnail_batch(self, start_index: int, pixmaps: List[QPixmap]):
+        """從 start_index 起更新一批縮圖的圖示。"""
+        for i, pix in enumerate(pixmaps):
+            row = start_index + i
+            if row >= self.thumbnail_list.count():
+                break
+            item = self.thumbnail_list.item(row)
+            if item and not pix.isNull():
+                item.setIcon(QIcon(pix))
 
     def display_all_pages_continuous(self, pixmaps: List[QPixmap]):
         """建立連續頁面場景：所有頁面由上到下排列，可捲動切換。"""
@@ -781,6 +801,8 @@ class PDFView(QMainWindow):
             max_w = max(max_w, pix.width())
             y += h + self.PAGE_GAP
         self.scene.setSceneRect(0, 0, max(1, max_w), max(1, y))
+        # 讓 view 使用與 scene 相同的 sceneRect，否則捲軸與可見區域會卡在開檔時單頁的 rect，無法捲動／跳頁
+        self.graphics_view.setSceneRect(self.scene.sceneRect())
         self.current_page = 0
         # pixmap 已以 self.scale 渲染完畢 → 更新 _render_scale
         self._render_scale = self.scale
@@ -788,6 +810,30 @@ class PDFView(QMainWindow):
         self.graphics_view.setTransform(QTransform())
         self._connect_scroll_handler()
         self.scroll_to_page(0)
+        self._sync_thumbnail_selection()
+
+    def append_pages_continuous(self, pixmaps: List[QPixmap], start_index: int):
+        """在連續場景中從 start_index 起追加一批頁面（用於分批載入）。"""
+        if not pixmaps:
+            return
+        if start_index == 0:
+            self.display_all_pages_continuous(pixmaps)
+            return
+        y = self.page_y_positions[-1] + self.page_heights[-1] + self.PAGE_GAP if self.page_y_positions else 0.0
+        max_w = self.scene.sceneRect().width() if self.scene.sceneRect().isValid() else 0.0
+        for i, pix in enumerate(pixmaps):
+            if pix.isNull():
+                continue
+            self.page_y_positions.append(y)
+            h = pix.height()
+            self.page_heights.append(h)
+            item = self.scene.addPixmap(pix)
+            item.setPos(0, y)
+            self.page_items.append(item)
+            max_w = max(max_w, pix.width())
+            y += h + self.PAGE_GAP
+        self.scene.setSceneRect(0, 0, max(1, max_w), max(1, y))
+        self.graphics_view.setSceneRect(self.scene.sceneRect())
         self._sync_thumbnail_selection()
 
     def _connect_scroll_handler(self):
@@ -856,9 +902,14 @@ class PDFView(QMainWindow):
         self.thumbnail_list.blockSignals(False)
 
     def scroll_to_page(self, page_idx: int):
-        """捲動至指定頁面，使該頁置中顯示。"""
-        if not self.page_y_positions or not self.page_heights or page_idx < 0 or page_idx >= len(self.page_y_positions):
+        """捲動至指定頁面，使該頁置中顯示。若目標頁尚未載入則捲動至最後已載入頁。"""
+        if not self.page_y_positions or not self.page_heights:
             return
+        n_pos = len(self.page_y_positions)
+        if page_idx < 0:
+            page_idx = 0
+        elif page_idx >= n_pos and n_pos > 0:
+            page_idx = n_pos - 1
         self._scroll_block = True
         try:
             y = self.page_y_positions[page_idx]
