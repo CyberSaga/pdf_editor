@@ -1,16 +1,39 @@
 pdf_editor/
-├── main.py                 # 入口點，初始化 MVC
+├── main.py                      # 入口點，初始化 MVC
 ├── model/
-│   ├── pdf_model.py        # PDF 邏輯（開檔/存檔/編輯/頁面/註解/浮水印/搜尋/OCR）
-│   ├── text_block.py       # 文字塊索引（TextBlock, TextBlockManager）
-│   └── edit_commands.py    # Undo/Redo（EditTextCommand, SnapshotCommand, CommandManager）
+│   ├── pdf_model.py             # PDF 邏輯（開檔/存檔/編輯/頁面/註解/浮水印/搜尋/OCR）
+│   ├── text_block.py             # 文字塊索引（TextBlock, TextBlockManager）
+│   └── edit_commands.py         # Undo/Redo（EditTextCommand, SnapshotCommand, CommandManager）
 ├── view/
-│   └── pdf_view.py         # UI（頂部 Tab 工具列、左側欄縮圖/搜尋/註解/浮水印、中央畫布、右側屬性、狀態列）
+│   └── pdf_view.py              # UI（頂部 Tab 工具列、左側欄縮圖/搜尋/註解/浮水印、中央畫布、右側屬性、狀態列）
 ├── controller/
-│   └── pdf_controller.py   # 事件處理，串接 View 訊號與 Model（含縮放全頁等齊、更新選單）
+│   └── pdf_controller.py        # 事件處理，串接 View 訊號與 Model（開檔分批縮圖/場景/索引、縮放全頁等齊）
 ├── utils/
-│   └── helpers.py          # 輔助（頁碼解析、pixmap 轉 QPixmap、錯誤提示）
-├── docs/                   # 文件與測試報告（README、ARCHITECTURE、FEATURES）
-├── test_scripts/           # 測試（test_feature_conflict、test_deep、test_all_pdfs 等）
-├── UI Specification.md     # UI 規格（三欄佈局、工具列、屬性面板等）
-└── requirements.txt        # PySide6, PyMuPDF, Pillow, pytesseract
+│   └── helpers.py               # 輔助（頁碼解析、pixmap 轉 QPixmap、錯誤提示）
+├── src/
+│   └── printing/                # 列印子系統
+│       ├── __init__.py
+│       ├── print_dialog.py      # 統一列印視窗（左側設定、右側預覽）
+│       ├── dispatcher.py        # 跨平台列印調度
+│       ├── page_selection.py     # 頁碼解析（ranges/subset/reverse）
+│       ├── layout.py             # 紙張/方向/縮放定位，供預覽與列印共用
+│       ├── pdf_renderer.py      # 頁面渲染
+│       ├── qt_bridge.py         # 輸出至 QPrinter
+│       ├── errors.py            # 列印錯誤定義
+│       ├── base_driver.py       # 列印驅動基底
+│       └── platforms/
+│           ├── __init__.py
+│           ├── win_driver.py    # Windows 列印驅動
+│           ├── linux_driver.py  # Linux 列印驅動
+│           └── mac_driver.py    # macOS 列印驅動
+├── docs/                        # 文件
+│   ├── README.md                # 專案說明（英文）
+│   ├── README.zh-TW.md          # 專案說明（繁中）
+│   ├── ARCHITECTURE.md          # MVC 架構與模組職責
+│   ├── FEATURES.md              # 功能清單與對照
+│   └── 架構.txt                 # 本檔：程式目錄結構
+├── test_scripts/                # 測試腳本（test_*.py、報表、generate_large_pdf 等）
+├── requirements.txt             # PySide6, PyMuPDF, Pillow, pytesseract
+├── optional-requirements.txt     # 選用列印後端
+├── .gitignore
+└── run.bat                      # Windows 快速啟動

@@ -24,6 +24,7 @@ Key features:
 - [x] printing pipeline with preview/layout options
 - [x] optional OCR via Tesseract
 - [x] undo/redo via command system
+- [x] large PDF: first page appears quickly; thumbnails and continuous scroll load in background; scroll and thumbnail jump work once loading completes (index built after scene)
 
 Detailed feature flow and responsibilities are described in:
 - `docs/FEATURES.md`
