@@ -4,11 +4,22 @@
 
 ---
 
+## 0. 多分頁管理（Multi-Tab）
+
+| 功能 | Model | Controller | View（觸發/顯示） |
+|------|-------|------------|-------------------|
+| **Session 註冊表** | `session_ids + sessions_by_id + active_session_id`，每個 session 持有獨立 doc/index/undo/pending_edits/浮水印狀態 | 以 active session 為唯一目標分派所有編輯與儲存操作 | 文件分頁列 `QTabBar` 顯示所有開啟檔案 |
+| **切換分頁** | `activate_session_by_index()` | `on_tab_changed(index)`：切換 active session，恢復該分頁的頁碼/縮放/搜尋狀態，重新啟動分批載入 | 點選文件分頁列觸發 `sig_tab_changed` |
+| **關閉分頁** | `close_session(session_id)` | `on_tab_close_requested(index)`：未儲存檢查（儲存/放棄/取消）後關閉，最後一頁關閉時重置空白 UI | 分頁關閉按鈕觸發 `sig_tab_close_requested` |
+| **防 stale 批次載入** | 無（Controller 層保護） | `_schedule_thumbnail_batch/_schedule_scene_batch/_schedule_index_batch` 全部帶 `session_id + generation` 驗證 | 切換分頁後不會被舊分頁背景批次覆寫畫面 |
+
+---
+
 ## 1. 檔案操作
 
 | 功能 | Model | Controller | View（觸發/顯示） |
 |------|-------|------------|-------------------|
-| **開啟 PDF** | `open_pdf(path, password)` | `open_pdf(path)` | 頂部「檔案」→「開啟」→ 檔案對話框 → `sig_open_pdf` |
+| **開啟 PDF** | `open_pdf(path, password, append=True)`，已開啟路徑會 focus existing | `open_pdf(path)` | 頂部「檔案」→「開啟」→ 檔案對話框 → `sig_open_pdf` |
 | **儲存** | `save_as(new_path)`（存回原檔時可 incremental） | `save()`（使用 `saved_path`） | 頂部「檔案」→「儲存」、快捷鍵 Ctrl+S → `sig_save` |
 | **另存新檔** | `save_as(new_path)` | `save_as(path)` | 頂部「檔案」→「另存新檔」→ 檔案對話框 → `sig_save_as` |
 
@@ -77,7 +88,7 @@
 
 | 功能 | Model | Controller | View（觸發/顯示） |
 |------|-------|------------|-------------------|
-| **搜尋文字** | `search_text(query)` 回傳 `List[Tuple[page_num, text, rect]]` | `search_text(query)`，將結果交給 View 顯示 | 頂部「常用」→「搜尋」或 Ctrl+F → 左側「搜尋」分頁；輸入後 `sig_search`，結果列表點擊 → `sig_jump_to_result`；Esc 關閉搜尋 |
+| **搜尋文字** | `search_text(query)` 回傳 `List[Tuple[page_num, text, rect]]`（僅作用於 active session） | `search_text(query)`，將結果交給 View 顯示並寫回該 session 的搜尋 UI state | 頂部「常用」→「搜尋」或 Ctrl+F → 左側「搜尋」分頁；輸入後 `sig_search`，結果列表點擊 → `sig_jump_to_result`；Esc 關閉搜尋 |
 | **跳至結果** | 無 | `jump_to_result(page_num, rect)`：換頁並在畫布上高亮該矩形 | View 接收並顯示對應頁與高亮 |
 
 ---

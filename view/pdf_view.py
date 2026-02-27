@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QWidget, QVBoxLayout, QPushButton, QLabel, QFontComboBox,
     QComboBox, QDoubleSpinBox, QTextEdit, QGraphicsProxyWidget, QLineEdit, QHBoxLayout,
     QStackedWidget, QDialog, QSpinBox, QDialogButtonBox, QFormLayout,
-    QScrollArea, QCheckBox, QTabWidget, QSplitter, QFrame, QSizePolicy, QSlider,
+    QScrollArea, QCheckBox, QTabWidget, QSplitter, QFrame, QSizePolicy, QSlider, QTabBar,
     QStatusBar, QGroupBox
 )
 from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QCloseEvent, QTextOption
@@ -192,6 +192,8 @@ class PDFView(QMainWindow):
     sig_print_requested = Signal()
     sig_save_as = Signal(str)
     sig_save = Signal()  # 存回原檔（Ctrl+S，使用增量更新若適用）
+    sig_tab_changed = Signal(int)
+    sig_tab_close_requested = Signal(int)
     sig_delete_pages = Signal(list)
     sig_rotate_pages = Signal(list, int)
     sig_export_pages = Signal(list, str, bool)
@@ -237,6 +239,7 @@ class PDFView(QMainWindow):
         self.setGeometry(100, 100, 1280, 800)
         self.total_pages = 0
         self.controller = None
+        self._doc_tab_signal_block = False
 
         # --- Central container: top toolbar area + main splitter ---
         central_container = QWidget(self)
@@ -248,6 +251,8 @@ class PDFView(QMainWindow):
         # --- Top Toolbar (ToolbarTabs): 48px height ---
         self._build_toolbar_tabs()
         main_layout.addWidget(self._toolbar_container)
+        self._build_document_tabs_bar()
+        main_layout.addWidget(self.document_tab_bar)
 
         # --- Main content: QSplitter (Left 260px | Center | Right 280px) ---
         self.main_splitter = QSplitter(Qt.Horizontal)
@@ -353,6 +358,77 @@ class PDFView(QMainWindow):
             QLineEdit, QComboBox { border-radius: 6px; padding: 4px 8px; border: 1px solid #E2E8F0; }
         """)
         self.graphics_view.setStyleSheet("QGraphicsView { background: #F1F5F9; border: none; }")
+
+    def _build_document_tabs_bar(self):
+        """Document-level tab bar for multiple open PDFs."""
+        self.document_tab_bar = QTabBar(self)
+        self.document_tab_bar.setExpanding(False)
+        self.document_tab_bar.setMovable(False)
+        self.document_tab_bar.setTabsClosable(True)
+        self.document_tab_bar.setDocumentMode(True)
+        self.document_tab_bar.setElideMode(Qt.ElideMiddle)
+        self.document_tab_bar.setStyleSheet("""
+            QTabBar {
+                background: #FFFFFF;
+                border-bottom: 1px solid #E2E8F0;
+                padding: 2px 6px;
+            }
+            QTabBar::tab {
+                min-width: 120px;
+                max-width: 280px;
+                padding: 6px 10px;
+                margin-right: 2px;
+                border: 1px solid #CBD5E1;
+                border-bottom: none;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                background: #EEF2F7;
+            }
+            QTabBar::tab:selected {
+                background: #FFFFFF;
+                color: #0F172A;
+            }
+        """)
+        self.document_tab_bar.currentChanged.connect(self._on_document_tab_changed)
+        self.document_tab_bar.tabCloseRequested.connect(self._on_document_tab_close_requested)
+        self.document_tab_bar.setVisible(False)
+
+    def set_document_tabs(self, tabs: List[dict], active_index: int) -> None:
+        self._doc_tab_signal_block = True
+        self.document_tab_bar.blockSignals(True)
+        try:
+            while self.document_tab_bar.count():
+                self.document_tab_bar.removeTab(self.document_tab_bar.count() - 1)
+            for meta in tabs:
+                title = meta.get("display_name") or "未命名"
+                if meta.get("dirty"):
+                    title = f"{title} *"
+                idx = self.document_tab_bar.addTab(title)
+                self.document_tab_bar.setTabData(idx, meta.get("id"))
+                self.document_tab_bar.setTabToolTip(idx, meta.get("path") or title)
+            if tabs:
+                idx = active_index if 0 <= active_index < len(tabs) else 0
+                self.document_tab_bar.setCurrentIndex(idx)
+            self.document_tab_bar.setVisible(bool(tabs))
+            self.document_tab_bar.setTabsClosable(bool(tabs))
+        finally:
+            self.document_tab_bar.blockSignals(False)
+            self._doc_tab_signal_block = False
+
+    def clear_document_tabs(self) -> None:
+        self.set_document_tabs([], -1)
+
+    def _on_document_tab_changed(self, index: int) -> None:
+        if self._doc_tab_signal_block:
+            return
+        if index >= 0:
+            self.sig_tab_changed.emit(index)
+
+    def _on_document_tab_close_requested(self, index: int) -> None:
+        if self._doc_tab_signal_block:
+            return
+        if index >= 0:
+            self.sig_tab_close_requested.emit(index)
 
     def _build_toolbar_tabs(self):
         """Top toolbar: 高度依字型與內距計算 — 標籤列 ~26px + 工具列 ~26px + 邊距 8px ≈ 60px，避免過窄截斷或過高留白。"""
@@ -791,6 +867,24 @@ class PDFView(QMainWindow):
             item = self.thumbnail_list.item(row)
             if item and not pix.isNull():
                 item.setIcon(QIcon(pix))
+
+    def reset_document_view(self) -> None:
+        """Reset canvas/sidebar/search state when no document sessions remain."""
+        if self.text_editor:
+            self._finalize_text_edit()
+        self._clear_hover_highlight()
+        self._disconnect_scroll_handler()
+        self.scene.clear()
+        self.page_items.clear()
+        self.page_y_positions.clear()
+        self.page_heights.clear()
+        self.thumbnail_list.clear()
+        self.total_pages = 0
+        self.current_page = 0
+        self._render_scale = self.scale if self.scale > 0 else 1.0
+        self.clear_search_ui_state()
+        self._update_page_counter()
+        self._update_status_bar()
 
     def display_all_pages_continuous(self, pixmaps: List[QPixmap]):
         """建立連續頁面場景：所有頁面由上到下排列，可捲動切換。"""
@@ -1578,6 +1672,29 @@ class PDFView(QMainWindow):
             self.search_status_label.setText("搜尋中...")
             self.sig_search.emit(query)
 
+    def get_search_ui_state(self) -> dict:
+        return {
+            "query": self.search_input.text(),
+            "results": list(self.current_search_results),
+            "index": self.current_search_index,
+        }
+
+    def apply_search_ui_state(self, state: Optional[dict]) -> None:
+        state = state or {}
+        query = state.get("query", "")
+        results = list(state.get("results", []))
+        idx = int(state.get("index", -1))
+        self.search_input.setText(query)
+        self.display_search_results(results)
+        if 0 <= idx < self.search_results_list.count():
+            self.current_search_index = idx
+            item = self.search_results_list.item(idx)
+            if item:
+                self.search_results_list.setCurrentItem(item)
+
+    def clear_search_ui_state(self) -> None:
+        self.apply_search_ui_state({"query": "", "results": [], "index": -1})
+
     def display_search_results(self, results: List[Tuple[int, str, fitz.Rect]]):
         self.current_search_results = results
         self.current_search_index = -1
@@ -1716,36 +1833,7 @@ class PDFView(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         """重寫closeEvent以檢查未儲存的變更"""
-        if self.controller and self.controller.model.has_unsaved_changes():
-            # 顯示提醒對話框
-            msg_box = QMessageBox(self)
-            msg_box.setWindowTitle("未儲存的變更")
-            msg_box.setText("檔案有未儲存的變更，是否要儲存？")
-            msg_box.setInformativeText("如果選擇「放棄變更」，所有變更將會遺失。")
-            
-            # 添加三個按鈕
-            save_btn = msg_box.addButton("先存檔後關閉", QMessageBox.AcceptRole)
-            discard_btn = msg_box.addButton("放棄變更直接關閉", QMessageBox.DestructiveRole)
-            cancel_btn = msg_box.addButton("取消關閉", QMessageBox.RejectRole)
-            
-            msg_box.setDefaultButton(cancel_btn)
-            msg_box.setIcon(QMessageBox.Warning)
-            
-            # 顯示對話框並取得用戶選擇
-            msg_box.exec()
-            
-            if msg_box.clickedButton() == save_btn:
-                # 先存檔後關閉
-                if self.controller.save_and_close():
-                    event.accept()  # 允許關閉
-                else:
-                    event.ignore()  # 取消關閉（例如用戶取消了存檔對話框）
-            elif msg_box.clickedButton() == discard_btn:
-                # 放棄變更直接關閉
-                event.accept()  # 允許關閉
-            else:  # cancel_btn 或關閉對話框
-                # 取消關閉
-                event.ignore()  # 阻止關閉
-        else:
-            # 沒有未儲存的變更，直接關閉
-            event.accept()
+        if self.controller and hasattr(self.controller, "handle_app_close"):
+            self.controller.handle_app_close(event)
+            return
+        event.accept()

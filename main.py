@@ -12,5 +12,6 @@ if __name__ == "__main__":
     view.controller = controller
     view.show()
     if len(sys.argv) > 1:
-        controller.open_pdf(sys.argv[1])
+        for path in sys.argv[1:]:
+            controller.open_pdf(path)
     sys.exit(app.exec())
