@@ -6,8 +6,9 @@ import logging
 import math
 import time
 import json
-from dataclasses import dataclass
-from typing import List, Tuple, Optional
+from dataclasses import dataclass, field
+from typing import List, Tuple, Optional, Iterator, Any
+from contextlib import contextmanager
 import pytesseract
 from PIL import Image
 from pathlib import Path
@@ -82,25 +83,38 @@ class TextHit:
     def __len__(self):
         return len(self._legacy())
 
+
+@dataclass
+class DocumentSession:
+    session_id: str
+    canonical_path: str
+    display_name: str
+    original_path: str
+    doc: fitz.Document
+    saved_path: Optional[str] = None
+    block_manager: TextBlockManager = field(default_factory=TextBlockManager)
+    command_manager: CommandManager = field(default_factory=CommandManager)
+    pending_edits: list = field(default_factory=list)
+    watermark_list: List[dict] = field(default_factory=list)
+    watermark_modified: bool = False
+    edit_count: int = 0
+
 class PDFModel:
     def __init__(self):
-        self.doc: fitz.Document = None
+        self._sessions_by_id: dict[str, DocumentSession] = {}
+        self._session_ids: list[str] = []
+        self._active_session_id: Optional[str] = None
+        self._path_to_session_id: dict[str, str] = {}
+        self._legacy_doc: Optional[fitz.Document] = None
+        self._legacy_original_path: Optional[str] = None
+        self._legacy_saved_path: Optional[str] = None
+        self._legacy_block_manager: TextBlockManager = TextBlockManager()
+        self._legacy_command_manager: CommandManager = CommandManager()
+        self._legacy_edit_count: int = 0
+        self._legacy_pending_edits: list = []
+        self._legacy_watermark_list: List[dict] = []
+        self._legacy_watermark_modified: bool = False
         self.temp_dir = None
-        self.original_path: str = None
-        self.saved_path: str = None  # 追蹤最後儲存的路徑
-        # Phase 1 & 2: 新管理器取代舊 text_block_index dict
-        self.block_manager = TextBlockManager()
-        self.command_manager = CommandManager()
-        # Phase 6: 效能優化 — 公開計數器 + 延遲清理追蹤
-        self.edit_count: int = 0
-        # pending_edits 記錄每次 edit_text 修改過的頁面資訊，
-        # apply_pending_redactions() 儲存前呼叫 page.clean_contents() 壓縮 content stream。
-        # 注意：apply_redactions() 本身仍在 Step 2 立即執行（插入前必須先清除舊文字），
-        # pending_edits 提供的是儲存時的批次 clean_contents 優化。
-        self.pending_edits: list = []          # [{"page_idx": int, "rect": fitz.Rect}]
-        # 浮水印列表（僅存於本階段，不寫入 PDF 直到儲存）：[{id, pages, text, angle, opacity, font_size, color, font}, ...]
-        self.watermark_list: List[dict] = []
-        self._watermark_modified = False
         # 是否在「存回原檔」時使用增量更新（Incremental Update），以減少對數位簽章與大檔的影響
         self.use_incremental_save: bool = True
         # Text target granularity: "run" (default) or "paragraph".
@@ -112,6 +126,248 @@ class PDFModel:
             logger.debug("已設定 PyMuPDF TOOLS.set_small_glyph_heights(True)")
         except AttributeError:
             logger.warning("PyMuPDF 版本無 TOOLS 支援，跳過 glyph 調整")
+
+    def _canonicalize_path(self, path: str) -> str:
+        """Normalize path for dedupe across tabs (case-insensitive on Windows)."""
+        return str(Path(path).resolve()).casefold()
+
+    def _active_session(self) -> Optional[DocumentSession]:
+        if not self._active_session_id:
+            return None
+        return self._sessions_by_id.get(self._active_session_id)
+
+    @contextmanager
+    def _activate_temporarily(self, session_id: str) -> Iterator[None]:
+        previous = self._active_session_id
+        if session_id != previous:
+            self.activate_session(session_id)
+        try:
+            yield
+        finally:
+            if previous and previous in self._sessions_by_id:
+                self._active_session_id = previous
+            elif self._active_session_id not in self._sessions_by_id:
+                self._active_session_id = self._session_ids[0] if self._session_ids else None
+
+    @property
+    def session_ids(self) -> list[str]:
+        return list(self._session_ids)
+
+    def list_sessions(self) -> list[dict]:
+        out = []
+        for sid in self._session_ids:
+            s = self._sessions_by_id[sid]
+            out.append({
+                "id": sid,
+                "display_name": s.display_name,
+                "path": s.original_path,
+                "saved_path": s.saved_path,
+                "dirty": s.watermark_modified or s.command_manager.has_pending_changes(),
+            })
+        return out
+
+    def get_session_id_by_index(self, index: int) -> Optional[str]:
+        if index < 0 or index >= len(self._session_ids):
+            return None
+        return self._session_ids[index]
+
+    def get_active_session_id(self) -> Optional[str]:
+        return self._active_session_id
+
+    def get_active_session_index(self) -> int:
+        if not self._active_session_id:
+            return -1
+        try:
+            return self._session_ids.index(self._active_session_id)
+        except ValueError:
+            return -1
+
+    def find_session_by_path(self, path: str) -> Optional[str]:
+        canonical = self._canonicalize_path(path)
+        return self._path_to_session_id.get(canonical)
+
+    def activate_session(self, session_id: str) -> bool:
+        if session_id not in self._sessions_by_id:
+            return False
+        self._active_session_id = session_id
+        return True
+
+    def activate_session_by_index(self, index: int) -> bool:
+        sid = self.get_session_id_by_index(index)
+        if not sid:
+            return False
+        return self.activate_session(sid)
+
+    def session_has_unsaved_changes(self, session_id: str) -> bool:
+        session = self._sessions_by_id.get(session_id)
+        if not session:
+            return False
+        return session.watermark_modified or session.command_manager.has_pending_changes()
+
+    def has_any_unsaved_changes(self) -> bool:
+        return any(self.session_has_unsaved_changes(sid) for sid in self._session_ids)
+
+    def get_dirty_session_ids(self) -> list[str]:
+        return [sid for sid in self._session_ids if self.session_has_unsaved_changes(sid)]
+
+    def get_session_meta(self, session_id: str) -> Optional[dict]:
+        session = self._sessions_by_id.get(session_id)
+        if not session:
+            return None
+        return {
+            "id": session_id,
+            "display_name": session.display_name,
+            "path": session.original_path,
+            "saved_path": session.saved_path,
+            "dirty": self.session_has_unsaved_changes(session_id),
+        }
+
+    def close_session(self, session_id: str) -> bool:
+        session = self._sessions_by_id.get(session_id)
+        if not session:
+            return False
+        try:
+            if session.doc:
+                session.doc.close()
+        except Exception as e:
+            logger.warning(f"關閉 session 文件失敗 ({session_id}): {e}")
+        self._sessions_by_id.pop(session_id, None)
+        self._session_ids = [sid for sid in self._session_ids if sid != session_id]
+        self._path_to_session_id.pop(session.canonical_path, None)
+        if self._active_session_id == session_id:
+            self._active_session_id = self._session_ids[0] if self._session_ids else None
+        return True
+
+    def close_all_sessions(self) -> None:
+        for sid in list(self._session_ids):
+            self.close_session(sid)
+
+    def save_session_as(self, session_id: str, new_path: str) -> None:
+        if session_id not in self._sessions_by_id:
+            raise RuntimeError(f"Session 不存在: {session_id}")
+        canonical = self._canonicalize_path(new_path)
+        existing = self._path_to_session_id.get(canonical)
+        if existing and existing != session_id:
+            raise RuntimeError("目標路徑已在其他分頁開啟，請改用不同檔名。")
+        with self._activate_temporarily(session_id):
+            self.save_as(new_path)
+
+    @property
+    def doc(self) -> Optional[fitz.Document]:
+        session = self._active_session()
+        return session.doc if session else self._legacy_doc
+
+    @doc.setter
+    def doc(self, value: Optional[fitz.Document]) -> None:
+        session = self._active_session()
+        if session:
+            session.doc = value
+        else:
+            self._legacy_doc = value
+
+    @property
+    def original_path(self) -> Optional[str]:
+        session = self._active_session()
+        return session.original_path if session else self._legacy_original_path
+
+    @original_path.setter
+    def original_path(self, value: Optional[str]) -> None:
+        session = self._active_session()
+        if session:
+            session.original_path = value
+        else:
+            self._legacy_original_path = value
+
+    @property
+    def saved_path(self) -> Optional[str]:
+        session = self._active_session()
+        return session.saved_path if session else self._legacy_saved_path
+
+    @saved_path.setter
+    def saved_path(self, value: Optional[str]) -> None:
+        session = self._active_session()
+        if session:
+            session.saved_path = value
+        else:
+            self._legacy_saved_path = value
+
+    @property
+    def block_manager(self) -> TextBlockManager:
+        session = self._active_session()
+        return session.block_manager if session else self._legacy_block_manager
+
+    @block_manager.setter
+    def block_manager(self, value: TextBlockManager) -> None:
+        session = self._active_session()
+        if session:
+            session.block_manager = value
+        else:
+            self._legacy_block_manager = value
+
+    @property
+    def command_manager(self) -> CommandManager:
+        session = self._active_session()
+        return session.command_manager if session else self._legacy_command_manager
+
+    @command_manager.setter
+    def command_manager(self, value: CommandManager) -> None:
+        session = self._active_session()
+        if session:
+            session.command_manager = value
+        else:
+            self._legacy_command_manager = value
+
+    @property
+    def edit_count(self) -> int:
+        session = self._active_session()
+        return session.edit_count if session else self._legacy_edit_count
+
+    @edit_count.setter
+    def edit_count(self, value: int) -> None:
+        session = self._active_session()
+        if session:
+            session.edit_count = value
+        else:
+            self._legacy_edit_count = value
+
+    @property
+    def pending_edits(self) -> list:
+        session = self._active_session()
+        return session.pending_edits if session else self._legacy_pending_edits
+
+    @pending_edits.setter
+    def pending_edits(self, value: list) -> None:
+        session = self._active_session()
+        if session:
+            session.pending_edits = value
+        else:
+            self._legacy_pending_edits = value
+
+    @property
+    def watermark_list(self) -> List[dict]:
+        session = self._active_session()
+        return session.watermark_list if session else self._legacy_watermark_list
+
+    @watermark_list.setter
+    def watermark_list(self, value: List[dict]) -> None:
+        session = self._active_session()
+        if session:
+            session.watermark_list = value
+        else:
+            self._legacy_watermark_list = value
+
+    @property
+    def _watermark_modified(self) -> bool:
+        session = self._active_session()
+        return session.watermark_modified if session else self._legacy_watermark_modified
+
+    @_watermark_modified.setter
+    def _watermark_modified(self, value: bool) -> None:
+        session = self._active_session()
+        if session:
+            session.watermark_modified = value
+        else:
+            self._legacy_watermark_modified = value
 
     def set_text_target_mode(self, mode: str) -> None:
         normalized = (mode or "").strip().lower()
@@ -144,7 +400,7 @@ class PDFModel:
     def __del__(self):
         self.close()
 
-    def open_pdf(self, path: str, password: Optional[str] = None):
+    def open_pdf(self, path: str, password: Optional[str] = None, append: bool = False) -> str:
         """
         開啟 PDF 檔案並建立文字塊索引。
 
@@ -156,37 +412,32 @@ class PDFModel:
                         回傳 4 = owner password 認證成功（可讀取並修改權限）
                         回傳 6 = 兩者皆成功
         """
-        logger.debug(f"嘗試開啟PDF: {path}")
-        self.original_path = path
+        logger.debug(f"嘗試開啟PDF: {path} (append={append})")
         try:
             # 規範化路徑
             src_path = Path(path).resolve()
+            canonical_path = self._canonicalize_path(str(src_path))
             if not src_path.exists():
                 logger.error(f"原始檔案不存在: {path}")
                 raise FileNotFoundError(f"原始檔案不存在: {path}")
             if not src_path.is_file():
                 logger.error(f"路徑不是有效檔案: {path}")
                 raise ValueError(f"路徑不是有效檔案: {path}")
-
-            # 為新文件會話清理狀態
-            if self.doc:
-                self.doc.close()
-            self.saved_path = None
-            self.block_manager.clear()
-            self.command_manager.clear()
-            self.watermark_list.clear()
-            self._watermark_modified = False
-            self.edit_count = 0
-            self.pending_edits.clear()
+            existing_id = self._path_to_session_id.get(canonical_path)
+            if append and existing_id:
+                self.activate_session(existing_id)
+                return existing_id
+            if not append:
+                self.close_all_sessions()
 
             # 直接從原始路徑開啟（以便存檔時可選用增量更新）
-            self.doc = fitz.open(str(src_path))
+            doc = fitz.open(str(src_path))
 
             # 若 PDF 需要密碼，嘗試認證（支援 user 與 owner password）
-            if self.doc.needs_pass:
+            if doc.needs_pass:
                 if password is None:
                     raise RuntimeError("document closed or encrypted — 需要密碼")
-                auth_result = self.doc.authenticate(password)
+                auth_result = doc.authenticate(password)
                 if auth_result == 0:
                     raise RuntimeError(
                         f"PDF 密碼驗證失敗（authenticate 回傳 0）: {path}"
@@ -198,11 +449,24 @@ class PDFModel:
                 )
 
             logger.debug(f"成功開啟PDF: {src_path}")
+            session_id = str(uuid.uuid4())
+            session = DocumentSession(
+                session_id=session_id,
+                canonical_path=canonical_path,
+                display_name=src_path.name,
+                original_path=str(src_path),
+                doc=doc,
+            )
+            self._sessions_by_id[session_id] = session
+            self._session_ids.append(session_id)
+            self._path_to_session_id[canonical_path] = session_id
+            self._active_session_id = session_id
 
             # 文字方塊索引改由 Controller 分批建立（方向 B），開檔不阻塞
             # self.block_manager.build_index(self.doc)
             # 方案 B：從 PDF 內嵌檔案還原浮水印列表（支援重新開檔後仍可編輯浮水印）
             self._load_watermarks_from_doc(self.doc)
+            return session_id
         except PermissionError as e:
             logger.error(f"無權限存取檔案: {str(e)}")
             raise PermissionError(f"無權限存取檔案: {str(e)}")
@@ -474,18 +738,16 @@ class PDFModel:
 
     def close(self):
         logger.debug("關閉PDF並清理臨時目錄")
-        if self.doc:
-            try:
-                self.doc.close()
-                logger.debug("PDF檔案已關閉")
-            except Exception as e:
-                logger.warning(f"關閉PDF失敗: {str(e)}")
-            self.doc = None
-        self.block_manager.clear()
-        self.command_manager.clear()
-        self.watermark_list.clear()
-        self.pending_edits.clear()
-        self.edit_count = 0
+        self.close_all_sessions()
+        self._legacy_doc = None
+        self._legacy_original_path = None
+        self._legacy_saved_path = None
+        self._legacy_block_manager.clear()
+        self._legacy_command_manager.clear()
+        self._legacy_watermark_list.clear()
+        self._legacy_pending_edits.clear()
+        self._legacy_edit_count = 0
+        self._legacy_watermark_modified = False
         if self.temp_dir:
             self.temp_dir.cleanup()
             logger.debug("臨時目錄已清理")
@@ -2314,6 +2576,11 @@ class PDFModel:
         """另存 PDF（含浮水印）。若存回原檔且支援增量更新，則使用 incremental=True。"""
         if not self.doc:
             return
+        canonical_new = self._canonicalize_path(new_path)
+        active_sid = self.get_active_session_id()
+        existing_sid = self._path_to_session_id.get(canonical_new)
+        if existing_sid and active_sid and existing_sid != active_sid:
+            raise RuntimeError("目標路徑已在其他分頁開啟，請改用不同檔名。")
         # Phase 6: 儲存前批次清理已修改頁面的 content stream，壓縮 PDF 大小
         self.apply_pending_redactions()
         new_path_resolved = Path(new_path).resolve()
@@ -2372,16 +2639,22 @@ class PDFModel:
             self._write_watermarks_embed(self.doc)
             self._full_save_to_path(new_path)
         self.saved_path = new_path
+        if active_sid and active_sid in self._sessions_by_id:
+            session = self._sessions_by_id[active_sid]
+            self._path_to_session_id.pop(session.canonical_path, None)
+            session.canonical_path = canonical_new
+            session.original_path = str(Path(new_path).resolve())
+            session.display_name = Path(new_path).name
+            self._path_to_session_id[canonical_new] = active_sid
         self.command_manager.mark_saved()
         self.edit_count = 0
         self._watermark_modified = False
     
     def has_unsaved_changes(self) -> bool:
         """檢查是否有未儲存的變更（Phase 6：統一由 command_manager 管理）。"""
-        if not self.doc:
+        sid = self.get_active_session_id()
+        if not sid:
             return False
-        if getattr(self, '_watermark_modified', False):
-            return True
-        return self.command_manager.has_pending_changes()
+        return self.session_has_unsaved_changes(sid)
 
     # undo() / redo() 已於 Phase 6 移除，改由 Controller 呼叫 model.command_manager.undo/redo()。

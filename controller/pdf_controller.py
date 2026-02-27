@@ -4,9 +4,10 @@ from PySide6.QtCore import QTimer
 from model.pdf_model import PDFModel
 from model.edit_commands import EditTextCommand, SnapshotCommand
 from view.pdf_view import PDFView
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from utils.helpers import pixmap_to_qpixmap, show_error
 from pathlib import Path
+from dataclasses import dataclass, field
 import logging
 import tempfile
 import fitz
@@ -25,6 +26,13 @@ from src.printing.print_dialog import UnifiedPrintDialog
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
+@dataclass
+class SessionUIState:
+    current_page: int = 0
+    scale: float = 1.0
+    search_state: dict = field(default_factory=lambda: {"query": "", "results": [], "index": -1})
+
 class PDFController:
     def __init__(self, model: PDFModel, view: PDFView):
         self.model = model
@@ -32,12 +40,16 @@ class PDFController:
         self.annotations = []
         self.print_dispatcher = PrintDispatcher()
         self._print_dialog = None
-        self._load_gen = 0
+        self._load_gen_by_session: dict[str, int] = {}
+        self._session_ui_state: dict[str, SessionUIState] = {}
+        self._desired_scroll_page: dict[str, int] = {}
         self._connect_signals()
 
     def _connect_signals(self):
         # Existing connections
         self.view.sig_open_pdf.connect(self.open_pdf)
+        self.view.sig_tab_changed.connect(self.on_tab_changed)
+        self.view.sig_tab_close_requested.connect(self.on_tab_close_requested)
         self.view.sig_print_requested.connect(self.print_document)
         self.view.sig_save_as.connect(self.save_as)
         self.view.sig_save.connect(self.save)
@@ -78,25 +90,95 @@ class PDFController:
         # Zoom re-render connection
         self.view.sig_request_rerender.connect(self._on_request_rerender)
 
+    def _next_load_gen(self, session_id: str) -> int:
+        gen = self._load_gen_by_session.get(session_id, 0) + 1
+        self._load_gen_by_session[session_id] = gen
+        return gen
+
+    def _capture_current_ui_state(self) -> None:
+        sid = self.model.get_active_session_id()
+        if not sid:
+            return
+        self._session_ui_state[sid] = SessionUIState(
+            current_page=max(0, self.view.current_page),
+            scale=max(0.1, min(float(self.view.scale), 4.0)),
+            search_state=self.view.get_search_ui_state(),
+        )
+
+    def _get_ui_state(self, session_id: str) -> SessionUIState:
+        state = self._session_ui_state.get(session_id)
+        if state is None:
+            state = SessionUIState()
+            self._session_ui_state[session_id] = state
+        return state
+
+    def _refresh_document_tabs(self) -> None:
+        tabs = self.model.list_sessions()
+        active_idx = self.model.get_active_session_index()
+        self.view.set_document_tabs(tabs, active_idx)
+
+    def _reset_empty_ui(self) -> None:
+        self.annotations = []
+        self.view.clear_document_tabs()
+        self.view.reset_document_view()
+        self.view.populate_annotations_list([])
+        self.view.populate_watermarks_list([])
+        self.view.update_undo_redo_tooltips("復原（無可撤銷操作）", "重做（無可重做操作）")
+
+    def _render_active_session(self, initial_page_idx: Optional[int] = None) -> None:
+        sid = self.model.get_active_session_id()
+        if not sid or not self.model.doc:
+            self._reset_empty_ui()
+            return
+
+        state = self._get_ui_state(sid)
+        if initial_page_idx is None:
+            initial_page_idx = state.current_page
+        initial_page_idx = max(0, min(initial_page_idx, len(self.model.doc) - 1))
+        self._desired_scroll_page[sid] = initial_page_idx
+
+        self.view.scale = state.scale
+        self.view.total_pages = len(self.model.doc)
+        first_pix = self.model.get_page_pixmap(initial_page_idx + 1, FIRST_PAGE_PREVIEW_SCALE)
+        qpix = pixmap_to_qpixmap(first_pix)
+        self.view.display_page(initial_page_idx, qpix)
+        self.view.set_thumbnail_placeholders(len(self.model.doc))
+        self.load_annotations()
+        self.load_watermarks()
+        self.view.apply_search_ui_state(state.search_state)
+        self._update_undo_redo_tooltips()
+
+        gen = self._next_load_gen(sid)
+        QTimer.singleShot(0, lambda sid=sid, gen=gen: self._schedule_thumbnail_batch(0, sid, gen))
+        QTimer.singleShot(0, lambda sid=sid, gen=gen: self._start_continuous_scene_loading(sid, gen))
+
+    def _switch_to_session_id(self, session_id: str) -> None:
+        active = self.model.get_active_session_id()
+        if active == session_id:
+            self._refresh_document_tabs()
+            return
+        self._capture_current_ui_state()
+        if self.view.text_editor:
+            self.view._finalize_text_edit()
+        self.model.activate_session(session_id)
+        self._refresh_document_tabs()
+        state = self._get_ui_state(session_id)
+        self._render_active_session(initial_page_idx=state.current_page)
+
     def open_pdf(self, path: str):
+        existing_sid = self.model.find_session_by_path(path)
+        if existing_sid:
+            self._switch_to_session_id(existing_sid)
+            return
+
+        self._capture_current_ui_state()
         password = None
         while True:
             try:
-                self.model.open_pdf(path, password=password)
-                n = len(self.model.doc)
-                self.view.total_pages = n
-                self._load_gen += 1
-                gen = self._load_gen
-                first_pix = self.model.get_page_pixmap(1, FIRST_PAGE_PREVIEW_SCALE)
-                qpix = pixmap_to_qpixmap(first_pix)
-                self.view.display_page(0, qpix)
-                self.view.set_thumbnail_placeholders(n)
-                self.load_annotations()
-                self.load_watermarks()
-                QTimer.singleShot(0, lambda: self._schedule_thumbnail_batch(0, gen))
-                QTimer.singleShot(0, lambda: self._start_continuous_scene_loading(gen))
-                # Index 延後至場景載完後再分批建立，避免與 scene 搶 main thread 導致約 30s 無法操作
-                # QTimer.singleShot(0, lambda: self._schedule_index_batch(0, gen))
+                sid = self.model.open_pdf(path, password=password, append=True)
+                self._session_ui_state.setdefault(sid, SessionUIState())
+                self._refresh_document_tabs()
+                self._render_active_session(initial_page_idx=0)
                 break
             except RuntimeError as e:
                 err_msg = str(e)
@@ -104,7 +186,8 @@ class PDFController:
                 if "需要密碼" in err_msg or "encrypted" in err_msg.lower():
                     pw = self.view.ask_pdf_password(path)
                     if pw is None:
-                        show_error(self.view, "已取消開啟 PDF。")
+                        if not self.model.get_active_session_id():
+                            self._reset_empty_ui()
                         break
                     password = pw
                     continue
@@ -125,8 +208,84 @@ class PDFController:
                 show_error(self.view, f"打開 PDF 失敗: {e}")
                 break
 
+    def on_tab_changed(self, index: int):
+        sid = self.model.get_session_id_by_index(index)
+        if not sid:
+            return
+        self._switch_to_session_id(sid)
+
+    def _save_session_with_dialog(self, session_id: str) -> bool:
+        meta = self.model.get_session_meta(session_id) or {}
+        default_path = meta.get("saved_path") or meta.get("path") or "未命名.pdf"
+        path, _ = QFileDialog.getSaveFileName(
+            self.view,
+            "儲存PDF",
+            str(default_path),
+            "PDF (*.pdf)",
+        )
+        if not path:
+            return False
+        try:
+            self.model.save_session_as(session_id, path)
+            return True
+        except Exception as e:
+            logger.error(f"儲存 session 失敗: {e}")
+            show_error(self.view, f"儲存失敗: {e}")
+            return False
+
+    def _confirm_close_session(self, session_id: str) -> bool:
+        if not self.model.session_has_unsaved_changes(session_id):
+            return True
+        meta = self.model.get_session_meta(session_id) or {}
+        name = meta.get("display_name") or "未命名"
+        msg_box = QMessageBox(self.view)
+        msg_box.setWindowTitle("未儲存的變更")
+        msg_box.setText(f"分頁「{name}」有未儲存的變更，是否要儲存？")
+        msg_box.setInformativeText("取消將保留分頁不關閉。")
+        save_btn = msg_box.addButton("儲存後關閉", QMessageBox.AcceptRole)
+        discard_btn = msg_box.addButton("放棄變更", QMessageBox.DestructiveRole)
+        cancel_btn = msg_box.addButton("取消", QMessageBox.RejectRole)
+        msg_box.setDefaultButton(cancel_btn)
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.exec()
+
+        clicked = msg_box.clickedButton()
+        if clicked == cancel_btn:
+            return False
+        if clicked == save_btn:
+            return self._save_session_with_dialog(session_id)
+        return True
+
+    def on_tab_close_requested(self, index: int):
+        sid = self.model.get_session_id_by_index(index)
+        if not sid:
+            return
+        if sid == self.model.get_active_session_id() and self.view.text_editor:
+            self.view._finalize_text_edit()
+        if not self._confirm_close_session(sid):
+            return
+        if sid == self.model.get_active_session_id():
+            self._capture_current_ui_state()
+        self.model.close_session(sid)
+        self._session_ui_state.pop(sid, None)
+        self._load_gen_by_session.pop(sid, None)
+        self._desired_scroll_page.pop(sid, None)
+        self._refresh_document_tabs()
+        active_sid = self.model.get_active_session_id()
+        if active_sid:
+            state = self._get_ui_state(active_sid)
+            self._render_active_session(initial_page_idx=state.current_page)
+        else:
+            self._reset_empty_ui()
+
     def save_as(self, path: str):
-        self.model.save_as(path)
+        try:
+            self.model.save_as(path)
+            self._refresh_document_tabs()
+            self._update_undo_redo_tooltips()
+        except Exception as e:
+            logger.error(f"另存失敗: {e}")
+            show_error(self.view, f"另存失敗: {e}")
 
     def save(self):
         """存回原檔（Ctrl+S）。若有原檔或上次儲存路徑則直接儲存（適用時使用增量更新）；否則改開另存對話框。"""
@@ -137,6 +296,8 @@ class PDFController:
             return
         try:
             self.model.save_as(path)
+            self._refresh_document_tabs()
+            self._update_undo_redo_tooltips()
             QMessageBox.information(self.view, "儲存完成", f"已儲存至：{path}")
         except Exception as e:
             logger.error(f"儲存失敗: {e}")
@@ -333,6 +494,10 @@ class PDFController:
     def search_text(self, query: str):
         results = self.model.search_text(query)
         self.view.display_search_results(results)
+        sid = self.model.get_active_session_id()
+        if sid:
+            state = self._get_ui_state(sid)
+            state.search_state = {"query": query, "results": list(results), "index": -1}
 
     def jump_to_result(self, page_num: int, rect: fitz.Rect):
         scale = self.view.scale
@@ -341,6 +506,10 @@ class PDFController:
         pix = self.model.get_page_pixmap(page_num, scale)
         qpix = pixmap_to_qpixmap(pix)
         self.view.display_page(page_num - 1, qpix, highlight_rect=scaled_rect)
+        sid = self.model.get_active_session_id()
+        if sid:
+            state = self._get_ui_state(sid)
+            state.current_page = max(0, page_num - 1)
 
     def ocr_pages(self, pages: List[int]):
         self.model.ocr_pages(pages)
@@ -394,12 +563,18 @@ class PDFController:
             logger.warning(f"無效頁碼: {page_idx}")
             return
         self.show_page(page_idx)
+        sid = self.model.get_active_session_id()
+        if sid:
+            self._get_ui_state(sid).current_page = page_idx
         
     def change_scale(self, page_idx: int, scale: float):
         """設定縮放比例：更新 view.scale，連續模式時所有頁面等齊重繪，並同步右上角縮放選單。"""
         if not self.model.doc or page_idx < 0 or page_idx >= len(self.model.doc):
             return
         self.view.scale = scale
+        sid = self.model.get_active_session_id()
+        if sid:
+            self._get_ui_state(sid).scale = scale
         if self.view.continuous_pages:
             self._rebuild_continuous_scene(page_idx)
         else:
@@ -413,43 +588,73 @@ class PDFController:
         thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i+1)) for i in range(len(self.model.doc))]
         self.view.update_thumbnails(thumbs)
 
-    def _schedule_thumbnail_batch(self, start: int, gen: int):
-        if gen != self._load_gen or not self.model.doc:
+    def _schedule_thumbnail_batch(self, start: int, session_id: str, gen: int):
+        if (
+            self.model.get_active_session_id() != session_id
+            or self._load_gen_by_session.get(session_id) != gen
+            or not self.model.doc
+        ):
             return
         n = len(self.model.doc)
         end = min(start + THUMB_BATCH_SIZE, n)
         thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i + 1)) for i in range(start, end)]
         self.view.update_thumbnail_batch(start, thumbs)
         if end < n:
-            QTimer.singleShot(THUMB_BATCH_INTERVAL_MS, lambda e=end: self._schedule_thumbnail_batch(e, gen))
+            QTimer.singleShot(
+                THUMB_BATCH_INTERVAL_MS,
+                lambda e=end, sid=session_id, g=gen: self._schedule_thumbnail_batch(e, sid, g),
+            )
 
-    def _start_continuous_scene_loading(self, gen: int):
-        if gen != self._load_gen or not self.model.doc or not self.view.continuous_pages:
+    def _start_continuous_scene_loading(self, session_id: str, gen: int):
+        if (
+            self.model.get_active_session_id() != session_id
+            or self._load_gen_by_session.get(session_id) != gen
+            or not self.model.doc
+            or not self.view.continuous_pages
+        ):
             return
-        QTimer.singleShot(0, lambda: self._schedule_scene_batch(0, gen))
+        QTimer.singleShot(0, lambda sid=session_id, g=gen: self._schedule_scene_batch(0, sid, g))
 
-    def _schedule_scene_batch(self, start: int, gen: int):
-        if gen != self._load_gen or not self.model.doc or not self.view.continuous_pages:
+    def _schedule_scene_batch(self, start: int, session_id: str, gen: int):
+        if (
+            self.model.get_active_session_id() != session_id
+            or self._load_gen_by_session.get(session_id) != gen
+            or not self.model.doc
+            or not self.view.continuous_pages
+        ):
             return
         n = len(self.model.doc)
         end = min(start + SCENE_BATCH_SIZE, n)
         pixmaps = [pixmap_to_qpixmap(self.model.get_page_pixmap(i + 1, self.view.scale)) for i in range(start, end)]
         self.view.append_pages_continuous(pixmaps, start)
+        target = self._desired_scroll_page.get(session_id, 0)
+        if self.view.page_items:
+            self.view.scroll_to_page(min(target, len(self.view.page_items) - 1))
         if end < n:
-            QTimer.singleShot(SCENE_BATCH_INTERVAL_MS, lambda e=end: self._schedule_scene_batch(e, gen))
+            QTimer.singleShot(
+                SCENE_BATCH_INTERVAL_MS,
+                lambda e=end, sid=session_id, g=gen: self._schedule_scene_batch(e, sid, g),
+            )
         else:
             # 場景載完後才開始分批建立索引，避免開檔時 main thread 被 index 阻塞
-            QTimer.singleShot(0, lambda: self._schedule_index_batch(0, gen))
+            QTimer.singleShot(0, lambda sid=session_id, g=gen: self._schedule_index_batch(0, sid, g))
 
-    def _schedule_index_batch(self, start: int, gen: int):
-        if gen != self._load_gen or not self.model.doc:
+    def _schedule_index_batch(self, start: int, session_id: str, gen: int):
+        if (
+            self.model.get_active_session_id() != session_id
+            or self._load_gen_by_session.get(session_id) != gen
+            or not self.model.doc
+        ):
             return
         n = len(self.model.doc)
         end = min(start + INDEX_BATCH_SIZE, n)
         for i in range(start, end):
             self.model.ensure_page_index_built(i + 1)
         if end < n:
-            QTimer.singleShot(INDEX_BATCH_INTERVAL_MS, lambda e=end: self._schedule_index_batch(e, gen))
+            QTimer.singleShot(
+                INDEX_BATCH_INTERVAL_MS,
+                lambda e=end, sid=session_id, g=gen: self._schedule_index_batch(e, sid, g),
+            )
 
     def _on_request_rerender(self):
         """觸控板縮放停止後的重渲回呼：以 self.view.scale 重新渲染所有頁面，確保清晰顯示。"""
@@ -481,6 +686,9 @@ class PDFController:
             pix = self.model.get_page_pixmap(page_idx + 1, self.view.scale)
             qpix = pixmap_to_qpixmap(pix)
             self.view.display_page(page_idx, qpix)
+        sid = self.model.get_active_session_id()
+        if sid:
+            self._get_ui_state(sid).current_page = page_idx
 
     def get_text_info_at_point(self, page_num: int, point: fitz.Point):
         return self.model.get_text_info_at_point(page_num, point)
@@ -499,6 +707,7 @@ class PDFController:
         else:
             redo_tip = "重做（無可重做操作）"
         self.view.update_undo_redo_tooltips(undo_tip, redo_tip)
+        self._refresh_document_tabs()
 
     def _update_mode(self, mode: str):
         pass
@@ -650,6 +859,7 @@ class PDFController:
             self._rebuild_continuous_scene(self.view.current_page)
             self.load_watermarks()
             self.view._show_watermark_panel()
+            self._refresh_document_tabs()
         except Exception as e:
             logger.error(f"新增浮水印失敗: {e}")
             show_error(self.view, f"新增浮水印失敗: {e}")
@@ -661,6 +871,7 @@ class PDFController:
         if self.model.update_watermark(wm_id, text=text, pages=pages, angle=angle, opacity=opacity, font_size=font_size, color=color, font=font, offset_x=offset_x, offset_y=offset_y, line_spacing=line_spacing):
             self._rebuild_continuous_scene(self.view.current_page)
             self.load_watermarks()
+            self._refresh_document_tabs()
 
     def remove_watermark(self, wm_id: str):
         """移除浮水印"""
@@ -669,47 +880,58 @@ class PDFController:
         if self.model.remove_watermark(wm_id):
             self._rebuild_continuous_scene(self.view.current_page)
             self.load_watermarks()
+            self._refresh_document_tabs()
 
     def load_watermarks(self):
         """載入浮水印列表並更新 View"""
         watermarks = self.model.get_watermarks()
         self.view.populate_watermarks_list(watermarks)
 
-    def save_and_close(self) -> bool:
-        """在關閉前儲存檔案
-        
-        Returns:
-            bool: 如果成功儲存則返回True，如果用戶取消則返回False
-        """
-        if not self.model.doc:
-            return True  # 沒有開啟的檔案，允許關閉
-        
-        # 如果有儲存過的路徑，建議使用該路徑，否則使用原始路徑
-        suggested_path = self.model.saved_path if self.model.saved_path else self.model.original_path
-        
-        # 顯示檔案對話框
-        if suggested_path:
-            # 使用完整路徑作為預設值，讓用戶可以選擇是否要更改位置
-            default_path = str(Path(suggested_path))
-        else:
-            default_path = "未命名.pdf"
-        
-        path, _ = QFileDialog.getSaveFileName(
-            self.view,
-            "儲存PDF",
-            default_path,
-            "PDF (*.pdf)"
-        )
-        
-        if path:
+    def _save_session_for_close(self, session_id: str) -> bool:
+        meta = self.model.get_session_meta(session_id) or {}
+        save_path = meta.get("saved_path") or meta.get("path")
+        if save_path:
             try:
-                self.save_as(path)
-                logger.debug(f"檔案已儲存至: {path}")
-                return True  # 成功儲存，允許關閉
+                self.model.save_session_as(session_id, save_path)
+                return True
             except Exception as e:
-                logger.error(f"儲存檔案失敗: {e}")
-                show_error(self.view, f"儲存檔案失敗: {e}")
-                return False  # 儲存失敗，不允許關閉
-        else:
-            # 用戶取消了檔案對話框
-            return False  # 取消儲存，不允許關閉
+                logger.warning(f"自動儲存失敗，改為另存對話框: {e}")
+        return self._save_session_with_dialog(session_id)
+
+    def handle_app_close(self, event) -> None:
+        dirty_ids = self.model.get_dirty_session_ids()
+        if not dirty_ids:
+            event.accept()
+            return
+
+        msg_box = QMessageBox(self.view)
+        msg_box.setWindowTitle("未儲存的變更")
+        msg_box.setText(f"共有 {len(dirty_ids)} 個分頁尚未儲存。")
+        msg_box.setInformativeText("是否要儲存所有變更後再關閉？")
+        save_all_btn = msg_box.addButton("全部儲存", QMessageBox.AcceptRole)
+        discard_all_btn = msg_box.addButton("全部放棄", QMessageBox.DestructiveRole)
+        cancel_btn = msg_box.addButton("取消", QMessageBox.RejectRole)
+        msg_box.setDefaultButton(cancel_btn)
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.exec()
+
+        clicked = msg_box.clickedButton()
+        if clicked == cancel_btn:
+            event.ignore()
+            return
+        if clicked == discard_all_btn:
+            event.accept()
+            return
+
+        for sid in dirty_ids:
+            if not self._save_session_for_close(sid):
+                event.ignore()
+                return
+        event.accept()
+
+    def save_and_close(self) -> bool:
+        """Backward-compatible helper used by legacy flows."""
+        sid = self.model.get_active_session_id()
+        if not sid:
+            return True
+        return self._save_session_for_close(sid)

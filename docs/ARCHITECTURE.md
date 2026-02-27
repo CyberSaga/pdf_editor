@@ -29,9 +29,9 @@
                             └───────────────┘
 ```
 
-- **Model**：持有 PDF 文件（`fitz.Document`）、文字塊索引（`TextBlockManager`）、編輯歷史（`CommandManager`），不依賴 UI。開檔時不主動建立整份文字塊索引，改由 Controller 分批呼叫 `ensure_page_index_built`；編輯/結構變更時才呼叫 `build_index` 或 `rebuild_page`。
-- **View**：負責所有 UI（工具列、縮圖、主畫布、右側繪製設定、對話框），透過 **Qt Signal** 把使用者操作往外送；連續模式時須同步 `graphics_view.setSceneRect` 與場景 rect，以支援捲動與縮圖跳頁。
-- **Controller**：訂閱 View 的訊號，呼叫 Model API，再驅動 View 更新（例如換頁、重繪、更新 Undo/Redo 按鈕狀態）；開檔流程為首頁預覽 → 分批縮圖/場景 → 場景完成後分批索引，以利大 PDF 下儘早可操作。
+- **Model**：採用多分頁 Session Registry（`session_ids + sessions_by_id`），每個分頁封裝 `fitz.Document`、`TextBlockManager`、`CommandManager`、`pending_edits`、浮水印狀態；對外 API 仍維持 `edit_text/save_as/search_text` 等入口，但一律作用於「目前 active session」。
+- **View**：除了既有工具列與主畫布，新增「文件分頁列（QTabBar）」；View 僅發出 `sig_tab_changed/sig_tab_close_requested`，不直接操作 Model 的 session registry。連續模式仍需同步 `graphics_view.setSceneRect` 與場景 rect。
+- **Controller**：負責多分頁生命週期（開啟/切換/關閉）與每個 session 的 UI 狀態恢復（頁碼、縮放、搜尋狀態）；開檔與切換皆採首頁預覽 → 分批縮圖/場景 → 分批索引，且所有批次載入都帶 `session_id + generation` 防止跨分頁汙染。
 
 ## 2. 模組職責
 
@@ -39,7 +39,7 @@
 
 | 檔案 | 職責 |
 |------|------|
-| `model/pdf_model.py` | PDF 開檔/存檔、文字編輯（edit_text）、頁面操作（刪除/旋轉/插入）、註解/螢光筆/矩形、搜尋、OCR、浮水印、快照與還原 |
+| `model/pdf_model.py` | 多分頁 Session 管理（open/activate/close/list）、PDF 開檔/存檔、文字編輯（edit_text）、頁面操作（刪除/旋轉/插入）、註解/螢光筆/矩形、搜尋、OCR、浮水印、快照與還原 |
 | `model/text_block.py` | `TextBlock` 資料結構、`TextBlockManager` 建立與維護頁面文字塊索引（build_index、find_by_rect、update_block、rebuild_page） |
 | `model/edit_commands.py` | Command 模式：`EditCommand` 抽象、`EditTextCommand`（頁面快照 undo/redo）、`SnapshotCommand`（整份文件快照）、`CommandManager`（undo/redo 堆疊） |
 
@@ -47,13 +47,13 @@
 
 | 檔案 | 職責 |
 |------|------|
-| `controller/pdf_controller.py` | 連接 View 訊號與 Model 方法；處理開檔/儲存/另存、刪除頁/旋轉頁/匯出頁、插入空白頁/從檔案插入頁、編輯文字、搜尋/跳轉、OCR、Undo/Redo、註解、浮水印、快照、顯示模式切換與縮圖/場景重建；開檔時首頁低解析度預覽、QTimer 分批載入縮圖與連續場景、場景載完後才分批建立文字塊索引（`_schedule_thumbnail_batch` / `_schedule_scene_batch` / `_schedule_index_batch`） |
+| `controller/pdf_controller.py` | 連接 View 訊號與 Model 方法；處理多分頁開檔/切換/關閉、儲存/另存、刪除頁/旋轉頁/匯出頁、插入空白頁/從檔案插入頁、編輯文字、搜尋/跳轉、OCR、Undo/Redo、註解、浮水印、快照、顯示模式切換與縮圖/場景重建；批次載入採 `session_id + generation` 驗證避免 stale update。 |
 
 ### 2.3 View 層
 
 | 檔案 | 職責 |
 |------|------|
-| `view/pdf_view.py` | 主視窗（QMainWindow，最小 1280×800，標題「視覺化 PDF 編輯器」）；頂部工具列（QTabWidget：檔案/常用/編輯/頁面/轉換，各分頁內 QToolBar；右側固定區：頁 X/Y、縮放選單、適應畫面、↺復原/↻重做）；中央 QSplitter（左 260px 左側欄 QTabWidget：縮圖/搜尋/註解列表/浮水印列表、中央 QGraphicsView 連續捲動畫布、右 280px「屬性」QStackedWidget 依模式顯示頁面資訊/矩形設定/螢光筆顏色/文字設定）；底部 QStatusBar；搜尋 Ctrl+F、Esc 關閉搜尋；右鍵選單；發出各類 Signal 給 Controller；連續模式時 `display_all_pages_continuous` / `append_pages_continuous` 建立/追加頁面後會呼叫 `graphics_view.setSceneRect(scene.sceneRect())` 以保持捲軸與可見區域正確，`scroll_to_page` 在目標頁未載入時會捲動至最後已載入頁 |
+| `view/pdf_view.py` | 主視窗（QMainWindow，最小 1280×800，標題「視覺化 PDF 編輯器」）；頂部工具列（QTabWidget：檔案/常用/編輯/頁面/轉換，各分頁內 QToolBar）+ 文件分頁列（QTabBar，可切換/關閉）；中央 QSplitter（左 260px 左側欄 QTabWidget：縮圖/搜尋/註解列表/浮水印列表、中央 QGraphicsView 連續捲動畫布、右 280px「屬性」QStackedWidget）；底部 QStatusBar；搜尋 Ctrl+F、Esc 關閉搜尋；右鍵選單；連續模式時 `display_all_pages_continuous` / `append_pages_continuous` 建立/追加頁面後會呼叫 `graphics_view.setSceneRect(scene.sceneRect())`。 |
 
 ### 2.4 工具層
 
