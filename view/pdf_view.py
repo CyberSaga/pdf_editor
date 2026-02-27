@@ -639,11 +639,20 @@ class PDFView(QMainWindow):
             pass
 
     def _fit_to_view(self):
-        if not self.scene.sceneRect().isValid() or not self.page_items:
+        target_rect = None
+        if self.continuous_pages and self.page_items:
+            idx = min(max(self.current_page, 0), len(self.page_items) - 1)
+            target_rect = self.page_items[idx].sceneBoundingRect()
+        elif self.page_items:
+            target_rect = self.page_items[0].sceneBoundingRect()
+        elif self.scene.sceneRect().isValid():
+            target_rect = self.scene.sceneRect()
+
+        if not target_rect or not target_rect.isValid():
             return
-        self.graphics_view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
-        if self.page_items:
-            self.graphics_view.centerOn(self.scene.itemsBoundingRect().center())
+
+        self.graphics_view.fitInView(target_rect, Qt.KeepAspectRatio)
+        self.graphics_view.centerOn(target_rect.center())
 
     def _show_thumbnails_tab(self):
         self.left_sidebar.setCurrentIndex(0)
