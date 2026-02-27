@@ -7,8 +7,8 @@ from PySide6.QtWidgets import (
     QScrollArea, QCheckBox, QTabWidget, QSplitter, QFrame, QSizePolicy, QSlider, QTabBar,
     QStatusBar, QGroupBox
 )
-from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QCloseEvent, QTextOption
-from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint
+from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QCloseEvent, QTextOption, QShortcut
+from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint, QEvent
 from typing import List, Tuple, Optional
 from utils.helpers import pixmap_to_qpixmap, parse_pages, show_error
 import logging
@@ -17,6 +17,37 @@ import fitz
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def _ctrl_tab_direction(key: int, modifiers: Qt.KeyboardModifiers) -> int:
+    if not (modifiers & Qt.ControlModifier):
+        return 0
+    if key == Qt.Key_Backtab:
+        return -1
+    if key != Qt.Key_Tab:
+        return 0
+    return -1 if (modifiers & Qt.ShiftModifier) else 1
+
+
+class _NoCtrlTabTabBar(QTabBar):
+    """Disable built-in Ctrl+Tab tab cycling on non-document tab bars."""
+    def event(self, event):
+        if event.type() == QEvent.ShortcutOverride and _ctrl_tab_direction(event.key(), event.modifiers()):
+            event.accept()
+            return True
+        return super().event(event)
+
+    def keyPressEvent(self, event):
+        direction = _ctrl_tab_direction(event.key(), event.modifiers())
+        if direction:
+            parent = self.parentWidget()
+            while parent is not None and not hasattr(parent, "_cycle_document_tab"):
+                parent = parent.parentWidget()
+            if parent is not None:
+                parent._cycle_document_tab(direction)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class PDFPasswordDialog(QDialog):
@@ -253,12 +284,14 @@ class PDFView(QMainWindow):
         main_layout.addWidget(self._toolbar_container)
         self._build_document_tabs_bar()
         main_layout.addWidget(self.document_tab_bar)
+        self._install_document_tab_shortcuts()
 
         # --- Main content: QSplitter (Left 260px | Center | Right 280px) ---
         self.main_splitter = QSplitter(Qt.Horizontal)
 
         # Left sidebar: 260px, QTabWidget (縮圖 / 搜尋 / 註解列表 / 浮水印列表)
         self.left_sidebar = QTabWidget()
+        self.left_sidebar.setTabBar(_NoCtrlTabTabBar(self.left_sidebar))
         self.left_sidebar.setMinimumWidth(200)
         self.left_sidebar.setMaximumWidth(400)
         self._setup_left_sidebar()
@@ -393,6 +426,33 @@ class PDFView(QMainWindow):
         self.document_tab_bar.tabCloseRequested.connect(self._on_document_tab_close_requested)
         self.document_tab_bar.setVisible(False)
 
+    def _install_document_tab_shortcuts(self) -> None:
+        """Route Ctrl+Tab and Ctrl+Shift+Tab to document tabs only."""
+        self._shortcut_next_doc_tab = QShortcut(QKeySequence("Ctrl+Tab"), self)
+        self._shortcut_next_doc_tab.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._shortcut_next_doc_tab.activated.connect(lambda: self._cycle_document_tab(1))
+
+        self._shortcut_prev_doc_tab = QShortcut(QKeySequence("Ctrl+Shift+Tab"), self)
+        self._shortcut_prev_doc_tab.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._shortcut_prev_doc_tab.activated.connect(lambda: self._cycle_document_tab(-1))
+
+        self._shortcut_prev_doc_tab_back = QShortcut(QKeySequence("Ctrl+Backtab"), self)
+        self._shortcut_prev_doc_tab_back.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._shortcut_prev_doc_tab_back.activated.connect(lambda: self._cycle_document_tab(-1))
+
+    def _tab_shortcut_direction(self, key: int, modifiers: Qt.KeyboardModifiers) -> int:
+        return _ctrl_tab_direction(key, modifiers)
+
+    def _cycle_document_tab(self, direction: int) -> bool:
+        tab_count = self.document_tab_bar.count()
+        if tab_count <= 1:
+            return False
+        current = self.document_tab_bar.currentIndex()
+        if current < 0:
+            current = 0
+        self.document_tab_bar.setCurrentIndex((current + direction) % tab_count)
+        return True
+
     def set_document_tabs(self, tabs: List[dict], active_index: int) -> None:
         self._doc_tab_signal_block = True
         self.document_tab_bar.blockSignals(True)
@@ -442,6 +502,7 @@ class PDFView(QMainWindow):
         bar_layout.setSpacing(6)
 
         self.toolbar_tabs = QTabWidget()
+        self.toolbar_tabs.setTabBar(_NoCtrlTabTabBar(self.toolbar_tabs))
         self.toolbar_tabs.setDocumentMode(True)
         # 標籤：緊湊內距，不省略文字，最小寬度避免截斷
         self.toolbar_tabs.setStyleSheet("""
@@ -828,6 +889,10 @@ class PDFView(QMainWindow):
             self.zoom_combo.blockSignals(False)
 
     def keyPressEvent(self, event):
+        direction = self._tab_shortcut_direction(event.key(), event.modifiers())
+        if direction and self._cycle_document_tab(direction):
+            event.accept()
+            return
         if event.key() == Qt.Key_Escape:
             if self.left_sidebar.currentIndex() == 1:
                 self.left_sidebar.setCurrentIndex(0)
