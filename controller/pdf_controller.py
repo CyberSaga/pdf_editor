@@ -726,6 +726,9 @@ class PDFController:
     def get_text_info_at_point(self, page_num: int, point: fitz.Point):
         return self.model.get_text_info_at_point(page_num, point)
 
+    def get_text_in_rect(self, page_num: int, rect: fitz.Rect) -> str:
+        return self.model.get_text_in_rect(page_num, rect)
+
     def _update_undo_redo_tooltips(self) -> None:
         """更新 View 的 undo/redo 按鈕 tooltip，顯示下一步操作描述。"""
         cm = self.model.command_manager

@@ -929,6 +929,15 @@ class PDFModel:
             )
         return None
 
+    def get_text_in_rect(self, page_num: int, rect: fitz.Rect) -> str:
+        """Extract plain text in a rectangle for browse-mode copy."""
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return ""
+        page = self.doc[page_num - 1]
+        clipped = self._clamp_rect_to_page(fitz.Rect(rect), page.rect)
+        text = page.get_text("text", clip=clipped, sort=True)
+        return (text or "").strip()
+
     def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect, rotation: int = 0, font_size: float = 12) -> float:
         """取得編輯時會使用的換行寬度（points），供編輯框預覽與 PDF 渲染一致。"""
         if not self.doc or page_num < 1 or page_num > len(self.doc):

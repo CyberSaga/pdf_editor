@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (
-    QColorDialog, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
+    QApplication, QColorDialog, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
     QListWidget, QToolBar, QInputDialog, QMessageBox, QMenu, QFileDialog,
     QListWidgetItem, QWidget, QVBoxLayout, QPushButton, QLabel, QFontComboBox,
     QComboBox, QDoubleSpinBox, QTextEdit, QGraphicsProxyWidget, QLineEdit, QHBoxLayout,
@@ -354,6 +354,15 @@ class PDFView(QMainWindow):
         self.current_search_results = []
         self.current_search_index = -1
         self._browse_text_cursor_active = False
+        self._text_selection_active = False
+        self._text_selection_page_idx = None
+        self._text_selection_start_scene_pos = None
+        self._text_selection_rect_item = None
+        self._text_selection_live_doc_rect = None
+        self._text_selection_last_scene_pos = None
+        self._selected_text_rect_doc = None
+        self._selected_text_page_idx = None
+        self._selected_text_cached = ""
         # Phase 5: edit_text 模式下的 hover 文字塊高亮
         self._hover_highlight_item = None       # QGraphicsRectItem | None
         self._last_hover_scene_pos = None       # QPointF | None（節流用）
@@ -852,6 +861,7 @@ class PDFView(QMainWindow):
         if self.text_editor: self._finalize_text_edit()
         if self.current_mode == 'browse' and mode != 'browse':
             self._reset_browse_hover_cursor()
+            self._clear_text_selection()
         # 切換模式時清除所有拖曳/待定狀態
         self._drag_pending = False
         self._drag_active = False
@@ -914,6 +924,10 @@ class PDFView(QMainWindow):
                 self._update_status_bar()
             event.accept()
             return
+        if self.current_mode == 'browse' and event.matches(QKeySequence.Copy):
+            if self._copy_selected_text_to_clipboard():
+                event.accept()
+                return
         if event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_F:
             self._show_search_tab()
             event.accept()
@@ -960,6 +974,7 @@ class PDFView(QMainWindow):
             self._finalize_text_edit()
         self._clear_hover_highlight()
         self._reset_browse_hover_cursor()
+        self._clear_text_selection()
         self._disconnect_scroll_handler()
         self.scene.clear()
         self.page_items.clear()
@@ -981,6 +996,7 @@ class PDFView(QMainWindow):
         #          否則後續 setRect() 會操作已刪除的 C++ 物件，拋出 RuntimeError。
         self._clear_hover_highlight()
         self._reset_browse_hover_cursor()
+        self._clear_text_selection()
         self._disconnect_scroll_handler()
         self.scene.clear()
         self.page_items.clear()
@@ -1138,6 +1154,7 @@ class PDFView(QMainWindow):
     def display_page(self, page_num: int, pix: QPixmap, highlight_rect: fitz.Rect = None):
         if self.text_editor:
             self._finalize_text_edit()
+        self._clear_text_selection()
         if not pix.isNull() and self.continuous_pages and self.page_items:
             # 連續模式：update_page_in_scene 不清場景，hover item 仍有效，不需重置
             self.update_page_in_scene(page_num, pix)
@@ -1243,6 +1260,19 @@ class PDFView(QMainWindow):
                 self.set_mode('browse')
                 return
 
+            if self.current_mode == 'browse':
+                page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
+                try:
+                    info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
+                except Exception:
+                    info = None
+                if info:
+                    self._start_text_selection(scene_pos, page_idx)
+                    event.accept()
+                    return
+                if self._selected_text_rect_doc is not None or self._selected_text_cached:
+                    self._clear_text_selection()
+
             if self.current_mode == 'edit_text':
                 # ── 若已有開啟的編輯框 ──
                 if self.text_editor:
@@ -1300,6 +1330,10 @@ class PDFView(QMainWindow):
         scene_pos = self.graphics_view.mapToScene(event.pos())
 
         if self.current_mode == 'browse':
+            if self._text_selection_active:
+                self._update_text_selection(scene_pos)
+                event.accept()
+                return
             if event.buttons() & Qt.LeftButton:
                 self._reset_browse_hover_cursor()
             else:
@@ -1378,6 +1412,191 @@ class PDFView(QMainWindow):
         self.graphics_view.viewport().setCursor(Qt.ArrowCursor)
         self._browse_text_cursor_active = False
 
+    def _get_page_scene_rect(self, page_idx: int) -> QRectF:
+        rs = self._render_scale if self._render_scale > 0 else 1.0
+        try:
+            page = self.controller.model.doc[page_idx]
+            page_w_scene = page.rect.width * rs
+            page_h_scene = page.rect.height * rs
+        except Exception:
+            page_w_scene = 595.0 * rs
+            page_h_scene = 842.0 * rs
+        y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0.0
+        return QRectF(0.0, y0, max(1.0, page_w_scene), max(1.0, page_h_scene))
+
+    def _clamp_scene_point_to_page(self, scene_pos: QPointF, page_idx: int) -> QPointF:
+        page_rect = self._get_page_scene_rect(page_idx)
+        x = min(max(scene_pos.x(), page_rect.left()), page_rect.right())
+        y = min(max(scene_pos.y(), page_rect.top()), page_rect.bottom())
+        return QPointF(x, y)
+
+    def _scene_rect_to_doc_rect(self, scene_rect: QRectF, page_idx: int) -> Optional[fitz.Rect]:
+        rs = self._render_scale if self._render_scale > 0 else 1.0
+        y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0.0
+        x0 = min(scene_rect.left(), scene_rect.right()) / rs
+        x1 = max(scene_rect.left(), scene_rect.right()) / rs
+        y0_doc = (min(scene_rect.top(), scene_rect.bottom()) - y0) / rs
+        y1_doc = (max(scene_rect.top(), scene_rect.bottom()) - y0) / rs
+        rect = fitz.Rect(x0, y0_doc, x1, y1_doc)
+        try:
+            page_rect = self.controller.model.doc[page_idx].rect
+            rect = fitz.Rect(
+                max(rect.x0, page_rect.x0),
+                max(rect.y0, page_rect.y0),
+                min(rect.x1, page_rect.x1),
+                min(rect.y1, page_rect.y1),
+            )
+        except Exception:
+            pass
+        if rect.width <= 0 or rect.height <= 0:
+            return None
+        return rect
+
+    def _start_text_selection(self, scene_pos: QPointF, page_idx: int) -> None:
+        self._clear_hover_highlight()
+        self._reset_browse_hover_cursor()
+        self._clear_text_selection()
+        start_pos = self._clamp_scene_point_to_page(scene_pos, page_idx)
+        self._text_selection_active = True
+        self._text_selection_page_idx = page_idx
+        self._text_selection_start_scene_pos = start_pos
+        self._text_selection_live_doc_rect = None
+        self._text_selection_last_scene_pos = None
+        pen = QPen(QColor(30, 120, 255, 220), 1)
+        brush = QBrush(QColor(30, 120, 255, 35))
+        rect = QRectF(start_pos, start_pos).normalized()
+        self._text_selection_rect_item = self.scene.addRect(rect, pen, brush)
+        self._text_selection_rect_item.setZValue(20)
+        # Live highlight should only appear after snapping to actual text bounds.
+        self._text_selection_rect_item.setVisible(False)
+
+    def _update_text_selection(self, scene_pos: QPointF, force: bool = False) -> None:
+        if not self._text_selection_active or self._text_selection_page_idx is None:
+            return
+        if self._text_selection_start_scene_pos is None or self._text_selection_rect_item is None:
+            return
+        if not force and self._text_selection_last_scene_pos is not None:
+            if (
+                abs(scene_pos.x() - self._text_selection_last_scene_pos.x()) < 2.0 and
+                abs(scene_pos.y() - self._text_selection_last_scene_pos.y()) < 2.0
+            ):
+                return
+        self._text_selection_last_scene_pos = scene_pos
+
+        end_pos = self._clamp_scene_point_to_page(scene_pos, self._text_selection_page_idx)
+        rough_scene_rect = QRectF(self._text_selection_start_scene_pos, end_pos).normalized()
+        rough_doc_rect = self._scene_rect_to_doc_rect(rough_scene_rect, self._text_selection_page_idx)
+        if rough_doc_rect is None:
+            self._text_selection_live_doc_rect = None
+            self._text_selection_rect_item.setVisible(False)
+            return
+
+        try:
+            selected_text = self.controller.get_text_in_rect(self._text_selection_page_idx + 1, rough_doc_rect)
+        except Exception:
+            selected_text = ""
+        if not selected_text.strip():
+            self._text_selection_live_doc_rect = None
+            self._text_selection_rect_item.setVisible(False)
+            return
+
+        precise_doc_rect = fitz.Rect(rough_doc_rect)
+        try:
+            precise = self.controller.get_text_bounds(self._text_selection_page_idx + 1, rough_doc_rect)
+            if precise is not None and precise.width > 0 and precise.height > 0:
+                precise_doc_rect = fitz.Rect(precise)
+        except Exception:
+            pass
+
+        self._text_selection_live_doc_rect = precise_doc_rect
+        rs = self._render_scale if self._render_scale > 0 else 1.0
+        y0 = self.page_y_positions[self._text_selection_page_idx] if (
+            self.continuous_pages and self._text_selection_page_idx < len(self.page_y_positions)
+        ) else 0.0
+        precise_scene = QRectF(
+            precise_doc_rect.x0 * rs,
+            y0 + precise_doc_rect.y0 * rs,
+            max(1.0, precise_doc_rect.width * rs),
+            max(1.0, precise_doc_rect.height * rs),
+        )
+        self._text_selection_rect_item.setRect(precise_scene)
+        self._text_selection_rect_item.setVisible(True)
+
+    def _finalize_text_selection(self, scene_pos: QPointF) -> None:
+        if not self._text_selection_active:
+            return
+        if self._text_selection_start_scene_pos is not None:
+            dx = scene_pos.x() - self._text_selection_start_scene_pos.x()
+            dy = scene_pos.y() - self._text_selection_start_scene_pos.y()
+            if dx * dx + dy * dy < 4.0:
+                self._clear_text_selection()
+                return
+
+        self._update_text_selection(scene_pos, force=True)
+        self._text_selection_active = False
+        self._text_selection_start_scene_pos = None
+        self._text_selection_last_scene_pos = None
+        page_idx = self._text_selection_page_idx
+        if page_idx is None or self._text_selection_rect_item is None:
+            self._clear_text_selection()
+            return
+        doc_rect = self._text_selection_live_doc_rect
+        if doc_rect is None:
+            self._clear_text_selection()
+            return
+        try:
+            selected_text = self.controller.get_text_in_rect(page_idx + 1, doc_rect)
+        except Exception:
+            selected_text = ""
+        if not selected_text.strip():
+            self._clear_text_selection()
+            return
+        self._selected_text_page_idx = page_idx
+        self._selected_text_rect_doc = fitz.Rect(doc_rect)
+        self._selected_text_cached = selected_text
+        rs = self._render_scale if self._render_scale > 0 else 1.0
+        y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0.0
+        precise_scene = QRectF(
+            doc_rect.x0 * rs,
+            y0 + doc_rect.y0 * rs,
+            max(1.0, doc_rect.width * rs),
+            max(1.0, doc_rect.height * rs),
+        )
+        self._text_selection_rect_item.setRect(precise_scene)
+        self._text_selection_rect_item.setVisible(True)
+
+    def _clear_text_selection(self) -> None:
+        self._text_selection_active = False
+        self._text_selection_page_idx = None
+        self._text_selection_start_scene_pos = None
+        self._text_selection_live_doc_rect = None
+        self._text_selection_last_scene_pos = None
+        self._selected_text_rect_doc = None
+        self._selected_text_page_idx = None
+        self._selected_text_cached = ""
+        if self._text_selection_rect_item is not None:
+            try:
+                if self._text_selection_rect_item.scene():
+                    self.scene.removeItem(self._text_selection_rect_item)
+            except Exception:
+                pass
+            self._text_selection_rect_item = None
+
+    def _copy_selected_text_to_clipboard(self) -> bool:
+        text = (self._selected_text_cached or "").strip()
+        if not text and self._selected_text_rect_doc is not None and self._selected_text_page_idx is not None:
+            try:
+                text = self.controller.get_text_in_rect(self._selected_text_page_idx + 1, self._selected_text_rect_doc).strip()
+            except Exception:
+                text = ""
+        if not text:
+            return False
+        QApplication.clipboard().setText(text)
+        self._selected_text_cached = text
+        if getattr(self, "status_bar", None):
+            self.status_bar.showMessage("Copied selected text", 1500)
+        return True
+
     def _clamp_editor_pos_to_page(self, x: float, y: float, page_idx: int):
         """將編輯框的場景座標（左上角）限制在指定頁面的邊界內，回傳 (x, y)。"""
         rs = self._render_scale if self._render_scale > 0 else 1.0
@@ -1455,6 +1674,12 @@ class PDFView(QMainWindow):
 
     def _mouse_release(self, event):
         # ── 拖曳移動文字框的放開處理 ──
+        if self.current_mode == 'browse' and event.button() == Qt.LeftButton and self._text_selection_active:
+            scene_pos = self.graphics_view.mapToScene(event.pos())
+            self._finalize_text_selection(scene_pos)
+            event.accept()
+            return
+
         if self.current_mode == 'edit_text' and event.button() == Qt.LeftButton:
             scene_pos = self.graphics_view.mapToScene(event.pos())
 
@@ -1663,6 +1888,9 @@ class PDFView(QMainWindow):
 
     def _show_context_menu(self, pos):
         menu = QMenu(self)
+        if self.current_mode == 'browse' and (self._selected_text_cached or self._selected_text_rect_doc is not None):
+            menu.addAction("Copy Selected Text", self._copy_selected_text_to_clipboard)
+            menu.addSeparator()
         menu.addAction("旋轉頁面", self._rotate_pages)
         menu.exec_(self.graphics_view.mapToGlobal(pos))
 

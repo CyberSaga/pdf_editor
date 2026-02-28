@@ -20,6 +20,7 @@ Key features:
 - [x] page operations (delete/rotate/export/insert/merge)
 - [x] text editing (overlap-safe redaction + replay; run/paragraph target modes; preserves existing annotations)
 - [x] search & jump to results
+- [x] browse-mode text selection and copy (`Ctrl+C` / context menu copy)
 - [x] annotations (rect/highlight/free-text) and visibility toggle
 - [x] watermarks (persisted inside PDF metadata)
 - [x] printing pipeline with preview/layout options
