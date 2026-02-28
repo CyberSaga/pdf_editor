@@ -29,4 +29,4 @@ pdf_editor/
     README.zh-TW.md               # 繁體中文 README
     ARCHITECTURE.md               # 架構說明（含文字編輯流程）
     FEATURES.md                   # 功能與主要流程
-  test_scripts/
+  test_scripts/                   # 每次修改完測試是否依然能用的腳本（不須列出）

@@ -1138,6 +1138,15 @@ class PDFModel:
         if is_italic:             return "heit"
         return "helv"
 
+    def _needs_cjk_font(self, text: str) -> bool:
+        """
+        判斷文字是否包含 CJK（中日韓）字符。
+        供文字重播/插入時挑選可用 fallback 字體，避免缺字。
+        """
+        if not text:
+            return False
+        return bool(re.search(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", text))
+
     def _push_down_overlapping_text(
         self,
         page: fitz.Page,
@@ -1346,8 +1355,36 @@ class PDFModel:
             rotate = int(span.rotation) if span.rotation in (0, 90, 180, 270) else 0
             raw_font = span.font or "helv"
             fontname = self._resolve_font_for_push(raw_font)
+            is_cjk_text = self._needs_cjk_font(text)
+
+            # CJK text can be silently dropped by insert_text(helv) without raising.
+            # Prefer HTML replay first to preserve Unicode reliably.
+            if is_cjk_text:
+                try:
+                    bbox = fitz.Rect(span.bbox)
+                    if bbox.width < 2:
+                        bbox.x1 = bbox.x0 + max(2.0, fontsize * 0.8)
+                    if bbox.height < 2:
+                        bbox.y1 = bbox.y0 + max(2.0, fontsize * 1.2)
+                    html_content = self._convert_text_to_html(text, int(round(fontsize)), color)
+                    css = self._build_insert_css(fontsize, color)
+                    page.insert_htmlbox(
+                        self._clamp_rect_to_page(bbox, page.rect),
+                        html_content,
+                        css=css,
+                        rotate=rotate,
+                        scale_low=0,
+                    )
+                    continue
+                except Exception as e_html:
+                    logger.debug(
+                        "protected replay html fallback failed span=%s err=%s; fallback to insert_text candidates",
+                        span.span_id,
+                        e_html,
+                    )
+
             candidates = [fontname]
-            if self._needs_cjk_font(text):
+            if is_cjk_text:
                 candidates.extend(["china-ts", "helv"])
             else:
                 candidates.extend(["helv", "tiro", "cour"])
