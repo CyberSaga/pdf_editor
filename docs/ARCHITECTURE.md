@@ -29,6 +29,7 @@ Responsibilities:
 - Save/save-as orchestration (including overwrite/collision behavior).
 - Command integration via `CommandManager`.
 - Delegation to built-in tools via `self.tools` (`ToolManager`).
+- Read-only text extraction helpers for UI interactions (for example, browse-mode selection copy).
 
 Session model (`DocumentSession`) stores:
 
@@ -136,13 +137,26 @@ Responsibilities:
    - index rebuild.
 4. Command manager tracks undo/redo stacks.
 
-### 3.3 Render / Print
+### 3.3 Browse Text Selection and Copy
+
+1. In browse mode, left-drag starts selection only when drag begins on editable text.
+2. View computes a rough drag region, then snaps highlight to text bounds:
+   - text existence check via `controller.get_text_in_rect(page_num, rect)`
+   - bounds snapping via `controller.get_text_bounds(page_num, rough_rect)`
+3. The live selection overlay is visible only when text exists in the dragged region.
+4. On mouse release, the snapped text bounds become the persisted selection.
+5. Copy path:
+   - `Ctrl+C` in browse mode copies selected text to system clipboard
+   - context menu shows `Copy Selected Text` only when selection exists
+6. Selection is cleared on blank-click, mode switch away from browse, and scene/document rebuild.
+
+### 3.4 Render / Print
 
 - `PDFModel.get_page_pixmap(...)` delegates to `ToolManager.render_page_pixmap(...)`.
 - Tools may inject overlays (notably watermark) by purpose (`view`, `snapshot`, `print`).
 - `PDFModel.build_print_snapshot()` delegates to tool manager to build printable bytes.
 
-### 3.4 Save
+### 3.5 Save
 
 1. Model applies pending redactions/cleanup.
 2. Model asks `tools.prepare_doc_for_save(session_id)` for save-time transformed doc if needed.
@@ -173,3 +187,4 @@ Controller entry:
 - Model owns document data and edit/save correctness.
 - Tool-specific state and logic live in tool extensions, keyed by `session_id`.
 - Built-in tools are statically registered; no runtime plugin discovery in current design.
+- Browse selection rendering is a View concern; text extraction/snap helpers remain in Controller/Model/Tool boundaries.

@@ -49,3 +49,31 @@ OCR 功能由 `model.tools.ocr.ocr_pages(pages)` 提供，執行依賴 `pytesser
 ## 11. API 與責任邊界
 
 工具型功能不再直接掛在 `PDFModel` 公開 API，而是統一從 `model.tools.<tool>.*` 進入。`PDFModel` 專注於 session、文件生命週期、核心編輯與儲存協調；`ToolManager` 負責工具生命週期與渲染/儲存掛勾；各工具類別則管理其專屬狀態與行為，避免模型層持續膨脹。
+## Browse-Mode Text Selection and Copy (2026-02)
+
+Browse mode supports text drag selection and clipboard copy.
+
+- Entry behavior:
+  - drag starts on editable text -> start selection
+  - drag starts on non-text -> keep page panning
+- Live highlight behavior:
+  - no arbitrary raw mouse rectangle is shown
+  - highlight snaps to actual text bounds during drag
+  - if dragged region has no text, no selection box is shown
+- Selection lifecycle:
+  - release finalizes snapped text bounds
+  - blank-click clears existing selection
+  - selection clears on mode switch and scene/document rebuild paths
+- Copy behavior:
+  - `Ctrl+C` in browse mode copies selected text to clipboard
+  - context menu shows `Copy Selected Text` only when selection exists
+
+Key functions:
+
+- `PDFModel.get_text_in_rect(page_num, rect) -> str`
+- `PDFController.get_text_in_rect(page_num, rect) -> str`
+- `PDFController.get_text_bounds(page_num, rough_rect) -> fitz.Rect`
+- `PDFView._start_text_selection(...)`
+- `PDFView._update_text_selection(...)`
+- `PDFView._finalize_text_selection(...)`
+- `PDFView._copy_selected_text_to_clipboard()`
