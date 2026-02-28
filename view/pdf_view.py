@@ -231,6 +231,7 @@ class PDFView(QMainWindow):
     sig_add_highlight = Signal(int, object, object)
     sig_add_rect = Signal(int, object, object, bool)
     sig_edit_text = Signal(int, object, str, str, int, tuple, str, bool, object, object, str)  # ..., new_rect(optional), target_span_id(optional), target_mode
+    sig_add_textbox = Signal(int, object, str, str, int, tuple)  # page_num, visual_rect, text, font, size, color
     sig_jump_to_result = Signal(int, object)
     sig_search = Signal(str)
     sig_ocr = Signal(list)
@@ -331,6 +332,12 @@ class PDFView(QMainWindow):
 
         # --- State Variables ---
         self.current_mode = 'browse'
+        self._add_text_default_font_applied = False
+        self._add_text_default_pdf_font = "cjk"
+        self._add_text_default_color = (0.0, 0.0, 0.0)
+        self._add_text_default_size = 12
+        self._add_text_default_width_pt = 220.0
+        self._add_text_default_height_pt = 56.0
         self.current_page = 0
         self.scale = 1.0
         # 記錄目前場景內 pixmap 實際渲染時所使用的 scale。
@@ -343,6 +350,7 @@ class PDFView(QMainWindow):
         self._zoom_debounce_timer.timeout.connect(self._on_zoom_debounce)
         self.drawing_start = None
         self.text_editor: QGraphicsProxyWidget = None
+        self.editing_intent = "edit_existing"
         self.editing_rect: fitz.Rect = None
         self._editing_original_rect: fitz.Rect = None  # 編輯開始時的原始 rect，拖曳期間不變
         # 拖曳移動文字框的狀態機
@@ -564,6 +572,7 @@ class PDFView(QMainWindow):
         tb_edit.setToolButtonStyle(Qt.ToolButtonTextOnly)
         tb_edit.setStyleSheet(toolbar_style)
         tb_edit.addAction("編輯文字", lambda: self.set_mode("edit_text")).setShortcut(QKeySequence(Qt.Key_F2))
+        tb_edit.addAction("新增文字框", lambda: self.set_mode("add_text"))
         tb_edit.addAction("矩形", lambda: self.set_mode("rect"))
         tb_edit.addAction("螢光筆", lambda: self.set_mode("highlight"))
         tb_edit.addAction("新增註解", lambda: self.set_mode("add_annotation"))
@@ -883,6 +892,16 @@ class PDFView(QMainWindow):
                 self.right_stacked_widget.setCurrentWidget(self.highlight_card)
             else:
                 self.right_stacked_widget.setCurrentWidget(self.page_info_card)
+        elif mode == 'add_text':
+            self.graphics_view.setDragMode(QGraphicsView.NoDrag)
+            self.graphics_view.viewport().setCursor(Qt.IBeamCursor)
+            self.right_stacked_widget.setCurrentWidget(self.text_card)
+            if not self._add_text_default_font_applied:
+                self.text_font.setCurrentFont(QFont("Microsoft JhengHei"))
+                if self.text_size.findText(str(self._add_text_default_size)) == -1:
+                    self.text_size.addItem(str(self._add_text_default_size))
+                self.text_size.setCurrentText(str(self._add_text_default_size))
+                self._add_text_default_font_applied = True
         elif mode == 'edit_text':
             self.right_stacked_widget.setCurrentWidget(self.text_card)
         else:
@@ -1273,6 +1292,24 @@ class PDFView(QMainWindow):
                 if self._selected_text_rect_doc is not None or self._selected_text_cached:
                     self._clear_text_selection()
 
+            if self.current_mode == 'add_text':
+                if self.text_editor:
+                    editor_scene_rect = self.text_editor.mapRectToScene(self.text_editor.boundingRect())
+                    if editor_scene_rect.contains(scene_pos):
+                        self._drag_pending = True
+                        self._drag_active = False
+                        self._pending_text_info = None
+                        self._drag_start_scene_pos = scene_pos
+                        self._drag_editor_start_pos = self.text_editor.pos()
+                        return
+                    self._drag_pending = False
+                    self._drag_active = False
+                    self._pending_text_info = None
+                    self._finalize_text_edit()
+                    return
+                self._create_add_text_editor_at_scene(scene_pos)
+                return
+
             if self.current_mode == 'edit_text':
                 # ── 若已有開啟的編輯框 ──
                 if self.text_editor:
@@ -1338,7 +1375,7 @@ class PDFView(QMainWindow):
                 self._reset_browse_hover_cursor()
             else:
                 self._update_browse_hover_cursor(scene_pos)
-        elif self.current_mode == 'edit_text':
+        elif self.current_mode in ('edit_text', 'add_text'):
             # ── 待定狀態：判斷是否超過拖曳閾值 ──
             if self._drag_pending and self._drag_start_scene_pos is not None:
                 dx = scene_pos.x() - self._drag_start_scene_pos.x()
@@ -1374,8 +1411,8 @@ class PDFView(QMainWindow):
                 self.text_editor.setPos(new_x, new_y)
                 return  # 拖曳中不觸發 ScrollHandDrag
 
-            # ── hover 高亮（無編輯框且非拖曳/待定狀態）──
-            if not self.text_editor and not self._drag_pending and not self._drag_active:
+            # ── hover 高亮（僅 edit_text）──
+            if self.current_mode == 'edit_text' and not self.text_editor and not self._drag_pending and not self._drag_active:
                 if (self._last_hover_scene_pos is None or
                         abs(scene_pos.x() - self._last_hover_scene_pos.x()) > 6 or
                         abs(scene_pos.y() - self._last_hover_scene_pos.y()) > 6):
@@ -1451,6 +1488,57 @@ class PDFView(QMainWindow):
         if rect.width <= 0 or rect.height <= 0:
             return None
         return rect
+
+    def _build_add_text_visual_rect(self, page_idx: int, doc_point: fitz.Point) -> fitz.Rect:
+        model = getattr(self.controller, "model", None)
+        if model is None or not model.doc:
+            return fitz.Rect(doc_point.x, doc_point.y, doc_point.x + 1, doc_point.y + 1)
+        page = model.doc[page_idx]
+        page_rect = fitz.Rect(page.rect)
+        w = float(self._add_text_default_width_pt)
+        h = float(self._add_text_default_height_pt)
+        rect = fitz.Rect(doc_point.x, doc_point.y, doc_point.x + w, doc_point.y + h)
+        rect = fitz.Rect(
+            max(page_rect.x0, rect.x0),
+            max(page_rect.y0, rect.y0),
+            min(page_rect.x1, rect.x1),
+            min(page_rect.y1, rect.y1),
+        )
+        if rect.width < 8:
+            rect.x1 = min(page_rect.x1, rect.x0 + 8)
+        if rect.height < 8:
+            rect.y1 = min(page_rect.y1, rect.y0 + 8)
+        return rect
+
+    def _create_add_text_editor_at_scene(self, scene_pos: QPointF) -> None:
+        if not hasattr(self, "controller") or self.controller is None:
+            return
+        model = getattr(self.controller, "model", None)
+        if model is None or not model.doc:
+            return
+        page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
+        visual_rect = self._build_add_text_visual_rect(page_idx, doc_point)
+        font_size = self._add_text_default_size
+        try:
+            font_size = int(self.text_size.currentText())
+        except Exception:
+            pass
+        page_rotation = int(model.doc[page_idx].rotation)
+        self.editing_font_name = self._add_text_default_pdf_font
+        self.editing_color = self._add_text_default_color
+        self.editing_original_text = ""
+        self._editing_page_idx = page_idx
+        self._create_text_editor(
+            visual_rect,
+            "",
+            self._add_text_default_pdf_font,
+            font_size,
+            self._add_text_default_color,
+            page_rotation,
+            None,
+            "run",
+            "add_new",
+        )
 
     def _start_text_selection(self, scene_pos: QPointF, page_idx: int) -> None:
         self._clear_hover_highlight()
@@ -1680,7 +1768,7 @@ class PDFView(QMainWindow):
             event.accept()
             return
 
-        if self.current_mode == 'edit_text' and event.button() == Qt.LeftButton:
+        if self.current_mode in ('edit_text', 'add_text') and event.button() == Qt.LeftButton:
             scene_pos = self.graphics_view.mapToScene(event.pos())
 
             if self._drag_pending:
@@ -1705,7 +1793,10 @@ class PDFView(QMainWindow):
                 # 拖曳結束 → 更新 editing_rect 為新的 PDF 座標（已被 clamp 在頁內）
                 self._drag_active = False
                 self._pending_text_info = None
-                self.graphics_view.viewport().setCursor(Qt.ArrowCursor)
+                if self.current_mode == 'add_text':
+                    self.graphics_view.viewport().setCursor(Qt.IBeamCursor)
+                else:
+                    self.graphics_view.viewport().setCursor(Qt.ArrowCursor)
                 if self.text_editor:
                     proxy_pos = self.text_editor.pos()
                     page_idx = getattr(self, '_editing_page_idx', self.current_page)
@@ -1744,7 +1835,18 @@ class PDFView(QMainWindow):
         self.set_mode('browse')
         QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
 
-    def _create_text_editor(self, rect: fitz.Rect, text: str, font_name: str, font_size: float, color: tuple = (0,0,0), rotation: int = 0, target_span_id: str = None, target_mode: str = "run"):
+    def _create_text_editor(
+        self,
+        rect: fitz.Rect,
+        text: str,
+        font_name: str,
+        font_size: float,
+        color: tuple = (0, 0, 0),
+        rotation: int = 0,
+        target_span_id: str = None,
+        target_mode: str = "run",
+        editor_intent: str = "edit_existing",
+    ):
         """建立文字編輯框，設定寬度與換行以預覽渲染後的排版（與 PDF insert_htmlbox 一致）。"""
         if self.text_editor:
             self._finalize_text_edit()
@@ -1766,6 +1868,7 @@ class PDFView(QMainWindow):
         self._editing_rotation = rotation
         self.editing_target_span_id = target_span_id
         self.editing_target_mode = target_mode if target_mode in ("run", "paragraph") else "run"
+        self.editing_intent = editor_intent if editor_intent in ("edit_existing", "add_new") else "edit_existing"
 
         qt_font = self._pdf_font_to_qt(font_name)
         editor.setFont(QFont(qt_font, int(font_size)))
@@ -1834,6 +1937,7 @@ class PDFView(QMainWindow):
         original_color = getattr(self, 'editing_color', (0,0,0))
         current_size = int(self.text_size.currentText())
         edit_page = getattr(self, '_editing_page_idx', self.current_page)
+        edit_intent = getattr(self, 'editing_intent', 'edit_existing')
 
         # 重置拖曳狀態
         self._drag_pending = False
@@ -1862,6 +1966,22 @@ class PDFView(QMainWindow):
         if hasattr(self, 'editing_target_span_id'): del self.editing_target_span_id
         target_mode = getattr(self, 'editing_target_mode', 'run')
         if hasattr(self, 'editing_target_mode'): del self.editing_target_mode
+        if hasattr(self, 'editing_intent'): del self.editing_intent
+
+        if edit_intent == 'add_new':
+            if new_text.strip() and current_rect is not None:
+                try:
+                    self.sig_add_textbox.emit(
+                        edit_page + 1,
+                        current_rect,
+                        new_text,
+                        original_font or self._add_text_default_pdf_font,
+                        current_size,
+                        original_color,
+                    )
+                except Exception as e:
+                    logger.error(f"發送新增文字框信號時出錯: {e}")
+            return
 
         if (text_changed or position_changed) and original_rect:
             try:

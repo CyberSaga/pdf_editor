@@ -2,7 +2,7 @@ from PySide6.QtWidgets import QMessageBox, QApplication, QFileDialog, QDialog
 from PySide6.QtGui import QPixmap
 from PySide6.QtCore import QTimer
 from model.pdf_model import PDFModel
-from model.edit_commands import EditTextCommand, SnapshotCommand
+from model.edit_commands import EditTextCommand, SnapshotCommand, AddTextboxCommand
 from view.pdf_view import PDFView
 from typing import List, Tuple, Optional
 from utils.helpers import pixmap_to_qpixmap, show_error
@@ -35,7 +35,7 @@ class SessionUIState:
     mode: str = "browse"
 
 class PDFController:
-    _VALID_MODES = {"browse", "edit_text", "rect", "highlight", "add_annotation"}
+    _VALID_MODES = {"browse", "edit_text", "add_text", "rect", "highlight", "add_annotation"}
     def __init__(self, model: PDFModel, view: PDFView):
         self.model = model
         self.view = view
@@ -61,6 +61,7 @@ class PDFController:
         self.view.sig_add_highlight.connect(self.add_highlight)
         self.view.sig_add_rect.connect(self.add_rect)
         self.view.sig_edit_text.connect(self.edit_text)
+        self.view.sig_add_textbox.connect(self.add_textbox)
         self.view.sig_jump_to_result.connect(self.jump_to_result)
         self.view.sig_search.connect(self.search_text)
         self.view.sig_ocr.connect(self.ocr_pages)
@@ -503,6 +504,39 @@ class PDFController:
             logger.error(f"編輯文字失敗: {e}")
             show_error(self.view, f"編輯失敗: {e}")
         
+    def add_textbox(
+        self,
+        page: int,
+        visual_rect: fitz.Rect,
+        text: str,
+        font: str,
+        size: int,
+        color: tuple,
+    ) -> None:
+        if not text.strip():
+            return
+        if not self.model.doc or page < 1 or page > len(self.model.doc):
+            return
+        try:
+            page_idx = page - 1
+            before_page_snapshot = self.model._capture_page_snapshot_strict(page_idx)
+            cmd = AddTextboxCommand(
+                model=self.model,
+                page_num=page,
+                visual_rect=visual_rect,
+                text=text,
+                font=font,
+                size=size,
+                color=color,
+                before_page_snapshot_bytes=before_page_snapshot,
+            )
+            self.model.command_manager.execute(cmd)
+            self.show_page(page_idx)
+            self._update_undo_redo_tooltips()
+        except Exception as e:
+            logger.error(f"新增文字框失敗: {e}")
+            show_error(self.view, f"新增文字框失敗: {e}")
+
     def set_text_target_mode(self, mode: str):
         self.model.set_text_target_mode(mode)
 
