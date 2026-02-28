@@ -1,4 +1,4 @@
-"""
+﻿"""
 測量測試程式的啟動時間
 """
 # -*- coding: utf-8 -*-
@@ -7,7 +7,7 @@ import sys
 import io
 
 # 設置標準輸出編碼為 UTF-8（Windows 兼容）
-if sys.platform == 'win32':
+if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 print("開始測量啟動時間...")

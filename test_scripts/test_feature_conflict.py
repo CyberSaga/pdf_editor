@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 test_feature_conflict.py — 功能與衝突驗證
 ==========================================
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass, field
 
-if sys.platform == "win32":
+if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 import logging

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 使用 1.pdf、2.pdf、when I was young I.pdf 測試 PDF 編輯器
 驗證：開啟、建立索引、擷取文字、執行編輯
@@ -7,7 +7,7 @@ import sys
 import io
 from pathlib import Path
 
-if sys.platform == 'win32':
+if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 from model.pdf_model import PDFModel

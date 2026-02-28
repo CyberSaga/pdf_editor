@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 test_drag_move.py -- drag-move text box feature test
 =====================================================
@@ -26,7 +26,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional, List, Tuple
 
-if sys.platform == "win32":
+if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 import fitz

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 test_all_pdfs.py — 全 test_files 目錄 PDF 批次測試
 ====================================================
@@ -25,7 +25,7 @@ import time
 import traceback
 from pathlib import Path
 
-if sys.platform == "win32":
+if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 import logging
@@ -33,14 +33,15 @@ logging.disable(logging.CRITICAL)   # 批次測試期間關閉所有 log，避�
 
 import fitz
 
-sys.path.insert(0, os.path.dirname(__file__))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 from model.pdf_model import PDFModel
 
 # ──────────────────────────────────────────────────────────────────
 # 設定
 # ──────────────────────────────────────────────────────────────────
-TEST_FILES_ROOT = Path(__file__).parent / "test_files"
-ERROR_LOG       = Path(__file__).parent / "error_log.txt"
+TEST_FILES_ROOT = ROOT / "test_files"
+ERROR_LOG       = ROOT / "error_log.txt"
 
 # 已知密碼表：{檔名（小寫）→ 密碼}
 # 支援 user password（開啟密碼）與 owner password（權限密碼）。

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 稽核 1.pdf：檢查頁面尺寸、文字塊位置、編輯後輸出
 """
@@ -6,7 +6,7 @@ import sys
 import io
 from pathlib import Path
 
-if sys.platform == 'win32':
+if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 import fitz
