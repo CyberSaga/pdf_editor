@@ -32,8 +32,10 @@ class SessionUIState:
     current_page: int = 0
     scale: float = 1.0
     search_state: dict = field(default_factory=lambda: {"query": "", "results": [], "index": -1})
+    mode: str = "browse"
 
 class PDFController:
+    _VALID_MODES = {"browse", "edit_text", "rect", "highlight", "add_annotation"}
     def __init__(self, model: PDFModel, view: PDFView):
         self.model = model
         self.view = view
@@ -104,6 +106,7 @@ class PDFController:
             current_page=max(0, self.view.current_page),
             scale=max(0.1, min(float(self.view.scale), 4.0)),
             search_state=self.view.get_search_ui_state(),
+            mode=self._normalize_mode(getattr(self.view, "current_mode", "browse")),
         )
 
     def _get_ui_state(self, session_id: str) -> SessionUIState:
@@ -118,9 +121,19 @@ class PDFController:
         active_idx = self.model.get_active_session_index()
         self.view.set_document_tabs(tabs, active_idx)
 
+    def _normalize_mode(self, mode: str) -> str:
+        return mode if mode in self._VALID_MODES else "browse"
+
+    def _apply_session_mode(self, mode: str) -> None:
+        normalized = self._normalize_mode(mode)
+        current = self._normalize_mode(getattr(self.view, "current_mode", "browse"))
+        if current != normalized:
+            self.view.set_mode(normalized)
+
     def _reset_empty_ui(self) -> None:
         self.annotations = []
         self.view.clear_document_tabs()
+        self._apply_session_mode("browse")
         self.view.reset_document_view()
         self.view.populate_annotations_list([])
         self.view.populate_watermarks_list([])
@@ -147,6 +160,7 @@ class PDFController:
         self.load_annotations()
         self.load_watermarks()
         self.view.apply_search_ui_state(state.search_state)
+        self._apply_session_mode(state.mode)
         self._update_undo_redo_tooltips()
 
         gen = self._next_load_gen(sid)
@@ -729,7 +743,11 @@ class PDFController:
         self._refresh_document_tabs()
 
     def _update_mode(self, mode: str):
-        pass
+        sid = self.model.get_active_session_id()
+        if not sid:
+            return
+        state = self._get_ui_state(sid)
+        state.mode = self._normalize_mode(mode)
 
     # --- New Annotation Handlers ---
 

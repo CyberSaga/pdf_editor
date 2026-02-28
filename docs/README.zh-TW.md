@@ -87,3 +87,10 @@ dist\main.exe
 ## 9. 免責聲明
 
 本軟體以「現狀」提供，不提供任何形式的保證。
+
+## 10. 架構更新（2026-02）
+
+- 工具功能已從 `PDFModel` 拆分為內建擴充，位於 `model/tools/`。
+- 目前內建工具：`annotation`、`watermark`、`search`、`ocr`。
+- 呼叫方式已改為 `model.tools.<tool>.*`（例如：`model.tools.search.search_text(...)`）。
+- OCR 仍為選用功能；缺少依賴時會回傳明確錯誤訊息。
