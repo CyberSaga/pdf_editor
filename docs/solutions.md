@@ -583,3 +583,124 @@ Files:
 | 6.6 | test_script 找不到 src 模組 | 將 repo root 加入 sys.path |
 | 7 | 大 PDF 開啟約 30s 無回應 | 延後 index 建立、批次載入、縮小 batch 讓出 main thread |
 | 8 | 縮放修復後仍無法捲動/點縮圖跳頁 | 更新 view.sceneRect 與 scene 一致、clamp 未載入頁 |
+
+---
+
+## 14. 本輪重構新增問題與解法（2026-02）
+
+### 14.1 工具解耦後仍有舊 API 呼叫導致行為不一致
+
+**問題：**  
+工具方法從 `PDFModel` 拆出後，部分呼叫端仍使用舊介面，造成功能混用或潛在 `AttributeError` 風險。
+
+**原因：**  
+本次屬 Breaking API：`search_text`、`ocr_pages`、註解與浮水印等方法不再直接掛在 `PDFModel`。
+
+**有效解法（已實作）：**  
+統一遷移為 `model.tools.<tool>.*` 入口，Controller 對外方法名稱保持不變，僅調整內部委派路徑，降低 UI 層衝擊。
+
+**檔案：** `controller/pdf_controller.py`、`view/pdf_view.py`、`test_scripts/*`
+
+---
+
+### 14.2 多分頁 dirty 狀態與工具狀態不同步
+
+**問題：**  
+工具狀態（尤其浮水印）移出 `DocumentSession` 後，dirty 判定可能漏算工具未儲存變更。
+
+**原因：**  
+舊邏輯主要依賴 `command_manager`，未納入工具層 per-session dirty。
+
+**有效解法（已實作）：**  
+在 Model 端改為整合判定：  
+`session.command_manager.has_pending_changes() or tools.has_unsaved_changes(session_id)`；  
+`list_sessions()` 的 dirty 欄位使用同一規則，確保分頁標記一致。
+
+**檔案：** `model/pdf_model.py`、`model/tools/manager.py`、`model/tools/watermark_tool.py`
+
+---
+
+### 14.3 `def _update_mode()` 空實作造成模式狀態不穩定
+
+**問題：**  
+模式更新若只接收 signal 而不落地到 session state，切換分頁後可能回到錯誤模式或出現 UI/Controller 狀態不一致。
+
+**原因：**  
+缺乏「Controller 持有模式真值、View 僅呈現」的邊界設計。
+
+**有效解法（已實作）：**  
+導入安全同步邊界：  
+1. `SessionUIState.mode` 作為每分頁模式來源。  
+2. `_update_mode(mode)` 只寫入 active session 狀態。  
+3. `_apply_session_mode(mode)` 做 normalize 後再呼叫 `view.set_mode(...)`，避免無效/重入切換。  
+4. 分頁切換時由 `_render_active_session` 還原該分頁模式。
+
+**檔案：** `controller/pdf_controller.py`
+
+---
+
+### 14.4 `test_deep.py` T6（2 failures）在拖曳與複雜文字下回滾
+
+**問題：**  
+T6 場景曾出現 paragraph 拖曳編輯回滾或驗證失敗。
+
+**原因：**  
+1. 舊命令資料在拖曳場景可能缺 `target_mode/target_span_id`，重播時路徑不穩。  
+2. 複雜字形（CJK/RTL 等）在抽取後比對易產生假陰性。  
+3. 受保護文字重播對 CJK 字體容錯不足。
+
+**有效解法（已實作）：**  
+1. 在 `edit_text` 加入 legacy fallback：`new_rect` 存在且未指定目標時，推導為 paragraph 路徑。  
+2. 新增複雜文字檢測與較寬鬆驗證門檻（僅對複雜腳本放寬），降低誤回滾。  
+3. `protected replay` 對 CJK 優先走 HTML 插入容錯路徑，減少字形遺失。
+
+**檔案：** `model/pdf_model.py`
+
+---
+
+### 14.5 OCR 缺依賴時錯誤訊息不夠明確
+
+**問題：**  
+缺 `pytesseract`、`Pillow` 或系統 `tesseract` 時，錯誤回報不夠可操作。
+
+**原因：**  
+依賴檢查與執行錯誤處理未集中於 OCR 工具層。
+
+**有效解法（已實作）：**  
+在 `OcrTool` 內執行期載入依賴並區分錯誤型別：  
+- 套件缺失：明確 `RuntimeError`。  
+- 引擎缺失（TesseractNotFound）：明確 `RuntimeError`。  
+- 非法頁碼：`ValueError`。  
+- 其它 OCR 失敗：包裝為 `RuntimeError` 並保留上下文。
+
+**檔案：** `model/tools/ocr_tool.py`
+
+---
+
+### 14.6 `pytest` 匯入腳本型測試時 stdout 包裝干擾
+
+**問題：**  
+部分測試腳本在 import 階段直接重綁 `sys.stdout`，與 pytest capture 互動不穩定。
+
+**原因：**  
+Windows 編碼修正邏輯放在 module import 階段，而非 CLI 執行入口。
+
+**有效解法（已實作）：**  
+將該邏輯改為僅在 `if sys.platform == "win32" and __name__ == "__main__":` 時執行，避免 pytest 收集期副作用。
+
+**檔案：** `test_scripts/*.py`（相關腳本）
+
+---
+
+### 14.7 README 繁中檔案出現亂碼（mojibake）
+
+**問題：**  
+`README.zh-TW.md` 在終端顯示為亂碼，造成文件不可讀。
+
+**原因：**  
+先前內容編碼與讀取方式不一致（UTF-8 與終端預設編碼混用）。
+
+**有效解法（已實作）：**  
+以 UTF-8 重新寫入全文，並以 `Get-Content -Encoding utf8` 驗證；同時與 `README.md` 同步章節內容，避免雙語文件漂移。
+
+**檔案：** `docs/README.zh-TW.md`、`docs/README.md`

@@ -2,6 +2,8 @@
 
 以 Python + Qt（PySide6）撰寫的桌面 PDF 編輯器，提供頁面管理、註解、文字編輯
 （redaction + 重新插入）、浮水印、搜尋與可選的 OCR 功能。
+工具功能已由 `PDFModel` 解耦至 `model/tools/` 內建擴充（`annotation`、`watermark`、`search`、`ocr`），
+統一入口為 `model.tools.<tool>.*`。
 
 本文件參考 `PDF4QT-README.md` 的章節結構。
 
@@ -21,6 +23,7 @@
 - [x] 可選 OCR（Tesseract）
 - [x] Undo / Redo（Command 系統）
 - [x] 大型 PDF：優先顯示第一頁，縮圖與連續捲動背景載入
+- [x] 多分頁 session 隔離（工具狀態與 dirty 狀態按 session 管理）
 
 更詳細的流程與責任分工請見：
 - `docs/FEATURES.md`
@@ -87,10 +90,3 @@ dist\main.exe
 ## 9. 免責聲明
 
 本軟體以「現狀」提供，不提供任何形式的保證。
-
-## 10. 架構更新（2026-02）
-
-- 工具功能已從 `PDFModel` 拆分為內建擴充，位於 `model/tools/`。
-- 目前內建工具：`annotation`、`watermark`、`search`、`ocr`。
-- 呼叫方式已改為 `model.tools.<tool>.*`（例如：`model.tools.search.search_text(...)`）。
-- OCR 仍為選用功能；缺少依賴時會回傳明確錯誤訊息。
