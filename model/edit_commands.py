@@ -193,6 +193,68 @@ class EditTextCommand(EditCommand):
 # SnapshotCommand
 # ──────────────────────────────────────────────────────────────────────────────
 
+class AddTextboxCommand(EditCommand):
+    """Atomic add-textbox command with page-level undo/redo boundaries."""
+
+    def __init__(
+        self,
+        model: Any,
+        page_num: int,
+        visual_rect: fitz.Rect,
+        text: str,
+        font: str,
+        size: int,
+        color: tuple,
+        before_page_snapshot_bytes: bytes,
+    ) -> None:
+        self._model = model
+        self._page_num = int(page_num)
+        self._visual_rect = fitz.Rect(visual_rect)
+        self._text = text
+        self._font = font
+        self._size = int(size)
+        self._color = color
+        self._before_page_snapshot_bytes = before_page_snapshot_bytes
+        self._after_page_snapshot_bytes: Optional[bytes] = None
+        self._executed = False
+
+    @property
+    def description(self) -> str:
+        preview = (self._text[:20] + "...") if len(self._text) > 20 else self._text
+        return f"新增文字框 '{preview}'（頁 {self._page_num}）"
+
+    def execute(self) -> None:
+        page_idx = self._page_num - 1
+        if not self._executed:
+            self._model.add_textbox(
+                self._page_num,
+                self._visual_rect,
+                self._text,
+                font=self._font,
+                size=self._size,
+                color=self._color,
+            )
+            self._after_page_snapshot_bytes = self._model._capture_page_snapshot_strict(page_idx)
+            self._executed = True
+            logger.debug("AddTextboxCommand.execute(first): %s", self.description)
+            return
+
+        if self._after_page_snapshot_bytes is None:
+            raise RuntimeError("AddTextboxCommand redo 缺少 after page snapshot")
+        self._model._restore_page_from_snapshot(page_idx, self._after_page_snapshot_bytes)
+        self._model.block_manager.rebuild_page(page_idx, self._model.doc)
+        logger.debug("AddTextboxCommand.execute(redo): %s", self.description)
+
+    def undo(self) -> None:
+        if not self._executed:
+            logger.warning("AddTextboxCommand.undo(): 尚未執行，略過")
+            return
+        page_idx = self._page_num - 1
+        self._model._restore_page_from_snapshot(page_idx, self._before_page_snapshot_bytes)
+        self._model.block_manager.rebuild_page(page_idx, self._model.doc)
+        logger.debug("AddTextboxCommand.undo(): %s", self.description)
+
+
 class SnapshotCommand(EditCommand):
     """
     文件整體快照指令：以 before/after bytes 快照實作完整的 undo/redo。

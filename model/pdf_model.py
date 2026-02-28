@@ -126,6 +126,13 @@ class PDFModel:
         """Normalize path for dedupe across tabs (case-insensitive on Windows)."""
         return str(Path(path).resolve()).casefold()
 
+    @staticmethod
+    def _safe_exc_message(exc: Exception) -> str:
+        try:
+            return str(exc)
+        except Exception:
+            return repr(exc)
+
     def _active_session(self) -> Optional[DocumentSession]:
         if not self._active_session_id:
             return None
@@ -418,6 +425,18 @@ class PDFModel:
                     f"2=user/4=owner/6=both): {src_path}"
                 )
 
+            # 部分壞損 PDF 可能被 MuPDF 接受但頁數為 0（無法進一步操作）。
+            # 這裡以空白文件替代，避免後續流程崩潰。
+            if len(doc) == 0:
+                logger.warning("PDF 頁數為 0，使用空白頁 fallback: %s", src_path)
+                fallback = fitz.open()
+                fallback.new_page(width=595.0, height=842.0)
+                try:
+                    doc.close()
+                except Exception:
+                    pass
+                doc = fallback
+
             logger.debug(f"成功開啟PDF: {src_path}")
             session_id = str(uuid.uuid4())
             session = DocumentSession(
@@ -511,6 +530,22 @@ class PDFModel:
         if x0 >= x1 or y0 >= y1:
             return fitz.Rect(page_rect.x0, page_rect.y0, page_rect.x0 + 1, page_rect.y0 + 1)
         return fitz.Rect(x0, y0, x1, y1)
+
+    def _rect_from_points(self, points: list[fitz.Point]) -> fitz.Rect:
+        xs = [float(p.x) for p in points]
+        ys = [float(p.y) for p in points]
+        return fitz.Rect(min(xs), min(ys), max(xs), max(ys))
+
+    def _visual_rect_to_unrotated_rect(self, page: fitz.Page, visual_rect: fitz.Rect) -> fitz.Rect:
+        """Convert a visual-space page rect to unrotated page coordinates."""
+        corners = [
+            fitz.Point(visual_rect.x0, visual_rect.y0),
+            fitz.Point(visual_rect.x1, visual_rect.y0),
+            fitz.Point(visual_rect.x1, visual_rect.y1),
+            fitz.Point(visual_rect.x0, visual_rect.y1),
+        ]
+        mapped = [pt * page.derotation_matrix for pt in corners]
+        return self._rect_from_points(mapped)
 
     def _y_overlaps(self, rect_a: fitz.Rect, rect_b: fitz.Rect) -> bool:
         return not (rect_a.y1 <= rect_b.y0 or rect_b.y1 <= rect_a.y0)
@@ -952,6 +987,149 @@ class PDFModel:
         max_w = right_safe - max(rect.x0, page_rect.x0) - margin
         return max(rect.width, min(max_w, page_rect.width * 0.98))
 
+    def _resolve_add_text_font(self, font_hint: str) -> str:
+        """Resolve add-text font name with CJK-safe default."""
+        low = (font_hint or "").strip().lower()
+        if not low:
+            return "cjk"
+        if low in {"cjk", "china-ts", "china-ss"}:
+            return low
+        if any(k in low for k in ("cjk", "jhenghei", "yahei", "simsun", "pingfang", "source han", "noto")):
+            return "cjk"
+        resolved = self._resolve_font_for_push(font_hint)
+        return resolved or "cjk"
+
+    def _insert_tiny_plain_text(
+        self,
+        page: fitz.Page,
+        text: str,
+        color_rgb: tuple[float, float, float],
+        font_size_hint: float,
+    ) -> None:
+        """
+        Tiny canvas fallback: force a minimal plain-text insertion.
+        This prioritizes recoverable text extraction on extremely small pages.
+        """
+        tiny_size = 0.1
+        x = float(page.rect.x0) + 0.05
+        y = float(page.rect.y0) + max(0.2, min(float(page.rect.height) * 0.8, max(0.2, float(page.rect.height) - 0.05)))
+        page.insert_text(
+            fitz.Point(x, y),
+            text,
+            fontsize=tiny_size,
+            fontname="helv",
+            color=color_rgb,
+            rotate=int(page.rotation) % 360,
+        )
+
+    def add_textbox(
+        self,
+        page_num: int,
+        visual_rect: fitz.Rect,
+        text: str,
+        font: str = "cjk",
+        size: int = 12,
+        color: tuple = (0.0, 0.0, 0.0),
+    ) -> None:
+        """
+        Add new page text anchored in visual page coordinates.
+
+        visual_rect uses current viewer orientation coordinates. The method maps
+        it to unrotated page space and inserts with rotate=page.rotation so text
+        appears at the clicked visual location for rotation 0/90/180/270.
+        """
+        if not text.strip():
+            logger.warning("新增文字框內容為空，略過")
+            return
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            raise ValueError(f"無效頁碼: {page_num}")
+
+        page_idx = page_num - 1
+        font_name = self._resolve_add_text_font(font)
+        font_size = max(0.1, float(size))
+        if len(color) >= 3:
+            color_rgb = (
+                max(0.0, min(1.0, float(color[0]))),
+                max(0.0, min(1.0, float(color[1]))),
+                max(0.0, min(1.0, float(color[2]))),
+            )
+        else:
+            color_rgb = (0.0, 0.0, 0.0)
+
+        last_err: Optional[Exception] = None
+        bounded_visual = fitz.Rect(visual_rect)
+        insert_rect = fitz.Rect(visual_rect)
+        repaired_once = False
+
+        for _ in range(2):
+            page = self.doc[page_idx]
+            page_visual_rect = fitz.Rect(page.rect)
+            bounded_visual = self._clamp_rect_to_page(fitz.Rect(visual_rect), page_visual_rect)
+
+            if bounded_visual.width < 4:
+                bounded_visual.x1 = min(page_visual_rect.x1, bounded_visual.x0 + 4)
+            if bounded_visual.height < 4:
+                bounded_visual.y1 = min(page_visual_rect.y1, bounded_visual.y0 + 4)
+
+            unrot_rect = self._visual_rect_to_unrotated_rect(page, bounded_visual)
+            # Prefer page.rect bounds for insertion. Some malformed PDFs have
+            # mediabox/pagebox mismatch where mediabox clipping collapses usable area.
+            insert_rect = self._clamp_rect_to_page(unrot_rect, fitz.Rect(page.rect))
+
+            try:
+                tiny_canvas = (
+                    min(float(page.rect.width), float(page.rect.height)) < 12.0
+                    or min(float(insert_rect.width), float(insert_rect.height)) < 12.0
+                )
+                if tiny_canvas and not self._needs_cjk_font(text):
+                    self._insert_tiny_plain_text(page, text, color_rgb, font_size)
+                else:
+                    escaped_text = _html_mod.escape(text).replace("\n", "<br>")
+                    html_content = f'<span style="font-family: {font_name};">{escaped_text}</span>'
+                    css = f"""
+                        span {{
+                            font-size: {font_size}pt;
+                            white-space: pre-wrap;
+                            word-break: break-all;
+                            overflow-wrap: anywhere;
+                            color: rgb({int(color_rgb[0]*255)}, {int(color_rgb[1]*255)}, {int(color_rgb[2]*255)});
+                        }}
+                    """
+                    page.insert_htmlbox(
+                        insert_rect,
+                        html_content,
+                        css=css,
+                        rotate=int(page.rotation) % 360,
+                        scale_low=0,
+                    )
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if repaired_once:
+                    break
+                repaired_once = self._repair_active_doc_in_memory(garbage=1)
+                if not repaired_once:
+                    break
+                if not self.doc or page_idx >= len(self.doc):
+                    break
+                continue
+
+        if last_err is not None:
+            raise RuntimeError(f"新增文字框失敗: {self._safe_exc_message(last_err)}") from last_err
+
+        self.block_manager.rebuild_page(page_idx, self.doc)
+        self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(insert_rect)})
+        self.edit_count += 1
+        logger.debug(
+            "add_textbox page=%s visual_rect=%s insert_rect=%s rotate=%s font=%s",
+            page_num,
+            bounded_visual,
+            insert_rect,
+            int(page.rotation) % 360,
+            font_name,
+        )
+
     def _convert_text_to_html(self, text: str, font_size: int, color: tuple) -> str:
         """
         將混合文本轉換為帶有字體樣式的簡單 HTML，並正確處理空格。
@@ -995,6 +1173,81 @@ class PDFModel:
     # ──────────────────────────────────────────────────────────────────────────
     # Phase 3: 頁面快照（取代 clone_page）
     # ──────────────────────────────────────────────────────────────────────────
+
+    def _capture_single_page_snapshot_bytes(
+        self,
+        source_doc: fitz.Document,
+        page_num_0based: int,
+        annots: bool = True,
+    ) -> bytes:
+        tmp_doc = fitz.open()
+        try:
+            tmp_doc.insert_pdf(
+                source_doc,
+                from_page=page_num_0based,
+                to_page=page_num_0based,
+                annots=annots,
+            )
+            stream = io.BytesIO()
+            tmp_doc.save(stream, garbage=0)
+            return stream.getvalue()
+        finally:
+            tmp_doc.close()
+
+    def _repair_active_doc_in_memory(self, garbage: int = 1) -> bool:
+        """Try to repair current doc by round-tripping bytes and reopen in memory."""
+        if not self.doc:
+            return False
+        try:
+            repaired_bytes = self.doc.tobytes(garbage=max(1, int(garbage)), deflate=True)
+            repaired_doc = fitz.open("pdf", repaired_bytes)
+            old_doc = self.doc
+            self.doc = repaired_doc
+            try:
+                old_doc.close()
+            except Exception:
+                pass
+            self.block_manager.build_index(self.doc)
+            logger.warning("已以 in-memory roundtrip 修復目前文件（garbage=%s）", max(1, int(garbage)))
+            return True
+        except Exception as e:
+            logger.warning("修復目前文件失敗: %s", self._safe_exc_message(e))
+            return False
+
+    def _capture_page_snapshot_strict(self, page_num_0based: int) -> bytes:
+        """Capture one-page snapshot without any whole-document fallback."""
+        if not self.doc or page_num_0based < 0 or page_num_0based >= len(self.doc):
+            raise ValueError(f"無效頁碼: {page_num_0based + 1}")
+        last_err: Optional[Exception] = None
+
+        # 1) direct page copy with annotations
+        try:
+            return self._capture_single_page_snapshot_bytes(self.doc, page_num_0based, annots=True)
+        except Exception as e:
+            last_err = e
+
+        # 2) fallback: page copy without annotations (still page-level strict)
+        try:
+            return self._capture_single_page_snapshot_bytes(self.doc, page_num_0based, annots=False)
+        except Exception as e:
+            last_err = e
+
+        # 3) repair current document in memory, then retry page-level extraction
+        repaired = self._repair_active_doc_in_memory(garbage=1)
+        if repaired and self.doc and page_num_0based < len(self.doc):
+            try:
+                return self._capture_single_page_snapshot_bytes(self.doc, page_num_0based, annots=True)
+            except Exception as e:
+                last_err = e
+            try:
+                return self._capture_single_page_snapshot_bytes(self.doc, page_num_0based, annots=False)
+            except Exception as e:
+                last_err = e
+
+        msg = self._safe_exc_message(last_err) if last_err else "unknown error"
+        raise RuntimeError(
+            f"無法擷取頁面快照（strict, page={page_num_0based + 1}）: {msg}"
+        )
 
     def _capture_page_snapshot(self, page_num_0based: int) -> bytes:
         """
