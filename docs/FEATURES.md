@@ -8,7 +8,7 @@
 
 | 功能 | Model | Controller | View（觸發/顯示） |
 |------|-------|------------|-------------------|
-| **Session 註冊表** | `session_ids + sessions_by_id + active_session_id`，每個 session 持有獨立 doc/index/undo/pending_edits/浮水印狀態 | 以 active session 為唯一目標分派所有編輯與儲存操作 | 文件分頁列 `QTabBar` 顯示所有開啟檔案 |
+| **Session 註冊表** | `session_ids + sessions_by_id + active_session_id`，每個 session 持有獨立 doc/index/undo/pending_edits；浮水印等工具狀態由 `model.tools.*` 依 session 管理 | 以 active session 為唯一目標分派所有編輯與儲存操作 | 文件分頁列 `QTabBar` 顯示所有開啟檔案 |
 | **切換分頁** | `activate_session_by_index()` | `on_tab_changed(index)`：切換 active session，恢復該分頁的頁碼/縮放/搜尋狀態，重新啟動分批載入 | 點選文件分頁列觸發 `sig_tab_changed` |
 | **關閉分頁** | `close_session(session_id)` | `on_tab_close_requested(index)`：未儲存檢查（儲存/放棄/取消）後關閉，最後一頁關閉時重置空白 UI | 分頁關閉按鈕觸發 `sig_tab_close_requested` |
 | **防 stale 批次載入** | 無（Controller 層保護） | `_schedule_thumbnail_batch/_schedule_scene_batch/_schedule_index_batch` 全部帶 `session_id + generation` 驗證 | 切換分頁後不會被舊分頁背景批次覆寫畫面 |
@@ -88,7 +88,7 @@
 
 | 功能 | Model | Controller | View（觸發/顯示） |
 |------|-------|------------|-------------------|
-| **搜尋文字** | `search_text(query)` 回傳 `List[Tuple[page_num, text, rect]]`（僅作用於 active session） | `search_text(query)`，將結果交給 View 顯示並寫回該 session 的搜尋 UI state | 頂部「常用」→「搜尋」或 Ctrl+F → 左側「搜尋」分頁；輸入後 `sig_search`，結果列表點擊 → `sig_jump_to_result`；Esc 關閉搜尋 |
+| **搜尋文字** | `model.tools.search.search_text(query)` 回傳 `List[Tuple[page_num, text, rect]]`（僅作用於 active session） | `search_text(query)`，將結果交給 View 顯示並寫回該 session 的搜尋 UI state | 頂部「常用」→「搜尋」或 Ctrl+F → 左側「搜尋」分頁；輸入後 `sig_search`，結果列表點擊 → `sig_jump_to_result`；Esc 關閉搜尋 |
 | **跳至結果** | 無 | `jump_to_result(page_num, rect)`：換頁並在畫布上高亮該矩形 | View 接收並顯示對應頁與高亮 |
 
 ---
@@ -97,13 +97,13 @@
 
 | 功能 | Model | Controller | View（觸發/顯示） |
 |------|-------|------------|-------------------|
-| **矩形** | `add_rect(page_num, rect, color, fill)` | `add_rect`，以 `SnapshotCommand` 記錄 | 頂部「編輯」→「矩形」→ `rect` 模式；右側「屬性」→ 矩形設定（顏色、透明度）→ 拖曳繪製後 `sig_add_rect` |
-| **螢光筆** | `add_highlight(page_num, rect, color)` | `add_highlight`，以 `SnapshotCommand` 記錄 | 頂部「編輯」→「螢光筆」→ `highlight` 模式；右側螢光筆顏色 → 拖曳後 `sig_add_highlight` |
-| **新增註解（FreeText）** | `add_annotation(page_num, point, text)` 回傳 xref | `add_annotation(page_idx, doc_point, text)`，以 `SnapshotCommand` 記錄 | 頂部「編輯」→「新增註解」→ `add_annotation` 模式；點擊頁面後輸入文字 → `sig_add_annotation` |
-| **註解列表** | `get_all_annotations()` | `load_annotations()` 取得列表並交給 View | 頂部「編輯」→「註解列表」或左側「註解列表」分頁；點選一筆 → `sig_jump_to_annotation` |
-| **顯示/隱藏註解** | 無（或由 View 控制繪製時是否畫註解） | `toggle_annotations_visibility(visible)` | 工具列「顯示/隱藏註解」勾選 → `sig_toggle_annotations_visibility` |
+| **矩形** | `model.tools.annotation.add_rect(page_num, rect, color, fill)` | `add_rect`，以 `SnapshotCommand` 記錄 | 頂部「編輯」→「矩形」→ `rect` 模式；右側「屬性」→ 矩形設定（顏色、透明度）→ 拖曳繪製後 `sig_add_rect` |
+| **螢光筆** | `model.tools.annotation.add_highlight(page_num, rect, color)` | `add_highlight`，以 `SnapshotCommand` 記錄 | 頂部「編輯」→「螢光筆」→ `highlight` 模式；右側螢光筆顏色 → 拖曳後 `sig_add_highlight` |
+| **新增註解（FreeText）** | `model.tools.annotation.add_annotation(page_num, point, text)` 回傳 xref | `add_annotation(page_idx, doc_point, text)`，以 `SnapshotCommand` 記錄 | 頂部「編輯」→「新增註解」→ `add_annotation` 模式；點擊頁面後輸入文字 → `sig_add_annotation` |
+| **註解列表** | `model.tools.annotation.get_all_annotations()` | `load_annotations()` 取得列表並交給 View | 頂部「編輯」→「註解列表」或左側「註解列表」分頁；點選一筆 → `sig_jump_to_annotation` |
+| **顯示/隱藏註解** | `model.tools.annotation.toggle_annotations_visibility(visible)` | `toggle_annotations_visibility(visible)` | 工具列「顯示/隱藏註解」勾選 → `sig_toggle_annotations_visibility` |
 
-- 編輯文字時會保留與 redact 區域重疊的 FreeText/Highlight 等註解（Model 內 `_save_overlapping_annots` / `_restore_annots`）。
+- 編輯文字時會保留與 redact 區域重疊的 FreeText/Highlight 等註解（`model.tools.annotation` 內 `_save_overlapping_annots` / `_restore_annots`）。
 
 ---
 
@@ -111,10 +111,10 @@
 
 | 功能 | Model | Controller | View（觸發/顯示） |
 |------|-------|------------|-------------------|
-| **添加浮水印** | 浮水印參數加入 `watermark_list`（儲存時繪入 PDF 並寫入元數據） | `add_watermark(pages, text, angle, opacity, font_size, color, font, ...)` | 頂部「編輯」→「添加浮水印」→ 浮水印對話框（文字、頁面、角度、透明度、字級、顏色、字型、偏移、行距）→ `sig_add_watermark` |
-| **浮水印列表** | `watermark_list`、`get_watermarks()` | `load_watermarks()` 提供給 View | 頂部「編輯」→「浮水印列表」或左側「浮水印列表」分頁；編輯/刪除 → `sig_update_watermark` / `sig_remove_watermark` |
+| **添加浮水印** | 由 `model.tools.watermark.add_watermark(...)` 寫入工具狀態（儲存時繪入 PDF 並寫入元數據） | `add_watermark(pages, text, angle, opacity, font_size, color, font, ...)` | 頂部「編輯」→「添加浮水印」→ 浮水印對話框（文字、頁面、角度、透明度、字級、顏色、字型、偏移、行距）→ `sig_add_watermark` |
+| **浮水印列表** | `model.tools.watermark.get_watermarks()` | `load_watermarks()` 提供給 View | 頂部「編輯」→「浮水印列表」或左側「浮水印列表」分頁；編輯/刪除 → `sig_update_watermark` / `sig_remove_watermark` |
 
-- **持久化**：儲存時將浮水印元數據寫入 PDF 內嵌檔案（`__pdf_editor_watermarks`），開檔時還原 `watermark_list`，重新開檔後仍可編輯/刪除浮水印。見 `pdf_model._load_watermarks_from_doc`、`_write_watermarks_embed`。
+- **持久化**：儲存時將浮水印元數據寫入 PDF 內嵌檔案（`__pdf_editor_watermarks`），開檔時由 `model.tools.watermark` 還原，重新開檔後仍可編輯/刪除浮水印。
 
 ---
 
@@ -122,9 +122,9 @@
 
 | 功能 | Model | Controller | View（觸發/顯示） |
 |------|-------|------------|-------------------|
-| **OCR** | `ocr_pages(pages)`（pytesseract + PIL） | `ocr_pages(pages)` | 頂部「轉換」→「OCR（文字辨識）」→ 選擇頁碼 → `sig_ocr` |
+| **OCR** | `model.tools.ocr.ocr_pages(pages)`（pytesseract + PIL） | `ocr_pages(pages)` | 頂部「轉換」→「OCR（文字辨識）」→ 選擇頁碼 → `sig_ocr` |
 | **快照** | 單頁匯出為影像（如 PNG） | `snapshot_page(page_idx)` 存檔 | 頂部「常用」→「快照」→ `sig_snapshot_page` |
-| **取得精準文字邊界** | `get_text_bounds(page_num, rough_rect)` | `get_text_bounds(page, rough_rect)` | Controller 在需要時呼叫（例如編輯前輔助框選） |
+| **取得精準文字邊界** | `model.tools.annotation.get_text_bounds(page_num, rough_rect)` | `get_text_bounds(page, rough_rect)` | Controller 在需要時呼叫（例如編輯前輔助框選） |
 | **取得頁面 Pixmap** | `get_page_pixmap(page_num, scale)`、縮圖用低解析度 | Controller 用於顯示當前頁與縮圖 | View 透過 Controller 或直接由 Model 取得 pixmap 並轉為 QPixmap 顯示 |
 
 ---

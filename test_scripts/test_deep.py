@@ -594,7 +594,7 @@ def run_t5_annotation_coexist(pdfs: List[Path], quick: bool) -> TestSuite:
             # ── 新增 FreeText 註解 ──
             annot_pt = fitz.Point(page_rect.x0 + 50, page_rect.y0 + 50)
             try:
-                xref = model.add_annotation(1, annot_pt, "深度測試：FreeText 註解")
+                xref = model.tools.annotation.add_annotation(1, annot_pt, "深度測試：FreeText 註解")
                 if xref <= 0:
                     errors.append("add_annotation 回傳無效 xref")
             except Exception as e:
@@ -618,12 +618,12 @@ def run_t5_annotation_coexist(pdfs: List[Path], quick: bool) -> TestSuite:
                     page_rect.x0 + 60, page_rect.y0 + 60,
                     page_rect.x0 + 200, page_rect.y0 + 80
                 )
-                model.add_highlight(1, highlight_rect, (1.0, 1.0, 0.0, 0.5))
+                model.tools.annotation.add_highlight(1, highlight_rect, (1.0, 1.0, 0.0, 0.5))
             except Exception as e:
                 errors.append(f"add_highlight 失敗: {str(e)[:80]}")
 
             # ── 確認 get_all_annotations ──
-            all_annots = model.get_all_annotations()
+            all_annots = model.tools.annotation.get_all_annotations()
 
         except Exception as e:
             errors.append(f"意外錯誤: {str(e)[:100]}")
