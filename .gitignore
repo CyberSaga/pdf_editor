@@ -22,3 +22,7 @@ test_scripts/
 # 單一程式
 for_Linux/
 for_Windows/
+
+# 無關文件
+docs/solutions.md
+docs/writing_method.md

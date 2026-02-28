@@ -1,17 +1,51 @@
 pdf_editor/
-  main.py                        # 程式入口：建立 Model / View / Controller
+  main.py
+    # 入口：建立 PDFModel / PDFView / PDFController
+
   model/
-    pdf_model.py                  # PDF 核心：開檔/存檔、頁面操作、文字編輯、註解、水印、搜尋、OCR
-    text_block.py                 # 文字索引：TextBlock / EditableSpan(run) / EditableParagraph(paragraph)
-    edit_commands.py              # Undo/Redo：EditTextCommand、SnapshotCommand、CommandManager
-  view/
-    pdf_view.py                   # UI：頁面預覽、縮圖、連續捲動、文字編輯框、註解面板、水印面板
+    pdf_model.py
+      # 核心 Model：
+      # - 多分頁 session registry（DocumentSession）
+      # - fitz.Document 擁有權
+      # - 文字編輯交易流程（驗證/回滾）
+      # - 開檔、存檔、頁面操作
+      # - 與 CommandManager、ToolManager 整合
+    text_block.py
+      # 文字索引：TextBlock / EditableSpan(run) / EditableParagraph(paragraph)
+    edit_commands.py
+      # Undo/Redo：EditTextCommand / SnapshotCommand / CommandManager
+    tools/
+      __init__.py
+      base.py
+        # ToolExtension 介面（session lifecycle / overlay / save hooks）
+      manager.py
+        # ToolManager：註冊並管理內建工具（annotation, watermark, search, ocr）
+      annotation_tool.py
+        # 註解工具（highlight/rect/freetext/顯示切換/保護註解）
+      watermark_tool.py
+        # 浮水印工具（CRUD、渲染、嵌入與還原 metadata、dirty 狀態）
+      search_tool.py
+        # 文字搜尋工具
+      ocr_tool.py
+        # OCR 工具（pytesseract + Pillow；缺依賴時回傳清楚 RuntimeError）
+
   controller/
-    pdf_controller.py             # Controller：連接 View Signals 與 Model API，並觸發畫面更新
-  utils/
-    helpers.py                    # 共用工具：對話框、座標/像素轉換等
+    pdf_controller.py
+      # Controller：
+      # - 接收 View signals
+      # - 呼叫 Model 與 model.tools.* API
+      # - 維護每個 session 的 UI 狀態（頁碼/縮放/模式/搜尋）
+      # - 協調重繪、列印、Undo/Redo
+
+  view/
+    pdf_view.py
+      # Qt UI：
+      # - Tab 文件介面、工具面板、畫布、事件信號
+      # - 不直接做資料層業務邏輯
+
   src/
-    printing/                     # 列印管線：對話框、分派器、版面計算、driver 等
+    printing/
+      # 列印子系統：dialog / dispatcher / page selection / layout / drivers
       print_dialog.py
       dispatcher.py
       page_selection.py
@@ -24,9 +58,18 @@ pdf_editor/
         win_driver.py
         linux_driver.py
         mac_driver.py
+
+  utils/
+    helpers.py
+      # 共用工具：頁碼解析、pixmap 轉換、錯誤提示等
+
   docs/
-    README.md                     # English README
-    README.zh-TW.md               # 繁體中文 README
-    ARCHITECTURE.md               # 架構說明（含文字編輯流程）
-    FEATURES.md                   # 功能與主要流程
-  test_scripts/                   # 每次修改完測試是否依然能用的腳本（不須列出）
+    README.md
+    README.zh-TW.md
+    ARCHITECTURE.md
+    FEATURES.md
+    架構.txt
+    solutions.md
+
+  test_scripts/
+    # 測試與壓力測試腳本（pytest tests + script-style 測試）

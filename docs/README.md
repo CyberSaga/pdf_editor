@@ -5,6 +5,7 @@ page management, annotations, text editing (via redaction + reinsert),
 watermarks, search, and optional OCR.
 Tool features are decoupled from `PDFModel` through built-in extensions
 under `model/tools/` (`annotation`, `watermark`, `search`, `ocr`).
+The tool entrypoint is `model.tools.<tool>.*`.
 
 ## 2. LEGAL ISSUES
 
@@ -25,6 +26,7 @@ Key features:
 - [x] optional OCR via Tesseract
 - [x] undo/redo via command system
 - [x] large PDF: first page appears quickly; thumbnails and continuous scroll load in background; scroll and thumbnail jump work once loading completes (index built after scene)
+- [x] multi-tab session isolation (tool state and dirty state tracked per session)
 
 Detailed feature flow and responsibilities are described in:
 - `docs/FEATURES.md`
