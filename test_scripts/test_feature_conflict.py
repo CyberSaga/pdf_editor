@@ -214,10 +214,10 @@ def run_annot_rect_highlight(pdfs: List[Path]) -> ConceptResult:
             m.open_pdf(str(p), password=_get_password(p))
             page = m.doc[0]
             r0 = page.rect
-            m.add_annotation(1, fitz.Point(r0.x0 + 50, r0.y0 + 50), "F4 annot")
-            m.add_rect(1, fitz.Rect(100, 100, 200, 150), (1, 0, 0, 0.5), False)
-            m.add_highlight(1, fitz.Rect(100, 160, 250, 180), (1, 1, 0, 0.5))
-            ann = m.get_all_annotations()
+            m.tools.annotation.add_annotation(1, fitz.Point(r0.x0 + 50, r0.y0 + 50), "F4 annot")
+            m.tools.annotation.add_rect(1, fitz.Rect(100, 100, 200, 150), (1, 0, 0, 0.5), False)
+            m.tools.annotation.add_highlight(1, fitz.Rect(100, 160, 250, 180), (1, 1, 0, 0.5))
+            ann = m.tools.annotation.get_all_annotations()
             m.close()
             ok = len(ann) >= 1
             r.cases.append(CaseResult(p.name, ok, _ms() - t0, f"annots={len(ann)}", ""))
@@ -234,7 +234,7 @@ def run_search_pixmap(pdfs: List[Path]) -> ConceptResult:
         try:
             m = PDFModel()
             m.open_pdf(str(p), password=_get_password(p))
-            res = m.search_text("the")  # 常見字
+            res = m.tools.search.search_text("the")  # 常見字
             pix = m.get_page_pixmap(1, scale=0.3)
             thumb = m.get_thumbnail(1)
             m.close()
@@ -254,16 +254,16 @@ def run_watermark(pdfs: List[Path]) -> ConceptResult:
             m = PDFModel()
             m.open_pdf(str(p), password=_get_password(p))
             n = len(m.doc)
-            m.add_watermark(list(range(1, min(3, n) + 1)), "F6 WM", 45, 0.4, 36, (0.7, 0.7, 0.7), "helv")
-            wl = m.get_watermarks()
+            m.tools.watermark.add_watermark(list(range(1, min(3, n) + 1)), "F6 WM", 45, 0.4, 36, (0.7, 0.7, 0.7), "helv")
+            wl = m.tools.watermark.get_watermarks()
             if not wl:
                 r.cases.append(CaseResult(p.name, False, _ms() - t0, "", "get_watermarks empty"))
                 m.close()
                 continue
             wid = wl[0].get("id")
-            m.update_watermark(wid, pages=[1], text="F6 updated", angle=30, opacity=0.5, font_size=24, color=(0.6, 0.6, 0.6), font="helv")
-            m.remove_watermark(wid)
-            wl2 = m.get_watermarks()
+            m.tools.watermark.update_watermark(wid, pages=[1], text="F6 updated", angle=30, opacity=0.5, font_size=24, color=(0.6, 0.6, 0.6), font="helv")
+            m.tools.watermark.remove_watermark(wid)
+            wl2 = m.tools.watermark.get_watermarks()
             m.close()
             ok = len(wl2) < len(wl)
             r.cases.append(CaseResult(p.name, ok, _ms() - t0, f"before={len(wl)} after={len(wl2)}", ""))
@@ -288,7 +288,7 @@ def run_conflict_annot_then_edit(pdfs: List[Path]) -> ConceptResult:
                 continue
             page = m.doc[pi]
             rect = page.rect
-            m.add_annotation(pi + 1, fitz.Point(rect.x0 + 60, rect.y0 + 60), "C1 annot")
+            m.tools.annotation.add_annotation(pi + 1, fitz.Point(rect.x0 + 60, rect.y0 + 60), "C1 annot")
             before_ann = len(list(page.annots())) if hasattr(page, 'annots') else 0
             m.edit_text(pi + 1, blk.layout_rect, "C1 edit", font="helv", size=11, color=(0, 0, 0), original_text=blk.text)
             page = m.doc[pi]
@@ -430,14 +430,14 @@ def run_save_with_watermark(pdfs: List[Path]) -> ConceptResult:
         try:
             m = PDFModel()
             m.open_pdf(str(p), password=_get_password(p))
-            m.add_watermark([1], "C6 WM", 45, 0.3, 24, (0.8, 0.8, 0.8), "helv")
+            m.tools.watermark.add_watermark([1], "C6 WM", 45, 0.3, 24, (0.8, 0.8, 0.8), "helv")
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
                 tmp = f.name
             m.save_as(tmp)
             m.close()
             m2 = PDFModel()
             m2.open_pdf(tmp)
-            wl = m2.get_watermarks()
+            wl = m2.tools.watermark.get_watermarks()
             pix = m2.get_page_pixmap(1, scale=0.2)
             m2.close()
             os.unlink(tmp)

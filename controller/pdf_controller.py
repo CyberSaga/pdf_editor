@@ -71,6 +71,7 @@ class PDFController:
 
         # New annotation connections
         self.view.sig_add_annotation.connect(self.add_annotation)
+        self.view.sig_load_annotations.connect(self.load_annotations)
         self.view.sig_jump_to_annotation.connect(self.jump_to_annotation)
         self.view.sig_toggle_annotations_visibility.connect(self.toggle_annotations_visibility)
         
@@ -409,7 +410,7 @@ class PDFController:
 
     def add_highlight(self, page: int, rect: fitz.Rect, color: Tuple[float, float, float, float]):
         before = self.model._capture_doc_snapshot()
-        self.model.add_highlight(page, rect, color)
+        self.model.tools.annotation.add_highlight(page, rect, color)
         after = self.model._capture_doc_snapshot()
         cmd = SnapshotCommand(
             model=self.model,
@@ -424,11 +425,11 @@ class PDFController:
         self._update_undo_redo_tooltips()
 
     def get_text_bounds(self, page: int, rough_rect: fitz.Rect) -> fitz.Rect:
-        return self.model.get_text_bounds(page, rough_rect)
+        return self.model.tools.annotation.get_text_bounds(page, rough_rect)
 
     def add_rect(self, page: int, rect: fitz.Rect, color: Tuple[float, float, float, float], fill: bool):
         before = self.model._capture_doc_snapshot()
-        self.model.add_rect(page, rect, color, fill)
+        self.model.tools.annotation.add_rect(page, rect, color, fill)
         after = self.model._capture_doc_snapshot()
         cmd = SnapshotCommand(
             model=self.model,
@@ -492,7 +493,7 @@ class PDFController:
         self.model.set_text_target_mode(mode)
 
     def search_text(self, query: str):
-        results = self.model.search_text(query)
+        results = self.model.tools.search.search_text(query)
         self.view.display_search_results(results)
         sid = self.model.get_active_session_id()
         if sid:
@@ -512,7 +513,25 @@ class PDFController:
             state.current_page = max(0, page_num - 1)
 
     def ocr_pages(self, pages: List[int]):
-        self.model.ocr_pages(pages)
+        if not self.model.doc:
+            show_error(self.view, "No PDF is open.")
+            return {}
+        try:
+            results = self.model.tools.ocr.ocr_pages(pages)
+            non_empty = sum(1 for text in results.values() if isinstance(text, str) and text.strip())
+            QMessageBox.information(
+                self.view,
+                "OCR Completed",
+                f"OCR finished for {len(results)} page(s); {non_empty} page(s) contain recognized text.",
+            )
+            return results
+        except RuntimeError as e:
+            show_error(self.view, str(e))
+            return {}
+        except Exception as e:
+            logger.error(f"OCR failed: {e}")
+            show_error(self.view, f"OCR failed: {e}")
+            return {}
 
     def undo(self):
         """
@@ -716,10 +735,13 @@ class PDFController:
 
     def load_annotations(self):
         """Load all annotations from the model and update the view's list."""
-        self.annotations = self.model.get_all_annotations()
-        logger.debug(f"Controller 從 Model 載入 {len(self.annotations)} 個註解: {self.annotations}")
+        try:
+            self.annotations = self.model.tools.annotation.get_all_annotations()
+        except Exception as e:
+            logger.error(f"Failed to load annotations: {e}")
+            self.annotations = []
+        logger.debug(f"Controller loaded {len(self.annotations)} annotations")
         self.view.populate_annotations_list(self.annotations)
-        logger.debug(f"已呼叫 View 更新註解列表")
 
     def add_annotation(self, page_idx: int, doc_point: fitz.Point, text: str):
         """Handle request to add a new annotation. doc_point 已由 view 轉為文件座標。"""
@@ -728,7 +750,7 @@ class PDFController:
         try:
             before = self.model._capture_doc_snapshot()
             # Model expects 1-based page number
-            new_annot_xref = self.model.add_annotation(page_idx + 1, doc_point, text)
+            new_annot_xref = self.model.tools.annotation.add_annotation(page_idx + 1, doc_point, text)
             after = self.model._capture_doc_snapshot()
             cmd = SnapshotCommand(
                 model=self.model,
@@ -763,7 +785,7 @@ class PDFController:
     def toggle_annotations_visibility(self, visible: bool):
         """Show or hide all annotations."""
         if not self.model.doc: return
-        self.model.toggle_annotations_visibility(visible)
+        self.model.tools.annotation.toggle_annotations_visibility(visible)
         self.show_page(self.view.current_page)
         logger.debug(f"設定註解可見性為 {visible}")
 
@@ -855,7 +877,7 @@ class PDFController:
             show_error(self.view, "沒有開啟的 PDF 文件")
             return
         try:
-            self.model.add_watermark(pages, text, angle, opacity, font_size, color, font, offset_x, offset_y, line_spacing)
+            self.model.tools.watermark.add_watermark(pages, text, angle, opacity, font_size, color, font, offset_x, offset_y, line_spacing)
             self._rebuild_continuous_scene(self.view.current_page)
             self.load_watermarks()
             self.view._show_watermark_panel()
@@ -868,7 +890,7 @@ class PDFController:
         """更新浮水印"""
         if not self.model.doc:
             return
-        if self.model.update_watermark(wm_id, text=text, pages=pages, angle=angle, opacity=opacity, font_size=font_size, color=color, font=font, offset_x=offset_x, offset_y=offset_y, line_spacing=line_spacing):
+        if self.model.tools.watermark.update_watermark(wm_id, text=text, pages=pages, angle=angle, opacity=opacity, font_size=font_size, color=color, font=font, offset_x=offset_x, offset_y=offset_y, line_spacing=line_spacing):
             self._rebuild_continuous_scene(self.view.current_page)
             self.load_watermarks()
             self._refresh_document_tabs()
@@ -877,14 +899,18 @@ class PDFController:
         """移除浮水印"""
         if not self.model.doc:
             return
-        if self.model.remove_watermark(wm_id):
+        if self.model.tools.watermark.remove_watermark(wm_id):
             self._rebuild_continuous_scene(self.view.current_page)
             self.load_watermarks()
             self._refresh_document_tabs()
 
     def load_watermarks(self):
-        """載入浮水印列表並更新 View"""
-        watermarks = self.model.get_watermarks()
+        """Load watermark list and update view."""
+        try:
+            watermarks = self.model.tools.watermark.get_watermarks()
+        except Exception as e:
+            logger.error(f"Failed to load watermarks: {e}")
+            watermarks = []
         self.view.populate_watermarks_list(watermarks)
 
     def _save_session_for_close(self, session_id: str) -> bool:

@@ -5,12 +5,9 @@ import shutil
 import logging
 import math
 import time
-import json
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Iterator, Any
 from contextlib import contextmanager
-import pytesseract
-from PIL import Image
 from pathlib import Path
 import uuid
 import difflib  # 相似度比對
@@ -26,6 +23,7 @@ from model.text_block import (
     rotation_degrees_from_dir,
 )
 from model.edit_commands import CommandManager, EditTextCommand
+from model.tools import ToolManager
 
 # [優化 1] 模組級正則預編譯：避免每次呼叫 _convert_text_to_html / _normalize_text_for_compare 時重新編譯，提升效能
 _RE_HTML_TEXT_PARTS = re.compile(r'([\u4e00-\u9fff\u3040-\u30ff]+|[^\u4e00-\u9fff\u3040-\u30ff\n ]+| +|\n)')
@@ -95,8 +93,6 @@ class DocumentSession:
     block_manager: TextBlockManager = field(default_factory=TextBlockManager)
     command_manager: CommandManager = field(default_factory=CommandManager)
     pending_edits: list = field(default_factory=list)
-    watermark_list: List[dict] = field(default_factory=list)
-    watermark_modified: bool = False
     edit_count: int = 0
 
 class PDFModel:
@@ -112,13 +108,12 @@ class PDFModel:
         self._legacy_command_manager: CommandManager = CommandManager()
         self._legacy_edit_count: int = 0
         self._legacy_pending_edits: list = []
-        self._legacy_watermark_list: List[dict] = []
-        self._legacy_watermark_modified: bool = False
         self.temp_dir = None
         # 是否在「存回原檔」時使用增量更新（Incremental Update），以減少對數位簽章與大檔的影響
         self.use_incremental_save: bool = True
         # Text target granularity: "run" (default) or "paragraph".
         self.text_target_mode: str = "run"
+        self.tools = ToolManager(self)
         self._initialize_temp_dir()
         # 全局 glyph 高度調整（文件推薦，import 後設定一次）
         try:
@@ -162,7 +157,7 @@ class PDFModel:
                 "display_name": s.display_name,
                 "path": s.original_path,
                 "saved_path": s.saved_path,
-                "dirty": s.watermark_modified or s.command_manager.has_pending_changes(),
+                "dirty": self.session_has_unsaved_changes(sid),
             })
         return out
 
@@ -202,7 +197,7 @@ class PDFModel:
         session = self._sessions_by_id.get(session_id)
         if not session:
             return False
-        return session.watermark_modified or session.command_manager.has_pending_changes()
+        return session.command_manager.has_pending_changes() or self.tools.has_unsaved_changes(session_id)
 
     def has_any_unsaved_changes(self) -> bool:
         return any(self.session_has_unsaved_changes(sid) for sid in self._session_ids)
@@ -226,6 +221,7 @@ class PDFModel:
         session = self._sessions_by_id.get(session_id)
         if not session:
             return False
+        self.tools.on_session_close(session_id)
         try:
             if session.doc:
                 session.doc.close()
@@ -343,32 +339,6 @@ class PDFModel:
         else:
             self._legacy_pending_edits = value
 
-    @property
-    def watermark_list(self) -> List[dict]:
-        session = self._active_session()
-        return session.watermark_list if session else self._legacy_watermark_list
-
-    @watermark_list.setter
-    def watermark_list(self, value: List[dict]) -> None:
-        session = self._active_session()
-        if session:
-            session.watermark_list = value
-        else:
-            self._legacy_watermark_list = value
-
-    @property
-    def _watermark_modified(self) -> bool:
-        session = self._active_session()
-        return session.watermark_modified if session else self._legacy_watermark_modified
-
-    @_watermark_modified.setter
-    def _watermark_modified(self, value: bool) -> None:
-        session = self._active_session()
-        if session:
-            session.watermark_modified = value
-        else:
-            self._legacy_watermark_modified = value
-
     def set_text_target_mode(self, mode: str) -> None:
         normalized = (mode or "").strip().lower()
         if normalized not in {"run", "paragraph"}:
@@ -461,11 +431,10 @@ class PDFModel:
             self._session_ids.append(session_id)
             self._path_to_session_id[canonical_path] = session_id
             self._active_session_id = session_id
+            self.tools.on_session_open(session_id, doc)
 
             # 文字方塊索引改由 Controller 分批建立（方向 B），開檔不阻塞
             # self.block_manager.build_index(self.doc)
-            # 方案 B：從 PDF 內嵌檔案還原浮水印列表（支援重新開檔後仍可編輯浮水印）
-            self._load_watermarks_from_doc(self.doc)
             return session_id
         except PermissionError as e:
             logger.error(f"無權限存取檔案: {str(e)}")
@@ -744,10 +713,8 @@ class PDFModel:
         self._legacy_saved_path = None
         self._legacy_block_manager.clear()
         self._legacy_command_manager.clear()
-        self._legacy_watermark_list.clear()
         self._legacy_pending_edits.clear()
         self._legacy_edit_count = 0
-        self._legacy_watermark_modified = False
         if self.temp_dir:
             self.temp_dir.cleanup()
             logger.debug("臨時目錄已清理")
@@ -860,410 +827,19 @@ class PDFModel:
             logger.error(f"從檔案插入頁面失敗: {e}")
             raise RuntimeError(f"從檔案插入頁面失敗: {e}")
 
-    def add_highlight(self, page_num: int, rect: fitz.Rect, color: Tuple[float, float, float, float]):
-        page = self.doc[page_num - 1]
-        annot = page.add_highlight_annot(rect)
-        annot.set_colors(stroke=color[:3], fill=color[:3])
-        annot.set_opacity(color[3])
-        annot.update()
-        logger.debug(f"新增螢光筆: 頁面 {page_num}, 矩形 {rect}, 顏色 {color}")
-
-    def get_text_bounds(self, page_num: int, rough_rect: fitz.Rect) -> fitz.Rect:
-        """獲取文字精準邊界"""
-        page = self.doc[page_num - 1]
-        words = page.get_text("words", clip=rough_rect)
-        if not words:
-            logger.debug(f"頁面 {page_num} 在 {rough_rect} 無文字，返回原矩形")
-            return rough_rect
-        x0 = min(word[0] for word in words)
-        y0 = min(word[1] for word in words)
-        x1 = max(word[2] for word in words)
-        y1 = max(word[3] for word in words)
-        precise_rect = fitz.Rect(x0, y0, x1, y1)
-        logger.debug(f"頁面 {page_num} 在 {rough_rect} 精準矩形 {precise_rect}")
-        return precise_rect
-
-    def add_rect(self, page_num: int, rect: fitz.Rect, color: Tuple[float, float, float, float], fill: bool):
-        page = self.doc[page_num - 1]
-        annot = page.add_rect_annot(rect)
-        annot.set_colors(stroke=color[:3], fill=color[:3] if fill else None)
-        annot.set_border(width=5 if not fill else 0) # 空心矩形設置邊框寬度
-        annot.set_opacity(color[3])
-        annot.update()
-        logger.debug(f"新增矩形: 頁面 {page_num}, 矩形 {rect}, 顏色 {color}, 填滿={fill}")
-
-    def add_annotation(self, page_num: int, point: fitz.Point, text: str) -> int:
-        """在指定頁面和位置新增文字註解"""
-        if not self.doc or page_num < 1 or page_num > len(self.doc):
-            raise ValueError("無效的頁碼")
-
-        page = self.doc[page_num - 1]
-        
-        # 定義註解的固定寬度和外觀
-        fixed_width = 200
-        font_size = 10.5
-        
-        # 初始矩形，高度稍後會被 PyMuPDF 自動調整
-        rect = fitz.Rect(point.x, point.y, point.x + fixed_width, point.y + 50)
-        
-        # 建立 FreeText 註解
-        annot = page.add_freetext_annot(
-            rect,
-            text,
-            fontsize=font_size,
-            fontname="helv",  # 使用一個常見的無襯線字體
-            text_color=(0, 0, 0),  # 黑色
-            fill_color=(1, 1, 0.8), # 淡黃色背景
-            rotate=page.rotation
-        )
-        
-        # PyMuPDF 會自動根據內容調整 FreeText 註解的高度，我們只需更新即可
-        annot.update()
-        
-        logger.debug(f"新增註解: 頁面 {page_num}, 最終矩形 {annot.rect}, xref: {annot.xref}")
-        return annot.xref
-
-    def get_all_annotations(self) -> List[dict]:
-        """獲取文件中所有的 FreeText 註解"""
-        results = []
-        if not self.doc:
-            return results
-        
-        for page in self.doc:
-            for annot in page.annots():
-                if annot.type[1] == 'FreeText': # 判斷一個註解是否為文字註解
-                    info = {
-                        "xref": annot.xref,
-                        "page_num": page.number,
-                        "rect": annot.rect,
-                        "text": annot.info.get("content", "")
-                    }
-                    results.append(info)
-        
-        logger.debug(f"找到 {len(results)} 個 FreeText 註解")
-        return results
-
-    def toggle_annotations_visibility(self, visible: bool):
-        """切換所有 FreeText 註解的可見性"""
-        if not self.doc:
-            return
-
-        for page in self.doc:
-            for annot in page.annots():
-                if annot.type[1] == 'FreeText': # 判斷一個註解是否為文字註解
-                    current_flags = annot.flags
-                    if visible:
-                        # 移除 Hidden 旗標
-                        new_flags = current_flags & ~fitz.ANNOT_FLAG_HIDDEN
-                    else:
-                        # 新增 Hidden 旗標
-                        new_flags = current_flags | fitz.ANNOT_FLAG_HIDDEN
-                    
-                    annot.set_flags(new_flags)
-                    annot.update()
-        
-        logger.debug(f"註解可見性設定為: {visible}")
-
-    # --- 浮水印相關 ---
-
-    def _needs_cjk_font(self, text: str) -> bool:
-        """檢查文字是否包含中日韓字元，需使用 CJK 字型才能正確顯示"""
-        return bool(re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', text))
-
-    def _get_watermark_font(self, font_name: str, text: str) -> str:
-        """取得適合浮水印文字的字型（中文等 CJK 需使用 china-ts）"""
-        non_cjk_fonts = ("helv", "cour", "Helvetica", "Courier")
-        if self._needs_cjk_font(text) and font_name in non_cjk_fonts:
-            return "china-ts"  # 繁體中文字型
-        return font_name
-
-    def _apply_watermarks_to_page(self, page: fitz.Page, watermarks: List[dict]) -> None:
-        """在頁面上繪製浮水印（多行文字、可旋轉、可調透明度與顏色）"""
-        if not watermarks:
-            return
-        page_rect = page.rect
-        cx = page_rect.width / 2
-        cy = page_rect.height / 2
-
-        for wm in watermarks:
-            text = wm.get("text", "")
-            angle = wm.get("angle", 0)
-            opacity = max(0.0, min(1.0, wm.get("opacity", 0.5)))
-            font_size = wm.get("font_size", 48)
-            color = wm.get("color", (0.7, 0.7, 0.7))
-            font_name = wm.get("font", "helv")
-            offset_x = wm.get("offset_x", 0)
-            offset_y = wm.get("offset_y", 0)
-            line_spacing = wm.get("line_spacing", 1.3)
-
-            font_name = self._get_watermark_font(font_name, text)
-            center_x = cx + offset_x
-            center_y = cy + offset_y
-            center = fitz.Point(center_x, center_y)
-
-            lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-            if not lines:
-                continue
-
-            try:
-                font = fitz.Font(font_name)
-            except Exception:
-                font = fitz.Font("china-ts" if self._needs_cjk_font(text) else "helv")
-
-            line_height = font_size * line_spacing
-            total_height = line_height * len(lines)
-            rad = math.radians(-angle)
-            cos_a = math.cos(rad)
-            sin_a = math.sin(rad)
-
-            for i, line in enumerate(lines):
-                if not line:
-                    continue
-                line_len = font.text_length(line, fontsize=font_size)
-                dx = -line_len / 2
-                dy = -total_height / 2 + i * line_height + font_size * 0.35
-                px = center_x + dx * cos_a - dy * sin_a
-                py = center_y + dx * sin_a + dy * cos_a
-                pt = fitz.Point(px, py)
-                mat = fitz.Matrix(cos_a, -sin_a, sin_a, cos_a, 0, 0)
-                page.insert_text(
-                    pt,
-                    line,
-                    fontsize=font_size,
-                    fontname=font_name,
-                    color=color[:3] if len(color) >= 3 else (0.7, 0.7, 0.7),
-                    morph=(center, mat),
-                    fill_opacity=opacity,
-                    stroke_opacity=opacity,
-                )
-
-    def add_watermark(
-        self,
-        pages: List[int],
-        text: str,
-        angle: float = 45,
-        opacity: float = 0.4,
-        font_size: int = 48,
-        color: Tuple[float, float, float] = (0.7, 0.7, 0.7),
-        font: str = "helv",
-        offset_x: float = 0,
-        offset_y: float = 0,
-        line_spacing: float = 1.3,
-    ) -> str:
-        """新增浮水印到指定頁面，返回浮水印 id。
-        offset_x: 水平偏移（正=向右，負=向左），單位：點
-        offset_y: 垂直偏移（正=向下，負=向上），單位：點
-        line_spacing: 行距倍率（相對於字型大小，如 1.3 表示 1.3 倍行高）
-        """
-        if not self.doc or not text.strip():
-            raise ValueError("無效的文件或浮水印文字")
-        wm_id = str(uuid.uuid4())
-        wm = {
-            "id": wm_id,
-            "pages": [p for p in pages if 1 <= p <= len(self.doc)],
-            "text": text.strip(),
-            "angle": angle,
-            "opacity": opacity,
-            "font_size": font_size,
-            "color": color,
-            "font": font,
-            "offset_x": offset_x,
-            "offset_y": offset_y,
-            "line_spacing": max(0.8, min(3.0, line_spacing)),
-        }
-        self.watermark_list.append(wm)
-        self._watermark_modified = True
-        logger.debug(f"新增浮水印: {wm_id}, 頁面 {wm['pages']}")
-        return wm_id
-
-    # 方案 B：浮水印元數據寫入 PDF 內嵌檔案，開檔時還原，以支援「重新開檔後仍可編輯浮水印」
-    WATERMARK_EMBED_NAME = "__pdf_editor_watermarks"
-
-    def _load_watermarks_from_doc(self, doc: fitz.Document) -> None:
-        """從 PDF 內嵌檔案還原 watermark_list。若無或解析失敗則維持空列表。"""
-        self.watermark_list.clear()
-        try:
-            names = doc.embfile_names()
-            if not names or self.WATERMARK_EMBED_NAME not in names:
-                return
-            raw = doc.embfile_get(self.WATERMARK_EMBED_NAME)
-            if not raw:
-                return
-            data = json.loads(raw.decode("utf-8"))
-            if not isinstance(data, list):
-                return
-            for wm in data:
-                if not isinstance(wm, dict) or "id" not in wm or "pages" not in wm:
-                    continue
-                # 還原 color 為 tuple（JSON 會變成 list）
-                if "color" in wm and isinstance(wm["color"], list):
-                    wm["color"] = tuple(wm["color"])
-                self.watermark_list.append(wm)
-            logger.debug(f"已從 PDF 還原 {len(self.watermark_list)} 個浮水印")
-        except Exception as e:
-            logger.warning(f"還原浮水印元數據失敗: {e}")
-
-    def _write_watermarks_embed(self, doc: fitz.Document) -> None:
-        """將當前 watermark_list 寫入文件的內嵌檔案（儲存前呼叫）。"""
-        payload = json.dumps(self.watermark_list, ensure_ascii=False).encode("utf-8")
-        try:
-            names = doc.embfile_names()
-            if names and self.WATERMARK_EMBED_NAME in names:
-                doc.embfile_del(self.WATERMARK_EMBED_NAME)
-        except Exception as e:
-            logger.debug(f"刪除舊浮水印附件時忽略: {e}")
-        try:
-            doc.embfile_add(self.WATERMARK_EMBED_NAME, payload)
-            logger.debug(f"已寫入浮水印元數據（{len(self.watermark_list)} 筆）")
-        except Exception as e:
-            logger.warning(f"寫入浮水印元數據失敗: {e}")
-
-    def get_watermarks(self) -> List[dict]:
-        """取得所有浮水印"""
-        return list(self.watermark_list)
-
-    def remove_watermark(self, watermark_id: str) -> bool:
-        """移除浮水印"""
-        for i, wm in enumerate(self.watermark_list):
-            if wm.get("id") == watermark_id:
-                self.watermark_list.pop(i)
-                self._watermark_modified = True
-                logger.debug(f"已移除浮水印: {watermark_id}")
-                return True
-        return False
-
-    def update_watermark(
-        self,
-        watermark_id: str,
-        text: Optional[str] = None,
-        pages: Optional[List[int]] = None,
-        angle: Optional[float] = None,
-        opacity: Optional[float] = None,
-        font_size: Optional[int] = None,
-        color: Optional[Tuple[float, float, float]] = None,
-        font: Optional[str] = None,
-        offset_x: Optional[float] = None,
-        offset_y: Optional[float] = None,
-        line_spacing: Optional[float] = None,
-    ) -> bool:
-        """更新浮水印屬性"""
-        for wm in self.watermark_list:
-            if wm.get("id") == watermark_id:
-                if text is not None:
-                    wm["text"] = text.strip()
-                if pages is not None:
-                    wm["pages"] = [p for p in pages if 1 <= p <= len(self.doc)]
-                if angle is not None:
-                    wm["angle"] = angle
-                if opacity is not None:
-                    wm["opacity"] = max(0.0, min(1.0, opacity))
-                if font_size is not None:
-                    wm["font_size"] = font_size
-                if color is not None:
-                    wm["color"] = color
-                if font is not None:
-                    wm["font"] = font
-                if offset_x is not None:
-                    wm["offset_x"] = offset_x
-                if offset_y is not None:
-                    wm["offset_y"] = offset_y
-                if line_spacing is not None:
-                    wm["line_spacing"] = max(0.8, min(3.0, line_spacing))
-                self._watermark_modified = True
-                logger.debug(f"已更新浮水印: {watermark_id}")
-                return True
-        return False
-
-    def _get_watermarks_for_page(self, page_num: int) -> List[dict]:
-        """取得適用於指定頁面的浮水印"""
-        return [wm for wm in self.watermark_list if page_num in wm.get("pages", [])]
-
-    def search_text(self, query: str) -> List[Tuple[int, str, fitz.Rect]]:
-        results = []
-        if not self.doc:
-            return results
-        for i in range(len(self.doc)):
-            page = self.doc[i]
-            found_rects = page.search_for(query)
-            for inst in found_rects:
-                # 獲取上下文，稍微擴大矩形以獲得更完整的句子
-                context_rect = inst + (-10, -5, 10, 5)
-                context = page.get_text("text", clip=context_rect, sort=True).strip().replace('\n', ' ')
-                results.append((i + 1, context, inst))
-        return results
-
-    def ocr_pages(self, pages: List[int]) -> dict:
-        results = {}
-        for page_num in pages:
-            pix = self.doc[page_num - 1].get_pixmap()
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            text = pytesseract.image_to_string(img)
-            results[page_num] = text
-        return results
-
     def get_page_pixmap(self, page_num: int, scale: float = 1.0) -> fitz.Pixmap:
-        """取得頁面影像（含浮水印）"""
-        page = self.doc[page_num - 1]
-        watermarks = self._get_watermarks_for_page(page_num)
-        if not watermarks:
-            return page.get_pixmap(matrix=fitz.Matrix(scale, scale))
-        tmp_doc = fitz.open()
-        tmp_doc.insert_pdf(self.doc, from_page=page_num - 1, to_page=page_num - 1)
-        tmp_page = tmp_doc[0]
-        self._apply_watermarks_to_page(tmp_page, watermarks)
-        pix = tmp_page.get_pixmap(matrix=fitz.Matrix(scale, scale))
-        tmp_doc.close()
-        return pix
+        return self.tools.render_page_pixmap(page_num, scale=scale, annots=True, purpose="view")
 
     def get_page_snapshot(self, page_num: int, scale: float = 1.0) -> fitz.Pixmap:
-        """獲取頁面的扁平化快照影像（包含所有註解、標記、浮水印）"""
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             raise ValueError(f"無效頁碼: {page_num}")
-        watermarks = self._get_watermarks_for_page(page_num)
-        if not watermarks:
-            page = self.doc[page_num - 1]
-            matrix = fitz.Matrix(scale, scale)
-            pix = page.get_pixmap(matrix=matrix, annots=True)
-            logger.debug(f"生成頁面 {page_num} 的快照，尺寸: {pix.width}x{pix.height}, 縮放: {scale}")
-            return pix
-        tmp_doc = fitz.open()
-        tmp_doc.insert_pdf(self.doc, from_page=page_num - 1, to_page=page_num - 1)
-        tmp_page = tmp_doc[0]
-        self._apply_watermarks_to_page(tmp_page, watermarks)
-        matrix = fitz.Matrix(scale, scale)
-        pix = tmp_page.get_pixmap(matrix=matrix, annots=True)
-        tmp_doc.close()
-        logger.debug(f"生成頁面 {page_num} 的快照（含浮水印），尺寸: {pix.width}x{pix.height}, 縮放: {scale}")
-        return pix
+        return self.tools.render_page_pixmap(page_num, scale=scale, annots=True, purpose="snapshot")
 
     def get_thumbnail(self, page_num: int) -> fitz.Pixmap:
         return self.get_page_pixmap(page_num, scale=0.2)
 
     def build_print_snapshot(self) -> bytes:
-        """
-        產生可列印的 PDF 快照 bytes（包含尚未儲存的浮水印覆蓋）。
-        不會變更 command_manager 的儲存狀態。
-        """
-        if not self.doc:
-            raise RuntimeError("沒有開啟的 PDF 文件")
-
-        # 無浮水印時可直接快速輸出當前文件快照。
-        if not self.watermark_list:
-            return self._capture_doc_snapshot()
-
-        tmp_doc = fitz.open()
-        try:
-            tmp_doc.insert_pdf(self.doc)
-            for wm in self.watermark_list:
-                for p in wm.get("pages", []):
-                    if 1 <= p <= len(tmp_doc):
-                        self._apply_watermarks_to_page(tmp_doc[p - 1], [wm])
-
-            stream = io.BytesIO()
-            tmp_doc.save(stream, garbage=0)
-            return stream.getvalue()
-        finally:
-            tmp_doc.close()
+        return self.tools.build_print_snapshot()
 
     def get_text_info_at_point(self, page_num: int, point: fitz.Point) -> Optional[TextHit]:
         """Return topmost editable run info at point using stable run/span identity."""
@@ -1471,134 +1047,6 @@ class PDFModel:
             .cjk {{ font-family: cjk; }}
         """
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Bug fix: apply_redactions 會誤刪與 redact_rect 重疊的非文字 annot（FreeText 等）。
-    # 在呼叫前儲存重疊 annot，呼叫後還原。
-    # ──────────────────────────────────────────────────────────────────────────
-
-    _ANNOT_FREE_TEXT = 2    # fitz.PDF_ANNOT_FREE_TEXT
-    _ANNOT_HIGHLIGHT = 8
-    _ANNOT_SQUARE    = 4
-    _ANNOT_CIRCLE    = 5
-    _ANNOT_UNDERLINE = 9
-    _ANNOT_STRIKEOUT = 10
-    _ANNOT_REDACT    = 12   # fitz.PDF_ANNOT_REDACT — 不保留
-
-    def _save_overlapping_annots(self, page: fitz.Page, redact_rect: fitz.Rect) -> list:
-        """
-        擷取頁面中與 redact_rect 重疊的非 redact 類型 annot 資訊。
-        apply_redactions 後呼叫 _restore_annots() 還原。
-
-        對壞損 xref / NoneType 等 PyMuPDF 異常做 graceful 跳過，不讓單一
-        損壞 annotation 阻斷整個 edit_text 流程。
-        """
-        saved = []
-        try:
-            annot_iter = list(page.annots())
-        except Exception as e:
-            logger.warning(f"_save_overlapping_annots: page.annots() 失敗（壞損 annot xref？）: {e}")
-            return saved
-
-        for annot in annot_iter:
-            try:
-                if annot is None:
-                    continue
-                if annot.type[0] == self._ANNOT_REDACT:
-                    continue
-                if not fitz.Rect(annot.rect).intersects(redact_rect):
-                    continue
-                entry = {
-                    "type_code": annot.type[0],
-                    "type_name": annot.type[1],
-                    "rect":      fitz.Rect(annot.rect),
-                    "info":      dict(annot.info),
-                    "colors":    annot.colors,
-                    "opacity":   annot.opacity,
-                    "border":    annot.border,
-                    "vertices":  annot.vertices,
-                }
-                saved.append(entry)
-                logger.debug(f"_save_overlapping_annots: 儲存 {annot.type[1]} @ {annot.rect}")
-            except Exception as e:
-                logger.warning(f"_save_overlapping_annots: 跳過損壞 annot: {e}")
-                continue
-        return saved
-
-    def _restore_annots(self, page: fitz.Page, saved: list) -> None:
-        """
-        還原 _save_overlapping_annots 儲存的 annot。
-        僅支援常見類型；不支援的類型記錄 warning。
-        """
-        for a in saved:
-            tc = a["type_code"]
-            rect = a["rect"]
-            info = a["info"]
-            colors = a["colors"] or {}
-            stroke = colors.get("stroke") or (0, 0, 0)
-            fill   = colors.get("fill")
-
-            try:
-                if tc == self._ANNOT_FREE_TEXT:
-                    new_a = page.add_freetext_annot(
-                        rect,
-                        info.get("content", ""),
-                        fontname="helv",
-                        fontsize=10.5,
-                        text_color=stroke if stroke else (0, 0, 0),
-                        fill_color=fill if fill else (1, 1, 0.8),
-                        rotate=page.rotation,
-                    )
-                    new_a.update()
-
-                elif tc == self._ANNOT_HIGHLIGHT:
-                    verts = a.get("vertices")
-                    if verts:
-                        new_a = page.add_highlight_annot(quads=verts)
-                    else:
-                        new_a = page.add_highlight_annot(rect)
-                    if stroke:
-                        new_a.set_colors(stroke=stroke)
-                    if a["opacity"] is not None:
-                        new_a.set_opacity(a["opacity"])
-                    new_a.update()
-
-                elif tc == self._ANNOT_SQUARE:
-                    new_a = page.add_rect_annot(rect)
-                    new_a.set_colors(stroke=stroke, fill=fill)
-                    if a["opacity"] is not None:
-                        new_a.set_opacity(a["opacity"])
-                    new_a.update()
-
-                elif tc == self._ANNOT_CIRCLE:
-                    new_a = page.add_circle_annot(rect)
-                    new_a.set_colors(stroke=stroke, fill=fill)
-                    if a["opacity"] is not None:
-                        new_a.set_opacity(a["opacity"])
-                    new_a.update()
-
-                elif tc in (self._ANNOT_UNDERLINE, self._ANNOT_STRIKEOUT):
-                    verts = a.get("vertices")
-                    if tc == self._ANNOT_UNDERLINE:
-                        new_a = page.add_underline_annot(quads=verts) if verts else page.add_underline_annot(rect)
-                    else:
-                        new_a = page.add_strikeout_annot(quads=verts) if verts else page.add_strikeout_annot(rect)
-                    if stroke:
-                        new_a.set_colors(stroke=stroke)
-                    if a["opacity"] is not None:
-                        new_a.set_opacity(a["opacity"])
-                    new_a.update()
-
-                else:
-                    logger.warning(
-                        f"_restore_annots: 不支援的 annot 類型 {a['type_name']} ({tc})，跳過還原"
-                    )
-                    continue
-
-                logger.debug(f"_restore_annots: 已還原 {a['type_name']} @ {rect}")
-
-            except Exception as e:
-                logger.warning(f"_restore_annots: 還原 {a['type_name']} 失敗: {e}")
-
     def apply_pending_redactions(self) -> None:
         """
         批次清理所有已修改頁面的 content stream（Phase 6 效能優化）。
@@ -1777,7 +1225,7 @@ class PDFModel:
         for bbox, block, delta_y in plan:
             redact_rects.append(fitz.Rect(bbox))
             # 儲存此 block 上的 annotation 並計算推移後位置
-            for saved_a in self._save_overlapping_annots(page, bbox):
+            for saved_a in self.tools.annotation._save_overlapping_annots(page, bbox):
                 r = fitz.Rect(saved_a["rect"])
                 shifted_annots.append(dict(
                     saved_a,
@@ -1808,7 +1256,7 @@ class PDFModel:
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
         # 在推移後的位置還原 annotation
         if shifted_annots:
-            self._restore_annots(page, shifted_annots)
+            self.tools.annotation._restore_annots(page, shifted_annots)
 
         # ── 6. 批次 Insert（使用 insert_htmlbox 確保 Unicode 完整保留）──
         # 改用 insert_htmlbox（而非 insert_text）的原因：
@@ -2132,11 +1580,11 @@ class PDFModel:
             # pending_edits 僅追蹤已修改的頁面，供 apply_pending_redactions() 批次 clean_contents。
             # [Bug fix] 在 redaction 前先儲存重疊的非文字 annot，redaction 後還原，
             # 避免 PyMuPDF apply_redactions 誤刪 FreeText 等 annotation。
-            _saved_annots = self._save_overlapping_annots(page, redact_rect)
+            _saved_annots = self.tools.annotation._save_overlapping_annots(page, redact_rect)
             page.add_redact_annot(redact_rect)
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
             if _saved_annots:
-                self._restore_annots(page, _saved_annots)
+                self.tools.annotation._restore_annots(page, _saved_annots)
             if protected_spans:
                 self._replay_protected_spans(page, protected_spans)
             self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(redact_rect)})
@@ -2573,7 +2021,7 @@ class PDFModel:
             self.doc.save(path, garbage=0)
 
     def save_as(self, new_path: str):
-        """另存 PDF（含浮水印）。若存回原檔且支援增量更新，則使用 incremental=True。"""
+        """另存 PDF。若存回原檔且支援增量更新，則使用 incremental=True。"""
         if not self.doc:
             return
         canonical_new = self._canonicalize_path(new_path)
@@ -2600,44 +2048,41 @@ class PDFModel:
             and can_incr
             and self.doc.can_save_incrementally()
         )
-        if self.watermark_list:
-            tmp_doc = fitz.open()
-            tmp_doc.insert_pdf(self.doc)
-            for wm in self.watermark_list:
-                for p in wm.get("pages", []):
-                    if 1 <= p <= len(tmp_doc):
-                        self._apply_watermarks_to_page(tmp_doc[p - 1], [wm])
-            self._write_watermarks_embed(tmp_doc)
-            # 若目標路徑為目前開啟的檔案，先寫暫存再覆蓋，避免 Windows Permission denied
-            if doc_name_resolved is not None and new_path_resolved == doc_name_resolved:
-                temp_save = Path(self.temp_dir.name) / f"save_{uuid.uuid4()}.pdf"
-                tmp_doc.save(str(temp_save), garbage=0)
-                tmp_doc.close()
-                self.doc.close()
+
+        prepared_doc = self.tools.prepare_doc_for_save(active_sid) if active_sid else None
+        doc_to_save = prepared_doc if prepared_doc is not None else self.doc
+        try:
+            if doc_to_save is self.doc and use_incremental:
+                # 增量更新時使用與 doc.name 一致的路徑格式，避免 PyMuPDF 判定為非原檔
                 try:
-                    shutil.copy2(str(temp_save), new_path)
-                finally:
-                    try:
-                        os.unlink(temp_save)
-                    except OSError:
-                        pass
-                self.doc = fitz.open(new_path)
-            else:
-                tmp_doc.save(new_path, garbage=0)
-                tmp_doc.close()
-        elif use_incremental:
-            self._write_watermarks_embed(self.doc)
-            # 增量更新時使用與 doc.name 一致的路徑格式，避免 PyMuPDF 判定為非原檔
-            try:
-                save_target = self.doc.name if self.doc.name else new_path
-                self.doc.save(save_target, incremental=True)
-                logger.debug(f"已使用增量更新儲存: {new_path}")
-            except Exception as e:
-                logger.warning(f"增量更新儲存失敗，改為完整儲存: {e}")
+                    save_target = self.doc.name if self.doc.name else new_path
+                    self.doc.save(save_target, incremental=True)
+                    logger.debug(f"已使用增量更新儲存: {new_path}")
+                except Exception as e:
+                    logger.warning(f"增量更新儲存失敗，改為完整儲存: {e}")
+                    self._full_save_to_path(new_path)
+            elif doc_to_save is self.doc:
                 self._full_save_to_path(new_path)
-        else:
-            self._write_watermarks_embed(self.doc)
-            self._full_save_to_path(new_path)
+            else:
+                # 若目標路徑為目前開啟的檔案，先寫暫存再覆蓋，避免 Windows Permission denied
+                if doc_name_resolved is not None and new_path_resolved == doc_name_resolved:
+                    temp_save = Path(self.temp_dir.name) / f"save_{uuid.uuid4()}.pdf"
+                    doc_to_save.save(str(temp_save), garbage=0)
+                    self.doc.close()
+                    try:
+                        shutil.copy2(str(temp_save), new_path)
+                    finally:
+                        try:
+                            os.unlink(temp_save)
+                        except OSError:
+                            pass
+                    self.doc = fitz.open(new_path)
+                else:
+                    doc_to_save.save(new_path, garbage=0)
+        finally:
+            if prepared_doc is not None:
+                prepared_doc.close()
+
         self.saved_path = new_path
         if active_sid and active_sid in self._sessions_by_id:
             session = self._sessions_by_id[active_sid]
@@ -2648,7 +2093,8 @@ class PDFModel:
             self._path_to_session_id[canonical_new] = active_sid
         self.command_manager.mark_saved()
         self.edit_count = 0
-        self._watermark_modified = False
+        if active_sid:
+            self.tools.on_session_saved(active_sid)
     
     def has_unsaved_changes(self) -> bool:
         """檢查是否有未儲存的變更（Phase 6：統一由 command_manager 管理）。"""

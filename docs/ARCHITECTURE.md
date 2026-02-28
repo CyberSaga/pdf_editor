@@ -29,7 +29,7 @@
                             └───────────────┘
 ```
 
-- **Model**：採用多分頁 Session Registry（`session_ids + sessions_by_id`），每個分頁封裝 `fitz.Document`、`TextBlockManager`、`CommandManager`、`pending_edits`、浮水印狀態；對外 API 仍維持 `edit_text/save_as/search_text` 等入口，但一律作用於「目前 active session」。
+- **Model**：採用多分頁 Session Registry（`session_ids + sessions_by_id`），每個分頁封裝 `fitz.Document`、`TextBlockManager`、`CommandManager`、`pending_edits`；工具功能由 `model.tools.ToolManager` 內建擴充（annotation / watermark / search / ocr）提供，Model 核心僅保留文件/會話/編輯/存檔協調。
 - **View**：除了既有工具列與主畫布，新增「文件分頁列（QTabBar）」；View 僅發出 `sig_tab_changed/sig_tab_close_requested`，不直接操作 Model 的 session registry。連續模式仍需同步 `graphics_view.setSceneRect` 與場景 rect。
 - **Controller**：負責多分頁生命週期（開啟/切換/關閉）與每個 session 的 UI 狀態恢復（頁碼、縮放、搜尋狀態）；開檔與切換皆採首頁預覽 → 分批縮圖/場景 → 分批索引，且所有批次載入都帶 `session_id + generation` 防止跨分頁汙染。
 
@@ -39,9 +39,10 @@
 
 | 檔案 | 職責 |
 |------|------|
-| `model/pdf_model.py` | 多分頁 Session 管理（open/activate/close/list）、PDF 開檔/存檔、文字編輯（edit_text）、頁面操作（刪除/旋轉/插入）、註解/螢光筆/矩形、搜尋、OCR、浮水印、快照與還原 |
+| `model/pdf_model.py` | 多分頁 Session 管理（open/activate/close/list）、PDF 開檔/存檔、文字編輯（edit_text）、頁面操作（刪除/旋轉/插入）、快照與還原；透過 `tools` 管理器協調工具擴充 |
 | `model/text_block.py` | `TextBlock` 資料結構、`TextBlockManager` 建立與維護頁面文字塊索引（build_index、find_by_rect、update_block、rebuild_page） |
 | `model/edit_commands.py` | Command 模式：`EditCommand` 抽象、`EditTextCommand`（頁面快照 undo/redo）、`SnapshotCommand`（整份文件快照）、`CommandManager`（undo/redo 堆疊） |
+| `model/tools/*.py` | 內建工具擴充：`annotation_tool`（註解/框選輔助）、`watermark_tool`（浮水印狀態/疊加/持久化）、`search_tool`（搜尋）、`ocr_tool`（OCR）；`manager.py` 提供生命周期與渲染/存檔掛鉤 |
 
 ### 2.2 Controller 層
 
@@ -94,7 +95,7 @@
 
 ## 4. 依賴關係
 
-- **Model** 僅依賴：`fitz`、`text_block`、`edit_commands`，以及標準庫 / pytesseract / PIL 等，**不依賴 View 或 Controller**。
+- **Model** 僅依賴：`fitz`、`text_block`、`edit_commands`、`model.tools`，以及標準庫；OCR 相關第三方依賴由 `ocr_tool` 延遲載入，**不依賴 View 或 Controller**。
 - **Controller** 依賴 Model 與 View 的介面（訊號與公開方法），不直接操作 Qt 元件內部。
 - **View** 依賴 PySide6 與 `utils.helpers`，透過 `controller` 引用呼叫少數 Controller 方法（若需由 View 主動觸發的邏輯），主要單向透過 Signal 通知 Controller。
 

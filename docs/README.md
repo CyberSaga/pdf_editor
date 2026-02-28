@@ -3,6 +3,8 @@
 PDF editor desktop app written in Python with a Qt UI. It provides
 page management, annotations, text editing (via redaction + reinsert),
 watermarks, search, and optional OCR.
+Tool features are decoupled from `PDFModel` through built-in extensions
+under `model/tools/` (`annotation`, `watermark`, `search`, `ocr`).
 
 ## 2. LEGAL ISSUES
 

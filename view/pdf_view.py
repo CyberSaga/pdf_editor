@@ -1712,7 +1712,7 @@ class PDFView(QMainWindow):
             return
         if not self.controller:
             return
-        watermarks = self.controller.model.get_watermarks()
+        watermarks = self.controller.model.tools.watermark.get_watermarks()
         edit_wm = next((w for w in watermarks if w.get("id") == wm_id), None)
         if not edit_wm:
             return
