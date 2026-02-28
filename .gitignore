@@ -23,6 +23,5 @@ test_scripts/
 for_Linux/
 for_Windows/
 
-# 無關文件
+# 文件
 docs/solutions.md
-docs/writing_method.md
