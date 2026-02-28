@@ -1,6 +1,14 @@
-# Optional native print backends for enhanced platform integration.
-# Core printing works without these via Qt raster bridge.
+# Optional dependencies.
+# Install with: pip install -r optional-requirements.txt
 
+# OCR feature (model/tools/ocr_tool.py)
+Pillow>=9.0
+pytesseract>=0.3.10
+
+# Native print backends for enhanced platform integration.
+# Core printing still works via the Qt raster bridge without these.
 pywin32>=306; platform_system == "Windows"
 pycups>=2.0.4; platform_system == "Linux" or platform_system == "Darwin"
 
+# Test runner (only needed when running test_scripts/*pytest*).
+pytest>=7.0

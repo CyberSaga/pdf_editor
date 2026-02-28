@@ -111,8 +111,8 @@ class PDFModel:
         self.temp_dir = None
         # 是否在「存回原檔」時使用增量更新（Incremental Update），以減少對數位簽章與大檔的影響
         self.use_incremental_save: bool = True
-        # Text target granularity: "run" (default) or "paragraph".
-        self.text_target_mode: str = "run"
+        # Text target granularity: "run" or "paragraph" (default).
+        self.text_target_mode: str = "paragraph"
         self.tools = ToolManager(self)
         self._initialize_temp_dir()
         # 全局 glyph 高度調整（文件推薦，import 後設定一次）
