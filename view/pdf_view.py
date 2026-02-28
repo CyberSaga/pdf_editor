@@ -353,6 +353,7 @@ class PDFView(QMainWindow):
         self._pending_text_info = None          # 待定狀態下存放的文字塊資訊（drag_pending 且無編輯框時）
         self.current_search_results = []
         self.current_search_index = -1
+        self._browse_text_cursor_active = False
         # Phase 5: edit_text 模式下的 hover 文字塊高亮
         self._hover_highlight_item = None       # QGraphicsRectItem | None
         self._last_hover_scene_pos = None       # QPointF | None（節流用）
@@ -371,6 +372,9 @@ class PDFView(QMainWindow):
 
         self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.graphics_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.graphics_view.setMouseTracking(True)
+        self.graphics_view.viewport().setMouseTracking(True)
+        self.graphics_view.viewport().installEventFilter(self)
 
         self.graphics_view.wheelEvent = self._wheel_event
         self.graphics_view.mousePressEvent = self._mouse_press
@@ -846,6 +850,8 @@ class PDFView(QMainWindow):
 
     def set_mode(self, mode: str):
         if self.text_editor: self._finalize_text_edit()
+        if self.current_mode == 'browse' and mode != 'browse':
+            self._reset_browse_hover_cursor()
         # 切換模式時清除所有拖曳/待定狀態
         self._drag_pending = False
         self._drag_active = False
@@ -871,7 +877,7 @@ class PDFView(QMainWindow):
             self.right_stacked_widget.setCurrentWidget(self.text_card)
         else:
             self.graphics_view.setDragMode(QGraphicsView.ScrollHandDrag)
-            self.graphics_view.viewport().setCursor(Qt.ArrowCursor)
+            self._reset_browse_hover_cursor()
             self.right_stacked_widget.setCurrentWidget(self.page_info_card)
         self._update_status_bar()
 
@@ -914,6 +920,12 @@ class PDFView(QMainWindow):
             return
         super().keyPressEvent(event)
 
+    def eventFilter(self, obj, event):
+        if obj is self.graphics_view.viewport() and event.type() == QEvent.Leave:
+            if self.current_mode == 'browse':
+                self._reset_browse_hover_cursor()
+        return super().eventFilter(obj, event)
+
     def update_thumbnails(self, thumbnails: List[QPixmap]):
         """一次設定全部縮圖（相容舊流程）。"""
         self.thumbnail_list.clear()
@@ -947,6 +959,7 @@ class PDFView(QMainWindow):
         if self.text_editor:
             self._finalize_text_edit()
         self._clear_hover_highlight()
+        self._reset_browse_hover_cursor()
         self._disconnect_scroll_handler()
         self.scene.clear()
         self.page_items.clear()
@@ -967,6 +980,7 @@ class PDFView(QMainWindow):
         # Phase 5: scene.clear() 會銷毀所有場景物件，必須先重置 hover item 引用，
         #          否則後續 setRect() 會操作已刪除的 C++ 物件，拋出 RuntimeError。
         self._clear_hover_highlight()
+        self._reset_browse_hover_cursor()
         self._disconnect_scroll_handler()
         self.scene.clear()
         self.page_items.clear()
@@ -1146,6 +1160,7 @@ class PDFView(QMainWindow):
             return
         # 單頁模式重建場景：同樣需要先清除 hover item 引用，避免懸空指標
         self._clear_hover_highlight()
+        self._reset_browse_hover_cursor()
         self.scene.clear()
         self.page_items.clear()
         self.page_y_positions.clear()
@@ -1284,7 +1299,12 @@ class PDFView(QMainWindow):
     def _mouse_move(self, event):
         scene_pos = self.graphics_view.mapToScene(event.pos())
 
-        if self.current_mode == 'edit_text':
+        if self.current_mode == 'browse':
+            if event.buttons() & Qt.LeftButton:
+                self._reset_browse_hover_cursor()
+            else:
+                self._update_browse_hover_cursor(scene_pos)
+        elif self.current_mode == 'edit_text':
             # ── 待定狀態：判斷是否超過拖曳閾值 ──
             if self._drag_pending and self._drag_start_scene_pos is not None:
                 dx = scene_pos.x() - self._drag_start_scene_pos.x()
@@ -1329,6 +1349,34 @@ class PDFView(QMainWindow):
                     self._update_hover_highlight(scene_pos)
 
         QGraphicsView.mouseMoveEvent(self.graphics_view, event)
+
+    def _update_browse_hover_cursor(self, scene_pos: QPointF) -> None:
+        """In browse mode, use text-selection cursor only on editable text."""
+        if self.current_mode != 'browse':
+            self._reset_browse_hover_cursor()
+            return
+        try:
+            if not hasattr(self, 'controller') or self.controller is None:
+                self._reset_browse_hover_cursor()
+                return
+            model = getattr(self.controller, "model", None)
+            if model is None or not model.doc:
+                self._reset_browse_hover_cursor()
+                return
+            page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
+            info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
+            if info:
+                if not self._browse_text_cursor_active:
+                    self.graphics_view.viewport().setCursor(Qt.IBeamCursor)
+                    self._browse_text_cursor_active = True
+            else:
+                self._reset_browse_hover_cursor()
+        except Exception:
+            self._reset_browse_hover_cursor()
+
+    def _reset_browse_hover_cursor(self) -> None:
+        self.graphics_view.viewport().setCursor(Qt.ArrowCursor)
+        self._browse_text_cursor_active = False
 
     def _clamp_editor_pos_to_page(self, x: float, y: float, page_idx: int):
         """將編輯框的場景座標（左上角）限制在指定頁面的邊界內，回傳 (x, y)。"""
