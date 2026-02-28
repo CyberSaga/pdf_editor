@@ -72,7 +72,7 @@
 - 描述已實作功能、流程與關鍵函式入口。
 
 規則：
-- 使用段落式敘述（非表格主導）。
+- 使用段落式敘述。
 - 每節可列「關鍵函式包含 ...」以便追蹤程式入口。
 - 功能必須對應到現有 Controller/Model/Tool 呼叫路徑。
 
@@ -85,6 +85,7 @@
 - 說明生命週期流程（open/edit/render/save/close）。
 
 規則：
+- 使用 ASCII Art Diagram 繪製專案架構
 - 重點放在邊界與責任，不放 UI 使用教學。
 - 任何 Breaking API 或工具註冊順序異動，需先更新此檔。
 
@@ -135,11 +136,11 @@
 ## 4. 建議更新流程（SOP）
 
 1. 確認程式已合併且可執行。  
-2. 先更新 `ARCHITECTURE.md`（邊界與流程）。  
-3. 更新 `FEATURES.md`（功能與函式入口）。  
-4. 更新 `架構.txt`（樹狀地圖）。  
-5. 同步更新 `README.md` 與 `README.zh-TW.md`（只保留摘要）。  
-6. 將本輪重要問題追加到 `solutions.md` 檔尾。  
+2. 將本輪重要問題追加到 `solutions.md` 檔尾。  
+3. 先更新 `ARCHITECTURE.md`（邊界與流程）。  
+4. 更新 `FEATURES.md`（功能與函式入口）。  
+5. 更新 `架構.txt`（樹狀地圖）。  
+6. 同步更新 `README.md` 與 `README.zh-TW.md`（只保留摘要）。  
 7. 最後做一致性檢查（名稱、API 路徑、章節對齊、UTF-8）。
 
 ---

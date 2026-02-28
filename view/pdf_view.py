@@ -787,7 +787,7 @@ class PDFView(QMainWindow):
         self.text_target_mode_combo = QComboBox()
         self.text_target_mode_combo.addItem("詞 / Run（精準）", "run")
         self.text_target_mode_combo.addItem("段落（整段）", "paragraph")
-        self.text_target_mode_combo.setCurrentIndex(0)
+        self.text_target_mode_combo.setCurrentIndex(1)
         self.text_target_mode_combo.currentIndexChanged.connect(self._on_text_target_mode_changed)
         text_layout.addWidget(QLabel("文字選取粒度"))
         text_layout.addWidget(self.text_target_mode_combo)
