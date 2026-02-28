@@ -1,13 +1,17 @@
-"""
+﻿"""
 測試腳本：驗證中英文混合文字的字體分配是否正確
 """
 # -*- coding: utf-8 -*-
 import sys
 import io
+from pathlib import Path
 
 # 設置標準輸出編碼為 UTF-8（Windows 兼容）
-if sys.platform == 'win32':
+if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 from model.pdf_model import PDFModel
 

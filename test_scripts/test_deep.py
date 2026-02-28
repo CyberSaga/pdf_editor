@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 test_deep.py — PDF 編輯器深度壓力測試
 ======================================
@@ -34,7 +34,7 @@ from typing import List, Optional, Tuple, Dict, Any
 from dataclasses import dataclass, field
 from collections import defaultdict
 
-if sys.platform == "win32":
+if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 import logging

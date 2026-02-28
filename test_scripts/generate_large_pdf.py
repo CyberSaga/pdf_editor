@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 generate_large_pdf.py — 產生極大 PDF（壓力測試用）
 ====================================================
@@ -15,7 +15,7 @@ import os
 import argparse
 from pathlib import Path
 
-if sys.platform == "win32":
+if sys.platform == "win32" and __name__ == "__main__":
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 

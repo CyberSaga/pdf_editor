@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 測試 1.pdf 水平文字編輯：驗證輸出在頁面內、文字可見
 支援兩種測試路徑：
@@ -9,7 +9,7 @@ import sys
 import io
 from pathlib import Path
 
-if sys.platform == 'win32':
+if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 from model.pdf_model import PDFModel

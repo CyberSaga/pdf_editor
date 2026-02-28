@@ -1147,6 +1147,20 @@ class PDFModel:
             return False
         return bool(re.search(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", text))
 
+    def _has_complex_script(self, text: str) -> bool:
+        """
+        判斷文字是否包含常見複雜腳本（RTL/CJK）。
+        用於在文字擷取不穩定時放寬驗證閾值（僅限特定流程）。
+        """
+        if not text:
+            return False
+        return bool(
+            re.search(
+                r"[\u0590-\u05ff\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]",
+                text,
+            )
+        )
+
     def _push_down_overlapping_text(
         self,
         page: fitz.Page,
@@ -1485,7 +1499,12 @@ class PDFModel:
         page_rect = page.rect
         rollback_flag = False
         resolved_target_span_id = target_span_id
-        effective_target_mode = (target_mode or self.text_target_mode or "run").strip().lower()
+        if target_mode is None and new_rect is not None and not target_span_id:
+            # Legacy drag-move callers (without explicit span/mode) historically
+            # expect block-level relocation semantics.
+            effective_target_mode = "paragraph"
+        else:
+            effective_target_mode = (target_mode or self.text_target_mode or "run").strip().lower()
         if effective_target_mode not in {"run", "paragraph"}:
             effective_target_mode = "run"
         overlap_cluster: list[EditableSpan] = []
@@ -1896,18 +1915,28 @@ class PDFModel:
 
             page_token_coverage = self._token_coverage_ratio(new_text, norm_page)
             exact_present = (norm_new in norm_page) or (bool(norm_clip) and norm_new in norm_clip)
+            has_complex_script = self._has_complex_script(new_text)
             if not norm_new:
                 target_present = True
             elif exact_present:
                 target_present = True
             elif effective_target_mode == "paragraph":
                 # Paragraph edits may interleave with protected replay text, so allow robust fuzzy checks.
-                target_present = (
-                    sim_ratio >= 0.88
-                    or clip_ratio >= 0.84
-                    or page_token_coverage >= 0.78
-                    or clip_token_coverage >= 0.72
-                )
+                # RTL/CJK extraction can lose diacritics / shaping information: apply a bounded relaxed threshold.
+                if has_complex_script:
+                    target_present = (
+                        sim_ratio >= 0.40
+                        or clip_ratio >= 0.38
+                        or page_token_coverage >= 0.35
+                        or clip_token_coverage >= 0.35
+                    )
+                else:
+                    target_present = (
+                        sim_ratio >= 0.88
+                        or clip_ratio >= 0.84
+                        or page_token_coverage >= 0.78
+                        or clip_token_coverage >= 0.72
+                    )
             elif len(norm_new) >= 48:
                 # Long run text can include extraction artifacts; use tighter fuzzy fallback.
                 target_present = (

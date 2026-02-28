@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Phase 6 測試：統一 undo 堆疊
 流程：刪頁 → 編輯文字 → undo × 2 → redo × 2 → 確認頁數與文字都正確復原
@@ -6,7 +6,7 @@ Phase 6 測試：統一 undo 堆疊
 import sys, io, tempfile, fitz
 from pathlib import Path
 
-if sys.platform == 'win32':
+if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 from model.pdf_model import PDFModel

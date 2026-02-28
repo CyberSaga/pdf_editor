@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 自動化測試：建立含文字的 PDF、開啟、執行 edit_text，驗證完整流程
 用以確認優化後的 model 穩定、準確運作
@@ -9,7 +9,7 @@ import tempfile
 import fitz
 from pathlib import Path
 
-if sys.platform == 'win32':
+if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 from model.pdf_model import PDFModel

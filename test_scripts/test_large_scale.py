@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 test_large_scale.py — Phase 7 大規模測試
 =========================================
@@ -25,7 +25,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-if sys.platform == "win32":
+if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 import fitz
