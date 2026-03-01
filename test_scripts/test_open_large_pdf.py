@@ -7,10 +7,10 @@ test_open_large_pdf.py — 超大 PDF 開檔壓力測試（headless）
 
 執行方式：
   python test_scripts/test_open_large_pdf.py
-    → 先產生 1000 頁 PDF 到 test_scripts/large_stress.pdf，再計時開檔
+    → 先產生 1000 頁 PDF 到 test_scripts/test_outputs/large_stress.pdf，再計時開檔
   python test_scripts/test_open_large_pdf.py --pages 500
   python test_scripts/test_open_large_pdf.py --path path/to/large.pdf
-  python test_scripts/test_open_large_pdf.py --path test_scripts/large_stress.pdf
+  python test_scripts/test_open_large_pdf.py --path test_scripts/test_outputs/large_stress.pdf
 """
 import sys
 import os
@@ -31,13 +31,15 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from model.pdf_model import PDFModel
 
-DEFAULT_LARGE_PDF = SCRIPT_DIR / "large_stress.pdf"
+OUTPUT_DIR = SCRIPT_DIR / "test_outputs"
+DEFAULT_LARGE_PDF = OUTPUT_DIR / "large_stress.pdf"
 
 
 def ensure_large_pdf(pages: int) -> Path:
     """產生指定頁數的 PDF 並回傳路徑。"""
     from generate_large_pdf import build_large_pdf
-    path = SCRIPT_DIR / "large_stress.pdf"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    path = OUTPUT_DIR / "large_stress.pdf"
     print(f"產生 {pages} 頁 PDF 至 {path}...")
     t0 = time.perf_counter()
     pdf_bytes = build_large_pdf(pages)

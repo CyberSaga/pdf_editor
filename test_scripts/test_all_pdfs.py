@@ -15,7 +15,7 @@ test_all_pdfs.py — 全 test_files 目錄 PDF 批次測試
   - veraPDF-corpus-staging：已知為合規測試用途，僅跑 Layer 1+2
 
 輸出：
-  error_log.txt   — 所有錯誤與異常的詳細記錄
+  test_outputs/error_log.txt   — 所有錯誤與異常的詳細記錄
   終端機 stdout   — 進度概覽 + 最終統計
 """
 import sys
@@ -34,6 +34,8 @@ logging.disable(logging.CRITICAL)   # 批次測試期間關閉所有 log，避�
 import fitz
 
 ROOT = Path(__file__).resolve().parent.parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+OUTPUT_DIR = SCRIPT_DIR / "test_outputs"
 sys.path.insert(0, str(ROOT))
 from model.pdf_model import PDFModel
 
@@ -41,7 +43,7 @@ from model.pdf_model import PDFModel
 # 設定
 # ──────────────────────────────────────────────────────────────────
 TEST_FILES_ROOT = ROOT / "test_files"
-ERROR_LOG       = ROOT / "error_log.txt"
+ERROR_LOG       = OUTPUT_DIR / "error_log.txt"
 
 # 已知密碼表：{檔名（小寫）→ 密碼}
 # 支援 user password（開啟密碼）與 owner password（權限密碼）。
@@ -224,6 +226,7 @@ def collect_pdfs() -> list[Path]:
 # 主流程
 # ──────────────────────────────────────────────────────────────────
 def main():
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     pdfs = collect_pdfs()
     total = len(pdfs)
     print(f"\n{'='*65}")

@@ -21,8 +21,9 @@ if sys.platform == "win32" and __name__ == "__main__":
 
 import fitz
 
-# 預設輸出路徑（專案 test_scripts 下）
-DEFAULT_OUTPUT = Path(__file__).resolve().parent / "large_stress.pdf"
+# 預設輸出路徑（test_scripts/test_outputs 下）
+OUTPUT_DIR = Path(__file__).resolve().parent / "test_outputs"
+DEFAULT_OUTPUT = OUTPUT_DIR / "large_stress.pdf"
 
 
 def build_large_pdf(n_pages: int) -> bytes:
@@ -52,6 +53,7 @@ def main() -> int:
 
     n = max(1, args.pages)
     out_path = Path(args.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"產生 {n} 頁 PDF...")
     pdf_bytes = build_large_pdf(n)

@@ -25,13 +25,15 @@ import logging
 logging.disable(logging.CRITICAL)
 
 ROOT = Path(__file__).resolve().parent.parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+OUTPUT_DIR = SCRIPT_DIR / "test_outputs"
 sys.path.insert(0, str(ROOT))
 
 TEST_FILES_ROOT = ROOT / "test_files"
 if not TEST_FILES_ROOT.exists():
     TEST_FILES_ROOT = Path(__file__).resolve().parent / "test_files"
 SAMPLE_DIR = TEST_FILES_ROOT / "sample-files-main"
-REPORT_PATH = ROOT / "docs" / "feature_conflict_test_report.txt"
+REPORT_PATH = OUTPUT_DIR / "feature_conflict_test_report.txt"
 
 import fitz
 from model.pdf_model import PDFModel
