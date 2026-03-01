@@ -1,4 +1,4 @@
-# 遇到的錯誤與解決方法
+﻿# 遇到的錯誤與解決方法
 
 ---
 ## 9. UI 佈局與縮放（視覺化 PDF 編輯器）
@@ -704,3 +704,118 @@ Windows 編碼修正邏輯放在 module import 階段，而非 CLI 執行入口�
 以 UTF-8 重新寫入全文，並以 `Get-Content -Encoding utf8` 驗證；同時與 `README.md` 同步章節內容，避免雙語文件漂移。
 
 **檔案：** `docs/README.zh-TW.md`、`docs/README.md`
+
+---
+
+## 2026-03 Documentation and Add-Text Consolidation
+
+### S1. Need separate add-text behavior without breaking `edit_text`
+
+Problem:
+- Mixed click intent between editing existing text and creating new textboxes caused ambiguity and side effects.
+
+Root cause:
+- Interaction path did not enforce explicit intent boundaries.
+
+Candidate fixes:
+1. Keep single mode and infer intent with hit-test heuristics.
+2. Split into explicit modes and explicit editor intent state.
+3. Always create new textbox and try to resolve later.
+
+Chosen fix:
+- Option 2.
+- Added dedicated `add_text` mode plus editor intent (`edit_existing` / `add_new`).
+
+Files:
+- `view/pdf_view.py`
+- `controller/pdf_controller.py`
+
+### S2. Add-text placement drift on rotated pages
+
+Problem:
+- Inserted text could drift from visual click location when page rotation was not 0.
+
+Root cause:
+- Coordinate conversion and clamping were not consistently done in unrotated page space.
+
+Candidate fixes:
+1. Manual per-angle formulas.
+2. Derotation-matrix mapping + unrotated bound clamp.
+3. Ignore rotation and accept drift.
+
+Chosen fix:
+- Option 2.
+
+Files:
+- `view/pdf_view.py`
+- `model/pdf_model.py`
+
+### S3. Add-text undo/redo boundary must be atomic and non-destructive
+
+Problem:
+- Undo/redo could risk over-scoped restoration without strict page boundary.
+
+Root cause:
+- Generic snapshot fallback paths can widen rollback scope.
+
+Candidate fixes:
+1. Reuse document-level snapshot command.
+2. Add dedicated add-text command with strict page snapshots.
+3. Delete inserted text by search match on undo.
+
+Chosen fix:
+- Option 2.
+- Implemented `AddTextboxCommand` with strict before/after page snapshots.
+
+Files:
+- `model/edit_commands.py`
+- `model/pdf_model.py`
+- `controller/pdf_controller.py`
+
+### S4. New page text must be immediately editable
+
+Problem:
+- Newly inserted page text was not guaranteed to be immediately detectable by `edit_text` hit-testing.
+
+Root cause:
+- Index refresh timing after insertion.
+
+Candidate fixes:
+1. Rebuild only on later full render.
+2. Rebuild target page index immediately after insertion and refresh page.
+3. Require manual refresh.
+
+Chosen fix:
+- Option 2.
+
+Files:
+- `model/pdf_model.py`
+- `controller/pdf_controller.py`
+
+### S5. Default `文字選取粒度` should be `paragraph` without regression
+
+Problem:
+- Requirement changed UI default to paragraph, but direct model default changes can break non-UI test/script assumptions.
+
+Root cause:
+- Startup mismatch risk between view default and model default.
+
+Candidate fixes:
+1. Make model default paragraph globally.
+2. Keep model default run, set UI default paragraph, and sync on startup.
+3. Keep existing defaults and require manual user change.
+
+Chosen fix:
+- Option 2.
+
+Files:
+- `view/pdf_view.py`
+- `controller/pdf_controller.py`
+- `model/pdf_model.py`
+
+### Verification
+
+Targeted regressions executed after final adjustment:
+- `pytest -q test_scripts/test_overlap_textbox_edit.py` -> pass
+- `pytest -q test_scripts/test_char_run_reconstruction.py` -> pass
+- `pytest -q test_scripts/test_add_textbox_atomic.py` -> pass

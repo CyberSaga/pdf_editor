@@ -1,190 +1,110 @@
-# PDF Editor Architecture
+﻿# PDF Editor Architecture
 
 ## 1. Overview
 
-The application uses an MVC design:
+The project uses MVC with built-in tool extensions.
 
-- `Model`: PDF document/session lifecycle, text editing core, save pipeline, and command history.
-- `View`: Qt UI state and rendering widgets (tabs, tool panels, canvas, dialogs).
-- `Controller`: coordinates UI events and model calls, preserves per-tab UI state, triggers refresh.
+```text
++-------------------+         signals          +---------------------+
+|       View        | -----------------------> |     Controller      |
+| (Qt widgets/UI)   | <----------------------- | (flow coordination) |
++-------------------+        updates           +----------+----------+
+                                                       calls |
+                                                             v
+                                                +------------+------------+
+                                                |          Model          |
+                                                | (docs, sessions, edits) |
+                                                +------------+------------+
+                                                             |
+                                               delegates     |
+                                                             v
+                                                +------------+------------+
+                                                |       ToolManager       |
+                                                | annotation/watermark/   |
+                                                | search/ocr extensions   |
+                                                +-------------------------+
+```
 
-Entry point:
+Entry wiring happens in `main.py`, which instantiates `PDFModel`, `PDFView`, and `PDFController`.
 
-- `main.py` wires `PDFModel`, `PDFView`, and `PDFController`.
+## 2. Layer Responsibilities
 
-## 2. Core Layers
+### 2.1 Model (`model/pdf_model.py`)
 
-### 2.1 Model Layer
+Model owns document correctness and persistence behavior. It manages sessions (`DocumentSession`), document handles (`fitz.Document`), text hit-testing, text edit transactions, add-text insertion, save/save-as pipeline, and snapshot helpers used by history commands.
 
-Main file:
+Important text APIs include `get_text_info_at_point(...)`, `edit_text(...)`, `add_textbox(...)`, and `set_text_target_mode(...)`.
 
-- `model/pdf_model.py`
+Snapshot APIs include `_capture_doc_snapshot()`, `_restore_doc_from_snapshot(...)`, `_capture_page_snapshot(...)`, `_capture_page_snapshot_strict(...)`, and `_restore_page_from_snapshot(...)`.
 
-Responsibilities:
+### 2.2 Commands (`model/edit_commands.py`)
 
-- Multi-session registry (`DocumentSession`) and active-session switching.
-- `fitz.Document` ownership per session.
-- Text edit transaction pipeline (`edit_text`) with verification and rollback.
-- Page operations (delete, rotate, insert blank, export, render helpers).
-- Save/save-as orchestration (including overwrite/collision behavior).
-- Command integration via `CommandManager`.
-- Delegation to built-in tools via `self.tools` (`ToolManager`).
-- Read-only text extraction helpers for UI interactions (for example, browse-mode selection copy).
+Command classes define history boundaries:
+- `EditTextCommand` for existing text edits.
+- `AddTextboxCommand` for atomic add-text insertion.
+- `SnapshotCommand` for document-level structural operations.
+- `CommandManager` for undo/redo stacks.
 
-Session model (`DocumentSession`) stores:
+`AddTextboxCommand` stores strict before-page snapshots, captures after-page snapshots on first execute, and restores only the target page on undo/redo.
 
-- `session_id`, paths, `doc`
-- `TextBlockManager`
-- `CommandManager`
-- per-session edit bookkeeping (`pending_edits`, `edit_count`)
+### 2.3 Controller (`controller/pdf_controller.py`)
 
-Dirty state rule:
+Controller is the only mutation coordinator between View and Model. It wires view signals, normalizes mode transitions, creates/executes commands, controls refresh scopes, and preserves per-session UI state.
 
-- `session.command_manager.has_pending_changes() or tools.has_unsaved_changes(session_id)`
+Mode registry includes `browse`, `edit_text`, `add_text`, `rect`, `highlight`, and `add_annotation`.
 
-Related model components:
+At startup, controller syncs text-target granularity from the view control to model state so runtime default behavior matches the UI default.
 
-- `model/text_block.py`: block/run/paragraph indexing and lookup.
-- `model/edit_commands.py`: `EditTextCommand`, `SnapshotCommand`, `CommandManager`.
+### 2.4 View (`view/pdf_view.py`)
 
-### 2.2 Built-in Tool Extensions
+View owns widgets, scene interactions, and signal emission. It does not mutate model business state directly.
 
-Directory:
+The text editor state is split by intent:
+- `edit_existing` for updating existing text.
+- `add_new` for inserting new page text.
 
-- `model/tools/`
-
-Files:
-
-- `base.py`: `ToolExtension` lifecycle/render/save hooks.
-- `manager.py`: `ToolManager` static registration and fan-out.
-- `annotation_tool.py`
-- `watermark_tool.py`
-- `search_tool.py`
-- `ocr_tool.py`
-
-Registration order in `ToolManager`:
-
-1. Annotation
-2. Watermark
-3. Search
-4. OCR
-
-Tool lifecycle hooks used by model:
-
-- `on_session_open`
-- `on_session_close`
-- `on_session_saved`
-- `has_unsaved_changes`
-- `needs_page_overlay` / `apply_page_overlay`
-- `prepare_doc_for_save`
-
-Public tool APIs used by app:
-
-- `model.tools.annotation.*`
-- `model.tools.watermark.*`
-- `model.tools.search.search_text(...)`
-- `model.tools.ocr.ocr_pages(...)`
-
-### 2.3 Controller Layer
-
-Main file:
-
-- `controller/pdf_controller.py`
-
-Responsibilities:
-
-- Connects Qt signals to model operations.
-- Keeps UI API stable while routing tool calls through `model.tools.*`.
-- Maintains per-session UI state (page, zoom, search, mode).
-- Synchronizes mode when switching tabs/sessions.
-- Wraps edit/structural actions into command objects for undo/redo.
-- Coordinates page/thumbnail/continuous rendering refresh.
-- Handles print workflow through `src/printing/*`.
-
-### 2.4 View Layer
-
-Main file:
-
-- `view/pdf_view.py`
-
-Responsibilities:
-
-- Qt widgets, toolbars, panels, tabbed document UI.
-- Emits user-intent signals; does not mutate model directly.
-- Hosts canvas and edit overlays.
-- Displays search/OCR/watermark/annotation interactions via controller callbacks.
+Mode behavior boundary:
+- In `edit_text`, blank-click does not create new textbox.
+- In `add_text`, blank-click commits open editor; otherwise it creates a new textbox editor.
 
 ## 3. Runtime Flows
 
 ### 3.1 Open / Activate / Close
 
-1. View emits open request.
-2. Controller calls `model.open_pdf(path, append=True|False)`.
-3. Model creates/activates session and calls `tools.on_session_open(...)`.
-4. Controller renders active session and restores session UI state.
-5. On close, controller confirms unsaved changes; model calls `tools.on_session_close(...)`.
+View emits open/switch/close intent. Controller calls model session operations. Model opens/activates/cleans session and tool hooks. Controller restores session UI state and schedules rendering/index batches.
 
-### 3.2 Text Edit (Undoable)
+### 3.2 Edit Existing Text
 
-1. View emits edit intent (including `target_span_id` and `target_mode` when available).
-2. Controller captures snapshot and executes `EditTextCommand`.
-3. `PDFModel.edit_text(...)` runs transaction:
-   - target resolution (run/paragraph),
-   - safe redaction + protected replay,
-   - insertion strategy,
-   - validation (`target_present`, protected spans),
-   - rollback on failure,
-   - index rebuild.
-4. Command manager tracks undo/redo stacks.
+View hit-tests text and opens editor with target metadata. On commit, view emits `sig_edit_text(...)`. Controller creates `EditTextCommand` with page snapshot. Model runs transactional edit pipeline and page index rebuild. Controller refreshes affected view scope.
 
-### 3.3 Browse Text Selection and Copy
+### 3.3 Add New Textbox
 
-1. In browse mode, left-drag starts selection only when drag begins on editable text.
-2. View computes a rough drag region, then snaps highlight to text bounds:
-   - text existence check via `controller.get_text_in_rect(page_num, rect)`
-   - bounds snapping via `controller.get_text_bounds(page_num, rough_rect)`
-3. The live selection overlay is visible only when text exists in the dragged region.
-4. On mouse release, the snapped text bounds become the persisted selection.
-5. Copy path:
-   - `Ctrl+C` in browse mode copies selected text to system clipboard
-   - context menu shows `Copy Selected Text` only when selection exists
-6. Selection is cleared on blank-click, mode switch away from browse, and scene/document rebuild.
+View computes visual insertion rect and opens add editor. On commit, view emits `sig_add_textbox(...)`. Controller captures strict page snapshot and executes `AddTextboxCommand`. Model maps visual-to-unrotated geometry, clamps bounds, inserts page text, and rebuilds page index. Controller refreshes page render so new text is immediately editable through existing edit flow.
 
-### 3.4 Render / Print
+### 3.4 Undo / Redo
 
-- `PDFModel.get_page_pixmap(...)` delegates to `ToolManager.render_page_pixmap(...)`.
-- Tools may inject overlays (notably watermark) by purpose (`view`, `snapshot`, `print`).
-- `PDFModel.build_print_snapshot()` delegates to tool manager to build printable bytes.
+Controller invokes command manager undo/redo. Commands restore page/doc snapshots according to command type. Controller then refreshes the minimal required UI scope and tooltip descriptions.
 
-### 3.5 Save
+## 4. Coordinate and Rotation Strategy
 
-1. Model applies pending redactions/cleanup.
-2. Model asks `tools.prepare_doc_for_save(session_id)` for save-time transformed doc if needed.
-3. Model writes output and marks command manager saved.
-4. Model calls `tools.on_session_saved(session_id)`.
+Add-text insertion uses visual coordinates from the current view. Model converts visual rectangle corners through derotation mapping into unrotated page space, clamps against unrotated page bounds (`cropbox`/`mediabox` fallback), and inserts with rotation-aware parameters. This keeps placement stable at the visual click location for page rotation `0/90/180/270`.
 
-## 4. Printing Subsystem
+## 5. Tool Extension Architecture
 
-Directory:
+Built-in tools are statically registered in `ToolManager` and accessed via `model.tools.<tool>.*`.
 
-- `src/printing/`
+Current registration order:
+1. Annotation
+2. Watermark
+3. Search
+4. OCR
 
-Key pieces:
+Tool lifecycle hooks cover session open/close/saved behavior, unsaved-change checks, overlay rendering, and save-time transformations.
 
-- `dispatcher.py`: printer discovery/dispatch and job routing.
-- `print_dialog.py`: unified print dialog and options.
-- `page_selection.py`, `layout.py`: page selection and layout mapping.
-- platform drivers in `src/printing/platforms/`.
+## 6. Printing Subsystem
 
-Controller entry:
+Printing is implemented under `src/printing/*` (dialog, dispatcher, layout, selection, renderer, platform drivers). Controller entry is `PDFController.print_document()`.
 
-- `PDFController.print_document()`
+## 7. Guardrails
 
-## 5. Boundary Rules
-
-- View does not call model directly for business mutations; it emits signals.
-- Controller is the only coordinator between View and Model.
-- Model owns document data and edit/save correctness.
-- Tool-specific state and logic live in tool extensions, keyed by `session_id`.
-- Built-in tools are statically registered; no runtime plugin discovery in current design.
-- Browse selection rendering is a View concern; text extraction/snap helpers remain in Controller/Model/Tool boundaries.
+View must not directly mutate model. Controller owns mutation orchestration. Model owns document correctness and persistence. Behavior-level feature truth is in `docs/FEATURES.md`; root-cause/fix history is in `docs/solutions.md`.

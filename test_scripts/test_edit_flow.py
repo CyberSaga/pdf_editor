@@ -41,6 +41,8 @@ def main():
             model.open_pdf(str(pdf_path))
             print("2. 成功開啟 PDF")
             print(f"   - 頁數: {len(model.doc)}")
+            # 索引採延遲建立，測試流程需先確保目標頁已建索引。
+            model.ensure_page_index_built(1)
             all_pages = list(model.block_manager._index.keys())
             total_blocks = sum(len(model.block_manager.get_blocks(p)) for p in all_pages)
             print(f"   - 文字方塊數: {total_blocks}")

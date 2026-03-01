@@ -1,50 +1,40 @@
-# PDF 編輯器（PySide6 + PyMuPDF）
+﻿# PDF 編輯器（PySide6 + PyMuPDF）
 
-以 Python + Qt（PySide6）撰寫的桌面 PDF 編輯器，提供頁面管理、註解、文字編輯
-（redaction + 重新插入）、浮水印、搜尋與可選的 OCR 功能。
-工具功能已由 `PDFModel` 解耦至 `model/tools/` 內建擴充（`annotation`、`watermark`、`search`、`ocr`），
-統一入口為 `model.tools.<tool>.*`。
+這是一個以 Python + Qt 開發的桌面 PDF 編輯器。
 
-本文件參考 `PDF4QT-README.md` 的章節結構。
+主要能力：
+- 開啟 / 儲存 PDF
+- 頁面操作（刪除 / 旋轉 / 插入 / 匯出 / 合併）
+- 文字編輯（重疊安全）
+- 獨立新增文字模式（新增頁面文字）
+- 註解（矩形 / 螢光 / 文字註解）
+- 浮水印
+- 搜尋與跳轉
+- 可選 OCR
+- Command-based Undo / Redo
 
-## 2. 法律與授權
+## 授權
 
-此專案目前未宣告授權條款。若需要授權資訊，請新增 `LICENSE` 並更新本節。
+目前此倉庫尚未宣告授權條款。
+若需要授權資訊，請新增 `LICENSE` 檔案。
 
-## 3. 功能
+## 功能文件
 
-- [x] 開啟 / 儲存 PDF（支援存回原檔的 incremental save）
-- [x] 頁面操作（刪除 / 旋轉 / 匯出 / 插入空白頁 / 從其他 PDF 插入頁面）
-- [x] 文字編輯（Overlap-safe：重疊範圍 redaction + replay；支援 run/段落 粒度；保留既有註解）
-- [x] 搜尋並跳轉到結果
-- [x] 註解（方框 / 螢光筆 / FreeText）與顯示切換
-- [x] 浮水印（內嵌於 PDF，重新開啟仍可編輯）
-- [x] 列印管線（預覽 / 版面配置）
-- [x] 可選 OCR（Tesseract）
-- [x] Undo / Redo（Command 系統）
-- [x] 大型 PDF：優先顯示第一頁，縮圖與連續捲動背景載入
-- [x] 多分頁 session 隔離（工具狀態與 dirty 狀態按 session 管理）
-
-更詳細的流程與責任分工請見：
+完整功能與流程行為請參考：
 - `docs/FEATURES.md`
 - `docs/ARCHITECTURE.md`
 
-## 4. 第三方套件
+修正決策、根因與解法紀錄請參考：
+- `docs/solutions.md`
 
-- PySide6（Qt UI）
-- PyMuPDF（fitz）
+## 第三方套件
+
+- PySide6
+- PyMuPDF (fitz)
 - Pillow
-- pytesseract（選用 OCR）
+- pytesseract（選用）
 
-## 6. 安裝
-
-### Windows（一般使用者）
-
-若使用打包版本：
-
-```text
-dist\main.exe
-```
+## 安裝
 
 ### Windows（開發）
 
@@ -53,7 +43,7 @@ python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements_clean.txt
 ```
 
-### 可選列印後端
+### 選用列印後端
 
 ```text
 .venv\Scripts\python -m pip install -r optional-requirements.txt
@@ -61,21 +51,15 @@ python -m venv .venv
 
 ### OCR 依賴
 
-若要使用 OCR，請先安裝 Tesseract OCR，並確認 `tesseract` 已加入 PATH。
+若需 OCR，請安裝 Tesseract OCR，並確保 `tesseract` 在 PATH 中。
 
-## 7. 執行
+## 執行
 
 ```text
 python main.py
 ```
 
-## 8. 打包（Windows）
-
-打包注意事項（含 PyMuPDF / PyInstaller workaround）請見：
-
-- `docs/PACKAGING.md`
-
-打包指令：
+## 打包（Windows）
 
 ```text
 .venv\Scripts\python -m PyInstaller --noconfirm --clean --onefile --windowed main.py
@@ -87,6 +71,15 @@ python main.py
 dist\main.exe
 ```
 
-## 9. 免責聲明
+## 最近更新（2026-03）
 
-本軟體以「現狀」提供，不提供任何形式的保證。
+- 新增獨立 `add_text` 模式，並提供原子化新增文字框 Undo/Redo。
+- 新增旋轉安全的點擊定位（0/90/180/270）新增文字放置。
+- 新增 CJK 預設字型策略（新增文字路徑）。
+- 將「文字選取粒度」UI 預設改為 `paragraph`，並加上啟動同步。
+
+細節請見 `docs/FEATURES.md` 與 `docs/solutions.md`。
+
+## 免責
+
+本軟體以「現況」提供，不提供任何明示或默示保證。

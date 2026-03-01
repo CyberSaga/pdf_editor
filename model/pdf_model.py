@@ -111,8 +111,8 @@ class PDFModel:
         self.temp_dir = None
         # 是否在「存回原檔」時使用增量更新（Incremental Update），以減少對數位簽章與大檔的影響
         self.use_incremental_save: bool = True
-        # Text target granularity: "run" or "paragraph" (default).
-        self.text_target_mode: str = "paragraph"
+        # Text target granularity: "run" or "paragraph" (UI can override on startup).
+        self.text_target_mode: str = "run"
         self.tools = ToolManager(self)
         self._initialize_temp_dir()
         # 全局 glyph 高度調整（文件推薦，import 後設定一次）
@@ -546,6 +546,26 @@ class PDFModel:
         ]
         mapped = [pt * page.derotation_matrix for pt in corners]
         return self._rect_from_points(mapped)
+
+    def _unrotated_page_rect(self, page: fitz.Page) -> fitz.Rect:
+        """
+        Return page bounds in unrotated coordinates.
+        For rotated pages, page.rect is visual-space (w/h swapped on 90/270), so
+        insertion geometry derived via derotation_matrix must clamp against cropbox.
+        """
+        try:
+            crop = fitz.Rect(page.cropbox)
+            if crop.width > 0 and crop.height > 0:
+                return crop
+        except Exception:
+            pass
+        try:
+            media = fitz.Rect(page.mediabox)
+            if media.width > 0 and media.height > 0:
+                return media
+        except Exception:
+            pass
+        return fitz.Rect(page.rect)
 
     def _y_overlaps(self, rect_a: fitz.Rect, rect_b: fitz.Rect) -> bool:
         return not (rect_a.y1 <= rect_b.y0 or rect_b.y1 <= rect_a.y0)
@@ -1074,7 +1094,7 @@ class PDFModel:
             unrot_rect = self._visual_rect_to_unrotated_rect(page, bounded_visual)
             # Prefer page.rect bounds for insertion. Some malformed PDFs have
             # mediabox/pagebox mismatch where mediabox clipping collapses usable area.
-            insert_rect = self._clamp_rect_to_page(unrot_rect, fitz.Rect(page.rect))
+            insert_rect = self._clamp_rect_to_page(unrot_rect, self._unrotated_page_rect(page))
 
             try:
                 tiny_canvas = (
@@ -1761,10 +1781,18 @@ class PDFModel:
         page_rect = page.rect
         rollback_flag = False
         resolved_target_span_id = target_span_id
-        if target_mode is None and new_rect is not None and not target_span_id:
-            # Legacy drag-move callers (without explicit span/mode) historically
-            # expect block-level relocation semantics.
-            effective_target_mode = "paragraph"
+        if target_mode is None:
+            if new_rect is not None and not target_span_id:
+                # Legacy drag-move callers (without explicit span/mode) historically
+                # expect block-level relocation semantics.
+                effective_target_mode = "paragraph"
+            elif target_span_id:
+                # Explicit span-id without explicit mode should stay span-precise.
+                effective_target_mode = "run"
+            else:
+                # Legacy rect-based edit callers (no explicit id/mode) historically
+                # operate on a full paragraph/block scope.
+                effective_target_mode = "paragraph"
         else:
             effective_target_mode = (target_mode or self.text_target_mode or "run").strip().lower()
         if effective_target_mode not in {"run", "paragraph"}:

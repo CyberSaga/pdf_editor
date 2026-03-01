@@ -1,97 +1,88 @@
-# PDF Editor (PySide6 + PyMuPDF)
+﻿# PDF Editor (PySide6 + PyMuPDF)
 
-PDF editor desktop app written in Python with a Qt UI. It provides
-page management, annotations, text editing (via redaction + reinsert),
-watermarks, search, and optional OCR.
-Tool features are decoupled from `PDFModel` through built-in extensions
-under `model/tools/` (`annotation`, `watermark`, `search`, `ocr`).
-The tool entrypoint is `model.tools.<tool>.*`.
+Desktop PDF editor written in Python with a Qt UI.
 
-## 2. LEGAL ISSUES
+Core capabilities include:
+- open/save PDFs
+- page operations (delete/rotate/insert/export/merge)
+- text editing (overlap-safe)
+- dedicated add-text mode (new page text insertion)
+- annotations (rect/highlight/free-text)
+- watermarks
+- search and jump
+- optional OCR
+- undo/redo through command history
 
-No license is declared in this repository. If you need licensing
-information, add a `LICENSE` file and update this section.
+## Legal
 
-## 3. FEATURES
+No license is currently declared in this repository.
+Add a `LICENSE` file if licensing terms are required.
 
-Key features:
+## Features
 
-- [x] open/save PDFs (incremental save supported)
-- [x] page operations (delete/rotate/export/insert/merge)
-- [x] text editing (overlap-safe redaction + replay; run/paragraph target modes; preserves existing annotations)
-- [x] search & jump to results
-- [x] browse-mode text selection and copy (`Ctrl+C` / context menu copy)
-- [x] annotations (rect/highlight/free-text) and visibility toggle
-- [x] watermarks (persisted inside PDF metadata)
-- [x] printing pipeline with preview/layout options
-- [x] optional OCR via Tesseract
-- [x] undo/redo via command system
-- [x] large PDF: first page appears quickly; thumbnails and continuous scroll load in background; scroll and thumbnail jump work once loading completes (index built after scene)
-- [x] multi-tab session isolation (tool state and dirty state tracked per session)
-
-Detailed feature flow and responsibilities are described in:
+Feature list and workflow-level behavior are maintained in:
 - `docs/FEATURES.md`
 - `docs/ARCHITECTURE.md`
 
-## 4. THIRD PARTY LIBRARIES
+Implementation decisions, bug root causes, and fixes are tracked in:
+- `docs/solutions.md`
 
-- PySide6 (Qt UI)
+## Third-Party Libraries
+
+- PySide6
 - PyMuPDF (fitz)
 - Pillow
-- pytesseract (optional OCR)
+- pytesseract (optional)
 
-## 6. INSTALLING
-
-### Windows (end users)
-
-If you have a packaged build, download it and run:
-
-```
-dist\main.exe
-```
+## Install
 
 ### Windows (development)
 
-```
+```text
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements_clean.txt
 ```
 
 ### Optional printing backends
 
-```
+```text
 .venv\Scripts\python -m pip install -r optional-requirements.txt
 ```
 
 ### OCR dependency
 
-If you use OCR features, install Tesseract OCR on the machine and make
-sure `tesseract` is on PATH.
+Install Tesseract OCR and ensure `tesseract` is available on PATH.
 
-## 7. RUNNING
+## Run
 
-```
+```text
 python main.py
 ```
 
-## 8. PACKAGING (Windows)
-
-Packaging notes (including the PyMuPDF/PyInstaller workaround) are in:
-
-- `docs/PACKAGING.md`
+## Package (Windows)
 
 Build command:
 
-```
+```text
 .venv\Scripts\python -m PyInstaller --noconfirm --clean --onefile --windowed main.py
 ```
 
 Output:
 
-```
+```text
 dist\main.exe
 ```
 
-## 9. DISCLAIMER
+## Recent Updates (2026-03)
+
+High-level summary:
+- Added dedicated `add_text` mode and atomic add-text undo/redo boundaries.
+- Added rotation-safe visual click anchoring for inserted textboxes.
+- Switched add-text default font policy to CJK-capable font path.
+- Set default text selection granularity in UI to `paragraph` with startup sync.
+
+Details are in `docs/FEATURES.md` and `docs/solutions.md`.
+
+## Disclaimer
 
 This software is provided "as is", without warranty of any kind.
