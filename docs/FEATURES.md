@@ -45,3 +45,8 @@ Browse mode supports drag text selection with text-bounds snapping. Copy is avai
 ## 11. Performance and Progressive Loading
 
 Large PDF handling uses staged loading and batching to preserve interactivity while thumbnails, scene items, and indexes are built. Rendering and refresh scopes are coordinated to avoid blocking behavior and stale geometry. Key functions include controller batch scheduling and view continuous-scene rebuild paths.
+
+## 12. Keyboard Shortcuts and Save Prompt Keys
+
+Core keyboard shortcuts include `Ctrl+Z` (undo), `Ctrl+Y` (redo), `Ctrl+S` (save), `Ctrl+Shift+S` (save as), and `F2` (enter edit-text mode).  
+When closing with unsaved changes, confirmation dialogs provide explicit key hints and single-key actions: `Y` to save and `N` to discard (with `Esc` as cancel).

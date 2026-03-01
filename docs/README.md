@@ -59,6 +59,16 @@ Install Tesseract OCR and ensure `tesseract` is available on PATH.
 python main.py
 ```
 
+## Keyboard Shortcuts
+
+- `Ctrl+Z`: Undo
+- `Ctrl+Y`: Redo
+- `Ctrl+S`: Save
+- `Ctrl+Shift+S`: Save As
+- `F2`: Enter text edit mode
+
+Unsaved-change close prompts also support keyboard confirmation: `Y` to save, `N` to discard, `Esc` to cancel.
+
 ## Test Scripts Guide
 
 `test_scripts/TEST_SCRIPTS.md` is the testing map for this project. It tells you:

@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QMessageBox, QApplication, QFileDialog, QDialog
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QShortcut, QKeySequence
 from PySide6.QtCore import QTimer
 from model.pdf_model import PDFModel
 from model.edit_commands import EditTextCommand, SnapshotCommand, AddTextboxCommand
@@ -256,6 +256,18 @@ class PDFController:
             show_error(self.view, f"儲存失敗: {e}")
             return False
 
+    def _attach_yes_no_shortcuts(self, msg_box: QMessageBox, yes_btn, no_btn) -> None:
+        """讓確認對話框支援 Y/N 快捷鍵。"""
+        shortcut_yes = QShortcut(QKeySequence("Y"), msg_box)
+        shortcut_no = QShortcut(QKeySequence("N"), msg_box)
+        shortcut_yes.setAutoRepeat(False)
+        shortcut_no.setAutoRepeat(False)
+        shortcut_yes.activated.connect(lambda: yes_btn.click() if yes_btn.isEnabled() else None)
+        shortcut_no.activated.connect(lambda: no_btn.click() if no_btn.isEnabled() else None)
+        # 保留引用，避免被 GC 回收後失效。
+        msg_box._shortcut_yes = shortcut_yes
+        msg_box._shortcut_no = shortcut_no
+
     def _confirm_close_session(self, session_id: str) -> bool:
         if not self.model.session_has_unsaved_changes(session_id):
             return True
@@ -264,12 +276,13 @@ class PDFController:
         msg_box = QMessageBox(self.view)
         msg_box.setWindowTitle("未儲存的變更")
         msg_box.setText(f"分頁「{name}」有未儲存的變更，是否要儲存？")
-        msg_box.setInformativeText("取消將保留分頁不關閉。")
+        msg_box.setInformativeText("取消將保留分頁不關閉。快捷鍵：Y=儲存，N=放棄，Esc=取消。")
         save_btn = msg_box.addButton("儲存後關閉", QMessageBox.AcceptRole)
         discard_btn = msg_box.addButton("放棄變更", QMessageBox.DestructiveRole)
         cancel_btn = msg_box.addButton("取消", QMessageBox.RejectRole)
         msg_box.setDefaultButton(cancel_btn)
         msg_box.setIcon(QMessageBox.Warning)
+        self._attach_yes_no_shortcuts(msg_box, save_btn, discard_btn)
         msg_box.exec()
 
         clicked = msg_box.clickedButton()
@@ -995,12 +1008,13 @@ class PDFController:
         msg_box = QMessageBox(self.view)
         msg_box.setWindowTitle("未儲存的變更")
         msg_box.setText(f"共有 {len(dirty_ids)} 個分頁尚未儲存。")
-        msg_box.setInformativeText("是否要儲存所有變更後再關閉？")
+        msg_box.setInformativeText("是否要儲存所有變更後再關閉？快捷鍵：Y=全部儲存，N=全部放棄，Esc=取消。")
         save_all_btn = msg_box.addButton("全部儲存", QMessageBox.AcceptRole)
         discard_all_btn = msg_box.addButton("全部放棄", QMessageBox.DestructiveRole)
         cancel_btn = msg_box.addButton("取消", QMessageBox.RejectRole)
         msg_box.setDefaultButton(cancel_btn)
         msg_box.setIcon(QMessageBox.Warning)
+        self._attach_yes_no_shortcuts(msg_box, save_all_btn, discard_all_btn)
         msg_box.exec()
 
         clicked = msg_box.clickedButton()
