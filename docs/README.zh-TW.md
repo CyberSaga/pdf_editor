@@ -59,6 +59,16 @@ python -m venv .venv
 python main.py
 ```
 
+## 快捷鍵
+
+- `Ctrl+Z`：復原
+- `Ctrl+Y`：重做
+- `Ctrl+S`：存檔
+- `Ctrl+Shift+S`：另存新檔
+- `F2`：編輯文字模式
+
+未儲存變更的關閉提醒支援鍵盤操作：`Y` 儲存、`N` 放棄、`Esc` 取消。
+
 ## 測試腳本索引
 
 `test_scripts/TEST_SCRIPTS.md` 是本專案的測試地圖，主要提供：

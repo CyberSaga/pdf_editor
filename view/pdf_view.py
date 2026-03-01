@@ -543,8 +543,10 @@ class PDFView(QMainWindow):
         tb_file.setStyleSheet(toolbar_style)
         tb_file.addAction("開啟", self._open_file)
         tb_file.addAction("列印", self._print_document).setShortcut(QKeySequence.Print)
-        tb_file.addAction("儲存", self._save).setShortcut(QKeySequence.Save)
-        tb_file.addAction("另存新檔", self._save_as)
+        self._action_save = tb_file.addAction("儲存", self._save)
+        self._action_save.setShortcut(QKeySequence("Ctrl+S"))
+        self._action_save_as = tb_file.addAction("另存新檔", self._save_as)
+        self._action_save_as.setShortcut(QKeySequence("Ctrl+Shift+S"))
         layout_file = QVBoxLayout(tab_file)
         layout_file.setContentsMargins(4, 0, 0, 0)
         layout_file.addWidget(tb_file)
@@ -556,9 +558,9 @@ class PDFView(QMainWindow):
         tb_common.setStyleSheet(toolbar_style)
         tb_common.addAction("瀏覽模式", lambda: self.set_mode("browse"))
         self._action_undo = tb_common.addAction("復原", self.sig_undo.emit)
-        self._action_undo.setShortcut(QKeySequence.Undo)
+        self._action_undo.setShortcut(QKeySequence("Ctrl+Z"))
         self._action_redo = tb_common.addAction("重做", self.sig_redo.emit)
-        self._action_redo.setShortcut(QKeySequence.Redo)
+        self._action_redo.setShortcut(QKeySequence("Ctrl+Y"))
         tb_common.addAction("縮圖", self._show_thumbnails_tab)
         tb_common.addAction("搜尋", self._show_search_tab)
         tb_common.addAction("快照", self._snapshot_page)
@@ -571,7 +573,8 @@ class PDFView(QMainWindow):
         tb_edit = QToolBar()
         tb_edit.setToolButtonStyle(Qt.ToolButtonTextOnly)
         tb_edit.setStyleSheet(toolbar_style)
-        tb_edit.addAction("編輯文字", lambda: self.set_mode("edit_text")).setShortcut(QKeySequence(Qt.Key_F2))
+        self._action_edit_text = tb_edit.addAction("編輯文字", lambda: self.set_mode("edit_text"))
+        self._action_edit_text.setShortcut(QKeySequence(Qt.Key_F2))
         tb_edit.addAction("新增文字框", lambda: self.set_mode("add_text"))
         tb_edit.addAction("矩形", lambda: self.set_mode("rect"))
         tb_edit.addAction("螢光筆", lambda: self.set_mode("highlight"))
@@ -651,6 +654,17 @@ class PDFView(QMainWindow):
 
         self._action_undo.setToolTip("復原（無可撤銷操作）")
         self._action_redo.setToolTip("重做（無可重做操作）")
+
+        # Ensure shortcuts remain active even when the source toolbar tab is hidden.
+        for action in (
+            self._action_save,
+            self._action_save_as,
+            self._action_undo,
+            self._action_redo,
+            self._action_edit_text,
+        ):
+            action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            self.addAction(action)
 
     def _on_zoom_combo_changed(self, text: str):
         try:
