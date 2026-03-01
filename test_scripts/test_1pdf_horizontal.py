@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 
 from model.pdf_model import PDFModel
 
-def test_horizontal_edit_and_verify(use_gui_flow: bool = False, save_output: str = None):
+def run_horizontal_edit_and_verify(use_gui_flow: bool = False, save_output: str = None) -> int:
     root = Path(__file__).resolve().parents[1]
     candidates = [
         root / "test_files" / "1.pdf",
@@ -126,10 +126,14 @@ def test_horizontal_edit_and_verify(use_gui_flow: bool = False, save_output: str
     model.close()
     return 0
 
+
+def test_horizontal_edit_and_verify() -> None:
+    assert run_horizontal_edit_and_verify(use_gui_flow=False, save_output=None) == 0
+
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument("--gui", action="store_true", help="模擬 GUI 流程（get_text_info_at_point）")
     p.add_argument("--save", metavar="PATH", help="儲存編輯後 PDF 以供視覺驗證")
     args = p.parse_args()
-    sys.exit(test_horizontal_edit_and_verify(use_gui_flow=args.gui, save_output=args.save))
+    sys.exit(run_horizontal_edit_and_verify(use_gui_flow=args.gui, save_output=args.save))

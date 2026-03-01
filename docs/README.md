@@ -8,6 +8,8 @@ Desktop PDF editor written in Python with a Qt UI.
 - Page operations: delete, rotate, insert, export, merge
 - Text editing with overlap-safe behavior
 - Dedicated add-text mode
+- Text properties commit/discard controls (`套用` / `取消`) with focus-safe inline editing
+- Expanded CJK font options with optional Windows font embedding (`Microsoft JhengHei`, `PMingLiU`, `DFKai-SB`)
 - Annotations: rectangle, highlight, free-text note
 - Watermarks
 - Search and jump

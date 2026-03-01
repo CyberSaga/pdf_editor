@@ -1,21 +1,21 @@
 ========================================================================
 Drag-Move Text Box Feature Test Report
-Time: 2026-02-23 15:59:54
+Time: 2026-03-01 22:28:54
 ========================================================================
 
 Concept                                      OK  FAIL   ERR  SKIP    Rate    Time
 ------------------------------------------------------------------------
 A Basic Move                                  1     0     0     0  100.0%   0.04s
-B Move + Edit Text                            1     0     0     0  100.0%   0.04s
-C Moved Block Not Lost                        1     0     0     0  100.0%   0.03s
-D Other Block Not Lost                        1     0     0     0  100.0%   0.04s
+B Move + Edit Text                            1     0     0     0  100.0%   0.03s
+C Moved Block Not Lost                        1     0     0     0  100.0%   0.04s
+D Other Block Not Lost                        1     0     0     0  100.0%   0.03s
 E Vertical Text Move                          1     0     0     0  100.0%   0.03s
 F Boundary Clamp                              1     0     0     0  100.0%   0.03s
-G sample-files-main (32 PDFs)                20     0     0    12  100.0%   1.91s
-H veraPDF representative (6 PDFs)             4     0     0     2  100.0%   0.07s
-I Logic Simulation                            2     0     0     0  100.0%   0.05s
+G sample-files-main (32 PDFs)                24     0     0     8  100.0%   8.54s
+H veraPDF representative (6 PDFs)             4     0     0     2  100.0%   0.08s
+I Logic Simulation                            2     0     0     0  100.0%   0.06s
 ------------------------------------------------------------------------
-Total                                        32     0     0    14  100.0%   2.23s
+Total                                        36     0     0    10  100.0%   8.88s
 
 ========================================================================
 Conclusion

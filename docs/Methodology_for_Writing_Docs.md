@@ -120,6 +120,20 @@
 
 ---
 
+## 2.7 `test_scripts/TEST_SCRIPTS.md`（測試用腳本用途說明）
+
+用途：
+- 作為 `test_scripts/` 的單一入口文件，讓使用者快速判斷每個測試檔的用途、執行方式與適用情境。
+
+規則：
+- 新增、移除、改名，或改變測試型態（`pytest` / script / hybrid）時，必須同步更新 `TEST_SCRIPTS.md`。
+- 必須清楚標示可被 `pytest` 收集的檔案，以及刻意不被收集（例如 `__test__ = False`）的 script runner。
+- 若同一檔案同時支援 `pytest` 與 CLI，需在文件內同時提供兩種執行指令。
+- 指令應可直接複製執行，並與專案標準測試環境一致（例如 `QT_QPA_PLATFORM=offscreen`、`PYTHONPATH=.`）。
+- 若腳本會輸出報告或檔案，需註明預設輸出位置與清理建議。
+
+---
+
 ## 3. 什麼情況要更新哪些文件
 
 1. 新增/移除工具 API（例如 annotation/watermark/search/ocr）  
