@@ -481,6 +481,47 @@ def test_19_escape_with_editor_closes_editor_but_keeps_mode(mvc, tmp_path):
     _assert_mode_checked(view, "add_text")
 
 
+def test_19b_font_size_menu_keeps_editor_and_outside_focus_finalizes_editor(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf(tmp_path / "font_size_editor_focus.pdf", ["font size editor"])
+    controller.open_pdf(str(path))
+    _pump_events(350)
+
+    view.set_mode("edit_text")
+    _pump_events(60)
+
+    model.ensure_page_index_built(1)
+    runs = [r for r in model.block_manager.get_runs(0) if (r.text or "").strip()]
+    assert runs, "no editable run on page 1"
+    run = runs[0]
+
+    rs = view._render_scale if view._render_scale > 0 else 1.0
+    y0 = view.page_y_positions[0] if view.page_y_positions else 0.0
+    sx = ((run.bbox.x0 + run.bbox.x1) * 0.5) * rs
+    sy = y0 + ((run.bbox.y0 + run.bbox.y1) * 0.5) * rs
+    click_pos = view.graphics_view.mapFromScene(sx, sy)
+
+    viewport = view.graphics_view.viewport()
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, click_pos)
+    _pump_events(260)
+
+    assert view.text_editor is not None
+    QTest.mouseClick(view.text_size, Qt.LeftButton, Qt.NoModifier, view.text_size.rect().center())
+    _pump_events(120)
+    assert view.text_editor is not None
+
+    view.text_size.setCurrentText("18")
+    _pump_events(120)
+    assert view.text_editor is not None
+    assert view.text_editor.widget().font().pointSize() == 18
+
+    editor_scene_rect = view.text_editor.mapRectToScene(view.text_editor.boundingRect())
+    outside_pos = view.graphics_view.mapFromScene(editor_scene_rect.bottomRight() + QPoint(40, 40))
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, outside_pos)
+    _pump_events(180)
+    assert view.text_editor is None
+
+
 def test_20_escape_non_browse_switches_to_browse(mvc, tmp_path):
     _, view, controller = mvc
     path = _make_pdf(tmp_path / "esc_mode.pdf", ["esc mode"])

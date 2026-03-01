@@ -375,6 +375,10 @@ class PDFView(QMainWindow):
         self._selected_text_rect_doc = None
         self._selected_text_page_idx = None
         self._selected_text_cached = ""
+        # Inline-editor focus lifecycle guards.
+        self._edit_focus_guard_connected = False
+        self._edit_focus_check_pending = False
+        self._finalizing_text_edit = False
         # Phase 5: edit_text 模式下的 hover 文字塊高亮
         self._hover_highlight_item = None       # QGraphicsRectItem | None
         self._last_hover_scene_pos = None       # QPointF | None（節流用）
@@ -975,6 +979,76 @@ class PDFView(QMainWindow):
                 return True
             current = current.parentWidget()
         return False
+
+    def _widget_has_ancestor(self, widget: QWidget, ancestor: QWidget) -> bool:
+        # Walk parent chain because combo popups are child widgets under text panel controls.
+        if widget is None or ancestor is None:
+            return False
+        current = widget
+        while current is not None:
+            if current is ancestor:
+                return True
+            current = current.parentWidget()
+        return False
+
+    def _is_focus_within_edit_context(self, widget: QWidget) -> bool:
+        # Keep editing alive when focus stays inside editor or right-side text controls.
+        if widget is None:
+            return False
+        editor_widget = self.text_editor.widget() if (self.text_editor and self.text_editor.widget()) else None
+        if editor_widget and self._widget_has_ancestor(widget, editor_widget):
+            return True
+        return self._widget_has_ancestor(widget, self.text_card)
+
+    def _set_edit_focus_guard(self, enabled: bool) -> None:
+        # Track app-level focus changes while inline editor is open.
+        app = QApplication.instance()
+        if app is None:
+            self._edit_focus_guard_connected = False
+            return
+        if enabled and not self._edit_focus_guard_connected:
+            app.focusChanged.connect(self._on_app_focus_changed)
+            self._edit_focus_guard_connected = True
+            return
+        if not enabled and self._edit_focus_guard_connected:
+            try:
+                app.focusChanged.disconnect(self._on_app_focus_changed)
+            except (TypeError, RuntimeError):
+                pass
+            self._edit_focus_guard_connected = False
+
+    def _schedule_finalize_on_focus_change(self) -> None:
+        # Defer decision until Qt finishes focus handoff (popup/editor/control transitions).
+        if self._edit_focus_check_pending:
+            return
+        self._edit_focus_check_pending = True
+        QTimer.singleShot(0, self._finalize_if_focus_outside_edit_context)
+
+    def _finalize_if_focus_outside_edit_context(self) -> None:
+        # Finalize only when focus truly leaves edit context.
+        self._edit_focus_check_pending = False
+        if self._finalizing_text_edit:
+            return
+        if not self.text_editor or not self.text_editor.widget():
+            return
+        app = QApplication.instance()
+        focus_widget = app.focusWidget() if app is not None else None
+        if self._is_focus_within_edit_context(focus_widget):
+            return
+        self._finalize_text_edit()
+
+    def _on_app_focus_changed(self, _old: QWidget, new: QWidget) -> None:
+        # App-level safety net for focus moves that bypass QTextEdit focusOut details.
+        if not self.text_editor or not self.text_editor.widget():
+            return
+        if self._is_focus_within_edit_context(new):
+            return
+        self._schedule_finalize_on_focus_change()
+
+    def _on_editor_focus_out(self, event, base_handler) -> None:
+        # Preserve original QTextEdit behavior, then run guarded finalize logic.
+        base_handler(event)
+        self._schedule_finalize_on_focus_change()
 
     def _focus_page_canvas(self) -> None:
         self.graphics_view.setFocus(Qt.ShortcutFocusReason)
@@ -2001,7 +2075,12 @@ class PDFView(QMainWindow):
                 return
             original_key_press(event)
         editor.keyPressEvent = _editor_key_press
-        editor.focusOutEvent = lambda event: self._finalize_text_edit()
+        original_focus_out = editor.focusOutEvent
+        def _editor_focus_out(event):
+            self._on_editor_focus_out(event, original_focus_out)
+        editor.focusOutEvent = _editor_focus_out
+        # Activate app-level focus guard only for active inline edit sessions.
+        self._set_edit_focus_guard(True)
         editor.setFocus()
 
     def _pdf_font_to_qt(self, font_name: str) -> str:
@@ -2021,10 +2100,34 @@ class PDFView(QMainWindow):
         f = editor.font()
         f.setPointSize(sz)
         editor.setFont(f)
+        # Return caret focus back to editor so user can continue typing immediately.
+        QTimer.singleShot(
+            0,
+            lambda: editor.setFocus(Qt.OtherFocusReason)
+            if (self.text_editor and self.text_editor.widget() is editor)
+            else None,
+        )
 
     def _finalize_text_edit(self):
+        # Re-entrancy-safe wrapper: cleanup is done once even if multiple blur events fire.
+        if self._finalizing_text_edit:
+            return
+        if not self.text_editor or not self.text_editor.widget():
+            self._set_edit_focus_guard(False)
+            self._edit_focus_check_pending = False
+            return
+        self._finalizing_text_edit = True
+        try:
+            self._finalize_text_edit_impl()
+        finally:
+            self._set_edit_focus_guard(False)
+            self._edit_focus_check_pending = False
+            self._finalizing_text_edit = False
+
+    def _finalize_text_edit_impl(self):
         if not self.text_editor or not self.text_editor.widget(): return
 
+        # Snapshot editor state before removing proxy widget from the scene.
         # 1. Get all necessary data out of the editor
         editor = self.text_editor.widget()
         new_text = editor.toPlainText()
