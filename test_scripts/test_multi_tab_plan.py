@@ -3,7 +3,7 @@ from pathlib import Path
 
 import fitz
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -34,6 +34,19 @@ def _pump_events(ms: int = 250) -> None:
     while time.time() < end:
         app.processEvents()
         time.sleep(0.01)
+
+
+def _assert_mode_checked(view: PDFView, expected_mode: str) -> None:
+    action_map = {
+        "browse": view._action_browse,
+        "edit_text": view._action_edit_text,
+        "add_text": view._action_add_text,
+        "rect": view._action_rect,
+        "highlight": view._action_highlight,
+        "add_annotation": view._action_add_annotation,
+    }
+    for mode, action in action_map.items():
+        assert action.isChecked() == (mode == expected_mode), f"mode checked mismatch: {mode}"
 
 
 def _make_dirty(model: PDFModel) -> None:
@@ -278,6 +291,7 @@ def test_09_app_close_cancel_and_save_all_paths(mvc, monkeypatch, tmp_path):
 
     import controller.pdf_controller as ctrl_module
     monkeypatch.setattr(ctrl_module, "QMessageBox", FakeBox)
+    monkeypatch.setattr(controller, "_attach_yes_no_shortcuts", lambda *a, **k: None)
 
     ev_cancel = _FakeEvent()
     FakeBox.mode = "cancel"
@@ -428,3 +442,114 @@ def test_17_fit_to_view_targets_current_page_not_full_scene(mvc, tmp_path):
 
     assert abs(scene_center.y() - current_center.y()) < 20
     assert abs(scene_center.y() - full_scene_center.y()) > 100
+
+
+def test_18_mode_checked_state_sync_and_restore(mvc, tmp_path):
+    model, view, controller = mvc
+    a = _make_pdf(tmp_path / "M1.pdf", ["m1"])
+    b = _make_pdf(tmp_path / "M2.pdf", ["m2"])
+    controller.open_pdf(str(a))
+    _pump_events(200)
+    view.set_mode("rect")
+    _assert_mode_checked(view, "rect")
+    controller.open_pdf(str(b))
+    _pump_events(200)
+    view.set_mode("highlight")
+    _assert_mode_checked(view, "highlight")
+    controller.on_tab_changed(0)
+    _pump_events(100)
+    assert view.current_mode == "rect"
+    _assert_mode_checked(view, "rect")
+    controller.on_tab_changed(1)
+    _pump_events(100)
+    assert view.current_mode == "highlight"
+    _assert_mode_checked(view, "highlight")
+
+
+def test_19_escape_with_editor_closes_editor_but_keeps_mode(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "esc_editor.pdf", ["esc editor"])
+    controller.open_pdf(str(path))
+    _pump_events(300)
+    view.set_mode("add_text")
+    viewport = view.graphics_view.viewport()
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, viewport.rect().center())
+    _pump_events(80)
+    assert view.text_editor is not None
+    QTest.keyClick(view.text_editor.widget(), Qt.Key_Escape)
+    _pump_events(120)
+    assert view.text_editor is None
+    assert view.current_mode == "add_text"
+    _assert_mode_checked(view, "add_text")
+
+
+def test_20_escape_non_browse_switches_to_browse(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "esc_mode.pdf", ["esc mode"])
+    controller.open_pdf(str(path))
+    _pump_events(300)
+    view.set_mode("highlight")
+    _assert_mode_checked(view, "highlight")
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_Escape)
+    _pump_events(80)
+    assert view.current_mode == "browse"
+    _assert_mode_checked(view, "browse")
+
+
+def test_21_escape_browse_fallback_keeps_existing_sidebar_behavior(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "esc_browse.pdf", ["esc browse"])
+    controller.open_pdf(str(path))
+    _pump_events(250)
+    view.set_mode("browse")
+    view.left_sidebar.setCurrentIndex(1)
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_Escape)
+    _pump_events(80)
+    assert view.current_mode == "browse"
+    assert view.left_sidebar.currentIndex() == 0
+
+
+def test_22_sticky_highlight_mode_after_draw(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "sticky_highlight.pdf", ["sticky highlight"])
+    controller.open_pdf(str(path))
+    _pump_events(500)
+    view.set_mode("highlight")
+    viewport = view.graphics_view.viewport()
+    start = viewport.rect().center()
+    end = start + QPoint(40, 20)
+    QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mouseMove(viewport, end, 10)
+    QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, end)
+    _pump_events(120)
+    assert view.current_mode == "highlight"
+    _assert_mode_checked(view, "highlight")
+    start2 = start + QPoint(10, 30)
+    end2 = start2 + QPoint(30, 18)
+    QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, start2)
+    QTest.mouseMove(viewport, end2, 10)
+    QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, end2)
+    _pump_events(120)
+    assert view.current_mode == "highlight"
+    _assert_mode_checked(view, "highlight")
+
+
+def test_23_sticky_add_annotation_mode_after_click(mvc, tmp_path, monkeypatch):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "sticky_annot.pdf", ["sticky annot"])
+    controller.open_pdf(str(path))
+    _pump_events(400)
+    monkeypatch.setattr(
+        "view.pdf_view.QInputDialog.getMultiLineText",
+        staticmethod(lambda *a, **k: ("note", True)),
+    )
+    view.set_mode("add_annotation")
+    viewport = view.graphics_view.viewport()
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, viewport.rect().center())
+    _pump_events(120)
+    assert view.current_mode == "add_annotation"
+    _assert_mode_checked(view, "add_annotation")
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, viewport.rect().center() + QPoint(20, 20))
+    _pump_events(120)
+    assert view.current_mode == "add_annotation"
+    _assert_mode_checked(view, "add_annotation")

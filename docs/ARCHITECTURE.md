@@ -66,6 +66,9 @@ The text editor state is split by intent:
 Mode behavior boundary:
 - In `edit_text`, blank-click does not create new textbox.
 - In `add_text`, blank-click commits open editor; otherwise it creates a new textbox editor.
+- In `rect`, `highlight`, and `add_annotation`, each tool is sticky for repeated operations.
+- Mode actions are checkable and remain synchronized with the active mode state.
+- `Esc` priority is: close active editor/dialog first (keep mode), else revert non-browse mode to `browse`, else run browse fallback behavior.
 
 ## 3. Runtime Flows
 

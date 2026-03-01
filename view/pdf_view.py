@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QCheckBox, QTabWidget, QSplitter, QFrame, QSizePolicy, QSlider, QTabBar,
     QStatusBar, QGroupBox
 )
-from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QCloseEvent, QTextOption, QShortcut
+from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QActionGroup, QCloseEvent, QTextOption, QShortcut
 from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint, QEvent
 from typing import List, Tuple, Optional
 from utils.helpers import pixmap_to_qpixmap, parse_pages, show_error
@@ -218,6 +218,7 @@ class WatermarkDialog(QDialog):
 
 
 class PDFView(QMainWindow):
+    _VALID_MODES = {"browse", "edit_text", "add_text", "rect", "highlight", "add_annotation"}
     # --- Existing Signals ---
     sig_open_pdf = Signal(str)
     sig_print_requested = Signal()
@@ -272,6 +273,9 @@ class PDFView(QMainWindow):
         self.total_pages = 0
         self.controller = None
         self._doc_tab_signal_block = False
+        self._mode_actions: dict[str, QAction] = {}
+        self._mode_action_group = QActionGroup(self)
+        self._mode_action_group.setExclusive(True)
 
         # --- Central container: top toolbar area + main splitter ---
         central_container = QWidget(self)
@@ -389,8 +393,10 @@ class PDFView(QMainWindow):
 
         self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.graphics_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.graphics_view.setFocusPolicy(Qt.StrongFocus)
         self.graphics_view.setMouseTracking(True)
         self.graphics_view.viewport().setMouseTracking(True)
+        self.graphics_view.viewport().setFocusPolicy(Qt.StrongFocus)
         self.graphics_view.viewport().installEventFilter(self)
 
         self.graphics_view.wheelEvent = self._wheel_event
@@ -460,6 +466,10 @@ class PDFView(QMainWindow):
         self._shortcut_prev_doc_tab_back = QShortcut(QKeySequence("Ctrl+Backtab"), self)
         self._shortcut_prev_doc_tab_back.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._shortcut_prev_doc_tab_back.activated.connect(lambda: self._cycle_document_tab(-1))
+
+        self._shortcut_escape = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self._shortcut_escape.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._shortcut_escape.activated.connect(self._on_escape_shortcut)
 
     def _tab_shortcut_direction(self, key: int, modifiers: Qt.KeyboardModifiers) -> int:
         return _ctrl_tab_direction(key, modifiers)
@@ -535,7 +545,11 @@ class PDFView(QMainWindow):
         tab_bar.setElideMode(Qt.ElideNone)
         tab_bar.setMinimumHeight(26)
         # 工具列按鈕：緊湊內距，仍保留 min-width 避免文字截斷
-        toolbar_style = "QToolBar { spacing: 4px; padding: 2px 0; } QToolButton { min-width: 52px; padding: 4px 8px; }"
+        toolbar_style = (
+            "QToolBar { spacing: 4px; padding: 2px 0; } "
+            "QToolButton { min-width: 52px; padding: 4px 8px; } "
+            "QToolButton:checked { background: #0EA5E9; color: white; border-radius: 4px; }"
+        )
         # 檔案
         tab_file = QWidget()
         tb_file = QToolBar()
@@ -556,7 +570,8 @@ class PDFView(QMainWindow):
         tb_common = QToolBar()
         tb_common.setToolButtonStyle(Qt.ToolButtonTextOnly)
         tb_common.setStyleSheet(toolbar_style)
-        tb_common.addAction("瀏覽模式", lambda: self.set_mode("browse"))
+        self._action_browse = self._make_mode_action("瀏覽模式", "browse")
+        tb_common.addAction(self._action_browse)
         self._action_undo = tb_common.addAction("復原", self.sig_undo.emit)
         self._action_undo.setShortcut(QKeySequence("Ctrl+Z"))
         self._action_redo = tb_common.addAction("重做", self.sig_redo.emit)
@@ -573,12 +588,17 @@ class PDFView(QMainWindow):
         tb_edit = QToolBar()
         tb_edit.setToolButtonStyle(Qt.ToolButtonTextOnly)
         tb_edit.setStyleSheet(toolbar_style)
-        self._action_edit_text = tb_edit.addAction("編輯文字", lambda: self.set_mode("edit_text"))
+        self._action_edit_text = self._make_mode_action("編輯文字", "edit_text")
+        tb_edit.addAction(self._action_edit_text)
         self._action_edit_text.setShortcut(QKeySequence(Qt.Key_F2))
-        tb_edit.addAction("新增文字框", lambda: self.set_mode("add_text"))
-        tb_edit.addAction("矩形", lambda: self.set_mode("rect"))
-        tb_edit.addAction("螢光筆", lambda: self.set_mode("highlight"))
-        tb_edit.addAction("新增註解", lambda: self.set_mode("add_annotation"))
+        self._action_add_text = self._make_mode_action("新增文字框", "add_text")
+        tb_edit.addAction(self._action_add_text)
+        self._action_rect = self._make_mode_action("矩形", "rect")
+        tb_edit.addAction(self._action_rect)
+        self._action_highlight = self._make_mode_action("螢光筆", "highlight")
+        tb_edit.addAction(self._action_highlight)
+        self._action_add_annotation = self._make_mode_action("新增註解", "add_annotation")
+        tb_edit.addAction(self._action_add_annotation)
         tb_edit.addAction("註解列表", self._show_annotations_tab)
         tb_edit.addAction("添加浮水印", self._show_add_watermark_dialog)
         tb_edit.addAction("浮水印列表", self._show_watermarks_tab)
@@ -665,6 +685,20 @@ class PDFView(QMainWindow):
         ):
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             self.addAction(action)
+
+    def _make_mode_action(self, text: str, mode: str) -> QAction:
+        action = QAction(text, self)
+        action.setCheckable(True)
+        action.triggered.connect(lambda _checked=False, m=mode: self.set_mode(m))
+        self._mode_action_group.addAction(action)
+        self._mode_actions[mode] = action
+        return action
+
+    def _sync_mode_checked_state(self, mode: str) -> None:
+        for mode_key, action in self._mode_actions.items():
+            previous = action.blockSignals(True)
+            action.setChecked(mode_key == mode)
+            action.blockSignals(previous)
 
     def _on_zoom_combo_changed(self, text: str):
         try:
@@ -881,7 +915,9 @@ class PDFView(QMainWindow):
             self.status_bar.showMessage(" • ".join(parts))
 
     def set_mode(self, mode: str):
-        if self.text_editor: self._finalize_text_edit()
+        mode = mode if mode in self._VALID_MODES else "browse"
+        if self.text_editor:
+            self._finalize_text_edit()
         if self.current_mode == 'browse' and mode != 'browse':
             self._reset_browse_hover_cursor()
             self._clear_text_selection()
@@ -895,6 +931,7 @@ class PDFView(QMainWindow):
         if mode != 'edit_text':
             self._clear_hover_highlight()
         self.current_mode = mode
+        self._sync_mode_checked_state(mode)
         self.sig_mode_changed.emit(mode)
         
         if mode in ['rect', 'highlight', 'add_annotation']:
@@ -924,6 +961,49 @@ class PDFView(QMainWindow):
             self.right_stacked_widget.setCurrentWidget(self.page_info_card)
         self._update_status_bar()
 
+    def _on_escape_shortcut(self) -> None:
+        self._handle_escape()
+
+    def _is_widget_owned_by_main(self, widget: QWidget) -> bool:
+        current = widget
+        while current is not None:
+            if current is self:
+                return True
+            current = current.parentWidget()
+        return False
+
+    def _focus_page_canvas(self) -> None:
+        self.graphics_view.setFocus(Qt.ShortcutFocusReason)
+        self.graphics_view.viewport().setFocus(Qt.ShortcutFocusReason)
+
+    def _handle_escape(self) -> bool:
+        if self.text_editor:
+            self._finalize_text_edit()
+            self._focus_page_canvas()
+            return True
+
+        app = QApplication.instance()
+        if app is not None:
+            for candidate in (app.activeModalWidget(), app.activePopupWidget()):
+                if candidate is not None and self._is_widget_owned_by_main(candidate):
+                    if hasattr(candidate, "reject"):
+                        candidate.reject()
+                    else:
+                        candidate.close()
+                    self._focus_page_canvas()
+                    return True
+
+        if self.current_mode != 'browse':
+            self.set_mode('browse')
+            self._focus_page_canvas()
+            return True
+
+        if self.left_sidebar.currentIndex() == 1:
+            self.left_sidebar.setCurrentIndex(0)
+            self._update_status_bar()
+            return True
+        return False
+
     def update_undo_redo_tooltips(self, undo_tip: str, redo_tip: str) -> None:
         """更新復原/重做按鈕的 tooltip，顯示下一步操作描述。"""
         for action in (getattr(self, '_action_undo', None), getattr(self, '_action_undo_right', None)):
@@ -952,11 +1032,9 @@ class PDFView(QMainWindow):
             event.accept()
             return
         if event.key() == Qt.Key_Escape:
-            if self.left_sidebar.currentIndex() == 1:
-                self.left_sidebar.setCurrentIndex(0)
-                self._update_status_bar()
-            event.accept()
-            return
+            if self._handle_escape():
+                event.accept()
+                return
         if self.current_mode == 'browse' and event.matches(QKeySequence.Copy):
             if self._copy_selected_text_to_clipboard():
                 event.accept()
@@ -1290,7 +1368,6 @@ class PDFView(QMainWindow):
                 if ok and text:
                     page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
                     self.sig_add_annotation.emit(page_idx, doc_point, text)
-                self.set_mode('browse')
                 return
 
             if self.current_mode == 'browse':
@@ -1460,7 +1537,8 @@ class PDFView(QMainWindow):
             self._reset_browse_hover_cursor()
 
     def _reset_browse_hover_cursor(self) -> None:
-        self.graphics_view.viewport().setCursor(Qt.ArrowCursor)
+        if self.current_mode == 'browse':
+            self.graphics_view.viewport().setCursor(Qt.ArrowCursor)
         self._browse_text_cursor_active = False
 
     def _get_page_scene_rect(self, page_idx: int) -> QRectF:
@@ -1846,7 +1924,6 @@ class PDFView(QMainWindow):
             self.sig_add_rect.emit(page_idx + 1, fitz_rect, color, fill)
         
         self.drawing_start = None
-        self.set_mode('browse')
         QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
 
     def _create_text_editor(
@@ -1908,6 +1985,18 @@ class PDFView(QMainWindow):
 
         self.text_editor = self.scene.addWidget(editor)
         self.text_editor.setPos(pos_x, pos_y)
+        # Ensure Esc works even when the embedded QTextEdit has focus inside QGraphicsProxyWidget.
+        editor_esc = QShortcut(QKeySequence(Qt.Key_Escape), editor)
+        editor_esc.setContext(Qt.ShortcutContext.WidgetShortcut)
+        editor_esc.activated.connect(self._on_escape_shortcut)
+        editor._escape_shortcut = editor_esc
+        original_key_press = editor.keyPressEvent
+        def _editor_key_press(event):
+            if event.key() == Qt.Key_Escape and self._handle_escape():
+                event.accept()
+                return
+            original_key_press(event)
+        editor.keyPressEvent = _editor_key_press
         editor.focusOutEvent = lambda event: self._finalize_text_edit()
         editor.setFocus()
 
