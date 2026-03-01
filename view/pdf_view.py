@@ -555,8 +555,10 @@ class PDFView(QMainWindow):
         tb_file = QToolBar()
         tb_file.setToolButtonStyle(Qt.ToolButtonTextOnly)
         tb_file.setStyleSheet(toolbar_style)
-        tb_file.addAction("開啟", self._open_file)
-        tb_file.addAction("列印", self._print_document).setShortcut(QKeySequence.Print)
+        self._action_open = tb_file.addAction("開啟", self._open_file)
+        self._action_open.setShortcut(QKeySequence("Ctrl+O"))
+        self._action_print = tb_file.addAction("列印", self._print_document)
+        self._action_print.setShortcut(QKeySequence("Ctrl+P"))
         self._action_save = tb_file.addAction("儲存", self._save)
         self._action_save.setShortcut(QKeySequence("Ctrl+S"))
         self._action_save_as = tb_file.addAction("另存新檔", self._save_as)
@@ -677,6 +679,8 @@ class PDFView(QMainWindow):
 
         # Ensure shortcuts remain active even when the source toolbar tab is hidden.
         for action in (
+            self._action_open,
+            self._action_print,
             self._action_save,
             self._action_save_as,
             self._action_undo,
