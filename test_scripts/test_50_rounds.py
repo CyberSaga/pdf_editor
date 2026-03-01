@@ -17,6 +17,8 @@ from model.text_block import TextBlock
 
 # ?? constants ??????????????????????????????????????????????????????????????????
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_OUTPUT_DIR = os.path.join(_SCRIPT_DIR, "test_outputs")
 SAMPLE_DIR   = os.path.join(_ROOT, "test_files", "sample-files-main")
 ROUNDS_HORIZ = 50
 ROUNDS_VERT  = 50
@@ -404,7 +406,8 @@ def main():
     loss_iss  = [i for i in all_iss if i.lost_text]
     error_iss = [i for i in all_iss if not i.lost_text and i.error_msg]
 
-    rpt = os.path.join(os.path.dirname(__file__), "issue_report.txt")
+    os.makedirs(_OUTPUT_DIR, exist_ok=True)
+    rpt = os.path.join(_OUTPUT_DIR, "issue_report.txt")
     with open(rpt, "w", encoding="utf-8") as f:
         sep = "=" * 70
         f.write(sep + "\n")

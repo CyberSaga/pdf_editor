@@ -32,6 +32,8 @@ if sys.platform == "win32" and __name__ == "__main__":
 import fitz
 
 ROOT = Path(__file__).parent.parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+OUTPUT_DIR = SCRIPT_DIR / "test_outputs"
 sys.path.insert(0, str(ROOT))
 
 from model.pdf_model import PDFModel
@@ -660,7 +662,8 @@ def main():
 
     print_report(groups)
 
-    report_path = ROOT / "drag_move_test_report.txt"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = OUTPUT_DIR / "drag_move_test_report.txt"
     import contextlib
     with open(str(report_path), "w", encoding="utf-8") as f:
         with contextlib.redirect_stdout(f):

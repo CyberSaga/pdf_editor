@@ -23,8 +23,10 @@ from model.pdf_model import PDFModel
 logging.disable(logging.CRITICAL)
 
 TEST_ROOT = Path("test_files")
-CSV_PATH = Path("docs/overlap_recursive_report.csv")
-MD_PATH = Path("docs/overlap_recursive_report.md")
+SCRIPT_DIR = Path(__file__).resolve().parent
+OUTPUT_DIR = SCRIPT_DIR / "test_outputs"
+CSV_PATH = OUTPUT_DIR / "overlap_recursive_report.csv"
+MD_PATH = OUTPUT_DIR / "overlap_recursive_report.md"
 PER_FILE_TIMEOUT_S = 20.0
 MAX_SCAN_SPANS_PER_PAGE = 600
 
