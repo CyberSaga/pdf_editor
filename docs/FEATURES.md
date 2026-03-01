@@ -8,7 +8,7 @@ The editor uses a multi-tab session model. Each tab keeps independent page index
 
 ## 2. Modes and Interaction Rules
 
-The supported modes are `browse`, `edit_text`, `add_text`, `rect`, `highlight`, and `add_annotation`. In `edit_text` mode, clicking existing text enters edit on that target while clicking blank area does not create a new textbox. In `add_text` mode, click behavior is dedicated to insertion: if an editor is already open, clicking blank space commits and closes it; if no editor is active, clicking creates a new textbox editor. Add-text mode stays active after insertion for repeated operations. Empty add-new commit is a no-op and does not create history. Key functions include `set_mode(...)`, `_mouse_press(...)`, `_create_add_text_editor_at_scene(...)`, and `_finalize_text_edit(...)`.
+The supported modes are `browse`, `edit_text`, `add_text`, `rect`, `highlight`, and `add_annotation`. In `edit_text` mode, clicking existing text enters edit on that target while clicking blank area does not create a new textbox. In `add_text` mode, click behavior is dedicated to insertion: if an editor is already open, clicking blank space commits and closes it; if no editor is active, clicking creates a new textbox editor. `rect`, `highlight`, and `add_annotation` are sticky modes: after each operation they remain active for repeated actions. Empty add-new commit is a no-op and does not create history. Mode toolbar buttons are checkable and synchronized to the active mode. Key functions include `set_mode(...)`, `_mouse_press(...)`, `_mouse_release(...)`, `_create_add_text_editor_at_scene(...)`, and `_finalize_text_edit(...)`.
 
 ## 3. Text Target Granularity
 
@@ -49,4 +49,5 @@ Large PDF handling uses staged loading and batching to preserve interactivity wh
 ## 12. Keyboard Shortcuts and Save Prompt Keys
 
 Core keyboard shortcuts include `Ctrl+Z` (undo), `Ctrl+Y` (redo), `Ctrl+S` (save), `Ctrl+Shift+S` (save as), and `F2` (enter edit-text mode).  
+`Esc` handling follows priority rules: close active editor/dialog first (and keep current mode), otherwise switch non-browse mode back to `browse`, otherwise run existing browse fallback (for example search sidebar close).  
 When closing with unsaved changes, confirmation dialogs provide explicit key hints and single-key actions: `Y` to save and `N` to discard (with `Esc` as cancel).
