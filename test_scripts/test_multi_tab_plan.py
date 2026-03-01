@@ -450,16 +450,14 @@ def test_18_mode_checked_state_sync_and_restore(mvc, tmp_path):
     b = _make_pdf(tmp_path / "M2.pdf", ["m2"])
     controller.open_pdf(str(a))
     _pump_events(200)
-    view.set_mode("rect")
-    _assert_mode_checked(view, "rect")
-    controller.open_pdf(str(b))
-    _pump_events(200)
     view.set_mode("highlight")
     _assert_mode_checked(view, "highlight")
+    controller.open_pdf(str(b))
+    _pump_events(200)
     controller.on_tab_changed(0)
     _pump_events(100)
-    assert view.current_mode == "rect"
-    _assert_mode_checked(view, "rect")
+    assert view.current_mode == "highlight"
+    _assert_mode_checked(view, "highlight")
     controller.on_tab_changed(1)
     _pump_events(100)
     assert view.current_mode == "highlight"
@@ -551,5 +549,43 @@ def test_23_sticky_add_annotation_mode_after_click(mvc, tmp_path, monkeypatch):
     _assert_mode_checked(view, "add_annotation")
     QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, viewport.rect().center() + QPoint(20, 20))
     _pump_events(120)
+    assert view.current_mode == "add_annotation"
+    _assert_mode_checked(view, "add_annotation")
+
+
+def test_24_open_existing_file_keeps_current_mode(mvc, tmp_path):
+    model, view, controller = mvc
+    a = _make_pdf(tmp_path / "E1.pdf", ["e1"])
+    b = _make_pdf(tmp_path / "E2.pdf", ["e2"])
+    controller.open_pdf(str(a))
+    sid_a = model.get_active_session_id()
+    controller.open_pdf(str(b))
+    assert len(model.session_ids) == 2
+
+    view.set_mode("rect")
+    _assert_mode_checked(view, "rect")
+
+    controller.open_pdf(str(a))  # duplicate-open should focus existing tab
+    _pump_events(120)
+    assert model.get_active_session_id() == sid_a
+    assert view.current_mode == "rect"
+    _assert_mode_checked(view, "rect")
+
+
+def test_25_close_last_tab_keeps_mode_when_window_stays_open(mvc, tmp_path, monkeypatch):
+    model, view, controller = mvc
+    a = _make_pdf(tmp_path / "Z1.pdf", ["z1"])
+    controller.open_pdf(str(a))
+    _pump_events(200)
+
+    view.set_mode("add_annotation")
+    _assert_mode_checked(view, "add_annotation")
+
+    monkeypatch.setattr(controller, "_confirm_close_session", lambda sid: True)
+    controller.on_tab_close_requested(0)
+    _pump_events(100)
+
+    assert not model.session_ids
+    assert model.get_active_session_id() is None
     assert view.current_mode == "add_annotation"
     _assert_mode_checked(view, "add_annotation")

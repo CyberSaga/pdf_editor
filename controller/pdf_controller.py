@@ -45,6 +45,7 @@ class PDFController:
         self._load_gen_by_session: dict[str, int] = {}
         self._session_ui_state: dict[str, SessionUIState] = {}
         self._desired_scroll_page: dict[str, int] = {}
+        self._global_mode = self._normalize_mode(getattr(self.view, "current_mode", "browse"))
         self._connect_signals()
 
     def _connect_signals(self):
@@ -141,7 +142,6 @@ class PDFController:
     def _reset_empty_ui(self) -> None:
         self.annotations = []
         self.view.clear_document_tabs()
-        self._apply_session_mode("browse")
         self.view.reset_document_view()
         self.view.populate_annotations_list([])
         self.view.populate_watermarks_list([])
@@ -168,7 +168,7 @@ class PDFController:
         self.load_annotations()
         self.load_watermarks()
         self.view.apply_search_ui_state(state.search_state)
-        self._apply_session_mode(state.mode)
+        self._apply_session_mode(self._global_mode)
         self._update_undo_redo_tooltips()
 
         gen = self._next_load_gen(sid)
@@ -800,11 +800,7 @@ class PDFController:
         self._refresh_document_tabs()
 
     def _update_mode(self, mode: str):
-        sid = self.model.get_active_session_id()
-        if not sid:
-            return
-        state = self._get_ui_state(sid)
-        state.mode = self._normalize_mode(mode)
+        self._global_mode = self._normalize_mode(mode)
 
     # --- New Annotation Handlers ---
 
