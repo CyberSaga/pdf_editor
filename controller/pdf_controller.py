@@ -94,6 +94,13 @@ class PDFController:
         # Zoom re-render connection
         self.view.sig_request_rerender.connect(self._on_request_rerender)
 
+        # Align model granularity with UI default at startup.
+        combo = getattr(self.view, "text_target_mode_combo", None)
+        if combo is not None:
+            mode = combo.currentData()
+            if mode in ("run", "paragraph"):
+                self.set_text_target_mode(mode)
+
     def _next_load_gen(self, session_id: str) -> int:
         gen = self._load_gen_by_session.get(session_id, 0) + 1
         self._load_gen_by_session[session_id] = gen

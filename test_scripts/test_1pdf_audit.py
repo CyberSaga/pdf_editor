@@ -13,8 +13,12 @@ import fitz
 from model.pdf_model import PDFModel
 
 def audit_1pdf():
-    base = Path(__file__).parent
-    path = base / "1.pdf"
+    root = Path(__file__).resolve().parents[1]
+    candidates = [
+        root / "test_files" / "1.pdf",
+        Path(__file__).parent / "1.pdf",
+    ]
+    path = next((p for p in candidates if p.exists()), candidates[0])
     if not path.exists():
         print("1.pdf 不存在")
         return
@@ -45,6 +49,7 @@ def audit_1pdf():
     print("\n=== 模擬編輯後 rect 計算 ===")
     model = PDFModel()
     model.open_pdf(str(path))
+    model.ensure_page_index_built(1)
     blocks_idx = model.block_manager.get_blocks(0)
     for i, block in enumerate(blocks_idx):
         rect = block.layout_rect

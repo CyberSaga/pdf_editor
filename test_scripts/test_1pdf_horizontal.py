@@ -15,14 +15,19 @@ if sys.platform == 'win32' and __name__ == '__main__':
 from model.pdf_model import PDFModel
 
 def test_horizontal_edit_and_verify(use_gui_flow: bool = False, save_output: str = None):
-    base = Path(__file__).parent
-    path = base / "1.pdf"
+    root = Path(__file__).resolve().parents[1]
+    candidates = [
+        root / "test_files" / "1.pdf",
+        Path(__file__).parent / "1.pdf",
+    ]
+    path = next((p for p in candidates if p.exists()), candidates[0])
     if not path.exists():
         print("1.pdf 不存在")
         return 1
 
     model = PDFModel()
     model.open_pdf(str(path))
+    model.ensure_page_index_built(1)
     page = model.doc[0]
     page_rect = page.rect
 

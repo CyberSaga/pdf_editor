@@ -1,4 +1,4 @@
-pdf_editor/
+﻿pdf_editor/
   main.py
     # 入口：建立 PDFModel / PDFView / PDFController
 
@@ -7,13 +7,14 @@ pdf_editor/
       # 核心 Model：
       # - 多分頁 session registry（DocumentSession）
       # - fitz.Document 擁有權
-      # - 文字編輯交易流程（驗證/回滾）
+      # - 文字編輯交易流程（驗證 / 回滾）
+      # - 新增文字框（add_text）插入流程
       # - 開檔、存檔、頁面操作
       # - 與 CommandManager、ToolManager 整合
     text_block.py
       # 文字索引：TextBlock / EditableSpan(run) / EditableParagraph(paragraph)
     edit_commands.py
-      # Undo/Redo：EditTextCommand / SnapshotCommand / CommandManager
+      # Undo/Redo：EditTextCommand / AddTextboxCommand / SnapshotCommand / CommandManager
     tools/
       __init__.py
       base.py
@@ -34,7 +35,7 @@ pdf_editor/
       # Controller：
       # - 接收 View signals
       # - 呼叫 Model 與 model.tools.* API
-      # - 維護每個 session 的 UI 狀態（頁碼/縮放/模式/搜尋）
+      # - 維護每個 session 的 UI 狀態（頁碼 / 縮放 / 模式 / 搜尋）
       # - 協調重繪、列印、Undo/Redo
 
   view/
@@ -42,6 +43,7 @@ pdf_editor/
       # Qt UI：
       # - Tab 文件介面、工具面板、畫布、事件信號
       # - 不直接做資料層業務邏輯
+      # - 編輯意圖分流：edit_existing / add_new
 
   src/
     printing/
@@ -70,6 +72,22 @@ pdf_editor/
     FEATURES.md
     架構.txt
     solutions.md
+    Methodology_for_Writing_Docs.md
 
   test_scripts/
     # 測試與壓力測試腳本（pytest tests + script-style 測試）
+
+目前主要工作流程：
+1) 編輯既有文字：
+   view(sig_edit_text) -> controller(EditTextCommand) -> model(edit_text)
+
+2) 新增頁面文字框：
+   view(sig_add_textbox) -> controller(AddTextboxCommand) -> model(add_textbox)
+
+3) 復原 / 重做：
+   view -> controller -> command_manager -> command restore -> controller refresh
+
+文件分工規則：
+- 行為規格：docs/FEATURES.md
+- 實作對應：docs/ARCHITECTURE.md
+- 問題修正與決策歷史：docs/solutions.md

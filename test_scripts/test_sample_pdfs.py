@@ -24,6 +24,8 @@ def test_pdf(path: Path) -> tuple[bool, str]:
     try:
         model.open_pdf(str(path))
         n_pages = len(model.doc)
+        for page_num in range(1, n_pages + 1):
+            model.ensure_page_index_built(page_num)
         all_page_indices = list(model.block_manager._index.keys())
         total_blocks = sum(len(model.block_manager.get_blocks(p)) for p in all_page_indices)
         if total_blocks == 0:
@@ -62,13 +64,24 @@ def test_pdf(path: Path) -> tuple[bool, str]:
         return False, str(e)
 
 def main():
-    base = Path(__file__).parent
+    root = Path(__file__).resolve().parents[1]
+    candidates = [
+        root / "test_files",
+        Path(__file__).parent,
+    ]
     print("=" * 60)
     print("測試 PDF 檔案：1.pdf, 2.pdf, when I was young I.pdf")
     print("=" * 60)
     ok_count = 0
     for name in PDF_FILES:
-        path = base / name
+        path = None
+        for c in candidates:
+            probe = c / name
+            if probe.exists():
+                path = probe
+                break
+        if path is None:
+            path = candidates[0] / name
         if not path.exists():
             print(f"\n{name}: [略過] 檔案不存在")
             continue
