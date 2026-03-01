@@ -14,7 +14,6 @@ env/
 # PDF 測試檔
 *.pdf
 test_files/
-test_scripts/
 
 # Cursor 相關
 .cursor/
@@ -25,4 +24,5 @@ for_Windows/
 
 # 文件
 docs/solutions.md
+test_scripts/TEST_SCRIPTS.md
 docs/prompts.md

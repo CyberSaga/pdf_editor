@@ -12,6 +12,10 @@ from pathlib import Path
 if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from model.pdf_model import PDFModel
 
 def create_test_pdf(path: str) -> None:
