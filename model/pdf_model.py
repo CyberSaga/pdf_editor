@@ -43,6 +43,19 @@ _LIGATURE_MAP = {
     '\ufb06': 'st',   # ﬆ
 }
 
+# Optional Windows CJK font files for visible family differences in insert_htmlbox.
+_WINDOWS_CJK_FONT_FILES = {
+    "microsoft jhenghei": Path(r"C:\Windows\Fonts\msjh.ttc"),
+    "pmingliu": Path(r"C:\Windows\Fonts\mingliu.ttc"),
+    "dfkai-sb": Path(r"C:\Windows\Fonts\kaiu.ttf"),
+}
+
+_CUSTOM_CJK_ALIASES = {
+    "microsoft jhenghei": "PdfEditorMicrosoftJhengHei",
+    "pmingliu": "PdfEditorPMingLiU",
+    "dfkai-sb": "PdfEditorDFKaiSB",
+}
+
 # 設置日誌
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -1012,12 +1025,40 @@ class PDFModel:
         low = (font_hint or "").strip().lower()
         if not low:
             return "cjk"
+        if low in {"microsoft jhenghei", "microsoftjhenghei", "microsoftjhengheiregular", "msjh"}:
+            return "microsoft jhenghei"
+        if low in {"pmingliu", "mingliu"}:
+            return "pmingliu"
+        if low in {"dfkai-sb", "dfkai", "dfkaishu-sb-estd-bf", "kaiu"}:
+            return "dfkai-sb"
         if low in {"cjk", "china-ts", "china-ss"}:
             return low
         if any(k in low for k in ("cjk", "jhenghei", "yahei", "simsun", "pingfang", "source han", "noto")):
             return "cjk"
         resolved = self._resolve_font_for_push(font_hint)
         return resolved or "cjk"
+
+    def _resolve_cjk_companion_font(self, latin_font_name: str) -> str:
+        token = self._resolve_add_text_font(latin_font_name)
+        if token in {"cjk", "china-ts", "china-ss", "microsoft jhenghei", "pmingliu", "dfkai-sb"}:
+            return token
+        if token == "tiro":
+            return "china-ts"
+        return "china-ss"
+
+    def _font_token_to_css_family(self, font_token: str) -> str:
+        token = self._resolve_add_text_font(font_token)
+        return _CUSTOM_CJK_ALIASES.get(token, token)
+
+    def _font_face_css_for_token(self, font_token: str) -> str:
+        token = self._resolve_add_text_font(font_token)
+        font_path = _WINDOWS_CJK_FONT_FILES.get(token)
+        if font_path is None or not font_path.exists():
+            return ""
+        css_family = self._font_token_to_css_family(token)
+        # Use absolute local path so MuPDF can resolve the face during htmlbox rendering.
+        src = font_path.as_posix()
+        return f'@font-face {{ font-family: "{css_family}"; src: url("{src}"); }}'
 
     def _insert_tiny_plain_text(
         self,
@@ -1150,7 +1191,13 @@ class PDFModel:
             font_name,
         )
 
-    def _convert_text_to_html(self, text: str, font_size: int, color: tuple) -> str:
+    def _convert_text_to_html(
+        self,
+        text: str,
+        font_size: int,
+        color: tuple,
+        latin_font: str = "helv",
+    ) -> str:
         """
         將混合文本轉換為帶有字體樣式的簡單 HTML，並正確處理空格。
         [優化 3] 使用模組級預編譯正則 _RE_HTML_TEXT_PARTS、_RE_CJK，避免重複編譯
@@ -1160,16 +1207,20 @@ class PDFModel:
             return ""
 
         parts = _RE_HTML_TEXT_PARTS.findall(text)
+        latin_font_name = self._resolve_add_text_font(latin_font)
+        cjk_font_name = self._resolve_cjk_companion_font(latin_font_name)
+        latin_css_family = self._font_token_to_css_family(latin_font_name)
+        cjk_css_family = self._font_token_to_css_family(cjk_font_name)
 
         for part in parts:
             if part == '\n':
                 html_parts.append('<br>')
             elif part.isspace():
-                html_parts.append(f'<span style="font-family: helv;">{part}</span>')
+                html_parts.append(f'<span style="font-family: {latin_css_family};">{part}</span>')
             elif _RE_CJK.match(part):
-                html_parts.append(f'<span style="font-family: cjk;">{_html_mod.escape(part)}</span>')
+                html_parts.append(f'<span style="font-family: {cjk_css_family};">{_html_mod.escape(part)}</span>')
             else:
-                html_parts.append(f'<span style="font-family: helv;">{_html_mod.escape(part)}</span>')
+                html_parts.append(f'<span style="font-family: {latin_css_family};">{_html_mod.escape(part)}</span>')
 
         return "".join(html_parts)
 
@@ -1315,9 +1366,18 @@ class PDFModel:
         self.doc.insert_pdf(snapshot_doc, from_page=0, to_page=0, start_at=page_num_0based)
         snapshot_doc.close()
 
-    def _build_insert_css(self, size: float, color: tuple) -> str:
+    def _build_insert_css(self, size: float, color: tuple, font_hint: str = "helv") -> str:
         """建構 insert_htmlbox 所需的 CSS 樣式字串"""
+        resolved_font = self._resolve_add_text_font(font_hint)
+        cjk_companion = self._resolve_cjk_companion_font(resolved_font)
+        font_face_rules = []
+        for token in {resolved_font, cjk_companion}:
+            css_rule = self._font_face_css_for_token(token)
+            if css_rule:
+                font_face_rules.append(css_rule)
+        font_face_block = "\n".join(font_face_rules)
         return f"""
+            {font_face_block}
             span {{
                 font-size: {size}pt;
                 white-space: pre-wrap;
@@ -1662,8 +1722,10 @@ class PDFModel:
                         bbox.x1 = bbox.x0 + max(2.0, fontsize * 0.8)
                     if bbox.height < 2:
                         bbox.y1 = bbox.y0 + max(2.0, fontsize * 1.2)
-                    html_content = self._convert_text_to_html(text, int(round(fontsize)), color)
-                    css = self._build_insert_css(fontsize, color)
+                    html_content = self._convert_text_to_html(
+                        text, int(round(fontsize)), color, latin_font=fontname
+                    )
+                    css = self._build_insert_css(fontsize, color, fontname)
                     page.insert_htmlbox(
                         self._clamp_rect_to_page(bbox, page.rect),
                         html_content,
@@ -1719,8 +1781,10 @@ class PDFModel:
                 bbox.x1 = bbox.x0 + max(2.0, fontsize * 0.8)
             if bbox.height < 2:
                 bbox.y1 = bbox.y0 + max(2.0, fontsize * 1.2)
-            html_content = self._convert_text_to_html(text, int(round(fontsize)), color)
-            css = self._build_insert_css(fontsize, color)
+            html_content = self._convert_text_to_html(
+                text, int(round(fontsize)), color, latin_font=fontname
+            )
+            css = self._build_insert_css(fontsize, color, fontname)
             page.insert_htmlbox(
                 self._clamp_rect_to_page(bbox, page.rect),
                 html_content,
@@ -1945,8 +2009,11 @@ class PDFModel:
             )
 
             # ═══════════ Step 3: 智能插入（三策略）═══════════
-            html_content = self._convert_text_to_html(new_text, int(size), color)
-            css = self._build_insert_css(size, color)
+            resolved_font = self._resolve_add_text_font(font)
+            html_content = self._convert_text_to_html(
+                new_text, int(size), color, latin_font=resolved_font
+            )
+            css = self._build_insert_css(size, color, resolved_font)
 
             # --- 計算初始插入矩形 ---
             # 若有指定 new_rect（拖曳移動），以 new_rect 為插入基準；否則沿用原本位置計算。
@@ -1974,7 +2041,7 @@ class PDFModel:
                     )
                 else:
                     base_rect = self._vertical_html_rect(
-                        target.layout_rect, new_text, size, font,
+                        target.layout_rect, new_text, size, resolved_font,
                         page_rect, anchor_right=vertical_shift_left
                     )
                     base_y1 = base_rect.y1
@@ -2097,7 +2164,7 @@ class PDFModel:
                     logger.debug("策略 A 失敗，嘗試策略 B（自動擴寬）")
                     try:
                         font_for_measure = (
-                            "china-ts" if self._needs_cjk_font(new_text) else font
+                            "china-ts" if self._needs_cjk_font(new_text) else resolved_font
                         )
                         try:
                             font_obj = fitz.Font(font_for_measure)
@@ -2276,7 +2343,7 @@ class PDFModel:
             # ═══════════ Step 5: 更新索引 ═══════════
             update_kwargs = dict(
                 text=new_text,
-                font=font,
+                font=resolved_font,
                 size=float(size),
                 color=color,
             )
