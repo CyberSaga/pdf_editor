@@ -1016,10 +1016,48 @@ class PDFView(QMainWindow):
             current = current.parentWidget()
         return False
 
+    def _is_widget_from_text_combo_popup(self, widget: QWidget) -> bool:
+        # QComboBox popup is often a top-level window; match by popup view/window lineage.
+        if widget is None:
+            return False
+        for attr in ("text_font", "text_size", "text_target_mode_combo"):
+            combo = getattr(self, attr, None)
+            if combo is None:
+                continue
+            try:
+                popup_view = combo.view()
+            except Exception:
+                popup_view = None
+            if popup_view is None:
+                continue
+            if self._widget_has_ancestor(widget, combo):
+                return True
+            if self._widget_has_ancestor(widget, popup_view):
+                return True
+            try:
+                if widget.window() is popup_view.window():
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _is_scene_focus_within_editor(self) -> bool:
+        # QWidget focus can transiently land on viewport while proxy editor keeps scene focus.
+        if not self.text_editor:
+            return False
+        focus_item = self.scene.focusItem() if self.scene is not None else None
+        while focus_item is not None:
+            if focus_item is self.text_editor:
+                return True
+            focus_item = focus_item.parentItem()
+        return False
+
     def _is_focus_within_edit_context(self, widget: QWidget) -> bool:
         # Keep editing alive when focus stays inside editor or right-side text controls.
         if widget is None:
             return False
+        if self._is_widget_from_text_combo_popup(widget):
+            return True
         editor_widget = self.text_editor.widget() if (self.text_editor and self.text_editor.widget()) else None
         if editor_widget and self._widget_has_ancestor(widget, editor_widget):
             return True
@@ -1047,7 +1085,7 @@ class PDFView(QMainWindow):
         if self._edit_focus_check_pending:
             return
         self._edit_focus_check_pending = True
-        QTimer.singleShot(0, self._finalize_if_focus_outside_edit_context)
+        QTimer.singleShot(40, self._finalize_if_focus_outside_edit_context)
 
     def _finalize_if_focus_outside_edit_context(self) -> None:
         # Finalize only when focus truly leaves edit context.
@@ -1059,6 +1097,12 @@ class PDFView(QMainWindow):
         app = QApplication.instance()
         focus_widget = app.focusWidget() if app is not None else None
         if self._is_focus_within_edit_context(focus_widget):
+            return
+        if app is not None:
+            active_popup = app.activePopupWidget()
+            if self._is_focus_within_edit_context(active_popup):
+                return
+        if self._is_scene_focus_within_editor():
             return
         self._finalize_text_edit()
 
