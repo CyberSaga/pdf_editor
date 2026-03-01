@@ -59,6 +59,17 @@ Install Tesseract OCR and ensure `tesseract` is available on PATH.
 python main.py
 ```
 
+## Test Scripts Guide
+
+`test_scripts/TEST_SCRIPTS.md` is the testing map for this project. It tells you:
+- which quality dimension each script validates (correctness, regression safety, conflict safety, performance, printing, multi-tab isolation)
+- which workflows are covered by each script (for example add-text atomicity, overlap editing, undo/redo integrity, large-file behavior)
+- which scripts are fast smoke checks vs deep/corpus/stress validation
+- which scripts produce artifacts/reports and where those outputs are written
+- which script set to look at when diagnosing a specific class of failures
+
+In short, it helps you understand test coverage scope and the diagnostic value of each script before running anything.
+
 ## Package (Windows)
 
 Build command:
