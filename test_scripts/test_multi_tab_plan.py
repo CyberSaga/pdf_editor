@@ -23,6 +23,15 @@ def _make_pdf(path: Path, texts: list[str]) -> Path:
     return path
 
 
+def _make_pdf_with_font(path: Path, text: str, font: str, size: int = 12) -> Path:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), text, fontsize=size, fontname=font)
+    doc.save(path)
+    doc.close()
+    return path
+
+
 def _norm(text: str) -> str:
     return "".join((text or "").lower().split())
 
@@ -520,6 +529,276 @@ def test_19b_font_size_menu_keeps_editor_and_outside_focus_finalizes_editor(mvc,
     QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, outside_pos)
     _pump_events(180)
     assert view.text_editor is None
+
+
+def test_19c_edit_font_change_commits_without_text_change(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf(tmp_path / "edit_font_change.pdf", ["font-change token"])
+    controller.open_pdf(str(path))
+    _pump_events(350)
+
+    view.set_mode("edit_text")
+    _pump_events(60)
+
+    model.ensure_page_index_built(1)
+    runs = [r for r in model.block_manager.get_runs(0) if (r.text or "").strip()]
+    assert runs, "no editable run on page 1"
+    run = runs[0]
+
+    rs = view._render_scale if view._render_scale > 0 else 1.0
+    y0 = view.page_y_positions[0] if view.page_y_positions else 0.0
+    sx = ((run.bbox.x0 + run.bbox.x1) * 0.5) * rs
+    sy = y0 + ((run.bbox.y0 + run.bbox.y1) * 0.5) * rs
+    click_pos = view.graphics_view.mapFromScene(sx, sy)
+
+    viewport = view.graphics_view.viewport()
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, click_pos)
+    _pump_events(260)
+    assert view.text_editor is not None
+
+    before_undo = model.command_manager.undo_count
+
+    # Change font only via text-panel selector; keep text content unchanged.
+    serif_idx = view.text_font.findData("tiro")
+    assert serif_idx >= 0
+    view.text_font.setCurrentIndex(serif_idx)
+    _pump_events(140)
+    assert view.text_editor is not None
+    assert getattr(view, "editing_font_name", "") == "tiro"
+
+    editor_scene_rect = view.text_editor.mapRectToScene(view.text_editor.boundingRect())
+    outside_pos = view.graphics_view.mapFromScene(editor_scene_rect.bottomRight() + QPoint(40, 40))
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, outside_pos)
+    _pump_events(220)
+    assert view.text_editor is None
+
+    assert model.command_manager.undo_count == before_undo + 1
+    last_cmd = model.command_manager._undo_stack[-1]
+    assert getattr(last_cmd, "_font", None) == "tiro"
+    assert _norm("font-change token") in _norm(model.doc[0].get_text("text"))
+
+
+def test_19d_text_apply_commits_and_cancel_discards(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf(tmp_path / "text_apply_cancel.pdf", ["apply cancel token"])
+    controller.open_pdf(str(path))
+    _pump_events(350)
+
+    view.set_mode("edit_text")
+    _pump_events(60)
+
+    model.ensure_page_index_built(1)
+    runs = [r for r in model.block_manager.get_runs(0) if (r.text or "").strip()]
+    assert runs, "no editable run on page 1"
+    run = runs[0]
+
+    rs = view._render_scale if view._render_scale > 0 else 1.0
+    y0 = view.page_y_positions[0] if view.page_y_positions else 0.0
+    sx = ((run.bbox.x0 + run.bbox.x1) * 0.5) * rs
+    sy = y0 + ((run.bbox.y0 + run.bbox.y1) * 0.5) * rs
+    click_pos = view.graphics_view.mapFromScene(sx, sy)
+    viewport = view.graphics_view.viewport()
+
+    before_undo = model.command_manager.undo_count
+
+    # Cancel path: change style in editor, then cancel should close without commit.
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, click_pos)
+    _pump_events(260)
+    assert view.text_editor is not None
+    mono_idx = view.text_font.findData("cour")
+    assert mono_idx >= 0
+    view.text_font.setCurrentIndex(mono_idx)
+    _pump_events(80)
+    QTest.mouseClick(view.text_cancel_btn, Qt.LeftButton, Qt.NoModifier, view.text_cancel_btn.rect().center())
+    _pump_events(150)
+    assert view.text_editor is None
+    assert model.command_manager.undo_count == before_undo
+
+    # Apply path: same style change, then apply should commit and close editor.
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, click_pos)
+    _pump_events(260)
+    assert view.text_editor is not None
+    view.text_font.setCurrentIndex(mono_idx)
+    _pump_events(80)
+    QTest.mouseClick(view.text_apply_btn, Qt.LeftButton, Qt.NoModifier, view.text_apply_btn.rect().center())
+    _pump_events(180)
+    assert view.text_editor is None
+    assert model.command_manager.undo_count == before_undo + 1
+
+
+def test_19e_cjk_font_change_commits_without_text_change(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf_with_font(tmp_path / "cjk_font_change.pdf", "中文字體測試", "china-ts", 12)
+    controller.open_pdf(str(path))
+    _pump_events(350)
+
+    view.set_mode("edit_text")
+    _pump_events(60)
+
+    model.ensure_page_index_built(1)
+    runs = [r for r in model.block_manager.get_runs(0) if (r.text or "").strip()]
+    assert runs, "no editable run on page 1"
+    run = runs[0]
+
+    rs = view._render_scale if view._render_scale > 0 else 1.0
+    y0 = view.page_y_positions[0] if view.page_y_positions else 0.0
+    sx = ((run.bbox.x0 + run.bbox.x1) * 0.5) * rs
+    sy = y0 + ((run.bbox.y0 + run.bbox.y1) * 0.5) * rs
+    click_pos = view.graphics_view.mapFromScene(sx, sy)
+
+    viewport = view.graphics_view.viewport()
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, click_pos)
+    _pump_events(260)
+    assert view.text_editor is not None
+
+    before_undo = model.command_manager.undo_count
+
+    cjk_sans_idx = view.text_font.findData("china-ss")
+    assert cjk_sans_idx >= 0
+    view.text_font.setCurrentIndex(cjk_sans_idx)
+    _pump_events(140)
+    assert view.text_editor is not None
+    assert getattr(view, "editing_font_name", "") == "china-ss"
+
+    editor_scene_rect = view.text_editor.mapRectToScene(view.text_editor.boundingRect())
+    outside_pos = view.graphics_view.mapFromScene(editor_scene_rect.bottomRight() + QPoint(40, 40))
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, outside_pos)
+    _pump_events(220)
+    assert view.text_editor is None
+
+    assert model.command_manager.undo_count == before_undo + 1
+    last_cmd = model.command_manager._undo_stack[-1]
+    assert getattr(last_cmd, "_font", None) == "china-ss"
+    assert _norm("中文字體測試") in _norm(model.doc[0].get_text("text"))
+
+
+def test_19f_convert_text_to_html_uses_cjk_companion_font(mvc):
+    model, _, _ = mvc
+    html_serif = model._convert_text_to_html("中文ABC", 12, (0.0, 0.0, 0.0), latin_font="tiro")
+    html_sans = model._convert_text_to_html("中文ABC", 12, (0.0, 0.0, 0.0), latin_font="helv")
+    assert "font-family: china-ts;" in html_serif
+    assert "font-family: china-ss;" in html_sans
+
+
+def test_19f2_custom_cjk_font_generates_embedded_css(mvc):
+    model, _, _ = mvc
+    sample = "\u5929\u5730ABC"
+    html = model._convert_text_to_html(sample, 12, (0.0, 0.0, 0.0), latin_font="dfkai-sb")
+    css = model._build_insert_css(12, (0.0, 0.0, 0.0), "dfkai-sb")
+    assert "PdfEditorDFKaiSB" in html
+    if Path(r"C:\Windows\Fonts\kaiu.ttf").exists():
+        assert "@font-face" in css
+        assert "PdfEditorDFKaiSB" in css
+
+
+def test_19g_add_text_cjk_font_selection_commits(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf(tmp_path / "add_text_cjk_font.pdf", ["seed"])
+    controller.open_pdf(str(path))
+    _pump_events(300)
+
+    before_undo = model.command_manager.undo_count
+    view.set_mode("add_text")
+    _pump_events(80)
+
+    cjk_sans_idx = view.text_font.findData("china-ss")
+    assert cjk_sans_idx >= 0
+    view.text_font.setCurrentIndex(cjk_sans_idx)
+    _pump_events(50)
+
+    viewport = view.graphics_view.viewport()
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, viewport.rect().center())
+    _pump_events(180)
+    assert view.text_editor is not None
+
+    view.text_editor.widget().setPlainText("新增中文文字框")
+    _pump_events(40)
+    QTest.mouseClick(view.text_apply_btn, Qt.LeftButton, Qt.NoModifier, view.text_apply_btn.rect().center())
+    _pump_events(250)
+
+    assert view.text_editor is None
+    assert model.command_manager.undo_count == before_undo + 1
+    last_cmd = model.command_manager._undo_stack[-1]
+    assert getattr(last_cmd, "_font", None) == "china-ss"
+    assert "新增中文文字框" in (model.doc[0].get_text("text") or "")
+
+
+def test_19h_edit_existing_switch_to_dfkai_commits_font_token(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf_with_font(tmp_path / "edit_cjk_dfkai.pdf", "\u5929\u5730\u7384\u9ec3", "china-ss", 22)
+    controller.open_pdf(str(path))
+    _pump_events(350)
+
+    view.set_mode("edit_text")
+    _pump_events(60)
+
+    model.ensure_page_index_built(1)
+    runs = [r for r in model.block_manager.get_runs(0) if (r.text or "").strip()]
+    assert runs, "no editable run on page 1"
+    run = runs[0]
+
+    rs = view._render_scale if view._render_scale > 0 else 1.0
+    y0 = view.page_y_positions[0] if view.page_y_positions else 0.0
+    sx = ((run.bbox.x0 + run.bbox.x1) * 0.5) * rs
+    sy = y0 + ((run.bbox.y0 + run.bbox.y1) * 0.5) * rs
+    click_pos = view.graphics_view.mapFromScene(sx, sy)
+    viewport = view.graphics_view.viewport()
+
+    before_undo = model.command_manager.undo_count
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, click_pos)
+    _pump_events(260)
+    assert view.text_editor is not None
+
+    idx = view.text_font.findData("dfkai-sb")
+    assert idx >= 0
+    view.text_font.setCurrentIndex(idx)
+    _pump_events(120)
+    assert getattr(view, "editing_font_name", "") == "dfkai-sb"
+
+    editor_scene_rect = view.text_editor.mapRectToScene(view.text_editor.boundingRect())
+    outside_pos = view.graphics_view.mapFromScene(editor_scene_rect.bottomRight() + QPoint(40, 40))
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, outside_pos)
+    _pump_events(220)
+
+    assert view.text_editor is None
+    assert model.command_manager.undo_count == before_undo + 1
+    last_cmd = model.command_manager._undo_stack[-1]
+    assert getattr(last_cmd, "_font", None) == "dfkai-sb"
+
+
+def test_19i_custom_windows_cjk_fonts_render_distinct_span_fonts(mvc):
+    model, _, _ = mvc
+    required = [
+        Path(r"C:\Windows\Fonts\msjh.ttc"),
+        Path(r"C:\Windows\Fonts\mingliu.ttc"),
+        Path(r"C:\Windows\Fonts\kaiu.ttf"),
+    ]
+    if not all(p.exists() for p in required):
+        pytest.skip("Windows CJK font files not available for embedding test")
+
+    rendered_fonts = {}
+    for token in ("microsoft jhenghei", "pmingliu", "dfkai-sb"):
+        doc = fitz.open()
+        page = doc.new_page()
+        html = model._convert_text_to_html("\u5929\u5730\u7384\u9ec3", 38, (0.0, 0.0, 0.0), latin_font=token)
+        css = model._build_insert_css(38, (0.0, 0.0, 0.0), token)
+        page.insert_htmlbox(fitz.Rect(72, 72, 520, 320), html, css=css, rotate=0, scale_low=1)
+
+        first_font = ""
+        for block in page.get_text("dict").get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    if (span.get("text") or "").strip():
+                        first_font = str(span.get("font") or "")
+                        break
+                if first_font:
+                    break
+            if first_font:
+                break
+        assert first_font, f"no rendered span found for token={token}"
+        rendered_fonts[token] = first_font
+
+    assert len(set(rendered_fonts.values())) >= 2, rendered_fonts
 
 
 def test_20_escape_non_browse_switches_to_browse(mvc, tmp_path):

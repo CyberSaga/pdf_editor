@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QApplication, QColorDialog, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
     QListWidget, QToolBar, QInputDialog, QMessageBox, QMenu, QFileDialog,
-    QListWidgetItem, QWidget, QVBoxLayout, QPushButton, QLabel, QFontComboBox,
+    QListWidgetItem, QWidget, QVBoxLayout, QPushButton, QLabel,
     QComboBox, QDoubleSpinBox, QTextEdit, QGraphicsProxyWidget, QLineEdit, QHBoxLayout,
     QStackedWidget, QDialog, QSpinBox, QDialogButtonBox, QFormLayout,
     QScrollArea, QCheckBox, QTabWidget, QSplitter, QFrame, QSizePolicy, QSlider, QTabBar,
@@ -379,6 +379,7 @@ class PDFView(QMainWindow):
         self._edit_focus_guard_connected = False
         self._edit_focus_check_pending = False
         self._finalizing_text_edit = False
+        self._discard_text_edit_once = False
         # Phase 5: edit_text 模式下的 hover 文字塊高亮
         self._hover_highlight_item = None       # QGraphicsRectItem | None
         self._last_hover_scene_pos = None       # QPointF | None（節流用）
@@ -850,8 +851,18 @@ class PDFView(QMainWindow):
         self.text_card = QWidget()
         text_layout = QVBoxLayout(self.text_card)
         text_layout.addWidget(QLabel("文字設定"))
-        self.text_font = QFontComboBox()
-        self.text_font.setCurrentFont(QFont("Source Han Serif TC"))
+        self.text_font = QComboBox()
+        self.text_font.addItem("Sans (helv)", "helv")
+        self.text_font.addItem("Serif (tiro)", "tiro")
+        self.text_font.addItem("Mono (cour)", "cour")
+        # Keep distinct CJK choices so CJK text can actually change family.
+        self.text_font.addItem("CJK Sans (china-ss)", "china-ss")
+        self.text_font.addItem("CJK Serif (china-ts)", "china-ts")
+        self.text_font.addItem("CJK Auto (cjk)", "cjk")
+        self.text_font.addItem("Microsoft JhengHei", "microsoft jhenghei")
+        self.text_font.addItem("PMingLiU", "pmingliu")
+        self.text_font.addItem("DFKai-SB", "dfkai-sb")
+        self.text_font.setCurrentIndex(0)
         self.text_size = QComboBox()
         self.text_size.addItems([str(i) for i in range(8, 30, 2)])
         self.text_size.setCurrentText("12")
@@ -871,6 +882,8 @@ class PDFView(QMainWindow):
         text_layout.addWidget(self.text_target_mode_combo)
         self.text_apply_btn = QPushButton("套用")
         self.text_cancel_btn = QPushButton("取消")
+        self.text_apply_btn.clicked.connect(self._on_text_apply_clicked)
+        self.text_cancel_btn.clicked.connect(self._on_text_cancel_clicked)
         text_layout.addWidget(self.text_apply_btn)
         text_layout.addWidget(self.text_cancel_btn)
         text_layout.addStretch()
@@ -903,6 +916,18 @@ class PDFView(QMainWindow):
         self.sig_text_target_mode_changed.emit(mode)
         # force hover target refresh under new granularity
         self._last_hover_scene_pos = None
+
+    def _on_text_apply_clicked(self):
+        # "Apply" commits current inline-editor content/style to the PDF.
+        if self.text_editor and self.text_editor.widget():
+            self._finalize_text_edit()
+
+    def _on_text_cancel_clicked(self):
+        if not self.text_editor or not self.text_editor.widget():
+            return
+        # One-shot discard flag consumed by _finalize_text_edit_impl.
+        self._discard_text_edit_once = True
+        self._finalize_text_edit()
 
     def _update_status_bar(self):
         """更新狀態列：已修改、模式、快捷鍵、頁/縮放；搜尋模式時顯示找到 X 個結果 • 按 Esc 關閉搜尋."""
@@ -956,7 +981,7 @@ class PDFView(QMainWindow):
             self.graphics_view.viewport().setCursor(Qt.IBeamCursor)
             self.right_stacked_widget.setCurrentWidget(self.text_card)
             if not self._add_text_default_font_applied:
-                self.text_font.setCurrentFont(QFont("Microsoft JhengHei"))
+                self._set_text_font_by_pdf(self._add_text_default_pdf_font)
                 if self.text_size.findText(str(self._add_text_default_size)) == -1:
                     self.text_size.addItem(str(self._add_text_default_size))
                 self.text_size.setCurrentText(str(self._add_text_default_size))
@@ -1693,15 +1718,18 @@ class PDFView(QMainWindow):
             font_size = int(self.text_size.currentText())
         except Exception:
             pass
+        selected_pdf_font = self._qt_font_to_pdf(
+            str(self.text_font.currentData() or self.text_font.currentText())
+        )
         page_rotation = int(model.doc[page_idx].rotation)
-        self.editing_font_name = self._add_text_default_pdf_font
+        self.editing_font_name = selected_pdf_font
         self.editing_color = self._add_text_default_color
         self.editing_original_text = ""
         self._editing_page_idx = page_idx
         self._create_text_editor(
             visual_rect,
             "",
-            self._add_text_default_pdf_font,
+            selected_pdf_font,
             font_size,
             self._add_text_default_color,
             page_rotation,
@@ -2057,9 +2085,18 @@ class PDFView(QMainWindow):
             self.text_size.clear()
             self.text_size.addItems(items)
         self.text_size.setCurrentText(size_str)
+        normalized_font = self._qt_font_to_pdf(font_name)
+        self._set_text_font_by_pdf(normalized_font)
+        self._editing_initial_font_name = normalized_font
+        self._editing_initial_size = int(round(font_size))
+        if not hasattr(self, "editing_font_name"):
+            self.editing_font_name = normalized_font
         if not getattr(self, '_edit_font_size_connected', False):
             self.text_size.currentTextChanged.connect(self._on_edit_font_size_changed)
             self._edit_font_size_connected = True
+        if not getattr(self, '_edit_font_family_connected', False):
+            self.text_font.currentIndexChanged.connect(self._on_edit_font_family_changed)
+            self._edit_font_family_connected = True
 
         self.text_editor = self.scene.addWidget(editor)
         self.text_editor.setPos(pos_x, pos_y)
@@ -2085,8 +2122,91 @@ class PDFView(QMainWindow):
 
     def _pdf_font_to_qt(self, font_name: str) -> str:
         """將 PDF 字型名稱映射為 Qt 可用字型，使預覽與渲染外觀相近。"""
-        m = {"helv": "Arial", "cour": "Courier New", "times": "Times New Roman", "cjk": "Microsoft JhengHei"}
-        return m.get((font_name or "").lower(), font_name or "Arial")
+        low = (font_name or "").strip().lower()
+        if low in {"microsoft jhenghei", "microsoftjhengheiregular", "msjh"}:
+            return "Microsoft JhengHei"
+        if low in {"pmingliu", "mingliu"}:
+            return "PMingLiU"
+        if low in {"dfkai-sb", "dfkaishu-sb-estd-bf", "kaiu"}:
+            return "DFKai-SB"
+        if low in {"china-ts", "china-t"}:
+            return "PMingLiU"
+        if low in {"cjk", "china-ss", "china-s"}:
+            return "Microsoft JhengHei"
+        if low.startswith("cour"):
+            return "Courier New"
+        if low in {"times", "tiro", "tib", "tiit", "tibo"}:
+            return "Times New Roman"
+        if low in {"helv", "hebo", "heit"}:
+            return "Arial"
+        return font_name or "Arial"
+
+    def _set_text_font_by_pdf(self, font_name: str) -> None:
+        pdf_font = self._qt_font_to_pdf(font_name)
+        idx = self.text_font.findData(pdf_font)
+        if idx < 0:
+            idx = 0
+        self.text_font.blockSignals(True)
+        self.text_font.setCurrentIndex(idx)
+        self.text_font.blockSignals(False)
+
+    def _qt_font_to_pdf(self, family: str) -> str:
+        low = (family or "").strip().lower()
+        if low in {"microsoft jhenghei", "microsoftjhenghei", "microsoftjhengheiregular", "msjh"}:
+            return "microsoft jhenghei"
+        if low in {"pmingliu", "mingliu"}:
+            return "pmingliu"
+        if low in {"dfkai-sb", "dfkai", "dfkaishu-sb-estd-bf", "kaiu"}:
+            return "dfkai-sb"
+        if low in {"helv", "hebo", "heit"}:
+            return "helv"
+        if low in {"cour", "cour-b", "cour-i", "cour-bi"}:
+            return "cour"
+        if low in {"tiro", "tib", "tiit", "tibo", "times"}:
+            return "tiro"
+        if low in {"china-ts", "china-t"}:
+            return "china-ts"
+        if low in {"china-ss", "china-s"}:
+            return "china-ss"
+        if low in {"cjk"}:
+            return "cjk"
+        if any(k in low for k in ("pmingliu", "mingliu", "songti", "simsun", "source han serif", "noto serif cjk")):
+            return "china-ts"
+        if any(k in low for k in ("jhenghei", "yahei", "pingfang", "heiti", "source han sans", "noto sans cjk")):
+            return "china-ss"
+        if "cjk" in low:
+            return "cjk"
+        if "courier" in low or "mono" in low:
+            return "cour"
+        if "serif" in low:
+            if any(k in low for k in ("cjk", "han", "song", "ming", "pming", "simsun", "songti")):
+                return "china-ts"
+            return "tiro"
+        if "sans" in low:
+            if any(k in low for k in ("cjk", "han", "hei", "jhenghei", "yahei", "pingfang", "noto", "source han")):
+                return "china-ss"
+            return "helv"
+        if "times" in low:
+            return "tiro"
+        return "helv"
+
+    def _on_edit_font_family_changed(self, *_):
+        if not self.text_editor or not self.text_editor.widget():
+            return
+        editor = self.text_editor.widget()
+        selected_pdf_font = self._qt_font_to_pdf(
+            str(self.text_font.currentData() or self.text_font.currentText())
+        )
+        f = editor.font()
+        f.setFamily(self._pdf_font_to_qt(selected_pdf_font))
+        editor.setFont(f)
+        self.editing_font_name = selected_pdf_font
+        QTimer.singleShot(
+            0,
+            lambda: editor.setFocus(Qt.OtherFocusReason)
+            if (self.text_editor and self.text_editor.widget() is editor)
+            else None,
+        )
 
     def _on_edit_font_size_changed(self, size_str: str):
         """編輯中變更字級時，更新編輯框字型以即時預覽。"""
@@ -2143,11 +2263,17 @@ class PDFView(QMainWindow):
              abs(current_rect.y0 - original_rect.y0) > 0.5)
         )
 
-        original_font = getattr(self, 'editing_font_name', 'helv')
+        current_font = getattr(self, 'editing_font_name', 'helv')
+        initial_font = getattr(self, '_editing_initial_font_name', current_font)
         original_color = getattr(self, 'editing_color', (0,0,0))
         current_size = int(self.text_size.currentText())
+        initial_size = int(getattr(self, '_editing_initial_size', current_size))
+        font_changed = (str(current_font).lower() != str(initial_font).lower())
+        size_changed = current_size != initial_size
         edit_page = getattr(self, '_editing_page_idx', self.current_page)
         edit_intent = getattr(self, 'editing_intent', 'edit_existing')
+        discard_changes = bool(getattr(self, "_discard_text_edit_once", False))
+        self._discard_text_edit_once = False
 
         # 重置拖曳狀態
         self._drag_pending = False
@@ -2168,7 +2294,15 @@ class PDFView(QMainWindow):
             except (TypeError, RuntimeError):
                 pass
             self._edit_font_size_connected = False
+        if getattr(self, '_edit_font_family_connected', False):
+            try:
+                self.text_font.currentIndexChanged.disconnect(self._on_edit_font_family_changed)
+            except (TypeError, RuntimeError):
+                pass
+            self._edit_font_family_connected = False
         if hasattr(self, 'editing_font_name'): del self.editing_font_name
+        if hasattr(self, '_editing_initial_font_name'): del self._editing_initial_font_name
+        if hasattr(self, '_editing_initial_size'): del self._editing_initial_size
         if hasattr(self, 'editing_color'): del self.editing_color
         if hasattr(self, '_editing_page_idx'): del self._editing_page_idx
         if hasattr(self, '_editing_rotation'): del self._editing_rotation
@@ -2178,6 +2312,10 @@ class PDFView(QMainWindow):
         if hasattr(self, 'editing_target_mode'): del self.editing_target_mode
         if hasattr(self, 'editing_intent'): del self.editing_intent
 
+        # "Cancel" should close editor and keep document unchanged.
+        if discard_changes:
+            return
+
         if edit_intent == 'add_new':
             if new_text.strip() and current_rect is not None:
                 try:
@@ -2185,7 +2323,7 @@ class PDFView(QMainWindow):
                         edit_page + 1,
                         current_rect,
                         new_text,
-                        original_font or self._add_text_default_pdf_font,
+                        current_font or self._add_text_default_pdf_font,
                         current_size,
                         original_color,
                     )
@@ -2193,7 +2331,7 @@ class PDFView(QMainWindow):
                     logger.error(f"發送新增文字框信號時出錯: {e}")
             return
 
-        if (text_changed or position_changed) and original_rect:
+        if (text_changed or position_changed or font_changed or size_changed) and original_rect:
             try:
                 original_text = getattr(self, 'editing_original_text', None)
                 vertical_shift_left = getattr(self, 'vertical_shift_left_cb', None)
@@ -2204,7 +2342,7 @@ class PDFView(QMainWindow):
                     edit_page + 1,
                     original_rect,      # 原始位置（供模型找到舊文字塊）
                     new_text,
-                    original_font,
+                    current_font,
                     current_size,
                     original_color,
                     original_text,
