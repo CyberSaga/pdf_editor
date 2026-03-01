@@ -2,87 +2,58 @@
 
 Desktop PDF editor written in Python with a Qt UI.
 
-Core capabilities include:
-- open/save PDFs
-- page operations (delete/rotate/insert/export/merge)
-- text editing (overlap-safe)
-- dedicated add-text mode (new page text insertion)
-- annotations (rect/highlight/free-text)
-- watermarks
-- search and jump
-- optional OCR
-- undo/redo through command history
+## 1. Core Capabilities
 
-## Legal
+- Open and save PDFs
+- Page operations: delete, rotate, insert, export, merge
+- Text editing with overlap-safe behavior
+- Dedicated add-text mode
+- Annotations: rectangle, highlight, free-text note
+- Watermarks
+- Search and jump
+- Optional OCR
+- Undo/redo via command history
 
-No license is currently declared in this repository.
-Add a `LICENSE` file if licensing terms are required.
+## 2. Documentation Map
 
-## Features
+- Feature behavior: `docs/FEATURES.md`
+- Architecture and boundaries: `docs/ARCHITECTURE.md`
+- Issue history and fixes: `docs/solutions.md`
+- Test script index: `test_scripts/TEST_SCRIPTS.md`
 
-Feature list and workflow-level behavior are maintained in:
-- `docs/FEATURES.md`
-- `docs/ARCHITECTURE.md`
+## 3. Requirements
 
-Implementation decisions, bug root causes, and fixes are tracked in:
-- `docs/solutions.md`
+- Python 3.10+
+- Windows (primary development environment)
 
-## Third-Party Libraries
-
+Third-party libraries used in this project:
 - PySide6
-- PyMuPDF (fitz)
+- PyMuPDF (`fitz`)
 - Pillow
 - pytesseract (optional)
 
-## Install
-
-### Windows (development)
+## 4. Install
 
 ```text
 python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements_clean.txt
+.venv\Scripts\python -m pip install -r requirements.txt
 ```
 
-### Optional printing backends
+Optional dependencies:
 
 ```text
 .venv\Scripts\python -m pip install -r optional-requirements.txt
 ```
 
-### OCR dependency
+OCR note: install Tesseract OCR and ensure `tesseract` is available on PATH.
 
-Install Tesseract OCR and ensure `tesseract` is available on PATH.
-
-## Run
+## 5. Run
 
 ```text
 python main.py
 ```
 
-## Keyboard Shortcuts
-
-- `Ctrl+Z`: Undo
-- `Ctrl+Y`: Redo
-- `Ctrl+S`: Save
-- `Ctrl+Shift+S`: Save As
-- `F2`: Enter text edit mode
-
-Unsaved-change close prompts also support keyboard confirmation: `Y` to save, `N` to discard, `Esc` to cancel.
-
-## Test Scripts Guide
-
-`test_scripts/TEST_SCRIPTS.md` is the testing map for this project. It tells you:
-- which quality dimension each script validates (correctness, regression safety, conflict safety, performance, printing, multi-tab isolation)
-- which workflows are covered by each script (for example add-text atomicity, overlap editing, undo/redo integrity, large-file behavior)
-- which scripts are fast smoke checks vs deep/corpus/stress validation
-- which scripts produce artifacts/reports and where those outputs are written
-- which script set to look at when diagnosing a specific class of failures
-
-In short, it helps you understand test coverage scope and the diagnostic value of each script before running anything.
-
-## Package (Windows)
-
-Build command:
+## 6. Package (Windows)
 
 ```text
 .venv\Scripts\python -m PyInstaller --noconfirm --clean --onefile --windowed main.py
@@ -94,16 +65,27 @@ Output:
 dist\main.exe
 ```
 
-## Recent Updates (2026-03)
+## 7. Keyboard Shortcuts
 
-High-level summary:
-- Added dedicated `add_text` mode and atomic add-text undo/redo boundaries.
-- Added rotation-safe visual click anchoring for inserted textboxes.
-- Switched add-text default font policy to CJK-capable font path.
-- Set default text selection granularity in UI to `paragraph` with startup sync.
+- `Ctrl+O`: Open PDF
+- `Ctrl+P`: Open print dialog
+- `Ctrl+Z`: Undo
+- `Ctrl+Y`: Redo
+- `Ctrl+S`: Save
+- `Ctrl+Shift+S`: Save As
+- `F2`: Enter text edit mode
+- `Esc`: Close active editor/dialog first; if none and not in browse mode, switch to browse mode
 
-Details are in `docs/FEATURES.md` and `docs/solutions.md`.
+Close prompts for unsaved changes support:
+- `Y`: Save
+- `N`: Discard
+- `Esc`: Cancel
 
-## Disclaimer
+## 8. Legal
+
+No license is currently declared in this repository.
+Add a `LICENSE` file if licensing terms are required.
+
+## 9. Disclaimer
 
 This software is provided "as is", without warranty of any kind.
