@@ -34,6 +34,7 @@ Entry wiring happens in `main.py`, which instantiates `PDFModel`, `PDFView`, and
 Model owns document correctness and persistence behavior. It manages sessions (`DocumentSession`), document handles (`fitz.Document`), text hit-testing, text edit transactions, add-text insertion, save/save-as pipeline, and snapshot helpers used by history commands.
 
 Important text APIs include `get_text_info_at_point(...)`, `edit_text(...)`, `add_textbox(...)`, and `set_text_target_mode(...)`.
+The text rendering path now resolves style tokens and supports custom CJK-family embedding for insert-html flows (for example `microsoft jhenghei`, `pmingliu`, `dfkai-sb`) when local font files are available.
 
 Snapshot APIs include `_capture_doc_snapshot()`, `_restore_doc_from_snapshot(...)`, `_capture_page_snapshot(...)`, `_capture_page_snapshot_strict(...)`, and `_restore_page_from_snapshot(...)`.
 
@@ -63,6 +64,15 @@ The text editor state is split by intent:
 - `edit_existing` for updating existing text.
 - `add_new` for inserting new page text.
 
+Inline editor finalization is guarded by focus context:
+- Focus transitions inside text-edit context (editor widget, text property panel, combo popups) keep the session alive.
+- Focus transitions outside the edit context finalize the current inline editor.
+- A short deferred check avoids false finalize during Qt popup handoff.
+
+Text style controls include explicit commit/cancel buttons:
+- `套用` commits current inline edit.
+- `取消` discards current inline edit session changes.
+
 Mode behavior boundary:
 - In `edit_text`, blank-click does not create new textbox.
 - In `add_text`, blank-click commits open editor; otherwise it creates a new textbox editor.
@@ -78,7 +88,7 @@ View emits open/switch/close intent. Controller calls model session operations. 
 
 ### 3.2 Edit Existing Text
 
-View hit-tests text and opens editor with target metadata. On commit, view emits `sig_edit_text(...)`. Controller creates `EditTextCommand` with page snapshot. Model runs transactional edit pipeline and page index rebuild. Controller refreshes affected view scope.
+View hit-tests text and opens editor with target metadata. On commit, view emits `sig_edit_text(...)`. Controller creates `EditTextCommand` with page snapshot. Model runs transactional edit pipeline and page index rebuild. Controller refreshes affected view scope. Commit criteria include text, position, font, and size deltas so style-only edits are persisted.
 
 ### 3.3 Add New Textbox
 

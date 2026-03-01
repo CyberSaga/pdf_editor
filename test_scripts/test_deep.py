@@ -34,6 +34,9 @@ from typing import List, Optional, Tuple, Dict, Any
 from dataclasses import dataclass, field
 from collections import defaultdict
 
+# Script-style stress runner; keep out of pytest auto-collection.
+__test__ = False
+
 if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 

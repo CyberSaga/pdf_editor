@@ -8,6 +8,7 @@
       # - 多分頁 session registry（DocumentSession）
       # - fitz.Document 擁有權
       # - 文字編輯交易流程（驗證 / 回滾）
+      # - 字型 token 解析與 CJK 字型 CSS/@font-face 組裝（htmlbox 路徑）
       # - 新增文字框（add_text）插入流程
       # - 開檔、存檔、頁面操作
       # - 與 CommandManager、ToolManager 整合
@@ -44,6 +45,8 @@
       # - Tab 文件介面、工具面板、畫布、事件信號
       # - 不直接做資料層業務邏輯
       # - 編輯意圖分流：edit_existing / add_new
+      # - Inline editor 焦點守衛：字體/字級 popup 互動不提前 finalize
+      # - 文字屬性按鈕：套用(提交) / 取消(捨棄)
 
   src/
     printing/

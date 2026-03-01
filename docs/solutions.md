@@ -707,6 +707,46 @@ Windows 編碼修正邏輯放在 module import 階段，而非 CLI 執行入口�
 
 ---
 
+## 15. 文字屬性面板與字型渲染修正（2026-03）
+
+### 15.1 點擊字體/字級選單會提前結束編輯，無法再回到文字框
+
+**問題：**  
+使用者在編輯文字時開啟字體或字級下拉選單，編輯框會被提前 finalize；即使再點回文字框也已經結束本次編輯。
+
+**原因：**  
+`focusOut` + `QApplication.focusChanged` 監聽邏輯未完整辨識 `QComboBox` popup 視窗（含 popup viewport）與 `QGraphicsProxyWidget` scene focus，導致 popup 焦點切換被誤判為「離開編輯情境」。
+
+**有效解法（已實作）：**  
+1. 新增 popup 情境判斷：辨識 `text_font` / `text_size` / `text_target_mode_combo` 的 popup lineage。  
+2. 新增 scene focus 判斷：若焦點仍在 editor proxy item 內，不 finalize。  
+3. 焦點檢查改為短延遲（40ms）後判定，避免 Qt popup handoff race。  
+4. 保留「點擊編輯情境外才 finalize」的既有產品邏輯。
+
+**檔案：** `view/pdf_view.py`  
+**測試：** `test_19j_font_popup_interaction_can_refocus_editor_without_finalize`
+
+---
+
+### 15.2 字型看起來「都有改但都長一樣」
+
+**問題：**  
+CJK 文字在編輯完成後，不同字型選項視覺上常落到相同字型，使用者感知不到差異。
+
+**原因：**  
+在 `insert_htmlbox` 路徑中，若未明確提供可用字型來源，渲染引擎可能回退到同一 fallback face（例如環境中統一回退），造成不同選項外觀一致。
+
+**有效解法（已實作）：**  
+1. 文字屬性面板新增明確 CJK 家族選項：`Microsoft JhengHei`、`PMingLiU`、`DFKai-SB`。  
+2. 建立 font token 映射與 companion font 邏輯，避免 UI 選項被過度折疊。  
+3. 在 CSS 建構時，對可用 Windows 字型檔加入 `@font-face`（`msjh.ttc`、`mingliu.ttc`、`kaiu.ttf`），讓 `insert_htmlbox` 可渲染出可辨識差異。  
+4. 保留無檔案時 fallback 行為，確保不崩潰。
+
+**檔案：** `view/pdf_view.py`、`model/pdf_model.py`  
+**測試：** `test_19f2_custom_cjk_font_generates_embedded_css`、`test_19h_edit_existing_switch_to_dfkai_commits_font_token`、`test_19i_custom_windows_cjk_fonts_render_distinct_span_fonts`
+
+---
+
 ## 2026-03 Documentation and Add-Text Consolidation
 
 ### S1. Need separate add-text behavior without breaking `edit_text`

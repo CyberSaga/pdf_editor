@@ -246,7 +246,13 @@ class PDFModel:
             if session.doc:
                 session.doc.close()
         except Exception as e:
-            logger.warning(f"關閉 session 文件失敗 ({session_id}): {e}")
+            # Some paths (stress/script runners) may already close the document handle.
+            # Treat "document closed" as benign cleanup noise.
+            msg = str(e).lower()
+            if "document closed" in msg:
+                logger.debug(f"session 文件已關閉 ({session_id})，略過重複 close")
+            else:
+                logger.warning(f"關閉 session 文件失敗 ({session_id}): {e}")
         self._sessions_by_id.pop(session_id, None)
         self._session_ids = [sid for sid in self._session_ids if sid != session_id]
         self._path_to_session_id.pop(session.canonical_path, None)

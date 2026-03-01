@@ -7,6 +7,9 @@ import sys
 import io
 from pathlib import Path
 
+# Script-style smoke runner; keep out of pytest auto-collection.
+__test__ = False
+
 if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 

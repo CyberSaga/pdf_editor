@@ -1508,7 +1508,8 @@ class PDFView(QMainWindow):
         self.sig_request_rerender.emit()
 
     def _mouse_press(self, event):
-        scene_pos = self.graphics_view.mapToScene(event.pos())
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        scene_pos = self.graphics_view.mapToScene(pos)
         if event.button() == Qt.LeftButton:
             if self.current_mode == 'add_annotation':
                 text, ok = QInputDialog.getMultiLineText(self, "新增註解", "請輸入註解內容:")
@@ -1602,7 +1603,8 @@ class PDFView(QMainWindow):
         QGraphicsView.mousePressEvent(self.graphics_view, event)
 
     def _mouse_move(self, event):
-        scene_pos = self.graphics_view.mapToScene(event.pos())
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        scene_pos = self.graphics_view.mapToScene(pos)
 
         if self.current_mode == 'browse':
             if self._text_selection_active:
@@ -2003,15 +2005,16 @@ class PDFView(QMainWindow):
         self._last_hover_scene_pos = None
 
     def _mouse_release(self, event):
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         # ── 拖曳移動文字框的放開處理 ──
         if self.current_mode == 'browse' and event.button() == Qt.LeftButton and self._text_selection_active:
-            scene_pos = self.graphics_view.mapToScene(event.pos())
+            scene_pos = self.graphics_view.mapToScene(pos)
             self._finalize_text_selection(scene_pos)
             event.accept()
             return
 
         if self.current_mode in ('edit_text', 'add_text') and event.button() == Qt.LeftButton:
-            scene_pos = self.graphics_view.mapToScene(event.pos())
+            scene_pos = self.graphics_view.mapToScene(pos)
 
             if self._drag_pending:
                 self._drag_pending = False
@@ -2057,7 +2060,7 @@ class PDFView(QMainWindow):
             QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
             return
 
-        end_pos = self.graphics_view.mapToScene(event.pos())
+        end_pos = self.graphics_view.mapToScene(pos)
         rect = QRectF(self.drawing_start, end_pos).normalized()
         cy = (rect.top() + rect.bottom()) / 2
         page_idx = self._scene_y_to_page_index(cy) if (self.continuous_pages and self.page_y_positions) else self.current_page
