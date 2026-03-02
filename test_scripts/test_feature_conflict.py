@@ -149,7 +149,7 @@ def run_page_ops(pdfs: List[Path]) -> ConceptResult:
                 err.append("insert_blank_page")
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
                 tmp = f.name
-            m.export_pages([1], tmp, as_image=True)
+            m.export_pages([1], tmp, as_image=True, dpi=300, image_format="png")
             m.close()
             os.unlink(tmp)
             r.cases.append(CaseResult(p.name, len(err) == 0, _ms() - t0, f"n0={n0}", "; ".join(err)))

@@ -440,8 +440,8 @@ class PDFController:
         self._rebuild_continuous_scene(self.view.current_page)
         self._update_undo_redo_tooltips()
 
-    def export_pages(self, pages: List[int], path: str, as_image: bool):
-        self.model.export_pages(pages, path, as_image)
+    def export_pages(self, pages: List[int], path: str, as_image: bool, dpi: int, image_format: str):
+        self.model.export_pages(pages, path, as_image=as_image, dpi=dpi, image_format=image_format)
 
     def add_highlight(self, page: int, rect: fitz.Rect, color: Tuple[float, float, float, float]):
         before = self.model._capture_doc_snapshot()
