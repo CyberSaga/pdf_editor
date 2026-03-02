@@ -840,13 +840,16 @@ class PDFModel:
             raw_suffix = output_target.suffix.lower().lstrip(".")
             # Keep user-typed suffix style for output names (e.g. .tif vs .tiff).
             write_ext = raw_suffix if self._normalize_image_format(raw_suffix) else normalized_format
-            scale = max(float(dpi), 1.0) / 72.0
+            dpi_value = max(int(round(float(dpi))), 1)
+            scale = dpi_value / 72.0
 
             for page_num in pages:
                 if not (1 <= page_num <= len(self.doc)):
                     logger.warning(f"匯出影像時略過無效頁碼: {page_num}")
                     continue
                 pix = self.get_page_pixmap(page_num, scale=scale)
+                # Persist resolution metadata so image "DPI" matches user selection.
+                pix.set_dpi(dpi_value, dpi_value)
                 if len(pages) == 1:
                     target_path = output_target if output_target.suffix else output_target.with_suffix(f".{write_ext}")
                 else:
