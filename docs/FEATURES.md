@@ -43,7 +43,19 @@ Undo/redo uses command history. Add-text insertion is atomic per insertion event
 
 ## 9. Structural Page Operations
 
-Page-level operations include delete, rotate, insert blank page, insert pages from another file, and export selected pages. These operations participate in command history and refresh flows. Key functions include `delete_pages(...)`, `rotate_pages(...)`, `insert_blank_page(...)`, `insert_pages_from_file(...)`, and `export_pages(...)`.
+Page-level operations include delete, rotate, insert blank page, insert pages from another file, and export selected pages. These operations participate in command history and refresh flows.
+
+Export behavior is now driven by a unified dialog:
+- Page scope supports `當前頁` and `指定頁面`.
+- `指定頁面` accepts page expressions like `1,3-5`.
+- Inline page counter is shown beside the page input (`/ N`) to indicate upper bound.
+- DPI options are `72`, `96`, `144`, `300`, `400`, `600`, `1200`, and `2400`.
+- Output target supports `PDF` or image export.
+- Image save dialog supports `JPEG`, `PNG`, and `TIFF`.
+- For image export, multi-page naming uses page-number suffix (`*_p{page_num}`).
+- For TIFF, export uses Pillow-backed save path because `fitz.Pixmap.save(...)` does not support TIFF directly.
+
+Key functions include `ExportPagesDialog`, `_export_pages(...)`, `_resolve_image_format(...)`, controller `export_pages(...)`, and model `export_pages(...)`.
 
 ## 10. Annotation, Watermark, Search, and OCR
 

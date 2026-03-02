@@ -47,6 +47,7 @@
       # - 編輯意圖分流：edit_existing / add_new
       # - Inline editor 焦點守衛：字體/字級 popup 互動不提前 finalize
       # - 文字屬性按鈕：套用(提交) / 取消(捨棄)
+      # - 匯出對話框：當前頁/指定頁、DPI、PDF/影像格式一次設定
 
   src/
     printing/
@@ -89,6 +90,11 @@
 
 3) 復原 / 重做：
    view -> controller -> command_manager -> command restore -> controller refresh
+
+4) 匯出頁面：
+   view(ExportPagesDialog/sig_export_pages) -> controller(export_pages) -> model(export_pages)
+   - 影像：scale = dpi / 72、jpg/png 走 Pixmap.save、tiff 走 Pixmap.pil_save(TIFF)
+   - 多頁輸出命名：*_p{page_num}
 
 文件分工規則：
 - 行為規格：docs/FEATURES.md

@@ -806,23 +806,75 @@ class PDFModel:
         for page_num in pages:
             self.block_manager.rebuild_page(page_num - 1, self.doc)
 
-    def export_pages(self, pages: List[int], output_path: str, as_image: bool = False):
-        base_path = Path(output_path).with_suffix('')
-        logger.debug(f"原始路徑: {output_path}, 清理後基底路徑: {base_path}")
+    @staticmethod
+    def _normalize_image_format(fmt: str) -> str:
+        value = (fmt or "").lower().lstrip(".")
+        if value in ("jpg", "jpeg"):
+            return "jpg"
+        if value == "png":
+            return "png"
+        if value in ("tif", "tiff"):
+            return "tiff"
+        return ""
+
+    def export_pages(
+        self,
+        pages: List[int],
+        output_path: str,
+        as_image: bool = False,
+        dpi: int = 300,
+        image_format: str = "png",
+    ):
+        output_target = Path(output_path)
+        base_path = output_target.with_suffix('')
+        logger.debug(
+            f"匯出頁面: 路徑={output_path}, as_image={as_image}, dpi={dpi}, image_format={image_format}"
+        )
+
         if as_image:
-            for i, page_num in enumerate(pages):
-                if 1 <= page_num <= len(self.doc):
-                    pix = self.get_page_pixmap(page_num, scale=1.0)
-                    output_path = f"{base_path}.png" if len(pages) == 1 else f"{base_path}_{i}.png"
-                    pix.save(output_path)
-                    logger.debug(f"匯出影像: 頁面 {page_num} 至 {output_path}")
-        else:
-            new_doc = fitz.open()
+            normalized_format = self._normalize_image_format(image_format)
+            if not normalized_format:
+                normalized_format = self._normalize_image_format(output_target.suffix)
+            if not normalized_format:
+                normalized_format = "png"
+            raw_suffix = output_target.suffix.lower().lstrip(".")
+            # Keep user-typed suffix style for output names (e.g. .tif vs .tiff).
+            write_ext = raw_suffix if self._normalize_image_format(raw_suffix) else normalized_format
+            scale = max(float(dpi), 1.0) / 72.0
+
+            for page_num in pages:
+                if not (1 <= page_num <= len(self.doc)):
+                    logger.warning(f"匯出影像時略過無效頁碼: {page_num}")
+                    continue
+                pix = self.get_page_pixmap(page_num, scale=scale)
+                if len(pages) == 1:
+                    target_path = output_target if output_target.suffix else output_target.with_suffix(f".{write_ext}")
+                else:
+                    # Multi-page export uses page-number suffix to avoid collisions.
+                    target_path = Path(f"{base_path}_p{page_num}.{write_ext}")
+                if normalized_format == "tiff":
+                    # PyMuPDF Pixmap.save does not support TIFF; use Pillow-backed path.
+                    try:
+                        pix.pil_save(str(target_path), format="TIFF")
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "匯出 TIFF 失敗，請確認已安裝 Pillow (pip install Pillow)"
+                        ) from exc
+                else:
+                    pix.save(str(target_path))
+                logger.debug(f"匯出影像: 頁面 {page_num} 至 {target_path}")
+            return
+
+        new_doc = fitz.open()
+        try:
             for page_num in pages:
                 if 1 <= page_num <= len(self.doc):
-                    new_doc.insert_pdf(self.doc, from_page=page_num-1, to_page=page_num-1)
+                    new_doc.insert_pdf(self.doc, from_page=page_num - 1, to_page=page_num - 1)
                     logger.debug(f"匯出PDF頁面: {page_num}")
+                else:
+                    logger.warning(f"匯出PDF時略過無效頁碼: {page_num}")
             new_doc.save(output_path)
+        finally:
             new_doc.close()
 
     def insert_blank_page(self, position: int):

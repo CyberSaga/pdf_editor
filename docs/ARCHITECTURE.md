@@ -98,6 +98,22 @@ View computes visual insertion rect and opens add editor. On commit, view emits 
 
 Controller invokes command manager undo/redo. Commands restore page/doc snapshots according to command type. Controller then refreshes the minimal required UI scope and tooltip descriptions.
 
+### 3.5 Export Pages
+
+View opens `ExportPagesDialog` and collects all export arguments in one pass:
+- pages (`當前頁` or parsed `指定頁面`)
+- output type (`PDF` or image)
+- dpi (`72`..`2400`)
+- image format (`jpg` / `png` / `tiff`)
+
+View emits `sig_export_pages(pages, path, as_image, dpi, image_format)`. Controller passes through to model `export_pages(...)`.
+
+Model behavior:
+- Image export renders by `scale = dpi / 72.0`.
+- `jpg/png` use `fitz.Pixmap.save(...)`.
+- `tiff` uses Pillow-backed `fitz.Pixmap.pil_save(..., format="TIFF")` because TIFF is not supported by plain `Pixmap.save`.
+- Multi-page image export uses page-number suffix naming (`*_p{page_num}`).
+
 ## 4. Coordinate and Rotation Strategy
 
 Add-text insertion uses visual coordinates from the current view. Model converts visual rectangle corners through derotation mapping into unrotated page space, clamps against unrotated page bounds (`cropbox`/`mediabox` fallback), and inserts with rotation-aware parameters. This keeps placement stable at the visual click location for page rotation `0/90/180/270`.

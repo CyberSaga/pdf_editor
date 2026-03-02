@@ -1,15 +1,16 @@
-from PySide6.QtWidgets import (
+﻿from PySide6.QtWidgets import (
     QApplication, QColorDialog, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
     QListWidget, QToolBar, QInputDialog, QMessageBox, QMenu, QFileDialog,
     QListWidgetItem, QWidget, QVBoxLayout, QPushButton, QLabel,
-    QComboBox, QDoubleSpinBox, QTextEdit, QGraphicsProxyWidget, QLineEdit, QHBoxLayout,
+    QComboBox, QDoubleSpinBox, QTextEdit, QGraphicsProxyWidget, QLineEdit, QHBoxLayout, QRadioButton,
     QStackedWidget, QDialog, QSpinBox, QDialogButtonBox, QFormLayout,
     QScrollArea, QCheckBox, QTabWidget, QSplitter, QFrame, QSizePolicy, QSlider, QTabBar,
     QStatusBar, QGroupBox
 )
-from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QActionGroup, QCloseEvent, QTextOption, QShortcut
+from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QActionGroup, QCloseEvent, QTextOption, QShortcut, QFontMetrics
 from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint, QEvent
 from typing import List, Tuple, Optional
+from pathlib import Path
 from utils.helpers import pixmap_to_qpixmap, parse_pages, show_error
 import logging
 import warnings
@@ -217,6 +218,100 @@ class WatermarkDialog(QDialog):
         return pages, text, angle, opacity, font_size, color, font, offset_x, offset_y, line_spacing
 
 
+class ExportPagesDialog(QDialog):
+    _DPI_OPTIONS = [72, 96, 144, 300, 400, 600, 1200, 2400]
+
+    def __init__(self, parent=None, total_pages: int = 1, current_page: int = 1):
+        super().__init__(parent)
+        self.total_pages = max(1, total_pages)
+        self.current_page = min(max(1, current_page), self.total_pages)
+        self.setWindowTitle("匯出頁面")
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        form_layout = QFormLayout()
+
+        self.current_page_radio = QRadioButton("當前頁")
+        self.selected_pages_radio = QRadioButton("指定頁面")
+        self.current_page_radio.setChecked(True)
+        self.current_page_radio.toggled.connect(self._on_scope_changed)
+
+        scope_row = QHBoxLayout()
+        scope_row.addWidget(self.current_page_radio)
+        scope_row.addWidget(self.selected_pages_radio)
+        scope_row.addStretch(1)
+        scope_widget = QWidget()
+        scope_widget.setLayout(scope_row)
+        form_layout.addRow("頁面範圍:", scope_widget)
+
+        self.pages_edit = QLineEdit()
+        self.pages_edit.setPlaceholderText("例如: 1,3-5")
+        self.pages_edit.setEnabled(False)
+
+        self.page_count_label = QLabel(f"/ {self.total_pages}")
+        self.page_count_label.setWordWrap(False)
+        self.page_count_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        fm = QFontMetrics(self.page_count_label.font())
+        # Reserve enough width so the inline counter text is not clipped on narrow layouts.
+        min_width = max(
+            fm.horizontalAdvance(self.page_count_label.text()),
+            fm.horizontalAdvance("總頁數: 99999"),
+        ) + 12
+        self.page_count_label.setMinimumWidth(min_width)
+
+        page_row = QHBoxLayout()
+        page_row.addWidget(self.pages_edit, 1)
+        page_row.addWidget(
+            self.page_count_label,
+            0,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+        )
+        page_widget = QWidget()
+        page_widget.setLayout(page_row)
+        form_layout.addRow("指定頁面:", page_widget)
+
+        self.dpi_combo = QComboBox()
+        for dpi in self._DPI_OPTIONS:
+            self.dpi_combo.addItem(str(dpi), dpi)
+        dpi_idx = self.dpi_combo.findData(300)
+        self.dpi_combo.setCurrentIndex(dpi_idx if dpi_idx >= 0 else 0)
+        form_layout.addRow("DPI:", self.dpi_combo)
+
+        self.output_combo = QComboBox()
+        self.output_combo.addItem("PDF", False)
+        self.output_combo.addItem("影像", True)
+        form_layout.addRow("匯出格式:", self.output_combo)
+
+        layout.addLayout(form_layout)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_scope_changed(self, checked: bool):
+        self.pages_edit.setEnabled(not checked)
+
+    def get_values(self) -> Tuple[List[int], int, bool]:
+        if self.current_page_radio.isChecked():
+            pages = [self.current_page]
+        else:
+            pages_text = self.pages_edit.text().strip()
+            if not pages_text:
+                raise ValueError("請輸入指定頁面頁碼")
+            try:
+                pages = parse_pages(pages_text, self.total_pages)
+            except ValueError as exc:
+                raise ValueError("頁碼格式錯誤，請使用例如 1,3-5") from exc
+            if not pages:
+                raise ValueError(f"頁碼必須在 1 到 {self.total_pages} 之間")
+
+        dpi = int(self.dpi_combo.currentData())
+        as_image = bool(self.output_combo.currentData())
+        return pages, dpi, as_image
+
+
 class PDFView(QMainWindow):
     _VALID_MODES = {"browse", "edit_text", "add_text", "rect", "highlight", "add_annotation"}
     # --- Existing Signals ---
@@ -228,7 +323,7 @@ class PDFView(QMainWindow):
     sig_tab_close_requested = Signal(int)
     sig_delete_pages = Signal(list)
     sig_rotate_pages = Signal(list, int)
-    sig_export_pages = Signal(list, str, bool)
+    sig_export_pages = Signal(list, str, bool, int, str)
     sig_add_highlight = Signal(int, object, object)
     sig_add_rect = Signal(int, object, object, bool)
     sig_edit_text = Signal(int, object, str, str, int, tuple, str, bool, object, object, str)  # ..., new_rect(optional), target_span_id(optional), target_mode
@@ -2452,16 +2547,60 @@ class PDFView(QMainWindow):
                     if parsed: self.sig_rotate_pages.emit(parsed, degrees)
                 except ValueError: show_error(self, "頁碼格式錯誤")
 
+    @staticmethod
+    def _normalize_image_extension(ext: str) -> str:
+        ext = ext.lower().lstrip(".")
+        if ext in ("jpg", "jpeg"):
+            return "jpg"
+        if ext == "png":
+            return "png"
+        if ext in ("tif", "tiff"):
+            return "tiff"
+        return ""
+
+    def _resolve_image_format(self, path: str, selected_filter: str) -> str:
+        lowered = (selected_filter or "").lower()
+        # Prefer the file dialog's selected filter; fall back to typed extension.
+        if "jpeg" in lowered or "jpg" in lowered:
+            return "jpg"
+        if "png" in lowered:
+            return "png"
+        if "tiff" in lowered or "tif" in lowered:
+            return "tiff"
+        ext = self._normalize_image_extension(Path(path).suffix)
+        return ext or "png"
+
     def _export_pages(self):
-        pages, ok = QInputDialog.getText(self, "匯出頁面", "輸入頁碼 (如 1,3-5):")
-        if ok and pages:
-            as_image = QMessageBox.question(self, "匯出格式", "以影像格式匯出？") == QMessageBox.Yes
-            path, _ = QFileDialog.getSaveFileName(self, "匯出頁面", "", "PNG (*.png)" if as_image else "PDF (*.pdf)")
-            if path:
-                try:
-                    parsed = parse_pages(pages, self.total_pages)
-                    if parsed: self.sig_export_pages.emit(parsed, path, as_image)
-                except ValueError: show_error(self, "頁碼格式錯誤")
+        if self.total_pages == 0:
+            show_error(self, "沒有可匯出的 PDF")
+            return
+
+        dlg = ExportPagesDialog(self, self.total_pages, self.current_page + 1)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        try:
+            pages, dpi, as_image = dlg.get_values()
+        except ValueError as exc:
+            show_error(self, str(exc))
+            return
+
+        filters = "JPEG (*.jpg *.jpeg);;PNG (*.png);;TIFF (*.tif *.tiff)" if as_image else "PDF (*.pdf)"
+        path, selected_filter = QFileDialog.getSaveFileName(self, "匯出頁面", "", filters)
+        if not path:
+            return
+
+        image_format = "png"
+        if as_image:
+            image_format = self._resolve_image_format(path, selected_filter)
+            # If users type a basename only, append the resolved image extension.
+            if not Path(path).suffix:
+                path = f"{path}.{image_format}"
+        else:
+            if not Path(path).suffix:
+                path = f"{path}.pdf"
+
+        self.sig_export_pages.emit(pages, path, as_image, dpi, image_format)
 
     def _show_search_panel(self):
         """Trigger search mode: switch left sidebar to Search tab, focus input (e.g. from Controller)."""

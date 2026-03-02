@@ -747,6 +747,62 @@ CJK 文字在編輯完成後，不同字型選項視覺上常落到相同字型�
 
 ---
 
+## 16. 匯出頁面重構與 TIFF 匯出錯誤修正（2026-03）
+
+### 16.1 匯出參數分散在多個對話框，使用者操作成本高
+
+**問題：**  
+舊流程先輸入頁碼、再回答是否影像、再開啟另存，匯出參數分散且容易出錯。
+
+**原因：**  
+匯出功能使用 `QInputDialog + QMessageBox + QFileDialog` 串接，缺少單一設定入口。
+
+**有效解法（已實作）：**  
+新增 `ExportPagesDialog`，一次收集：
+- 當前頁 / 指定頁面
+- 指定頁碼（支援 `1,3-5`）
+- DPI（`72`~`2400`）
+- PDF / 影像輸出型態  
+再開啟一次 Save As 並發送完整參數給 Controller/Model。
+
+**檔案：** `view/pdf_view.py`、`controller/pdf_controller.py`、`model/pdf_model.py`
+
+---
+
+### 16.2 TIFF 匯出拋出 `ValueError: Image format tiff not in ...`
+
+**問題：**  
+選擇 TIFF 匯出時，程式在 `pix.save(...)` 崩潰。
+
+**原因：**  
+`fitz.Pixmap.save(...)` 不支援 TIFF（僅支援 png/jpg 等），但流程仍直接呼叫 `save`。
+
+**有效解法（已實作）：**  
+在 Model 匯出路徑中：
+- `jpg/png` 維持 `pix.save(...)`
+- `tiff` 改用 `pix.pil_save(..., format="TIFF")`（Pillow-backed）  
+若 Pillow 不可用，回傳可操作的錯誤訊息。
+
+**檔案：** `model/pdf_model.py`
+
+---
+
+### 16.3 匯出副檔名被強制改寫（`.tif` 被改為 `.tiff`）
+
+**問題：**  
+使用者輸入 `.tif` 時，輸出檔名被程式改寫成 `.tiff`，與預期不一致。
+
+**原因：**  
+流程只保留「格式正規化結果」，未保留使用者輸入的副檔名樣式。
+
+**有效解法（已實作）：**  
+保留使用者輸入副檔名樣式（例如 `.tif` / `.jpeg`），僅在未提供副檔名時補上解析後的副檔名。  
+多頁輸出也沿用同一樣式（例如 `*_p1.tif`）。
+
+**檔案：** `model/pdf_model.py`
+
+---
+
 ## 2026-03 Documentation and Add-Text Consolidation
 
 ### S1. Need separate add-text behavior without breaking `edit_text`
