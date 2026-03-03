@@ -4,11 +4,11 @@
     QListWidgetItem, QWidget, QVBoxLayout, QPushButton, QLabel,
     QComboBox, QDoubleSpinBox, QTextEdit, QGraphicsProxyWidget, QLineEdit, QHBoxLayout, QRadioButton,
     QStackedWidget, QDialog, QSpinBox, QDialogButtonBox, QFormLayout,
-    QScrollArea, QCheckBox, QTabWidget, QSplitter, QFrame, QSizePolicy, QSlider, QTabBar,
+    QScrollArea, QCheckBox, QTabWidget, QSplitter, QFrame, QSizePolicy, QSlider, QTabBar, QListView, QAbstractItemView,
     QStatusBar, QGroupBox
 )
 from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QActionGroup, QCloseEvent, QTextOption, QShortcut, QFontMetrics
-from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint, QEvent
+from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint, QEvent, QSize
 from typing import List, Tuple, Optional
 from pathlib import Path
 from utils.helpers import pixmap_to_qpixmap, parse_pages, show_error
@@ -848,8 +848,14 @@ class PDFView(QMainWindow):
         # 縮圖 (default)
         self.thumbnail_list = QListWidget(self)
         self.thumbnail_list.setViewMode(QListWidget.IconMode)
+        self.thumbnail_list.setFlow(QListView.TopToBottom)
+        self.thumbnail_list.setWrapping(False)
+        self.thumbnail_list.setMovement(QListView.Static)
+        self.thumbnail_list.setResizeMode(QListView.Adjust)
+        self.thumbnail_list.viewport().installEventFilter(self)
         self.thumbnail_list.itemClicked.connect(self._on_thumbnail_clicked)
         self.left_sidebar.addTab(self.thumbnail_list, "縮圖")
+        QTimer.singleShot(0, self._update_thumbnail_layout_metrics)
 
         # 搜尋 (on-demand)
         self.search_panel = QWidget()
@@ -1288,16 +1294,70 @@ class PDFView(QMainWindow):
         super().keyPressEvent(event)
 
     def eventFilter(self, obj, event):
-        if obj is self.graphics_view.viewport() and event.type() == QEvent.Leave:
+        graphics_view = getattr(self, "graphics_view", None)
+        if graphics_view is not None and obj is graphics_view.viewport() and event.type() == QEvent.Leave:
             if self.current_mode == 'browse':
                 self._reset_browse_hover_cursor()
+        thumb_list = getattr(self, "thumbnail_list", None)
+        if thumb_list is not None and obj is thumb_list.viewport() and event.type() == QEvent.Resize:
+            self._update_thumbnail_layout_metrics()
         return super().eventFilter(obj, event)
+
+    def _update_thumbnail_layout_metrics(self) -> None:
+        if not getattr(self, "thumbnail_list", None):
+            return
+        viewport = self.thumbnail_list.viewport()
+        if viewport is None:
+            return
+        viewport_w = max(1, viewport.width())
+        if viewport_w <= 1:
+            return
+        # Root cause note:
+        # The visible "gap" between thumbnails was mostly oversized per-item cell height
+        # (icon box too tall), not QListWidget spacing itself.
+        spacing = 1
+        item_w = max(120, viewport_w - 12)
+        icon_w = max(96, item_w - 18)
+        # Match icon box height to actual thumbnail aspect ratio to avoid large blank
+        # space inside each cell (especially for landscape pages).
+        aspect = self._thumbnail_icon_aspect_ratio()
+        icon_h = max(88, int(icon_w * aspect))
+        # Reserve only minimal label/padding area below the thumbnail.
+        item_h = icon_h + 28
+        self.thumbnail_list.setSpacing(spacing)
+        self.thumbnail_list.setIconSize(QSize(icon_w, icon_h))
+        self.thumbnail_list.setGridSize(QSize(item_w, item_h))
+
+    def _thumbnail_icon_aspect_ratio(self) -> float:
+        """Return representative thumbnail icon height/width ratio."""
+        default_ratio = 0.75
+        count = self.thumbnail_list.count() if getattr(self, "thumbnail_list", None) else 0
+        for i in range(min(count, 8)):
+            item = self.thumbnail_list.item(i)
+            if item is None:
+                continue
+            icon = item.icon()
+            if icon.isNull():
+                continue
+            sizes = icon.availableSizes()
+            if sizes:
+                size = max(sizes, key=lambda s: s.width() * s.height())
+                if size.width() > 0 and size.height() > 0:
+                    ratio = size.height() / float(size.width())
+                    # Clamp to a sane range so one unusual icon does not break layout.
+                    return min(1.6, max(0.5, ratio))
+            probe = icon.pixmap(QSize(512, 512))
+            if not probe.isNull() and probe.width() > 0 and probe.height() > 0:
+                ratio = probe.height() / float(probe.width())
+                return min(1.6, max(0.5, ratio))
+        return default_ratio
 
     def update_thumbnails(self, thumbnails: List[QPixmap]):
         """一次設定全部縮圖（相容舊流程）。"""
         self.thumbnail_list.clear()
         for i, pix in enumerate(thumbnails):
             self.thumbnail_list.addItem(QListWidgetItem(QIcon(pix), f"頁{i+1}"))
+        self._update_thumbnail_layout_metrics()
         self.total_pages = len(thumbnails)
         self._update_page_counter()
         self._update_status_bar()
@@ -1307,6 +1367,7 @@ class PDFView(QMainWindow):
         self.thumbnail_list.clear()
         for i in range(total):
             self.thumbnail_list.addItem(QListWidgetItem(f"頁{i+1}"))
+        self._update_thumbnail_layout_metrics()
         self.total_pages = total
         self._update_page_counter()
         self._update_status_bar()
@@ -1320,6 +1381,7 @@ class PDFView(QMainWindow):
             item = self.thumbnail_list.item(row)
             if item and not pix.isNull():
                 item.setIcon(QIcon(pix))
+        self._update_thumbnail_layout_metrics()
 
     def reset_document_view(self) -> None:
         """Reset canvas/sidebar/search state when no document sessions remain."""
@@ -1469,6 +1531,9 @@ class PDFView(QMainWindow):
         row = min(self.current_page, self.thumbnail_list.count() - 1)
         self.thumbnail_list.blockSignals(True)
         self.thumbnail_list.setCurrentRow(row)
+        item = self.thumbnail_list.item(row)
+        if item is not None:
+            self.thumbnail_list.scrollToItem(item, QAbstractItemView.PositionAtCenter)
         self.thumbnail_list.blockSignals(False)
 
     def scroll_to_page(self, page_idx: int):
@@ -2826,6 +2891,7 @@ class PDFView(QMainWindow):
 
     def _resize_event(self, event):
         super().resizeEvent(event)
+        self._update_thumbnail_layout_metrics()
         if not self.scene.sceneRect().isValid():
             return
         if self.continuous_pages and self.page_items:
