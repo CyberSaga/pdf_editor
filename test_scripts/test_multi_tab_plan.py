@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QListView
 
 from controller.pdf_controller import PDFController
 from model.pdf_model import PDFModel
@@ -27,6 +27,16 @@ def _make_pdf_with_font(path: Path, text: str, font: str, size: int = 12) -> Pat
     doc = fitz.open()
     page = doc.new_page()
     page.insert_text((72, 72), text, fontsize=size, fontname=font)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def _make_landscape_pdf(path: Path, pages: int = 2) -> Path:
+    doc = fitz.open()
+    for i in range(pages):
+        page = doc.new_page(width=842, height=595)
+        page.insert_text((72, 72), f"landscape {i+1}", fontsize=14, fontname="helv")
     doc.save(path)
     doc.close()
     return path
@@ -220,6 +230,68 @@ def test_06_rapid_switch_has_no_stale_async_render(mvc, tmp_path):
     assert len(model.doc) == 1
     assert view.thumbnail_list.count() == 1
     assert len(view.page_items) <= 1
+
+
+def test_06a_thumbnail_list_enforces_single_column_layout(mvc):
+    _, view, _ = mvc
+    assert view.thumbnail_list.viewMode() == QListView.IconMode
+    assert view.thumbnail_list.flow() == QListView.TopToBottom
+    assert not view.thumbnail_list.isWrapping()
+
+
+def test_06b_thumbnail_click_navigation_with_single_column(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "thumb_nav.pdf", ["p1", "p2", "p3"])
+    controller.open_pdf(str(path))
+    _pump_events(400)
+    assert view.thumbnail_list.count() == 3
+    item = view.thumbnail_list.item(2)
+    assert item is not None
+    view._on_thumbnail_clicked(item)
+    _pump_events(80)
+    assert view.current_page == 2
+    assert view.thumbnail_list.currentRow() == 2
+
+
+def test_06c_thumbnail_layout_fills_sidebar_width_and_has_spacing(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "thumb_layout_width.pdf", ["p1", "p2", "p3", "p4", "p5"])
+    controller.open_pdf(str(path))
+    _pump_events(500)
+    viewport_w = view.thumbnail_list.viewport().width()
+    assert viewport_w > 0
+    assert view.thumbnail_list.spacing() == 1
+    assert view.thumbnail_list.gridSize().width() >= int(viewport_w * 0.88)
+    assert view.thumbnail_list.iconSize().width() >= int(viewport_w * 0.75)
+
+
+def test_06d_thumbnail_list_auto_scrolls_with_page_scroll(mvc, tmp_path):
+    _, view, controller = mvc
+    pages = [f"p{i}" for i in range(1, 21)]
+    path = _make_pdf(tmp_path / "thumb_follow_scroll.pdf", pages)
+    controller.open_pdf(str(path))
+    _pump_events(1500)
+    thumb_sb = view.thumbnail_list.verticalScrollBar()
+    canvas_sb = view.graphics_view.verticalScrollBar()
+    assert thumb_sb.maximum() > 0
+    assert canvas_sb.maximum() > 0
+    canvas_sb.setValue(canvas_sb.maximum())
+    _pump_events(180)
+    assert view.current_page > 0
+    assert view.thumbnail_list.currentRow() == view.current_page
+    assert thumb_sb.value() > 0
+
+
+def test_06e_landscape_thumbnail_does_not_create_tall_blank_cell(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_landscape_pdf(tmp_path / "thumb_landscape.pdf", pages=3)
+    controller.open_pdf(str(path))
+    _pump_events(500)
+    icon_size = view.thumbnail_list.iconSize()
+    grid_size = view.thumbnail_list.gridSize()
+    assert icon_size.width() > 0 and icon_size.height() > 0
+    assert icon_size.height() <= int(icon_size.width() * 0.9)
+    assert grid_size.height() <= icon_size.height() + 36
 
 
 def test_07_close_modified_tab_cancel_keeps_tab(mvc, tmp_path, monkeypatch):
