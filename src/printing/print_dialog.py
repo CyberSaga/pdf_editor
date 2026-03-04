@@ -113,12 +113,27 @@ class UnifiedPrintDialog(QDialog):
         printer_box = QGroupBox("印表機")
         printer_form = QFormLayout(printer_box)
         self.printer_combo = QComboBox()
+        self.printer_properties_btn = QPushButton("屬性")
         self.printer_status_label = QLabel("-")
         self.printer_capability_label = QLabel("")
         self.printer_capability_label.setWordWrap(True)
         printer_form.addRow("名稱", self.printer_combo)
         printer_form.addRow("狀態", self.printer_status_label)
         printer_form.addRow("能力", self.printer_capability_label)
+        printer_name_row, _ = printer_form.getWidgetPosition(self.printer_combo)
+        printer_row = QWidget()
+        printer_row_layout = QHBoxLayout(printer_row)
+        printer_row_layout.setContentsMargins(0, 0, 0, 0)
+        printer_row_layout.setSpacing(8)
+        self.printer_combo.setParent(printer_row)
+        printer_row_layout.addWidget(self.printer_combo, 1)
+        printer_row_layout.addWidget(self.printer_properties_btn)
+        if printer_name_row >= 0:
+            printer_form.setWidget(
+                printer_name_row,
+                QFormLayout.ItemRole.FieldRole,
+                printer_row,
+            )
         left_layout.addWidget(printer_box)
 
         setting_box = QGroupBox("列印設定")
@@ -263,9 +278,11 @@ class UnifiedPrintDialog(QDialog):
         if self.printer_combo.count() > 0:
             self.printer_combo.setCurrentIndex(default_index)
             self._on_printer_changed()
+        self._sync_printer_properties_button()
 
     def _wire_signals(self) -> None:
         self.printer_combo.currentIndexChanged.connect(self._on_printer_changed)
+        self.printer_properties_btn.clicked.connect(self._open_printer_properties_dialog)
         self.range_mode_combo.currentIndexChanged.connect(self._on_range_mode_changed)
         self.scale_mode_combo.currentIndexChanged.connect(self._on_scale_mode_changed)
         self.page_list.currentRowChanged.connect(self._on_preview_row_changed)
@@ -302,11 +319,87 @@ class UnifiedPrintDialog(QDialog):
         if not name:
             self.printer_status_label.setText("-")
             self.printer_capability_label.setText("")
+            self._sync_printer_properties_button()
             return
         printer = self._printer_map.get(name)
         self.printer_status_label.setText(printer.status if printer else "unknown")
         self._sync_printer_capabilities(name)
+        self._apply_printer_preferences(self._load_printer_preferences(name))
+        self._sync_printer_properties_button()
         self._schedule_preview_refresh()
+
+    def _sync_printer_properties_button(self) -> None:
+        selected_name = self.printer_combo.currentData()
+        support_fn = getattr(self.dispatcher, "supports_printer_properties_dialog", None)
+        supported = bool(support_fn()) if callable(support_fn) else False
+        self.printer_properties_btn.setEnabled(bool(selected_name) and supported)
+        if supported:
+            self.printer_properties_btn.setToolTip("Open native printer properties")
+        else:
+            self.printer_properties_btn.setToolTip("Native printer properties are unavailable on this platform")
+
+    def _open_printer_properties_dialog(self) -> None:
+        printer_name = self.printer_combo.currentData()
+        if not printer_name:
+            QMessageBox.warning(self, "Printer", "Please select a printer first.")
+            return
+        open_fn = getattr(self.dispatcher, "open_printer_properties", None)
+        if not callable(open_fn):
+            QMessageBox.warning(self, "Printer", "Native printer properties are unavailable.")
+            return
+        try:
+            updated = open_fn(printer_name)
+            if isinstance(updated, dict) and updated:
+                self._apply_printer_preferences(updated)
+            else:
+                # Fallback: reload defaults in case driver persisted changes asynchronously.
+                self._apply_printer_preferences(self._load_printer_preferences(printer_name))
+        except PrintingError as exc:
+            QMessageBox.warning(self, "Printer", str(exc))
+
+    def _load_printer_preferences(self, printer_name: str) -> Dict[str, object]:
+        getter = getattr(self.dispatcher, "get_printer_preferences", None)
+        if not callable(getter):
+            return {}
+        try:
+            data = getter(printer_name)
+        except PrintingError:
+            return {}
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _apply_printer_preferences(self, prefs: Dict[str, object]) -> None:
+        if not prefs:
+            return
+
+        if "paper_size" in prefs:
+            idx = self.paper_combo.findData(prefs.get("paper_size"))
+            if idx >= 0:
+                self.paper_combo.setCurrentIndex(idx)
+
+        if "orientation" in prefs:
+            idx = self.orientation_combo.findData(prefs.get("orientation"))
+            if idx >= 0:
+                self.orientation_combo.setCurrentIndex(idx)
+
+        if "duplex" in prefs:
+            idx = self.duplex_combo.findData(prefs.get("duplex"))
+            if idx >= 0:
+                self.duplex_combo.setCurrentIndex(idx)
+
+        if "color_mode" in prefs:
+            idx = self.color_combo.findData(prefs.get("color_mode"))
+            if idx >= 0:
+                self.color_combo.setCurrentIndex(idx)
+
+        dpi = prefs.get("dpi")
+        if isinstance(dpi, int):
+            self.dpi_spin.setValue(max(self.dpi_spin.minimum(), min(self.dpi_spin.maximum(), dpi)))
+
+        copies = prefs.get("copies")
+        if isinstance(copies, int):
+            self.copies_spin.setValue(max(self.copies_spin.minimum(), min(self.copies_spin.maximum(), copies)))
 
     def _sync_printer_capabilities(self, printer_name: str) -> None:
         info = None

@@ -133,6 +133,7 @@ Tool lifecycle hooks cover session open/close/saved behavior, unsaved-change che
 ## 6. Printing Subsystem
 
 Printing is implemented under `src/printing/*` (dialog, dispatcher, layout, selection, renderer, platform drivers). Controller entry is `PDFController.print_document()`.
+The unified print dialog also exposes native printer properties through driver-dispatched calls (`PrintDispatcher.open_printer_properties(...)`), enabling OS/vendor preference dialogs from the same workflow. The dialog then applies returned/default driver preferences back into UI fields (`paper_size`, `orientation`, `duplex`, `color_mode`, `dpi`, `copies`).
 
 ## 7. Guardrails
 

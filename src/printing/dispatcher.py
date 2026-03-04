@@ -5,7 +5,7 @@ from __future__ import annotations
 import platform
 import tempfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .base_driver import PrintJobOptions, PrintJobResult, PrinterDevice, PrinterDriver
 from .errors import PrintJobSubmissionError, PrinterUnavailableError
@@ -45,6 +45,21 @@ class PrintDispatcher:
 
     def get_printer_status(self, printer_name: str) -> str:
         return self.driver.get_printer_status(printer_name)
+
+    def supports_printer_properties_dialog(self) -> bool:
+        return bool(self.driver.supports_printer_properties_dialog)
+
+    def open_printer_properties(self, printer_name: str) -> Optional[Dict[str, Any]]:
+        normalized_name = (printer_name or "").strip()
+        if not normalized_name:
+            raise PrinterUnavailableError("No printer selected.")
+        return self.driver.open_printer_properties(normalized_name)
+
+    def get_printer_preferences(self, printer_name: str) -> Dict[str, Any]:
+        normalized_name = (printer_name or "").strip()
+        if not normalized_name:
+            raise PrinterUnavailableError("No printer selected.")
+        return self.driver.get_printer_preferences(normalized_name)
 
     def resolve_page_indices_for_count(self, total_pages: int, options: PrintJobOptions) -> List[int]:
         normalized = options.normalized()
