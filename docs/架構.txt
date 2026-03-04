@@ -84,6 +84,7 @@
 目前主要工作流程：
 1) 編輯既有文字：
    view(sig_edit_text) -> controller(EditTextCommand) -> model(edit_text)
+   - 若編輯框內容清空並提交，視為刪除目標文字框內容（保留 Undo/Redo）
 
 2) 新增頁面文字框：
    view(sig_add_textbox) -> controller(AddTextboxCommand) -> model(add_textbox)

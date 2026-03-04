@@ -909,9 +909,36 @@ Files:
 - `controller/pdf_controller.py`
 - `model/pdf_model.py`
 
+### S6. Empty inline text edit reverted instead of deleting target textbox content
+
+Problem:
+- When users edited an existing textbox and removed all text, closing/committing the editor restored the original content instead of deleting that textbox content.
+
+Root cause:
+- Empty `new_text` was short-circuited at both controller and model levels, so no edit command transaction was executed.
+- The editor closed, but page content never changed, which looked like a revert.
+
+Candidate fixes:
+1. Keep empty-edit guard and force users to use separate delete action.
+2. Allow empty edits through existing `EditTextCommand` pipeline.
+3. Convert empty edits to whitespace placeholders.
+
+Chosen fix:
+- Option 2.
+- Treat empty inline commit as valid delete intent for existing text edits:
+  - controller no longer returns early on empty text
+  - model no longer returns early on empty text
+  - transactional edit pipeline performs redaction and reinsert-nothing result, preserving undo/redo behavior
+
+Files:
+- `controller/pdf_controller.py`
+- `model/pdf_model.py`
+- `test_scripts/test_empty_text_edit.py`
+
 ### Verification
 
 Targeted regressions executed after final adjustment:
 - `pytest -q test_scripts/test_overlap_textbox_edit.py` -> pass
 - `pytest -q test_scripts/test_char_run_reconstruction.py` -> pass
 - `pytest -q test_scripts/test_add_textbox_atomic.py` -> pass
+- `pytest -q test_scripts/test_empty_text_edit.py` -> pass
