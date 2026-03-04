@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .layout import (
     normalize_orientation,
@@ -102,6 +102,11 @@ class PrinterDriver(ABC):
         """Whether this driver can submit raw PDF to platform spooler."""
         return False
 
+    @property
+    def supports_printer_properties_dialog(self) -> bool:
+        """Whether this driver can open a native printer properties dialog."""
+        return False
+
     @abstractmethod
     def list_printers(self) -> List[PrinterDevice]:
         """Enumerate available system printers."""
@@ -122,3 +127,11 @@ class PrinterDriver(ABC):
         options: PrintJobOptions,
     ) -> PrintJobResult:
         """Submit print job for the given PDF."""
+
+    def open_printer_properties(self, printer_name: str) -> Optional[Dict[str, Any]]:
+        """Open native printer properties dialog for the selected printer."""
+        raise NotImplementedError("Printer properties dialog is not supported by this driver.")
+
+    def get_printer_preferences(self, printer_name: str) -> Dict[str, Any]:
+        """Return driver-level printer defaults mapped to app option keys."""
+        return {}

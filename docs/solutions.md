@@ -935,6 +935,36 @@ Files:
 - `model/pdf_model.py`
 - `test_scripts/test_empty_text_edit.py`
 
+### S7. Need OS-native printer properties dialog from unified print dialog
+
+Problem:
+- Users needed direct access to vendor/system printer preferences while staying inside the app print flow.
+
+Root cause:
+- Unified print dialog exposed generic options only and had no bridge to native printer properties.
+
+Candidate fixes:
+1. Add app-side advanced options only.
+2. Add a direct native-properties entry beside printer selector.
+3. Launch external control panel manually outside app flow.
+
+Chosen fix:
+- Option 2.
+- Added a `屬性` button next to the printer combo in unified print dialog.
+- Routed action through dispatcher/driver API:
+  - `PrintDispatcher.open_printer_properties(...)`
+  - `PrintDispatcher.get_printer_preferences(...)`
+  - driver capability flag `supports_printer_properties_dialog`
+  - Windows implementation opens native dialog via `rundll32 printui.dll,PrintUIEntry /e /n <printer>`
+- After properties action, dialog syncs driver preferences back to app controls (`paper_size`, `orientation`, `duplex`, `color_mode`, `dpi`, `copies`).
+
+Files:
+- `src/printing/print_dialog.py`
+- `src/printing/dispatcher.py`
+- `src/printing/base_driver.py`
+- `src/printing/platforms/win_driver.py`
+- `test_scripts/test_print_dialog_properties_button.py`
+
 ### Verification
 
 Targeted regressions executed after final adjustment:
