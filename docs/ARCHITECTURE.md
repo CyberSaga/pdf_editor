@@ -88,7 +88,7 @@ View emits open/switch/close intent. Controller calls model session operations. 
 
 ### 3.2 Edit Existing Text
 
-View hit-tests text and opens editor with target metadata. On commit, view emits `sig_edit_text(...)`. Controller creates `EditTextCommand` with page snapshot. Model runs transactional edit pipeline and page index rebuild. Controller refreshes affected view scope. Commit criteria include text, position, font, and size deltas so style-only edits are persisted.
+View hit-tests text and opens editor with target metadata. On commit, view emits `sig_edit_text(...)`. Controller creates `EditTextCommand` with page snapshot. Model runs transactional edit pipeline and page index rebuild. Controller refreshes affected view scope. Commit criteria include text, position, font, and size deltas so style-only edits are persisted. Empty text commits from existing-text edit are valid delete intents: the target textbox content is redacted and not reinserted, and history remains undo/redo-safe.
 
 ### 3.3 Add New Textbox
 

@@ -18,6 +18,7 @@ Text targeting supports `run` and `paragraph` granularity. The UI control `æ–‡å­
 
 Existing-text editing is transactional: resolve target, build overlap cluster, redact once, replay protected content, insert replacement text, validate output, and rollback on failure. This protects non-target content and maintains deterministic undo/redo through command boundaries. Key functions include `edit_text(...)`, `_resolve_paragraph_candidate(...)`, `_restore_page_from_snapshot(...)`, and `EditTextCommand` execution paths.
 Style-only edits are first-class: if only font and/or size changes (without text change), commit still records a history entry and persists to page content.
+Clearing all text in an existing inline editor and committing is treated as an intentional delete operation for that target textbox content (not a revert/no-op), and remains fully undo/redo-compatible via `EditTextCommand`.
 
 ## 5. Add Textbox as True Page Text
 

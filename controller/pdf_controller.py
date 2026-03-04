@@ -492,7 +492,9 @@ class PDFController:
         target_span_id: str = None,
         target_mode: str = None,
     ):
-        if not new_text.strip(): return
+        # Empty string is a valid "delete textbox content" intent from inline edit.
+        if new_text is None:
+            new_text = ""
         if not self.model.doc or page < 1 or page > len(self.model.doc): return
         try:
             page_idx = page - 1

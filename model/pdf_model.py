@@ -1895,9 +1895,9 @@ class PDFModel:
             original_text: 原始文字內容（可選，用於精確定位）
             vertical_shift_left: 垂直文字擴展方向（True=左移，False=右移）
         """
-        if not new_text.strip():
-            logger.warning("文字內容為空，跳過編輯")
-            return
+        # Keep empty text as a valid edit: redact target text and reinsert nothing.
+        if new_text is None:
+            new_text = ""
 
         _t0 = time.perf_counter()  # Phase 6: 效能計時
         page_idx = page_num - 1
