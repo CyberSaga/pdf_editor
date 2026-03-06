@@ -1220,3 +1220,51 @@ Verification:
 - `src/printing/platforms/linux_driver.py`
 
 ---
+
+### 10.4 列印預覽例外路徑與過早 snapshot 生成（2026-03）
+
+**問題：**  
+- 列印對話框在預覽區 resize / wheel / 切頁時，若使用者剛好把自訂頁碼暫時編輯成無效值（例如空字串），例外可能直接從 UI 事件路徑冒出。  
+- `PDFController.print_document()` 也會在對話框開啟前先做 `build_print_snapshot()` 並寫入 temp PDF，即使使用者最後直接取消列印。
+
+**原因：**  
+- `_refresh_preview()` 有錯誤保護，但 `_render_preview()` 被其他 UI 路徑直接呼叫時沒有同等防護。  
+- 列印預覽與最終送印共用同一個「先生成整份 snapshot PDF」前置假設，導致 preview 與 submission 沒有分層。
+
+**有效解法（已實作）：**  
+- 在 `UnifiedPrintDialog` 加入安全 preview 包裝，將暫時性的 option-building 失敗轉為對話框內的 preview error，而不是讓例外穿出 UI event。  
+- dialog 支援以 live-document preview provider 直接渲染單頁預覽。  
+- controller 改為只有在 dialog `Accepted` 後才建立完整 print snapshot / temp PDF；取消列印時不再做整份文件序列化與磁碟 I/O。
+
+**檔案：**  
+- `src/printing/print_dialog.py`  
+- `controller/pdf_controller.py`  
+- `test_scripts/test_print_dialog_properties_button.py`  
+- `test_scripts/test_print_controller_flow.py`
+
+**驗證：**  
+- `pytest -q test_scripts/test_print_dialog_properties_button.py test_scripts/test_print_controller_flow.py` -> pass  
+- `pytest -q` -> pass
+
+### 10.5 logging 初始化責任集中到入口（2026-03）
+
+**問題：**  
+`controller/pdf_controller.py`、`model/pdf_model.py`、`view/pdf_view.py` 在 import 時各自呼叫 `logging.basicConfig(...)`，造成 root logger 行為依 import 順序而變。
+
+**原因：**  
+logging 設定責任沒有集中在 app entrypoint，導致可匯入模組同時扮演「使用 logger」與「配置 logger」兩種角色。
+
+**有效解法（已實作）：**  
+- 移除 model / view / controller 模組內的 `logging.basicConfig(...)`。  
+- 將 app-level logging 初始化集中到 `main.py`。  
+- 其餘模組僅保留 `logging.getLogger(__name__)`。
+
+**檔案：**  
+- `main.py`  
+- `controller/pdf_controller.py`  
+- `model/pdf_model.py`  
+- `view/pdf_view.py`
+
+**驗證：**  
+- `rg -n "logging.basicConfig" main.py controller/pdf_controller.py model/pdf_model.py view/pdf_view.py` 僅剩 `main.py`  
+- `pytest -q` -> pass

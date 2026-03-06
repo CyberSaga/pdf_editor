@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from PySide6.QtCore import QEvent, QRectF, QTimer, Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
@@ -56,6 +56,7 @@ class UnifiedPrintDialog(QDialog):
         total_pages: int,
         current_page: int,
         job_name: str,
+        preview_page_provider: Optional[Callable[[int, int], QImage]] = None,
     ) -> None:
         super().__init__(parent)
         self.dispatcher = dispatcher
@@ -73,6 +74,7 @@ class UnifiedPrintDialog(QDialog):
         self._printer_preferences: Dict[str, object] = {}
         self._touched_hardware_fields: set[str] = set()
         self._syncing_printer_preferences = False
+        self._preview_page_provider = preview_page_provider
 
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
@@ -92,7 +94,7 @@ class UnifiedPrintDialog(QDialog):
     def eventFilter(self, watched, event):  # noqa: N802 (Qt override)
         if watched is self.preview_label:
             if event.type() == QEvent.Resize:
-                self._render_preview()
+                self._safe_render_preview()
             elif event.type() == QEvent.Wheel:
                 delta = event.angleDelta().y()
                 if delta > 0:
@@ -580,7 +582,7 @@ class UnifiedPrintDialog(QDialog):
     def _on_preview_row_changed(self, row: int) -> None:
         if row < 0:
             return
-        self._render_preview()
+        self._safe_render_preview()
 
     def _schedule_preview_refresh(self) -> None:
         self._preview_timer.start()
@@ -620,7 +622,7 @@ class UnifiedPrintDialog(QDialog):
             select_row = page_indices.index(previous_page)
         self.page_list.setCurrentRow(select_row)
         self.preview_message_label.setText("")
-        self._render_preview()
+        self._safe_render_preview()
 
     def _show_preview_error(self, message: str) -> None:
         self._page_indices = []
@@ -631,7 +633,15 @@ class UnifiedPrintDialog(QDialog):
         self.preview_label.setPixmap(QPixmap())
         self.preview_message_label.setText(message)
 
-    def _render_preview(self) -> None:
+    def _safe_render_preview(self) -> None:
+        try:
+            self._render_preview()
+        except (ValueError, PrintingError) as exc:
+            self._show_preview_error(str(exc))
+        except Exception as exc:
+            self._show_preview_error(f"無法渲染預覽頁面: {exc}")
+
+    def _render_preview_legacy(self) -> None:
         if not self._page_indices:
             return
         row = self.page_list.currentRow()
@@ -662,6 +672,51 @@ class UnifiedPrintDialog(QDialog):
         self.preview_label.setPixmap(pixmap)
         self.page_info_label.setText(
             f"第 {page_index + 1} 頁 / 共 {self.total_pages} 頁（本次列印 {len(self._page_indices)} 頁）"
+        )
+        self.prev_btn.setEnabled(row > 0)
+        self.next_btn.setEnabled(row < len(self._page_indices) - 1)
+
+    def _load_preview_image(self, page_index: int, dpi: int) -> QImage:
+        if self._preview_page_provider is not None:
+            image = self._preview_page_provider(page_index, dpi)
+            if not isinstance(image, QImage) or image.isNull():
+                raise RuntimeError("預覽提供器未回傳有效影像。")
+            return image
+        if not self.pdf_path:
+            raise RuntimeError("缺少預覽 PDF 來源。")
+
+        pages = self.renderer.iter_page_images(self.pdf_path, [page_index], dpi)
+        try:
+            rendered = next(pages)
+        except StopIteration as exc:
+            raise RuntimeError("無法渲染預覽頁面。") from exc
+        return rendered.image
+
+    def _render_preview(self) -> None:
+        if not self._page_indices:
+            return
+        row = self.page_list.currentRow()
+        if row < 0:
+            row = 0
+            self.page_list.setCurrentRow(0)
+        if row >= len(self._page_indices):
+            row = len(self._page_indices) - 1
+
+        page_index = self._page_indices[row]
+        dpi = self.dpi_spin.value()
+        cache_key = (page_index, dpi)
+        image = self._preview_cache.get(cache_key)
+        if image is None:
+            image = self._load_preview_image(page_index, dpi)
+            self._preview_cache[cache_key] = image
+            while len(self._preview_cache) > 24:
+                self._preview_cache.pop(next(iter(self._preview_cache)))
+
+        options = self._build_effective_options()
+        pixmap = self._compose_preview_pixmap(image, options)
+        self.preview_label.setPixmap(pixmap)
+        self.page_info_label.setText(
+            f"蝚?{page_index + 1} ??/ ??{self.total_pages} ???祆活? {len(self._page_indices)} ??"
         )
         self.prev_btn.setEnabled(row > 0)
         self.next_btn.setEnabled(row < len(self._page_indices) - 1)
