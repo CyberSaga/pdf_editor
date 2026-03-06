@@ -70,6 +70,9 @@ class UnifiedPrintDialog(QDialog):
         self._page_indices: List[int] = []
         self._preview_cache: Dict[tuple[int, int], QImage] = {}
         self._result: Optional[UnifiedPrintDialogResult] = None
+        self._printer_preferences: Dict[str, object] = {}
+        self._touched_hardware_fields: set[str] = set()
+        self._syncing_printer_preferences = False
 
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
@@ -155,8 +158,10 @@ class UnifiedPrintDialog(QDialog):
         self.duplex_combo.addItem("短邊雙面", "short")
 
         self.color_combo = QComboBox()
+        self.color_combo.addItem("依系統屬性", "system")
         self.color_combo.addItem("彩色", "color")
         self.color_combo.addItem("黑白", "grayscale")
+        self.color_combo.setCurrentIndex(self.color_combo.findData("color"))
 
         self.dpi_spin = QSpinBox()
         self.dpi_spin.setRange(72, 1200)
@@ -177,17 +182,6 @@ class UnifiedPrintDialog(QDialog):
         setting_form.addRow("", self.collate_cb)
         left_layout.addWidget(setting_box)
 
-        self.inherited_properties_toggle = QPushButton("顯示系統屬性")
-        self.inherited_properties_toggle.setCheckable(True)
-        left_layout.addWidget(self.inherited_properties_toggle)
-
-        self.inherited_properties_panel = QGroupBox("系統屬性（唯讀）")
-        inherited_form = QFormLayout(self.inherited_properties_panel)
-        self.inherited_tray_edit = QLineEdit("系統預設")
-        self.inherited_tray_edit.setReadOnly(True)
-        inherited_form.addRow("紙盤", self.inherited_tray_edit)
-        self.inherited_properties_panel.setVisible(False)
-        left_layout.addWidget(self.inherited_properties_panel)
 
         page_box = QGroupBox("頁面範圍")
         page_form = QFormLayout(page_box)
@@ -295,7 +289,10 @@ class UnifiedPrintDialog(QDialog):
     def _wire_signals(self) -> None:
         self.printer_combo.currentIndexChanged.connect(self._on_printer_changed)
         self.printer_properties_btn.clicked.connect(self._open_printer_properties_dialog)
-        self.inherited_properties_toggle.toggled.connect(self._on_toggle_inherited_properties)
+        self.paper_combo.currentIndexChanged.connect(lambda _idx: self._on_hardware_field_changed("paper_size"))
+        self.orientation_combo.currentIndexChanged.connect(lambda _idx: self._on_hardware_field_changed("orientation"))
+        self.duplex_combo.currentIndexChanged.connect(lambda _idx: self._on_hardware_field_changed("duplex"))
+        self.color_combo.currentIndexChanged.connect(lambda _idx: self._on_hardware_field_changed("color_mode"))
         self.range_mode_combo.currentIndexChanged.connect(self._on_range_mode_changed)
         self.scale_mode_combo.currentIndexChanged.connect(self._on_scale_mode_changed)
         self.page_list.currentRowChanged.connect(self._on_preview_row_changed)
@@ -332,21 +329,26 @@ class UnifiedPrintDialog(QDialog):
         if not name:
             self.printer_status_label.setText("-")
             self.printer_capability_label.setText("")
-            self._update_inherited_property_fields({})
+            self._printer_preferences = {}
+            self._touched_hardware_fields.clear()
             self._sync_printer_properties_button()
             return
         printer = self._printer_map.get(name)
         self.printer_status_label.setText(printer.status if printer else "unknown")
-        self._sync_printer_capabilities(name)
-        self._apply_printer_preferences(self._load_printer_preferences(name))
+        self._touched_hardware_fields.clear()
+        self._syncing_printer_preferences = True
+        try:
+            self._sync_printer_capabilities(name)
+            self._apply_printer_preferences(self._load_printer_preferences(name))
+        finally:
+            self._syncing_printer_preferences = False
         self._sync_printer_properties_button()
         self._schedule_preview_refresh()
 
-    def _on_toggle_inherited_properties(self, checked: bool) -> None:
-        self.inherited_properties_panel.setVisible(bool(checked))
-        self.inherited_properties_toggle.setText(
-            "隱藏系統屬性" if checked else "顯示系統屬性"
-        )
+    def _on_hardware_field_changed(self, field_name: str) -> None:
+        if self._syncing_printer_preferences:
+            return
+        self._touched_hardware_fields.add(field_name)
 
     def _sync_printer_properties_button(self) -> None:
         selected_name = self.printer_combo.currentData()
@@ -369,13 +371,20 @@ class UnifiedPrintDialog(QDialog):
             return
         try:
             updated = open_fn(printer_name)
+            if updated is None:
+                return
+            self._touched_hardware_fields.clear()
+            self._syncing_printer_preferences = True
             if isinstance(updated, dict) and updated:
                 self._apply_printer_preferences(updated)
             else:
                 # Fallback: reload defaults in case driver persisted changes asynchronously.
                 self._apply_printer_preferences(self._load_printer_preferences(printer_name))
+            self._schedule_preview_refresh()
         except PrintingError as exc:
             QMessageBox.warning(self, "Printer", str(exc))
+        finally:
+            self._syncing_printer_preferences = False
 
     def _load_printer_preferences(self, printer_name: str) -> Dict[str, object]:
         getter = getattr(self.dispatcher, "get_printer_preferences", None)
@@ -390,58 +399,118 @@ class UnifiedPrintDialog(QDialog):
         return data if isinstance(data, dict) else {}
 
     def _apply_printer_preferences(self, prefs: Dict[str, object]) -> None:
-        self._update_inherited_property_fields(prefs)
+        self._printer_preferences = dict(prefs or {})
+        opaque_fields = {
+            str(item).strip()
+            for item in self._printer_preferences.get("opaque_fields", [])
+            if str(item).strip()
+        }
+        if "color_mode" in opaque_fields:
+            self._printer_preferences["color_mode"] = "system"
         if not prefs:
             return
+        applied_prefs = self._printer_preferences
 
-        if "paper_size" in prefs:
-            idx = self.paper_combo.findData(prefs.get("paper_size"))
+        if "paper_size" in applied_prefs:
+            idx = self.paper_combo.findData(applied_prefs.get("paper_size"))
             if idx >= 0:
                 self.paper_combo.setCurrentIndex(idx)
 
-        if "orientation" in prefs:
-            idx = self.orientation_combo.findData(prefs.get("orientation"))
+        if "orientation" in applied_prefs:
+            idx = self.orientation_combo.findData(applied_prefs.get("orientation"))
             if idx >= 0:
                 self.orientation_combo.setCurrentIndex(idx)
 
-        if "duplex" in prefs:
-            idx = self.duplex_combo.findData(prefs.get("duplex"))
+        if "duplex" in applied_prefs:
+            idx = self.duplex_combo.findData(applied_prefs.get("duplex"))
             if idx >= 0:
                 self.duplex_combo.setCurrentIndex(idx)
 
-        if "color_mode" in prefs:
-            idx = self.color_combo.findData(prefs.get("color_mode"))
+        if "color_mode" in applied_prefs:
+            idx = self.color_combo.findData(applied_prefs.get("color_mode"))
             if idx >= 0:
                 self.color_combo.setCurrentIndex(idx)
 
-        dpi = prefs.get("dpi")
+        dpi = applied_prefs.get("dpi")
         if isinstance(dpi, int):
             self.dpi_spin.setValue(max(self.dpi_spin.minimum(), min(self.dpi_spin.maximum(), dpi)))
 
-        copies = prefs.get("copies")
+        copies = applied_prefs.get("copies")
         if isinstance(copies, int):
             self.copies_spin.setValue(max(self.copies_spin.minimum(), min(self.copies_spin.maximum(), copies)))
 
     def _update_inherited_property_fields(self, prefs: Dict[str, object]) -> None:
-        tray_value = str(prefs.get("paper_tray", "")).strip()
-        tray_options = prefs.get("paper_tray_options")
-        tray_label = ""
-        if isinstance(tray_options, list):
-            for item in tray_options:
-                if not isinstance(item, dict):
+        _ = prefs
+
+    def _current_hardware_values(self) -> Dict[str, str]:
+        return {
+            "paper_size": str(self.paper_combo.currentData() or "auto"),
+            "orientation": str(self.orientation_combo.currentData() or "auto"),
+            "duplex": str(self.duplex_combo.currentData() or "none"),
+            "color_mode": str(self.color_combo.currentData() or "color"),
+        }
+
+    def _resolve_hardware_values(self) -> tuple[Dict[str, str], set[str]]:
+        current_values = self._current_hardware_values()
+        effective_values: Dict[str, str] = {}
+        override_fields: set[str] = set()
+        for field_name, current_value in current_values.items():
+            pref_value = self._printer_preferences.get(field_name)
+            if field_name in self._touched_hardware_fields:
+                if current_value == "system":
+                    if pref_value is not None:
+                        effective_values[field_name] = str(pref_value)
+                    elif field_name == "color_mode":
+                        effective_values[field_name] = "color"
+                    else:
+                        effective_values[field_name] = current_value
                     continue
-                code = str(item.get("code", "")).strip()
-                if code != tray_value:
-                    continue
-                tray_label = str(item.get("label", "")).strip()
-                break
-        if tray_label and tray_value:
-            text = f"{tray_label} ({tray_value})"
-        elif tray_value:
-            text = tray_value
+                effective_values[field_name] = current_value
+                override_fields.add(field_name)
+            elif pref_value is not None:
+                effective_values[field_name] = str(pref_value)
+            else:
+                effective_values[field_name] = current_value
+                override_fields.add(field_name)
+        return effective_values, override_fields
+
+    def _build_effective_options(self) -> PrintJobOptions:
+        range_mode = self.range_mode_combo.currentData()
+        if range_mode == "all":
+            page_ranges = None
+        elif range_mode == "current":
+            page_ranges = str(self.current_page)
         else:
-            text = "系統預設"
-        self.inherited_tray_edit.setText(text)
+            page_ranges = self.custom_range_edit.text().strip()
+            if not page_ranges:
+                raise ValueError("自訂頁碼不可為空。")
+
+        scale_mode = self.scale_mode_combo.currentData()
+        effective_hardware, override_fields = self._resolve_hardware_values()
+        options = PrintJobOptions(
+            printer_name=self.printer_combo.currentData(),
+            page_ranges=page_ranges,
+            copies=self.copies_spin.value(),
+            collate=self.collate_cb.isChecked(),
+            dpi=self.dpi_spin.value(),
+            fit_to_page=(scale_mode == "fit"),
+            color_mode=effective_hardware["color_mode"],
+            duplex=effective_hardware["duplex"],
+            job_name=self.job_name,
+            transport="raster",
+            paper_size=effective_hardware["paper_size"],
+            paper_tray="auto",
+            orientation=effective_hardware["orientation"],
+            scale_mode=scale_mode,
+            scale_percent=self.scale_percent_spin.value(),
+            page_subset=self.page_subset_combo.currentData(),
+            reverse_order=self.reverse_cb.isChecked(),
+            override_fields=override_fields,
+        )
+        return options.normalized()
+
+    def _build_submission_options(self) -> PrintJobOptions:
+        return self._build_effective_options()
 
     def _sync_printer_capabilities(self, printer_name: str) -> None:
         info = None
@@ -517,42 +586,11 @@ class UnifiedPrintDialog(QDialog):
         self._preview_timer.start()
 
     def _build_options(self) -> PrintJobOptions:
-        range_mode = self.range_mode_combo.currentData()
-        if range_mode == "all":
-            page_ranges = None
-        elif range_mode == "current":
-            page_ranges = str(self.current_page)
-        else:
-            page_ranges = self.custom_range_edit.text().strip()
-            if not page_ranges:
-                raise ValueError("自訂頁碼不可為空。")
-
-        scale_mode = self.scale_mode_combo.currentData()
-        options = PrintJobOptions(
-            printer_name=self.printer_combo.currentData(),
-            page_ranges=page_ranges,
-            copies=self.copies_spin.value(),
-            collate=self.collate_cb.isChecked(),
-            dpi=self.dpi_spin.value(),
-            fit_to_page=(scale_mode == "fit"),
-            color_mode=self.color_combo.currentData(),
-            duplex=self.duplex_combo.currentData(),
-            job_name=self.job_name,
-            transport="raster",
-            paper_size=self.paper_combo.currentData(),
-            # Tray source follows system/native properties by default.
-            paper_tray="auto",
-            orientation=self.orientation_combo.currentData(),
-            scale_mode=scale_mode,
-            scale_percent=self.scale_percent_spin.value(),
-            page_subset=self.page_subset_combo.currentData(),
-            reverse_order=self.reverse_cb.isChecked(),
-        )
-        return options.normalized()
+        return self._build_submission_options()
 
     def _refresh_preview(self) -> None:
         try:
-            options = self._build_options()
+            options = self._build_effective_options()
             page_indices = self.dispatcher.resolve_page_indices_for_count(
                 self.total_pages, options
             )
@@ -619,7 +657,7 @@ class UnifiedPrintDialog(QDialog):
             while len(self._preview_cache) > 24:
                 self._preview_cache.pop(next(iter(self._preview_cache)))
 
-        options = self._build_options()
+        options = self._build_effective_options()
         pixmap = self._compose_preview_pixmap(image, options)
         self.preview_label.setPixmap(pixmap)
         self.page_info_label.setText(
@@ -682,7 +720,7 @@ class UnifiedPrintDialog(QDialog):
 
     def accept(self) -> None:  # noqa: D401
         try:
-            options = self._build_options()
+            options = self._build_submission_options()
             page_indices = self.dispatcher.resolve_page_indices_for_count(
                 self.total_pages, options
             )

@@ -16,7 +16,8 @@ Desktop PDF editor written in Python with a Qt UI.
 - Watermarks
 - Search and jump
 - Optional OCR
-- Print dialog includes native printer properties entry (`屬性`) beside printer selector on supported systems, syncs returned paper/orientation/duplex/color/DPI/copies into dialog controls, inherits tray/vendor-specific settings directly from system properties, and provides a collapsible read-only system-properties panel
+- Print dialog includes native printer properties entry (`屬性`) beside printer selector on supported systems, syncs returned paper/orientation/duplex/color/DPI/copies into dialog controls, and keeps tray/vendor-specific settings inherited from system properties without exposing a tray section in the app UI
+- Hardware precedence in print dialog is touch-based: `paper_size`, `orientation`, `duplex`, and `color_mode` inherit native/system defaults until the user explicitly changes them in the app; `copies`, `dpi`, `collate`, page range, and scaling remain app-owned job settings
 - Undo/redo via command history
 
 ## 2. Documentation Map

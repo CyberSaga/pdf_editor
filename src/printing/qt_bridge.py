@@ -132,14 +132,16 @@ def _apply_printer_options(printer: QPrinter, options: PrintJobOptions) -> None:
     printer.setResolution(normalized.dpi)
     printer.setCopyCount(normalized.copies)
     printer.setCollateCopies(normalized.collate)
-    printer.setDuplex(_to_duplex_mode(normalized.duplex))
+    if "duplex" in normalized.override_fields:
+        printer.setDuplex(_to_duplex_mode(normalized.duplex))
     # Keep tray choice in system/native properties unless explicitly overridden.
     if (normalized.paper_tray or "").strip().lower() not in ("", "auto"):
         printer.setPaperSource(_to_paper_source(normalized.paper_tray))
-    if normalized.color_mode == "grayscale":
-        printer.setColorMode(QPrinter.GrayScale)
-    else:
-        printer.setColorMode(QPrinter.Color)
+    if "color_mode" in normalized.override_fields:
+        if normalized.color_mode == "grayscale":
+            printer.setColorMode(QPrinter.GrayScale)
+        else:
+            printer.setColorMode(QPrinter.Color)
 
 
 def _draw_page_image(
@@ -192,7 +194,8 @@ def raster_print_pdf(
     except StopIteration as exc:
         raise PrintJobSubmissionError("No rendered pages available.") from exc
 
-    _set_page_layout(printer, _fitz_rect_to_qrectf(first.page_rect), normalized)
+    if {"paper_size", "orientation"} & set(normalized.override_fields):
+        _set_page_layout(printer, _fitz_rect_to_qrectf(first.page_rect), normalized)
 
     painter = QPainter()
     if not painter.begin(printer):

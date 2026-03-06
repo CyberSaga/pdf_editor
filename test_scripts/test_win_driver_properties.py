@@ -25,10 +25,18 @@ class _FakeDevMode:
     Copies = 1
 
 
+def _clone_devmode(devmode: object) -> _FakeDevMode:
+    clone = _FakeDevMode()
+    for name in ("PaperSize", "Orientation", "Duplex", "DefaultSource", "Color", "PrintQuality", "Copies"):
+        setattr(clone, name, getattr(devmode, name))
+    return clone
+
+
 class _FakeWin32Print:
     DC_BINS = 6
     DC_BINNAMES = 12
     DM_IN_PROMPT = 0x0004
+    DM_IN_BUFFER = 0x0008
     DM_OUT_BUFFER = 0x0002
 
     def __init__(self) -> None:
@@ -68,7 +76,7 @@ class _FakeWin32Print:
         if capability == self.DC_BINNAMES:
             if port_name == "WSD-PORT":
                 raise RuntimeError("simulated port mismatch")
-            return ["紙盤1", "紙盤2"]
+            return ["Tray 1", "Tray 2"]
         return []
 
 
@@ -77,7 +85,7 @@ def test_open_printer_properties_ignores_setprinter_access_denied(monkeypatch: p
     monkeypatch.setattr(win_mod, "win32print", fake)
 
     driver = win_mod.WindowsPrinterDriver()
-    prefs = driver.open_printer_properties("3F印表機")
+    prefs = driver.open_printer_properties("Printer A")
 
     assert isinstance(prefs, dict)
     assert prefs.get("paper_size") == "a4"
@@ -100,7 +108,7 @@ class _FakeWin32PrintLimitedPort(_FakeWin32Print):
         if capability == self.DC_BINNAMES:
             if port_name == "WSD-PORT":
                 return [""]
-            return ["紙盤1", "紙盤2", "紙盤3", "紙盤4", "紙盤5(手送紙盤)"]
+            return ["Tray 1", "Tray 2", "Tray 3", "Tray 4", "Manual Feed"]
         return []
 
 
@@ -109,9 +117,94 @@ def test_get_printer_preferences_prefers_richer_tray_list(monkeypatch: pytest.Mo
     monkeypatch.setattr(win_mod, "win32print", fake)
 
     driver = win_mod.WindowsPrinterDriver()
-    prefs = driver.get_printer_preferences("3F印表機")
+    prefs = driver.get_printer_preferences("Printer A")
 
     tray_options = prefs.get("paper_tray_options")
     assert isinstance(tray_options, list)
     assert len(tray_options) == 5
-    assert tray_options[-1] == {"code": "5", "label": "紙盤5(手送紙盤)"}
+    assert tray_options[-1] == {"code": "5", "label": "Manual Feed"}
+
+
+class _FakeWin32PrintUserDefaults(_FakeWin32Print):
+    def __init__(self) -> None:
+        super().__init__()
+        self._global_devmode = _FakeDevMode()
+        self._user_devmode = _FakeDevMode()
+        self._document_color: int | None = 1
+        self._persisted_user_color: int | None = None
+
+    def GetPrinter(self, handle, level: int):
+        _ = handle
+        self._calls.append(("GetPrinter", level))
+        if int(level) == 9:
+            return {"pDevMode": self._user_devmode}
+        if int(level) == 8:
+            return {"pDevMode": self._global_devmode}
+        return {"pDevMode": self._global_devmode, "pPortName": "WSD-PORT"}
+
+    def DocumentProperties(self, hwnd, handle, printer_name, out_devmode, in_devmode, flags):
+        _ = (hwnd, handle, printer_name, in_devmode, flags)
+        self._calls.append(("DocumentProperties", printer_name))
+        if self._document_color is not None:
+            out_devmode.Color = self._document_color
+        return 1
+
+    def SetPrinter(self, handle, level, info, command) -> None:
+        _ = (handle, command)
+        self._calls.append(("SetPrinter", level))
+        if int(level) == 9:
+            self._user_devmode = _clone_devmode(info["pDevMode"])
+            if self._persisted_user_color is not None:
+                self._user_devmode.Color = self._persisted_user_color
+            return
+        raise RuntimeError("(5, 'SetPrinter', 'Access is denied.')")
+
+
+def test_get_printer_preferences_prefers_user_defaults_for_color_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeWin32PrintUserDefaults()
+    fake._global_devmode.Color = 2
+    fake._user_devmode.Color = 1
+    monkeypatch.setattr(win_mod, "win32print", fake)
+
+    driver = win_mod.WindowsPrinterDriver()
+    prefs = driver.get_printer_preferences("Printer A")
+
+    assert prefs.get("color_mode") == "grayscale"
+
+
+def test_open_printer_properties_reloads_user_defaults_after_color_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeWin32PrintUserDefaults()
+    fake._global_devmode.Color = 2
+    fake._user_devmode.Color = 2
+    fake._document_color = None
+    fake._persisted_user_color = 1
+    monkeypatch.setattr(win_mod, "win32print", fake)
+
+    driver = win_mod.WindowsPrinterDriver()
+    prefs = driver.open_printer_properties("Printer A")
+
+    assert prefs.get("color_mode") == "grayscale"
+
+
+class _FakeWin32PrintCancel(_FakeWin32Print):
+    def DocumentProperties(self, hwnd, handle, printer_name, out_devmode, in_devmode, flags):
+        _ = (hwnd, handle, printer_name, out_devmode, in_devmode, flags)
+        self._calls.append(("DocumentProperties", printer_name))
+        return 2
+
+
+def test_open_printer_properties_cancel_returns_none_without_persisting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeWin32PrintCancel()
+    monkeypatch.setattr(win_mod, "win32print", fake)
+
+    driver = win_mod.WindowsPrinterDriver()
+    prefs = driver.open_printer_properties("Printer A")
+
+    assert prefs is None
+    assert ("SetPrinter", 9) not in fake._calls
