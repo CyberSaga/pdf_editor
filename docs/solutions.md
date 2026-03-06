@@ -955,8 +955,35 @@ Chosen fix:
   - `PrintDispatcher.open_printer_properties(...)`
   - `PrintDispatcher.get_printer_preferences(...)`
   - driver capability flag `supports_printer_properties_dialog`
-  - Windows implementation opens native dialog via `rundll32 printui.dll,PrintUIEntry /e /n <printer>`
-- After properties action, dialog syncs driver preferences back to app controls (`paper_size`, `orientation`, `duplex`, `color_mode`, `dpi`, `copies`).
+  - Windows implementation opens native dialog and persists selected DEVMODE back to printer defaults
+- After properties action, dialog syncs driver preferences back to app controls (`paper_size`, `paper_tray`, `orientation`, `duplex`, `color_mode`, `dpi`, `copies`).
+- Added app-side tray selector (`選擇紙盤`) using driver-reported paper tray options.
+- Settings not exposed in app controls remain aligned by preserving driver/system defaults from `屬性`.
+
+### S8. Printer properties failed on `SetPrinter` access denied and tray list stayed empty
+
+Problem:
+- Clicking `屬性` could show: `SetPrinter ... Access is denied (5)`.
+- `選擇紙盤` stayed at `自動選擇` only, even when system properties showed multiple trays.
+
+Root cause:
+- Driver treated `win32print.SetPrinter(...)` failure as fatal, aborting sync flow.
+- Tray enumeration via `DeviceCapabilities(...)` used a single port path and could fail on some queue/port combinations.
+
+Candidate fixes:
+1. Keep strict `SetPrinter` requirement and ask users to run as admin.
+2. Keep `SetPrinter` as best-effort (non-fatal), continue sync from returned DEVMODE, and add tray-enumeration fallbacks.
+3. Remove pywin32 path and always open `rundll32` only.
+
+Chosen fix:
+- Option 2.
+- `SetPrinter` errors are now non-fatal; app continues with returned preferences.
+- Tray enumeration now retries multiple port variants (`pPortName`, `""`, `None`).
+- Added regression test to lock behavior.
+
+Files:
+- `src/printing/platforms/win_driver.py`
+- `test_scripts/test_win_driver_properties.py`
 
 Files:
 - `src/printing/print_dialog.py`
@@ -972,3 +999,94 @@ Targeted regressions executed after final adjustment:
 - `pytest -q test_scripts/test_char_run_reconstruction.py` -> pass
 - `pytest -q test_scripts/test_add_textbox_atomic.py` -> pass
 - `pytest -q test_scripts/test_empty_text_edit.py` -> pass
+
+### S9. Tray showed `紙盤15`, no usable tray list, and active-layout warning during print
+
+Problem:
+- After `屬性`, tray in app could show `紙盤15` instead of expected tray names like `紙盤1`/`紙盤5(手送紙盤)`.
+- Some queues returned only one tray entry from app-side tray list.
+- Runtime warning appeared: `QPrinter::setPageLayout: Cannot be changed while printer is active`.
+
+Root cause:
+- `DeviceCapabilities` tray query stopped at first non-empty port result; some drivers returned incomplete data (for example only `15`) on that first path.
+- `DMBIN_FORMSOURCE (15)` was treated as a concrete physical tray in UI fallback.
+- Qt bridge called `setPageLayout(...)` inside print loop after `QPainter.begin(...)`, which is too late for active printer context.
+
+Candidate fixes:
+1. Keep first-port tray result and expose raw codes directly (`紙盤15` etc).
+2. Evaluate multiple port candidates and keep the richest tray list; treat code `15` as auto/driver-managed when no explicit tray match exists; keep in-loop layout update.
+3. Evaluate multiple tray sources, keep richest list, map `15` fallback to auto, persist per-user DEVMODE with `SetPrinter` level 9, and stop changing layout while printer is active.
+
+Chosen fix:
+- Option 3.
+- Windows tray enumeration now evaluates multiple port variants and picks the richest candidate list.
+- UI tray sync maps unknown `paper_tray=15` to `自動選擇` instead of adding misleading `紙盤15`.
+- Properties persistence attempts `SetPrinter` level 9 (per-user defaults) to reduce admin-right dependence while keeping behavior aligned with `屬性`.
+- Qt bridge now sets page layout once before print activation and no longer mutates it in-page loop.
+
+Files:
+- `src/printing/platforms/win_driver.py`
+- `src/printing/print_dialog.py`
+- `src/printing/qt_bridge.py`
+- `test_scripts/test_win_driver_properties.py`
+- `test_scripts/test_print_dialog_properties_button.py`
+- `test_scripts/test_qt_bridge_layout.py`
+
+Verification:
+- `pytest -q test_scripts/test_win_driver_properties.py test_scripts/test_print_dialog_properties_button.py test_scripts/test_qt_bridge_layout.py` -> pass
+- `python test_scripts/test_print_dialog_logic.py` -> pass
+
+### S10. Remove app-side tray menu and inherit tray/vendor settings from system properties
+
+Problem:
+- Users requested removing the app tray selector and relying on native printer properties for tray/vendor options.
+
+Root cause:
+- App-side tray field could diverge from vendor driver behavior and create confusing labels for driver-specific tray semantics.
+
+Candidate fixes:
+1. Keep tray UI and continue mapping driver codes in app.
+2. Hide tray UI only, but still force paper source in Qt print path.
+3. Remove tray UI and do not set paper source when tray is `auto`, so system/native properties pass through.
+
+Chosen fix:
+- Option 3.
+- Unified print dialog no longer exposes tray selection.
+- `PrintJobOptions.paper_tray` is fixed to `auto` in dialog output.
+- Qt bridge skips `setPaperSource(...)` when tray is `auto`, preserving system `屬性` tray/vendor preferences.
+
+Files:
+- `src/printing/print_dialog.py`
+- `src/printing/qt_bridge.py`
+- `test_scripts/test_print_dialog_properties_button.py`
+- `test_scripts/test_qt_bridge_layout.py`
+
+Verification:
+- `pytest -q test_scripts/test_print_dialog_properties_button.py test_scripts/test_qt_bridge_layout.py test_scripts/test_win_driver_properties.py` -> pass
+- `python test_scripts/test_print_dialog_logic.py` -> pass
+
+### S11. Add collapsed read-only inherited-properties field in print dialog
+
+Problem:
+- Users wanted inherited tray/system-property values visible, but only on demand, without reintroducing editable tray controls.
+
+Root cause:
+- After removing app-side tray menu, there was no lightweight UI hint for currently inherited tray value.
+
+Candidate fixes:
+1. Keep hidden tray combo and disable editing.
+2. Add always-visible read-only field.
+3. Add collapsed-by-default read-only panel that expands on click.
+
+Chosen fix:
+- Option 3.
+- Added a checkable toggle (`顯示系統屬性` / `隱藏系統屬性`) and a hidden-by-default read-only group.
+- The panel shows inherited tray text from driver preferences (`paper_tray` + optional `paper_tray_options` label mapping).
+
+Files:
+- `src/printing/print_dialog.py`
+- `test_scripts/test_print_dialog_properties_button.py`
+
+Verification:
+- `pytest -q test_scripts/test_print_dialog_properties_button.py` -> pass
+- `pytest -q test_scripts/test_print_dialog_properties_button.py test_scripts/test_qt_bridge_layout.py test_scripts/test_win_driver_properties.py` -> pass

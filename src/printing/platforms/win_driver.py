@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import logging
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtPrintSupport import QPrinterInfo
@@ -39,6 +40,36 @@ _DUPLEX_TO_APP: Dict[int, str] = {
     2: "long",
     3: "short",
 }
+
+_DMBIN_LABELS: Dict[int, str] = {
+    1: "自動選擇",
+    2: "紙盤2",
+    3: "紙盤3",
+    4: "手送紙盤",
+    5: "信封紙盤",
+    6: "手送信封",
+    7: "紙盤7",
+    8: "紙盤8",
+    9: "紙盤9",
+    10: "紙盤10",
+    11: "紙盤11",
+    14: "卡匣",
+    15: "依表單設定",
+}
+
+logger = logging.getLogger(__name__)
+
+
+def _decode_capability_text(value: Any) -> str:
+    """Decode tray names returned by DeviceCapabilities across drivers/locales."""
+    if isinstance(value, bytes):
+        for encoding in ("utf-8", "mbcs", "cp950", "latin-1"):
+            try:
+                return value.decode(encoding).replace("\x00", "").strip()
+            except Exception:
+                continue
+        return ""
+    return str(value).replace("\x00", "").strip()
 
 
 class WindowsPrinterDriver(PrinterDriver):
@@ -145,6 +176,10 @@ class WindowsPrinterDriver(PrinterDriver):
         if duplex in _DUPLEX_TO_APP:
             prefs["duplex"] = _DUPLEX_TO_APP[duplex]
 
+        paper_tray = int(getattr(devmode, "DefaultSource", 0) or 0)
+        if paper_tray > 0:
+            prefs["paper_tray"] = str(paper_tray)
+
         color_mode = int(getattr(devmode, "Color", 0) or 0)
         if color_mode == 1:
             prefs["color_mode"] = "grayscale"
@@ -161,6 +196,72 @@ class WindowsPrinterDriver(PrinterDriver):
 
         return prefs
 
+    def _list_paper_trays(self, printer_name: str, port_name: str) -> List[Dict[str, str]]:
+        if win32print is None:
+            return []
+        ports_to_try: List[Optional[str]] = []
+        if port_name:
+            ports_to_try.append(port_name)
+        ports_to_try.extend(["", None])
+        # Driver behavior differs by queue/port. Evaluate all candidates and
+        # keep the richest list instead of stopping at the first non-empty one.
+        best_options: List[Dict[str, str]] = []
+        best_named_count = -1
+        best_total_count = -1
+        for port in ports_to_try:
+            try:
+                bins = win32print.DeviceCapabilities(
+                    printer_name,
+                    port,
+                    win32print.DC_BINS,
+                )
+            except Exception:
+                continue
+            if not bins:
+                continue
+            if isinstance(bins, int):
+                # Some drivers return count-only for unsupported call patterns.
+                continue
+            try:
+                names = win32print.DeviceCapabilities(
+                    printer_name,
+                    port,
+                    win32print.DC_BINNAMES,
+                )
+            except Exception:
+                names = []
+            if isinstance(names, int):
+                names = []
+
+            local_seen: set[str] = set()
+            local_options: List[Dict[str, str]] = []
+            named_count = 0
+            for idx, code in enumerate(bins):
+                code_int = int(code)
+                code_str = str(code_int)
+                if code_str in local_seen:
+                    continue
+                local_seen.add(code_str)
+                raw_name = names[idx] if idx < len(names) else ""
+                label = _decode_capability_text(raw_name)
+                if label:
+                    named_count += 1
+                else:
+                    label = _DMBIN_LABELS.get(code_int, f"紙盤{code_str}")
+                local_options.append({"code": code_str, "label": label})
+
+            total_count = len(local_options)
+            if total_count <= 0:
+                continue
+            if (
+                total_count > best_total_count
+                or (total_count == best_total_count and named_count > best_named_count)
+            ):
+                best_options = local_options
+                best_total_count = total_count
+                best_named_count = named_count
+        return best_options
+
     def get_printer_preferences(self, printer_name: str) -> Dict[str, Any]:
         if win32print is None:
             return {}
@@ -168,7 +269,12 @@ class WindowsPrinterDriver(PrinterDriver):
         try:
             handle = win32print.OpenPrinter(printer_name)
             info = win32print.GetPrinter(handle, 2)
-            return self._devmode_to_preferences(info.get("pDevMode"))
+            prefs = self._devmode_to_preferences(info.get("pDevMode"))
+            port_name = str(info.get("pPortName", "") or "")
+            tray_options = self._list_paper_trays(printer_name, port_name)
+            if tray_options:
+                prefs["paper_tray_options"] = tray_options
+            return prefs
         except Exception:
             return {}
         finally:
@@ -207,7 +313,19 @@ class WindowsPrinterDriver(PrinterDriver):
                     raise PrintJobSubmissionError(
                         f"Printer properties dialog returned error code: {result}"
                     )
-                return self._devmode_to_preferences(devmode)
+                merged = self.get_printer_preferences(normalized_name)
+                merged.update(self._devmode_to_preferences(devmode))
+                # Persist per-user defaults (PRINTER_INFO_9) so vendor/private
+                # settings selected in properties can be reused by subsequent jobs.
+                try:
+                    win32print.SetPrinter(handle, 9, {"pDevMode": devmode}, 0)
+                except Exception as exc_set:
+                    logger.info(
+                        "SetPrinter(level=9) skipped/denied for '%s' after properties dialog (non-fatal): %s",
+                        normalized_name,
+                        exc_set,
+                    )
+                return merged
             except PrintJobSubmissionError:
                 raise
             except Exception as exc:
