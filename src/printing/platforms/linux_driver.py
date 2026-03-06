@@ -144,15 +144,17 @@ class LinuxPrinterDriver(PrinterDriver):
         cups_options["collate"] = "true" if options.collate else "false"
         if options.fit_to_page:
             cups_options["fit-to-page"] = "true"
-        if options.color_mode == "grayscale":
-            cups_options["print-color-mode"] = "monochrome"
-            cups_options["ColorModel"] = "Gray"
-        else:
-            cups_options["print-color-mode"] = "color"
-        if options.duplex == "long":
-            cups_options["sides"] = "two-sided-long-edge"
-        elif options.duplex == "short":
-            cups_options["sides"] = "two-sided-short-edge"
+        if "color_mode" in options.override_fields:
+            if options.color_mode == "grayscale":
+                cups_options["print-color-mode"] = "monochrome"
+                cups_options["ColorModel"] = "Gray"
+            else:
+                cups_options["print-color-mode"] = "color"
+        if "duplex" in options.override_fields:
+            if options.duplex == "long":
+                cups_options["sides"] = "two-sided-long-edge"
+            elif options.duplex == "short":
+                cups_options["sides"] = "two-sided-short-edge"
         for key, value in options.extra_options.items():
             cups_options[str(key)] = str(value)
         return cups_options
@@ -190,11 +192,12 @@ class LinuxPrinterDriver(PrinterDriver):
             cmd.extend(["-P", options.page_ranges])
         if options.fit_to_page:
             cmd.extend(["-o", "fit-to-page"])
-        if options.duplex == "long":
-            cmd.extend(["-o", "sides=two-sided-long-edge"])
-        elif options.duplex == "short":
-            cmd.extend(["-o", "sides=two-sided-short-edge"])
-        if options.color_mode == "grayscale":
+        if "duplex" in options.override_fields:
+            if options.duplex == "long":
+                cmd.extend(["-o", "sides=two-sided-long-edge"])
+            elif options.duplex == "short":
+                cmd.extend(["-o", "sides=two-sided-short-edge"])
+        if "color_mode" in options.override_fields and options.color_mode == "grayscale":
             cmd.extend(["-o", "ColorModel=Gray"])
         cmd.append(pdf_path)
 

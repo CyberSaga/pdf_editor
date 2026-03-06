@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from pathlib import Path
-import sys
 
 import fitz
 from PySide6.QtWidgets import QApplication
@@ -21,11 +21,16 @@ from src.printing.base_driver import PrinterDevice
 from src.printing.print_dialog import UnifiedPrintDialog
 
 
+_OPEN_RESULT_UNSET = object()
+
+
 class _FakeDispatcher:
     def __init__(self, supports_properties: bool) -> None:
         self._supports_properties = supports_properties
         self.opened_for: list[str] = []
         self.printer_preferences: dict[str, object] = {}
+        self.printer_preferences_by_name: dict[str, dict[str, object]] = {}
+        self.open_printer_properties_result: object = _OPEN_RESULT_UNSET
 
     def get_default_printer(self) -> str | None:
         return "Printer A"
@@ -39,12 +44,17 @@ class _FakeDispatcher:
     def supports_printer_properties_dialog(self) -> bool:
         return self._supports_properties
 
-    def open_printer_properties(self, printer_name: str) -> dict[str, object]:
+    def open_printer_properties(self, printer_name: str):
         self.opened_for.append(printer_name)
+        if self.open_printer_properties_result is not _OPEN_RESULT_UNSET:
+            return self.open_printer_properties_result
+        if printer_name in self.printer_preferences_by_name:
+            return dict(self.printer_preferences_by_name[printer_name])
         return dict(self.printer_preferences)
 
     def get_printer_preferences(self, printer_name: str) -> dict[str, object]:
-        _ = printer_name
+        if printer_name in self.printer_preferences_by_name:
+            return dict(self.printer_preferences_by_name[printer_name])
         return dict(self.printer_preferences)
 
 
@@ -82,7 +92,6 @@ def test_properties_button_calls_dispatcher_when_supported() -> None:
         )
         try:
             assert dialog.printer_properties_btn.isEnabled()
-            assert dialog.inherited_properties_panel.isHidden()
             dialog.printer_properties_btn.click()
             assert dispatcher.opened_for == ["Printer A"]
         finally:
@@ -148,8 +157,14 @@ def test_properties_button_syncs_dialog_fields_from_system_preferences() -> None
             assert dialog.color_combo.currentData() == "grayscale"
             assert dialog.dpi_spin.value() == 600
             assert dialog.copies_spin.value() == 3
-            assert not hasattr(dialog, "paper_tray_combo")
-            assert dialog._build_options().paper_tray == "auto"
+            effective = dialog._build_effective_options()
+            submission = dialog._build_submission_options()
+            assert effective.paper_size == "letter"
+            assert effective.duplex == "long"
+            assert effective.color_mode == "grayscale"
+            assert effective.override_fields == set()
+            assert submission.override_fields == set()
+            assert submission.paper_tray == "auto"
         finally:
             dialog.close()
 
@@ -176,19 +191,23 @@ def test_properties_tray_preferences_are_inherited_without_dialog_field() -> Non
         )
         try:
             dialog.printer_properties_btn.click()
-            assert not hasattr(dialog, "paper_tray_combo")
-            assert dialog._build_options().paper_tray == "auto"
-            assert dialog.inherited_tray_edit.text() == "15"
+            assert dialog._build_submission_options().paper_tray == "auto"
         finally:
             dialog.close()
 
 
-def test_inherited_properties_panel_is_collapsed_and_expandable() -> None:
+def test_user_changed_hardware_field_marks_only_that_override() -> None:
     _ensure_app()
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = Path(tmp) / "sample.pdf"
         _make_single_page_pdf(pdf_path)
         dispatcher = _FakeDispatcher(supports_properties=True)
+        dispatcher.printer_preferences = {
+            "paper_size": "letter",
+            "orientation": "landscape",
+            "duplex": "long",
+            "color_mode": "grayscale",
+        }
         printers = [PrinterDevice(name="Printer A", is_default=True, status="ready")]
 
         dialog = UnifiedPrintDialog(
@@ -201,30 +220,127 @@ def test_inherited_properties_panel_is_collapsed_and_expandable() -> None:
             job_name="test_job",
         )
         try:
-            assert dialog.inherited_properties_panel.isHidden()
-            dialog.inherited_properties_toggle.click()
-            assert not dialog.inherited_properties_panel.isHidden()
-            assert dialog.inherited_properties_toggle.text() == "隱藏系統屬性"
-            dialog.inherited_properties_toggle.click()
-            assert dialog.inherited_properties_panel.isHidden()
-            assert dialog.inherited_properties_toggle.text() == "顯示系統屬性"
-            assert dialog.inherited_tray_edit.isReadOnly()
+            duplex_idx = dialog.duplex_combo.findData("short")
+            assert duplex_idx >= 0
+            dialog.duplex_combo.setCurrentIndex(duplex_idx)
+
+            effective = dialog._build_effective_options()
+            submission = dialog._build_submission_options()
+            assert effective.paper_size == "letter"
+            assert effective.orientation == "landscape"
+            assert effective.duplex == "short"
+            assert effective.color_mode == "grayscale"
+            assert submission.override_fields == {"duplex"}
         finally:
             dialog.close()
 
 
-def test_inherited_tray_readonly_shows_label_when_options_available() -> None:
+def test_opening_properties_resets_touched_overrides() -> None:
     _ensure_app()
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = Path(tmp) / "sample.pdf"
         _make_single_page_pdf(pdf_path)
         dispatcher = _FakeDispatcher(supports_properties=True)
         dispatcher.printer_preferences = {
-            "paper_tray": "5",
-            "paper_tray_options": [
-                {"code": "1", "label": "紙盤1"},
-                {"code": "5", "label": "紙盤5(手送紙盤)"},
-            ],
+            "paper_size": "letter",
+            "orientation": "landscape",
+            "duplex": "long",
+            "color_mode": "grayscale",
+        }
+        printers = [PrinterDevice(name="Printer A", is_default=True, status="ready")]
+
+        dialog = UnifiedPrintDialog(
+            parent=None,
+            dispatcher=dispatcher,
+            printers=printers,
+            pdf_path=str(pdf_path),
+            total_pages=1,
+            current_page=1,
+            job_name="test_job",
+        )
+        try:
+            color_idx = dialog.color_combo.findData("color")
+            assert color_idx >= 0
+            dialog.color_combo.setCurrentIndex(color_idx)
+            assert dialog._build_submission_options().override_fields == {"color_mode"}
+
+            dispatcher.printer_preferences = {
+                "paper_size": "a4",
+                "orientation": "portrait",
+                "duplex": "none",
+                "color_mode": "grayscale",
+            }
+            dialog.printer_properties_btn.click()
+
+            submission = dialog._build_submission_options()
+            assert submission.paper_size == "a4"
+            assert submission.orientation == "portrait"
+            assert submission.duplex == "none"
+            assert submission.color_mode == "grayscale"
+            assert submission.override_fields == set()
+        finally:
+            dialog.close()
+
+
+def test_properties_cancel_keeps_current_ui_and_touched_state() -> None:
+    _ensure_app()
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "sample.pdf"
+        _make_single_page_pdf(pdf_path)
+        dispatcher = _FakeDispatcher(supports_properties=True)
+        dispatcher.printer_preferences = {
+            "paper_size": "letter",
+            "orientation": "landscape",
+            "duplex": "long",
+            "color_mode": "grayscale",
+        }
+        dispatcher.open_printer_properties_result = None
+        printers = [PrinterDevice(name="Printer A", is_default=True, status="ready")]
+
+        dialog = UnifiedPrintDialog(
+            parent=None,
+            dispatcher=dispatcher,
+            printers=printers,
+            pdf_path=str(pdf_path),
+            total_pages=1,
+            current_page=1,
+            job_name="test_job",
+        )
+        try:
+            duplex_idx = dialog.duplex_combo.findData("short")
+            assert duplex_idx >= 0
+            dialog.duplex_combo.setCurrentIndex(duplex_idx)
+            assert dialog.color_combo.currentData() == "grayscale"
+            assert dialog._build_submission_options().override_fields == {"duplex"}
+
+            dialog.printer_properties_btn.click()
+
+            assert dialog.color_combo.currentData() == "grayscale"
+            assert dialog._build_submission_options().override_fields == {"duplex"}
+        finally:
+            dialog.close()
+
+
+def test_driver_private_properties_use_system_color_state_in_ui() -> None:
+    _ensure_app()
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "sample.pdf"
+        _make_single_page_pdf(pdf_path)
+        dispatcher = _FakeDispatcher(supports_properties=True)
+        dispatcher.printer_preferences = {
+            "paper_size": "a4",
+            "orientation": "portrait",
+            "duplex": "long",
+            "color_mode": "color",
+            "paper_tray": "15",
+        }
+        dispatcher.open_printer_properties_result = {
+            "paper_size": "a4",
+            "orientation": "portrait",
+            "duplex": "long",
+            "color_mode": "color",
+            "paper_tray": "15",
+            "opaque_fields": ["color_mode", "paper_tray"],
         }
         printers = [PrinterDevice(name="Printer A", is_default=True, status="ready")]
 
@@ -239,6 +355,73 @@ def test_inherited_tray_readonly_shows_label_when_options_available() -> None:
         )
         try:
             dialog.printer_properties_btn.click()
-            assert dialog.inherited_tray_edit.text() == "紙盤5(手送紙盤) (5)"
+            assert dialog.color_combo.currentData() == "system"
+
+            submission = dialog._build_submission_options()
+            assert submission.color_mode == "system"
+            assert submission.override_fields == set()
+
+            grayscale_idx = dialog.color_combo.findData("grayscale")
+            assert grayscale_idx >= 0
+            dialog.color_combo.setCurrentIndex(grayscale_idx)
+
+            submission = dialog._build_submission_options()
+            assert submission.color_mode == "grayscale"
+            assert submission.override_fields == {"color_mode"}
         finally:
             dialog.close()
+
+
+def test_switching_printers_resets_touched_overrides_and_loads_new_defaults() -> None:
+    _ensure_app()
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "sample.pdf"
+        _make_single_page_pdf(pdf_path)
+        dispatcher = _FakeDispatcher(supports_properties=True)
+        dispatcher.printer_preferences_by_name = {
+            "Printer A": {
+                "paper_size": "letter",
+                "orientation": "landscape",
+                "duplex": "long",
+                "color_mode": "grayscale",
+            },
+            "Printer B": {
+                "paper_size": "a4",
+                "orientation": "portrait",
+                "duplex": "none",
+                "color_mode": "color",
+            },
+        }
+        printers = [
+            PrinterDevice(name="Printer A", is_default=True, status="ready"),
+            PrinterDevice(name="Printer B", is_default=False, status="ready"),
+        ]
+
+        dialog = UnifiedPrintDialog(
+            parent=None,
+            dispatcher=dispatcher,
+            printers=printers,
+            pdf_path=str(pdf_path),
+            total_pages=1,
+            current_page=1,
+            job_name="test_job",
+        )
+        try:
+            paper_idx = dialog.paper_combo.findData("legal")
+            assert paper_idx >= 0
+            dialog.paper_combo.setCurrentIndex(paper_idx)
+            assert dialog._build_submission_options().override_fields == {"paper_size"}
+
+            printer_b_idx = dialog.printer_combo.findData("Printer B")
+            assert printer_b_idx >= 0
+            dialog.printer_combo.setCurrentIndex(printer_b_idx)
+
+            submission = dialog._build_submission_options()
+            assert submission.paper_size == "a4"
+            assert submission.orientation == "portrait"
+            assert submission.duplex == "none"
+            assert submission.color_mode == "color"
+            assert submission.override_fields == set()
+        finally:
+            dialog.close()
+

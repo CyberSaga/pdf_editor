@@ -83,6 +83,7 @@ def run() -> int:
         reverse_order=1,
         paper_size="A4",
         orientation="LANDSCAPE",
+        override_fields={"Orientation", "duplex", "unknown"},
     ).normalized()
     _assert(opts.scale_mode == "custom", f"scale_mode mismatch: {opts.scale_mode}")
     _assert(opts.scale_percent == 25, f"scale_percent mismatch: {opts.scale_percent}")
@@ -90,6 +91,7 @@ def run() -> int:
     _assert(opts.reverse_order is True, "reverse_order should be True")
     _assert(opts.paper_size == "a4", f"paper_size mismatch: {opts.paper_size}")
     _assert(opts.orientation == "landscape", f"orientation mismatch: {opts.orientation}")
+    _assert(opts.override_fields == {"orientation", "duplex"}, f"override_fields mismatch: {opts.override_fields}")
 
     print("[PASS] unified print dialog logic checks")
     return 0

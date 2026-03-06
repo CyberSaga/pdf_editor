@@ -14,6 +14,11 @@ from .layout import (
 from .page_selection import normalize_page_subset
 
 
+OVERRIDABLE_PRINT_FIELDS = frozenset(
+    {"paper_size", "orientation", "duplex", "color_mode"}
+)
+
+
 @dataclass(slots=True)
 class PrinterDevice:
     """System printer metadata."""
@@ -46,6 +51,7 @@ class PrintJobOptions:
     scale_percent: int = 100  # 25~400
     page_subset: str = "all"  # all | odd | even
     reverse_order: bool = False
+    override_fields: set[str] = field(default_factory=set)
     extra_options: Dict[str, str] = field(default_factory=dict)
 
     def normalized(self) -> "PrintJobOptions":
@@ -57,6 +63,11 @@ class PrintJobOptions:
         transport = self.transport.lower().strip() or "auto"
         scale_mode = normalize_scale_mode(self.scale_mode, fit_to_page=bool(self.fit_to_page))
         scale_percent = normalize_scale_percent(self.scale_percent)
+        override_fields = {
+            str(item).strip().lower()
+            for item in set(self.override_fields or set())
+            if str(item).strip().lower() in OVERRIDABLE_PRINT_FIELDS
+        }
         fit_to_page = scale_mode == "fit"
         return PrintJobOptions(
             printer_name=(self.printer_name or "").strip() or None,
@@ -77,6 +88,7 @@ class PrintJobOptions:
             scale_percent=scale_percent,
             page_subset=normalize_page_subset(self.page_subset),
             reverse_order=bool(self.reverse_order),
+            override_fields=override_fields,
             extra_options=dict(self.extra_options or {}),
         )
 

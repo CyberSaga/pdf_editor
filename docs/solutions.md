@@ -1090,3 +1090,133 @@ Files:
 Verification:
 - `pytest -q test_scripts/test_print_dialog_properties_button.py` -> pass
 - `pytest -q test_scripts/test_print_dialog_properties_button.py test_scripts/test_qt_bridge_layout.py test_scripts/test_win_driver_properties.py` -> pass
+
+### S12. Touch-based precedence for hardware print settings
+
+Problem:
+- App print controls could silently overwrite native printer `屬性` values even when the user never changed those controls in the app.
+- Users needed vendor/system defaults to remain authoritative until they explicitly changed a hardware field inside the unified print dialog.
+
+Root cause:
+- Dialog option building treated the current UI state as authoritative for every field, regardless of whether the value came from native printer preferences or from user interaction.
+- Print backends had no explicit metadata telling them which hardware fields were intentional app-side overrides versus inherited system defaults.
+
+Candidate fixes:
+1. Keep current behavior and document that app UI always wins.
+2. Remove app-side hardware controls entirely and force all hardware changes through native `屬性`.
+3. Track touched hardware fields in the dialog, inherit native defaults for untouched hardware fields, and pass explicit override metadata downstream so each print backend only applies user-touched hardware settings.
+
+Chosen fix:
+- Option 3.
+- Added `PrintJobOptions.override_fields` as normalized backend-facing metadata for hardware overrides.
+- Unified print dialog now caches latest printer preferences, tracks user-touched `paper_size` / `orientation` / `duplex` / `color_mode`, and builds effective options by merging untouched native defaults with touched UI values.
+- If a native preference for one of those hardware fields is unavailable, the dialog falls back to the current UI value and marks that field overridden for the current job.
+- Qt print bridge now applies page layout, duplex, and color mode only when the corresponding field is marked overridden.
+- Linux/macOS direct-print paths now omit duplex/color CUPS or `lp` options unless the app explicitly touched those fields.
+- App-owned job settings (`copies`, `dpi`, `collate`, page range, scale`) remain unconditional.
+
+Files:
+- `src/printing/base_driver.py`
+- `src/printing/print_dialog.py`
+- `src/printing/qt_bridge.py`
+- `src/printing/platforms/linux_driver.py`
+- `test_scripts/test_print_dialog_properties_button.py`
+- `test_scripts/test_qt_bridge_layout.py`
+- `test_scripts/test_linux_driver_overrides.py`
+- `test_scripts/test_print_dialog_logic.py`
+
+Verification:
+- `pytest -q test_scripts/test_print_dialog_properties_button.py test_scripts/test_qt_bridge_layout.py test_scripts/test_linux_driver_overrides.py` -> pass
+- `python test_scripts/test_print_dialog_logic.py` -> pass
+
+### S13. Color mode changed in native properties but app UI stayed on old value
+
+Problem:
+- After changing `色彩/黑白` inside native printer `屬性`, printed output followed the new setting, but the app's `色彩` combo could stay on the previous UI value.
+- Other properties such as paper/orientation/duplex synced correctly, making `color_mode` look uniquely broken.
+
+Root cause:
+- Windows preference sync relied mainly on `GetPrinter(..., 2)` plus public fields from the dialog-returned DEVMODE.
+- Some drivers expose updated color mode only through per-user printer defaults (`GetPrinter(..., 9)`) after the native dialog persists settings, while the public/global DEVMODE path can still report the older `Color` value or omit it entirely.
+- `open_printer_properties(...)` also built the merged preference snapshot before attempting `SetPrinter(..., 9)`, so the app could miss the just-changed user default.
+- The dialog treated non-error `DocumentProperties(...)` results as success, so `取消` could still trigger a resync path.
+- After merged preferences were rebuilt, public DEVMODE fallback values were applied with unconditional overwrite, which could replace a correct level-9 `grayscale` result with stale public `color`.
+
+Candidate fixes:
+1. Keep reading only `GetPrinter(..., 2)` and treat color-mode mismatch as a vendor-driver limitation.
+2. Add a special-case fallback only for `color_mode`, leaving the rest of preference sync unchanged.
+3. Merge Windows preference snapshots from `GetPrinter(..., 2/8/9)` and, after native properties close, persist level 9 first and then rebuild the merged preference snapshot before syncing UI.
+
+Chosen fix:
+- Option 3.
+- Added helper logic to safely read `GetPrinter(..., 2/8/9)` and merge DEVMODE preferences from least specific to most specific.
+- `get_printer_preferences(...)` now prefers per-user defaults when available, so UI sync can reflect color mode selected in native `屬性`.
+- `open_printer_properties(...)` now treats non-`IDOK` prompt results as cancel/no-op, so app UI and touched-state are preserved when the user presses `取消`.
+- `open_printer_properties(...)` now attempts `SetPrinter(..., 9)` before rebuilding merged preferences, then uses public dialog-returned DEVMODE values only as missing-key fallback so stale public `color_mode` cannot overwrite a newer per-user value.
+
+Files:
+- `src/printing/platforms/win_driver.py`
+- `src/printing/print_dialog.py`
+- `test_scripts/test_win_driver_properties.py`
+- `test_scripts/test_print_dialog_properties_button.py`
+
+Verification:
+- `pytest -q test_scripts/test_win_driver_properties.py test_scripts/test_print_dialog_properties_button.py test_scripts/test_qt_bridge_layout.py test_scripts/test_linux_driver_overrides.py` -> pass
+- `python test_scripts/test_print_dialog_logic.py` -> pass
+## 10. 列印屬性同步與 UI 邊界（2026-03）
+
+### 10.1 原生 `屬性` 視窗關閉後，app 的「色彩」總是回到彩色
+
+**問題：**  
+使用者在 Windows 印表機原生 `屬性` 視窗中改成黑白，或直接按取消，回到 app 的列印對話框後，「色彩」仍固定顯示為彩色。
+
+**原因：**  
+- 舊流程把 `DocumentProperties(...)` 回傳後的資料直接當成可信 public DEVMODE。  
+- 某些 Windows 廠商驅動會把使用者在原生視窗的變更寫進 private `DriverExtra`，但不更新 public `dmColor` / `dmDefaultSource`。  
+- 取消時若仍重新同步預設值，也會把 app 目前 UI 狀態覆蓋掉。
+
+**有效解法（已實作）：**  
+- Windows driver 改為優先走 `DocumentPropertiesW` + 完整 DEVMODE buffer 路徑。  
+- 原生視窗取消時回傳 `None`，dialog 保持目前 UI 與 touched-state，不重同步。  
+- 若偵測到 private `DriverExtra` 改變、但 public DEVMODE 硬體欄位未改，將該欄位標記為 opaque。對這類 opaque 欄位，app 不再誤顯示舊的 public 值，而是把色彩顯示為 `依系統屬性`。
+
+**檔案：**  
+- `src/printing/platforms/win_driver.py`  
+- `src/printing/print_dialog.py`
+
+### 10.2 紙盤 public 值固定為 `15`，但實際選擇已在原生驅動中改變
+
+**問題：**  
+使用者在原生 `屬性` 視窗更換紙盤後，app 端若讀取 public `DefaultSource`，仍會看到固定值（例如 `15`），與實際紙盤選擇不一致。
+
+**原因：**  
+這與色彩屬於同一類問題：驅動把真實設定寫進 private `DriverExtra`，但不更新 generic public DEVMODE 欄位，因此 app 無法通用地反推出正確紙盤。
+
+**有效解法（已實作）：**  
+- app 不再暴露紙盤欄位，也不再顯示唯讀紙盤資訊區塊。  
+- 列印送出時維持 `paper_tray="auto"`，讓系統/驅動沿用原生屬性中的實際紙盤設定。  
+- UI 只保留可安全同步的欄位，不對無法通用解析的驅動私有設定做錯誤展示。
+
+**檔案：**  
+- `src/printing/print_dialog.py`
+
+### 10.3 硬體欄位不應由 app 無條件覆寫系統預設
+
+**問題：**  
+即使使用者沒有在 app 內變更紙張/方向/雙面/色彩，舊列印後端仍可能把 app 對話框中的值無條件套到 Qt/CUPS，造成系統原生設定被靜默覆寫。
+
+**原因：**  
+列印對話框、Qt bridge、Linux/CUPS driver 之間缺少一致的「哪些硬體欄位是 app 明確 override」契約。
+
+**有效解法（已實作）：**  
+- 在 `PrintJobOptions` 中引入 `override_fields`。  
+- `UnifiedPrintDialog` 追蹤使用者在 app 內實際 touched 的硬體欄位，只對 touched 欄位標記 override。  
+- Qt bridge 與 Linux/CUPS backend 僅在 `override_fields` 命中時才套用 duplex/color/page-layout，避免默默壓過原生屬性。
+
+**檔案：**  
+- `src/printing/base_driver.py`  
+- `src/printing/print_dialog.py`  
+- `src/printing/qt_bridge.py`  
+- `src/printing/platforms/linux_driver.py`
+
+---
