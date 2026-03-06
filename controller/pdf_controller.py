@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QMessageBox, QApplication, QFileDialog, QDialog
-from PySide6.QtGui import QPixmap, QShortcut, QKeySequence
+from PySide6.QtGui import QImage, QPixmap, QShortcut, QKeySequence
 from PySide6.QtCore import QTimer
 from model.pdf_model import PDFModel
 from model.edit_commands import EditTextCommand, SnapshotCommand, AddTextboxCommand
@@ -23,7 +23,6 @@ FIRST_PAGE_PREVIEW_SCALE = 0.25
 from src.printing import PrintDispatcher, PrintingError
 from src.printing.print_dialog import UnifiedPrintDialog
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
@@ -339,6 +338,12 @@ class PDFController:
             logger.error(f"儲存失敗: {e}")
             show_error(self.view, f"儲存失敗: {e}")
 
+    def _render_print_preview_image(self, page_index: int, dpi: int) -> QImage:
+        scale = max(1.0, float(dpi) / 72.0)
+        pix = self.model.get_page_snapshot(page_index + 1, scale=scale)
+        fmt = QImage.Format_RGBA8888 if pix.alpha else QImage.Format_RGB888
+        return QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
+
     def print_document(self):
         """列印當前文件（統一設定視窗 + 右側預覽）。"""
         if not self.model.doc:
@@ -357,19 +362,15 @@ class PDFController:
                 show_error(self.view, "找不到可用的印表機")
                 return
 
-            snapshot_bytes = self.model.build_print_snapshot()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(snapshot_bytes)
-                temp_path = tmp.name
-
             self._print_dialog = UnifiedPrintDialog(
                 parent=self.view,
                 dispatcher=self.print_dispatcher,
                 printers=printers,
-                pdf_path=temp_path,
+                pdf_path="",
                 total_pages=len(self.model.doc),
                 current_page=self.view.current_page + 1,
                 job_name=Path(self.model.original_path or "pdf_editor_job").name,
+                preview_page_provider=self._render_print_preview_image,
             )
 
             if self._print_dialog.exec() != QDialog.DialogCode.Accepted:
@@ -385,6 +386,11 @@ class PDFController:
                 if status in {"offline", "stopped"}:
                     show_error(self.view, f"印表機狀態異常：{status}")
                     return
+
+            snapshot_bytes = self.model.build_print_snapshot()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(snapshot_bytes)
+                temp_path = tmp.name
 
             result = self.print_dispatcher.print_pdf_file(temp_path, dialog_result.options)
             QMessageBox.information(

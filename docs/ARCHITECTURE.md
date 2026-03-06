@@ -26,6 +26,7 @@ The project uses MVC with built-in tool extensions.
 ```
 
 Entry wiring happens in `main.py`, which instantiates `PDFModel`, `PDFView`, and `PDFController`.
+Application-level logging configuration is also owned by `main.py`; importable modules only acquire named loggers and do not call `logging.basicConfig(...)` at import time.
 
 ## 2. Layer Responsibilities
 
@@ -137,6 +138,8 @@ The unified print dialog also exposes native printer properties through driver-d
 Tray and other non-UI driver preferences remain pass-through system defaults because dialog output keeps `paper_tray="auto"`. The app no longer renders a tray/system-properties section in the dialog UI. On Windows, the driver attempts per-user preference persistence (`SetPrinter` level 9) so vendor/private DEVMODE settings can carry into later jobs without queue-admin rights. When a driver changes only private `DriverExtra` data and leaves public DEVMODE fields stale, the driver marks those fields opaque; the dialog then shows `color_mode="system"` (`依系統屬性`) instead of incorrectly echoing stale public values.
 `PrintJobOptions.override_fields` is the shared contract between the dialog and print backends. The Qt bridge applies page layout only when `paper_size` or `orientation` is overridden, and applies duplex/color mode only when those fields are marked overridden. The Linux/macOS CUPS path follows the same rule by omitting duplex/color command options unless the app explicitly touched them. This keeps app-owned job settings (`copies`, `dpi`, `collate`, page range, scaling) unconditional while preventing silent overrides of native hardware defaults.
 The Qt bridge sets page layout before print activation and does not mutate layout after `QPainter.begin(...)`, preventing active-printer warnings (`QPrinter::setPageLayout: Cannot be changed while printer is active`).
+Preview rendering and final submission are intentionally split. `UnifiedPrintDialog` can render preview pages from a live-document provider callback, so opening the dialog does not require prebuilding a full print snapshot. `PDFController.print_document()` builds the full print snapshot/temp PDF only after the dialog returns `Accepted`, avoiding wasted serialization and disk I/O on cancel.
+Preview refresh is also guarded at the dialog boundary: resize / wheel / row-change paths flow through a safe preview wrapper that converts temporary option-building errors (for example invalid custom page range while typing) into inline preview messages rather than unhandled UI-event exceptions.
 
 ## 7. Guardrails
 

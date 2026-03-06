@@ -10,6 +10,7 @@ from pathlib import Path
 
 import fitz
 from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QImage
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -424,4 +425,67 @@ def test_switching_printers_resets_touched_overrides_and_loads_new_defaults() ->
             assert submission.override_fields == set()
         finally:
             dialog.close()
+
+
+def test_preview_errors_are_handled_without_raising_from_ui_path() -> None:
+    _ensure_app()
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "sample.pdf"
+        _make_single_page_pdf(pdf_path)
+        dispatcher = _FakeDispatcher(supports_properties=False)
+        printers = [PrinterDevice(name="Printer A", is_default=True, status="ready")]
+
+        dialog = UnifiedPrintDialog(
+            parent=None,
+            dispatcher=dispatcher,
+            printers=printers,
+            pdf_path=str(pdf_path),
+            total_pages=1,
+            current_page=1,
+            job_name="test_job",
+        )
+        try:
+            custom_idx = dialog.range_mode_combo.findData("custom")
+            assert custom_idx >= 0
+            dialog.range_mode_combo.setCurrentIndex(custom_idx)
+            dialog.custom_range_edit.setText("")
+            dialog._page_indices = [0]
+
+            dialog._safe_render_preview()
+
+            assert dialog.preview_message_label.text()
+            assert dialog.page_list.count() == 0
+        finally:
+            dialog.close()
+
+
+def test_preview_provider_supports_dialog_without_temp_pdf_path() -> None:
+    _ensure_app()
+    dispatcher = _FakeDispatcher(supports_properties=False)
+    printers = [PrinterDevice(name="Printer A", is_default=True, status="ready")]
+
+    def _preview_provider(page_index: int, dpi: int) -> QImage:
+        _ = (page_index, dpi)
+        image = QImage(120, 160, QImage.Format_RGB888)
+        image.fill(0xFFFFFF)
+        return image
+
+    dialog = UnifiedPrintDialog(
+        parent=None,
+        dispatcher=dispatcher,
+        printers=printers,
+        pdf_path="",
+        total_pages=1,
+        current_page=1,
+        job_name="test_job",
+        preview_page_provider=_preview_provider,
+    )
+    try:
+        dialog._page_indices = [0]
+        dialog._safe_render_preview()
+        pixmap = dialog.preview_label.pixmap()
+        assert pixmap is not None and not pixmap.isNull()
+        assert dialog.preview_message_label.text() == ""
+    finally:
+        dialog.close()
 

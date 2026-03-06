@@ -1,10 +1,12 @@
 import sys
+import logging
 from PySide6.QtWidgets import QApplication
 from model.pdf_model import PDFModel
 from view.pdf_view import PDFView
 from controller.pdf_controller import PDFController
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
     app = QApplication(sys.argv)
     model = PDFModel()
     view = PDFView()

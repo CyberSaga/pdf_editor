@@ -57,7 +57,6 @@ _CUSTOM_CJK_ALIASES = {
 }
 
 # 設置日誌
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 

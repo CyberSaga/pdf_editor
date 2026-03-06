@@ -1,6 +1,7 @@
 ﻿pdf_editor/
   main.py
     # 入口：建立 PDFModel / PDFView / PDFController
+    # - 全域 logging.basicConfig 只在這裡初始化；其他模組只拿 named logger
 
   model/
     pdf_model.py
@@ -60,6 +61,9 @@
       # - 份數/DPI/逐份列印/頁面範圍/縮放仍屬 app 工作設定，不受系統屬性接管
       # - 不再顯示紙盤或「系統屬性（唯讀）」區塊；紙盤仍以 paper_tray="auto" 方式 pass-through 給系統驅動
       # - Windows 若原生屬性只更新 private DriverExtra 而未更新 public DEVMODE，dialog 將色彩顯示為「依系統屬性」
+      # - 預覽可直接透過 live-document provider 單頁渲染，不必在開啟 dialog 前先生成整份列印 snapshot
+      # - 真正的 build_print_snapshot / temp PDF 生成延後到使用者按下列印確認之後
+      # - preview refresh 有安全包裝；自訂頁碼等暫時無效輸入只會顯示 preview error，不會從 UI event 直接丟例外
       print_dialog.py
       dispatcher.py
       page_selection.py
