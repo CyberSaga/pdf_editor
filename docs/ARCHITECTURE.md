@@ -133,7 +133,8 @@ Tool lifecycle hooks cover session open/close/saved behavior, unsaved-change che
 ## 6. Printing Subsystem
 
 Printing is implemented under `src/printing/*` (dialog, dispatcher, layout, selection, renderer, platform drivers). Controller entry is `PDFController.print_document()`.
-The unified print dialog also exposes native printer properties through driver-dispatched calls (`PrintDispatcher.open_printer_properties(...)`), enabling OS/vendor preference dialogs from the same workflow. The dialog then applies returned/default driver preferences back into UI fields (`paper_size`, `orientation`, `duplex`, `color_mode`, `dpi`, `copies`).
+The unified print dialog also exposes native printer properties through driver-dispatched calls (`PrintDispatcher.open_printer_properties(...)`), enabling OS/vendor preference dialogs from the same workflow. The dialog then applies returned/default driver preferences back into UI fields (`paper_size`, `orientation`, `duplex`, `color_mode`, `dpi`, `copies`) while preserving tray and other non-UI driver preferences as system-default baseline behavior. A collapsed read-only panel can display inherited tray metadata for inspection without introducing app-side override fields. On Windows, the driver attempts per-user preference persistence (`SetPrinter` level 9) so vendor/private DEVMODE settings can carry into later jobs without queue-admin rights.
+The Qt bridge sets page layout before print activation and does not mutate layout after `QPainter.begin(...)`, preventing active-printer warnings (`QPrinter::setPageLayout: Cannot be changed while printer is active`).
 
 ## 7. Guardrails
 

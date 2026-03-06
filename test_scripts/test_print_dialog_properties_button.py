@@ -82,6 +82,7 @@ def test_properties_button_calls_dispatcher_when_supported() -> None:
         )
         try:
             assert dialog.printer_properties_btn.isEnabled()
+            assert dialog.inherited_properties_panel.isHidden()
             dialog.printer_properties_btn.click()
             assert dispatcher.opened_for == ["Printer A"]
         finally:
@@ -126,6 +127,7 @@ def test_properties_button_syncs_dialog_fields_from_system_preferences() -> None
             "color_mode": "grayscale",
             "dpi": 600,
             "copies": 3,
+            "paper_tray": "2",
         }
         printers = [PrinterDevice(name="Printer A", is_default=True, status="ready")]
 
@@ -146,5 +148,97 @@ def test_properties_button_syncs_dialog_fields_from_system_preferences() -> None
             assert dialog.color_combo.currentData() == "grayscale"
             assert dialog.dpi_spin.value() == 600
             assert dialog.copies_spin.value() == 3
+            assert not hasattr(dialog, "paper_tray_combo")
+            assert dialog._build_options().paper_tray == "auto"
+        finally:
+            dialog.close()
+
+
+def test_properties_tray_preferences_are_inherited_without_dialog_field() -> None:
+    _ensure_app()
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "sample.pdf"
+        _make_single_page_pdf(pdf_path)
+        dispatcher = _FakeDispatcher(supports_properties=True)
+        dispatcher.printer_preferences = {
+            "paper_tray": "15",
+        }
+        printers = [PrinterDevice(name="Printer A", is_default=True, status="ready")]
+
+        dialog = UnifiedPrintDialog(
+            parent=None,
+            dispatcher=dispatcher,
+            printers=printers,
+            pdf_path=str(pdf_path),
+            total_pages=1,
+            current_page=1,
+            job_name="test_job",
+        )
+        try:
+            dialog.printer_properties_btn.click()
+            assert not hasattr(dialog, "paper_tray_combo")
+            assert dialog._build_options().paper_tray == "auto"
+            assert dialog.inherited_tray_edit.text() == "15"
+        finally:
+            dialog.close()
+
+
+def test_inherited_properties_panel_is_collapsed_and_expandable() -> None:
+    _ensure_app()
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "sample.pdf"
+        _make_single_page_pdf(pdf_path)
+        dispatcher = _FakeDispatcher(supports_properties=True)
+        printers = [PrinterDevice(name="Printer A", is_default=True, status="ready")]
+
+        dialog = UnifiedPrintDialog(
+            parent=None,
+            dispatcher=dispatcher,
+            printers=printers,
+            pdf_path=str(pdf_path),
+            total_pages=1,
+            current_page=1,
+            job_name="test_job",
+        )
+        try:
+            assert dialog.inherited_properties_panel.isHidden()
+            dialog.inherited_properties_toggle.click()
+            assert not dialog.inherited_properties_panel.isHidden()
+            assert dialog.inherited_properties_toggle.text() == "隱藏系統屬性"
+            dialog.inherited_properties_toggle.click()
+            assert dialog.inherited_properties_panel.isHidden()
+            assert dialog.inherited_properties_toggle.text() == "顯示系統屬性"
+            assert dialog.inherited_tray_edit.isReadOnly()
+        finally:
+            dialog.close()
+
+
+def test_inherited_tray_readonly_shows_label_when_options_available() -> None:
+    _ensure_app()
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "sample.pdf"
+        _make_single_page_pdf(pdf_path)
+        dispatcher = _FakeDispatcher(supports_properties=True)
+        dispatcher.printer_preferences = {
+            "paper_tray": "5",
+            "paper_tray_options": [
+                {"code": "1", "label": "紙盤1"},
+                {"code": "5", "label": "紙盤5(手送紙盤)"},
+            ],
+        }
+        printers = [PrinterDevice(name="Printer A", is_default=True, status="ready")]
+
+        dialog = UnifiedPrintDialog(
+            parent=None,
+            dispatcher=dispatcher,
+            printers=printers,
+            pdf_path=str(pdf_path),
+            total_pages=1,
+            current_page=1,
+            job_name="test_job",
+        )
+        try:
+            dialog.printer_properties_btn.click()
+            assert dialog.inherited_tray_edit.text() == "紙盤5(手送紙盤) (5)"
         finally:
             dialog.close()

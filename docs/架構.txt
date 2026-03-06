@@ -54,6 +54,8 @@
       # 列印子系統：dialog / dispatcher / page selection / layout / drivers
       # - UnifiedPrintDialog 印表機列新增「屬性」按鈕，可開啟系統原生印表機設定視窗（支援平台）
       # - 屬性視窗關閉後，將驅動回傳的紙張/方向/雙面/色彩/DPI/份數同步回 app 對話框
+      # - 紙盤與廠商私有設定不在 app 對話框暴露，直接沿用系統屬性
+      # - 提供預設收合的「系統屬性（唯讀）」區塊，點選後可查看沿用紙盤值
       print_dialog.py
       dispatcher.py
       page_selection.py

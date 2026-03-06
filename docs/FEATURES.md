@@ -90,3 +90,6 @@ When closing with unsaved changes, confirmation dialogs provide explicit key hin
 ## 15. Native Printer Properties Entry
 
 In the unified print dialog, the printer selector row includes a `屬性` button beside the printer combo. On supported systems, this opens the OS-native printer properties/preferences dialog for the currently selected printer so users can adjust vendor-specific settings with system tools. Returned/default preferences are synchronized back into dialog controls (`paper_size`, `orientation`, `duplex`, `color_mode`, `dpi`, `copies`).
+Paper tray is no longer exposed as an app-side field. Tray and vendor/private options are inherited from system/native properties and passed through by keeping tray source unmodified in app defaults.
+The dialog provides a collapsed-by-default read-only section (`顯示系統屬性`) so users can expand it only when needed and inspect inherited tray value without editing it.
+On Windows, per-user DEVMODE persistence is attempted via `SetPrinter` level 9 so vendor/private properties set in `屬性` can continue to apply to later jobs without requiring queue-admin permissions.

@@ -40,6 +40,7 @@ class PrintJobOptions:
     output_pdf_path: Optional[str] = None  # virtual printer target
     transport: str = "auto"  # auto | direct_pdf | raster
     paper_size: str = "auto"  # auto | a4 | letter | legal
+    paper_tray: str = "auto"  # auto | printer bin code/name
     orientation: str = "auto"  # auto | portrait | landscape
     scale_mode: str = "fit"  # fit | actual | custom
     scale_percent: int = 100  # 25~400
@@ -70,6 +71,7 @@ class PrintJobOptions:
             output_pdf_path=(self.output_pdf_path or "").strip() or None,
             transport=transport,
             paper_size=(self.paper_size or "auto").strip().lower() or "auto",
+            paper_tray=(self.paper_tray or "auto").strip() or "auto",
             orientation=normalize_orientation(self.orientation),
             scale_mode=scale_mode,
             scale_percent=scale_percent,

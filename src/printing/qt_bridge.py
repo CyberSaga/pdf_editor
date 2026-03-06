@@ -39,6 +39,48 @@ def _to_duplex_mode(duplex: str) -> QPrinter.DuplexMode:
     return QPrinter.DuplexNone
 
 
+def _to_paper_source(source: str) -> QPrinter.PaperSource:
+    value = (source or "").strip().lower()
+    if value in ("", "auto"):
+        return QPrinter.PaperSource.Auto
+    if value == "manual":
+        return QPrinter.PaperSource.Manual
+    if value == "lower":
+        return QPrinter.PaperSource.Lower
+    if value == "middle":
+        return QPrinter.PaperSource.Middle
+    if value == "upper":
+        return QPrinter.PaperSource.Upper
+    if value == "envelope":
+        return QPrinter.PaperSource.Envelope
+    if value == "cassette":
+        return QPrinter.PaperSource.Cassette
+    if value == "tractor":
+        return QPrinter.PaperSource.Tractor
+    if value == "smallformat":
+        return QPrinter.PaperSource.SmallFormat
+    if value == "largeformat":
+        return QPrinter.PaperSource.LargeFormat
+    if value == "largecapacity":
+        return QPrinter.PaperSource.LargeCapacity
+
+    # Windows DMBIN_* tray codes.
+    try:
+        code = int(value)
+    except ValueError:
+        code = -1
+    mapping = {
+        1: QPrinter.PaperSource.Upper,
+        2: QPrinter.PaperSource.Lower,
+        3: QPrinter.PaperSource.Middle,
+        4: QPrinter.PaperSource.Manual,
+        5: QPrinter.PaperSource.Envelope,
+        14: QPrinter.PaperSource.Cassette,
+        15: QPrinter.PaperSource.FormSource,
+    }
+    return mapping.get(code, QPrinter.PaperSource.CustomSource)
+
+
 def _to_q_orientation(orientation: str) -> QPageLayout.Orientation:
     return QPageLayout.Landscape if orientation == "landscape" else QPageLayout.Portrait
 
@@ -91,6 +133,9 @@ def _apply_printer_options(printer: QPrinter, options: PrintJobOptions) -> None:
     printer.setCopyCount(normalized.copies)
     printer.setCollateCopies(normalized.collate)
     printer.setDuplex(_to_duplex_mode(normalized.duplex))
+    # Keep tray choice in system/native properties unless explicitly overridden.
+    if (normalized.paper_tray or "").strip().lower() not in ("", "auto"):
+        printer.setPaperSource(_to_paper_source(normalized.paper_tray))
     if normalized.color_mode == "grayscale":
         printer.setColorMode(QPrinter.GrayScale)
     else:
@@ -158,11 +203,8 @@ def raster_print_pdf(
     try:
         _draw_page_image(painter, printer, first, normalized)
         for rendered in pages_iter:
-            _set_page_layout(
-                printer,
-                _fitz_rect_to_qrectf(rendered.page_rect),
-                normalized,
-            )
+            # QPrinter blocks page-layout changes while active; changing here
+            # only emits warnings and does not take effect on most backends.
             printer.newPage()
             _draw_page_image(painter, printer, rendered, normalized)
     except Exception as exc:
