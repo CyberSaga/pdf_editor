@@ -70,6 +70,13 @@ Browse mode supports drag text selection with text-bounds snapping. Copy is avai
 
 Large PDF handling uses staged loading and batching to preserve interactivity while thumbnails, scene items, and indexes are built. Rendering and refresh scopes are coordinated to avoid blocking behavior and stale geometry. Key functions include controller batch scheduling and view continuous-scene rebuild paths.
 
+Structural page operations (insert/delete) avoid full-document text reindex:
+- Inserted/imported pages are immediately indexed so their text is editable right away (hit-testing works without manual refresh).
+- Pages whose page numbers shifted are marked stale and rebuilt lazily in the background, keeping the UI responsive on large PDFs.
+- Undo metadata for these operations uses the model-returned "actual affected pages" after validation, so undo/redo refresh targets stay synchronized with real document state.
+
+Key functions include model `delete_pages(...)`, `insert_blank_page(...)`, `insert_pages_from_file(...)`, `ensure_page_index_built(...)`, `TextBlockManager.shift_after_insert/delete`, controller `_schedule_stale_index_drain(...)`, and snapshot restore via `SnapshotCommand`.
+
 ## 13. Text Font Families and CJK Rendering
 
 The text properties font menu supports PDF-safe Latin families and CJK families, including explicit Windows CJK selections:

@@ -481,12 +481,44 @@ class PDFModel:
             raise RuntimeError(f"開啟PDF失敗: {str(e)}")
 
     def ensure_page_index_built(self, page_num: int) -> None:
-        """若該頁尚未建立文字塊索引則建立（供編輯／搜尋前呼叫）。"""
+        """
+        Ensure the requested page is immediately edit/search-ready.
+
+        Contract:
+        - Controller and tools may call this before hit-testing / search / edit flows.
+        - We rebuild if the cache is missing OR marked stale (stale is produced by structural ops that shift
+          page numbers without eagerly rebuilding the entire document).
+
+        Notes:
+        - `page_num` is 1-based to match public UI-facing APIs.
+        """
         page_idx = page_num - 1
         if page_idx < 0 or not self.doc or page_idx >= len(self.doc):
             return
-        if page_idx not in self.block_manager._index:
+        if self.block_manager.page_state(page_idx) in {"missing", "stale"}:
             self.block_manager.rebuild_page(page_idx, self.doc)
+
+    def refresh_structural_indexes(self, affected_pages: List[int]) -> None:
+        """
+        Refresh page text indices after a document snapshot restore (undo/redo) that may have changed content.
+
+        Why it clears everything:
+        - Snapshot restore replaces the whole document bytes, so any cached page indices could be wrong even
+          if page counts match.
+
+        Why it doesn't rebuild everything:
+        - Full-document rebuild is CPU-heavy and can stall the UI for large PDFs. We rebuild only the pages
+          that the controller knows are immediately relevant (`affected_pages`). Other pages are rebuilt
+          lazily through `ensure_page_index_built(...)` or background draining.
+
+        `affected_pages` is expected to be 1-based (same as public APIs).
+        """
+        if not self.doc:
+            return
+        # Snapshot restore invalidates the old cache wholesale, so rebuild only the hot pages now.
+        self.block_manager.clear()
+        for page_num in sorted({page for page in affected_pages if 1 <= page <= len(self.doc)}):
+            self.block_manager.rebuild_page(page_num - 1, self.doc)
 
     def _insert_rotate_for_htmlbox(self, rotation: int) -> int:
         """
@@ -793,17 +825,74 @@ class PDFModel:
             logger.debug("臨時目錄已清理")
             self.temp_dir = None
 
-    def delete_pages(self, pages: List[int]):
-        for page_num in sorted(pages, reverse=True):
-            self.doc.delete_page(page_num - 1)
-        self.block_manager.build_index(self.doc)
+    def delete_pages(self, pages: List[int]) -> List[int]:
+        """
+        Delete pages (1-based) and return the actual deleted pages (1-based, sorted).
 
-    def rotate_pages(self, pages: List[int], degrees: int):
-        for page_num in pages:
+        Source of truth rule:
+        - Controller must use this return value for UI messaging and SnapshotCommand metadata. The input can
+          be dirty (out-of-range, duplicates, non-int), and the model decides the actual effect.
+
+        Indexing rule:
+        - Do not rebuild all pages. Keep unaffected cache entries, mark shifted survivors as stale, and make
+          a nearby anchor page immediately usable for compatibility with existing callers.
+        """
+        if not self.doc:
+            raise ValueError("沒有開啟的PDF文件")
+
+        max_page = len(self.doc)
+        normalized: list[int] = []
+        for value in pages or []:
+            if isinstance(value, bool):
+                continue
+            try:
+                page_num = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= page_num <= max_page:
+                normalized.append(page_num)
+
+        actual_deleted_pages = sorted(set(normalized))
+        deleted_page_idxs = [page_num - 1 for page_num in actual_deleted_pages]
+        for page_num in sorted(actual_deleted_pages, reverse=True):
+            self.doc.delete_page(page_num - 1)
+        # Preserve unaffected cache entries; shifted survivors become stale until demanded.
+        self.block_manager.shift_after_delete(deleted_page_idxs)
+        if self.doc and deleted_page_idxs:
+            # Keep the page nearest the deletion immediately usable for existing callers.
+            anchor_idx = min(deleted_page_idxs[0], len(self.doc) - 1)
+            if anchor_idx >= 0:
+                self.block_manager.rebuild_page(anchor_idx, self.doc)
+        return actual_deleted_pages
+
+    def rotate_pages(self, pages: List[int], degrees: int) -> List[int]:
+        """
+        Rotate pages and return the actual rotated pages (1-based, sorted).
+
+        Controller input can be dirty; model validates and becomes the source of truth for undo metadata.
+        """
+        if not self.doc:
+            raise ValueError("沒有開啟的PDF文件")
+
+        max_page = len(self.doc)
+        normalized: list[int] = []
+        for value in pages or []:
+            if isinstance(value, bool):
+                continue
+            try:
+                page_num = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= page_num <= max_page:
+                normalized.append(page_num)
+
+        actual_pages = sorted(set(normalized))
+        for page_num in actual_pages:
             page = self.doc[page_num - 1]
             page.set_rotation((page.rotation + degrees) % 360)
-        for page_num in pages:
+        for page_num in actual_pages:
             self.block_manager.rebuild_page(page_num - 1, self.doc)
+        return actual_pages
 
     @staticmethod
     def _normalize_image_format(fmt: str) -> str:
@@ -879,8 +968,16 @@ class PDFModel:
         finally:
             new_doc.close()
 
-    def insert_blank_page(self, position: int):
-        """在指定位置插入空白頁面
+    def insert_blank_page(self, position: int) -> List[int]:
+        """
+        Insert one blank page and return the actual inserted page number (1-based).
+
+        Source of truth rule:
+        - Controller must use the returned page number (position can be dirty/out-of-range).
+
+        Indexing rule:
+        - The inserted page must be immediately editable/search-ready, but the shifted suffix can be marked
+          stale and rebuilt lazily.
         
         Args:
             position: 插入位置（1-based），例如 1 表示在第一頁之前，2 表示在第一頁之後
@@ -888,6 +985,11 @@ class PDFModel:
         """
         if not self.doc:
             raise ValueError("沒有開啟的PDF文件")
+
+        try:
+            pos_value = int(position)
+        except (TypeError, ValueError):
+            pos_value = 1
         
         # 獲取當前第一頁的尺寸作為新頁面的尺寸
         if len(self.doc) > 0:
@@ -901,17 +1003,29 @@ class PDFModel:
             height = 842  # A4 height in points
         
         # 轉換為 0-based 索引，並確保不超出範圍
-        insert_at = min(position - 1, len(self.doc))
+        insert_at = min(pos_value - 1, len(self.doc))
         if insert_at < 0:
             insert_at = 0
         
         # 插入空白頁面
         self.doc.new_page(insert_at, width=width, height=height)
         logger.debug(f"在位置 {insert_at + 1} 插入空白頁面，尺寸: {width}x{height}")
-        self.block_manager.build_index(self.doc)
+        # New pages must be editable right away, but later pages can be rebuilt lazily.
+        self.block_manager.shift_after_insert(insert_at, 1)
+        self.block_manager.rebuild_page(insert_at, self.doc)
+        return [insert_at + 1]
 
-    def insert_pages_from_file(self, source_file: str, source_pages: List[int], position: int):
-        """從其他PDF檔案插入頁面到當前文件
+    def insert_pages_from_file(self, source_file: str, source_pages: List[int], position: int) -> List[int]:
+        """
+        Insert pages from another PDF and return the actual inserted page numbers (1-based, ascending).
+
+        Source of truth rule:
+        - Controller must use the returned positions for SnapshotCommand metadata and UI. `source_pages` and
+          `position` can be dirty; the model validates and applies the real operation.
+
+        Indexing rule:
+        - Imported pages are rebuilt immediately for edit hit-testing; shifted suffix pages are marked stale
+          and rebuilt lazily/background.
         
         Args:
             source_file: 來源PDF檔案路徑
@@ -926,17 +1040,40 @@ class PDFModel:
             raise FileNotFoundError(f"來源檔案不存在: {source_file}")
         
         try:
+            try:
+                pos_value = int(position)
+            except (TypeError, ValueError):
+                pos_value = 1
+
             # 開啟來源PDF
             source_doc = fitz.open(str(source_path))
             
             # 轉換為 0-based 索引
-            insert_at = min(position - 1, len(self.doc))
+            insert_at = min(pos_value - 1, len(self.doc))
             if insert_at < 0:
                 insert_at = 0
             
-            # 插入指定的頁面
-            for i, page_num in enumerate(sorted(source_pages)):
-                if 1 <= page_num <= len(source_doc):
+            max_source = len(source_doc)
+            normalized_source: list[int] = []
+            for value in source_pages or []:
+                if isinstance(value, bool):
+                    continue
+                try:
+                    page_num = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= page_num <= max_source:
+                    normalized_source.append(page_num)
+                else:
+                    logger.warning(f"來源檔案頁碼 {value} 超出範圍（總頁數: {max_source}）")
+
+            # Sort and de-dup BEFORE insertion so invalid pages do not distort positional offsets.
+            actual_source_pages = sorted(set(normalized_source))
+
+            inserted_positions: list[int] = []
+            try:
+                # 插入指定的頁面
+                for i, page_num in enumerate(actual_source_pages):
                     # 使用 insert_pdf 方法插入單頁
                     self.doc.insert_pdf(
                         source_doc,
@@ -945,11 +1082,16 @@ class PDFModel:
                         start_at=insert_at + i
                     )
                     logger.debug(f"從 {source_file} 插入頁面 {page_num} 到位置 {insert_at + i + 1}")
-                else:
-                    logger.warning(f"來源檔案頁碼 {page_num} 超出範圍（總頁數: {len(source_doc)}）")
-            
-            source_doc.close()
-            self.block_manager.build_index(self.doc)
+                    inserted_positions.append(insert_at + i + 1)
+            finally:
+                source_doc.close()
+
+            if inserted_positions:
+                # Imported pages are rebuilt immediately; the shifted suffix drains in the background.
+                self.block_manager.shift_after_insert(insert_at, len(inserted_positions))
+                for page_idx in range(insert_at, insert_at + len(inserted_positions)):
+                    self.block_manager.rebuild_page(page_idx, self.doc)
+            return inserted_positions
 
         except Exception as e:
             logger.error(f"從檔案插入頁面失敗: {e}")

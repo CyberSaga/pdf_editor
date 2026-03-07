@@ -1268,3 +1268,32 @@ logging 設定責任沒有集中在 app entrypoint，導致可匯入模組同時
 **驗證：**  
 - `rg -n "logging.basicConfig" main.py controller/pdf_controller.py model/pdf_model.py view/pdf_view.py` 僅剩 `main.py`  
 - `pytest -q` -> pass
+
+---
+
+## 2026-03 Structural Page Operations: Avoid Full Reindex After Insert/Delete
+
+**問題：**  
+在做頁面結構操作（插入頁、刪除頁）時，系統會重新索引全文件所有頁面（TextBlock index），在大檔（數百頁）上容易造成明顯卡頓，且會重現「CPU 飽和導致 UI 事件無法處理」的體感問題。
+
+**原因：**  
+- 結構操作會改變頁碼映射；舊實作為了確保正確性，選擇在操作後直接做全量 `build_index()`。  
+- 全量 rebuild 是 CPU-heavy，對大 PDF 會造成事件迴圈長時間被佔用。
+
+**有效解法（已實作）：**  
+- 採用 hybrid indexing：結構操作後不再全量重建索引，而是保留未受影響的 cache，將頁碼位移造成的頁面標記為 `stale`。  
+- 立即重建「新插入/新匯入」頁面索引，確保新頁文字可立刻被 `edit_text` hit-testing 找到（符合「新增頁文字必須立即可編輯」的需求）。  
+- 其餘 `stale` 頁面在需要時由 `model.ensure_page_index_built(...)` 即時補建，並由 Controller 以小 batch 方式背景 drain，避免再度造成大檔開啟或操作的 UI stall。  
+- Model 端對 Controller 的 dirty input 做 sanitize，並回傳「實際生效的 affected_pages」；Controller 只用回傳值同步 UI 與 `SnapshotCommand` metadata（避免 Controller 重新推導頁碼，維持 Model 為唯一事實來源）。  
+- undo/redo 的 snapshot restore 會清空舊 cache，並只重建 `affected_pages`（其餘頁走 lazy rebuild），避免 undo/redo 觸發全量 rebuild。
+
+**檔案：**  
+- `model/pdf_model.py`（`delete_pages/insert_blank_page/insert_pages_from_file` 回傳實際 affected pages、shift + immediate rebuild、`ensure_page_index_built`）  
+- `model/text_block.py`（`_page_state` 與 `shift_after_insert/shift_after_delete`，支援 stale/clean/missing）  
+- `controller/pdf_controller.py`（結構操作使用 model 回傳值建立 `SnapshotCommand`，並 `_schedule_stale_index_drain`）  
+- `model/edit_commands.py`（`SnapshotCommand` snapshot restore 改為只重建 affected pages）  
+- `test_scripts/test_structural_indexing.py`、`test_scripts/test_multi_tab_plan.py`（行為與 metadata 同步回歸測試）
+
+**驗證：**  
+- `pytest -q test_scripts/test_structural_indexing.py test_scripts/test_multi_tab_plan.py` -> pass  
+- `python test_scripts/test_unified_undo.py` -> PASS

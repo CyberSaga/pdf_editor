@@ -140,12 +140,27 @@ class TextBlockManager:
         self._span_index: dict[int, list[EditableSpan]] = {}
         self._paragraph_index: dict[int, list[EditableParagraph]] = {}
         self._run_to_paragraph: dict[int, dict[str, str]] = {}
+        # Page-level cache state for the current document snapshot.
+        #
+        # Why it exists:
+        # - Structural operations (insert/delete pages) shift page numbers. Existing cached entries are still
+        #   useful, but their "page_idx -> content" mapping becomes invalid until rebuilt.
+        # - Instead of forcing a full-document rebuild (slow + UI-stalling), we keep unaffected entries and
+        #   mark shifted entries as "stale". They will be rebuilt on-demand (edit/search) or drained in a
+        #   background batch loop (controller).
+        #
+        # State values:
+        # - "missing": no cache (default for absent key)
+        # - "clean"  : cache matches the current doc snapshot for this page_idx
+        # - "stale"  : cache exists but the page index was shifted by a structural op; must rebuild before use
+        self._page_state: dict[int, str] = {}
 
     def build_index(self, doc: fitz.Document) -> None:
         self._index.clear()
         self._span_index.clear()
         self._paragraph_index.clear()
         self._run_to_paragraph.clear()
+        self._page_state.clear()
         for page_num in range(len(doc)):
             self._build_page_index(page_num, doc[page_num])
         total = sum(len(blocks) for blocks in self._index.values())
@@ -156,6 +171,60 @@ class TextBlockManager:
             logger.warning(f"rebuild_page out of range: {page_num}")
             return
         self._build_page_index(page_num, doc[page_num])
+
+    def page_state(self, page_idx: int) -> str:
+        """Return cache state for 0-based page index ("missing" | "clean" | "stale")."""
+        return self._page_state.get(page_idx, "missing")
+
+    def list_stale_pages(self) -> list[int]:
+        """Return sorted 0-based page indices that are known stale and safe to rebuild lazily."""
+        return sorted(page_idx for page_idx, state in self._page_state.items() if state == "stale")
+
+    def shift_after_insert(self, insert_at: int, count: int) -> None:
+        if count <= 0:
+            return
+        # Keep cached entries, but shift their keys to match the new page numbering.
+        # Any moved page becomes stale because the underlying page content at that new index is different.
+        for store_name in ("_index", "_span_index", "_paragraph_index", "_run_to_paragraph"):
+            store = getattr(self, store_name)
+            moved = {}
+            for page_idx in sorted(store.keys(), reverse=True):
+                if page_idx >= insert_at:
+                    moved[page_idx + count] = store.pop(page_idx)
+            store.update(moved)
+        moved_state: dict[int, str] = {}
+        for page_idx in sorted(self._page_state.keys(), reverse=True):
+            if page_idx >= insert_at:
+                moved_state[page_idx + count] = "stale"
+                self._page_state.pop(page_idx)
+        self._page_state.update(moved_state)
+
+    def shift_after_delete(self, deleted_pages: list[int]) -> None:
+        if not deleted_pages:
+            return
+        deleted = sorted(set(deleted_pages))
+        deleted_set = set(deleted)
+        # After deletion, later cached pages slide left; any page that moved becomes stale until rebuilt.
+        for store_name in ("_index", "_span_index", "_paragraph_index", "_run_to_paragraph"):
+            store = getattr(self, store_name)
+            remapped = {}
+            for page_idx in sorted(store.keys()):
+                if page_idx in deleted_set:
+                    continue
+                shift = sum(1 for deleted_idx in deleted if deleted_idx < page_idx)
+                remapped[page_idx - shift] = store[page_idx]
+            store.clear()
+            store.update(remapped)
+        remapped_state: dict[int, str] = {}
+        for page_idx in sorted(self._page_state.keys()):
+            if page_idx in deleted_set:
+                continue
+            shift = sum(1 for deleted_idx in deleted if deleted_idx < page_idx)
+            new_idx = page_idx - shift
+            state = self._page_state[page_idx]
+            remapped_state[new_idx] = "stale" if shift else state
+        self._page_state.clear()
+        self._page_state.update(remapped_state)
 
     def _build_page_index(self, page_num: int, page: fitz.Page) -> None:
         blocks_raw = page.get_text("dict", flags=0).get("blocks", [])
@@ -184,6 +253,7 @@ class TextBlockManager:
             for run_id in para.run_ids:
                 run_map[run_id] = para.paragraph_id
         self._run_to_paragraph[page_num] = run_map
+        self._page_state[page_num] = "clean"
         logger.debug(
             f"page {page_num + 1}: {len(page_blocks)} blocks, {len(page_spans)} spans(runs), "
             f"{len(paragraphs)} paragraphs"
@@ -293,10 +363,12 @@ class TextBlockManager:
             block.is_vertical = block.rotation in (90, 270)
 
     def clear(self) -> None:
+        # Clears all cached indices and page state. Callers should rebuild only the pages they need now.
         self._index.clear()
         self._span_index.clear()
         self._paragraph_index.clear()
         self._run_to_paragraph.clear()
+        self._page_state.clear()
         logger.debug("TextBlockManager index cleared")
 
     def _parse_block(

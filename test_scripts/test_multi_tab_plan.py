@@ -197,6 +197,55 @@ def test_04_structural_undo_redo_isolated(mvc, tmp_path, monkeypatch):
     assert len(model.doc) == a_pages_before + 1
 
 
+def test_04b_structural_actions_schedule_stale_index_drain(mvc, tmp_path, monkeypatch):
+    model, _, controller = mvc
+    path = _make_pdf(tmp_path / "A.pdf", ["alpha", "beta", "gamma"])
+    controller.open_pdf(str(path))
+    for page_num in (1, 2):
+        model.ensure_page_index_built(page_num)
+
+    scheduled: list[str] = []
+    monkeypatch.setattr(controller, "_schedule_stale_index_drain", lambda: scheduled.append("scheduled"))
+
+    controller.insert_blank_page(2)
+
+    assert scheduled == ["scheduled"]
+
+
+def test_04c_structural_metadata_uses_actual_blank_insert_position(mvc, tmp_path):
+    model, _, controller = mvc
+    path = _make_pdf(tmp_path / "A.pdf", ["alpha", "beta", "gamma"])
+    controller.open_pdf(str(path))
+
+    controller.insert_blank_page(99)
+
+    cmd = model.command_manager._undo_stack[-1]
+    assert cmd.affected_pages == [4]
+
+
+def test_04d_structural_metadata_uses_actual_import_insert_positions(mvc, tmp_path):
+    model, _, controller = mvc
+    base = _make_pdf(tmp_path / "A.pdf", ["alpha", "beta", "gamma"])
+    source = _make_pdf(tmp_path / "B.pdf", ["imported"])
+    controller.open_pdf(str(base))
+
+    controller.insert_pages_from_file(str(source), [0, 1], 2)
+
+    cmd = model.command_manager._undo_stack[-1]
+    assert cmd.affected_pages == [2]
+
+
+def test_04e_structural_metadata_uses_actual_deleted_pages(mvc, tmp_path):
+    model, _, controller = mvc
+    path = _make_pdf(tmp_path / "A.pdf", ["alpha", "beta", "gamma"])
+    controller.open_pdf(str(path))
+
+    controller.delete_pages([0, -1, 2, 2, 99])
+
+    cmd = model.command_manager._undo_stack[-1]
+    assert cmd.affected_pages == [2]
+
+
 def test_05_search_state_restored_per_tab(mvc, tmp_path):
     model, view, controller = mvc
     a = _make_pdf(tmp_path / "A.pdf", ["alpha-key"])
