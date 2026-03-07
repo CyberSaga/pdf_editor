@@ -42,6 +42,7 @@ class PDFController:
         self.print_dispatcher = PrintDispatcher()
         self._print_dialog = None
         self._load_gen_by_session: dict[str, int] = {}
+        self._stale_index_gen_by_session: dict[str, int] = {}
         self._session_ui_state: dict[str, SessionUIState] = {}
         self._desired_scroll_page: dict[str, int] = {}
         self._global_mode = self._normalize_mode(getattr(self.view, "current_mode", "browse"))
@@ -104,6 +105,11 @@ class PDFController:
     def _next_load_gen(self, session_id: str) -> int:
         gen = self._load_gen_by_session.get(session_id, 0) + 1
         self._load_gen_by_session[session_id] = gen
+        return gen
+
+    def _next_stale_index_gen(self, session_id: str) -> int:
+        gen = self._stale_index_gen_by_session.get(session_id, 0) + 1
+        self._stale_index_gen_by_session[session_id] = gen
         return gen
 
     def _capture_current_ui_state(self) -> None:
@@ -414,32 +420,40 @@ class PDFController:
 
     def delete_pages(self, pages: List[int]):
         before = self.model._capture_doc_snapshot()
-        self.model.delete_pages(pages)
+        # Model is the source of truth: it sanitizes dirty input and returns the actual deleted pages.
+        actual_deleted_pages = self.model.delete_pages(pages)
+        if not actual_deleted_pages:
+            return
         after = self.model._capture_doc_snapshot()
         cmd = SnapshotCommand(
             model=self.model,
             command_type="delete_pages",
-            affected_pages=pages,
+            # SnapshotCommand metadata must reflect the real effect, not the user's requested intent.
+            affected_pages=actual_deleted_pages,
             before_bytes=before,
             after_bytes=after,
-            description=f"刪除頁面 {pages}",
+            description=f"刪除頁面 {actual_deleted_pages}",
         )
         self.model.command_manager.record(cmd)
         self._update_thumbnails()
         self._rebuild_continuous_scene(min(self.view.current_page, len(self.model.doc) - 1))
+        self._schedule_stale_index_drain()
         self._update_undo_redo_tooltips()
 
     def rotate_pages(self, pages: List[int], degrees: int):
         before = self.model._capture_doc_snapshot()
-        self.model.rotate_pages(pages, degrees)
+        # Model sanitizes and returns the actual rotated pages for metadata correctness.
+        actual_rotated_pages = self.model.rotate_pages(pages, degrees)
+        if not actual_rotated_pages:
+            return
         after = self.model._capture_doc_snapshot()
         cmd = SnapshotCommand(
             model=self.model,
             command_type="rotate_pages",
-            affected_pages=pages,
+            affected_pages=actual_rotated_pages,
             before_bytes=before,
             after_bytes=after,
-            description=f"旋轉頁面 {pages} {degrees}°",
+            description=f"旋轉頁面 {actual_rotated_pages} {degrees}°",
         )
         self.model.command_manager.record(cmd)
         self._update_thumbnails()
@@ -639,6 +653,7 @@ class PDFController:
             self._update_thumbnails()
             self._rebuild_continuous_scene(page_idx)
             self.load_annotations()
+            self._schedule_stale_index_drain()
         else:
             # 精準刷新：找出受影響的頁碼
             if hasattr(cmd, '_page_num'):
@@ -749,6 +764,50 @@ class PDFController:
             QTimer.singleShot(
                 INDEX_BATCH_INTERVAL_MS,
                 lambda e=end, sid=session_id, g=gen: self._schedule_index_batch(e, sid, g),
+            )
+
+    def _schedule_stale_index_drain(self) -> None:
+        """
+        Drain stale page indices in small batches.
+
+        This is triggered after structural operations (insert/delete) and after snapshot restore (undo/redo).
+        The model marks shifted pages "stale" (cheap), and the controller rebuilds them lazily in the
+        background so the UI stays responsive (especially for large PDFs).
+        """
+        session_id = self.model.get_active_session_id()
+        if not session_id or not self.model.doc:
+            return
+        gen = self._next_stale_index_gen(session_id)
+        # Kick cleanup to the next tick so the structural UI refresh wins first.
+        QTimer.singleShot(
+            0,
+            lambda sid=session_id, g=gen: self._drain_stale_index_batch(sid, g),
+        )
+
+    def _drain_stale_index_batch(self, session_id: str, gen: int) -> None:
+        """
+        Rebuild a small slice of stale pages, then reschedule until drained.
+
+        The `gen` token cancels older drains when a new structural operation happens, preventing multiple
+        concurrent drain loops from competing for CPU and recreating the "large PDF stalls" problem.
+        """
+        if (
+            self.model.get_active_session_id() != session_id
+            or self._stale_index_gen_by_session.get(session_id) != gen
+            or not self.model.doc
+        ):
+            return
+        stale_pages = self.model.block_manager.list_stale_pages()
+        if not stale_pages:
+            return
+        # Small batches prevent structural cleanup from recreating the large-PDF stall.
+        batch = stale_pages[:INDEX_BATCH_SIZE]
+        for page_idx in batch:
+            self.model.ensure_page_index_built(page_idx + 1)
+        if len(stale_pages) > len(batch):
+            QTimer.singleShot(
+                INDEX_BATCH_INTERVAL_MS,
+                lambda sid=session_id, g=gen: self._drain_stale_index_batch(sid, g),
             )
 
     def _on_request_rerender(self):
@@ -902,22 +961,27 @@ class PDFController:
         
         try:
             before = self.model._capture_doc_snapshot()
-            self.model.insert_blank_page(position)
+            # Model clamps/sanitizes position and returns the actual inserted page number.
+            actual_inserted_pages = self.model.insert_blank_page(position)
+            if not actual_inserted_pages:
+                return
             after = self.model._capture_doc_snapshot()
             cmd = SnapshotCommand(
                 model=self.model,
                 command_type="insert_blank_page",
-                affected_pages=[position],
+                # Undo metadata must match real state after model-side validation.
+                affected_pages=actual_inserted_pages,
                 before_bytes=before,
                 after_bytes=after,
-                description=f"插入空白頁（位置 {position}）",
+                description=f"插入空白頁（位置 {actual_inserted_pages[0]}）",
             )
             self.model.command_manager.record(cmd)
             self._update_thumbnails()
-            new_page_idx = min(position - 1, len(self.model.doc) - 1)
+            new_page_idx = min(actual_inserted_pages[0] - 1, len(self.model.doc) - 1)
             self._rebuild_continuous_scene(new_page_idx)
+            self._schedule_stale_index_drain()
             self._update_undo_redo_tooltips()
-            QMessageBox.information(self.view, "插入成功", f"已在位置 {position} 插入空白頁面")
+            QMessageBox.information(self.view, "插入成功", f"已在位置 {actual_inserted_pages[0]} 插入空白頁面")
         except Exception as e:
             logger.error(f"插入空白頁面失敗: {e}")
             show_error(self.view, f"插入空白頁面失敗: {e}")
@@ -930,22 +994,32 @@ class PDFController:
         
         try:
             before = self.model._capture_doc_snapshot()
-            self.model.insert_pages_from_file(source_file, source_pages, position)
+            # Model validates source pages and returns the actual inserted target positions.
+            actual_inserted_pages = self.model.insert_pages_from_file(source_file, source_pages, position)
+            if not actual_inserted_pages:
+                return
             after = self.model._capture_doc_snapshot()
             cmd = SnapshotCommand(
                 model=self.model,
                 command_type="insert_pages_from_file",
-                affected_pages=source_pages,
+                # SnapshotCommand metadata is derived from the model return (source of truth).
+                affected_pages=actual_inserted_pages,
                 before_bytes=before,
                 after_bytes=after,
-                description=f"從 {Path(source_file).name} 插入 {len(source_pages)} 頁（位置 {position}）",
+                description=f"從 {Path(source_file).name} 插入 {len(actual_inserted_pages)} 頁（位置 {actual_inserted_pages[0]}）",
             )
             self.model.command_manager.record(cmd)
             self._update_thumbnails()
-            new_page_idx = min(position - 1, len(self.model.doc) - 1)
+            new_page_idx = min(actual_inserted_pages[0] - 1, len(self.model.doc) - 1)
             self._rebuild_continuous_scene(new_page_idx)
+            # Immediate page is ready now; the shifted suffix is drained asynchronously.
+            self._schedule_stale_index_drain()
             self._update_undo_redo_tooltips()
-            QMessageBox.information(self.view, "插入成功", f"已從 {Path(source_file).name} 插入 {len(source_pages)} 個頁面到位置 {position}")
+            QMessageBox.information(
+                self.view,
+                "插入成功",
+                f"已從 {Path(source_file).name} 插入 {len(actual_inserted_pages)} 個頁面到位置 {actual_inserted_pages[0]}",
+            )
         except Exception as e:
             logger.error(f"從檔案插入頁面失敗: {e}")
             show_error(self.view, f"從檔案插入頁面失敗: {e}")

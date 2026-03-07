@@ -39,6 +39,21 @@ The text rendering path now resolves style tokens and supports custom CJK-family
 
 Snapshot APIs include `_capture_doc_snapshot()`, `_restore_doc_from_snapshot(...)`, `_capture_page_snapshot(...)`, `_capture_page_snapshot_strict(...)`, and `_restore_page_from_snapshot(...)`.
 
+#### Structural Page Operations and Text Indexing
+
+Structural operations (insert/delete pages) are model-owned correctness logic. The model must sanitize dirty inputs and return the actual effected pages so the controller can synchronize UI and undo metadata without re-deriving page numbers.
+
+Key contracts:
+- `delete_pages(pages) -> list[int]` returns the actual deleted pages (1-based, sorted).
+- `insert_blank_page(position) -> list[int]` returns the actual inserted page number (1-based).
+- `insert_pages_from_file(source_file, source_pages, position) -> list[int]` returns the actual inserted target page numbers (1-based, sorted).
+
+Text index lifecycle:
+- Page text indices live in `TextBlockManager` ([`model/text_block.py`](../model/text_block.py)).
+- Each cached page has a state: `"missing" | "clean" | "stale"`.
+- Structural ops shift cached keys and mark shifted pages `"stale"` (cheap), instead of eagerly rebuilding the entire document.
+- Any immediate edit/search path calls `model.ensure_page_index_built(page_num)` which rebuilds missing/stale pages on-demand.
+
 ### 2.2 Commands (`model/edit_commands.py`)
 
 Command classes define history boundaries:
@@ -56,6 +71,8 @@ Controller is the only mutation coordinator between View and Model. It wires vie
 Mode registry includes `browse`, `edit_text`, `add_text`, `rect`, `highlight`, and `add_annotation`.
 
 At startup, controller syncs text-target granularity from the view control to model state so runtime default behavior matches the UI default.
+
+For performance on large PDFs, controller schedules heavy work in small batches (scene rendering and text indexing). After structural operations or snapshot restore, controller also drains stale page indices in the background (`_schedule_stale_index_drain`), while the active/visible pages remain immediately usable via the model's `ensure_page_index_built(...)` contract.
 
 ### 2.4 View (`view/pdf_view.py`)
 

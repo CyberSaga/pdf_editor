@@ -15,6 +15,7 @@
       # - 與 CommandManager、ToolManager 整合
     text_block.py
       # 文字索引：TextBlock / EditableSpan(run) / EditableParagraph(paragraph)
+      # - 索引頁面狀態：missing/clean/stale（支援 insert/delete 後 lazy rebuild）
     edit_commands.py
       # Undo/Redo：EditTextCommand / AddTextboxCommand / SnapshotCommand / CommandManager
     tools/

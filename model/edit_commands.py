@@ -267,7 +267,8 @@ class SnapshotCommand(EditCommand):
       - after_bytes ：操作後整份文件的 bytes（redo 用）
       - execute() 是 redo 的入口，還原至 after_bytes
       - undo()    是撤銷的入口，還原至 before_bytes
-      - 兩者都會呼叫 block_manager.build_index() 以更新 TextBlock 索引
+      - 兩者都會清空舊 cache，並只重建 `affected_pages`（其餘頁面走 lazy rebuild）
+        目的：避免大檔在 undo/redo 後做全文件重建而卡住 UI。
 
     Controller 建立範例：
         before = model._capture_doc_snapshot()
@@ -276,7 +277,7 @@ class SnapshotCommand(EditCommand):
         cmd = SnapshotCommand(
             model=model,
             command_type="delete_pages",
-            affected_pages=[3],
+            affected_pages=[3],  # should be the model-returned "actual affected pages" after validation
             before_bytes=before,
             after_bytes=after,
             description="刪除頁面 3",
@@ -323,13 +324,15 @@ class SnapshotCommand(EditCommand):
     def execute(self) -> None:
         """redo：從 after_bytes 還原文件，並重建 TextBlock 索引。"""
         self._model._restore_doc_from_snapshot(self._after_bytes)
-        self._model.block_manager.build_index(self._model.doc)
+        # Structural redo avoids the old eager full rebuild and only restores the hot pages.
+        self._model.refresh_structural_indexes(self._affected_pages)
         logger.debug(f"SnapshotCommand.execute() [redo]: {self._description}")
 
     def undo(self) -> None:
         """撤銷：從 before_bytes 還原文件，並重建 TextBlock 索引。"""
         self._model._restore_doc_from_snapshot(self._before_bytes)
-        self._model.block_manager.build_index(self._model.doc)
+        # The remaining pages are rebuilt later through the model/controller lazy path.
+        self._model.refresh_structural_indexes(self._affected_pages)
         logger.debug(f"SnapshotCommand.undo(): {self._description}")
 
 
