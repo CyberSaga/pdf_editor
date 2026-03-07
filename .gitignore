@@ -10,13 +10,15 @@ venv/
 env/
 .env
 .pytest_cache/
+_tmp_vert_tests/
 
 # PDF 測試檔
 *.pdf
 test_files/
 
-# Cursor 相關
+# Agents 相關
 .cursor/
+.agents/
 
 # 單一程式
 for_Linux/
