@@ -1268,3 +1268,33 @@ logging 設定責任沒有集中在 app entrypoint，導致可匯入模組同時
 **驗證：**  
 - `rg -n "logging.basicConfig" main.py controller/pdf_controller.py model/pdf_model.py view/pdf_view.py` 僅剩 `main.py`  
 - `pytest -q` -> pass
+
+### 10.6 Windows 列印送出卡死（Sending print job）與關閉生命週期風險（2026-03）
+
+**問題：**  
+- 手動 GUI 測試列印時，畫面停在「正在送出列印工作」且主視窗顯示沒有回應。  
+- 使用者在列印送出期間關閉主視窗，可能發生 view 已被銷毀但背景送印工作仍在跑，造成不穩定甚至 crash。
+
+**原因：**  
+- Windows 的 Qt/GDI/driver print stack 可能在同一個 process 內阻塞，即使把送印放到 `QThread`，GUI process 仍可能被拖住而顯示沒有回應。  
+- 送印 worker 的 signal 直接連到 plain Python `PDFController` 方法時，Qt 可能在 worker thread 內直接呼叫 controller callback，導致在非 GUI thread 建立/操作 UI 物件（例如將 `PDFView` 當作 parent），觸發 `QObject: Cannot create children for a parent that is in a different thread`。
+
+**有效解法（已實作）：**  
+- Windows 送印改為 helper subprocess 隔離：主程序建立 `PrintHelperJob`（temp work dir + `input.pdf` + `job.json`），用 `QProcess` 以 `sys.executable` 啟動 `python -m src.printing.helper_main <job.json>`，由子程序完成 watermark 套用與 raster submission。  
+- 子程序透過 stdout line-delimited JSON 回報 started/progress/succeeded/failed；主程式用 `PrintSubprocessRunner` 解析與監控，並提供 stalled 偵測與「終止列印工作」動作（只殺子程序、主視窗不必重啟）。  
+- Controller 端加入 thread-safe bridge（`_PrintWorkerBridge`），確保 worker-thread 的 progress/prepared/failed/finished 一律回到 GUI thread 再觸碰 UI 或建立 runner。  
+- Close 行為改為 aware：列印進行中拒絕關閉（defer close），改顯示「正在完成最後工作，請稍候...」，待送印完成後自動關閉。
+
+**檔案：**  
+- `controller/pdf_controller.py`  
+- `src/printing/subprocess_runner.py`  
+- `src/printing/helper_main.py`  
+- `src/printing/helper_protocol.py`  
+- `src/printing/messages.py`  
+- `test_scripts/test_print_controller_flow.py`  
+- `test_scripts/test_print_subprocess_runner.py`  
+- `test_scripts/test_print_subprocess_helper.py`
+
+**驗證：**  
+- `pytest -q test_scripts/test_print_controller_flow.py test_scripts/test_print_subprocess_runner.py test_scripts/test_print_subprocess_helper.py` -> pass  
+- `pytest -q` -> pass

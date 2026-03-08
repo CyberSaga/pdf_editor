@@ -20,3 +20,11 @@ class PrintJobSubmissionError(PrintingError):
 class RenderingError(PrintingError):
     """Raised when page rasterization fails."""
 
+
+class PrintHelperStalledError(PrintingError):
+    """Raised when the helper subprocess stops reporting progress."""
+
+
+class PrintHelperTerminatedError(PrintingError):
+    """Raised when the user terminates the helper subprocess."""
+

@@ -8,7 +8,12 @@ from typing import TYPE_CHECKING
 import fitz
 
 from .base import ToolExtension
-from .watermark_rendering import apply_watermarks_to_page, needs_cjk_font, resolve_watermark_font
+from .watermark_rendering import (
+    apply_watermarks_to_document,
+    apply_watermarks_to_page,
+    needs_cjk_font,
+    resolve_watermark_font,
+)
 
 if TYPE_CHECKING:
     from model.pdf_model import PDFModel
@@ -55,10 +60,7 @@ class WatermarkTool(ToolExtension):
 
         tmp_doc = fitz.open()
         tmp_doc.insert_pdf(doc)
-        for wm in watermarks:
-            for page_num in wm.get("pages", []):
-                if 1 <= page_num <= len(tmp_doc):
-                    self._apply_watermarks_to_page(tmp_doc[page_num - 1], [wm])
+        self.apply_watermarks_to_document(tmp_doc, watermarks)
         self._write_watermarks_embed(tmp_doc, watermarks)
         return tmp_doc
 
@@ -214,11 +216,18 @@ class WatermarkTool(ToolExtension):
         watermarks = self._watermarks_by_session.get(session_id, [])
         return [wm for wm in watermarks if page_num in wm.get("pages", [])]
 
-    def _needs_cjk_font(self, text: str) -> bool:
+    @staticmethod
+    def _needs_cjk_font(text: str) -> bool:
         return needs_cjk_font(text)
 
-    def _get_watermark_font(self, font_name: str, text: str) -> str:
+    @classmethod
+    def _get_watermark_font(cls, font_name: str, text: str) -> str:
         return resolve_watermark_font(font_name, text)
 
-    def _apply_watermarks_to_page(self, page: fitz.Page, watermarks: list[dict]) -> None:
+    @classmethod
+    def _apply_watermarks_to_page(cls, page: fitz.Page, watermarks: list[dict]) -> None:
         apply_watermarks_to_page(page, watermarks)
+
+    @classmethod
+    def apply_watermarks_to_document(cls, doc: fitz.Document, watermarks: list[dict]) -> None:
+        apply_watermarks_to_document(doc, watermarks)
