@@ -132,24 +132,41 @@ class PDFController:
         self.model = model
         self.view = view
         self.annotations = []
-        self.print_dispatcher = PrintDispatcher()
+        self.print_dispatcher: Optional[PrintDispatcher] = None
         self._print_dialog = None
         self._print_progress_dialog: Optional[QProgressDialog] = None
         self._print_thread: Optional[QThread] = None
         self._print_worker: Optional[_PrintSubmissionWorker] = None
         self._print_runner: Optional[PrintSubprocessRunner] = None
-        self._print_worker_bridge = _PrintWorkerBridge(self.view)
+        self._print_worker_bridge: Optional[_PrintWorkerBridge] = None
         self._print_close_pending = False
         self._print_stalled = False
         self._load_gen_by_session: dict[str, int] = {}
         self._session_ui_state: dict[str, SessionUIState] = {}
         self._desired_scroll_page: dict[str, int] = {}
         self._global_mode = self._normalize_mode(getattr(self.view, "current_mode", "browse"))
-        self._print_worker_bridge.progress.connect(self._update_print_progress_dialog)
-        self._print_worker_bridge.prepared.connect(self._on_print_job_prepared)
-        self._print_worker_bridge.failed.connect(self._on_print_submission_failed)
-        self._print_worker_bridge.thread_finished.connect(self._on_print_thread_finished)
-        self._connect_signals()
+        self._signals_connected = False
+        self._activated = False
+
+    @property
+    def is_active(self) -> bool:
+        return self._activated
+
+    def activate(self) -> None:
+        if self._activated:
+            return
+        if self._print_worker_bridge is None:
+            self._print_worker_bridge = _PrintWorkerBridge(self.view)
+            self._print_worker_bridge.progress.connect(self._update_print_progress_dialog)
+            self._print_worker_bridge.prepared.connect(self._on_print_job_prepared)
+            self._print_worker_bridge.failed.connect(self._on_print_submission_failed)
+            self._print_worker_bridge.thread_finished.connect(self._on_print_thread_finished)
+        if self.print_dispatcher is None:
+            self.print_dispatcher = PrintDispatcher()
+        if not self._signals_connected:
+            self._connect_signals()
+            self._signals_connected = True
+        self._activated = True
 
     def _connect_signals(self):
         # Existing connections
@@ -292,6 +309,7 @@ class PDFController:
         self._render_active_session(initial_page_idx=state.current_page)
 
     def open_pdf(self, path: str):
+        self.activate()
         existing_sid = self.model.find_session_by_path(path)
         if existing_sid:
             self._switch_to_session_id(existing_sid)
@@ -517,6 +535,10 @@ class PDFController:
             self._print_progress_dialog.setCancelButtonText(PRINT_TERMINATE_BUTTON_TEXT)
 
     def _start_print_submission(self, options) -> None:
+        self.activate()
+        bridge = self._print_worker_bridge
+        if bridge is None:
+            raise RuntimeError("Print worker bridge is not initialized")
         work_dir = tempfile.mkdtemp(prefix="pdf_editor_print_")
         request = PrintJobRequest(
             capture_pdf_bytes=self.model.capture_print_input_pdf_bytes,
@@ -529,12 +551,12 @@ class PDFController:
         worker = _PrintSubmissionWorker(request)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.progress.connect(self._print_worker_bridge.forward_progress)
-        worker.prepared.connect(self._print_worker_bridge.forward_prepared)
-        worker.failed.connect(self._print_worker_bridge.forward_failed)
+        worker.progress.connect(bridge.forward_progress)
+        worker.prepared.connect(bridge.forward_prepared)
+        worker.failed.connect(bridge.forward_failed)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(self._print_worker_bridge.notify_thread_finished)
+        thread.finished.connect(bridge.notify_thread_finished)
         thread.finished.connect(thread.deleteLater)
         self._print_thread = thread
         self._print_worker = worker
@@ -629,6 +651,7 @@ class PDFController:
             show_error(self.view, "沒有可列印的 PDF 文件")
             return
 
+        self.activate()
         if self._has_active_print_submission():
             self._set_print_status_message(PRINT_STATUS_MESSAGE)
             return
@@ -639,6 +662,8 @@ class PDFController:
             return
 
         try:
+            if self.print_dispatcher is None:
+                raise RuntimeError("Print dispatcher is not initialized")
             printers = self.print_dispatcher.list_printers()
             if not printers:
                 show_error(self.view, "找不到可用的印表機")

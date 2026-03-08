@@ -19,6 +19,7 @@ test_files/
 # Agents 相關
 .cursor/
 .agents/
+.worktrees/
 
 # 單一程式
 for_Linux/

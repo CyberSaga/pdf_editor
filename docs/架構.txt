@@ -2,6 +2,8 @@
   main.py
     # 入口：建立 PDFModel / PDFView / PDFController
     # - 全域 logging.basicConfig 只在這裡初始化；其他模組只拿 named logger
+    # - 無 PDF 啟動時先顯示 shell，再等 PDFView.shell_ready 後 attach/activate controller
+    # - CLI 直接開檔仍走同步 attach/activate/open 路徑
 
   model/
     pdf_model.py
@@ -35,16 +37,19 @@
   controller/
     pdf_controller.py
       # Controller：
-      # - 接收 View signals
+      # - activate() 後才接收 View signals
       # - 呼叫 Model 與 model.tools.* API
       # - 維護每個 session 的 UI 狀態（頁碼 / 縮放 / 模式 / 搜尋）
       # - 協調重繪、列印、Undo/Redo
+      # - 將列印相關初始化延後到 activate()
 
   view/
     pdf_view.py
       # Qt UI：
       # - Tab 文件介面、工具面板、畫布、事件信號
       # - 不直接做資料層業務邏輯
+      # - 可先顯示 shell，再延後 hydrate 左/右重面板
+      # - deferred hydration 完成後發出 shell_ready
       # - 編輯意圖分流：edit_existing / add_new
       # - Inline editor 焦點守衛：字體/字級 popup 互動不提前 finalize
       # - 文字屬性按鈕：套用(提交) / 取消(捨棄)
@@ -92,6 +97,8 @@
 
   test_scripts/
     # 測試與壓力測試腳本（pytest tests + script-style 測試）
+    test_main_startup_behavior.py
+      # 啟動生命週期回歸：shell_ready、deferred controller attach、CLI 直接開檔同步 attach/activate
 
 目前主要工作流程：
 1) 編輯既有文字：

@@ -27,6 +27,7 @@ The project uses MVC with built-in tool extensions.
 
 Entry wiring happens in `main.py`, which instantiates `PDFModel`, `PDFView`, and `PDFController`.
 Application-level logging configuration is also owned by `main.py`; importable modules only acquire named loggers and do not call `logging.basicConfig(...)` at import time.
+For empty startup (no CLI PDF paths), `main.py` now follows a shell-first lifecycle: show `PDFView`, let the view hydrate deferred panels, wait for `PDFView.shell_ready`, then attach/activate the controller. Direct CLI-open startup keeps the synchronous attach/activate/open path.
 
 ## 2. Layer Responsibilities
 
@@ -51,15 +52,16 @@ Command classes define history boundaries:
 
 ### 2.3 Controller (`controller/pdf_controller.py`)
 
-Controller is the only mutation coordinator between View and Model. It wires view signals, normalizes mode transitions, creates/executes commands, controls refresh scopes, and preserves per-session UI state.
+Controller is the only mutation coordinator between View and Model. It normalizes mode transitions, creates/executes commands, controls refresh scopes, and preserves per-session UI state.
 
 Mode registry includes `browse`, `edit_text`, `add_text`, `rect`, `highlight`, and `add_annotation`.
 
-At startup, controller syncs text-target granularity from the view control to model state so runtime default behavior matches the UI default.
+Controller activation is now explicit. `PDFController.__init__()` keeps startup cheap, while `PDFController.activate()` performs view-signal wiring, print subsystem setup, and startup sync such as text-target granularity alignment. This keeps the no-document startup shell decoupled from full controller behavior until the UI is ready.
 
 ### 2.4 View (`view/pdf_view.py`)
 
 View owns widgets, scene interactions, and signal emission. It does not mutate model business state directly.
+For empty startup it can defer building heavy sidebars/property panels, then emit `shell_ready` only after deferred hydration completes.
 
 The text editor state is split by intent:
 - `edit_existing` for updating existing text.
