@@ -73,3 +73,10 @@ def apply_watermarks_to_page(page: fitz.Page, watermarks: list[dict]) -> None:
                 fill_opacity=opacity,
                 stroke_opacity=opacity,
             )
+
+
+def apply_watermarks_to_document(doc: fitz.Document, watermarks: list[dict]) -> None:
+    for wm in watermarks:
+        for page_num in wm.get("pages", []):
+            if 1 <= page_num <= len(doc):
+                apply_watermarks_to_page(doc[page_num - 1], [wm])

@@ -974,7 +974,6 @@ class PDFModel:
         return self._capture_doc_snapshot()
 
     def get_print_watermarks(self) -> list[dict]:
-        # JSON round-trip provides a deep copy and normalizes tuples for IPC.
         return json.loads(json.dumps(self.tools.watermark.get_watermarks(), ensure_ascii=False))
 
     def get_text_info_at_point(self, page_num: int, point: fitz.Point) -> Optional[TextHit]:

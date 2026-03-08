@@ -1,17 +1,16 @@
 from PySide6.QtWidgets import QMessageBox, QApplication, QFileDialog, QDialog, QProgressDialog
 from PySide6.QtGui import QImage, QPixmap, QShortcut, QKeySequence
-from PySide6.QtCore import QProcess, QTimer, Qt
+from PySide6.QtCore import QTimer, QObject, QThread, Qt, Signal, Slot
 from model.pdf_model import PDFModel
 from model.edit_commands import EditTextCommand, SnapshotCommand, AddTextboxCommand
 from view.pdf_view import PDFView
-from typing import List, Tuple, Optional
+from typing import Callable, List, Tuple, Optional
 from utils.helpers import pixmap_to_qpixmap, show_error
 from pathlib import Path
 from dataclasses import dataclass, field
-import json
 import logging
 import tempfile
-import sys
+import uuid
 import fitz
 
 THUMB_BATCH_SIZE = 10
@@ -22,12 +21,38 @@ INDEX_BATCH_SIZE = 5
 INDEX_BATCH_INTERVAL_MS = 50
 FIRST_PAGE_PREVIEW_SCALE = 0.25
 
-from src.printing import PrintDispatcher, PrintingError
+from src.printing import PrintDispatcher, PrintingError, PrintHelperTerminatedError
+from src.printing.helper_protocol import PrintHelperJob
+from src.printing.messages import (
+    PRINT_CLOSING_MESSAGE as CLEAN_PRINT_CLOSING_MESSAGE,
+    PRINT_PREPARING_MESSAGE as CLEAN_PRINT_PREPARING_MESSAGE,
+    PRINT_STALLED_MESSAGE as CLEAN_PRINT_STALLED_MESSAGE,
+    PRINT_STATUS_MESSAGE as CLEAN_PRINT_STATUS_MESSAGE,
+    PRINT_SUBMITTING_MESSAGE as CLEAN_PRINT_SUBMITTING_MESSAGE,
+    PRINT_TERMINATE_BUTTON_TEXT as CLEAN_PRINT_TERMINATE_BUTTON_TEXT,
+    PRINT_TERMINATING_MESSAGE as CLEAN_PRINT_TERMINATING_MESSAGE,
+)
 from src.printing.print_dialog import UnifiedPrintDialog
-from src.printing.print_job_runner import cleanup_print_job_request, write_print_job_request
+from src.printing.subprocess_runner import PrintSubprocessRunner
 
 logger = logging.getLogger(__name__)
 
+PRINT_STATUS_MESSAGE = "列印中..."
+PRINT_PREPARING_MESSAGE = "正在準備列印工作，請稍候..."
+PRINT_SUBMITTING_MESSAGE = "正在送出列印工作，請稍候..."
+PRINT_CLOSING_MESSAGE = "正在完成最後工作，請稍候..."
+PRINT_STALLED_MESSAGE = "列印子系統沒有回應，您可以終止背景列印工作。"
+PRINT_TERMINATING_MESSAGE = "正在終止背景列印工作，請稍候..."
+PRINT_TERMINATE_BUTTON_TEXT = "終止列印工作"
+
+
+PRINT_STATUS_MESSAGE = CLEAN_PRINT_STATUS_MESSAGE
+PRINT_PREPARING_MESSAGE = CLEAN_PRINT_PREPARING_MESSAGE
+PRINT_SUBMITTING_MESSAGE = CLEAN_PRINT_SUBMITTING_MESSAGE
+PRINT_CLOSING_MESSAGE = CLEAN_PRINT_CLOSING_MESSAGE
+PRINT_STALLED_MESSAGE = CLEAN_PRINT_STALLED_MESSAGE
+PRINT_TERMINATING_MESSAGE = CLEAN_PRINT_TERMINATING_MESSAGE
+PRINT_TERMINATE_BUTTON_TEXT = CLEAN_PRINT_TERMINATE_BUTTON_TEXT
 
 @dataclass
 class SessionUIState:
@@ -35,6 +60,71 @@ class SessionUIState:
     scale: float = 1.0
     search_state: dict = field(default_factory=lambda: {"query": "", "results": [], "index": -1})
     mode: str = "browse"
+
+
+@dataclass(frozen=True)
+class PrintJobRequest:
+    capture_pdf_bytes: Callable[[], bytes]
+    watermarks: list[dict]
+    options: object
+    job_id: str
+    work_dir: str
+
+
+class _PrintSubmissionWorker(QObject):
+    progress = Signal(str)
+    prepared = Signal(object)
+    failed = Signal(object)
+    finished = Signal()
+
+    def __init__(self, request: PrintJobRequest) -> None:
+        super().__init__()
+        self._request = request
+
+    def run(self) -> None:
+        try:
+            self.progress.emit(PRINT_PREPARING_MESSAGE)
+            pdf_bytes = self._request.capture_pdf_bytes()
+            input_pdf_path = Path(self._request.work_dir) / "input.pdf"
+            input_pdf_path.write_bytes(pdf_bytes)
+            self.prepared.emit(
+                PrintHelperJob(
+                    job_id=self._request.job_id,
+                    input_pdf_path=str(input_pdf_path),
+                    watermarks=self._request.watermarks,
+                    options=self._request.options,
+                )
+            )
+        except Exception as exc:
+            self.failed.emit(exc)
+        finally:
+            self.finished.emit()
+
+
+class _PrintWorkerBridge(QObject):
+    """Marshals worker-thread callbacks back onto the GUI thread."""
+
+    progress = Signal(str)
+    prepared = Signal(object)
+    failed = Signal(object)
+    thread_finished = Signal()
+
+    @Slot(str)
+    def forward_progress(self, message: str) -> None:
+        self.progress.emit(message)
+
+    @Slot(object)
+    def forward_prepared(self, job) -> None:
+        self.prepared.emit(job)
+
+    @Slot(object)
+    def forward_failed(self, exc) -> None:
+        self.failed.emit(exc)
+
+    @Slot()
+    def notify_thread_finished(self) -> None:
+        self.thread_finished.emit()
+
 
 class PDFController:
     _VALID_MODES = {"browse", "edit_text", "add_text", "rect", "highlight", "add_annotation"}
@@ -45,15 +135,20 @@ class PDFController:
         self.print_dispatcher = PrintDispatcher()
         self._print_dialog = None
         self._print_progress_dialog: Optional[QProgressDialog] = None
-        self._print_process: Optional[QProcess] = None
-        self._print_job_request_path: Optional[Path] = None
-        self._print_process_stdout_buffer = ""
-        self._print_process_result = None
-        self._print_process_error: Optional[str] = None
+        self._print_thread: Optional[QThread] = None
+        self._print_worker: Optional[_PrintSubmissionWorker] = None
+        self._print_runner: Optional[PrintSubprocessRunner] = None
+        self._print_worker_bridge = _PrintWorkerBridge(self.view)
+        self._print_close_pending = False
+        self._print_stalled = False
         self._load_gen_by_session: dict[str, int] = {}
         self._session_ui_state: dict[str, SessionUIState] = {}
         self._desired_scroll_page: dict[str, int] = {}
         self._global_mode = self._normalize_mode(getattr(self.view, "current_mode", "browse"))
+        self._print_worker_bridge.progress.connect(self._update_print_progress_dialog)
+        self._print_worker_bridge.prepared.connect(self._on_print_job_prepared)
+        self._print_worker_bridge.failed.connect(self._on_print_submission_failed)
+        self._print_worker_bridge.thread_finished.connect(self._on_print_thread_finished)
         self._connect_signals()
 
     def _connect_signals(self):
@@ -353,10 +448,189 @@ class PDFController:
         fmt = QImage.Format_RGBA8888 if pix.alpha else QImage.Format_RGB888
         return QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
 
-    def _print_document_legacy_unused(self):
+    def _has_active_print_submission(self) -> bool:
+        return self._print_thread is not None or self._print_runner is not None
+
+    def _show_print_progress_dialog(self, label_text: str) -> None:
+        if self._print_progress_dialog is None:
+            progress = QProgressDialog(label_text, "", 0, 0, self.view)
+            progress.setWindowTitle("列印")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setCancelButton(None)
+            progress.setMinimumDuration(0)
+            progress.setAutoClose(False)
+            progress.setAutoReset(False)
+            if hasattr(progress, "canceled"):
+                progress.canceled.connect(self._terminate_active_print_submission)
+            self._print_progress_dialog = progress
+        else:
+            self._print_progress_dialog.setLabelText(label_text)
+        self._print_progress_dialog.show()
+        self._print_progress_dialog.raise_()
+
+    def _update_print_progress_dialog(self, label_text: str) -> None:
+        if self._print_progress_dialog is None:
+            self._show_print_progress_dialog(label_text)
+            return
+        self._print_progress_dialog.setLabelText(label_text)
+
+    def _hide_print_progress_dialog(self) -> None:
+        if self._print_progress_dialog is None:
+            return
+        self._print_progress_dialog.close()
+        self._print_progress_dialog.deleteLater()
+        self._print_progress_dialog = None
+
+    def _set_print_status_message(self, message: Optional[str]) -> None:
+        if hasattr(self.view, "set_status_bar_override_message"):
+            self.view.set_status_bar_override_message(message)
+            return
+        if getattr(self.view, "status_bar", None):
+            if message:
+                self.view.status_bar.showMessage(message)
+            else:
+                self.view._update_status_bar()
+
+    def _set_print_ui_busy(self, busy: bool) -> None:
+        action = getattr(self.view, "_action_print", None)
+        if action is not None:
+            action.setEnabled(not busy)
+        if busy:
+            if self._print_stalled:
+                status_message = PRINT_STALLED_MESSAGE
+            else:
+                status_message = PRINT_CLOSING_MESSAGE if self._print_close_pending else PRINT_STATUS_MESSAGE
+            self._set_print_status_message(status_message)
+            return
+        self._set_print_status_message(None)
+
+    def _update_print_close_pending_ui(self) -> None:
+        if not self._has_active_print_submission():
+            return
+        self._set_print_status_message(PRINT_CLOSING_MESSAGE)
+        self._update_print_progress_dialog(PRINT_CLOSING_MESSAGE)
+
+    def _enable_print_terminate_option(self) -> None:
+        if self._print_progress_dialog is None:
+            return
+        if hasattr(self._print_progress_dialog, "setCancelButtonText"):
+            self._print_progress_dialog.setCancelButtonText(PRINT_TERMINATE_BUTTON_TEXT)
+
+    def _start_print_submission(self, options) -> None:
+        work_dir = tempfile.mkdtemp(prefix="pdf_editor_print_")
+        request = PrintJobRequest(
+            capture_pdf_bytes=self.model.capture_print_input_pdf_bytes,
+            watermarks=self.model.get_print_watermarks(),
+            options=options.normalized() if hasattr(options, "normalized") else options,
+            job_id=str(uuid.uuid4()),
+            work_dir=work_dir,
+        )
+        thread = QThread(self.view)
+        worker = _PrintSubmissionWorker(request)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._print_worker_bridge.forward_progress)
+        worker.prepared.connect(self._print_worker_bridge.forward_prepared)
+        worker.failed.connect(self._print_worker_bridge.forward_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._print_worker_bridge.notify_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._print_thread = thread
+        self._print_worker = worker
+        self._print_stalled = False
+        thread.start()
+
+    def _create_print_runner(self, job: PrintHelperJob) -> PrintSubprocessRunner:
+        work_dir = str(Path(job.input_pdf_path).parent)
+        return PrintSubprocessRunner(job, work_dir=work_dir, parent=self.view)
+
+    def _on_print_job_prepared(self, job: PrintHelperJob) -> None:
+        self._update_print_progress_dialog(PRINT_SUBMITTING_MESSAGE)
+        runner = self._create_print_runner(job)
+        runner.progress.connect(self._update_print_progress_dialog)
+        runner.stalled.connect(self._on_print_submission_stalled)
+        runner.succeeded.connect(self._on_print_submission_succeeded)
+        runner.failed.connect(self._on_print_submission_failed)
+        runner.finished.connect(self._on_print_runner_finished)
+        self._print_runner = runner
+        runner.start()
+
+    def _on_print_submission_succeeded(self, result) -> None:
+        route = result.route if hasattr(result, "route") else ""
+        message = result.message if hasattr(result, "message") else str(result)
+        self._finalize_print_submission()
+        if self._print_close_pending:
+            return
+        QMessageBox.information(
+            self.view,
+            "列印送出",
+            f"{message}\n路徑: {route}",
+        )
+
+    def _on_print_submission_stalled(self) -> None:
+        self._print_stalled = True
+        self._set_print_status_message(PRINT_STALLED_MESSAGE)
+        self._update_print_progress_dialog(PRINT_STALLED_MESSAGE)
+        self._enable_print_terminate_option()
+
+    def _terminate_active_print_submission(self) -> None:
+        runner = self._print_runner
+        if runner is None:
+            return
+        self._print_close_pending = False
+        self._print_stalled = False
+        self._set_print_status_message(PRINT_TERMINATING_MESSAGE)
+        self._update_print_progress_dialog(PRINT_TERMINATING_MESSAGE)
+        if self._print_runner is not runner:
+            return
+        runner.terminate()
+
+    def _on_print_submission_failed(self, exc) -> None:
+        self._finalize_print_submission()
+        if isinstance(exc, PrintHelperTerminatedError):
+            logger.warning("列印背景工作已終止: %s", exc)
+            return
+        if isinstance(exc, PrintingError):
+            logger.error(f"列印失敗: {exc}")
+            if not self._print_close_pending:
+                show_error(self.view, f"列印失敗: {exc}")
+            return
+        logger.error(f"列印發生非預期錯誤: {exc}")
+        if not self._print_close_pending:
+            show_error(self.view, f"列印發生非預期錯誤: {exc}")
+
+    def _finalize_print_submission(self) -> None:
+        self._hide_print_progress_dialog()
+
+    def _on_print_thread_finished(self) -> None:
+        self._print_thread = None
+        self._print_worker = None
+        self._complete_active_print_submission_if_idle()
+
+    def _on_print_runner_finished(self) -> None:
+        self._print_runner = None
+        self._complete_active_print_submission_if_idle()
+
+    def _complete_active_print_submission_if_idle(self) -> None:
+        if self._has_active_print_submission():
+            return
+        self._print_stalled = False
+        if not self._print_close_pending:
+            self._set_print_ui_busy(False)
+            return
+        self._print_close_pending = False
+        self._set_print_ui_busy(False)
+        self.view.close()
+
+    def print_document(self):
         """列印當前文件（統一設定視窗 + 右側預覽）。"""
         if not self.model.doc:
             show_error(self.view, "沒有可列印的 PDF 文件")
+            return
+
+        if self._has_active_print_submission():
+            self._set_print_status_message(PRINT_STATUS_MESSAGE)
             return
 
         if self._print_dialog is not None and self._print_dialog.isVisible():
@@ -364,7 +638,6 @@ class PDFController:
             self._print_dialog.activateWindow()
             return
 
-        temp_path = None
         try:
             printers = self.print_dispatcher.list_printers()
             if not printers:
@@ -396,249 +669,16 @@ class PDFController:
                     show_error(self.view, f"印表機狀態異常：{status}")
                     return
 
-            snapshot_bytes = self.model.build_print_snapshot()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(snapshot_bytes)
-                temp_path = tmp.name
-
-            result = self.print_dispatcher.print_pdf_file(temp_path, dialog_result.options)
-            QMessageBox.information(
-                self.view,
-                "列印送出",
-                f"{result.message}\n路徑: {result.route}",
-            )
+            self._show_print_progress_dialog(PRINT_PREPARING_MESSAGE)
+            self._set_print_ui_busy(True)
+            self._start_print_submission(dialog_result.options)
         except PrintingError as e:
             logger.error(f"列印失敗: {e}")
             show_error(self.view, f"列印失敗: {e}")
+            self._finalize_print_submission()
         except Exception as e:
             logger.error(f"列印發生非預期錯誤: {e}")
             show_error(self.view, f"列印發生非預期錯誤: {e}")
-        finally:
-            self._print_dialog = None
-            if temp_path:
-                try:
-                    Path(temp_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-    def _show_print_progress_dialog(self, label_text: str) -> None:
-        if self._print_progress_dialog is None:
-            progress = QProgressDialog(label_text, "", 0, 0, self.view)
-            progress.setWindowTitle("列印")
-            progress.setWindowModality(Qt.WindowModal)
-            progress.setCancelButton(None)
-            progress.setMinimumDuration(0)
-            progress.setAutoClose(False)
-            progress.setAutoReset(False)
-            self._print_progress_dialog = progress
-        else:
-            self._print_progress_dialog.setLabelText(label_text)
-        self._print_progress_dialog.show()
-        self._print_progress_dialog.raise_()
-        QApplication.processEvents()
-
-    def _update_print_progress_dialog(self, label_text: str) -> None:
-        if self._print_progress_dialog is None:
-            self._show_print_progress_dialog(label_text)
-            return
-        self._print_progress_dialog.setLabelText(label_text)
-        QApplication.processEvents()
-
-    def _hide_print_progress_dialog(self) -> None:
-        if self._print_progress_dialog is None:
-            return
-        self._print_progress_dialog.close()
-        self._print_progress_dialog.deleteLater()
-        self._print_progress_dialog = None
-
-    def _set_print_ui_busy(self, busy: bool) -> None:
-        action = getattr(self.view, "_action_print", None)
-        if action is not None:
-            action.setEnabled(not busy)
-        if getattr(self.view, "status_bar", None):
-            if busy:
-                self.view.status_bar.showMessage("正在送出列印工作，請稍候...")
-            else:
-                self.view.status_bar.clearMessage()
-
-    def _read_process_text(self, payload) -> str:
-        raw = bytes(payload) if not isinstance(payload, (bytes, bytearray)) else bytes(payload)
-        return raw.decode("utf-8", errors="replace")
-
-    def _handle_print_process_event(self, event: dict) -> None:
-        event_type = str(event.get("type") or "").strip().lower()
-        if event_type == "progress":
-            self._update_print_progress_dialog(str(event.get("message") or ""))
-            return
-        if event_type == "result":
-            self._print_process_result = event
-            return
-        if event_type == "error":
-            self._print_process_error = str(event.get("message") or "列印程序失敗。")
-            return
-        logger.warning("unknown print process event: %s", event)
-
-    def _on_print_process_stdout(self) -> None:
-        if self._print_process is None:
-            return
-        self._print_process_stdout_buffer += self._read_process_text(
-            self._print_process.readAllStandardOutput()
-        )
-        while "\n" in self._print_process_stdout_buffer:
-            line, self._print_process_stdout_buffer = self._print_process_stdout_buffer.split("\n", 1)
-            if not line.strip():
-                continue
-            try:
-                event = json.loads(line)
-            except Exception:
-                logger.warning("print process emitted non-JSON output: %s", line)
-                continue
-            self._handle_print_process_event(event)
-
-    def _on_print_process_stderr(self) -> None:
-        if self._print_process is None:
-            return
-        text = self._read_process_text(self._print_process.readAllStandardError()).strip()
-        if not text:
-            return
-        logger.error("print process stderr: %s", text)
-        self._print_process_error = text
-
-    def _on_print_process_error(self, process_error) -> None:
-        self._print_process_error = f"列印程序啟動失敗: {process_error}"
-
-    def _launch_print_process(self, request_path: Path) -> None:
-        process = QProcess(self.view)
-        process.setProgram(sys.executable)
-        process.setArguments(["-m", "src.printing.print_job_runner", str(request_path)])
-        process.readyReadStandardOutput.connect(self._on_print_process_stdout)
-        process.readyReadStandardError.connect(self._on_print_process_stderr)
-        process.finished.connect(self._on_print_process_finished)
-        process.errorOccurred.connect(self._on_print_process_error)
-
-        self._print_process = process
-        self._print_job_request_path = Path(request_path)
-        self._print_process_stdout_buffer = ""
-        self._print_process_result = None
-        self._print_process_error = None
-        process.start()
-
-    def _prepare_and_launch_print_process(self, options) -> None:
-        try:
-            base_pdf_bytes = self.model.capture_print_input_pdf_bytes()
-            watermarks = self.model.get_print_watermarks()
-            request_path = write_print_job_request(base_pdf_bytes, watermarks, options)
-            self._launch_print_process(request_path)
-        except Exception as exc:
-            self._on_print_submission_failed(exc)
-
-    def _on_print_process_finished(self, exit_code: int, exit_status) -> None:
-        result = self._print_process_result
-        error_message = self._print_process_error
-        normal_exit = exit_status == QProcess.ExitStatus.NormalExit
-
-        if normal_exit and exit_code == 0 and isinstance(result, dict):
-            self._on_print_submission_succeeded(result)
-            return
-
-        if not error_message and isinstance(result, dict) and result.get("type") == "error":
-            error_message = str(result.get("message") or "列印程序失敗。")
-        if not error_message:
-            error_message = f"列印程序異常結束 (exit_code={exit_code})."
-        self._on_print_submission_failed(RuntimeError(error_message))
-
-    def _on_print_submission_succeeded(self, result) -> None:
-        route = result.get("route") if isinstance(result, dict) else getattr(result, "route", "")
-        message = result.get("message") if isinstance(result, dict) else getattr(result, "message", "")
-        self._finalize_print_submission()
-        QMessageBox.information(
-            self.view,
-            "??",
-            f"{message}\n頝臬?: {route}",
-        )
-
-    def _on_print_submission_failed(self, exc: Exception) -> None:
-        self._finalize_print_submission()
-        if isinstance(exc, PrintingError):
-            logger.error(f"?憭望?: {exc}")
-            show_error(self.view, f"?憭望?: {exc}")
-            return
-        logger.error(f"??潛????隤? {exc}")
-        show_error(self.view, f"??潛????隤? {exc}")
-
-    def _finalize_print_submission(self) -> None:
-        self._set_print_ui_busy(False)
-        self._hide_print_progress_dialog()
-        if self._print_process is not None:
-            self._print_process.deleteLater()
-        self._print_process = None
-        cleanup_print_job_request(self._print_job_request_path)
-        self._print_job_request_path = None
-        self._print_process_stdout_buffer = ""
-        self._print_process_result = None
-        self._print_process_error = None
-
-    def print_document(self):
-        if not self.model.doc:
-            show_error(self.view, "瘝??臬??啁? PDF ?辣")
-            return
-
-        if self._print_process is not None:
-            if getattr(self.view, "status_bar", None):
-                self.view.status_bar.showMessage("列印工作已在處理中，請稍候...", 3000)
-            return
-
-        if self._print_dialog is not None and self._print_dialog.isVisible():
-            self._print_dialog.raise_()
-            self._print_dialog.activateWindow()
-            return
-
-        try:
-            printers = self.print_dispatcher.list_printers()
-            if not printers:
-                show_error(self.view, "沒有可用的印表機。")
-                return
-
-            self._print_dialog = UnifiedPrintDialog(
-                parent=self.view,
-                dispatcher=self.print_dispatcher,
-                printers=printers,
-                pdf_path="",
-                total_pages=len(self.model.doc),
-                current_page=self.view.current_page + 1,
-                job_name=Path(self.model.original_path or "pdf_editor_job").name,
-                preview_page_provider=self._render_print_preview_image,
-            )
-
-            if self._print_dialog.exec() != QDialog.DialogCode.Accepted:
-                return
-
-            dialog_result = self._print_dialog.result_data()
-            if dialog_result is None:
-                return
-
-            selected_printer = dialog_result.options.printer_name
-            if selected_printer:
-                status = self.print_dispatcher.get_printer_status(selected_printer)
-                if status in {"offline", "stopped"}:
-                    show_error(self.view, f"?啗”璈??撣賂?{status}")
-                    return
-
-            # Yield one event-loop turn after the progress dialog is shown so the
-            # UI paints before snapshot capture starts.
-            self._show_print_progress_dialog("正在準備列印內容，請稍候...")
-            self._set_print_ui_busy(True)
-            QTimer.singleShot(
-                0,
-                lambda options=dialog_result.options: self._prepare_and_launch_print_process(options),
-            )
-        except PrintingError as e:
-            logger.error(f"?憭望?: {e}")
-            show_error(self.view, f"?憭望?: {e}")
-            self._finalize_print_submission()
-        except Exception as e:
-            logger.error(f"??潛????隤? {e}")
-            show_error(self.view, f"??潛????隤? {e}")
             self._finalize_print_submission()
         finally:
             self._print_dialog = None
@@ -1235,6 +1275,12 @@ class PDFController:
         return self._save_session_with_dialog(session_id)
 
     def handle_app_close(self, event) -> None:
+        if self._has_active_print_submission():
+            self._print_close_pending = True
+            self._update_print_close_pending_ui()
+            event.ignore()
+            return
+
         dirty_ids = self.model.get_dirty_session_ids()
         if not dirty_ids:
             event.accept()

@@ -3,15 +3,16 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import fitz
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication, QDialog
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -23,7 +24,15 @@ if str(REPO_ROOT) not in sys.path:
 import controller.pdf_controller as pdf_controller_module
 from controller.pdf_controller import PDFController
 from model.pdf_model import PDFModel
-from src.printing.base_driver import PrintJobOptions, PrinterDevice
+from src.printing.base_driver import PrintJobOptions, PrintJobResult, PrinterDevice
+from src.printing.errors import PrintHelperTerminatedError
+from src.printing.messages import (
+    PRINT_CLOSING_MESSAGE,
+    PRINT_STALLED_MESSAGE,
+    PRINT_STATUS_MESSAGE,
+    PRINT_SUBMITTING_MESSAGE,
+    PRINT_TERMINATE_BUTTON_TEXT,
+)
 from view.pdf_view import PDFView
 
 
@@ -32,6 +41,17 @@ def _ensure_app() -> QApplication:
     if app is None:
         app = QApplication([])
     return app
+
+
+def _pump_until(app: QApplication, predicate, timeout: float = 2.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.01)
+    app.processEvents()
+    return bool(predicate())
 
 
 def _make_single_page_pdf(path: Path) -> None:
@@ -49,6 +69,12 @@ class _FakePrintDispatcher:
     def get_printer_status(self, printer_name: str) -> str:
         _ = printer_name
         return "ready"
+
+    def print_pdf_file(self, pdf_path: str, options):
+        raise AssertionError(f"print_pdf_file should not run in these controller tests: {pdf_path}, {options}")
+
+    def print_pdf_bytes(self, pdf_bytes: bytes, options):
+        raise AssertionError(f"print_pdf_bytes should not run in these controller tests: {len(pdf_bytes)}, {options}")
 
 
 class _CancelDialog:
@@ -110,6 +136,8 @@ class _FakeProgressDialog:
     def __init__(self, label_text: str, _cancel_text: str, _minimum: int, _maximum: int, _parent) -> None:
         self.label_text = label_text
         self.visible = False
+        self.cancel_button_text = ""
+        self.cancel_callback = None
 
     def setWindowTitle(self, _title: str) -> None:
         return None
@@ -119,6 +147,9 @@ class _FakeProgressDialog:
 
     def setCancelButton(self, _button) -> None:
         return None
+
+    def setCancelButtonText(self, text: str) -> None:
+        self.cancel_button_text = text
 
     def setMinimumDuration(self, _duration: int) -> None:
         return None
@@ -147,73 +178,28 @@ class _FakeProgressDialog:
     def deleteLater(self) -> None:
         return None
 
+    @property
+    def canceled(self):
+        class _SignalProxy:
+            def __init__(self, outer) -> None:
+                self._outer = outer
 
-class _FakeSignal:
+            def connect(self, callback) -> None:
+                self._outer.cancel_callback = callback
+
+        return _SignalProxy(self)
+
+
+class _FakeCloseEvent:
     def __init__(self) -> None:
-        self._callbacks = []
+        self.accepted = False
+        self.ignored = False
 
-    def connect(self, callback) -> None:
-        self._callbacks.append(callback)
+    def accept(self) -> None:
+        self.accepted = True
 
-    def emit(self, *args) -> None:
-        for callback in list(self._callbacks):
-            callback(*args)
-
-
-class _FakeQProcess:
-    instances: list["_FakeQProcess"] = []
-
-    class ProcessError:
-        FailedToStart = 0
-
-    class ExitStatus:
-        NormalExit = 0
-        CrashExit = 1
-
-    def __init__(self, _parent=None) -> None:
-        self.program = None
-        self.arguments: list[str] = []
-        self.started = False
-        self._stdout_chunks: list[bytes] = []
-        self._stderr_chunks: list[bytes] = []
-        self.readyReadStandardOutput = _FakeSignal()
-        self.readyReadStandardError = _FakeSignal()
-        self.finished = _FakeSignal()
-        self.errorOccurred = _FakeSignal()
-        self.__class__.instances.append(self)
-
-    def setProgram(self, program: str) -> None:
-        self.program = program
-
-    def setArguments(self, arguments: list[str]) -> None:
-        self.arguments = list(arguments)
-
-    def start(self) -> None:
-        self.started = True
-
-    def readAllStandardOutput(self):
-        payload = b"".join(self._stdout_chunks)
-        self._stdout_chunks.clear()
-        return payload
-
-    def readAllStandardError(self):
-        payload = b"".join(self._stderr_chunks)
-        self._stderr_chunks.clear()
-        return payload
-
-    def push_stdout(self, payload: dict) -> None:
-        self._stdout_chunks.append((json.dumps(payload) + "\n").encode("utf-8"))
-        self.readyReadStandardOutput.emit()
-
-    def push_stderr(self, text: str) -> None:
-        self._stderr_chunks.append(text.encode("utf-8"))
-        self.readyReadStandardError.emit()
-
-    def finish(self, exit_code: int = 0, exit_status: int = 0) -> None:
-        self.finished.emit(exit_code, exit_status)
-
-    def deleteLater(self) -> None:
-        return None
+    def ignore(self) -> None:
+        self.ignored = True
 
 
 def test_print_document_defers_snapshot_until_user_accepts(monkeypatch) -> None:
@@ -231,12 +217,13 @@ def test_print_document_defers_snapshot_until_user_accepts(monkeypatch) -> None:
 
         snapshot_called = False
 
-        def _unexpected_snapshot() -> bytes:
+        def _unexpected_snapshot(*_args, **_kwargs) -> bytes:
             nonlocal snapshot_called
             snapshot_called = True
-            raise AssertionError("capture_print_input_pdf_bytes should not run before the user accepts printing")
+            raise AssertionError("print snapshot capture should not run before the user accepts printing")
 
-        monkeypatch.setattr(model, "capture_print_input_pdf_bytes", _unexpected_snapshot)
+        monkeypatch.setattr(model, "build_print_snapshot", _unexpected_snapshot)
+        monkeypatch.setattr(model, "capture_print_input_pdf_bytes", _unexpected_snapshot, raising=False)
         monkeypatch.setattr(pdf_controller_module, "UnifiedPrintDialog", _CancelDialog)
 
         try:
@@ -253,7 +240,7 @@ def test_print_document_defers_snapshot_until_user_accepts(monkeypatch) -> None:
             model.close()
 
 
-def test_print_document_launches_external_process_without_blocking_ui(monkeypatch) -> None:
+def test_print_document_runs_in_background_and_defers_close_until_helper_finishes(monkeypatch) -> None:
     app = _ensure_app()
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = Path(tmp) / "sample.pdf"
@@ -261,71 +248,240 @@ def test_print_document_launches_external_process_without_blocking_ui(monkeypatc
 
         model = PDFModel()
         view = PDFView()
+        view.show()
         controller = PDFController(model, view)
         view.controller = controller
-        controller.print_dispatcher = _FakePrintDispatcher()
         model.open_pdf(str(pdf_path))
 
         info_calls: list[tuple[str, str]] = []
+        errors: list[str] = []
+        main_thread_id = threading.get_ident()
+        capture_started = threading.Event()
+        allow_capture_finish = threading.Event()
+        runner_started = threading.Event()
+        progress_thread_ids: list[int] = []
+        runner_thread_ids: list[int] = []
 
-        def _snapshot_with_visible_progress() -> bytes:
-            progress = getattr(controller, "_print_progress_dialog", None)
-            assert progress is not None, "progress dialog should exist before snapshot build"
-            assert progress.isVisible(), "progress dialog should be visible while snapshot is building"
-            return b"%PDF-1.4 test payload"
+        class _FakeRunner(QObject):
+            progress = Signal(str)
+            stalled = Signal()
+            succeeded = Signal(object)
+            failed = Signal(object)
+            finished = Signal()
+            raw_message = Signal(str)
 
-        monkeypatch.setattr(model, "capture_print_input_pdf_bytes", _snapshot_with_visible_progress)
-        monkeypatch.setattr(pdf_controller_module, "UnifiedPrintDialog", _AcceptDialog)
-        monkeypatch.setattr(pdf_controller_module, "QProgressDialog", _FakeProgressDialog)
-        monkeypatch.setattr(pdf_controller_module, "QProcess", _FakeQProcess)
-        monkeypatch.setattr(pdf_controller_module, "show_error", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(
-            pdf_controller_module.QMessageBox,
-            "information",
-            lambda _parent, title, message: info_calls.append((title, message)),
-        )
+            instances: list["_FakeRunner"] = []
+
+            def __init__(self, job, *_args, **_kwargs) -> None:
+                super().__init__()
+                self.job = job
+                runner_thread_ids.append(threading.get_ident())
+                self.started = False
+                self.terminated = False
+                self.__class__.instances.append(self)
+
+            def start(self) -> None:
+                self.started = True
+                runner_started.set()
+                self.progress.emit(PRINT_SUBMITTING_MESSAGE)
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+        def _blocking_capture_print_input_pdf_bytes() -> bytes:
+            capture_started.set()
+            assert threading.get_ident() != main_thread_id
+            assert allow_capture_finish.wait(2.0), "worker thread never received release for PDF capture"
+            return b"%PDF-1.4 captured input"
 
         try:
+            controller.print_dispatcher = _FakePrintDispatcher()
+            monkeypatch.setattr(model, "capture_print_input_pdf_bytes", _blocking_capture_print_input_pdf_bytes)
+            monkeypatch.setattr(pdf_controller_module, "UnifiedPrintDialog", _AcceptDialog)
+            monkeypatch.setattr(pdf_controller_module, "QProgressDialog", _FakeProgressDialog, raising=False)
+            monkeypatch.setattr(pdf_controller_module, "PrintSubprocessRunner", _FakeRunner, raising=False)
+            monkeypatch.setattr(pdf_controller_module, "show_error", lambda _parent, message: errors.append(message))
+            original_update_print_progress_dialog = controller._update_print_progress_dialog
+            monkeypatch.setattr(
+                controller,
+                "_update_print_progress_dialog",
+                lambda label_text: (
+                    progress_thread_ids.append(threading.get_ident()),
+                    original_update_print_progress_dialog(label_text),
+                )[-1],
+            )
+            monkeypatch.setattr(
+                pdf_controller_module.QMessageBox,
+                "information",
+                lambda _parent, title, message: info_calls.append((title, message)),
+            )
+
+            baseline_status = view.status_bar.currentMessage()
+
             started_at = time.perf_counter()
             controller.print_document()
             elapsed = time.perf_counter() - started_at
 
-            assert elapsed < 0.5, f"print_document blocked UI for {elapsed:.3f}s"
+            assert elapsed < 0.2, f"print_document blocked the UI thread for {elapsed:.3f}s"
             assert controller._print_progress_dialog is not None
             assert controller._print_progress_dialog.isVisible()
-            assert info_calls == []
+            assert view.status_bar.currentMessage() == PRINT_STATUS_MESSAGE
+            assert _pump_until(app, capture_started.is_set), "PDF capture never started"
 
-            deadline = time.time() + 1.0
-            while time.time() < deadline and not _FakeQProcess.instances:
-                app.processEvents()
-                time.sleep(0.01)
+            close_event = _FakeCloseEvent()
+            controller.handle_app_close(close_event)
+            assert close_event.ignored is True
+            assert close_event.accepted is False
+            assert view.status_bar.currentMessage() == PRINT_CLOSING_MESSAGE
+            assert view.isVisible() is True
 
-            assert _FakeQProcess.instances, "external print process was never launched"
-            process = _FakeQProcess.instances[-1]
-            assert process.started is True
-            assert process.program == sys.executable
-            assert process.arguments[:2] == ["-m", "src.printing.print_job_runner"]
+            allow_capture_finish.set()
+            assert _pump_until(app, runner_started.is_set), "print helper runner never started"
+            runner = _FakeRunner.instances[-1]
+            assert runner.started is True
+            assert runner_thread_ids == [main_thread_id]
+            assert _pump_until(app, lambda: controller._print_thread is None), "preparation worker thread never finished"
+            assert progress_thread_ids
+            assert all(thread_id == main_thread_id for thread_id in progress_thread_ids)
 
-            process.push_stdout({"type": "progress", "message": "正在送出列印工作，請稍候..."})
-            app.processEvents()
-            assert controller._print_progress_dialog.label_text == "正在送出列印工作，請稍候..."
-
-            process.push_stdout(
-                {
-                    "type": "result",
-                    "success": True,
-                    "route": "external-process",
-                    "message": "Submitted 1 page(s) to printer.",
-                    "job_id": "job-1",
-                }
+            controller._on_print_submission_succeeded(
+                PrintJobResult(
+                    success=True,
+                    route="print-helper",
+                    message="Submitted 1 page(s) to printer.",
+                    job_id="job-1",
+                )
             )
-            process.finish(0, _FakeQProcess.ExitStatus.NormalExit)
+            controller._on_print_runner_finished()
+            assert _pump_until(app, lambda: not view.isVisible()), "view did not auto-close after print completion"
+
+            assert errors == []
+            assert info_calls == []
+            assert controller._print_progress_dialog is None
+            assert view.status_bar.currentMessage() == baseline_status
+        finally:
+            allow_capture_finish.set()
+            _AcceptDialog.instances.clear()
+            _FakeRunner.instances.clear()
+            if view.isVisible():
+                view.close()
+            model.close()
+
+
+def test_stalled_print_helper_can_be_terminated_without_closing_main_window(monkeypatch) -> None:
+    app = _ensure_app()
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "sample.pdf"
+        _make_single_page_pdf(pdf_path)
+
+        model = PDFModel()
+        view = PDFView()
+        view.show()
+        controller = PDFController(model, view)
+        view.controller = controller
+        model.open_pdf(str(pdf_path))
+
+        errors: list[str] = []
+        info_calls: list[tuple[str, str]] = []
+
+        class _FakeRunner(QObject):
+            progress = Signal(str)
+            stalled = Signal()
+            succeeded = Signal(object)
+            failed = Signal(object)
+            finished = Signal()
+            raw_message = Signal(str)
+
+            instances: list["_FakeRunner"] = []
+
+            def __init__(self, job, *_args, **_kwargs) -> None:
+                super().__init__()
+                self.job = job
+                self.started = False
+                self.terminated = False
+                self.__class__.instances.append(self)
+
+            def start(self) -> None:
+                self.started = True
+                self.progress.emit(PRINT_SUBMITTING_MESSAGE)
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+        try:
+            controller.print_dispatcher = _FakePrintDispatcher()
+            monkeypatch.setattr(pdf_controller_module, "UnifiedPrintDialog", _AcceptDialog)
+            monkeypatch.setattr(pdf_controller_module, "QProgressDialog", _FakeProgressDialog, raising=False)
+            monkeypatch.setattr(pdf_controller_module, "PrintSubprocessRunner", _FakeRunner, raising=False)
+            monkeypatch.setattr(pdf_controller_module, "show_error", lambda _parent, message: errors.append(message))
+            monkeypatch.setattr(
+                pdf_controller_module.QMessageBox,
+                "information",
+                lambda _parent, title, message: info_calls.append((title, message)),
+            )
+
+            baseline_status = view.status_bar.currentMessage()
+            controller.print_document()
+
+            assert _pump_until(app, lambda: bool(_FakeRunner.instances)), "runner was not created"
+            runner = _FakeRunner.instances[-1]
+            assert runner.started is True
+
+            controller._on_print_submission_stalled()
             app.processEvents()
 
-            assert info_calls == [("??", info_calls[0][1])]
-            assert controller._print_progress_dialog is None
+            assert controller._print_progress_dialog is not None
+            assert controller._print_progress_dialog.label_text == PRINT_STALLED_MESSAGE
+            assert controller._print_progress_dialog.cancel_button_text == PRINT_TERMINATE_BUTTON_TEXT
+            assert view.status_bar.currentMessage() == PRINT_STALLED_MESSAGE
+
+            controller._terminate_active_print_submission()
+            assert runner.terminated is True
+
+            controller._on_print_submission_failed(PrintHelperTerminatedError("列印背景工作已終止"))
+            controller._on_print_runner_finished()
+            assert _pump_until(app, lambda: controller._print_progress_dialog is None), "print UI never cleaned up"
+
+            assert errors == []
+            assert info_calls == []
+            assert view.isVisible() is True
+            assert view.status_bar.currentMessage() == baseline_status
         finally:
             _AcceptDialog.instances.clear()
-            _FakeQProcess.instances.clear()
-            view.close()
+            _FakeRunner.instances.clear()
+            if view.isVisible():
+                view.close()
             model.close()
+
+
+def test_terminate_active_print_submission_handles_reentrant_runner_cleanup(monkeypatch) -> None:
+    _ensure_app()
+    model = PDFModel()
+    view = PDFView()
+    controller = PDFController(model, view)
+    view.controller = controller
+
+    class _FakeRunner:
+        def __init__(self) -> None:
+            self.terminated = False
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+    try:
+        runner = _FakeRunner()
+        controller._print_runner = runner
+        monkeypatch.setattr(controller, "_set_print_status_message", lambda _message: None)
+        monkeypatch.setattr(
+            controller,
+            "_update_print_progress_dialog",
+            lambda _message: setattr(controller, "_print_runner", None),
+        )
+
+        controller._terminate_active_print_submission()
+
+        assert runner.terminated is False
+        assert controller._print_runner is None
+    finally:
+        view.close()
+        model.close()
