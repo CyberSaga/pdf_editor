@@ -259,6 +259,45 @@
 
 ---
 
+## 13. 冷啟動第一次開啟 UI 很慢（no-PDF launch）
+
+### 13.1 第一次啟動常見 10s+，第二次啟動正常
+
+**問題：**  
+冷開機後第一次執行 `python .\main.py`（不帶任何 PDF 路徑），有時要 10 秒以上才顯示視窗；第二次啟動通常只要 2 秒左右。
+
+**觀測到的瓶頸：**  
+從 startup log 來看，時間主要卡在：
+- `view_native_window_created -> view_show_event`
+- `view_native_window_created -> view_first_resize_event_enter`
+
+而非 import、model/view/controller 建構本身。
+
+**根因（已定位）：**  
+這個延遲只會在「Controller 在 `show()` 前就被掛回 `PDFView`（`view.controller = controller`）」時放大。
+
+透過 probe 可重現並區分：
+- `python .\test_scripts\pdfview_startup_probe.py --no-event-loop`：只建 `PDFView`，仍有少量 pre-show 延遲
+- `python .\test_scripts\pdfview_startup_probe.py --with-controller --detach-controller --no-event-loop`：Controller 存在但不掛回 view，維持快
+- `python .\test_scripts\pdfview_startup_probe.py --with-controller --no-event-loop`：Controller 掛回 view，pre-show 延遲會顯著放大（可達 10s+）
+
+因此問題不是 Qt 本身，也不是單純的 UI shell；是 `PDFView` 在 controller 存在時，於第一輪顯示前就會走到更多 controller-dependent 的路徑，造成冷啟動卡住。
+
+**有效解法（已實作）：**  
+在 no-PDF launch（`argv=[]`）時，不在 `show()` 之前做 `view.controller = controller`，而是在視窗可見後的第一個 event-loop tick 再附掛：
+- 空啟動：`QTimer.singleShot(0, attach_controller)`
+- 帶檔啟動（`argv` 有 PDF 路徑）：仍維持「先 attach，再 open_pdf」以避免行為改變
+
+**檔案：** `main.py`
+
+**測試：**
+- `python -m pytest test_scripts/test_main_startup_logging.py -q`
+  - `test_empty_launch_defers_controller_attachment_until_first_event_loop_tick`
+  - `test_cli_open_path_keeps_controller_attached_before_opening_documents`
+
+**人工驗證：**
+- 冷開機後第一次執行：`python .\main.py`，觀察 startup log 是否仍有 10s+ 的 `view_native_window_created -> view_show_event` 卡頓。
+
 ### 12.2 縮放後編輯模式點擊文字位置無法觸發編輯框
 
 **問題：**  

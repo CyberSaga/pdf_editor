@@ -372,6 +372,7 @@ class PDFView(QMainWindow):
         self._startup_checkpoint_logger = None
         self._startup_markers_seen: set[str] = set()
         self._startup_show_tick_scheduled = False
+        self._startup_first_resize_logged = False
         self._startup_created_at = time.perf_counter()
         self._doc_tab_signal_block = False
         self._mode_actions: dict[str, QAction] = {}
@@ -2973,16 +2974,24 @@ class PDFView(QMainWindow):
         self._update_status_bar()
 
     def _resize_event(self, event):
-        super().resizeEvent(event)
-        self._update_thumbnail_layout_metrics()
-        if not self.scene.sceneRect().isValid():
-            return
-        if self.continuous_pages and self.page_items:
-            # 連續模式：不 fit 整個場景，保留縮放與捲動位置
-            return
-        self.graphics_view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
-        if self.scene.items():
-            self.graphics_view.centerOn(self.scene.itemsBoundingRect().center())
+        first_resize = not self._startup_first_resize_logged
+        if first_resize:
+            self._startup_first_resize_logged = True
+            self._emit_startup_marker("view_first_resize_event_enter")
+        try:
+            super().resizeEvent(event)
+            self._update_thumbnail_layout_metrics()
+            if not self.scene.sceneRect().isValid():
+                return
+            if self.continuous_pages and self.page_items:
+                # 連續模式：不 fit 整個場景，保留縮放與捲動位置
+                return
+            self.graphics_view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+            if self.scene.items():
+                self.graphics_view.centerOn(self.scene.itemsBoundingRect().center())
+        finally:
+            if first_resize:
+                self._emit_startup_marker("view_first_resize_event_exit")
 
     def closeEvent(self, event: QCloseEvent):
         """重寫closeEvent以檢查未儲存的變更"""

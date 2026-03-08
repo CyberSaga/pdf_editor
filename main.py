@@ -36,6 +36,7 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
     checkpoint = _log_startup_checkpoint(logger, "logging_configured", checkpoint)
 
     from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import QTimer
 
     checkpoint = _log_startup_checkpoint(logger, "qt_imported", checkpoint)
 
@@ -57,10 +58,10 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
     checkpoint = _log_startup_checkpoint(logger, "view_created", checkpoint)
 
     controller = PDFController(model, view)
-    view.controller = controller
     checkpoint = _log_startup_checkpoint(logger, "controller_created", checkpoint)
 
     checkpoint_state = {"value": checkpoint}
+    controller_attached = {"done": False}
 
     def _log_view_lifecycle(label: str) -> None:
         checkpoint_state["value"] = _log_startup_checkpoint(
@@ -68,6 +69,12 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
             label,
             checkpoint_state["value"],
         )
+
+    def _attach_controller_to_view() -> None:
+        if controller_attached["done"]:
+            return
+        view.controller = controller
+        controller_attached["done"] = True
 
     view.set_startup_checkpoint_logger(_log_view_lifecycle)
 
@@ -84,8 +91,13 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
     checkpoint = _log_startup_checkpoint(logger, "view_shown", checkpoint)
 
     if cli_args:
+        _attach_controller_to_view()
         # Opening a document immediately needs the real sidebar/inspector widgets.
         view.ensure_heavy_panels_initialized()
+    else:
+        # Leave PDFView detached during the first empty-window show path, then
+        # attach the controller on the first queued tick after the window is visible.
+        QTimer.singleShot(0, _attach_controller_to_view)
 
     for path in cli_args:
         controller.open_pdf(path)

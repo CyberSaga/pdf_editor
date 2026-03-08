@@ -5,6 +5,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -50,13 +52,54 @@ def test_run_logs_first_window_lifecycle_markers(caplog) -> None:
     try:
         for _ in range(5):
             startup["app"].processEvents()
+        startup["view"].resize(startup["view"].width() + 1, startup["view"].height() + 1)
+        startup["app"].processEvents()
 
         log_text = caplog.text
         for expected in (
             "startup: view_show_event",
+            "startup: view_first_resize_event_enter",
+            "startup: view_first_resize_event_exit",
             "startup: view_first_event_loop_tick",
         ):
             assert expected in log_text
+    finally:
+        startup["view"].close()
+        startup["model"].close()
+        startup["app"].quit()
+
+
+def test_empty_launch_defers_controller_attachment_until_first_event_loop_tick() -> None:
+    startup = main_module.run(argv=[], start_event_loop=False)
+
+    try:
+        # Empty startup should keep PDFView detached during the first show pass.
+        assert startup["view"].controller is None
+
+        for _ in range(5):
+            startup["app"].processEvents()
+
+        assert startup["view"].controller is startup["controller"]
+    finally:
+        startup["view"].close()
+        startup["model"].close()
+        startup["app"].quit()
+
+
+def test_cli_open_path_keeps_controller_attached_before_opening_documents(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: list[bool] = []
+
+    from controller.pdf_controller import PDFController
+
+    def fake_open_pdf(self, path: str) -> None:
+        observed.append(self.view.controller is self)
+
+    monkeypatch.setattr(PDFController, "open_pdf", fake_open_pdf)
+
+    startup = main_module.run(argv=["dummy.pdf"], start_event_loop=False)
+    try:
+        assert observed == [True]
+        assert startup["view"].controller is startup["controller"]
     finally:
         startup["view"].close()
         startup["model"].close()
