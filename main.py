@@ -1,71 +1,49 @@
 import logging
 import sys
-import time
 from typing import Any
 
-# Capture startup as early as possible before importing heavier GUI/MVC modules.
-_PROCESS_START = time.perf_counter()
-_LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
-
-
 def _configure_logging() -> logging.Logger:
-    logging.basicConfig(level=logging.DEBUG, format=_LOG_FORMAT)
+    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
     return logging.getLogger(__name__)
-
-
-def _log_startup_checkpoint(
-    logger: logging.Logger,
-    label: str,
-    previous_checkpoint: float,
-) -> float:
-    now = time.perf_counter()
-    logger.info(
-        "startup: %s total=%.3fs delta=%.3fs",
-        label,
-        now - _PROCESS_START,
-        now - previous_checkpoint,
-    )
-    return now
 
 
 def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | dict[str, Any]:
     cli_args = list(sys.argv[1:] if argv is None else argv)
 
-    logger = _configure_logging()
-    checkpoint = _PROCESS_START
-    checkpoint = _log_startup_checkpoint(logger, "logging_configured", checkpoint)
+    _configure_logging()
 
     from PySide6.QtWidgets import QApplication
-
-    checkpoint = _log_startup_checkpoint(logger, "qt_imported", checkpoint)
-
     from model.pdf_model import PDFModel
     from view.pdf_view import PDFView
     from controller.pdf_controller import PDFController
 
-    checkpoint = _log_startup_checkpoint(logger, "mvc_imported", checkpoint)
-
-    app = QApplication([sys.argv[0], *cli_args])
-    checkpoint = _log_startup_checkpoint(logger, "qapplication_created", checkpoint)
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([sys.argv[0], *cli_args])
 
     model = PDFModel()
-    checkpoint = _log_startup_checkpoint(logger, "model_created", checkpoint)
-
-    view = PDFView()
-    checkpoint = _log_startup_checkpoint(logger, "view_created", checkpoint)
+    view = PDFView(defer_heavy_panels=not cli_args)
 
     controller = PDFController(model, view)
-    view.controller = controller
-    checkpoint = _log_startup_checkpoint(logger, "controller_created", checkpoint)
+    controller_attached = {"done": False}
+
+    def attach_and_activate_controller() -> None:
+        if controller_attached["done"]:
+            return
+        view.controller = controller
+        controller.activate()
+        controller_attached["done"] = True
+
+    if not cli_args:
+        view.shell_ready.connect(attach_and_activate_controller)
 
     view.show()
-    checkpoint = _log_startup_checkpoint(logger, "view_shown", checkpoint)
 
-    for path in cli_args:
-        controller.open_pdf(path)
-        checkpoint = _log_startup_checkpoint(logger, f"document_opened path={path}", checkpoint)
-
-    checkpoint = _log_startup_checkpoint(logger, "event_loop_ready", checkpoint)
+    if cli_args:
+        attach_and_activate_controller()
+        view.ensure_heavy_panels_initialized()
+        for path in cli_args:
+            controller.open_pdf(path)
 
     if not start_event_loop:
         return {
@@ -73,7 +51,6 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
             "model": model,
             "view": view,
             "controller": controller,
-            "checkpoint": checkpoint,
         }
 
     return app.exec()

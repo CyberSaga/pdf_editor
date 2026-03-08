@@ -1298,3 +1298,31 @@ logging 設定責任沒有集中在 app entrypoint，導致可匯入模組同時
 **驗證：**  
 - `pytest -q test_scripts/test_print_controller_flow.py test_scripts/test_print_subprocess_runner.py test_scripts/test_print_subprocess_helper.py` -> pass  
 - `pytest -q` -> pass
+
+### 10.7 無 PDF 啟動偶發 10 秒以上卡住（Initialization Storm，2026-03）
+
+**問題：**  
+使用者在沒有直接開啟 PDF 的情況下啟動程式，主視窗偶發要 10 秒以上才真正顯示；同一次修復中也觀察到「第一次冷啟動特別慢」。
+
+**原因：**  
+- 問題不在 `PDFModel` 建立或一般 Qt 空白視窗，而是在真正的 `PDFView` + controller 啟動路徑。  
+- 根因是 no-PDF 啟動時太早建立完整互動鏈：`PDFView` 尚未完成 first show / first idle，就同時進行重型側欄/屬性面板建立與 controller-view 綁定，形成 initialization storm。  
+- 實測隔離後證明：單純 Qt 視窗、rich shell probe、甚至未綁定 controller 的 `PDFView` 都明顯更快；真正把 `view.controller` 提前接上後，pre-show stall 才會暴增。
+
+**有效解法（已實作）：**  
+- 採用 shell-first startup：`PDFView` 在 no-PDF 啟動時先顯示輕量 shell。  
+- 左側 sidebar 與右側 property inspector 改為 deferred hydration；等第一個 UI turn 後才建完整重面板。  
+- `PDFView` 在 deferred hydration 完成後發出 `shell_ready`。  
+- `main.py` 只在收到 `shell_ready` 後才 attach `view.controller` 並呼叫 `PDFController.activate()`；不再依賴分散的雙 `QTimer.singleShot(0, ...)`。  
+- `PDFController` 也拆成 cheap `__init__()` 與 `activate()`：signal wiring、print dispatcher、print worker bridge 等延後到 view ready 或 CLI 直接開檔時才初始化。  
+- CLI 直接開檔路徑仍維持同步 attach/activate/open，避免破壞原本開檔行為。
+
+**檔案：**  
+- `main.py`  
+- `view/pdf_view.py`  
+- `controller/pdf_controller.py`  
+- `test_scripts/test_main_startup_behavior.py`
+
+**驗證：**  
+- `pytest -q test_scripts/test_main_startup_behavior.py` -> pass  
+- 冷啟動實測從原本常見的 10s+ stall，降到約 3-4 秒可見主視窗，且不再卡在 pre-show 階段

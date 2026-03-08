@@ -70,6 +70,8 @@ Browse mode supports drag text selection with text-bounds snapping. Copy is avai
 
 Large PDF handling uses staged loading and batching to preserve interactivity while thumbnails, scene items, and indexes are built. Rendering and refresh scopes are coordinated to avoid blocking behavior and stale geometry. Key functions include controller batch scheduling and view continuous-scene rebuild paths.
 
+Empty-launch startup also uses a shell-first path. When the app starts without an input file, `PDFView` can show a lightweight shell first, defer the heavy sidebars/property inspector until after the first UI turn, then let `main.py` attach and activate the controller only after the view emits `shell_ready`. Direct file-open startup keeps the synchronous path so `open_pdf(...)` still runs against a fully wired controller/view pair. Key functions include `main.run(...)`, `PDFView.ensure_heavy_panels_initialized()`, `PDFView.showEvent()`, `PDFView.shell_ready`, and `PDFController.activate()`.
+
 ## 13. Text Font Families and CJK Rendering
 
 The text properties font menu supports PDF-safe Latin families and CJK families, including explicit Windows CJK selections:
