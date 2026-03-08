@@ -13,6 +13,7 @@ from typing import List, Tuple, Optional
 from pathlib import Path
 from utils.helpers import pixmap_to_qpixmap, parse_pages, show_error
 import logging
+import time
 import warnings
 import fitz
 
@@ -359,13 +360,19 @@ class PDFView(QMainWindow):
     sig_remove_watermark = Signal(str)
     sig_load_watermarks = Signal()
 
-    def __init__(self):
+    def __init__(self, defer_heavy_panels: bool = False):
         super().__init__()
         self.setWindowTitle("視覺化 PDF 編輯器")
         self.setMinimumSize(1280, 800)
         self.setGeometry(100, 100, 1280, 800)
         self.total_pages = 0
         self.controller = None
+        self._defer_heavy_panels = defer_heavy_panels
+        self._heavy_panels_initialized = False
+        self._startup_checkpoint_logger = None
+        self._startup_markers_seen: set[str] = set()
+        self._startup_show_tick_scheduled = False
+        self._startup_created_at = time.perf_counter()
         self._doc_tab_signal_block = False
         self._mode_actions: dict[str, QAction] = {}
         self._mode_action_group = QActionGroup(self)
@@ -393,7 +400,9 @@ class PDFView(QMainWindow):
         self.left_sidebar.setTabBar(_NoCtrlTabTabBar(self.left_sidebar))
         self.left_sidebar.setMinimumWidth(200)
         self.left_sidebar.setMaximumWidth(400)
-        self._setup_left_sidebar()
+        if not self._defer_heavy_panels:
+            self._setup_left_sidebar()
+            self._heavy_panels_initialized = True
         self.left_sidebar_widget = QWidget()
         left_sidebar_layout = QVBoxLayout(self.left_sidebar_widget)
         left_sidebar_layout.setContentsMargins(0, 0, 0, 0)
@@ -414,7 +423,10 @@ class PDFView(QMainWindow):
         right_title.setStyleSheet("font-weight: bold; padding: 8px;")
         right_sidebar_layout.addWidget(right_title)
         self.right_stacked_widget = QStackedWidget()
-        self._setup_property_inspector()
+        if self._defer_heavy_panels:
+            self._setup_property_inspector_placeholder()
+        else:
+            self._setup_property_inspector()
         right_sidebar_layout.addWidget(self.right_stacked_widget)
         self.right_sidebar.setMinimumWidth(240)
         self.right_sidebar.setMaximumWidth(400)
@@ -518,6 +530,61 @@ class PDFView(QMainWindow):
             QLineEdit, QComboBox { border-radius: 6px; padding: 4px 8px; border: 1px solid #E2E8F0; }
         """)
         self.graphics_view.setStyleSheet("QGraphicsView { background: #F1F5F9; border: none; }")
+
+    def set_startup_checkpoint_logger(self, callback) -> None:
+        self._startup_checkpoint_logger = callback
+
+    def ensure_heavy_panels_initialized(self) -> None:
+        if self._heavy_panels_initialized:
+            return
+
+        self._setup_left_sidebar()
+        while self.right_stacked_widget.count():
+            widget = self.right_stacked_widget.widget(0)
+            self.right_stacked_widget.removeWidget(widget)
+            widget.deleteLater()
+        self._setup_property_inspector()
+        self._heavy_panels_initialized = True
+        # Re-apply the active mode once the real inspector cards exist.
+        self.set_mode(self.current_mode)
+        self._update_status_bar()
+        if getattr(self, "text_target_mode_combo", None) is not None:
+            self._on_text_target_mode_changed()
+        self._emit_startup_marker("view_deferred_ui_ready")
+
+    def _emit_startup_marker(self, label: str) -> None:
+        if label in self._startup_markers_seen:
+            return
+        self._startup_markers_seen.add(label)
+        callback = self._startup_checkpoint_logger
+        if callback is not None:
+            callback(label)
+            return
+        logger.info(
+            "startup_window: %s local_total=%.3fs",
+            label,
+            time.perf_counter() - self._startup_created_at,
+        )
+
+    def showEvent(self, event):
+        self._emit_startup_marker("view_show_event")
+        if not self._startup_show_tick_scheduled:
+            self._startup_show_tick_scheduled = True
+            # This separates time spent inside QWidget.show() from the first queued
+            # event-loop turn after the window becomes visible.
+            def _after_first_tick() -> None:
+                self._emit_startup_marker("view_first_event_loop_tick")
+                if self._defer_heavy_panels:
+                    # Build the expensive sidebars only after the window is visible
+                    # so cold startup is dominated by the main shell, not hidden tabs.
+                    self.ensure_heavy_panels_initialized()
+
+            QTimer.singleShot(0, _after_first_tick)
+        super().showEvent(event)
+
+    def paintEvent(self, event):
+        self._emit_startup_marker("view_first_paint")
+        super().paintEvent(event)
 
     def _build_document_tabs_bar(self):
         """Document-level tab bar for multiple open PDFs."""
@@ -902,6 +969,15 @@ class PDFView(QMainWindow):
         btn_layout.addWidget(self.watermark_remove_btn)
         wm_layout.addLayout(btn_layout)
         self.left_sidebar.addTab(self.watermark_panel, "浮水印列表")
+
+    def _setup_property_inspector_placeholder(self):
+        self.page_info_card = QWidget()
+        page_layout = QVBoxLayout(self.page_info_card)
+        self.page_info_label = QLabel("載入屬性面板中...")
+        self.page_info_label.setWordWrap(True)
+        page_layout.addWidget(self.page_info_label)
+        page_layout.addStretch()
+        self.right_stacked_widget.addWidget(self.page_info_card)
 
     def _setup_property_inspector(self):
         """Right sidebar: 屬性 — dynamic inspector by mode (page info / 矩形設定 / 螢光筆顏色 / 文字設定). Apply/Cancel."""

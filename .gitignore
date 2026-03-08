@@ -11,6 +11,7 @@ env/
 .env
 .pytest_cache/
 _tmp_vert_tests/
+.worktree/
 
 # PDF 測試檔
 *.pdf

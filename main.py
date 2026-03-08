@@ -45,21 +45,47 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
 
     checkpoint = _log_startup_checkpoint(logger, "mvc_imported", checkpoint)
 
-    app = QApplication([sys.argv[0], *cli_args])
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([sys.argv[0], *cli_args])
     checkpoint = _log_startup_checkpoint(logger, "qapplication_created", checkpoint)
 
     model = PDFModel()
     checkpoint = _log_startup_checkpoint(logger, "model_created", checkpoint)
 
-    view = PDFView()
+    view = PDFView(defer_heavy_panels=True)
     checkpoint = _log_startup_checkpoint(logger, "view_created", checkpoint)
 
     controller = PDFController(model, view)
     view.controller = controller
     checkpoint = _log_startup_checkpoint(logger, "controller_created", checkpoint)
 
+    checkpoint_state = {"value": checkpoint}
+
+    def _log_view_lifecycle(label: str) -> None:
+        checkpoint_state["value"] = _log_startup_checkpoint(
+            logger,
+            label,
+            checkpoint_state["value"],
+        )
+
+    view.set_startup_checkpoint_logger(_log_view_lifecycle)
+
+    # Split pre-show work into Qt polish vs native window creation so slow cold
+    # starts can be attributed to widget/style preparation or platform handles.
+    view.ensurePolished()
+    checkpoint = _log_startup_checkpoint(logger, "view_polished", checkpoint)
+
+    _ = view.winId()
+    checkpoint = _log_startup_checkpoint(logger, "view_native_window_created", checkpoint)
+
     view.show()
+    checkpoint = checkpoint_state["value"]
     checkpoint = _log_startup_checkpoint(logger, "view_shown", checkpoint)
+
+    if cli_args:
+        # Opening a document immediately needs the real sidebar/inspector widgets.
+        view.ensure_heavy_panels_initialized()
 
     for path in cli_args:
         controller.open_pdf(path)
