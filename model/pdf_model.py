@@ -12,6 +12,7 @@ from pathlib import Path
 import uuid
 import difflib  # 相似度比對
 import io  # 用於 BytesIO 記憶體 stream（文件推薦 in-memory PDF）
+import json
 import re
 import html as _html_mod
 
@@ -968,6 +969,12 @@ class PDFModel:
 
     def build_print_snapshot(self) -> bytes:
         return self.tools.build_print_snapshot()
+
+    def capture_print_input_pdf_bytes(self) -> bytes:
+        return self._capture_doc_snapshot()
+
+    def get_print_watermarks(self) -> list[dict]:
+        return json.loads(json.dumps(self.tools.watermark.get_watermarks(), ensure_ascii=False))
 
     def get_text_info_at_point(self, page_num: int, point: fitz.Point) -> Optional[TextHit]:
         """Return topmost editable run info at point using stable run/span identity."""
