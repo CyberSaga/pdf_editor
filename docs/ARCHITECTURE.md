@@ -141,6 +141,26 @@ The Qt bridge sets page layout before print activation and does not mutate layou
 Preview rendering and final submission are intentionally split. `UnifiedPrintDialog` can render preview pages from a live-document provider callback, so opening the dialog does not require prebuilding a full print snapshot. `PDFController.print_document()` builds the full print snapshot/temp PDF only after the dialog returns `Accepted`, avoiding wasted serialization and disk I/O on cancel.
 Preview refresh is also guarded at the dialog boundary: resize / wheel / row-change paths flow through a safe preview wrapper that converts temporary option-building errors (for example invalid custom page range while typing) into inline preview messages rather than unhandled UI-event exceptions.
 
+### 6.1 Windows Spooler Isolation (Helper Subprocess)
+
+On Windows, the Qt/GDI print submission path can stall the entire GUI process even when invoked from a `QThread` because the OS print stack can block inside the process. To protect application responsiveness and lifecycle stability, Windows raster submission is isolated into a helper subprocess:
+
+- Main app prepares a job (immutable inputs): capture current document bytes, write an `input.pdf` into a temp work dir, and serialize a `PrintHelperJob` into `job.json`.
+- Main app launches a child Python process via `QProcess` using `sys.executable` and runs `python -m src.printing.helper_main <job.json>`.
+- Child process performs end-to-end submission: apply watermarks (if any), render/rasterize, and submit to either `output_pdf_path` (PDF output) or the OS spooler.
+- Progress and terminal status are emitted as line-delimited JSON on stdout (see `src/printing/helper_protocol.py`). The main app parses these events in `src/printing/subprocess_runner.py`.
+
+The helper uses shared user-facing message constants from `src/printing/messages.py` so controller UI and helper progress stay consistent.
+
+### 6.2 Lifecycle Guardrails (Close, Stall, Terminate)
+
+Controller print submission is explicitly lifecycle-aware:
+
+- Snapshot/input capture runs off the GUI thread from the moment the user confirms printing.
+- Worker-thread callbacks are marshaled back to the GUI thread before touching UI objects (see `_PrintWorkerBridge` in `controller/pdf_controller.py`).
+- If the user closes the app while printing is active, the close request is deferred and the UI remains alive; the window auto-closes after the submission finishes.
+- The subprocess runner monitors activity and emits a stalled state after a no-progress threshold; UI surfaces a terminate option that kills only the helper subprocess and returns the app to normal without requiring a restart.
+
 ## 7. Guardrails
 
 View must not directly mutate model. Controller owns mutation orchestration. Model owns document correctness and persistence. Behavior-level feature truth is in `docs/FEATURES.md`; root-cause/fix history is in `docs/solutions.md`.
