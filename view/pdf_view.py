@@ -427,6 +427,7 @@ class PDFView(QMainWindow):
         # --- Status Bar ---
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
+        self._status_bar_override_message: Optional[str] = None
 
         # --- State Variables ---
         self.current_mode = 'browse'
@@ -1031,6 +1032,9 @@ class PDFView(QMainWindow):
 
     def _update_status_bar(self):
         """更新狀態列：已修改、模式、快捷鍵、頁/縮放；搜尋模式時顯示找到 X 個結果 • 按 Esc 關閉搜尋."""
+        if getattr(self, "_status_bar_override_message", None):
+            self.status_bar.showMessage(self._status_bar_override_message)
+            return
         scale = getattr(self, "scale", 1.0)
         total = getattr(self, "total_pages", 0)
         cur = getattr(self, "current_page", 0)
@@ -1046,6 +1050,10 @@ class PDFView(QMainWindow):
         parts.append("Ctrl+K 快速指令")
         if getattr(self, "status_bar", None):
             self.status_bar.showMessage(" • ".join(parts))
+
+    def set_status_bar_override_message(self, message: Optional[str]) -> None:
+        self._status_bar_override_message = message or None
+        self._update_status_bar()
 
     def set_mode(self, mode: str):
         mode = mode if mode in self._VALID_MODES else "browse"

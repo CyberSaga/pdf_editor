@@ -55,10 +55,7 @@ class WatermarkTool(ToolExtension):
 
         tmp_doc = fitz.open()
         tmp_doc.insert_pdf(doc)
-        for wm in watermarks:
-            for page_num in wm.get("pages", []):
-                if 1 <= page_num <= len(tmp_doc):
-                    self._apply_watermarks_to_page(tmp_doc[page_num - 1], [wm])
+        self.apply_watermarks_to_document(tmp_doc, watermarks)
         self._write_watermarks_embed(tmp_doc, watermarks)
         return tmp_doc
 
@@ -214,18 +211,21 @@ class WatermarkTool(ToolExtension):
         watermarks = self._watermarks_by_session.get(session_id, [])
         return [wm for wm in watermarks if page_num in wm.get("pages", [])]
 
-    def _needs_cjk_font(self, text: str) -> bool:
+    @staticmethod
+    def _needs_cjk_font(text: str) -> bool:
         import re
 
         return bool(re.search(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", text))
 
-    def _get_watermark_font(self, font_name: str, text: str) -> str:
+    @classmethod
+    def _get_watermark_font(cls, font_name: str, text: str) -> str:
         non_cjk_fonts = ("helv", "cour", "Helvetica", "Courier")
-        if self._needs_cjk_font(text) and font_name in non_cjk_fonts:
+        if cls._needs_cjk_font(text) and font_name in non_cjk_fonts:
             return "china-ts"
         return font_name
 
-    def _apply_watermarks_to_page(self, page: fitz.Page, watermarks: list[dict]) -> None:
+    @classmethod
+    def _apply_watermarks_to_page(cls, page: fitz.Page, watermarks: list[dict]) -> None:
         if not watermarks:
             return
         page_rect = page.rect
@@ -243,7 +243,7 @@ class WatermarkTool(ToolExtension):
             offset_y = wm.get("offset_y", 0)
             line_spacing = wm.get("line_spacing", 1.3)
 
-            font_name = self._get_watermark_font(font_name, text)
+            font_name = cls._get_watermark_font(font_name, text)
             center_x = cx + offset_x
             center_y = cy + offset_y
             center = fitz.Point(center_x, center_y)
@@ -255,7 +255,7 @@ class WatermarkTool(ToolExtension):
             try:
                 font = fitz.Font(font_name)
             except Exception:
-                font = fitz.Font("china-ts" if self._needs_cjk_font(text) else "helv")
+                font = fitz.Font("china-ts" if cls._needs_cjk_font(text) else "helv")
 
             line_height = font_size * line_spacing
             total_height = line_height * len(lines)
@@ -283,3 +283,10 @@ class WatermarkTool(ToolExtension):
                     fill_opacity=opacity,
                     stroke_opacity=opacity,
                 )
+
+    @classmethod
+    def apply_watermarks_to_document(cls, doc: fitz.Document, watermarks: list[dict]) -> None:
+        for wm in watermarks:
+            for page_num in wm.get("pages", []):
+                if 1 <= page_num <= len(doc):
+                    cls._apply_watermarks_to_page(doc[page_num - 1], [wm])
