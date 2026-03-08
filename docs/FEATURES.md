@@ -97,3 +97,17 @@ For some Windows vendor drivers, native properties update only private `DriverEx
 Preview rendering is guarded against temporary invalid input. If page-range input becomes invalid during live editing, preview errors are shown inside the dialog and the UI event path keeps running.
 Print preview no longer requires building the full print snapshot before the dialog opens. Preview pages can be rendered directly from the live document, while the full print snapshot/temp PDF is generated only after the user confirms printing.
 Job-level settings remain app-owned regardless of native properties: `copies`, `dpi`, `collate`, page range, page subset, reverse order, and scaling are always taken from the unified print dialog.
+
+## 16. Print Lifecycle Resilience (Windows)
+
+Windows print submission can hang inside the GUI process due to OS/driver stack behavior. The app protects responsiveness and shutdown correctness with the following behavior:
+
+- From the moment the user confirms printing, document capture (PDF bytes) runs in a background thread and does not block the UI thread.
+- Windows raster submission is performed in a helper subprocess (child Python process) so driver/GDI stalls do not freeze the main UI process.
+- The main app monitors helper activity and surfaces a “not responding” print state after a stall threshold, offering a “terminate print job” action that kills only the helper subprocess and restores the app to normal state.
+- If the user attempts to close the window while printing is active, close is deferred and the UI stays alive; the window auto-closes after printing finishes.
+
+Key files/functions:
+- Controller entry: `controller/pdf_controller.py` `print_document()` and print lifecycle helpers.
+- Helper protocol and job payload: `src/printing/helper_protocol.py` (`PrintHelperJob`) and `src/printing/helper_main.py`.
+- Subprocess runner: `src/printing/subprocess_runner.py`.

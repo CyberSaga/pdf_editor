@@ -16,6 +16,7 @@ Desktop PDF editor written in Python with a Qt UI.
 - Watermarks
 - Search and jump
 - Optional OCR
+- Windows printing is resilient: snapshot capture starts off-thread after confirmation, raster submission is isolated into a helper subprocess to avoid UI hangs, close is deferred until submission completes, and stalled jobs can be terminated without restarting the main window.
 - Print dialog includes native printer properties entry (`屬性`) beside printer selector on supported systems, syncs returned paper/orientation/duplex/color/DPI/copies into dialog controls, and keeps tray/vendor-specific settings inherited from system properties without exposing a tray section in the app UI
 - Hardware precedence in print dialog is touch-based: `paper_size`, `orientation`, `duplex`, and `color_mode` inherit native/system defaults until the user explicitly changes them in the app; `copies`, `dpi`, `collate`, page range, and scaling remain app-owned job settings
 - Print preview is resilient to invalid temporary input (for example empty custom page range) and shows preview errors inside the dialog instead of crashing the UI event path; full print snapshot generation is deferred until the user confirms printing
