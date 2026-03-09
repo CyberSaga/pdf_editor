@@ -106,6 +106,7 @@ Windows print submission can hang inside the GUI process due to OS/driver stack 
 
 - From the moment the user confirms printing, document capture (PDF bytes) runs in a background thread and does not block the UI thread.
 - Windows raster submission is performed in a helper subprocess (child Python process) so driver/GDI stalls do not freeze the main UI process.
+- The helper emits periodic heartbeat messages during long rendering/submission so legitimate long jobs are not misclassified as stalled.
 - The main app monitors helper activity and surfaces a “not responding” print state after a stall threshold, offering a “terminate print job” action that kills only the helper subprocess and restores the app to normal state.
 - If the user attempts to close the window while printing is active, close is deferred and the UI stays alive; the window auto-closes after printing finishes.
 

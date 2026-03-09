@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QProcess, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 from PySide6.QtWidgets import QApplication
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -54,6 +54,8 @@ class _FakeProcess(QObject):
         super().__init__()
         self.program = None
         self.arguments = None
+        self.working_directory = None
+        self.process_environment: dict[str, str] | None = None
         self._state = QProcess.ProcessState.NotRunning
         self._stdout = bytearray()
         self._stderr = bytearray()
@@ -67,6 +69,12 @@ class _FakeProcess(QObject):
 
     def state(self):
         return self._state
+
+    def setWorkingDirectory(self, path: str) -> None:
+        self.working_directory = path
+
+    def setProcessEnvironment(self, env: QProcessEnvironment) -> None:
+        self.process_environment = {key: env.value(key) for key in env.keys()}
 
     def kill(self) -> None:
         self.killed = True
@@ -166,9 +174,59 @@ def test_runner_logs_startup_error_and_uses_sys_executable(tmp_path: Path) -> No
     runner.start()
     process = _FakeProcess.instances[-1]
     assert process.program == sys.executable
+    assert process.arguments is not None
+    assert process.arguments[:2] == ["-m", "src.printing.helper_main"]
+    assert process.working_directory == str(REPO_ROOT)
+    assert process.process_environment is not None
+    py_path = process.process_environment.get("PYTHONPATH", "")
+    assert str(REPO_ROOT) in py_path.split(os.pathsep)
 
     process.push_stderr_text("failed to start helper")
     process.errorOccurred.emit(QProcess.ProcessError.FailedToStart)
 
     assert _pump_until(app, lambda: bool(failures)), "runner never emitted startup failure"
     assert "failed to start helper" in str(failures[-1])
+
+
+def test_runner_heartbeat_events_prevent_false_stall(tmp_path: Path) -> None:
+    app = _ensure_app()
+    job = PrintHelperJob(
+        job_id="job-4",
+        input_pdf_path=str(tmp_path / "input.pdf"),
+        watermarks=[],
+        options=PrintJobOptions(printer_name="Printer A"),
+    )
+
+    stalled: list[bool] = []
+    succeeded: list[object] = []
+    runner = PrintSubprocessRunner(
+        job,
+        process_factory=_FakeProcess,
+        stall_timeout_ms=40,
+        stall_check_interval_ms=10,
+    )
+    runner.stalled.connect(lambda: stalled.append(True))
+    runner.succeeded.connect(lambda payload: succeeded.append(payload))
+
+    runner.start()
+    process = _FakeProcess.instances[-1]
+    for _ in range(4):
+        process.push_stdout_event({"job_id": job.job_id, "event": "heartbeat", "message": ""})
+        app.processEvents()
+        time.sleep(0.02)
+        app.processEvents()
+
+    assert stalled == []
+
+    process.push_stdout_event(
+        {
+            "job_id": job.job_id,
+            "event": "succeeded",
+            "message": "done",
+            "route": "test",
+            "result_job_id": "spool-4",
+        }
+    )
+    process.emit_finished(0)
+    assert _pump_until(app, lambda: bool(succeeded)), "runner never emitted succeeded event"
+    assert stalled == []

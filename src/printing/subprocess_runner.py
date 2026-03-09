@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QProcess, QTimer, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
 from .base_driver import PrintJobResult
 from .errors import PrintHelperTerminatedError, PrintJobSubmissionError
@@ -57,6 +58,39 @@ class PrintSubprocessRunner(QObject):
         self._watchdog.setInterval(int(stall_check_interval_ms))
         self._watchdog.timeout.connect(self._check_stall)
 
+    def _detect_project_root(self) -> Path:
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent
+        return Path(__file__).resolve().parents[2]
+
+    def _build_helper_env(self, project_root: Path) -> dict[str, str]:
+        env = dict(os.environ)
+        root = str(project_root)
+        existing = env.get("PYTHONPATH", "")
+        parts = [part for part in existing.split(os.pathsep) if part]
+        if root not in parts:
+            parts.insert(0, root)
+        env["PYTHONPATH"] = os.pathsep.join(parts)
+        return env
+
+    def _configure_process_context(
+        self,
+        process: QProcess,
+        *,
+        project_root: Path,
+        env: dict[str, str],
+    ) -> None:
+        set_cwd = getattr(process, "setWorkingDirectory", None)
+        if callable(set_cwd):
+            set_cwd(str(project_root))
+        set_env = getattr(process, "setProcessEnvironment", None)
+        if callable(set_env):
+            process_env = QProcessEnvironment()
+            for key, value in env.items():
+                if isinstance(value, str):
+                    process_env.insert(key, value)
+            set_env(process_env)
+
     def start(self) -> None:
         if self._process is not None:
             return
@@ -72,6 +106,9 @@ class PrintSubprocessRunner(QObject):
         self._process.readyReadStandardError.connect(self._on_ready_stderr)
         self._process.finished.connect(self._on_finished)
         self._process.errorOccurred.connect(self._on_error)
+        project_root = self._detect_project_root()
+        helper_env = self._build_helper_env(project_root)
+        self._configure_process_context(self._process, project_root=project_root, env=helper_env)
         self._last_activity = time.monotonic()
         self._watchdog.start()
         self._process.start(

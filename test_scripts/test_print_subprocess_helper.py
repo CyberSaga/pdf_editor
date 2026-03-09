@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import fitz
@@ -98,3 +99,39 @@ def test_run_print_helper_emits_failed_event_on_dispatch_error(tmp_path: Path) -
     assert events[-1]["event"] == "failed"
     assert events[-1]["error_type"] == "PrintJobSubmissionError"
     assert "driver exploded" in events[-1]["message"]
+
+
+def test_run_print_helper_emits_heartbeat_during_long_submission(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "input.pdf"
+    job_path = tmp_path / "job.json"
+    _make_single_page_pdf(pdf_path)
+
+    job = PrintHelperJob(
+        job_id="job-3",
+        input_pdf_path=str(pdf_path),
+        watermarks=[],
+        options=PrintJobOptions(printer_name="Printer A", job_name="helper job"),
+        heartbeat_interval_ms=20,
+    )
+    job_path.write_text(json.dumps(job.to_json_dict(), ensure_ascii=False), encoding="utf-8")
+
+    events: list[dict] = []
+
+    class _Dispatcher:
+        def print_pdf_bytes(self, pdf_bytes: bytes, options: PrintJobOptions) -> PrintJobResult:
+            assert isinstance(pdf_bytes, bytes)
+            assert options.printer_name == "Printer A"
+            time.sleep(0.22)
+            return PrintJobResult(
+                success=True,
+                route="helper-test",
+                message="Submitted 1 page(s) to printer.",
+                job_id="spool-3",
+            )
+
+    exit_code = run_print_helper(str(job_path), dispatcher=_Dispatcher(), emit=events.append)
+
+    assert exit_code == 0
+    event_types = [event["event"] for event in events]
+    assert "heartbeat" in event_types
+    assert event_types[-1] == "succeeded"
