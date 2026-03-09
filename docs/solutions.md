@@ -1326,3 +1326,29 @@ logging 設定責任沒有集中在 app entrypoint，導致可匯入模組同時
 **驗證：**  
 - `pytest -q test_scripts/test_main_startup_behavior.py` -> pass  
 - 冷啟動實測從原本常見的 10s+ stall，降到約 3-4 秒可見主視窗，且不再卡在 pre-show 階段
+
+### 10.8 列印 helper 在不同啟動目錄/打包模式下失敗，且長列印易被誤判卡死（2026-03）
+
+**問題：**  
+- 子程序列印 helper 可能因啟動目錄不同或未正確解析 `src` 套件而無法啟動（尤其在未從專案根目錄啟動、或未來 .exe 打包模式下）。  
+- 長時間的 raster/render 期間若沒有輸出訊息，主程序容易把有效工作誤判為 stalled。  
+
+**原因：**  
+- `QProcess` 啟動時未固定 `cwd` 與 `PYTHONPATH`，導致 helper 無法解析 `src.printing.helper_main`。  
+- helper 只在主要步驟輸出訊息，長時間渲染期間 stdout 沉默，runner 的 stalled 偵測無法判斷仍在工作。  
+
+**有效解法（已實作）：**  
+- 子程序啟動改為 `sys.executable -m src.printing.helper_main`，並動態解析專案根目錄：  
+  - script 模式：以檔案位置回推 repo root  
+  - frozen 模式：偵測 `sys.frozen` 並回推對應 root  
+- 啟動時明確設定 `cwd=project_root`，並建立 `env`，在原始 `os.environ` 基礎上加入 `PYTHONPATH=project_root`。  
+- helper 在長任務期間每 5 秒輸出 heartbeat JSON，runner 收到任何有效訊息（heartbeat/progress/data）即重設 stalled 計時。  
+
+**檔案：**  
+- `src/printing/subprocess_runner.py`  
+- `src/printing/helper_main.py`  
+- `test_scripts/test_print_subprocess_runner.py`  
+- `test_scripts/test_print_subprocess_helper.py`  
+
+**驗證：**  
+- `pytest -q test_scripts/test_print_subprocess_runner.py test_scripts/test_print_subprocess_helper.py` -> pass

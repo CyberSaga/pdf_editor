@@ -149,8 +149,10 @@ On Windows, the Qt/GDI print submission path can stall the entire GUI process ev
 
 - Main app prepares a job (immutable inputs): capture current document bytes, write an `input.pdf` into a temp work dir, and serialize a `PrintHelperJob` into `job.json`.
 - Main app launches a child Python process via `QProcess` using `sys.executable` and runs `python -m src.printing.helper_main <job.json>`.
+- The subprocess is started with `cwd=project_root`, and `PYTHONPATH` is extended to include the project root so `src.*` imports resolve regardless of launch directory or frozen packaging mode.
 - Child process performs end-to-end submission: apply watermarks (if any), render/rasterize, and submit to either `output_pdf_path` (PDF output) or the OS spooler.
 - Progress and terminal status are emitted as line-delimited JSON on stdout (see `src/printing/helper_protocol.py`). The main app parses these events in `src/printing/subprocess_runner.py`.
+- During long-running rendering/submission, the helper emits heartbeat messages every few seconds so the parent can differentiate active work from a true stall.
 
 The helper uses shared user-facing message constants from `src/printing/messages.py` so controller UI and helper progress stay consistent.
 
@@ -161,7 +163,7 @@ Controller print submission is explicitly lifecycle-aware:
 - Snapshot/input capture runs off the GUI thread from the moment the user confirms printing.
 - Worker-thread callbacks are marshaled back to the GUI thread before touching UI objects (see `_PrintWorkerBridge` in `controller/pdf_controller.py`).
 - If the user closes the app while printing is active, the close request is deferred and the UI remains alive; the window auto-closes after the submission finishes.
-- The subprocess runner monitors activity and emits a stalled state after a no-progress threshold; UI surfaces a terminate option that kills only the helper subprocess and returns the app to normal without requiring a restart.
+- The subprocess runner monitors activity and emits a stalled state after a no-progress threshold. Any valid helper message (heartbeat/progress/data) resets the stall timer, so long jobs remain healthy as long as the helper stays responsive. The UI surfaces a terminate option that kills only the helper subprocess and returns the app to normal without requiring a restart.
 
 ## 7. Guardrails
 
