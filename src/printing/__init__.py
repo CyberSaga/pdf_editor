@@ -3,6 +3,8 @@
 from .base_driver import PrintJobOptions, PrintJobResult, PrinterDevice
 from .dispatcher import PrintDispatcher, get_printer_driver
 from .errors import (
+    PrintHelperStalledError,
+    PrintHelperTerminatedError,
     PrintJobSubmissionError,
     PrinterOfflineError,
     PrinterUnavailableError,
@@ -20,6 +22,8 @@ __all__ = [
     "PrinterUnavailableError",
     "PrinterOfflineError",
     "PrintJobSubmissionError",
+    "PrintHelperStalledError",
+    "PrintHelperTerminatedError",
     "RenderingError",
 ]
 

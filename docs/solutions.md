@@ -1269,6 +1269,90 @@ logging 設定責任沒有集中在 app entrypoint，導致可匯入模組同時
 - `rg -n "logging.basicConfig" main.py controller/pdf_controller.py model/pdf_model.py view/pdf_view.py` 僅剩 `main.py`  
 - `pytest -q` -> pass
 
+### 10.6 Windows 列印送出卡死（Sending print job）與關閉生命週期風險（2026-03）
+
+**問題：**  
+- 手動 GUI 測試列印時，畫面停在「正在送出列印工作」且主視窗顯示沒有回應。  
+- 使用者在列印送出期間關閉主視窗，可能發生 view 已被銷毀但背景送印工作仍在跑，造成不穩定甚至 crash。
+
+**原因：**  
+- Windows 的 Qt/GDI/driver print stack 可能在同一個 process 內阻塞，即使把送印放到 `QThread`，GUI process 仍可能被拖住而顯示沒有回應。  
+- 送印 worker 的 signal 直接連到 plain Python `PDFController` 方法時，Qt 可能在 worker thread 內直接呼叫 controller callback，導致在非 GUI thread 建立/操作 UI 物件（例如將 `PDFView` 當作 parent），觸發 `QObject: Cannot create children for a parent that is in a different thread`。
+
+**有效解法（已實作）：**  
+- Windows 送印改為 helper subprocess 隔離：主程序建立 `PrintHelperJob`（temp work dir + `input.pdf` + `job.json`），用 `QProcess` 以 `sys.executable` 啟動 `python -m src.printing.helper_main <job.json>`，由子程序完成 watermark 套用與 raster submission。  
+- 子程序透過 stdout line-delimited JSON 回報 started/progress/succeeded/failed；主程式用 `PrintSubprocessRunner` 解析與監控，並提供 stalled 偵測與「終止列印工作」動作（只殺子程序、主視窗不必重啟）。  
+- Controller 端加入 thread-safe bridge（`_PrintWorkerBridge`），確保 worker-thread 的 progress/prepared/failed/finished 一律回到 GUI thread 再觸碰 UI 或建立 runner。  
+- Close 行為改為 aware：列印進行中拒絕關閉（defer close），改顯示「正在完成最後工作，請稍候...」，待送印完成後自動關閉。
+
+**檔案：**  
+- `controller/pdf_controller.py`  
+- `src/printing/subprocess_runner.py`  
+- `src/printing/helper_main.py`  
+- `src/printing/helper_protocol.py`  
+- `src/printing/messages.py`  
+- `test_scripts/test_print_controller_flow.py`  
+- `test_scripts/test_print_subprocess_runner.py`  
+- `test_scripts/test_print_subprocess_helper.py`
+
+**驗證：**  
+- `pytest -q test_scripts/test_print_controller_flow.py test_scripts/test_print_subprocess_runner.py test_scripts/test_print_subprocess_helper.py` -> pass  
+- `pytest -q` -> pass
+
+### 10.7 無 PDF 啟動偶發 10 秒以上卡住（Initialization Storm，2026-03）
+
+**問題：**  
+使用者在沒有直接開啟 PDF 的情況下啟動程式，主視窗偶發要 10 秒以上才真正顯示；同一次修復中也觀察到「第一次冷啟動特別慢」。
+
+**原因：**  
+- 問題不在 `PDFModel` 建立或一般 Qt 空白視窗，而是在真正的 `PDFView` + controller 啟動路徑。  
+- 根因是 no-PDF 啟動時太早建立完整互動鏈：`PDFView` 尚未完成 first show / first idle，就同時進行重型側欄/屬性面板建立與 controller-view 綁定，形成 initialization storm。  
+- 實測隔離後證明：單純 Qt 視窗、rich shell probe、甚至未綁定 controller 的 `PDFView` 都明顯更快；真正把 `view.controller` 提前接上後，pre-show stall 才會暴增。
+
+**有效解法（已實作）：**  
+- 採用 shell-first startup：`PDFView` 在 no-PDF 啟動時先顯示輕量 shell。  
+- 左側 sidebar 與右側 property inspector 改為 deferred hydration；等第一個 UI turn 後才建完整重面板。  
+- `PDFView` 在 deferred hydration 完成後發出 `shell_ready`。  
+- `main.py` 只在收到 `shell_ready` 後才 attach `view.controller` 並呼叫 `PDFController.activate()`；不再依賴分散的雙 `QTimer.singleShot(0, ...)`。  
+- `PDFController` 也拆成 cheap `__init__()` 與 `activate()`：signal wiring、print dispatcher、print worker bridge 等延後到 view ready 或 CLI 直接開檔時才初始化。  
+- CLI 直接開檔路徑仍維持同步 attach/activate/open，避免破壞原本開檔行為。
+
+**檔案：**  
+- `main.py`  
+- `view/pdf_view.py`  
+- `controller/pdf_controller.py`  
+- `test_scripts/test_main_startup_behavior.py`
+
+**驗證：**  
+- `pytest -q test_scripts/test_main_startup_behavior.py` -> pass  
+- 冷啟動實測從原本常見的 10s+ stall，降到約 3-4 秒可見主視窗，且不再卡在 pre-show 階段
+
+### 10.8 列印 helper 在不同啟動目錄/打包模式下失敗，且長列印易被誤判卡死（2026-03）
+
+**問題：**  
+- 子程序列印 helper 可能因啟動目錄不同或未正確解析 `src` 套件而無法啟動（尤其在未從專案根目錄啟動、或未來 .exe 打包模式下）。  
+- 長時間的 raster/render 期間若沒有輸出訊息，主程序容易把有效工作誤判為 stalled。  
+
+**原因：**  
+- `QProcess` 啟動時未固定 `cwd` 與 `PYTHONPATH`，導致 helper 無法解析 `src.printing.helper_main`。  
+- helper 只在主要步驟輸出訊息，長時間渲染期間 stdout 沉默，runner 的 stalled 偵測無法判斷仍在工作。  
+
+**有效解法（已實作）：**  
+- 子程序啟動改為 `sys.executable -m src.printing.helper_main`，並動態解析專案根目錄：  
+  - script 模式：以檔案位置回推 repo root  
+  - frozen 模式：偵測 `sys.frozen` 並回推對應 root  
+- 啟動時明確設定 `cwd=project_root`，並建立 `env`，在原始 `os.environ` 基礎上加入 `PYTHONPATH=project_root`。  
+- helper 在長任務期間每 5 秒輸出 heartbeat JSON，runner 收到任何有效訊息（heartbeat/progress/data）即重設 stalled 計時。  
+
+**檔案：**  
+- `src/printing/subprocess_runner.py`  
+- `src/printing/helper_main.py`  
+- `test_scripts/test_print_subprocess_runner.py`  
+- `test_scripts/test_print_subprocess_helper.py`  
+
+**驗證：**  
+- `pytest -q test_scripts/test_print_subprocess_runner.py test_scripts/test_print_subprocess_helper.py` -> pass
+
 ---
 
 ## 2026-03 Structural Page Operations: Avoid Full Reindex After Insert/Delete
