@@ -1,0 +1,10 @@
+"""Shared user-facing messages for the print lifecycle."""
+
+PRINT_HELPER_STARTED_MESSAGE = "print helper started"
+PRINT_STATUS_MESSAGE = "列印中..."
+PRINT_PREPARING_MESSAGE = "正在準備列印工作，請稍候..."
+PRINT_SUBMITTING_MESSAGE = "正在送出列印工作，請稍候..."
+PRINT_CLOSING_MESSAGE = "正在完成最後工作，請稍候..."
+PRINT_STALLED_MESSAGE = "列印子系統沒有回應，您可以終止背景列印工作。"
+PRINT_TERMINATING_MESSAGE = "正在終止背景列印工作，請稍候..."
+PRINT_TERMINATE_BUTTON_TEXT = "終止列印工作"

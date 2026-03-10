@@ -70,6 +70,8 @@ Browse mode supports drag text selection with text-bounds snapping. Copy is avai
 
 Large PDF handling uses staged loading and batching to preserve interactivity while thumbnails, scene items, and indexes are built. Rendering and refresh scopes are coordinated to avoid blocking behavior and stale geometry. Key functions include controller batch scheduling and view continuous-scene rebuild paths.
 
+Empty-launch startup also uses a shell-first path. When the app starts without an input file, `PDFView` can show a lightweight shell first, defer the heavy sidebars/property inspector until after the first UI turn, then let `main.py` attach and activate the controller only after the view emits `shell_ready`. Direct file-open startup keeps the synchronous path so `open_pdf(...)` still runs against a fully wired controller/view pair. Key functions include `main.run(...)`, `PDFView.ensure_heavy_panels_initialized()`, `PDFView.showEvent()`, `PDFView.shell_ready`, and `PDFController.activate()`.
+
 Structural page operations (insert/delete) avoid full-document text reindex:
 - Inserted/imported pages are immediately indexed so their text is editable right away (hit-testing works without manual refresh).
 - Pages whose page numbers shifted are marked stale and rebuilt lazily in the background, keeping the UI responsive on large PDFs.
@@ -104,3 +106,18 @@ For some Windows vendor drivers, native properties update only private `DriverEx
 Preview rendering is guarded against temporary invalid input. If page-range input becomes invalid during live editing, preview errors are shown inside the dialog and the UI event path keeps running.
 Print preview no longer requires building the full print snapshot before the dialog opens. Preview pages can be rendered directly from the live document, while the full print snapshot/temp PDF is generated only after the user confirms printing.
 Job-level settings remain app-owned regardless of native properties: `copies`, `dpi`, `collate`, page range, page subset, reverse order, and scaling are always taken from the unified print dialog.
+
+## 16. Print Lifecycle Resilience (Windows)
+
+Windows print submission can hang inside the GUI process due to OS/driver stack behavior. The app protects responsiveness and shutdown correctness with the following behavior:
+
+- From the moment the user confirms printing, document capture (PDF bytes) runs in a background thread and does not block the UI thread.
+- Windows raster submission is performed in a helper subprocess (child Python process) so driver/GDI stalls do not freeze the main UI process.
+- The helper emits periodic heartbeat messages during long rendering/submission so legitimate long jobs are not misclassified as stalled.
+- The main app monitors helper activity and surfaces a “not responding” print state after a stall threshold, offering a “terminate print job” action that kills only the helper subprocess and restores the app to normal state.
+- If the user attempts to close the window while printing is active, close is deferred and the UI stays alive; the window auto-closes after printing finishes.
+
+Key files/functions:
+- Controller entry: `controller/pdf_controller.py` `print_document()` and print lifecycle helpers.
+- Helper protocol and job payload: `src/printing/helper_protocol.py` (`PrintHelperJob`) and `src/printing/helper_main.py`.
+- Subprocess runner: `src/printing/subprocess_runner.py`.

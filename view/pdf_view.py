@@ -358,14 +358,19 @@ class PDFView(QMainWindow):
     sig_update_watermark = Signal(str, list, str, float, float, int, tuple, str, float, float, float)  # wm_id, pages, text, angle, opacity, font_size, color, font, offset_x, offset_y, line_spacing
     sig_remove_watermark = Signal(str)
     sig_load_watermarks = Signal()
+    shell_ready = Signal()
 
-    def __init__(self):
+    def __init__(self, defer_heavy_panels: bool = False):
         super().__init__()
         self.setWindowTitle("視覺化 PDF 編輯器")
         self.setMinimumSize(1280, 800)
         self.setGeometry(100, 100, 1280, 800)
         self.total_pages = 0
         self.controller = None
+        self._defer_heavy_panels = defer_heavy_panels
+        self._heavy_panels_initialized = False
+        self._deferred_hydration_scheduled = False
+        self._shell_ready_emitted = False
         self._doc_tab_signal_block = False
         self._mode_actions: dict[str, QAction] = {}
         self._mode_action_group = QActionGroup(self)
@@ -393,7 +398,9 @@ class PDFView(QMainWindow):
         self.left_sidebar.setTabBar(_NoCtrlTabTabBar(self.left_sidebar))
         self.left_sidebar.setMinimumWidth(200)
         self.left_sidebar.setMaximumWidth(400)
-        self._setup_left_sidebar()
+        if not self._defer_heavy_panels:
+            self._setup_left_sidebar()
+            self._heavy_panels_initialized = True
         self.left_sidebar_widget = QWidget()
         left_sidebar_layout = QVBoxLayout(self.left_sidebar_widget)
         left_sidebar_layout.setContentsMargins(0, 0, 0, 0)
@@ -414,7 +421,10 @@ class PDFView(QMainWindow):
         right_title.setStyleSheet("font-weight: bold; padding: 8px;")
         right_sidebar_layout.addWidget(right_title)
         self.right_stacked_widget = QStackedWidget()
-        self._setup_property_inspector()
+        if self._defer_heavy_panels:
+            self._setup_property_inspector_placeholder()
+        else:
+            self._setup_property_inspector()
         right_sidebar_layout.addWidget(self.right_stacked_widget)
         self.right_sidebar.setMinimumWidth(240)
         self.right_sidebar.setMaximumWidth(400)
@@ -427,6 +437,7 @@ class PDFView(QMainWindow):
         # --- Status Bar ---
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
+        self._status_bar_override_message: Optional[str] = None
 
         # --- State Variables ---
         self.current_mode = 'browse'
@@ -517,6 +528,45 @@ class PDFView(QMainWindow):
             QLineEdit, QComboBox { border-radius: 6px; padding: 4px 8px; border: 1px solid #E2E8F0; }
         """)
         self.graphics_view.setStyleSheet("QGraphicsView { background: #F1F5F9; border: none; }")
+
+    def ensure_heavy_panels_initialized(self) -> None:
+        if self._heavy_panels_initialized:
+            return
+
+        self._setup_left_sidebar()
+        while self.right_stacked_widget.count():
+            widget = self.right_stacked_widget.widget(0)
+            self.right_stacked_widget.removeWidget(widget)
+            widget.deleteLater()
+        self._setup_property_inspector()
+        self._heavy_panels_initialized = True
+        self.set_mode(self.current_mode)
+        self._update_status_bar()
+        if getattr(self, "text_target_mode_combo", None) is not None:
+            self._on_text_target_mode_changed()
+
+    def _emit_shell_ready_once(self) -> None:
+        if self._shell_ready_emitted:
+            return
+        self._shell_ready_emitted = True
+        self.shell_ready.emit()
+
+    def _complete_deferred_shell_startup(self) -> None:
+        self.ensure_heavy_panels_initialized()
+        self._emit_shell_ready_once()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._shell_ready_emitted:
+            return
+        if self._defer_heavy_panels:
+            if not self._deferred_hydration_scheduled:
+                self._deferred_hydration_scheduled = True
+                # The shell is visible first; heavy panels hydrate on the next UI turn.
+                QTimer.singleShot(0, self._complete_deferred_shell_startup)
+            return
+        # Non-deferred views still announce readiness after the first show turn.
+        QTimer.singleShot(0, self._emit_shell_ready_once)
 
     def _build_document_tabs_bar(self):
         """Document-level tab bar for multiple open PDFs."""
@@ -902,6 +952,15 @@ class PDFView(QMainWindow):
         wm_layout.addLayout(btn_layout)
         self.left_sidebar.addTab(self.watermark_panel, "浮水印列表")
 
+    def _setup_property_inspector_placeholder(self):
+        self.page_info_card = QWidget()
+        page_layout = QVBoxLayout(self.page_info_card)
+        self.page_info_label = QLabel("載入屬性面板中...")
+        self.page_info_label.setWordWrap(True)
+        page_layout.addWidget(self.page_info_label)
+        page_layout.addStretch()
+        self.right_stacked_widget.addWidget(self.page_info_card)
+
     def _setup_property_inspector(self):
         """Right sidebar: 屬性 — dynamic inspector by mode (page info / 矩形設定 / 螢光筆顏色 / 文字設定). Apply/Cancel."""
         # Page info (no selection)
@@ -1031,6 +1090,9 @@ class PDFView(QMainWindow):
 
     def _update_status_bar(self):
         """更新狀態列：已修改、模式、快捷鍵、頁/縮放；搜尋模式時顯示找到 X 個結果 • 按 Esc 關閉搜尋."""
+        if getattr(self, "_status_bar_override_message", None):
+            self.status_bar.showMessage(self._status_bar_override_message)
+            return
         scale = getattr(self, "scale", 1.0)
         total = getattr(self, "total_pages", 0)
         cur = getattr(self, "current_page", 0)
@@ -1046,6 +1108,10 @@ class PDFView(QMainWindow):
         parts.append("Ctrl+K 快速指令")
         if getattr(self, "status_bar", None):
             self.status_bar.showMessage(" • ".join(parts))
+
+    def set_status_bar_override_message(self, message: Optional[str]) -> None:
+        self._status_bar_override_message = message or None
+        self._update_status_bar()
 
     def set_mode(self, mode: str):
         mode = mode if mode in self._VALID_MODES else "browse"
