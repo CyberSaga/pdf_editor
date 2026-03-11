@@ -100,6 +100,10 @@ Mode behavior boundary:
 - Mode actions are checkable and remain synchronized with the active mode state.
 - `Esc` priority is: close active editor/dialog first (keep mode), else revert non-browse mode to `browse`, else run browse fallback behavior.
 
+Fullscreen UX is implemented in the view, but coordinated by controller state:
+- View owns chrome visibility, fullscreen enter/exit, top-edge exit affordance, and viewport anchor helpers.
+- Controller decides when fullscreen is allowed, normalizes mode/interaction state on entry, and restores per-tab layout on exit.
+
 ## 3. Runtime Flows
 
 ### 3.1 Open / Activate / Close
@@ -133,6 +137,10 @@ Model behavior:
 - `jpg/png` use `fitz.Pixmap.save(...)`.
 - `tiff` uses Pillow-backed `fitz.Pixmap.pil_save(..., format="TIFF")` because TIFF is not supported by plain `Pixmap.save`.
 - Multi-page image export uses page-number suffix naming (`*_p{page_num}`).
+
+### 3.6 Fullscreen Viewing
+
+Entry can be triggered from any mode (`F5` or the top-right `全螢幕` button). The controller cancels active edits/partial gestures, clears transient selection/search UI state, forces `browse`, and captures a per-tab pre-fullscreen snapshot (page, scale, scroll anchor). The view enters native fullscreen and hides chrome; it computes a contain-fit scale for the active page and re-centers on resize. Exit restores the normal window chrome and per-tab pre-fullscreen layout, keeping the current tab active.
 
 ## 4. Coordinate and Rotation Strategy
 

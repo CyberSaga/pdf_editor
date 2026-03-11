@@ -5,18 +5,26 @@
     QComboBox, QDoubleSpinBox, QTextEdit, QGraphicsProxyWidget, QLineEdit, QHBoxLayout, QRadioButton,
     QStackedWidget, QDialog, QSpinBox, QDialogButtonBox, QFormLayout,
     QScrollArea, QCheckBox, QTabWidget, QSplitter, QFrame, QSizePolicy, QSlider, QTabBar, QListView, QAbstractItemView,
-    QStatusBar, QGroupBox
+    QStatusBar, QGroupBox, QToolButton
 )
-from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QActionGroup, QCloseEvent, QTextOption, QShortcut, QFontMetrics
-from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint, QEvent, QSize
+from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QActionGroup, QCloseEvent, QTextOption, QShortcut, QFontMetrics, QGuiApplication
+from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint, QEvent, QSize, QRect
 from typing import List, Tuple, Optional
 from pathlib import Path
+from dataclasses import dataclass
 from utils.helpers import pixmap_to_qpixmap, parse_pages, show_error
 import logging
 import warnings
 import fitz
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ViewportAnchor:
+    page_idx: int
+    horizontal_value: int
+    vertical_value: int
 
 
 def _ctrl_tab_direction(key: int, modifiers: Qt.KeyboardModifiers) -> int:
@@ -336,6 +344,7 @@ class PDFView(QMainWindow):
     sig_text_target_mode_changed = Signal(str)
     sig_page_changed = Signal(int)
     sig_scale_changed = Signal(int, float)
+    sig_toggle_fullscreen = Signal()
 
     # --- New Annotation Signals ---
     sig_add_annotation = Signal(int, object, str)  # page_idx, doc_point (fitz.Point), text
@@ -375,13 +384,22 @@ class PDFView(QMainWindow):
         self._mode_actions: dict[str, QAction] = {}
         self._mode_action_group = QActionGroup(self)
         self._mode_action_group.setExclusive(True)
+        self._fullscreen_active = False
+        self._fullscreen_restore_geometry = QRect()
+        self._fullscreen_restore_maximized = False
+        self._fullscreen_restore_screen_name = ""
+        self._fullscreen_restore_visibility: dict[str, bool] = {}
 
         # --- Central container: top toolbar area + main splitter ---
         central_container = QWidget(self)
         self.setCentralWidget(central_container)
+        central_container.setMouseTracking(True)
+        central_container.installEventFilter(self)
         main_layout = QVBoxLayout(central_container)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
+        self.setMouseTracking(True)
+        self.installEventFilter(self)
 
         # --- Top Toolbar (ToolbarTabs): 48px height ---
         self._build_toolbar_tabs()
@@ -438,6 +456,7 @@ class PDFView(QMainWindow):
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
         self._status_bar_override_message: Optional[str] = None
+        self._build_fullscreen_exit_button()
 
         # --- State Variables ---
         self.current_mode = 'browse'
@@ -550,6 +569,153 @@ class PDFView(QMainWindow):
             return
         self._shell_ready_emitted = True
         self.shell_ready.emit()
+
+    def _build_fullscreen_exit_button(self) -> None:
+        self._fullscreen_exit_button = QToolButton(self)
+        self._fullscreen_exit_button.setText("X")
+        self._fullscreen_exit_button.setCursor(Qt.PointingHandCursor)
+        self._fullscreen_exit_button.setToolTip("離開全螢幕")
+        self._fullscreen_exit_button.setFixedSize(40, 32)
+        self._fullscreen_exit_button.setStyleSheet(
+            "QToolButton { background: rgba(15, 23, 42, 220); color: white; border: none; border-radius: 16px; font-weight: bold; }"
+            "QToolButton:hover { background: rgba(30, 41, 59, 235); }"
+        )
+        self._fullscreen_exit_button.clicked.connect(self.sig_toggle_fullscreen.emit)
+        self._fullscreen_exit_button.hide()
+        self._update_fullscreen_exit_button_geometry()
+
+    def _update_fullscreen_exit_button_geometry(self) -> None:
+        if not hasattr(self, "_fullscreen_exit_button"):
+            return
+        margin = 12
+        width = self._fullscreen_exit_button.width()
+        self._fullscreen_exit_button.move(max(margin, self.width() - width - margin), margin)
+        self._fullscreen_exit_button.raise_()
+
+    def _set_fullscreen_exit_button_visible(self, visible: bool) -> None:
+        if not hasattr(self, "_fullscreen_exit_button"):
+            return
+        if not self._fullscreen_active:
+            self._fullscreen_exit_button.hide()
+            return
+        self._fullscreen_exit_button.setVisible(bool(visible))
+        if visible:
+            self._fullscreen_exit_button.raise_()
+
+    def _update_fullscreen_exit_hover(self, pos: QPoint) -> None:
+        if not self._fullscreen_active:
+            self._set_fullscreen_exit_button_visible(False)
+            return
+        # Reveal the exit affordance only in a shallow top band or near the button.
+        top_band_height = 24
+        button_rect = self._fullscreen_exit_button.geometry()
+        should_show = pos.y() <= top_band_height or button_rect.adjusted(-8, -8, 8, 8).contains(pos)
+        self._set_fullscreen_exit_button_visible(should_show)
+
+    def is_fullscreen_active(self) -> bool:
+        return self._fullscreen_active
+
+    def set_fullscreen_action_enabled(self, enabled: bool) -> None:
+        action = getattr(self, "_action_fullscreen", None)
+        if action is not None:
+            action.setEnabled(enabled)
+
+    def current_screen_name(self) -> str:
+        handle = self.windowHandle()
+        if handle is not None and handle.screen() is not None:
+            return handle.screen().name()
+        screen = QGuiApplication.screenAt(self.frameGeometry().center())
+        return screen.name() if screen is not None else ""
+
+    def enter_fullscreen_ui(self) -> None:
+        if self._fullscreen_active:
+            return
+        # Snapshot current window state so exit can restore user layout precisely.
+        self._fullscreen_restore_geometry = QRect(self.geometry())
+        self._fullscreen_restore_maximized = self.isMaximized()
+        self._fullscreen_restore_screen_name = self.current_screen_name()
+        self._fullscreen_restore_visibility = {
+            "toolbar": self._toolbar_container.isVisible(),
+            "document_tabs": self.document_tab_bar.isVisible(),
+            "left_sidebar": self.left_sidebar_widget.isVisible(),
+            "right_sidebar": self.right_sidebar.isVisible(),
+            "status_bar": self.statusBar().isVisible(),
+        }
+        self._toolbar_container.hide()
+        self.document_tab_bar.hide()
+        self.left_sidebar_widget.hide()
+        self.right_sidebar.hide()
+        self.statusBar().hide()
+        self._fullscreen_active = True
+        self._set_fullscreen_exit_button_visible(False)
+        self.showFullScreen()
+        self._update_fullscreen_exit_button_geometry()
+
+    def exit_fullscreen_ui(self) -> None:
+        if not self._fullscreen_active:
+            return
+        # Restore window geometry and chrome visibility captured on entry.
+        self._fullscreen_active = False
+        self._set_fullscreen_exit_button_visible(False)
+        self.showNormal()
+        if self._fullscreen_restore_maximized:
+            self.showMaximized()
+        else:
+            if self._fullscreen_restore_geometry.isValid():
+                self.setGeometry(self._fullscreen_restore_geometry)
+        if self._fullscreen_restore_visibility.get("toolbar", True):
+            self._toolbar_container.show()
+        if self._fullscreen_restore_visibility.get("document_tabs", False):
+            self.document_tab_bar.show()
+        if self._fullscreen_restore_visibility.get("left_sidebar", True):
+            self.left_sidebar_widget.show()
+        if self._fullscreen_restore_visibility.get("right_sidebar", True):
+            self.right_sidebar.show()
+        if self._fullscreen_restore_visibility.get("status_bar", True):
+            self.statusBar().show()
+        self._update_fullscreen_exit_button_geometry()
+
+    def capture_viewport_anchor(self) -> ViewportAnchor:
+        # Persist exact scrollbars to restore the same visible region.
+        return ViewportAnchor(
+            page_idx=max(0, self.current_page),
+            horizontal_value=self.graphics_view.horizontalScrollBar().value(),
+            vertical_value=self.graphics_view.verticalScrollBar().value(),
+        )
+
+    def restore_viewport_anchor(self, anchor: Optional[ViewportAnchor]) -> None:
+        if anchor is None:
+            return
+        self.scroll_to_page(max(0, anchor.page_idx))
+        self.graphics_view.horizontalScrollBar().setValue(max(0, int(anchor.horizontal_value)))
+        self.graphics_view.verticalScrollBar().setValue(max(0, int(anchor.vertical_value)))
+
+    def compute_contain_scale_for_page(self, page_idx: int) -> float:
+        if not self.page_items:
+            return max(0.1, float(self.scale))
+        idx = min(max(0, page_idx), len(self.page_items) - 1)
+        rect = self.page_items[idx].sceneBoundingRect()
+        rs = self._render_scale if self._render_scale > 0 else max(0.1, float(self.scale))
+        width_pt = max(1.0, rect.width() / rs)
+        height_pt = max(1.0, rect.height() / rs)
+        viewport = self.graphics_view.viewport().rect()
+        viewport_width = max(1, viewport.width() - 12)
+        viewport_height = max(1, viewport.height() - 12)
+        return max(0.1, min(4.0, min(viewport_width / width_pt, viewport_height / height_pt)))
+
+    def cancel_interaction_for_fullscreen(self) -> None:
+        # Cancel any in-progress editor or partial gesture before switching to browse+fullscreen.
+        if self.text_editor:
+            self._discard_text_edit_once = True
+            self._finalize_text_edit()
+        self.drawing_start = None
+        self._drag_pending = False
+        self._drag_active = False
+        self._drag_start_scene_pos = None
+        self._drag_editor_start_pos = None
+        self._pending_text_info = None
+        self._clear_hover_highlight()
+        self._clear_text_selection()
 
     def _complete_deferred_shell_startup(self) -> None:
         self.ensure_heavy_panels_initialized()
@@ -727,6 +893,7 @@ class PDFView(QMainWindow):
         self._action_undo.setShortcut(QKeySequence("Ctrl+Z"))
         self._action_redo = tb_common.addAction("重做", self.sig_redo.emit)
         self._action_redo.setShortcut(QKeySequence("Ctrl+Y"))
+        self._action_fullscreen = tb_common.addAction("全螢幕", self.sig_toggle_fullscreen.emit)
         tb_common.addAction("縮圖", self._show_thumbnails_tab)
         tb_common.addAction("搜尋", self._show_search_tab)
         tb_common.addAction("快照", self._snapshot_page)
@@ -791,7 +958,7 @@ class PDFView(QMainWindow):
         # Fixed right section: 頁 X / Y, Zoom, 適應畫面, 復原, 重做
         # 根因 1 排除：放寬上限，避免整區過窄導致 QToolBar 溢出（»）
         right_widget = QWidget()
-        right_widget.setMaximumWidth(420)
+        right_widget.setMaximumWidth(520)
         right_layout = QHBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
         self.page_counter_label = QLabel("頁 1 / 1")
@@ -802,8 +969,10 @@ class PDFView(QMainWindow):
             self.zoom_combo.addItem(f"{pct}%")
         self.zoom_combo.setCurrentText("100%")
         self.zoom_combo.currentTextChanged.connect(self._on_zoom_combo_changed)
-        fit_btn = QPushButton("適應畫面")
-        fit_btn.clicked.connect(self._fit_to_view)
+        self.fit_view_btn = QPushButton("適應畫面")
+        self.fit_view_btn.clicked.connect(self._fit_to_view)
+        self.fullscreen_quick_btn = QPushButton("全螢幕")
+        self.fullscreen_quick_btn.clicked.connect(self.sig_toggle_fullscreen.emit)
         self._action_undo_right = QAction("↺ 復原", self)
         self._action_undo_right.triggered.connect(self.sig_undo.emit)
         self._action_redo_right = QAction("↻ 重做", self)
@@ -811,15 +980,16 @@ class PDFView(QMainWindow):
         right_layout.addWidget(self.page_counter_label)
         right_layout.addWidget(QLabel(" "))
         right_layout.addWidget(self.zoom_combo)
-        right_layout.addWidget(fit_btn)
+        right_layout.addWidget(self.fit_view_btn)
+        right_layout.addWidget(self.fullscreen_quick_btn)
         # 根因 2 排除：移除 stretch，避免佔滿剩餘空間、把 QToolBar 擠成只顯示溢出
         # right_layout.addWidget(QWidget(), 1) 已移除
-        toolbar_right = QToolBar()
-        toolbar_right.addAction(self._action_undo_right)
-        toolbar_right.addAction(self._action_redo_right)
+        self.toolbar_right = QToolBar()
+        self.toolbar_right.addAction(self._action_undo_right)
+        self.toolbar_right.addAction(self._action_redo_right)
         # 根因 3 排除：確保「復原」「重做」兩顆按鈕都有空間，不進溢出選單
-        toolbar_right.setMinimumWidth(100)
-        right_layout.addWidget(toolbar_right)
+        self.toolbar_right.setMinimumWidth(100)
+        right_layout.addWidget(self.toolbar_right)
         bar_layout.addWidget(right_widget)
         bar_layout.addSpacing(12)
 
@@ -835,9 +1005,11 @@ class PDFView(QMainWindow):
             self._action_undo,
             self._action_redo,
             self._action_edit_text,
+            self._action_fullscreen,
         ):
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             self.addAction(action)
+        self._action_fullscreen.setShortcut(QKeySequence(Qt.Key_F5))
 
     def _make_mode_action(self, text: str, mode: str) -> QAction:
         action = QAction(text, self)
@@ -1290,6 +1462,9 @@ class PDFView(QMainWindow):
         self.graphics_view.viewport().setFocus(Qt.ShortcutFocusReason)
 
     def _handle_escape(self) -> bool:
+        if self._fullscreen_active:
+            self.sig_toggle_fullscreen.emit()
+            return True
         if self.text_editor:
             self._finalize_text_edit()
             self._focus_page_canvas()
@@ -1360,9 +1535,20 @@ class PDFView(QMainWindow):
 
     def eventFilter(self, obj, event):
         graphics_view = getattr(self, "graphics_view", None)
-        if graphics_view is not None and obj is graphics_view.viewport() and event.type() == QEvent.Leave:
-            if self.current_mode == 'browse':
-                self._reset_browse_hover_cursor()
+        if graphics_view is not None and obj is graphics_view.viewport():
+            if event.type() == QEvent.Leave:
+                if self.current_mode == 'browse':
+                    self._reset_browse_hover_cursor()
+                if self._fullscreen_active:
+                    self._set_fullscreen_exit_button_visible(False)
+            elif event.type() == QEvent.MouseMove and self._fullscreen_active:
+                pos = graphics_view.viewport().mapTo(self, event.position().toPoint())
+                self._update_fullscreen_exit_hover(pos)
+        if obj is self or obj is self.centralWidget():
+            if event.type() == QEvent.MouseMove and self._fullscreen_active:
+                self._update_fullscreen_exit_hover(event.position().toPoint())
+            elif event.type() == QEvent.Leave and self._fullscreen_active:
+                self._set_fullscreen_exit_button_visible(False)
         thumb_list = getattr(self, "thumbnail_list", None)
         if thumb_list is not None and obj is thumb_list.viewport() and event.type() == QEvent.Resize:
             self._update_thumbnail_layout_metrics()
@@ -2956,8 +3142,14 @@ class PDFView(QMainWindow):
 
     def _resize_event(self, event):
         super().resizeEvent(event)
+        self._update_fullscreen_exit_button_geometry()
         self._update_thumbnail_layout_metrics()
         if not self.scene.sceneRect().isValid():
+            if self._fullscreen_active and self.controller and hasattr(self.controller, "handle_fullscreen_view_resized"):
+                self.controller.handle_fullscreen_view_resized()
+            return
+        if self._fullscreen_active and self.controller and hasattr(self.controller, "handle_fullscreen_view_resized"):
+            self.controller.handle_fullscreen_view_resized()
             return
         if self.continuous_pages and self.page_items:
             # 連續模式：不 fit 整個場景，保留縮放與捲動位置
@@ -2965,6 +3157,11 @@ class PDFView(QMainWindow):
         self.graphics_view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
         if self.scene.items():
             self.graphics_view.centerOn(self.scene.itemsBoundingRect().center())
+
+    def mouseMoveEvent(self, event):
+        if self._fullscreen_active:
+            self._update_fullscreen_exit_hover(event.position().toPoint())
+        super().mouseMoveEvent(event)
 
     def closeEvent(self, event: QCloseEvent):
         """重寫closeEvent以檢查未儲存的變更"""

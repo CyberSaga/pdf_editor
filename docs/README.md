@@ -16,6 +16,7 @@ Desktop PDF editor written in Python with a Qt UI.
 - Watermarks
 - Search and jump
 - Optional OCR
+- Fullscreen viewing: `F5` or `全螢幕` button, hides chrome, contain-fit page, exit via `Esc`/`F5`/`X`
 - Windows printing is resilient: snapshot capture starts off-thread after confirmation, raster submission is isolated into a helper subprocess to avoid UI hangs, close is deferred until submission completes, and stalled jobs can be terminated without restarting the main window.
 - Print dialog includes native printer properties entry (`屬性`) beside printer selector on supported systems, syncs returned paper/orientation/duplex/color/DPI/copies into dialog controls, and keeps tray/vendor-specific settings inherited from system properties without exposing a tray section in the app UI
 - Hardware precedence in print dialog is touch-based: `paper_size`, `orientation`, `duplex`, and `color_mode` inherit native/system defaults until the user explicitly changes them in the app; `copies`, `dpi`, `collate`, page range, and scaling remain app-owned job settings
@@ -82,6 +83,7 @@ dist\main.exe
 - `Ctrl+S`: Save
 - `Ctrl+Shift+S`: Save As
 - `F2`: Enter text edit mode
+- `F5`: Toggle fullscreen (from any mode, entry cancels in-progress edits/gestures and switches to browse mode)
 - `Esc`: Close active editor/dialog first; if none and not in browse mode, switch to browse mode
 
 Close prompts for unsaved changes support:
