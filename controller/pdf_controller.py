@@ -3,7 +3,7 @@ from PySide6.QtGui import QImage, QPixmap, QShortcut, QKeySequence
 from PySide6.QtCore import QTimer, QObject, QThread, Qt, Signal, Slot
 from model.pdf_model import PDFModel
 from model.edit_commands import EditTextCommand, SnapshotCommand, AddTextboxCommand
-from view.pdf_view import PDFView
+from view.pdf_view import PDFView, ViewportAnchor
 from typing import Callable, List, Tuple, Optional
 from utils.helpers import pixmap_to_qpixmap, show_error
 from pathlib import Path
@@ -60,6 +60,14 @@ class SessionUIState:
     scale: float = 1.0
     search_state: dict = field(default_factory=lambda: {"query": "", "results": [], "index": -1})
     mode: str = "browse"
+    viewport_anchor: Optional[ViewportAnchor] = None
+
+
+@dataclass
+class FullscreenSessionSnapshot:
+    current_page: int
+    scale: float
+    anchor: ViewportAnchor
 
 
 @dataclass(frozen=True)
@@ -145,6 +153,7 @@ class PDFController:
         self._stale_index_gen_by_session: dict[str, int] = {}
         self._session_ui_state: dict[str, SessionUIState] = {}
         self._desired_scroll_page: dict[str, int] = {}
+        self._fullscreen_session_snapshots: dict[str, FullscreenSessionSnapshot] = {}
         self._global_mode = self._normalize_mode(getattr(self.view, "current_mode", "browse"))
         self._signals_connected = False
         self._activated = False
@@ -192,6 +201,7 @@ class PDFController:
         self.view.sig_mode_changed.connect(self._update_mode)
         self.view.sig_page_changed.connect(self.change_page)
         self.view.sig_scale_changed.connect(self.change_scale)
+        self.view.sig_toggle_fullscreen.connect(self.toggle_fullscreen)
         self.view.sig_text_target_mode_changed.connect(self.set_text_target_mode)
 
         # New annotation connections
@@ -242,6 +252,7 @@ class PDFController:
             scale=max(0.1, min(float(self.view.scale), 4.0)),
             search_state=self.view.get_search_ui_state(),
             mode=self._normalize_mode(getattr(self.view, "current_mode", "browse")),
+            viewport_anchor=self.view.capture_viewport_anchor(),
         )
 
     def _get_ui_state(self, session_id: str) -> SessionUIState:
@@ -264,6 +275,121 @@ class PDFController:
         current = self._normalize_mode(getattr(self.view, "current_mode", "browse"))
         if current != normalized:
             self.view.set_mode(normalized)
+
+    def _empty_search_state(self) -> dict:
+        return {"query": "", "results": [], "index": -1}
+
+    def _capture_fullscreen_snapshot(self, session_id: Optional[str] = None, use_current_view: bool = True) -> None:
+        sid = session_id or self.model.get_active_session_id()
+        if not sid or sid in self._fullscreen_session_snapshots:
+            return
+        # Record the pre-fullscreen zoom+anchor so we can restore per-tab layout on exit.
+        state = self._get_ui_state(sid)
+        if use_current_view:
+            current_page = max(0, self.view.current_page)
+            scale = max(0.1, float(self.view.scale))
+            anchor = self.view.capture_viewport_anchor()
+        else:
+            current_page = max(0, state.current_page)
+            scale = max(0.1, float(state.scale))
+            anchor = state.viewport_anchor or ViewportAnchor(current_page, 0, 0)
+        self._fullscreen_session_snapshots[sid] = FullscreenSessionSnapshot(
+            current_page=current_page,
+            scale=scale,
+            anchor=anchor,
+        )
+
+    def _fullscreen_is_blocked(self) -> bool:
+        if not self.model.doc:
+            return True
+        if self._has_active_print_submission():
+            return True
+        app = QApplication.instance()
+        if app is None:
+            return False
+        for candidate in (app.activeModalWidget(), app.activePopupWidget()):
+            if candidate is not None and self.view._is_widget_owned_by_main(candidate):
+                return True
+        return False
+
+    def _apply_fullscreen_fit_for_active_session(self) -> None:
+        if not self.view.is_fullscreen_active() or not self.model.doc:
+            return
+        session_id = self.model.get_active_session_id()
+        if not session_id:
+            return
+        self._capture_fullscreen_snapshot(session_id)
+        target_page = max(0, self.view.current_page)
+        scale = self.view.compute_contain_scale_for_page(target_page)
+        self.change_scale(target_page, scale)
+
+    def _restore_fullscreen_session_state(self, session_id: str, snapshot: FullscreenSessionSnapshot) -> None:
+        state = self._get_ui_state(session_id)
+        state.scale = snapshot.scale
+        state.current_page = snapshot.current_page
+        state.viewport_anchor = snapshot.anchor
+
+    def _restore_active_fullscreen_anchor(self, snapshot: FullscreenSessionSnapshot) -> None:
+        self.view.restore_viewport_anchor(snapshot.anchor)
+
+    def _restore_viewport_anchor_if_current(self, session_id: str, gen: int, anchor: Optional[ViewportAnchor]) -> None:
+        if anchor is None:
+            return
+        if self.model.get_active_session_id() != session_id:
+            return
+        if self._load_gen_by_session.get(session_id) != gen:
+            return
+        self.view.restore_viewport_anchor(anchor)
+
+    def _schedule_restore_viewport_anchor(self, session_id: str, gen: int, anchor: Optional[ViewportAnchor]) -> None:
+        if anchor is None:
+            return
+        QTimer.singleShot(0, lambda sid=session_id, g=gen, a=anchor: self._restore_viewport_anchor_if_current(sid, g, a))
+        QTimer.singleShot(180, lambda sid=session_id, g=gen, a=anchor: self._restore_viewport_anchor_if_current(sid, g, a))
+
+    def enter_fullscreen(self) -> None:
+        self.activate()
+        if self._fullscreen_is_blocked():
+            return
+        session_id = self.model.get_active_session_id()
+        if not session_id:
+            return
+        self._fullscreen_session_snapshots.clear()
+        self._capture_fullscreen_snapshot(session_id)
+        # Enter fullscreen from any mode, but normalize interactions to a clean browse state.
+        self.view.cancel_interaction_for_fullscreen()
+        self.view._clear_text_selection()
+        self.view.clear_search_ui_state()
+        self._get_ui_state(session_id).search_state = self._empty_search_state()
+        self.view.set_mode("browse")
+        self.view.enter_fullscreen_ui()
+        self._apply_fullscreen_fit_for_active_session()
+
+    def exit_fullscreen(self) -> None:
+        if not self.view.is_fullscreen_active():
+            return
+        # Restore all visited tabs to their pre-fullscreen layout, keep current tab active.
+        active_session_id = self.model.get_active_session_id()
+        snapshots = dict(self._fullscreen_session_snapshots)
+        self.view.exit_fullscreen_ui()
+        for sid, snapshot in snapshots.items():
+            self._restore_fullscreen_session_state(sid, snapshot)
+        if active_session_id and active_session_id in snapshots:
+            snapshot = snapshots[active_session_id]
+            self._render_active_session(initial_page_idx=snapshot.current_page)
+            QTimer.singleShot(0, lambda snap=snapshot: self._restore_active_fullscreen_anchor(snap))
+            QTimer.singleShot(180, lambda snap=snapshot: self._restore_active_fullscreen_anchor(snap))
+        self._fullscreen_session_snapshots.clear()
+
+    def toggle_fullscreen(self) -> None:
+        if self.view.is_fullscreen_active():
+            self.exit_fullscreen()
+            return
+        self.enter_fullscreen()
+
+    def handle_fullscreen_view_resized(self) -> None:
+        if self.view.is_fullscreen_active() and self.model.doc:
+            self._apply_fullscreen_fit_for_active_session()
 
     def _reset_empty_ui(self) -> None:
         self.annotations = []
@@ -300,6 +426,7 @@ class PDFController:
         gen = self._next_load_gen(sid)
         QTimer.singleShot(0, lambda sid=sid, gen=gen: self._schedule_thumbnail_batch(0, sid, gen))
         QTimer.singleShot(0, lambda sid=sid, gen=gen: self._start_continuous_scene_loading(sid, gen))
+        self._schedule_restore_viewport_anchor(sid, gen, state.viewport_anchor)
 
     def _switch_to_session_id(self, session_id: str) -> None:
         active = self.model.get_active_session_id()
@@ -363,6 +490,9 @@ class PDFController:
         if not sid:
             return
         self._switch_to_session_id(sid)
+        if self.view.is_fullscreen_active():
+            self._capture_fullscreen_snapshot(sid, use_current_view=False)
+            self._apply_fullscreen_fit_for_active_session()
 
     def _save_session_with_dialog(self, session_id: str) -> bool:
         meta = self.model.get_session_meta(session_id) or {}
@@ -431,6 +561,7 @@ class PDFController:
             self._capture_current_ui_state()
         self.model.close_session(sid)
         self._session_ui_state.pop(sid, None)
+        self._fullscreen_session_snapshots.pop(sid, None)
         self._load_gen_by_session.pop(sid, None)
         self._desired_scroll_page.pop(sid, None)
         self._refresh_document_tabs()
@@ -519,6 +650,8 @@ class PDFController:
         action = getattr(self.view, "_action_print", None)
         if action is not None:
             action.setEnabled(not busy)
+        if hasattr(self.view, "set_fullscreen_action_enabled"):
+            self.view.set_fullscreen_action_enabled(not busy)
         if busy:
             if self._print_stalled:
                 status_message = PRINT_STALLED_MESSAGE

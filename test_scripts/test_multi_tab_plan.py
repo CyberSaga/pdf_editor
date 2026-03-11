@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QListView
+from PySide6.QtWidgets import QApplication, QListView, QDialog
 
 from controller.pdf_controller import PDFController
 from model.pdf_model import PDFModel
@@ -53,6 +53,13 @@ def _pump_events(ms: int = 250) -> None:
     while time.time() < end:
         app.processEvents()
         time.sleep(0.01)
+
+
+def _trigger_fullscreen(view: PDFView) -> None:
+    action = getattr(view, "_action_fullscreen", None)
+    assert action is not None, "fullscreen action missing"
+    action.trigger()
+    _pump_events(220)
 
 
 def _assert_mode_checked(view: PDFView, expected_mode: str) -> None:
@@ -1080,3 +1087,257 @@ def test_25_close_last_tab_keeps_mode_when_window_stays_open(mvc, tmp_path, monk
     assert model.get_active_session_id() is None
     assert view.current_mode == "add_annotation"
     _assert_mode_checked(view, "add_annotation")
+
+
+def test_26_fullscreen_no_document_is_noop(mvc):
+    _, view, _ = mvc
+    view.show()
+    _pump_events(120)
+
+    normal_geometry = view.geometry()
+    _trigger_fullscreen(view)
+
+    assert not view.isFullScreen()
+    assert view.geometry() == normal_geometry
+
+
+def test_27_fullscreen_enter_and_escape_restore_chrome(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "fullscreen_enter_exit.pdf", ["page 1", "page 2"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(500)
+
+    assert not view.isFullScreen()
+    assert view._toolbar_container.isVisible()
+    assert view.left_sidebar_widget.isVisible()
+    assert view.right_sidebar.isVisible()
+    assert view.statusBar().isVisible()
+
+    _trigger_fullscreen(view)
+
+    assert view.isFullScreen()
+    assert not view._toolbar_container.isVisible()
+    assert not view.document_tab_bar.isVisible()
+    assert not view.left_sidebar_widget.isVisible()
+    assert not view.right_sidebar.isVisible()
+    assert not view.statusBar().isVisible()
+
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_Escape)
+    _pump_events(220)
+
+    assert not view.isFullScreen()
+    assert view._toolbar_container.isVisible()
+    assert view.left_sidebar_widget.isVisible()
+    assert view.right_sidebar.isVisible()
+    assert view.statusBar().isVisible()
+
+
+def test_28_fullscreen_restores_zoom_scroll_and_dirty_state(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf(tmp_path / "fullscreen_restore_state.pdf", [f"page {i}" for i in range(1, 7)])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(700)
+
+    controller.change_scale(view.current_page, 1.8)
+    _pump_events(300)
+    view.scroll_to_page(3)
+    _pump_events(120)
+    view.graphics_view.verticalScrollBar().setValue(view.graphics_view.verticalScrollBar().value() + 80)
+    _pump_events(120)
+    _make_dirty(model)
+
+    before_scale = view.scale
+    before_vscroll = view.graphics_view.verticalScrollBar().value()
+    before_hscroll = view.graphics_view.horizontalScrollBar().value()
+    before_page = view.current_page
+
+    _trigger_fullscreen(view)
+    assert view.isFullScreen()
+    assert view.scale != before_scale
+
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_Escape)
+    _pump_events(260)
+
+    assert not view.isFullScreen()
+    assert view.scale == pytest.approx(before_scale)
+    assert view.current_page == before_page
+    assert view.graphics_view.verticalScrollBar().value() == before_vscroll
+    assert view.graphics_view.horizontalScrollBar().value() == before_hscroll
+    assert model.has_unsaved_changes()
+
+
+def test_29_fullscreen_clears_search_and_cancels_editor(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf(tmp_path / "fullscreen_clear_state.pdf", ["alpha key", "beta key"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(450)
+
+    controller.search_text("alpha")
+    view.search_input.setText("alpha")
+    _pump_events(120)
+    assert view.current_search_results
+
+    view.set_mode("edit_text")
+    _pump_events(80)
+    model.ensure_page_index_built(1)
+    run = next(r for r in model.block_manager.get_runs(0) if (r.text or "").strip())
+    rs = view._render_scale if view._render_scale > 0 else 1.0
+    y0 = view.page_y_positions[0] if view.page_y_positions else 0.0
+    click_pos = view.graphics_view.mapFromScene(((run.bbox.x0 + run.bbox.x1) * 0.5) * rs, y0 + ((run.bbox.y0 + run.bbox.y1) * 0.5) * rs)
+    QTest.mouseClick(view.graphics_view.viewport(), Qt.LeftButton, Qt.NoModifier, click_pos)
+    _pump_events(260)
+    assert view.text_editor is not None
+
+    _trigger_fullscreen(view)
+
+    assert view.isFullScreen()
+    assert view.text_editor is None
+    assert view.current_mode == "browse"
+    assert view.search_input.text() == ""
+    assert not view.current_search_results
+
+
+def test_30_fullscreen_blocked_while_print_busy_or_modal(mvc, tmp_path, monkeypatch):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "fullscreen_blocked.pdf", ["blocked"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(320)
+
+    monkeypatch.setattr(controller, "_has_active_print_submission", lambda: True)
+    _trigger_fullscreen(view)
+    assert not view.isFullScreen()
+
+    monkeypatch.setattr(controller, "_has_active_print_submission", lambda: False)
+    dialog = QDialog(view)
+    dialog.setWindowModality(Qt.WindowModal)
+    dialog.show()
+    _pump_events(120)
+    try:
+        _trigger_fullscreen(view)
+        assert not view.isFullScreen()
+    finally:
+        dialog.close()
+        _pump_events(80)
+
+
+def test_31_fullscreen_top_edge_hover_reveals_exit_button(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "fullscreen_hover_exit.pdf", ["hover exit"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(320)
+
+    _trigger_fullscreen(view)
+    assert view.isFullScreen()
+
+    exit_button = getattr(view, "_fullscreen_exit_button", None)
+    assert exit_button is not None, "fullscreen exit button missing"
+    assert not exit_button.isVisible()
+
+    center_widget = view.centralWidget()
+    view._update_fullscreen_exit_hover(QPoint(center_widget.width() // 2, 2))
+    _pump_events(80)
+    assert exit_button.isVisible()
+
+    view._update_fullscreen_exit_hover(QPoint(center_widget.width() // 2, max(30, center_widget.height() // 2)))
+    _pump_events(80)
+    assert not exit_button.isVisible()
+
+
+def test_32_fullscreen_tab_switch_restores_each_visited_tab_state(mvc, tmp_path):
+    model, view, controller = mvc
+    a = _make_pdf(tmp_path / "fullscreen_tab_a.pdf", [f"a{i}" for i in range(1, 6)])
+    b = _make_pdf(tmp_path / "fullscreen_tab_b.pdf", [f"b{i}" for i in range(1, 6)])
+    view.show()
+    controller.open_pdf(str(a))
+    controller.open_pdf(str(b))
+    _pump_events(700)
+
+    controller.on_tab_changed(0)
+    _pump_events(250)
+    controller.change_scale(view.current_page, 1.6)
+    _pump_events(220)
+    view.scroll_to_page(2)
+    _pump_events(100)
+    view.graphics_view.verticalScrollBar().setValue(view.graphics_view.verticalScrollBar().value() + 60)
+    _pump_events(100)
+    a_scale = view.scale
+    a_scroll = view.graphics_view.verticalScrollBar().value()
+
+    controller.on_tab_changed(1)
+    _pump_events(250)
+    controller.change_scale(view.current_page, 1.25)
+    _pump_events(220)
+    view.scroll_to_page(3)
+    _pump_events(100)
+    view.graphics_view.verticalScrollBar().setValue(view.graphics_view.verticalScrollBar().value() + 40)
+    _pump_events(100)
+    b_scale = view.scale
+    b_scroll = view.graphics_view.verticalScrollBar().value()
+
+    _trigger_fullscreen(view)
+    assert view.isFullScreen()
+
+    controller.on_tab_changed(0)
+    _pump_events(300)
+    assert view.isFullScreen()
+    assert view.scale != pytest.approx(a_scale)
+
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_Escape)
+    _pump_events(320)
+
+    assert not view.isFullScreen()
+    assert model.get_active_session_index() == 0
+    assert view.scale == pytest.approx(a_scale)
+    assert view.graphics_view.verticalScrollBar().value() == a_scroll
+
+    controller.on_tab_changed(1)
+    _pump_events(300)
+    assert view.scale == pytest.approx(b_scale)
+    assert view.graphics_view.verticalScrollBar().value() == b_scroll
+
+
+def test_33_fullscreen_from_highlight_mode_cancels_partial_state_and_enters_browse(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "fullscreen_from_highlight.pdf", ["highlight fullscreen"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(350)
+
+    view.set_mode("highlight")
+    _pump_events(80)
+    viewport = view.graphics_view.viewport()
+    start = viewport.rect().center()
+    QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, start)
+    _pump_events(40)
+    assert view.drawing_start is not None
+
+    _trigger_fullscreen(view)
+
+    assert view.isFullScreen()
+    assert view.current_mode == "browse"
+    assert view.drawing_start is None
+    _assert_mode_checked(view, "browse")
+
+
+def test_34_fullscreen_quick_button_sits_between_fit_and_undo_and_f5_toggles(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "fullscreen_quick_entry.pdf", ["quick entry"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(320)
+
+    assert view._action_fullscreen.shortcut().toString() == "F5"
+    assert view.fit_view_btn.x() < view.fullscreen_quick_btn.x() < view.toolbar_right.x()
+
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_F5)
+    _pump_events(180)
+    assert view.isFullScreen()
+
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_F5)
+    _pump_events(220)
+    assert not view.isFullScreen()

@@ -121,3 +121,9 @@ Key files/functions:
 - Controller entry: `controller/pdf_controller.py` `print_document()` and print lifecycle helpers.
 - Helper protocol and job payload: `src/printing/helper_protocol.py` (`PrintHelperJob`) and `src/printing/helper_main.py`.
 - Subprocess runner: `src/printing/subprocess_runner.py`.
+
+## 17. Fullscreen Viewing
+
+Fullscreen is available from any mode via `F5` or the top-right `全螢幕` button. Entering fullscreen cancels any active inline editor or partial draw/drag state, clears transient selection/search UI state, and forces `browse` mode before showing the fullscreen window. The fullscreen view hides all chrome (toolbars, tab bar, sidebars, status bar) and fits the current page using a contain scale so the entire page is visible. A top-edge hover reveals a small `X` exit affordance; `Esc`, `F5`, and the `X` button all exit fullscreen. While fullscreen is active, tab switching is allowed and each visited tab restores its pre-fullscreen zoom and scroll anchor on exit.
+
+Key functions include controller `enter_fullscreen()`, `exit_fullscreen()`, `toggle_fullscreen()`, view `enter_fullscreen_ui()`, `exit_fullscreen_ui()`, `cancel_interaction_for_fullscreen()`, and viewport anchor capture/restore helpers.
