@@ -1098,6 +1098,70 @@ class PDFModel:
             logger.error(f"從檔案插入頁面失敗: {e}")
             raise RuntimeError(f"從檔案插入頁面失敗: {e}")
 
+    def compose_merged_document(self, ordered_sources: List[dict]) -> fitz.Document:
+        if not self.doc:
+            raise ValueError("沒有開啟的PDF文件")
+
+        merged = fitz.open()
+        current_snapshot = self._capture_doc_snapshot()
+
+        for source in ordered_sources or []:
+            source_kind = (source or {}).get("source_kind")
+            if source_kind == "current":
+                current_doc = fitz.open("pdf", current_snapshot)
+                try:
+                    merged.insert_pdf(current_doc)
+                finally:
+                    current_doc.close()
+                continue
+
+            if source_kind != "file":
+                continue
+
+            path = (source or {}).get("path")
+            if not path:
+                continue
+
+            password = (source or {}).get("password")
+            file_doc = fitz.open(str(path))
+            try:
+                if file_doc.needs_pass:
+                    if password is None:
+                        raise RuntimeError(f"document closed or encrypted — 需要密碼: {path}")
+                    if file_doc.authenticate(password) == 0:
+                        raise RuntimeError(f"PDF 密碼驗證失敗（authenticate 回傳 0）: {path}")
+                merged.insert_pdf(file_doc)
+            finally:
+                file_doc.close()
+
+        return merged
+
+    def open_merge_source(self, path: str, password: Optional[str] = None) -> dict:
+        src_path = Path(path).resolve()
+        if not src_path.exists():
+            raise FileNotFoundError(f"來源檔案不存在: {path}")
+        if not src_path.is_file():
+            raise ValueError(f"路徑不是有效檔案: {path}")
+
+        doc = fitz.open(str(src_path))
+        try:
+            if doc.needs_pass:
+                if password is None:
+                    raise RuntimeError("document closed or encrypted — 需要密碼")
+                if doc.authenticate(password) == 0:
+                    raise RuntimeError(f"PDF 密碼驗證失敗（authenticate 回傳 0）: {path}")
+
+            if len(doc) == 0:
+                raise RuntimeError(f"無法讀取來源檔案: {path}")
+
+            return {
+                "path": str(src_path),
+                "display_name": src_path.name,
+                "password": password,
+            }
+        finally:
+            doc.close()
+
     def get_page_pixmap(self, page_num: int, scale: float = 1.0) -> fitz.Pixmap:
         return self.tools.render_page_pixmap(page_num, scale=scale, annots=True, purpose="view")
 
@@ -1449,6 +1513,12 @@ class PDFModel:
         self.doc.close()
         self.doc = fitz.open("pdf", snapshot_bytes)
         logger.debug(f"_restore_doc_from_snapshot: 已還原文件（{len(snapshot_bytes)} bytes）")
+
+    def replace_active_document_from_snapshot(self, snapshot_bytes: bytes, affected_pages: Optional[List[int]] = None) -> None:
+        if not snapshot_bytes:
+            raise ValueError("缺少文件快照")
+        self._restore_doc_from_snapshot(snapshot_bytes)
+        self.refresh_structural_indexes(affected_pages or [1])
 
     # ──────────────────────────────────────────────────────────────────────────
     # Phase 3: 頁面快照（取代 clone_page）
