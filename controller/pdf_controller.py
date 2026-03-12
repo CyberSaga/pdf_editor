@@ -8,6 +8,7 @@ from typing import Callable, List, Tuple, Optional
 from utils.helpers import pixmap_to_qpixmap, show_error
 from pathlib import Path
 from dataclasses import dataclass, field
+import io
 import logging
 import tempfile
 import uuid
@@ -216,6 +217,7 @@ class PDFController:
         # Insert pages connections
         self.view.sig_insert_blank_page.connect(self.insert_blank_page)
         self.view.sig_insert_pages_from_file.connect(self.insert_pages_from_file)
+        self.view.sig_merge_pdfs_requested.connect(self.start_merge_pdfs)
 
         # Watermark connections
         self.view.sig_add_watermark.connect(self.add_watermark)
@@ -484,6 +486,124 @@ class PDFController:
                 logger.error(f"打開 PDF 失敗: {e}")
                 show_error(self.view, f"打開 PDF 失敗: {e}")
                 break
+
+    def start_merge_pdfs(self) -> None:
+        active_sid = self.model.get_active_session_id()
+        if not active_sid:
+            show_error(self.view, "沒有開啟的PDF文件")
+            return
+
+        meta = self.model.get_session_meta(active_sid)
+        if not meta:
+            show_error(self.view, "沒有可合併的目前文件")
+            return
+
+        from model.merge_session import MergeSessionModel
+        from view.pdf_view import MergePdfDialog
+
+        session_model = MergeSessionModel(
+            current_label=meta["display_name"],
+            current_source_id=active_sid,
+        )
+        dialog = MergePdfDialog(session_model, self.view, file_resolver=self._resolve_merge_file)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        ordered_sources: list[dict] = []
+        for entry in dialog.ordered_entries():
+            if getattr(entry, "source_kind", "") == "current":
+                ordered_sources.append({"source_kind": "current"})
+                continue
+            resolved = self._resolve_merge_file(
+                {
+                    "source_kind": "file",
+                    "path": getattr(entry, "path", None),
+                    "password": getattr(entry, "password", None),
+                }
+            )
+            if resolved is not None:
+                ordered_sources.append(resolved)
+
+        if not ordered_sources:
+            show_error(self.view, "沒有可合併的有效 PDF")
+            return
+
+        if dialog.selected_mode() == "merge_current":
+            self.merge_ordered_sources_into_current(ordered_sources)
+            return
+
+        path, _ = QFileDialog.getSaveFileName(self.view, "儲存合併後的 PDF", "merged.pdf", "PDF (*.pdf)")
+        if not path:
+            return
+        self.save_ordered_sources_as_new(ordered_sources, path)
+
+    def merge_ordered_sources_into_current(self, ordered_sources: List[dict]) -> None:
+        if not self.model.doc:
+            raise ValueError("沒有開啟的PDF文件")
+
+        before = self.model._capture_doc_snapshot()
+        merged_doc = self.model.compose_merged_document(ordered_sources)
+        try:
+            stream = io.BytesIO()
+            merged_doc.save(stream, garbage=0)
+            after = stream.getvalue()
+        finally:
+            merged_doc.close()
+
+        self.model.replace_active_document_from_snapshot(after, [1])
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="merge_pdfs",
+            affected_pages=[1],
+            before_bytes=before,
+            after_bytes=after,
+            description="合併 PDF",
+        )
+        self.model.command_manager.record(cmd)
+        self._update_thumbnails()
+        self._rebuild_continuous_scene(0)
+        self._schedule_stale_index_drain()
+        self._update_undo_redo_tooltips()
+
+    def save_ordered_sources_as_new(self, ordered_sources: List[dict], output_path: str) -> None:
+        merged_doc = self.model.compose_merged_document(ordered_sources)
+        try:
+            merged_doc.save(output_path, garbage=0)
+        finally:
+            merged_doc.close()
+        self.open_pdf(output_path)
+
+    def _resolve_merge_file(self, entry: dict) -> Optional[dict]:
+        path = (entry or {}).get("path")
+        if not path:
+            return None
+
+        password = entry.get("password")
+        while True:
+            try:
+                resolved = self.model.open_merge_source(path, password=password)
+                resolved["source_kind"] = "file"
+                return resolved
+            except RuntimeError as e:
+                err_msg = str(e)
+                if "需要密碼" in err_msg or "encrypted" in err_msg.lower():
+                    pw = self.view.ask_pdf_password(path)
+                    if pw is None:
+                        return None
+                    password = pw
+                    continue
+                if "密碼驗證失敗" in err_msg:
+                    show_error(self.view, "密碼錯誤，請重試。")
+                    pw = self.view.ask_pdf_password(path)
+                    if pw is None:
+                        return None
+                    password = pw
+                    continue
+                show_error(self.view, f"無法讀取來源檔案: {e}")
+                return None
+            except Exception as e:
+                show_error(self.view, f"無法讀取來源檔案: {e}")
+                return None
 
     def on_tab_changed(self, index: int):
         sid = self.model.get_session_id_by_index(index)
