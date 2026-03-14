@@ -127,3 +127,30 @@ Key files/functions:
 Fullscreen is available from any mode via `F5` or the top-right `全螢幕` button. Entering fullscreen cancels any active inline editor or partial draw/drag state, clears transient selection/search UI state, and forces `browse` mode before showing the fullscreen window. The fullscreen view hides all chrome (toolbars, tab bar, sidebars, status bar) and fits the current page using a contain scale so the entire page is visible. A top-edge hover reveals a small `X` exit affordance; `Esc`, `F5`, and the `X` button all exit fullscreen. While fullscreen is active, tab switching is allowed and each visited tab restores its pre-fullscreen zoom and scroll anchor on exit.
 
 Key functions include controller `enter_fullscreen()`, `exit_fullscreen()`, `toggle_fullscreen()`, view `enter_fullscreen_ui()`, `exit_fullscreen_ui()`, `cancel_interaction_for_fullscreen()`, and viewport anchor capture/restore helpers.
+
+## 18. Merge PDFs (頁面 Tab)
+
+This section follows `docs/Methodology_for_Writing_Docs.md` as behavior-level source of truth.
+
+User flow:
+- From the `頁面` tab, user opens a modal merge dialog with a reorderable list, `選擇檔案`, `刪除檔案`, and `確認合併`.
+- The current document is always present in the list as a locked row:
+  - It participates in ordering.
+  - It cannot be removed.
+- `選擇檔案` adds files only via the OS file picker; reopening the picker appends new picks to the end.
+- Users can reorder items via drag-and-drop (including multi-select reorder); add/remove operations must preserve the user’s current custom order.
+- `刪除檔案` removes only selected unlocked rows.
+- `確認合併` is disabled if there are no valid merge inputs.
+
+Input handling:
+- Password-protected PDFs prompt for password; wrong password supports retry; cancel skips that file.
+- Files that are not valid PDFs (including “.pdf but not a PDF”) are rejected with a clear message and skipped.
+- Other unreadable PDFs are also rejected with a clear message and skipped.
+- Large batch add shows a progress indicator while validating/adding.
+
+Outputs:
+- `建立新檔`: prompts output path, saves immediately, opens merged result as a new tab.
+- `合併到目前檔案`: merges into the active document, remains on that tab, and marks the document as unsaved (dirty).
+
+Regression guardrails:
+- The list-order contract is covered by tests in `test_scripts/test_pdf_merge_workflow.py` (reorder then add/remove must not revert).

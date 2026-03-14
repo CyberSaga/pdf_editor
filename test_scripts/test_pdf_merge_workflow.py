@@ -36,6 +36,12 @@ def _pump_events(ms: int = 100) -> None:
         time.sleep(0.01)
 
 
+def _reorder_list_widget(dialog, from_row: int, to_row: int) -> None:
+    item = dialog.file_list.takeItem(from_row)
+    assert item is not None
+    dialog.file_list.insertItem(to_row, item)
+
+
 @pytest.fixture(scope="session")
 def qapp():
     app = QApplication.instance()
@@ -374,3 +380,59 @@ def test_merge_dialog_updates_progress_while_processing_picker_batch(monkeypatch
     dialog._select_files()
 
     assert progress_values == [-1, 0, 1, 2, -2]
+
+
+def test_merge_dialog_preserves_reordered_list_when_adding_files(monkeypatch, qapp) -> None:
+    from model.merge_session import MergeSessionModel
+    from view.pdf_view import MergePdfDialog
+
+    session = MergeSessionModel(current_label="Current.pdf", current_source_id="active")
+    session.add_files(
+        [
+            str(Path("C:/tmp/B.pdf")),
+            str(Path("C:/tmp/C.pdf")),
+        ]
+    )
+    dialog = MergePdfDialog(session)
+
+    _reorder_list_widget(dialog, 2, 1)
+
+    monkeypatch.setattr(
+        "view.pdf_view.QFileDialog.getOpenFileNames",
+        lambda *args, **kwargs: ([str(Path("C:/tmp/D.pdf"))], "PDF (*.pdf)"),
+    )
+
+    dialog._select_files()
+
+    assert [dialog.file_list.item(i).text() for i in range(dialog.file_list.count())] == [
+        "Current.pdf",
+        "C.pdf",
+        "B.pdf",
+        "D.pdf",
+    ]
+
+
+def test_merge_dialog_preserves_reordered_list_when_removing_files(qapp) -> None:
+    from model.merge_session import MergeSessionModel
+    from view.pdf_view import MergePdfDialog
+
+    session = MergeSessionModel(current_label="Current.pdf", current_source_id="active")
+    session.add_files(
+        [
+            str(Path("C:/tmp/B.pdf")),
+            str(Path("C:/tmp/C.pdf")),
+            str(Path("C:/tmp/D.pdf")),
+        ]
+    )
+    dialog = MergePdfDialog(session)
+
+    _reorder_list_widget(dialog, 3, 1)
+    dialog.file_list.setCurrentRow(2)
+
+    dialog._delete_selected()
+
+    assert [dialog.file_list.item(i).text() for i in range(dialog.file_list.count())] == [
+        "Current.pdf",
+        "D.pdf",
+        "C.pdf",
+    ]

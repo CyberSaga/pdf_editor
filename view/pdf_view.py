@@ -122,6 +122,7 @@ class MergePdfDialog(QDialog):
         self.file_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.file_list.setDragDropMode(QAbstractItemView.InternalMove)
         self.file_list.setDefaultDropAction(Qt.MoveAction)
+        self.file_list.model().rowsMoved.connect(self._sync_session_model_from_file_list)
         layout.addWidget(self.file_list)
 
         button_row = QHBoxLayout()
@@ -152,6 +153,7 @@ class MergePdfDialog(QDialog):
         if not paths:
             return
 
+        self._sync_session_model_from_file_list()
         resolved_entries: list[dict] = []
         progress = self.progress_factory(len(paths))
         progress.show()
@@ -181,6 +183,7 @@ class MergePdfDialog(QDialog):
         self._refresh_file_list()
 
     def _delete_selected(self) -> None:
+        self._sync_session_model_from_file_list()
         entry_ids: list[str] = []
         for item in self.file_list.selectedItems():
             entry_id = item.data(Qt.UserRole)
@@ -190,6 +193,15 @@ class MergePdfDialog(QDialog):
             return
         self.session_model.remove_entries(entry_ids)
         self._refresh_file_list()
+
+    def _sync_session_model_from_file_list(self, *_args) -> None:
+        entry_ids: list[str] = []
+        for index in range(self.file_list.count()):
+            item = self.file_list.item(index)
+            entry_id = item.data(Qt.UserRole)
+            if entry_id:
+                entry_ids.append(entry_id)
+        self.session_model.set_order(entry_ids)
 
     def _update_buttons(self) -> None:
         self.confirm_button.setEnabled(self.session_model.can_confirm)
