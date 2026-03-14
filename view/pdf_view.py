@@ -5,7 +5,7 @@
     QComboBox, QDoubleSpinBox, QTextEdit, QGraphicsProxyWidget, QLineEdit, QHBoxLayout, QRadioButton,
     QStackedWidget, QDialog, QSpinBox, QDialogButtonBox, QFormLayout,
     QScrollArea, QCheckBox, QTabWidget, QSplitter, QFrame, QSizePolicy, QSlider, QTabBar, QListView, QAbstractItemView,
-    QStatusBar, QGroupBox, QToolButton, QProgressDialog, QTableWidget, QTableWidgetItem, QHeaderView
+    QStatusBar, QGroupBox, QToolButton, QProgressDialog, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip
 )
 from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QActionGroup, QCloseEvent, QTextOption, QShortcut, QFontMetrics, QGuiApplication
 from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint, QEvent, QSize, QRect
@@ -229,11 +229,13 @@ class MergePdfDialog(QDialog):
 
 
 class AuditStackedBar(QWidget):
+    hovered_label_changed = Signal(str)
     _COLORS = ["#0EA5E9", "#22C55E", "#F59E0B", "#EF4444", "#64748B", "#A855F7"]
 
     def __init__(self, report: PdfAuditReport, parent=None):
         super().__init__(parent)
         self._segments: list[QFrame] = []
+        self._segment_labels: dict[QFrame, str] = {}
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
@@ -245,12 +247,36 @@ class AuditStackedBar(QWidget):
             )
             stretch = max(1, int(round(item.percent)))
             layout.addWidget(segment, stretch)
-            segment.setToolTip(f"{item.label}: {item.bytes_used:,} bytes ({item.percent:.2f}%)")
+            # Keep hover text minimal so users can quickly identify each object type.
+            segment.setToolTip(item.label)
+            segment.setMouseTracking(True)
+            segment.setAttribute(Qt.WA_Hover, True)
+            segment.installEventFilter(self)
+            self._segment_labels[segment] = item.label
             self._segments.append(segment)
         self.setMinimumHeight(18)
 
     def segment_count(self) -> int:
         return len(self._segments)
+
+    def segment_tooltips(self) -> list[str]:
+        return [segment.toolTip() for segment in self._segments if segment.toolTip()]
+
+    def _show_segment_name(self, segment: QFrame) -> None:
+        label = self._segment_labels.get(segment, "")
+        if not label:
+            return
+        self.hovered_label_changed.emit(label)
+        QToolTip.showText(QCursor.pos(), label, segment)
+
+    def eventFilter(self, watched, event):
+        if watched in self._segment_labels:
+            if event.type() in (QEvent.Enter, QEvent.MouseMove, QEvent.ToolTip):
+                self._show_segment_name(watched)
+                return event.type() == QEvent.ToolTip
+            if event.type() == QEvent.Leave:
+                self.hovered_label_changed.emit("")
+        return super().eventFilter(watched, event)
 
 
 class PdfAuditReportDialog(QDialog):
@@ -267,7 +293,10 @@ class PdfAuditReportDialog(QDialog):
         )
         layout.addWidget(summary)
 
+        self.hover_name_label = QLabel("將游標移到色塊上以查看物件種類")
+        layout.addWidget(self.hover_name_label)
         self.stacked_bar = AuditStackedBar(report, self)
+        self.stacked_bar.hovered_label_changed.connect(self._on_stacked_bar_hovered)
         layout.addWidget(self.stacked_bar)
 
         self.table = QTableWidget(len(report.items), 4, self)
@@ -296,6 +325,12 @@ class PdfAuditReportDialog(QDialog):
         buttons.button(QDialogButtonBox.Close).setText("關閉")
         layout.addWidget(buttons)
 
+    def _on_stacked_bar_hovered(self, label: str) -> None:
+        if label:
+            self.hover_name_label.setText(f"目前: {label}")
+            return
+        self.hover_name_label.setText("將游標移到色塊上以查看物件種類")
+
 
 class OptimizePdfDialog(QDialog):
     def __init__(self, parent=None, audit_provider=None):
@@ -313,7 +348,7 @@ class OptimizePdfDialog(QDialog):
         header = QHBoxLayout()
         header.addWidget(QLabel("設定:"))
         self.preset_combo = QComboBox()
-        self.preset_combo.addItems(["低壓縮", "平衡", "強力", "自訂"])
+        self.preset_combo.addItems(["快速", "平衡", "極致壓縮", "自訂"])
         self.preset_combo.currentTextChanged.connect(self._on_preset_changed)
         header.addWidget(self.preset_combo, 1)
         self.audit_button = QPushButton("審計空間使用報告")
@@ -531,8 +566,8 @@ class OptimizePdfDialog(QDialog):
             deflate_fonts=self.deflate_fonts_checkbox.isChecked(),
             use_object_streams=self.object_streams_checkbox.isChecked(),
             linearize=self.linearize_checkbox.isChecked(),
-            garbage_level=4 if self.preset_combo.currentText() == "強力" else 2 if self.preset_combo.currentText() == "低壓縮" else 3,
-            compression_effort=9 if self.preset_combo.currentText() == "強力" else 3 if self.preset_combo.currentText() == "低壓縮" else 6,
+            garbage_level=4 if self.preset_combo.currentText() == "極致壓縮" else 2 if self.preset_combo.currentText() == "快速" else 3,
+            compression_effort=9 if self.preset_combo.currentText() == "極致壓縮" else 3 if self.preset_combo.currentText() == "快速" else 6,
         )
 
 

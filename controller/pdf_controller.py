@@ -751,17 +751,32 @@ class PDFController:
         self._show_optimize_progress_dialog("正在最佳化 PDF 副本...")
         thread.start()
 
+    @staticmethod
+    def _format_size_units(size_bytes: int) -> str:
+        units = ["bytes", "KB", "MB", "GB", "TB"]
+        value = float(max(0, int(size_bytes)))
+        unit_index = 0
+        while value >= 1024.0 and unit_index < len(units) - 1:
+            value /= 1024.0
+            unit_index += 1
+        if unit_index == 0:
+            return f"{int(size_bytes):,} bytes"
+        return f"{value:.2f} {units[unit_index]} ({int(size_bytes):,} bytes)"
+
     def _on_optimize_copy_succeeded(self, result) -> None:
         self._hide_optimize_progress_dialog()
         self.open_pdf(result.output_path)
+        original_size = self._format_size_units(result.original_bytes)
+        optimized_size = self._format_size_units(result.optimized_bytes)
+        saved_size = self._format_size_units(result.bytes_saved)
         QMessageBox.information(
             self.view,
             "最佳化完成",
             (
                 f"已建立最佳化副本:\n{result.output_path}\n\n"
-                f"原始大小: {result.original_bytes:,} bytes\n"
-                f"最佳化後: {result.optimized_bytes:,} bytes\n"
-                f"節省: {result.bytes_saved:,} bytes ({result.percent_saved:.1f}%)"
+                f"原始大小: {original_size}\n"
+                f"最佳大小: {optimized_size}\n"
+                f"節省: {saved_size} ({result.percent_saved:.1f}%)"
             ),
         )
 

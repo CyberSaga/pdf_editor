@@ -53,6 +53,19 @@ def _pump_events(ms: int = 100) -> None:
         time.sleep(0.01)
 
 
+def _wait_until(predicate, timeout_ms: int = 1000) -> bool:
+    app = QApplication.instance()
+    assert app is not None
+    end = time.time() + timeout_ms / 1000.0
+    while time.time() < end:
+        app.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.01)
+    app.processEvents()
+    return bool(predicate())
+
+
 @pytest.fixture(scope="session")
 def qapp():
     app = QApplication.instance()
@@ -128,6 +141,26 @@ def test_save_optimized_copy_uses_working_doc_and_preserves_live_doc(tmp_path: P
         model.close()
 
 
+@pytest.mark.parametrize("preset_name", ["快速", "平衡", "極致壓縮"])
+def test_save_optimized_copy_accepts_all_presets(tmp_path: Path, preset_name: str) -> None:
+    from model.pdf_model import PDFModel
+
+    source = _make_pdf_with_image(tmp_path / f"{preset_name}-source.pdf")
+    output = tmp_path / f"{preset_name}-optimized.pdf"
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source))
+        result = model.save_optimized_copy(str(output), model.preset_optimize_options(preset_name))
+
+        assert output.exists() is True
+        assert result.output_path == str(output)
+        assert result.optimized_bytes > 0
+        assert result.applied_preset == preset_name
+    finally:
+        model.close()
+
+
 def test_build_pdf_audit_report_groups_known_categories(tmp_path: Path) -> None:
     from model.pdf_model import PDFModel
 
@@ -166,6 +199,13 @@ def test_pdf_audit_report_dialog_uses_table_and_stacked_bar(qapp, tmp_path: Path
     assert dialog.table.rowCount() == len(report.items)
     assert dialog.table.columnCount() == 4
     assert dialog.stacked_bar.segment_count() >= 1
+    assert dialog.layout().indexOf(dialog.hover_name_label) < dialog.layout().indexOf(dialog.stacked_bar)
+    tooltips = dialog.stacked_bar.segment_tooltips()
+    meaningful_labels = {item.label for item in report.items if item.bytes_used > 0}
+    assert tooltips
+    assert all(tip in meaningful_labels for tip in tooltips)
+    dialog.stacked_bar.hovered_label_changed.emit(tooltips[0])
+    assert tooltips[0] in dialog.hover_name_label.text()
 
 
 def test_start_optimize_pdf_copy_saves_and_opens_new_tab(mvc, monkeypatch, tmp_path: Path) -> None:
@@ -191,7 +231,7 @@ def test_start_optimize_pdf_copy_saves_and_opens_new_tab(mvc, monkeypatch, tmp_p
     )
 
     controller.start_optimize_pdf_copy()
-    _pump_events(120)
+    assert _wait_until(lambda: len(model.session_ids) == 2, timeout_ms=1500)
 
     assert output.exists() is True
     assert len(model.session_ids) == 2
@@ -266,3 +306,45 @@ def test_start_optimize_pdf_copy_runs_work_in_background(mvc, monkeypatch, tmp_p
     assert elapsed < 0.15
     _pump_events(500)
     assert len(model.session_ids) == 2
+
+
+def test_start_optimize_pdf_copy_completion_message_uses_human_units(mvc, monkeypatch, tmp_path: Path) -> None:
+    model, _view, controller = mvc
+    current = _make_pdf_with_image(tmp_path / "Current.pdf")
+    output = tmp_path / "Current.optimized.pdf"
+    controller.open_pdf(str(current))
+    _pump_events(120)
+
+    import view.pdf_view as pdf_view_module
+    from model.pdf_model import PdfOptimizationResult
+
+    messages: list[str] = []
+    monkeypatch.setattr(
+        "controller.pdf_controller.QMessageBox.information",
+        staticmethod(lambda _parent, _title, text: messages.append(str(text))),
+    )
+    monkeypatch.setattr(pdf_view_module.OptimizePdfDialog, "exec", lambda self: QDialog.Accepted)
+    monkeypatch.setattr(
+        "controller.pdf_controller.QFileDialog.getSaveFileName",
+        staticmethod(lambda *args, **kwargs: (str(output), "PDF (*.pdf)")),
+    )
+
+    def fake_save_optimized_copy(path: str, _options):
+        shutil.copy2(str(current), path)
+        return PdfOptimizationResult(
+            output_path=path,
+            original_bytes=8 * 1024 * 1024,
+            optimized_bytes=3 * 1024 * 1024,
+            bytes_saved=5 * 1024 * 1024,
+            percent_saved=62.5,
+            applied_preset="撟唾﹛",
+            applied_summary=["撟唾﹛"],
+        )
+
+    monkeypatch.setattr(model, "save_optimized_copy", fake_save_optimized_copy)
+
+    controller.start_optimize_pdf_copy()
+    _pump_events(500)
+
+    assert messages
+    assert "MB" in messages[-1]
