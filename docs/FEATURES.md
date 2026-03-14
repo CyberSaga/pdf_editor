@@ -165,7 +165,10 @@ Behavior:
 - Supported controls are limited to implemented behavior: image downsampling / recompression, font subsetting, metadata removal, and cleanup / compression flags.
 - Unsupported Acrobat-style controls are hidden and tracked in `docs/unsupported-optimizer.md`.
 - `審計空間使用報告` is on-demand only for the current source document; it does not auto-refresh while options change.
+- The audit report UI uses a table and stacked proportion bar. Hovering a bar segment shows the object type, and the current hover label is displayed above the bar.
+- In the audit table, `數量` means unique referenced object count for that category (for example unique xref count for images / fonts / content streams), not visual occurrence count on page.
 - Saving an optimized copy opens the new file as a new tab and leaves the original tab/session untouched.
 - The optimizer rejects output paths that would overwrite the current file or any already-open file.
+- Completion message shows human-readable size units (`KB`/`MB`/`GB`) with raw byte values for original / optimized / saved sizes.
 
 Key functions include `OptimizePdfDialog`, `PDFController.start_optimize_pdf_copy()`, `build_pdf_audit_report()`, and `save_optimized_copy()`.

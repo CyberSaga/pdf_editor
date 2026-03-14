@@ -172,7 +172,16 @@ Optimize-copy is an explicit new-file workflow from the `檔案` tab. It must no
 Contracts:
 - Controller owns the dialog / save-path flow and opens the output as a new tab.
 - Model owns the disposable working-document boundary, audit report generation, and optimization save pipeline.
+- Save-option normalization runs at model boundary before `fitz.Document.save(...)` so invalid flag combinations (for example `linearize + use_object_streams`) are resolved before persistence.
 - The active session document remains the source of truth and is not rewritten by the optimizer path.
+
+Audit report semantics:
+- `build_pdf_audit_report(...)` derives category usage by collecting unique referenced xrefs from each page:
+  - `圖片`: unique xrefs from `page.get_images(full=True)`
+  - `字體`: unique xrefs from `page.get_fonts(full=True)`
+  - `內容串流`: unique xrefs from `page.get_contents()`
+- `數量` is unique-object count per category (not draw-call or visual-occurrence count).
+- `文件開銷` and `其他/未分類` are byte-bucket rows; their `數量` is a presence marker (`1` or `0`) instead of a true xref count.
 
 ## 4. Coordinate and Rotation Strategy
 
