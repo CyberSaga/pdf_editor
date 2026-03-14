@@ -142,6 +142,38 @@ Model behavior:
 
 Entry can be triggered from any mode (`F5` or the top-right `全螢幕` button). The controller cancels active edits/partial gestures, clears transient selection/search UI state, forces `browse`, and captures a per-tab pre-fullscreen snapshot (page, scale, scroll anchor). The view enters native fullscreen and hides chrome; it computes a contain-fit scale for the active page and re-centers on resize. Exit restores the normal window chrome and per-tab pre-fullscreen layout, keeping the current tab active.
 
+### 3.7 Optimize PDF Copy
+
+Optimize-copy is an explicit new-file workflow from the `檔案` tab. It must not mutate the active live document while preparing the optimized output.
+
+```text
+[active session doc]
+      |
+      v
+[in-memory snapshot bytes]
+      |
+      v
+[disposable working doc]
+      |
+      +--> [audit xref/resource usage] -> [report dialog]
+      |
+      `--> [tool save prep]
+              |
+              v
+      [image/font/metadata/cleanup passes]
+              |
+              v
+      [full save to output path]
+              |
+              v
+      [open optimized copy as new tab]
+```
+
+Contracts:
+- Controller owns the dialog / save-path flow and opens the output as a new tab.
+- Model owns the disposable working-document boundary, audit report generation, and optimization save pipeline.
+- The active session document remains the source of truth and is not rewritten by the optimizer path.
+
 ## 4. Coordinate and Rotation Strategy
 
 Add-text insertion uses visual coordinates from the current view. Model converts visual rectangle corners through derotation mapping into unrotated page space, clamps against unrotated page bounds (`cropbox`/`mediabox` fallback), and inserts with rotation-aware parameters. This keeps placement stable at the visual click location for page rotation `0/90/180/270`.

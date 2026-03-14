@@ -15,6 +15,10 @@ import io  # 用於 BytesIO 記憶體 stream（文件推薦 in-memory PDF）
 import json
 import re
 import html as _html_mod
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover - optional dependency
+    Image = None
 
 from model.text_block import (
     TextBlock,
@@ -59,6 +63,57 @@ _CUSTOM_CJK_ALIASES = {
 
 # 設置日誌
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PdfOptimizeOptions:
+    preset: str = "平衡"
+    optimize_images: bool = True
+    image_dpi_target: int = 150
+    image_dpi_threshold: int = 225
+    image_jpeg_quality: int = 60
+    optimize_color_images: bool = True
+    optimize_gray_images: bool = True
+    optimize_bitonal_images: bool = True
+    optimize_fonts: bool = True
+    subset_fonts: bool = True
+    remove_metadata: bool = False
+    remove_xml_metadata: bool = False
+    content_cleanup: bool = True
+    garbage_level: int = 3
+    deflate_streams: bool = True
+    deflate_images: bool = True
+    deflate_fonts: bool = True
+    use_object_streams: bool = True
+    linearize: bool = False
+    compression_effort: int = 6
+
+
+@dataclass(frozen=True)
+class PdfAuditItem:
+    label: str
+    count: int
+    bytes_used: int
+    percent: float
+
+
+@dataclass(frozen=True)
+class PdfAuditReport:
+    pdf_version: str
+    compatibility: str
+    total_bytes: int
+    items: list[PdfAuditItem]
+
+
+@dataclass(frozen=True)
+class PdfOptimizationResult:
+    output_path: str
+    original_bytes: int
+    optimized_bytes: int
+    bytes_saved: int
+    percent_saved: float
+    applied_preset: str
+    applied_summary: list[str]
 
 
 @dataclass
@@ -1507,6 +1562,316 @@ class PDFModel:
         stream = io.BytesIO()
         self.doc.save(stream, garbage=0)
         return stream.getvalue()
+
+    @staticmethod
+    def preset_optimize_options(preset: str) -> PdfOptimizeOptions:
+        normalized = (preset or "").strip()
+        if normalized == "低壓縮":
+            return PdfOptimizeOptions(
+                preset="低壓縮",
+                image_dpi_target=220,
+                image_dpi_threshold=300,
+                image_jpeg_quality=78,
+                remove_metadata=False,
+                remove_xml_metadata=False,
+                garbage_level=2,
+                use_object_streams=False,
+                linearize=False,
+                compression_effort=3,
+            )
+        if normalized == "強力":
+            return PdfOptimizeOptions(
+                preset="強力",
+                image_dpi_target=110,
+                image_dpi_threshold=165,
+                image_jpeg_quality=42,
+                remove_metadata=True,
+                remove_xml_metadata=True,
+                garbage_level=4,
+                use_object_streams=True,
+                linearize=True,
+                compression_effort=9,
+            )
+        return PdfOptimizeOptions()
+
+    def _build_working_doc_for_optimized_copy(self, session_id: Optional[str]) -> fitz.Document:
+        """
+        Optimize-copy pipeline:
+          live doc -> bytes snapshot -> disposable working doc -> tool save prep
+        Never run optimizer mutations against self.doc.
+        """
+        if not self.doc:
+            raise RuntimeError("沒有可最佳化的 PDF")
+        working_doc = fitz.open("pdf", self.doc.tobytes(garbage=0, no_new_id=1))
+        prepared_doc = self.tools.prepare_doc_for_save(session_id, working_doc) if session_id else None
+        if prepared_doc is None:
+            return working_doc
+        if prepared_doc is not working_doc:
+            working_doc.close()
+        return prepared_doc
+
+    @staticmethod
+    def _blank_metadata_dict(doc: fitz.Document) -> dict[str, str]:
+        metadata = doc.metadata or {}
+        if not metadata:
+            return {
+                "author": "",
+                "producer": "",
+                "creator": "",
+                "title": "",
+                "subject": "",
+                "keywords": "",
+                "trapped": "",
+                "creationDate": "",
+                "modDate": "",
+            }
+        return {key: "" for key in metadata.keys()}
+
+    @staticmethod
+    def _xref_size_bytes(doc: fitz.Document, xref: int) -> int:
+        size = 0
+        try:
+            obj = doc.xref_object(xref, compressed=0, ascii=0)
+            if obj:
+                size += len(obj.encode("utf-8", "ignore"))
+        except Exception:
+            pass
+        try:
+            if doc.xref_is_stream(xref):
+                size += len(doc.xref_stream_raw(xref) or b"")
+        except Exception:
+            pass
+        return size
+
+    def build_pdf_audit_report(self, doc: fitz.Document | None = None) -> PdfAuditReport:
+        target_doc = doc if doc is not None else self.doc
+        if target_doc is None:
+            raise RuntimeError("沒有可審計的 PDF")
+
+        total_bytes = len(target_doc.tobytes(garbage=0))
+        image_xrefs: set[int] = set()
+        font_xrefs: set[int] = set()
+        content_xrefs: set[int] = set()
+
+        for page_index in range(len(target_doc)):
+            page = target_doc[page_index]
+            try:
+                content_xrefs.update(int(xref) for xref in page.get_contents() if int(xref) > 0)
+            except Exception:
+                pass
+            try:
+                image_xrefs.update(int(item[0]) for item in page.get_images(full=True) if int(item[0]) > 0)
+            except Exception:
+                pass
+            try:
+                font_xrefs.update(int(item[0]) for item in page.get_fonts(full=True) if int(item[0]) > 0)
+            except Exception:
+                pass
+
+        image_bytes = sum(self._xref_size_bytes(target_doc, xref) for xref in image_xrefs)
+        font_bytes = sum(self._xref_size_bytes(target_doc, xref) for xref in font_xrefs)
+        content_bytes = sum(self._xref_size_bytes(target_doc, xref) for xref in content_xrefs)
+        metadata_payload = json.dumps(target_doc.metadata or {}, ensure_ascii=False).encode("utf-8")
+        xml_metadata = target_doc.get_xml_metadata() or ""
+        overhead_bytes = len(metadata_payload) + len(xml_metadata.encode("utf-8", "ignore"))
+
+        known_bytes = image_bytes + font_bytes + content_bytes + overhead_bytes
+        other_bytes = max(0, total_bytes - known_bytes)
+
+        raw_items = [
+            ("圖片", len(image_xrefs), image_bytes),
+            ("內容串流", len(content_xrefs), content_bytes),
+            ("字體", len(font_xrefs), font_bytes),
+            ("文件開銷", 1 if overhead_bytes else 0, overhead_bytes),
+            ("其他/未分類", 1 if other_bytes else 0, other_bytes),
+        ]
+        items = [
+            PdfAuditItem(
+                label=label,
+                count=count,
+                bytes_used=bytes_used,
+                percent=(bytes_used / total_bytes * 100.0) if total_bytes else 0.0,
+            )
+            for label, count, bytes_used in raw_items
+        ]
+        version = getattr(target_doc, "pdf_version", lambda: "")()
+        if not version:
+            version = "未知"
+        return PdfAuditReport(
+            pdf_version=str(version),
+            compatibility="保留現有",
+            total_bytes=total_bytes,
+            items=items,
+        )
+
+    def _apply_optimize_options(self, working_doc: fitz.Document, options: PdfOptimizeOptions) -> None:
+        if options.content_cleanup:
+            for page_index in range(len(working_doc)):
+                try:
+                    working_doc[page_index].clean_contents()
+                except Exception as exc:
+                    logger.warning("clean_contents 失敗（頁面 %s）: %s", page_index + 1, self._safe_exc_message(exc))
+
+        if options.remove_metadata:
+            working_doc.set_metadata(self._blank_metadata_dict(working_doc))
+        if options.remove_xml_metadata:
+            try:
+                working_doc.del_xml_metadata()
+            except Exception as exc:
+                logger.warning("移除 XML metadata 失敗: %s", self._safe_exc_message(exc))
+
+        if options.optimize_fonts and options.subset_fonts:
+            try:
+                working_doc.subset_fonts()
+            except Exception as exc:
+                logger.warning("subset_fonts 失敗: %s", self._safe_exc_message(exc))
+
+        if options.optimize_images:
+            self._rewrite_images_with_pillow(working_doc, options)
+
+    @staticmethod
+    def _classify_pil_image(image: Any) -> str:
+        mode = (getattr(image, "mode", "") or "").upper()
+        if mode == "1":
+            return "bitonal"
+        if mode in {"L", "LA"}:
+            return "gray"
+        return "color"
+
+    def _rewrite_images_with_pillow(self, working_doc: fitz.Document, options: PdfOptimizeOptions) -> None:
+        if Image is None:
+            raise RuntimeError("圖像最佳化需要 Pillow，請先安裝 optional-requirements.txt。")
+
+        dpi_target = max(int(options.image_dpi_target), 1)
+        dpi_threshold = max(int(options.image_dpi_threshold), dpi_target)
+        quality = min(max(int(options.image_jpeg_quality), 0), 100)
+        image_usage: dict[int, dict[str, float | int]] = {}
+        for page_index in range(len(working_doc)):
+            page = working_doc[page_index]
+            for item in page.get_images(full=True):
+                xref = int(item[0])
+                width = int(item[2])
+                height = int(item[3])
+                try:
+                    bbox = page.get_image_bbox(item)
+                except Exception:
+                    continue
+                rect_width = max(float(bbox.width), 1.0)
+                rect_height = max(float(bbox.height), 1.0)
+                max_dpi = max(
+                    width / (rect_width / 72.0),
+                    height / (rect_height / 72.0),
+                )
+                existing = image_usage.get(xref)
+                if existing is None:
+                    image_usage[xref] = {"page_index": page_index, "max_dpi": max_dpi}
+                else:
+                    existing["max_dpi"] = max(float(existing["max_dpi"]), max_dpi)
+
+        for xref, usage in image_usage.items():
+            try:
+                image_info = working_doc.extract_image(xref)
+                image_bytes = image_info.get("image")
+                if not image_bytes:
+                    continue
+                image = Image.open(io.BytesIO(image_bytes))
+                family = self._classify_pil_image(image)
+                if family == "color" and not options.optimize_color_images:
+                    continue
+                if family == "gray" and not options.optimize_gray_images:
+                    continue
+                if family == "bitonal" and not options.optimize_bitonal_images:
+                    continue
+
+                max_dpi = float(usage["max_dpi"])
+
+                rewritten = image
+                if max_dpi > dpi_threshold:
+                    scale = min(1.0, dpi_target / max_dpi)
+                    new_size = (
+                        max(1, int(round(image.width * scale))),
+                        max(1, int(round(image.height * scale))),
+                    )
+                    rewritten = image.resize(new_size, Image.Resampling.LANCZOS)
+
+                buf = io.BytesIO()
+                has_alpha = "A" in (rewritten.mode or "").upper()
+                if family == "bitonal":
+                    rewritten.save(buf, format="PNG", optimize=True)
+                elif has_alpha:
+                    rewritten.save(buf, format="PNG", optimize=True)
+                else:
+                    target_mode = "L" if family == "gray" else "RGB"
+                    rewritten.convert(target_mode).save(
+                        buf,
+                        format="JPEG",
+                        quality=quality,
+                        optimize=True,
+                    )
+                owner_page_index = int(usage["page_index"])
+                working_doc[owner_page_index].replace_image(xref, stream=buf.getvalue())
+            except Exception as exc:
+                logger.warning("rewrite image 失敗 (xref=%s): %s", xref, self._safe_exc_message(exc))
+
+    def save_optimized_copy(self, new_path: str, options: PdfOptimizeOptions | None = None) -> PdfOptimizationResult:
+        # live doc -> working copy -> optimize -> full-save new file
+        if not self.doc:
+            raise RuntimeError("沒有可最佳化的 PDF")
+
+        active_sid = self.get_active_session_id()
+        canonical_new = self._canonicalize_path(new_path)
+        current_meta = self.get_session_meta(active_sid) if active_sid else None
+        current_canonical = self._canonicalize_path(current_meta["path"]) if current_meta and current_meta.get("path") else None
+        existing_sid = self._path_to_session_id.get(canonical_new)
+        if existing_sid is not None or (current_canonical and canonical_new == current_canonical):
+            raise RuntimeError("最佳化副本必須使用新的輸出路徑，且不能覆蓋已開啟的檔案。")
+
+        resolved_options = options or self.preset_optimize_options("平衡")
+        original_bytes = len(self.doc.tobytes(garbage=0, no_new_id=1))
+        working_doc = self._build_working_doc_for_optimized_copy(active_sid)
+        temp_save = Path(self.temp_dir.name) / f"optimized_{uuid.uuid4()}.pdf"
+        try:
+            self._apply_optimize_options(working_doc, resolved_options)
+            working_doc.save(
+                str(temp_save),
+                garbage=max(0, int(resolved_options.garbage_level)),
+                clean=0,
+                deflate=int(bool(resolved_options.deflate_streams)),
+                deflate_images=int(bool(resolved_options.deflate_images)),
+                deflate_fonts=int(bool(resolved_options.deflate_fonts)),
+                linear=int(bool(resolved_options.linearize)),
+                use_objstms=int(bool(resolved_options.use_object_streams)),
+                compression_effort=max(0, int(resolved_options.compression_effort)),
+            )
+            Path(new_path).parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(temp_save), new_path)
+            optimized_bytes = Path(new_path).stat().st_size
+            bytes_saved = max(0, original_bytes - optimized_bytes)
+            summary: list[str] = [resolved_options.preset]
+            if resolved_options.optimize_images:
+                summary.append(f"圖像 {resolved_options.image_dpi_target}dpi / JPEG {resolved_options.image_jpeg_quality}")
+            if resolved_options.subset_fonts:
+                summary.append("字體子集化")
+            if resolved_options.remove_metadata or resolved_options.remove_xml_metadata:
+                summary.append("移除 metadata")
+            return PdfOptimizationResult(
+                output_path=str(new_path),
+                original_bytes=original_bytes,
+                optimized_bytes=optimized_bytes,
+                bytes_saved=bytes_saved,
+                percent_saved=(bytes_saved / original_bytes * 100.0) if original_bytes else 0.0,
+                applied_preset=resolved_options.preset,
+                applied_summary=summary,
+            )
+        except Exception as exc:
+            if temp_save.exists():
+                try:
+                    temp_save.unlink()
+                except OSError:
+                    pass
+            raise RuntimeError(f"最佳化 PDF 失敗: {self._safe_exc_message(exc)}") from exc
+        finally:
+            working_doc.close()
 
     def _restore_doc_from_snapshot(self, snapshot_bytes: bytes) -> None:
         """用 bytes 快照替換整份文件（SnapshotCommand undo/redo 時呼叫）。"""
