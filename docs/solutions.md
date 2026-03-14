@@ -218,6 +218,30 @@
 `_norm` 僅處理空白字元，未將合字字元展開為一般字元。
 
 **有效解法（已實作）：**  
+
+---
+
+## 12. 合併 PDF 清單：重新排序後新增/刪除會回復原順序（2026-03）
+
+**問題：**  
+在「合併 PDF」對話框中，使用者拖曳重新排序清單後，再按 `選擇檔案` 新增或按 `刪除檔案` 刪除，清單順序會先回到原本（未排序前）的狀態，然後才追加/刪除項目。
+
+**原因：**  
+清單順序同時存在兩個來源：
+- UI 的 `QListWidget` 目前顯示順序（拖曳後只有 UI 變了）。
+- `MergeSessionModel.entries` 的順序（仍停留在原始順序）。
+新增/刪除會改動 `MergeSessionModel.entries`，然後呼叫 `_refresh_file_list()` 以 model 重新建 UI，導致 UI 以「舊順序」重建，看起來像順序被回復。
+
+**有效解法（已實作）：**  
+- 任何 row reorder（Qt `rowsMoved`）時，將 `QListWidget` 目前順序同步回 `MergeSessionModel.entries`。
+- 在新增/刪除前也先同步一次，避免 UI/model 短暫不一致。
+- 使用 `entry_id` 作為穩定鍵值，避免靠顯示文字比對造成誤判。
+
+**回歸測試：**  
+`test_scripts/test_pdf_merge_workflow.py` 新增 `reorder -> add` 與 `reorder -> remove` 的測試，保證順序不會回復。
+
+**檔案：**  
+`view/pdf_view.py`、`model/merge_session.py`、`test_scripts/test_pdf_merge_workflow.py`
 在 `_norm` 中加入 `_LIGATURE_MAP`（如 `\ufb01`→`fi`、`\ufb02`→`fl` 等），在標準化前先替換合字。
 
 **檔案：** `test_scripts/test_drag_move.py`

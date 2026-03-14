@@ -74,6 +74,24 @@ class MergeSessionModel:
         self.entries = kept
         return removed
 
+    def set_order(self, entry_ids: list[str]) -> None:
+        if not entry_ids:
+            return
+        by_id = {entry.entry_id: entry for entry in self.entries}
+        reordered: list[MergeEntry] = []
+        seen: set[str] = set()
+        for entry_id in entry_ids:
+            entry = by_id.get(entry_id)
+            if entry is None:
+                continue
+            reordered.append(entry)
+            seen.add(entry_id)
+        if len(reordered) != len(self.entries):
+            for entry in self.entries:
+                if entry.entry_id not in seen:
+                    reordered.append(entry)
+        self.entries = reordered
+
     @property
     def can_confirm(self) -> bool:
         return any(entry.status != "rejected" for entry in self.entries)
