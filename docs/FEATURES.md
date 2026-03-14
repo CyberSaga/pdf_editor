@@ -154,3 +154,18 @@ Outputs:
 
 Regression guardrails:
 - The list-order contract is covered by tests in `test_scripts/test_pdf_merge_workflow.py` (reorder then add/remove must not revert).
+
+## 19. Optimize PDF Copy (檔案 Tab)
+
+The `檔案` tab includes `另存為最佳化的副本`, which always writes a new optimized PDF copy and never overwrites the active document through the optimizer flow.
+
+Behavior:
+- The optimizer opens a modal dialog with presets `低壓縮`, `平衡`, `強力`, and `自訂`; default is `平衡`.
+- Manual edits to optimizer controls switch the preset label to `自訂`.
+- Supported controls are limited to implemented behavior: image downsampling / recompression, font subsetting, metadata removal, and cleanup / compression flags.
+- Unsupported Acrobat-style controls are hidden and tracked in `docs/unsupported-optimizer.md`.
+- `審計空間使用報告` is on-demand only for the current source document; it does not auto-refresh while options change.
+- Saving an optimized copy opens the new file as a new tab and leaves the original tab/session untouched.
+- The optimizer rejects output paths that would overwrite the current file or any already-open file.
+
+Key functions include `OptimizePdfDialog`, `PDFController.start_optimize_pdf_copy()`, `build_pdf_audit_report()`, and `save_optimized_copy()`.
