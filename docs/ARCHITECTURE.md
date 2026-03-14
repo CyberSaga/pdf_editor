@@ -193,3 +193,29 @@ Controller print submission is explicitly lifecycle-aware:
 ## 7. Guardrails
 
 View must not directly mutate model. Controller owns mutation orchestration. Model owns document correctness and persistence. Behavior-level feature truth is in `docs/FEATURES.md`; root-cause/fix history is in `docs/solutions.md`.
+
+## 8. Merge PDFs (Merge Dialog)
+
+This section follows `docs/Methodology_for_Writing_Docs.md` and documents the stable contract for the merge-dialog design.
+
+### 8.1 Components
+
+- View: `MergePdfDialog` in `view/pdf_view.py`
+  - Owns the modal UI and displays the ordered merge list.
+  - Stores `entry_id` on each list item (Qt UserRole) and retains the `MergeEntry` object for confirm-time readout.
+- Model (dialog-scoped): `MergeSessionModel` / `MergeEntry` in `model/merge_session.py`
+  - Holds merge entries including a locked `current` entry.
+  - Provides add/remove and ordering helpers.
+- Controller: `PDFController.start_merge_pdfs()` and merge helpers in `controller/pdf_controller.py`
+  - Supplies the file resolver (password loop, rejection handling) and dispatches the merge into either save-as-new or merge-into-current flows.
+
+### 8.2 Ordering Contract (Change-Control)
+
+Problem class: the merge list has two representations (Qt list widget order vs. `MergeSessionModel.entries` order). If these drift, add/remove can “snap back” to stale model order.
+
+Contract:
+- The session model must be synchronized from the UI order whenever the user reorders rows, and also before any add/remove mutation.
+- The UI rebuild path (`_refresh_file_list()`) must always reflect `MergeSessionModel.entries` and must not be able to revert user order.
+
+Guardrails (do not change casually):
+- If you modify list ordering, add/remove, or refresh behavior, update `docs/FEATURES.md` section “Merge PDFs (頁面 Tab)” and re-run the regression tests in `test_scripts/test_pdf_merge_workflow.py` that assert reorder-then-add/remove preserves order.
