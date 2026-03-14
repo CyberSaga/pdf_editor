@@ -6,6 +6,7 @@ Desktop PDF editor written in Python with a Qt UI.
 
 - Open and save PDFs
 - Page operations: delete, rotate, insert, export, merge
+- File-tab optimizer: save an optimized copy with presets (`快速` / `平衡` / `極致壓縮`), on-demand space audit report, and size-reduction summary
 - Unified export dialog: current/selected pages, DPI (`72` to `2400`), output as PDF or images (`JPG/PNG/TIFF`)
 - Text editing with overlap-safe behavior
 - Empty inline edit commit deletes the target textbox content (undo/redo supported)

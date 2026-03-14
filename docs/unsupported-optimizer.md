@@ -9,7 +9,7 @@ This file tracks Acrobat-style optimizer controls that are intentionally not exp
   - Reason: the current PyMuPDF + Pillow stack does not provide a clean, low-risk mapping for all PDF-native codecs.
 
 - Full font unembedding policy matrix
-  - Deferred options include `解除內嵌推薦的字體`, `解除內嵌所有字體`, and manual font pickers.
+  - Deferred options include "unembed recommended fonts", "unembed all fonts", and manual font pickers.
   - Reason: these options are high-risk for rendering fidelity and need explicit font-availability handling.
 
 - Full object-removal matrix
