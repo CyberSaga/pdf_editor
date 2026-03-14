@@ -160,7 +160,7 @@ Regression guardrails:
 The `檔案` tab includes `另存為最佳化的副本`, which always writes a new optimized PDF copy and never overwrites the active document through the optimizer flow.
 
 Behavior:
-- The optimizer opens a modal dialog with presets `低壓縮`, `平衡`, `強力`, and `自訂`; default is `平衡`.
+- The optimizer opens a modal dialog with presets `快速`, `平衡`, `極致壓縮`, and `自訂`; default is `平衡`.
 - Manual edits to optimizer controls switch the preset label to `自訂`.
 - Supported controls are limited to implemented behavior: image downsampling / recompression, font subsetting, metadata removal, and cleanup / compression flags.
 - Unsupported Acrobat-style controls are hidden and tracked in `docs/unsupported-optimizer.md`.

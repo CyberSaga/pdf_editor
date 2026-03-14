@@ -5,7 +5,7 @@ import shutil
 import logging
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import List, Tuple, Optional, Iterator, Any
 from contextlib import contextmanager
 from pathlib import Path
@@ -1566,9 +1566,9 @@ class PDFModel:
     @staticmethod
     def preset_optimize_options(preset: str) -> PdfOptimizeOptions:
         normalized = (preset or "").strip()
-        if normalized == "低壓縮":
+        if normalized == "快速":
             return PdfOptimizeOptions(
-                preset="低壓縮",
+                preset="快速",
                 image_dpi_target=220,
                 image_dpi_threshold=300,
                 image_jpeg_quality=78,
@@ -1579,20 +1579,26 @@ class PDFModel:
                 linearize=False,
                 compression_effort=3,
             )
-        if normalized == "強力":
+        if normalized == "極致壓縮":
             return PdfOptimizeOptions(
-                preset="強力",
+                preset="極致壓縮",
                 image_dpi_target=110,
                 image_dpi_threshold=165,
                 image_jpeg_quality=42,
                 remove_metadata=True,
                 remove_xml_metadata=True,
                 garbage_level=4,
-                use_object_streams=True,
+                use_object_streams=False,
                 linearize=True,
                 compression_effort=9,
             )
         return PdfOptimizeOptions()
+
+    @staticmethod
+    def _normalize_optimize_options(options: PdfOptimizeOptions) -> PdfOptimizeOptions:
+        if options.linearize and options.use_object_streams:
+            return replace(options, use_object_streams=False)
+        return options
 
     def _build_working_doc_for_optimized_copy(self, session_id: Optional[str]) -> fitz.Document:
         """
@@ -1826,7 +1832,7 @@ class PDFModel:
         if existing_sid is not None or (current_canonical and canonical_new == current_canonical):
             raise RuntimeError("最佳化副本必須使用新的輸出路徑，且不能覆蓋已開啟的檔案。")
 
-        resolved_options = options or self.preset_optimize_options("平衡")
+        resolved_options = self._normalize_optimize_options(options or self.preset_optimize_options("平衡"))
         original_bytes = len(self.doc.tobytes(garbage=0, no_new_id=1))
         working_doc = self._build_working_doc_for_optimized_copy(active_sid)
         temp_save = Path(self.temp_dir.name) / f"optimized_{uuid.uuid4()}.pdf"
