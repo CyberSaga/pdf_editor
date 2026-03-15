@@ -22,66 +22,78 @@ from pathlib import Path
 import psutil
 from model.pdf_model import PDFModel
 
-src = Path(sys.argv[1]).resolve()
-preset = sys.argv[2]
-process = psutil.Process(os.getpid())
-model = PDFModel()
-model.open_pdf(str(src))
-options = model.preset_optimize_options(preset)
-base_rss = process.memory_info().rss
-peak = {'rss': base_rss}
-start_io = process.io_counters()
-done = False
 
-def watch():
-    while not done:
-        try:
-            rss = process.memory_info().rss
-            if rss > peak['rss']:
-                peak['rss'] = rss
-        except Exception:
-            pass
-        time.sleep(0.02)
+def main() -> int:
+    src = Path(sys.argv[1]).resolve()
+    preset = sys.argv[2]
+    process = psutil.Process(os.getpid())
+    model = PDFModel()
+    model.open_pdf(str(src))
+    options = model.preset_optimize_options(preset)
+    base_rss = process.memory_info().rss
+    peak = {'rss': base_rss}
+    start_io = process.io_counters()
+    done = False
 
-thread = threading.Thread(target=watch, daemon=True)
-thread.start()
-temp_output = Path(tempfile.gettempdir()) / f'codex_ab_{os.getpid()}_{int(time.time() * 1000)}.pdf'
-t0 = time.perf_counter()
-try:
-    result = model.save_optimized_copy(str(temp_output), options)
-    t1 = time.perf_counter()
-finally:
-    done = True
-    thread.join(timeout=1.0)
-    end_io = process.io_counters()
-    model.close()
-summary = {
-    't_seconds': round(t1 - t0, 3),
-    'base_rss': base_rss,
-    'peak_rss': peak['rss'],
-    'm_delta': peak['rss'] - base_rss,
-    'optimized_bytes': result.optimized_bytes,
-    'bytes_saved': result.bytes_saved,
-    'percent_saved': result.percent_saved,
-    'read_bytes': end_io.read_bytes - start_io.read_bytes,
-    'write_bytes': end_io.write_bytes - start_io.write_bytes,
-}
-summary['read_mb_s'] = round(summary['read_bytes'] / max(summary['t_seconds'], 1e-9) / (1024 * 1024), 3)
-summary['write_mb_s'] = round(summary['write_bytes'] / max(summary['t_seconds'], 1e-9) / (1024 * 1024), 3)
-print(json.dumps(summary, ensure_ascii=False))
-if temp_output.exists():
-    temp_output.unlink()
+    def watch():
+        while not done:
+            try:
+                rss = process.memory_info().rss
+                if rss > peak['rss']:
+                    peak['rss'] = rss
+            except Exception:
+                pass
+            time.sleep(0.02)
+
+    thread = threading.Thread(target=watch, daemon=True)
+    thread.start()
+    temp_output = Path(tempfile.gettempdir()) / f'codex_ab_{os.getpid()}_{int(time.time() * 1000)}.pdf'
+    t0 = time.perf_counter()
+    try:
+        result = model.save_optimized_copy(str(temp_output), options)
+        t1 = time.perf_counter()
+    finally:
+        done = True
+        thread.join(timeout=1.0)
+        end_io = process.io_counters()
+        model.close()
+    summary = {
+        't_seconds': round(t1 - t0, 3),
+        'base_rss': base_rss,
+        'peak_rss': peak['rss'],
+        'm_delta': peak['rss'] - base_rss,
+        'optimized_bytes': result.optimized_bytes,
+        'bytes_saved': result.bytes_saved,
+        'percent_saved': result.percent_saved,
+        'read_bytes': end_io.read_bytes - start_io.read_bytes,
+        'write_bytes': end_io.write_bytes - start_io.write_bytes,
+    }
+    summary['read_mb_s'] = round(summary['read_bytes'] / max(summary['t_seconds'], 1e-9) / (1024 * 1024), 3)
+    summary['write_mb_s'] = round(summary['write_bytes'] / max(summary['t_seconds'], 1e-9) / (1024 * 1024), 3)
+    print(json.dumps(summary, ensure_ascii=False))
+    if temp_output.exists():
+        temp_output.unlink()
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
 """
 
 
 def _run_measurement(repo_dir: Path, pdf_path: Path, preset: str) -> dict:
-    completed = subprocess.run(
-        [sys.executable, "-c", MEASURE_SNIPPET, str(pdf_path), preset],
-        cwd=str(repo_dir),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    temp_script = repo_dir / ".codex_measure_optimize.py"
+    temp_script.write_text(MEASURE_SNIPPET, encoding="utf-8")
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(temp_script), str(pdf_path), preset],
+            cwd=str(repo_dir),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        temp_script.unlink(missing_ok=True)
     lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
     return json.loads(lines[-1])
 

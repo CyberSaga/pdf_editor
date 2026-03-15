@@ -49,6 +49,21 @@ def _make_pdf_with_image(path: Path) -> Path:
     return path
 
 
+def _make_pdf_with_many_images(path: Path, image_count: int = 4) -> Path:
+    doc = fitz.open()
+    for index in range(image_count):
+        image = Image.new("RGB", (48, 48), color=((20 + index * 30) % 255, 120, 220))
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        payload = buf.getvalue()
+        page = doc.new_page()
+        page.insert_text((72, 72), f"image page {index + 1}", fontsize=12, fontname="helv")
+        page.insert_image(fitz.Rect(72, 100, 220, 248), stream=payload)
+    doc.save(path)
+    doc.close()
+    return path
+
+
 def _large_pdf_path(name: str) -> Path:
     path = REPO_ROOT / "test_files" / name
     if not path.exists():
@@ -178,6 +193,46 @@ def test_save_optimized_copy_avoids_live_doc_tobytes_for_clean_session(
         assert output.exists() is True
         assert result.output_path == str(output)
         assert result.optimized_bytes > 0
+    finally:
+        model.close()
+
+
+def test_save_optimized_copy_prefers_parallel_image_rewrite_for_clean_source(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from model.pdf_model import PDFModel, PdfOptimizeOptions
+
+    source = _make_pdf_with_many_images(tmp_path / "parallel-source.pdf")
+    output = tmp_path / "parallel-optimized.pdf"
+
+    calls: list[dict] = []
+
+    def fake_parallel(self, working_doc, image_usage, options, source_path):
+        calls.append(
+            {
+                "image_count": len(image_usage),
+                "source_path": str(source_path),
+                "preset": options.preset,
+            }
+        )
+
+    monkeypatch.setattr(
+        PDFModel,
+        "_rewrite_images_from_source_in_parallel",
+        fake_parallel,
+        raising=False,
+    )
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source))
+        result = model.save_optimized_copy(str(output), PdfOptimizeOptions())
+
+        assert output.exists() is True
+        assert result.optimized_bytes > 0
+        assert calls
+        assert calls[0]["image_count"] >= 4
+        assert calls[0]["source_path"] == str(source.resolve())
     finally:
         model.close()
 
@@ -424,6 +479,7 @@ def test_start_optimize_pdf_copy_cancels_active_background_loading(mvc, monkeypa
 
     assert controller._load_gen_by_session[sid] > load_gen_before
     assert controller._stale_index_gen_by_session[sid] > stale_gen_before
+    assert _wait_until(lambda: controller._optimize_thread is None, timeout_ms=2000)
 
 
 def test_start_optimize_pdf_copy_completion_message_uses_human_units(mvc, monkeypatch, tmp_path: Path) -> None:

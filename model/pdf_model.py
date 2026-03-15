@@ -5,6 +5,8 @@ import shutil
 import logging
 import math
 import time
+import sys
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import List, Tuple, Optional, Iterator, Any
 from contextlib import contextmanager
@@ -69,6 +71,86 @@ _CUSTOM_CJK_ALIASES = {
 logger = logging.getLogger(__name__)
 logging.getLogger("PIL").setLevel(logging.INFO)
 logging.getLogger("PIL.PngImagePlugin").setLevel(logging.INFO)
+
+_IMAGE_REWRITE_WORKER_DOC: Optional[fitz.Document] = None
+_MIN_PARALLEL_IMAGE_REWRITES = 4
+_MAX_PARALLEL_IMAGE_WORKERS = 4
+
+
+def _init_image_rewrite_worker(source_path: str) -> None:
+    global _IMAGE_REWRITE_WORKER_DOC
+    _IMAGE_REWRITE_WORKER_DOC = fitz.open(source_path)
+
+
+def _classify_worker_pil_image_mode(mode: str) -> str:
+    normalized = (mode or "").upper()
+    if normalized == "1":
+        return "bitonal"
+    if normalized in {"L", "LA"}:
+        return "gray"
+    return "color"
+
+
+def _transcode_image_payload(
+    image_bytes: bytes,
+    max_dpi: float,
+    settings: dict[str, int | bool],
+) -> bytes | None:
+    if not image_bytes:
+        return None
+    image = Image.open(io.BytesIO(image_bytes))
+    try:
+        image.load()
+        family = _classify_worker_pil_image_mode(getattr(image, "mode", ""))
+        if family == "color" and not settings["optimize_color_images"]:
+            return None
+        if family == "gray" and not settings["optimize_gray_images"]:
+            return None
+        if family == "bitonal" and not settings["optimize_bitonal_images"]:
+            return None
+
+        rewritten = image
+        dpi_threshold = max(int(settings["image_dpi_threshold"]), 1)
+        dpi_target = max(int(settings["image_dpi_target"]), 1)
+        if max_dpi > dpi_threshold:
+            scale = min(1.0, dpi_target / max_dpi)
+            new_size = (
+                max(1, int(round(image.width * scale))),
+                max(1, int(round(image.height * scale))),
+            )
+            rewritten = image.resize(new_size, Image.Resampling.LANCZOS)
+
+        buf = io.BytesIO()
+        has_alpha = "A" in ((rewritten.mode or "").upper())
+        if family == "bitonal" or has_alpha:
+            rewritten.save(buf, format="PNG", optimize=True)
+        else:
+            target_mode = "L" if family == "gray" else "RGB"
+            rewritten.convert(target_mode).save(
+                buf,
+                format="JPEG",
+                quality=int(settings["image_jpeg_quality"]),
+                optimize=True,
+            )
+        return buf.getvalue()
+    finally:
+        try:
+            image.close()
+        except Exception:
+            pass
+
+
+def _rewrite_source_image_task(task: tuple[int, float, dict[str, int | bool]]) -> tuple[int, bytes | None, str | None]:
+    xref, max_dpi, settings = task
+    try:
+        if _IMAGE_REWRITE_WORKER_DOC is None:
+            raise RuntimeError("image rewrite worker document is not initialized")
+        image_info = _IMAGE_REWRITE_WORKER_DOC.extract_image(int(xref))
+        image_bytes = image_info.get("image")
+        rewritten = _transcode_image_payload(image_bytes, float(max_dpi), settings)
+        return int(xref), rewritten, None
+    except Exception as exc:
+        return int(xref), None, str(exc)
 
 
 @dataclass(frozen=True)
@@ -1775,7 +1857,12 @@ class PDFModel:
             self._audit_report_cache_value = report
         return report
 
-    def _apply_optimize_options(self, working_doc: fitz.Document, options: PdfOptimizeOptions) -> None:
+    def _apply_optimize_options(
+        self,
+        working_doc: fitz.Document,
+        options: PdfOptimizeOptions,
+        source_path: Optional[Path] = None,
+    ) -> None:
         if options.content_cleanup:
             for page_index in range(len(working_doc)):
                 try:
@@ -1798,7 +1885,7 @@ class PDFModel:
                 logger.warning("subset_fonts 失敗: %s", self._safe_exc_message(exc))
 
         if options.optimize_images:
-            self._rewrite_images_with_pillow(working_doc, options)
+            self._rewrite_images_with_pillow(working_doc, options, source_path=source_path)
 
     @staticmethod
     def _classify_pil_image(image: Any) -> str:
@@ -1809,13 +1896,100 @@ class PDFModel:
             return "gray"
         return "color"
 
-    def _rewrite_images_with_pillow(self, working_doc: fitz.Document, options: PdfOptimizeOptions) -> None:
+    @staticmethod
+    def _image_rewrite_settings(options: PdfOptimizeOptions) -> dict[str, int | bool]:
+        return {
+            "image_dpi_target": max(int(options.image_dpi_target), 1),
+            "image_dpi_threshold": max(int(options.image_dpi_threshold), max(int(options.image_dpi_target), 1)),
+            "image_jpeg_quality": min(max(int(options.image_jpeg_quality), 0), 100),
+            "optimize_color_images": bool(options.optimize_color_images),
+            "optimize_gray_images": bool(options.optimize_gray_images),
+            "optimize_bitonal_images": bool(options.optimize_bitonal_images),
+        }
+
+    @staticmethod
+    def _parallel_image_worker_count(image_count: int) -> int:
+        cpu_count = os.cpu_count() or 1
+        return max(1, min(image_count, max(cpu_count - 1, 1), _MAX_PARALLEL_IMAGE_WORKERS))
+
+    @staticmethod
+    def _can_use_parallel_image_rewrite() -> bool:
+        if os.name != "nt":
+            return True
+        main_module = sys.modules.get("__main__")
+        main_file = getattr(main_module, "__file__", None)
+        if not main_file:
+            return False
+        try:
+            return Path(main_file).exists()
+        except OSError:
+            return False
+
+    def _rewrite_images_serially(
+        self,
+        working_doc: fitz.Document,
+        image_usage: dict[int, dict[str, float | int]],
+        options: PdfOptimizeOptions,
+    ) -> None:
+        settings = self._image_rewrite_settings(options)
+        for xref, usage in image_usage.items():
+            try:
+                image_info = working_doc.extract_image(xref)
+                image_bytes = image_info.get("image")
+                rewritten = _transcode_image_payload(image_bytes, float(usage["max_dpi"]), settings)
+                if not rewritten:
+                    continue
+                owner_page_index = int(usage["page_index"])
+                working_doc[owner_page_index].replace_image(xref, stream=rewritten)
+            except Exception as exc:
+                logger.warning("rewrite image 失敗 (xref=%s): %s", xref, self._safe_exc_message(exc))
+
+    def _rewrite_images_from_source_in_parallel(
+        self,
+        working_doc: fitz.Document,
+        image_usage: dict[int, dict[str, float | int]],
+        options: PdfOptimizeOptions,
+        source_path: Path,
+    ) -> None:
+        worker_count = self._parallel_image_worker_count(len(image_usage))
+        if worker_count <= 1:
+            self._rewrite_images_serially(working_doc, image_usage, options)
+            return
+
+        settings = self._image_rewrite_settings(options)
+        tasks = [
+            (int(xref), float(usage["max_dpi"]), settings)
+            for xref, usage in image_usage.items()
+        ]
+        try:
+            with ProcessPoolExecutor(
+                max_workers=worker_count,
+                initializer=_init_image_rewrite_worker,
+                initargs=(str(source_path),),
+            ) as executor:
+                for xref, rewritten, error in executor.map(_rewrite_source_image_task, tasks):
+                    if error:
+                        logger.warning("rewrite image 失敗 (xref=%s): %s", xref, error)
+                        continue
+                    if not rewritten:
+                        continue
+                    owner_page_index = int(image_usage[int(xref)]["page_index"])
+                    working_doc[owner_page_index].replace_image(int(xref), stream=rewritten)
+        except Exception as exc:
+            logger.warning("parallel rewrite image 失敗，改回序列模式: %s", self._safe_exc_message(exc))
+            self._rewrite_images_serially(working_doc, image_usage, options)
+
+    def _rewrite_images_with_pillow(
+        self,
+        working_doc: fitz.Document,
+        options: PdfOptimizeOptions,
+        source_path: Optional[Path] = None,
+    ) -> None:
         if Image is None:
             raise RuntimeError("圖像最佳化需要 Pillow，請先安裝 optional-requirements.txt。")
 
         dpi_target = max(int(options.image_dpi_target), 1)
         dpi_threshold = max(int(options.image_dpi_threshold), dpi_target)
-        quality = min(max(int(options.image_jpeg_quality), 0), 100)
         image_usage: dict[int, dict[str, float | int]] = {}
         for page_index in range(len(working_doc)):
             page = working_doc[page_index]
@@ -1839,50 +2013,16 @@ class PDFModel:
                 else:
                     existing["max_dpi"] = max(float(existing["max_dpi"]), max_dpi)
 
-        for xref, usage in image_usage.items():
-            try:
-                image_info = working_doc.extract_image(xref)
-                image_bytes = image_info.get("image")
-                if not image_bytes:
-                    continue
-                image = Image.open(io.BytesIO(image_bytes))
-                family = self._classify_pil_image(image)
-                if family == "color" and not options.optimize_color_images:
-                    continue
-                if family == "gray" and not options.optimize_gray_images:
-                    continue
-                if family == "bitonal" and not options.optimize_bitonal_images:
-                    continue
-
-                max_dpi = float(usage["max_dpi"])
-
-                rewritten = image
-                if max_dpi > dpi_threshold:
-                    scale = min(1.0, dpi_target / max_dpi)
-                    new_size = (
-                        max(1, int(round(image.width * scale))),
-                        max(1, int(round(image.height * scale))),
-                    )
-                    rewritten = image.resize(new_size, Image.Resampling.LANCZOS)
-
-                buf = io.BytesIO()
-                has_alpha = "A" in (rewritten.mode or "").upper()
-                if family == "bitonal":
-                    rewritten.save(buf, format="PNG", optimize=True)
-                elif has_alpha:
-                    rewritten.save(buf, format="PNG", optimize=True)
-                else:
-                    target_mode = "L" if family == "gray" else "RGB"
-                    rewritten.convert(target_mode).save(
-                        buf,
-                        format="JPEG",
-                        quality=quality,
-                        optimize=True,
-                    )
-                owner_page_index = int(usage["page_index"])
-                working_doc[owner_page_index].replace_image(xref, stream=buf.getvalue())
-            except Exception as exc:
-                logger.warning("rewrite image 失敗 (xref=%s): %s", xref, self._safe_exc_message(exc))
+        if not image_usage:
+            return
+        if (
+            source_path is not None
+            and len(image_usage) >= _MIN_PARALLEL_IMAGE_REWRITES
+            and self._can_use_parallel_image_rewrite()
+        ):
+            self._rewrite_images_from_source_in_parallel(working_doc, image_usage, options, source_path)
+            return
+        self._rewrite_images_serially(working_doc, image_usage, options)
 
     @staticmethod
     def _requires_post_save_packaging(options: PdfOptimizeOptions) -> bool:
@@ -1958,11 +2098,12 @@ class PDFModel:
             raise RuntimeError("最佳化副本必須使用新的輸出路徑，且不能覆蓋已開啟的檔案。")
 
         resolved_options = self._normalize_optimize_options(options or self.preset_optimize_options("平衡"))
+        optimize_source_path = self._resolve_file_backed_optimize_source(active_sid)
         original_bytes = self._current_document_size_bytes(active_sid)
         working_doc = self._build_working_doc_for_optimized_copy(active_sid)
         temp_save = Path(self.temp_dir.name) / f"optimized_{uuid.uuid4()}.pdf"
         try:
-            self._apply_optimize_options(working_doc, resolved_options)
+            self._apply_optimize_options(working_doc, resolved_options, source_path=optimize_source_path)
             self._save_optimized_working_doc(working_doc, temp_save, resolved_options)
             Path(new_path).parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(temp_save), new_path)
