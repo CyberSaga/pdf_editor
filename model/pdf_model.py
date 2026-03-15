@@ -19,6 +19,10 @@ try:
     from PIL import Image
 except ImportError:  # pragma: no cover - optional dependency
     Image = None
+try:
+    import pikepdf
+except ImportError:  # pragma: no cover - optional dependency
+    pikepdf = None
 
 from model.text_block import (
     TextBlock,
@@ -182,6 +186,8 @@ class PDFModel:
         # Text target granularity: "run" or "paragraph" (UI can override on startup).
         self.text_target_mode: str = "run"
         self.tools = ToolManager(self)
+        self._audit_report_cache_key: Optional[tuple] = None
+        self._audit_report_cache_value: Optional[PdfAuditReport] = None
         self._initialize_temp_dir()
         # 全局 glyph 高度調整（文件推薦，import 後設定一次）
         try:
@@ -1600,21 +1606,67 @@ class PDFModel:
             return replace(options, use_object_streams=False)
         return options
 
+    def _resolve_file_backed_optimize_source(self, session_id: Optional[str]) -> Optional[Path]:
+        if not session_id or not self.doc:
+            return None
+        session = self._sessions_by_id.get(session_id)
+        if session is None or self.session_has_unsaved_changes(session_id):
+            return None
+        if getattr(self.doc, "needs_pass", False):
+            return None
+        source_path = Path(session.original_path).resolve()
+        doc_name = getattr(self.doc, "name", "") or ""
+        if not doc_name:
+            return None
+        try:
+            if Path(doc_name).resolve() != source_path:
+                return None
+        except OSError:
+            return None
+        if not source_path.exists():
+            return None
+        return source_path
+
+    def _current_document_size_bytes(self, session_id: Optional[str]) -> int:
+        if not self.doc:
+            raise RuntimeError("沒有可最佳化的 PDF")
+        source_path = self._resolve_file_backed_optimize_source(session_id)
+        if source_path is not None:
+            return source_path.stat().st_size
+        return len(self.doc.tobytes(garbage=0, no_new_id=1))
+
     def _build_working_doc_for_optimized_copy(self, session_id: Optional[str]) -> fitz.Document:
         """
         Optimize-copy pipeline:
-          live doc -> bytes snapshot -> disposable working doc -> tool save prep
-        Never run optimizer mutations against self.doc.
+          live doc -> disposable working doc -> tool save prep
+        Prefer reopening the clean source file to avoid cloning the live doc bytes.
         """
         if not self.doc:
             raise RuntimeError("沒有可最佳化的 PDF")
-        working_doc = fitz.open("pdf", self.doc.tobytes(garbage=0, no_new_id=1))
+        source_path = self._resolve_file_backed_optimize_source(session_id)
+        if source_path is not None:
+            working_doc = fitz.open(str(source_path))
+        else:
+            working_doc = fitz.open("pdf", self.doc.tobytes(garbage=0, no_new_id=1))
         prepared_doc = self.tools.prepare_doc_for_save(session_id, working_doc) if session_id else None
         if prepared_doc is None:
             return working_doc
         if prepared_doc is not working_doc:
             working_doc.close()
         return prepared_doc
+
+    def _make_active_audit_cache_key(self) -> Optional[tuple]:
+        session_id = self.get_active_session_id()
+        if not session_id or not self.doc:
+            return None
+        session = self._sessions_by_id.get(session_id)
+        if session is None:
+            return None
+        source_path = self._resolve_file_backed_optimize_source(session_id)
+        if source_path is not None:
+            stat = source_path.stat()
+            return ("file", session_id, stat.st_size, stat.st_mtime_ns, len(self.doc), self.edit_count)
+        return ("memory", session_id, len(self.doc), self.doc.xref_length(), self.edit_count)
 
     @staticmethod
     def _blank_metadata_dict(doc: fitz.Document) -> dict[str, str]:
@@ -1653,8 +1705,15 @@ class PDFModel:
         target_doc = doc if doc is not None else self.doc
         if target_doc is None:
             raise RuntimeError("沒有可審計的 PDF")
+        cache_key = None if doc is not None else self._make_active_audit_cache_key()
+        if cache_key is not None and cache_key == self._audit_report_cache_key and self._audit_report_cache_value is not None:
+            return self._audit_report_cache_value
 
-        total_bytes = len(target_doc.tobytes(garbage=0))
+        source_path = None if doc is not None else self._resolve_file_backed_optimize_source(self.get_active_session_id())
+        if source_path is not None:
+            total_bytes = source_path.stat().st_size
+        else:
+            total_bytes = len(target_doc.tobytes(garbage=0))
         image_xrefs: set[int] = set()
         font_xrefs: set[int] = set()
         content_xrefs: set[int] = set()
@@ -1703,12 +1762,16 @@ class PDFModel:
         version = getattr(target_doc, "pdf_version", lambda: "")()
         if not version:
             version = "未知"
-        return PdfAuditReport(
+        report = PdfAuditReport(
             pdf_version=str(version),
             compatibility="保留現有",
             total_bytes=total_bytes,
             items=items,
         )
+        if cache_key is not None:
+            self._audit_report_cache_key = cache_key
+            self._audit_report_cache_value = report
+        return report
 
     def _apply_optimize_options(self, working_doc: fitz.Document, options: PdfOptimizeOptions) -> None:
         if options.content_cleanup:
@@ -1819,6 +1882,66 @@ class PDFModel:
             except Exception as exc:
                 logger.warning("rewrite image 失敗 (xref=%s): %s", xref, self._safe_exc_message(exc))
 
+    @staticmethod
+    def _requires_post_save_packaging(options: PdfOptimizeOptions) -> bool:
+        return bool(options.linearize or options.use_object_streams)
+
+    @staticmethod
+    def _fast_save_kwargs(options: PdfOptimizeOptions) -> dict[str, int]:
+        return {
+            "garbage": 1 if int(options.garbage_level) > 0 else 0,
+            "clean": 0,
+            "deflate": int(bool(options.deflate_streams or options.deflate_images or options.deflate_fonts)),
+            "deflate_images": 0,
+            "deflate_fonts": 0,
+            "linear": 0,
+            "use_objstms": 0,
+            "compression_effort": 0,
+        }
+
+    def _postprocess_optimized_pdf_with_pikepdf(self, source_path: Path, options: PdfOptimizeOptions) -> None:
+        if pikepdf is None:
+            raise RuntimeError("目前環境缺少 pikepdf，無法套用 linearize / object streams。")
+        repacked_path = source_path.with_name(f"{source_path.stem}_packed_{uuid.uuid4().hex}.pdf")
+        try:
+            with pikepdf.open(str(source_path)) as pdf:
+                pdf.save(
+                    str(repacked_path),
+                    compress_streams=bool(options.deflate_streams or options.deflate_images or options.deflate_fonts),
+                    object_stream_mode=(
+                        pikepdf.ObjectStreamMode.generate
+                        if options.use_object_streams
+                        else pikepdf.ObjectStreamMode.preserve
+                    ),
+                    linearize=bool(options.linearize),
+                    recompress_flate=False,
+                )
+            os.replace(str(repacked_path), str(source_path))
+        finally:
+            if repacked_path.exists():
+                try:
+                    repacked_path.unlink()
+                except OSError:
+                    pass
+
+    def _save_optimized_working_doc(self, working_doc: fitz.Document, temp_save: Path, options: PdfOptimizeOptions) -> None:
+        if self._requires_post_save_packaging(options) and pikepdf is None:
+            working_doc.save(
+                str(temp_save),
+                garbage=max(0, int(options.garbage_level)),
+                clean=0,
+                deflate=int(bool(options.deflate_streams)),
+                deflate_images=int(bool(options.deflate_images)),
+                deflate_fonts=int(bool(options.deflate_fonts)),
+                linear=int(bool(options.linearize)),
+                use_objstms=int(bool(options.use_object_streams)),
+                compression_effort=max(0, int(options.compression_effort)),
+            )
+            return
+        working_doc.save(str(temp_save), **self._fast_save_kwargs(options))
+        if self._requires_post_save_packaging(options):
+            self._postprocess_optimized_pdf_with_pikepdf(temp_save, options)
+
     def save_optimized_copy(self, new_path: str, options: PdfOptimizeOptions | None = None) -> PdfOptimizationResult:
         # live doc -> working copy -> optimize -> full-save new file
         if not self.doc:
@@ -1833,22 +1956,12 @@ class PDFModel:
             raise RuntimeError("最佳化副本必須使用新的輸出路徑，且不能覆蓋已開啟的檔案。")
 
         resolved_options = self._normalize_optimize_options(options or self.preset_optimize_options("平衡"))
-        original_bytes = len(self.doc.tobytes(garbage=0, no_new_id=1))
+        original_bytes = self._current_document_size_bytes(active_sid)
         working_doc = self._build_working_doc_for_optimized_copy(active_sid)
         temp_save = Path(self.temp_dir.name) / f"optimized_{uuid.uuid4()}.pdf"
         try:
             self._apply_optimize_options(working_doc, resolved_options)
-            working_doc.save(
-                str(temp_save),
-                garbage=max(0, int(resolved_options.garbage_level)),
-                clean=0,
-                deflate=int(bool(resolved_options.deflate_streams)),
-                deflate_images=int(bool(resolved_options.deflate_images)),
-                deflate_fonts=int(bool(resolved_options.deflate_fonts)),
-                linear=int(bool(resolved_options.linearize)),
-                use_objstms=int(bool(resolved_options.use_object_streams)),
-                compression_effort=max(0, int(resolved_options.compression_effort)),
-            )
+            self._save_optimized_working_doc(working_doc, temp_save, resolved_options)
             Path(new_path).parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(temp_save), new_path)
             optimized_bytes = Path(new_path).stat().st_size
