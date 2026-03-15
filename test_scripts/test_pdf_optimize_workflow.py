@@ -384,6 +384,48 @@ def test_start_optimize_pdf_copy_runs_work_in_background(mvc, monkeypatch, tmp_p
     assert len(model.session_ids) == 2
 
 
+def test_start_optimize_pdf_copy_cancels_active_background_loading(mvc, monkeypatch, tmp_path: Path) -> None:
+    model, _view, controller = mvc
+    current = _make_pdf_with_image(tmp_path / "Current.pdf")
+    output = tmp_path / "Current.optimized.pdf"
+    controller.open_pdf(str(current))
+    _pump_events(120)
+
+    sid = model.get_active_session_id()
+    assert sid is not None
+    load_gen_before = controller._load_gen_by_session.get(sid, 0)
+    stale_gen_before = controller._stale_index_gen_by_session.get(sid, 0)
+
+    import view.pdf_view as pdf_view_module
+    from model.pdf_model import PdfOptimizationResult
+
+    monkeypatch.setattr(pdf_view_module.OptimizePdfDialog, "exec", lambda self: QDialog.Accepted)
+    monkeypatch.setattr(
+        "controller.pdf_controller.QFileDialog.getSaveFileName",
+        staticmethod(lambda *args, **kwargs: (str(output), "PDF (*.pdf)")),
+    )
+
+    def fake_save_optimized_copy(path: str, _options):
+        time.sleep(0.25)
+        shutil.copy2(str(current), path)
+        return PdfOptimizationResult(
+            output_path=path,
+            original_bytes=current.stat().st_size,
+            optimized_bytes=Path(path).stat().st_size,
+            bytes_saved=0,
+            percent_saved=0.0,
+            applied_preset="平衡",
+            applied_summary=["平衡"],
+        )
+
+    monkeypatch.setattr(model, "save_optimized_copy", fake_save_optimized_copy)
+
+    controller.start_optimize_pdf_copy()
+
+    assert controller._load_gen_by_session[sid] > load_gen_before
+    assert controller._stale_index_gen_by_session[sid] > stale_gen_before
+
+
 def test_start_optimize_pdf_copy_completion_message_uses_human_units(mvc, monkeypatch, tmp_path: Path) -> None:
     model, _view, controller = mvc
     current = _make_pdf_with_image(tmp_path / "Current.pdf")
@@ -433,6 +475,12 @@ def test_format_size_units_covers_kb_mb_and_gb(mvc) -> None:
     assert controller._format_size_units(1536) == "1.50 KB (1,536 bytes)"
     assert controller._format_size_units(8 * 1024 * 1024) == "8.00 MB (8,388,608 bytes)"
     assert controller._format_size_units(3 * 1024 * 1024 * 1024) == "3.00 GB (3,221,225,472 bytes)"
+
+
+def test_pil_png_debug_logging_is_suppressed() -> None:
+    import logging
+
+    assert logging.getLogger("PIL.PngImagePlugin").getEffectiveLevel() >= logging.INFO
 
 
 @pytest.mark.parametrize("source_name", LARGE_PDF_NAMES)

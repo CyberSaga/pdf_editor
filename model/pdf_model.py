@@ -67,6 +67,8 @@ _CUSTOM_CJK_ALIASES = {
 
 # 設置日誌
 logger = logging.getLogger(__name__)
+logging.getLogger("PIL").setLevel(logging.INFO)
+logging.getLogger("PIL.PngImagePlugin").setLevel(logging.INFO)
 
 
 @dataclass(frozen=True)

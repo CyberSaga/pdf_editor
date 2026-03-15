@@ -201,6 +201,7 @@ class PDFController:
         self._optimize_thread: Optional[QThread] = None
         self._optimize_worker: Optional[_OptimizePdfCopyWorker] = None
         self._optimize_worker_bridge: Optional[_OptimizeWorkerBridge] = None
+        self._optimize_paused_session_id: Optional[str] = None
         self._load_gen_by_session: dict[str, int] = {}
         self._stale_index_gen_by_session: dict[str, int] = {}
         self._session_ui_state: dict[str, SessionUIState] = {}
@@ -301,6 +302,12 @@ class PDFController:
         gen = self._stale_index_gen_by_session.get(session_id, 0) + 1
         self._stale_index_gen_by_session[session_id] = gen
         return gen
+
+    def _pause_session_background_loading(self, session_id: Optional[str]) -> None:
+        if not session_id:
+            return
+        self._next_load_gen(session_id)
+        self._next_stale_index_gen(session_id)
 
     def _capture_current_ui_state(self) -> None:
         sid = self.model.get_active_session_id()
@@ -734,6 +741,9 @@ class PDFController:
         bridge = self._optimize_worker_bridge
         if bridge is None:
             raise RuntimeError("Optimize worker bridge is not initialized")
+        # Background scene/index batches for the active tab can dominate large-PDF optimize latency.
+        self._optimize_paused_session_id = self.model.get_active_session_id()
+        self._pause_session_background_loading(self._optimize_paused_session_id)
         request = OptimizePdfCopyRequest(output_path=output_path, options=options)
         thread = QThread(self.view)
         worker = _OptimizePdfCopyWorker(self.model, request)
@@ -788,6 +798,7 @@ class PDFController:
     def _on_optimize_thread_finished(self) -> None:
         self._optimize_thread = None
         self._optimize_worker = None
+        self._optimize_paused_session_id = None
         self._set_optimize_ui_busy(False)
 
     def on_tab_changed(self, index: int):
