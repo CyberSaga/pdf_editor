@@ -26,7 +26,7 @@ The project uses MVC with built-in tool extensions.
 ```
 
 Entry wiring happens in `main.py`, which instantiates `PDFModel`, `PDFView`, and `PDFController`.
-Application-level logging configuration is also owned by `main.py`; importable modules only acquire named loggers and do not call `logging.basicConfig(...)` at import time.
+Application-level logging configuration is also owned by `main.py`; importable modules only acquire named loggers and do not call `logging.basicConfig(...)` at import time. Some modules may still apply narrow logger-level adjustments for extremely noisy third-party debug channels (for example PIL PNG chunk parsing).
 For empty startup (no CLI PDF paths), `main.py` now follows a shell-first lifecycle: show `PDFView`, let the view hydrate deferred panels, wait for `PDFView.shell_ready`, then attach/activate the controller. Direct CLI-open startup keeps the synchronous attach/activate/open path.
 
 ## 2. Layer Responsibilities
@@ -235,11 +235,46 @@ Controller print submission is explicitly lifecycle-aware:
 
 View must not directly mutate model. Controller owns mutation orchestration. Model owns document correctness and persistence. Behavior-level feature truth is in `docs/FEATURES.md`; root-cause/fix history is in `docs/solutions.md`.
 
-## 8. Merge PDFs (Merge Dialog)
+## 8. Optimize PDF Copy (檔案 Tab)
+
+The optimize-copy flow is a "write a new file" pipeline. It must never mutate the live active `fitz.Document` in-place. It is designed to keep the GUI responsive on large PDFs by moving the heavy work off the main thread and preventing competing background loaders from consuming CPU during optimization.
+
+```mermaid
+flowchart TD
+  A["User: 檔案 > 另存為最佳化的副本"] --> B["Controller: start_optimize_pdf_copy()"]
+  B --> C["OptimizePdfDialog\n- preset=平衡(default)\n- 審計空間使用報告(on-demand)"]
+  C -->|OK| D["Pick output path"]
+  D --> E["Controller: _start_optimize_submission()\n- pause active tab background loading\n- show progress dialog\n- QThread worker"]
+  E --> F["Worker: PDFModel.save_optimized_copy(output, options)"]
+
+  subgraph Model["Model: save_optimized_copy()"]
+    F --> G["Resolve options\n- normalize conflicts (linear vs objstms)\n- original_bytes from file stat when possible"]
+    G --> H["Build disposable working_doc\n- clean file-backed: reopen from path\n- dirty/in-memory: snapshot bytes -> open\n- ToolManager.prepare_doc_for_save(session_id, working_doc)"]
+    H --> I["Apply options\n- cleanup / metadata / fonts\n- optimize_images (dominant cost)"]
+    I --> J["Optimize images\n- scan pages -> image_usage{xref -> (page_index, max_dpi)}"]
+    J --> K{"Parallelize?"}
+    K -->|clean file-backed| L["Parallel A\nworkers reopen source PDF\nextract_image + transcode\nparent replace_image"]
+    K -->|dirty/in-memory| M["Parallel B\nparent extract_image once\nworkers transcode bytes\nparent replace_image"]
+    K -->|fallback| N["Serial\nextract + transcode + replace"]
+    L --> O["Fast save to temp\n- fitz.save fast flags\n- optional pikepdf packaging for linearize/object streams"]
+    M --> O
+    N --> O
+  end
+
+  O --> P["Atomic move temp -> output\nreturn PdfOptimizationResult"]
+  P --> Q["Controller: open_pdf(output) as new tab\nthen show completion message (KB/MB/GB + bytes)"]
+```
+
+Performance guardrails:
+- `PDFModel.save_optimized_copy(...)` runs in a worker thread (`QThread`) so the main thread remains interactive.
+- Before dispatching the worker, the controller invalidates the active tab's background scene/index batch loops so they do not compete with the optimizer for CPU.
+- Image transcode can use multiple processes for large PDFs; the model falls back to serial mode when multiprocessing is not safe in the current runtime.
+
+## 9. Merge PDFs (Merge Dialog)
 
 This section follows `docs/Methodology_for_Writing_Docs.md` and documents the stable contract for the merge-dialog design.
 
-### 8.1 Components
+### 9.1 Components
 
 - View: `MergePdfDialog` in `view/pdf_view.py`
   - Owns the modal UI and displays the ordered merge list.
@@ -250,7 +285,7 @@ This section follows `docs/Methodology_for_Writing_Docs.md` and documents the st
 - Controller: `PDFController.start_merge_pdfs()` and merge helpers in `controller/pdf_controller.py`
   - Supplies the file resolver (password loop, rejection handling) and dispatches the merge into either save-as-new or merge-into-current flows.
 
-### 8.2 Ordering Contract (Change-Control)
+### 9.2 Ordering Contract (Change-Control)
 
 Problem class: the merge list has two representations (Qt list widget order vs. `MergeSessionModel.entries` order). If these drift, add/remove can “snap back” to stale model order.
 

@@ -2,6 +2,7 @@
   main.py
     # 入口：建立 PDFModel / PDFView / PDFController
     # - 全域 logging.basicConfig 只在這裡初始化；其他模組只拿 named logger
+    # - 允許少數模組對極吵的第三方 debug logger 做 narrow level 調整（例如 PIL PNG chunk parsing）
     # - 無 PDF 啟動時先顯示 shell，再等 PDFView.shell_ready 後 attach/activate controller
     # - CLI 直接開檔仍走同步 attach/activate/open 路徑
 
@@ -116,6 +117,14 @@
    view(ExportPagesDialog/sig_export_pages) -> controller(export_pages) -> model(export_pages)
    - 影像：scale = dpi / 72、jpg/png 走 Pixmap.save、tiff 走 Pixmap.pil_save(TIFF)
    - 多頁輸出命名：*_p{page_num}
+
+5) 另存為最佳化的副本（Optimize PDF Copy）：
+   view(sig_optimize_pdf_copy_requested) -> controller(start_optimize_pdf_copy) -> QThread worker -> model(save_optimized_copy) -> controller(open_pdf 新分頁)
+   - controller 送出 optimize job 前會暫停目前分頁的 background scene/index batch，避免跟最佳化競爭 CPU
+   - model 永遠在 disposable working_doc 上做最佳化，不會直接 mutate live doc
+   - 大檔且影像多時，圖像轉碼會用 multiprocessing 平行化（clean file-backed / dirty snapshot 路徑不同）
+   - 審計空間使用報告為 on-demand，並會快取同一份文件狀態的結果
+   - 完整工作流程圖請見 `docs/ARCHITECTURE.md` 的 “Optimize PDF Copy (檔案 Tab)” 章節
 
 文件分工規則：
 - 行為規格：docs/FEATURES.md

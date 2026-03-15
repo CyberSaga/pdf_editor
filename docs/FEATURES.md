@@ -170,5 +170,8 @@ Behavior:
 - Saving an optimized copy opens the new file as a new tab and leaves the original tab/session untouched.
 - The optimizer rejects output paths that would overwrite the current file or any already-open file.
 - Completion message shows human-readable size units (`KB`/`MB`/`GB`) with raw byte values for original / optimized / saved sizes.
+- Optimization runs off the GUI thread. While optimization is in progress, controller pauses background scene/index batch loading for the active tab so the optimizer is not competing with those background tasks.
+- For image-heavy PDFs, image transcoding can use multiple processes to accelerate JPEG recompression and downsampling. Clean file-backed documents can be processed directly from the source path; dirty/in-memory documents preserve unsaved edits by extracting image bytes from the working snapshot and only parallelizing the CPU-heavy transcode stage.
+- Architecture-level workflow graph is documented in `docs/ARCHITECTURE.md` section “Optimize PDF Copy (檔案 Tab)”.
 
 Key functions include `OptimizePdfDialog`, `PDFController.start_optimize_pdf_copy()`, `build_pdf_audit_report()`, and `save_optimized_copy()`.
