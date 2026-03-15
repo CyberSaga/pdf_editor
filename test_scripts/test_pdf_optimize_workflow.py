@@ -136,6 +136,16 @@ def test_optimize_dialog_defaults_to_balanced_and_switches_to_custom(qapp) -> No
     assert dialog.preset_combo.currentText() == "自訂"
 
 
+def test_pdf_model_optimizer_facade_uses_internal_module() -> None:
+    from model.pdf_model import PDFModel
+    from model.pdf_optimizer import PdfOptimizeOptions as InternalPdfOptimizeOptions
+
+    options = PDFModel.preset_optimize_options("平衡")
+
+    assert isinstance(options, InternalPdfOptimizeOptions)
+    assert options.preset == "平衡"
+
+
 def test_file_tab_exposes_optimize_copy_action(mvc) -> None:
     _model, view, _controller = mvc
 
