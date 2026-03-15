@@ -237,6 +237,71 @@ def test_save_optimized_copy_prefers_parallel_image_rewrite_for_clean_source(
         model.close()
 
 
+def test_save_optimized_copy_prefers_parallel_image_rewrite_for_dirty_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from model.pdf_model import PDFModel, PdfOptimizeOptions
+
+    source = _make_pdf_with_many_images(tmp_path / "dirty-parallel-source.pdf")
+    output = tmp_path / "dirty-parallel-optimized.pdf"
+
+    calls: list[dict] = []
+
+    def fake_parallel(self, working_doc, extracted_images, options):
+        calls.append(
+            {
+                "image_count": len(extracted_images),
+                "preset": options.preset,
+            }
+        )
+
+    monkeypatch.setattr(
+        PDFModel,
+        "_rewrite_extracted_images_in_parallel",
+        fake_parallel,
+        raising=False,
+    )
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source))
+        active_sid = model.get_active_session_id()
+        assert active_sid is not None
+        monkeypatch.setattr(model, "session_has_unsaved_changes", lambda session_id: session_id == active_sid)
+
+        result = model.save_optimized_copy(str(output), PdfOptimizeOptions())
+
+        assert output.exists() is True
+        assert result.optimized_bytes > 0
+        assert calls
+        assert calls[0]["image_count"] >= 4
+    finally:
+        model.close()
+
+
+def test_save_optimized_copy_dirty_session_preserves_unsaved_edits(tmp_path: Path, monkeypatch) -> None:
+    from model.pdf_model import PDFModel, PdfOptimizeOptions
+
+    source = _make_pdf(tmp_path / "dirty-source.pdf", ["original text"])
+    output = tmp_path / "dirty-output.pdf"
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source))
+        active_sid = model.get_active_session_id()
+        assert active_sid is not None
+        model.doc[0].insert_text((72, 140), "unsaved edit", fontsize=12, fontname="helv")
+        monkeypatch.setattr(model, "session_has_unsaved_changes", lambda session_id: session_id == active_sid)
+
+        result = model.save_optimized_copy(str(output), PdfOptimizeOptions(optimize_images=False))
+
+        assert result.optimized_bytes > 0
+        with fitz.open(str(output)) as optimized_doc:
+            assert "unsaved edit" in optimized_doc[0].get_text("text")
+    finally:
+        model.close()
+
+
 @pytest.mark.parametrize("preset_name", ["快速", "平衡", "極致壓縮"])
 def test_save_optimized_copy_accepts_all_presets(tmp_path: Path, preset_name: str) -> None:
     from model.pdf_model import PDFModel

@@ -153,6 +153,17 @@ def _rewrite_source_image_task(task: tuple[int, float, dict[str, int | bool]]) -
         return int(xref), None, str(exc)
 
 
+def _rewrite_extracted_image_task(
+    task: tuple[int, int, float, bytes, dict[str, int | bool]]
+) -> tuple[int, int, bytes | None, str | None]:
+    xref, page_index, max_dpi, image_bytes, settings = task
+    try:
+        rewritten = _transcode_image_payload(image_bytes, float(max_dpi), settings)
+        return int(xref), int(page_index), rewritten, None
+    except Exception as exc:
+        return int(xref), int(page_index), None, str(exc)
+
+
 @dataclass(frozen=True)
 class PdfOptimizeOptions:
     preset: str = "平衡"
@@ -1944,6 +1955,30 @@ class PDFModel:
             except Exception as exc:
                 logger.warning("rewrite image 失敗 (xref=%s): %s", xref, self._safe_exc_message(exc))
 
+    def _collect_extracted_images(
+        self,
+        working_doc: fitz.Document,
+        image_usage: dict[int, dict[str, float | int]],
+    ) -> list[tuple[int, int, float, bytes]]:
+        extracted_images: list[tuple[int, int, float, bytes]] = []
+        for xref, usage in image_usage.items():
+            try:
+                image_info = working_doc.extract_image(xref)
+                image_bytes = image_info.get("image")
+                if not image_bytes:
+                    continue
+                extracted_images.append(
+                    (
+                        int(xref),
+                        int(usage["page_index"]),
+                        float(usage["max_dpi"]),
+                        image_bytes,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("extract image 失敗 (xref=%s): %s", xref, self._safe_exc_message(exc))
+        return extracted_images
+
     def _rewrite_images_from_source_in_parallel(
         self,
         working_doc: fitz.Document,
@@ -1977,6 +2012,43 @@ class PDFModel:
                     working_doc[owner_page_index].replace_image(int(xref), stream=rewritten)
         except Exception as exc:
             logger.warning("parallel rewrite image 失敗，改回序列模式: %s", self._safe_exc_message(exc))
+            self._rewrite_images_serially(working_doc, image_usage, options)
+
+    def _rewrite_extracted_images_in_parallel(
+        self,
+        working_doc: fitz.Document,
+        extracted_images: list[tuple[int, int, float, bytes]],
+        options: PdfOptimizeOptions,
+    ) -> None:
+        worker_count = self._parallel_image_worker_count(len(extracted_images))
+        if worker_count <= 1:
+            image_usage = {
+                int(xref): {"page_index": int(page_index), "max_dpi": float(max_dpi)}
+                for xref, page_index, max_dpi, _image_bytes in extracted_images
+            }
+            self._rewrite_images_serially(working_doc, image_usage, options)
+            return
+
+        settings = self._image_rewrite_settings(options)
+        tasks = [
+            (int(xref), int(page_index), float(max_dpi), image_bytes, settings)
+            for xref, page_index, max_dpi, image_bytes in extracted_images
+        ]
+        try:
+            with ProcessPoolExecutor(max_workers=worker_count) as executor:
+                for xref, page_index, rewritten, error in executor.map(_rewrite_extracted_image_task, tasks):
+                    if error:
+                        logger.warning("rewrite image 失敗 (xref=%s): %s", xref, error)
+                        continue
+                    if not rewritten:
+                        continue
+                    working_doc[int(page_index)].replace_image(int(xref), stream=rewritten)
+        except Exception as exc:
+            logger.warning("parallel rewrite extracted image 失敗，改回序列模式: %s", self._safe_exc_message(exc))
+            image_usage = {
+                int(xref): {"page_index": int(page_index), "max_dpi": float(max_dpi)}
+                for xref, page_index, max_dpi, _image_bytes in extracted_images
+            }
             self._rewrite_images_serially(working_doc, image_usage, options)
 
     def _rewrite_images_with_pillow(
@@ -2022,6 +2094,11 @@ class PDFModel:
         ):
             self._rewrite_images_from_source_in_parallel(working_doc, image_usage, options, source_path)
             return
+        if len(image_usage) >= _MIN_PARALLEL_IMAGE_REWRITES and self._can_use_parallel_image_rewrite():
+            extracted_images = self._collect_extracted_images(working_doc, image_usage)
+            if extracted_images:
+                self._rewrite_extracted_images_in_parallel(working_doc, extracted_images, options)
+                return
         self._rewrite_images_serially(working_doc, image_usage, options)
 
     @staticmethod
