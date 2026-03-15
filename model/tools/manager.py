@@ -105,8 +105,8 @@ class ToolManager:
         finally:
             tmp_doc.close()
 
-    def prepare_doc_for_save(self, session_id: str) -> fitz.Document | None:
-        doc = self._model.doc
+    def prepare_doc_for_save(self, session_id: str, doc: fitz.Document | None = None) -> fitz.Document | None:
+        doc = doc if doc is not None else self._model.doc
         if doc is None:
             return None
 

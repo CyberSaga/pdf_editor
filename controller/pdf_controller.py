@@ -3,7 +3,7 @@ from PySide6.QtGui import QImage, QPixmap, QShortcut, QKeySequence
 from PySide6.QtCore import QTimer, QObject, QThread, Qt, Signal, Slot
 from model.pdf_model import PDFModel
 from model.edit_commands import EditTextCommand, SnapshotCommand, AddTextboxCommand
-from view.pdf_view import PDFView, ViewportAnchor
+from view.pdf_view import PDFView, ViewportAnchor, OptimizePdfDialog
 from typing import Callable, List, Tuple, Optional
 from utils.helpers import pixmap_to_qpixmap, show_error
 from pathlib import Path
@@ -80,6 +80,12 @@ class PrintJobRequest:
     work_dir: str
 
 
+@dataclass(frozen=True)
+class OptimizePdfCopyRequest:
+    output_path: str
+    options: object
+
+
 class _PrintSubmissionWorker(QObject):
     progress = Signal(str)
     prepared = Signal(object)
@@ -135,6 +141,47 @@ class _PrintWorkerBridge(QObject):
         self.thread_finished.emit()
 
 
+class _OptimizePdfCopyWorker(QObject):
+    succeeded = Signal(object)
+    failed = Signal(object)
+    finished = Signal()
+
+    def __init__(self, model: PDFModel, request: OptimizePdfCopyRequest) -> None:
+        super().__init__()
+        self._model = model
+        self._request = request
+
+    def run(self) -> None:
+        try:
+            result = self._model.save_optimized_copy(
+                self._request.output_path,
+                self._request.options,
+            )
+            self.succeeded.emit(result)
+        except Exception as exc:
+            self.failed.emit(exc)
+        finally:
+            self.finished.emit()
+
+
+class _OptimizeWorkerBridge(QObject):
+    succeeded = Signal(object)
+    failed = Signal(object)
+    thread_finished = Signal()
+
+    @Slot(object)
+    def forward_succeeded(self, result) -> None:
+        self.succeeded.emit(result)
+
+    @Slot(object)
+    def forward_failed(self, exc) -> None:
+        self.failed.emit(exc)
+
+    @Slot()
+    def notify_thread_finished(self) -> None:
+        self.thread_finished.emit()
+
+
 class PDFController:
     _VALID_MODES = {"browse", "edit_text", "add_text", "rect", "highlight", "add_annotation"}
     def __init__(self, model: PDFModel, view: PDFView):
@@ -150,6 +197,11 @@ class PDFController:
         self._print_worker_bridge: Optional[_PrintWorkerBridge] = None
         self._print_close_pending = False
         self._print_stalled = False
+        self._optimize_progress_dialog: Optional[QProgressDialog] = None
+        self._optimize_thread: Optional[QThread] = None
+        self._optimize_worker: Optional[_OptimizePdfCopyWorker] = None
+        self._optimize_worker_bridge: Optional[_OptimizeWorkerBridge] = None
+        self._optimize_paused_session_id: Optional[str] = None
         self._load_gen_by_session: dict[str, int] = {}
         self._stale_index_gen_by_session: dict[str, int] = {}
         self._session_ui_state: dict[str, SessionUIState] = {}
@@ -172,6 +224,11 @@ class PDFController:
             self._print_worker_bridge.prepared.connect(self._on_print_job_prepared)
             self._print_worker_bridge.failed.connect(self._on_print_submission_failed)
             self._print_worker_bridge.thread_finished.connect(self._on_print_thread_finished)
+        if self._optimize_worker_bridge is None:
+            self._optimize_worker_bridge = _OptimizeWorkerBridge(self.view)
+            self._optimize_worker_bridge.succeeded.connect(self._on_optimize_copy_succeeded)
+            self._optimize_worker_bridge.failed.connect(self._on_optimize_copy_failed)
+            self._optimize_worker_bridge.thread_finished.connect(self._on_optimize_thread_finished)
         if self.print_dispatcher is None:
             self.print_dispatcher = PrintDispatcher()
         if not self._signals_connected:
@@ -218,6 +275,7 @@ class PDFController:
         self.view.sig_insert_blank_page.connect(self.insert_blank_page)
         self.view.sig_insert_pages_from_file.connect(self.insert_pages_from_file)
         self.view.sig_merge_pdfs_requested.connect(self.start_merge_pdfs)
+        self.view.sig_optimize_pdf_copy_requested.connect(self.start_optimize_pdf_copy)
 
         # Watermark connections
         self.view.sig_add_watermark.connect(self.add_watermark)
@@ -244,6 +302,12 @@ class PDFController:
         gen = self._stale_index_gen_by_session.get(session_id, 0) + 1
         self._stale_index_gen_by_session[session_id] = gen
         return gen
+
+    def _pause_session_background_loading(self, session_id: Optional[str]) -> None:
+        if not session_id:
+            return
+        self._next_load_gen(session_id)
+        self._next_stale_index_gen(session_id)
 
     def _capture_current_ui_state(self) -> None:
         sid = self.model.get_active_session_id()
@@ -604,6 +668,139 @@ class PDFController:
             except Exception as e:
                 show_error(self.view, f"無法讀取來源檔案: {e}")
                 return None
+
+    def start_optimize_pdf_copy(self) -> None:
+        # UI flow:
+        # file-tab action -> dialog -> save path -> background optimize worker -> open new tab
+        active_sid = self.model.get_active_session_id()
+        if not active_sid or not self.model.doc:
+            show_error(self.view, "沒有可最佳化的 PDF")
+            return
+        if self._has_active_optimize_submission():
+            self._show_optimize_progress_dialog("正在最佳化 PDF 副本...")
+            return
+
+        meta = self.model.get_session_meta(active_sid) or {}
+        source_path = meta.get("path") or "optimized.pdf"
+        source_stem = Path(source_path).stem or "optimized"
+        suggested_name = f"{source_stem}.optimized.pdf"
+
+        dialog = OptimizePdfDialog(self.view, audit_provider=self.model.build_pdf_audit_report)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        output_path, _ = QFileDialog.getSaveFileName(
+            self.view,
+            "另存為最佳化的副本",
+            suggested_name,
+            "PDF (*.pdf)",
+        )
+        if not output_path:
+            return
+        if not Path(output_path).suffix:
+            output_path = f"{output_path}.pdf"
+        if meta.get("path"):
+            current_canonical = self.model._canonicalize_path(meta["path"])
+            if self.model._canonicalize_path(output_path) == current_canonical:
+                show_error(self.view, "最佳化副本必須使用新的輸出路徑，且不能覆蓋已開啟的檔案。")
+                return
+
+        self._start_optimize_submission(output_path, dialog.get_options())
+
+    def _has_active_optimize_submission(self) -> bool:
+        return self._optimize_thread is not None
+
+    def _show_optimize_progress_dialog(self, label_text: str) -> None:
+        if self._optimize_progress_dialog is None:
+            progress = QProgressDialog(label_text, "", 0, 0, self.view)
+            progress.setWindowTitle("最佳化 PDF")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setCancelButton(None)
+            progress.setMinimumDuration(0)
+            progress.setAutoClose(False)
+            progress.setAutoReset(False)
+            self._optimize_progress_dialog = progress
+        else:
+            self._optimize_progress_dialog.setLabelText(label_text)
+        self._optimize_progress_dialog.show()
+        self._optimize_progress_dialog.raise_()
+
+    def _hide_optimize_progress_dialog(self) -> None:
+        if self._optimize_progress_dialog is None:
+            return
+        self._optimize_progress_dialog.close()
+        self._optimize_progress_dialog.deleteLater()
+        self._optimize_progress_dialog = None
+
+    def _set_optimize_ui_busy(self, busy: bool) -> None:
+        action = getattr(self.view, "_action_optimize_copy", None)
+        if action is not None:
+            action.setEnabled(not busy)
+
+    def _start_optimize_submission(self, output_path: str, options: object) -> None:
+        bridge = self._optimize_worker_bridge
+        if bridge is None:
+            raise RuntimeError("Optimize worker bridge is not initialized")
+        # Background scene/index batches for the active tab can dominate large-PDF optimize latency.
+        # The worker calls `PDFModel.save_optimized_copy(...)` (facade); optimizer internals live in `model/pdf_optimizer.py`.
+        self._optimize_paused_session_id = self.model.get_active_session_id()
+        self._pause_session_background_loading(self._optimize_paused_session_id)
+        request = OptimizePdfCopyRequest(output_path=output_path, options=options)
+        thread = QThread(self.view)
+        worker = _OptimizePdfCopyWorker(self.model, request)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(bridge.forward_succeeded)
+        worker.failed.connect(bridge.forward_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(bridge.notify_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._optimize_thread = thread
+        self._optimize_worker = worker
+        self._set_optimize_ui_busy(True)
+        self._show_optimize_progress_dialog("正在最佳化 PDF 副本...")
+        thread.start()
+
+    @staticmethod
+    def _format_size_units(size_bytes: int) -> str:
+        units = ["bytes", "KB", "MB", "GB", "TB"]
+        value = float(max(0, int(size_bytes)))
+        unit_index = 0
+        while value >= 1024.0 and unit_index < len(units) - 1:
+            value /= 1024.0
+            unit_index += 1
+        if unit_index == 0:
+            return f"{int(size_bytes):,} bytes"
+        return f"{value:.2f} {units[unit_index]} ({int(size_bytes):,} bytes)"
+
+    def _on_optimize_copy_succeeded(self, result) -> None:
+        self._hide_optimize_progress_dialog()
+        self.open_pdf(result.output_path)
+        original_size = self._format_size_units(result.original_bytes)
+        optimized_size = self._format_size_units(result.optimized_bytes)
+        saved_size = self._format_size_units(result.bytes_saved)
+        QMessageBox.information(
+            self.view,
+            "最佳化完成",
+            (
+                f"已建立最佳化副本:\n{result.output_path}\n\n"
+                f"原始大小: {original_size}\n"
+                f"最佳大小: {optimized_size}\n"
+                f"節省: {saved_size} ({result.percent_saved:.1f}%)"
+            ),
+        )
+
+    def _on_optimize_copy_failed(self, exc) -> None:
+        self._hide_optimize_progress_dialog()
+        logger.error(f"最佳化 PDF 失敗: {exc}")
+        show_error(self.view, f"最佳化 PDF 失敗: {exc}")
+
+    def _on_optimize_thread_finished(self) -> None:
+        self._optimize_thread = None
+        self._optimize_worker = None
+        self._optimize_paused_session_id = None
+        self._set_optimize_ui_busy(False)
 
     def on_tab_changed(self, index: int):
         sid = self.model.get_session_id_by_index(index)

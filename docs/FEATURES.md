@@ -154,3 +154,26 @@ Outputs:
 
 Regression guardrails:
 - The list-order contract is covered by tests in `test_scripts/test_pdf_merge_workflow.py` (reorder then add/remove must not revert).
+
+## 19. Optimize PDF Copy (檔案 Tab)
+
+The `檔案` tab includes `另存為最佳化的副本`, which always writes a new optimized PDF copy and never overwrites the active document through the optimizer flow.
+
+Behavior:
+- The optimizer opens a modal dialog with presets `快速`, `平衡`, `極致壓縮`, and `自訂`; default is `平衡`.
+- Manual edits to optimizer controls switch the preset label to `自訂`.
+- Supported controls are limited to implemented behavior: image downsampling / recompression, font subsetting, metadata removal, and cleanup / compression flags.
+- Unsupported Acrobat-style controls are hidden and tracked in `docs/unsupported-optimizer.md`.
+- `審計空間使用報告` is on-demand only for the current source document; it does not auto-refresh while options change.
+- The audit report UI uses a table and stacked proportion bar. Hovering a bar segment shows the object type, and the current hover label is displayed above the bar.
+- In the audit table, `數量` means unique referenced object count for that category (for example unique xref count for images / fonts / content streams), not visual occurrence count on page.
+- Saving an optimized copy opens the new file as a new tab and leaves the original tab/session untouched.
+- The optimizer rejects output paths that would overwrite the current file or any already-open file.
+- Completion message shows human-readable size units (`KB`/`MB`/`GB`) with raw byte values for original / optimized / saved sizes.
+- Optimization runs off the GUI thread. While optimization is in progress, controller pauses background scene/index batch loading for the active tab so the optimizer is not competing with those background tasks.
+- For image-heavy PDFs, image transcoding can use multiple processes to accelerate JPEG recompression and downsampling. Clean file-backed documents can be processed directly from the source path; dirty/in-memory documents preserve unsaved edits by extracting image bytes from the working snapshot and only parallelizing the CPU-heavy transcode stage.
+- Architecture-level workflow graph is documented in `docs/ARCHITECTURE.md` section “Optimize PDF Copy (檔案 Tab)”.
+
+Key functions include `OptimizePdfDialog`, `PDFController.start_optimize_pdf_copy()`, `build_pdf_audit_report()`, and `save_optimized_copy()`.
+
+Implementation note: optimizer internals are implemented in `model/pdf_optimizer.py`, while `model/pdf_model.py` keeps the stable facade used by UI/tests.
