@@ -742,6 +742,7 @@ class PDFController:
         if bridge is None:
             raise RuntimeError("Optimize worker bridge is not initialized")
         # Background scene/index batches for the active tab can dominate large-PDF optimize latency.
+        # The worker calls `PDFModel.save_optimized_copy(...)` (facade); optimizer internals live in `model/pdf_optimizer.py`.
         self._optimize_paused_session_id = self.model.get_active_session_id()
         self._pause_session_background_loading(self._optimize_paused_session_id)
         request = OptimizePdfCopyRequest(output_path=output_path, options=options)

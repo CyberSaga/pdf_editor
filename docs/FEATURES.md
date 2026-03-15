@@ -175,3 +175,5 @@ Behavior:
 - Architecture-level workflow graph is documented in `docs/ARCHITECTURE.md` section “Optimize PDF Copy (檔案 Tab)”.
 
 Key functions include `OptimizePdfDialog`, `PDFController.start_optimize_pdf_copy()`, `build_pdf_audit_report()`, and `save_optimized_copy()`.
+
+Implementation note: optimizer internals are implemented in `model/pdf_optimizer.py`, while `model/pdf_model.py` keeps the stable facade used by UI/tests.

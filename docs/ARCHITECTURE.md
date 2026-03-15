@@ -172,6 +172,7 @@ Optimize-copy is an explicit new-file workflow from the `檔案` tab. It must no
 Contracts:
 - Controller owns the dialog / save-path flow and opens the output as a new tab.
 - Model owns the disposable working-document boundary, audit report generation, and optimization save pipeline.
+- Optimizer internals are implemented in `model/pdf_optimizer.py`; `PDFModel` exposes a stable facade and delegates.
 - Save-option normalization runs at model boundary before `fitz.Document.save(...)` so invalid flag combinations (for example `linearize + use_object_streams`) are resolved before persistence.
 - The active session document remains the source of truth and is not rewritten by the optimizer path.
 

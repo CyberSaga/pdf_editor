@@ -122,6 +122,7 @@
    view(sig_optimize_pdf_copy_requested) -> controller(start_optimize_pdf_copy) -> QThread worker -> model(save_optimized_copy) -> controller(open_pdf 新分頁)
    - controller 送出 optimize job 前會暫停目前分頁的 background scene/index batch，避免跟最佳化競爭 CPU
    - model 永遠在 disposable working_doc 上做最佳化，不會直接 mutate live doc
+   - optimizer 的內部實作在 `model/pdf_optimizer.py`；`model/pdf_model.py` 僅提供穩定 facade 供 UI/tests 呼叫
    - 大檔且影像多時，圖像轉碼會用 multiprocessing 平行化（clean file-backed / dirty snapshot 路徑不同）
    - 審計空間使用報告為 on-demand，並會快取同一份文件狀態的結果
    - 完整工作流程圖請見 `docs/ARCHITECTURE.md` 的 “Optimize PDF Copy (檔案 Tab)” 章節
