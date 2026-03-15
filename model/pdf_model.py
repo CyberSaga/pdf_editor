@@ -6,7 +6,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Iterator, Any
+from typing import List, Tuple, Optional, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 import uuid
@@ -24,6 +24,9 @@ from model.text_block import (
     rotation_degrees_from_dir,
 )
 from model.edit_commands import CommandManager, EditTextCommand
+# Optimizer internals live in `model/pdf_optimizer.py`.
+# `PDFModel` keeps the public facade stable and delegates to the internal module.
+from model import pdf_optimizer
 from model.tools import ToolManager
 
 # [優化 1] 模組級正則預編譯：避免每次呼叫 _convert_text_to_html / _normalize_text_for_compare 時重新編譯，提升效能
@@ -59,6 +62,11 @@ _CUSTOM_CJK_ALIASES = {
 
 # 設置日誌
 logger = logging.getLogger(__name__)
+# Re-export optimizer schema types for backwards compatibility (tests/UI import from `model.pdf_model`).
+PdfOptimizeOptions = pdf_optimizer.PdfOptimizeOptions
+PdfAuditItem = pdf_optimizer.PdfAuditItem
+PdfAuditReport = pdf_optimizer.PdfAuditReport
+PdfOptimizationResult = pdf_optimizer.PdfOptimizationResult
 
 
 @dataclass
@@ -127,6 +135,8 @@ class PDFModel:
         # Text target granularity: "run" or "paragraph" (UI can override on startup).
         self.text_target_mode: str = "run"
         self.tools = ToolManager(self)
+        self._audit_report_cache_key: Optional[tuple] = None
+        self._audit_report_cache_value: Optional[PdfAuditReport] = None
         self._initialize_temp_dir()
         # 全局 glyph 高度調整（文件推薦，import 後設定一次）
         try:
@@ -1507,6 +1517,116 @@ class PDFModel:
         stream = io.BytesIO()
         self.doc.save(stream, garbage=0)
         return stream.getvalue()
+
+    @staticmethod
+    def preset_optimize_options(preset: str) -> PdfOptimizeOptions:
+        return pdf_optimizer.preset_optimize_options(preset)
+
+    @staticmethod
+    def _normalize_optimize_options(options: PdfOptimizeOptions) -> PdfOptimizeOptions:
+        return pdf_optimizer.normalize_optimize_options(options)
+
+    def _resolve_file_backed_optimize_source(self, session_id: Optional[str]) -> Optional[Path]:
+        return pdf_optimizer.resolve_file_backed_optimize_source(self, session_id)
+
+    def _current_document_size_bytes(self, session_id: Optional[str]) -> int:
+        return pdf_optimizer.current_document_size_bytes(self, session_id)
+
+    def _build_working_doc_for_optimized_copy(self, session_id: Optional[str]) -> fitz.Document:
+        return pdf_optimizer.build_working_doc_for_optimized_copy(self, session_id)
+
+    def _make_active_audit_cache_key(self) -> Optional[tuple]:
+        return pdf_optimizer.make_active_audit_cache_key(self)
+
+    @staticmethod
+    def _blank_metadata_dict(doc: fitz.Document) -> dict[str, str]:
+        return pdf_optimizer.blank_metadata_dict(doc)
+
+    @staticmethod
+    def _xref_size_bytes(doc: fitz.Document, xref: int) -> int:
+        return pdf_optimizer.xref_size_bytes(doc, xref)
+
+    def build_pdf_audit_report(self, doc: fitz.Document | None = None) -> PdfAuditReport:
+        return pdf_optimizer.build_pdf_audit_report(self, doc)
+
+    def _apply_optimize_options(
+        self,
+        working_doc: fitz.Document,
+        options: PdfOptimizeOptions,
+        source_path: Optional[Path] = None,
+    ) -> None:
+        pdf_optimizer.apply_optimize_options(self, working_doc, options, source_path=source_path)
+
+    @staticmethod
+    def _image_rewrite_settings(options: PdfOptimizeOptions) -> dict[str, int | bool]:
+        return pdf_optimizer.image_rewrite_settings(options)
+
+    @staticmethod
+    def _parallel_image_worker_count(image_count: int) -> int:
+        return pdf_optimizer.parallel_image_worker_count(image_count)
+
+    @staticmethod
+    def _can_use_parallel_image_rewrite() -> bool:
+        return pdf_optimizer.can_use_parallel_image_rewrite()
+
+    def _rewrite_images_serially(
+        self,
+        working_doc: fitz.Document,
+        image_usage: dict[int, dict[str, float | int]],
+        options: PdfOptimizeOptions,
+    ) -> None:
+        pdf_optimizer.rewrite_images_serially(self, working_doc, image_usage, options)
+
+    def _collect_extracted_images(
+        self,
+        working_doc: fitz.Document,
+        image_usage: dict[int, dict[str, float | int]],
+    ) -> list[tuple[int, int, float, bytes]]:
+        return pdf_optimizer.collect_extracted_images(self, working_doc, image_usage)
+
+    def _rewrite_images_from_source_in_parallel(
+        self,
+        working_doc: fitz.Document,
+        image_usage: dict[int, dict[str, float | int]],
+        options: PdfOptimizeOptions,
+        source_path: Path,
+    ) -> None:
+        pdf_optimizer.rewrite_images_from_source_in_parallel(self, working_doc, image_usage, options, source_path)
+
+    def _rewrite_extracted_images_in_parallel(
+        self,
+        working_doc: fitz.Document,
+        extracted_images: list[tuple[int, int, float, bytes]],
+        options: PdfOptimizeOptions,
+    ) -> None:
+        pdf_optimizer.rewrite_extracted_images_in_parallel(self, working_doc, extracted_images, options)
+
+    def _rewrite_images_with_pillow(
+        self,
+        working_doc: fitz.Document,
+        options: PdfOptimizeOptions,
+        source_path: Optional[Path] = None,
+    ) -> None:
+        pdf_optimizer.rewrite_images_with_pillow(self, working_doc, options, source_path=source_path)
+
+    @staticmethod
+    def _requires_post_save_packaging(options: PdfOptimizeOptions) -> bool:
+        return pdf_optimizer.requires_post_save_packaging(options)
+
+    @staticmethod
+    def _fast_save_kwargs(options: PdfOptimizeOptions) -> dict[str, int]:
+        return pdf_optimizer.fast_save_kwargs(options)
+
+    def _postprocess_optimized_pdf_with_pikepdf(self, source_path: Path, options: PdfOptimizeOptions) -> None:
+        pdf_optimizer.postprocess_optimized_pdf_with_pikepdf(self, source_path, options)
+
+    def _save_optimized_working_doc(self, working_doc: fitz.Document, temp_save: Path, options: PdfOptimizeOptions) -> None:
+        pdf_optimizer.save_optimized_working_doc(self, working_doc, temp_save, options)
+
+    def save_optimized_copy(self, new_path: str, options: PdfOptimizeOptions | None = None) -> PdfOptimizationResult:
+        # Optimize-copy is a strict "write a new file" workflow.
+        # Implementation is delegated so `PDFModel` does not become an optimizer grab-bag.
+        return pdf_optimizer.save_optimized_copy(self, new_path, options)
 
     def _restore_doc_from_snapshot(self, snapshot_bytes: bytes) -> None:
         """用 bytes 快照替換整份文件（SnapshotCommand undo/redo 時呼叫）。"""
