@@ -1,6 +1,12 @@
-# 文件維護方法（Writing Method）
+# Methodology for Writing Docs
 
-本文件定義以下檔案的維護邊界、更新時機與寫作規則：
+This repo keeps documentation intentionally small but high-signal. This file defines:
+
+- which doc files are "canonical"
+- what each one is responsible for
+- how to update docs so they stay consistent with the codebase
+
+Canonical docs (keep these accurate):
 
 - `docs/README.md`
 - `docs/README.zh-TW.md`
@@ -8,169 +14,173 @@
 - `docs/ARCHITECTURE.md`
 - `docs/架構.txt`
 - `docs/solutions.md`
+- `test_scripts/TEST_SCRIPTS.md`
+
+This file is the English version. For Traditional Chinese, see:
+
+- `docs/Methodology_for_Writing_Docs.zh-TW.md`
 
 ---
 
-## 1. 全域原則
+## 1. Principles
 
-1. 單一事實來源（Single Source of Truth）  
-   架構事實以 `ARCHITECTURE.md` 為主，功能細節以 `FEATURES.md` 為主；README 只保留摘要。
+1. Single Source of Truth
+   - Architecture and data-flow details live in `docs/ARCHITECTURE.md`.
+   - User-visible behavior lives in `docs/FEATURES.md`.
+   - READMEs are entry points (what it is, how to run, where to look next).
 
-2. 先改程式，再改文件  
-   文件只能描述「目前程式已存在」的行為，不記錄尚未實作的規劃。
+2. Prefer "How It Works" over "What We Intended"
+   - Docs must reflect current behavior, especially around save/optimize workflows, threading, and failure modes.
+   - If you changed behavior, update docs in the same change-set.
 
-3. 中英 README 同步  
-   `README.md` 與 `README.zh-TW.md` 章節結構、項目數量、功能清單需同步。
+3. Keep the Quick Path Quick
+   - READMEs should not become design documents. Link to `docs/FEATURES.md` / `docs/ARCHITECTURE.md` instead.
 
-4. 避免在 README 放測試細節  
-   測試命令與除錯流程放在其他文件（如 `solutions.md` 或測試文件），README 保持對外簡潔。
+4. Encode as UTF-8
+   - All docs are UTF-8.
+   - If you see mojibake in a terminal, treat it as a display/encoding issue first, not file corruption.
 
-5. 固定 UTF-8 編碼  
-   所有文件使用 UTF-8，避免繁中亂碼（mojibake）。
-
-6. README 採使用者導向
-   README 只回答使用者關心的內容：這是什麼、有哪些功能、怎麼安裝/執行/打包、授權與免責；開發者內部設計移至 `FEATURES.md` / `ARCHITECTURE.md`。
-
----
-
-## 2. 各文件責任邊界
-
-## 2.1 `docs/README.md`（英文對外摘要）
-
-用途：
-- 專案一句話定位、主要功能摘要、安裝/執行/打包入口。
-
-應包含：
-- 使用者可見功能與能力（非內部實作細節）。
-- 對外依賴（PySide6、PyMuPDF、Pillow、pytesseract）。
-- 連到 `FEATURES.md` 與 `ARCHITECTURE.md`。
-- 法律/授權與免責資訊。
-
-不應包含：
-- 細粒度函式列表或內部 API 名稱（例如 `model.tools.*`、`_update_mode`）。
-- MVC 分層、session state、command internals 等開發者資訊。
-- 長篇問題追蹤。
-- 測試命令清單。
-
-格式：
-- 針對每一個 ## 層級的段落，必須編號計數。
+5. Diagrams Are Allowed (When They Reduce Words)
+   - Use Mermaid diagrams in `docs/ARCHITECTURE.md` for workflows / pipelines.
+   - Keep node labels short. Use quotes in Mermaid labels if the text contains punctuation or parentheses.
 
 ---
 
-## 2.2 `docs/README.zh-TW.md`（繁中對外摘要）
+## 2. Per-File Responsibilities
 
-用途：
-- 與英文 README 同等資訊的繁中版本。
+### 2.1 `docs/README.md`
 
-規則：
-- 與 `README.md` 章節對齊（標題順序一致）。
-- 僅語言轉換，不新增獨立事實。
-- 維持 UTF-8，提交前以 UTF-8 方式讀取驗證。
+Include:
 
----
+- what the app is, who it is for
+- minimal run/dev instructions
+- pointers to `docs/FEATURES.md` and `docs/ARCHITECTURE.md`
 
-## 2.3 `docs/FEATURES.md`（功能層說明）
+Avoid:
 
-用途：
-- 描述已實作功能、流程與關鍵函式入口。
+- deep implementation details (put those in `docs/ARCHITECTURE.md`)
+- long troubleshooting lists (use `docs/solutions.md`)
 
-規則：
-- 使用段落式敘述。
-- 每節可列「關鍵函式包含 ...」以便追蹤程式入口。
-- 功能必須對應到現有 Controller/Model/Tool 呼叫路徑。
+### 2.2 `docs/README.zh-TW.md`
 
----
+Keep it aligned with `docs/README.md` but translated/adapted for zh-TW readers.
 
-## 2.4 `docs/ARCHITECTURE.md`（架構層說明）
+### 2.3 `docs/FEATURES.md`
 
-用途：
-- 說明分層責任（Model/Controller/View/Tools/Printing）。
-- 說明生命週期流程（open/edit/render/save/close）。
+Purpose: user-visible behaviors and constraints (what users can do, what will happen).
 
-規則：
-- 使用 ASCII Art Diagram 繪製專案架構
-- 重點放在邊界與責任，不放 UI 使用教學。
-- 任何 Breaking API 或工具註冊順序異動，需先更新此檔。
+Include:
 
----
+- workflow-level behavior (e.g., "always saves an optimized copy, never overwrites")
+- defaults and presets (names, meanings)
+- UX expectations (e.g., "runs in background", "opens output as a new tab")
 
-## 2.5 `docs/架構.txt`（快速結構地圖）
+Avoid:
 
-用途：
-- 以樹狀清單快速呈現「目前實際存在」的目錄、核心檔案與模組定位。
+- class/method names unless needed for clarity
+- deep dataflow details (those belong in `docs/ARCHITECTURE.md`)
 
-規則：
-- 使用繁體中文，短句註解，不重複 `ARCHITECTURE.md` 長文。
-- 每次文件更新時，`架構.txt` 必須同步檢查並更新，不得跳過（即使本次主要改動不在架構）。
-- 「完整」的定義：至少涵蓋 `main.py`、`model/`、`controller/`、`view/`、`src/printing/`、`utils/`、`docs/`、`test_scripts/`，以及其核心檔案清單。
-- 只要有新增、刪除、搬移、改名（尤其 `model/tools/*`、`src/printing/*`），必須在同一提交更新 `架構.txt`。
-- 更新後需做一致性驗證：`架構.txt` 內容必須與實際檔案樹一致，不可保留已不存在路徑，也不可遺漏新核心模組。
+### 2.4 `docs/ARCHITECTURE.md`
 
----
+Purpose: how the system is structured and how data flows through it.
 
-## 2.6 `docs/solutions.md`（問題與解法履歷）
+Include:
 
-用途：
-- 記錄「發生過的真實問題」及「最終採用解法」。
+- module boundaries (Model/Controller/View/Tools/Printing)
+- critical pipelines (open/edit/render/save/close; optimize-copy; audit scan)
+- performance guardrails (what must not run on UI thread, what must be cached, what is paused)
+- diagrams:
+  - ASCII is acceptable
+  - Mermaid is preferred for non-trivial workflows
 
-規則：
-- 新條目一律附：問題、原因、有效解法、涉及檔案。
-- 新增內容以「附加到檔尾」為原則，不覆蓋歷史。
-- 避免只有結論，需留下可追溯根因。
+When adding a workflow graph:
 
----
+- keep it close to the relevant section (don't centralize all diagrams at the top)
+- call out key invariants near the graph (e.g., "never mutate the live document")
 
-## 2.7 `test_scripts/TEST_SCRIPTS.md`（測試用腳本用途說明）
+### 2.5 `docs/架構.txt`
 
-用途：
-- 作為 `test_scripts/` 的單一入口文件，讓使用者快速判斷每個測試檔的用途、執行方式與適用情境。
+Purpose: a terse, human-scannable map for contributors (especially when they prefer plain text).
 
-規則：
-- 新增、移除、改名，或改變測試型態（`pytest` / script / hybrid）時，必須同步更新 `TEST_SCRIPTS.md`。
-- 必須清楚標示可被 `pytest` 收集的檔案，以及刻意不被收集（例如 `__test__ = False`）的 script runner。
-- 若同一檔案同時支援 `pytest` 與 CLI，需在文件內同時提供兩種執行指令。
-- 指令應可直接複製執行，並與專案標準測試環境一致（例如 `QT_QPA_PLATFORM=offscreen`、`PYTHONPATH=.`）。
-- 若腳本會輸出報告或檔案，需註明預設輸出位置與清理建議。
+Include:
 
----
+- file/folder inventory and "what lives where"
+- pointers to the authoritative sections of `docs/ARCHITECTURE.md`
 
-## 3. 什麼情況要更新哪些文件
+Avoid:
 
-1. 新增/移除工具 API（例如 annotation/watermark/search/ocr）  
-   必改：`ARCHITECTURE.md`、`FEATURES.md`、`架構.txt`、雙 README（摘要層）。
+- duplicating full architecture explanations
+- duplicating feature semantics (link instead)
 
-2. 控制流程或狀態同步邏輯變更（例如 session/mode/dirty）  
-   必改：`ARCHITECTURE.md`、`FEATURES.md`；有實際事故再加 `solutions.md`。
+### 2.6 `docs/solutions.md`
 
-3. 僅 UI 細節或文案調整  
-   優先改：`FEATURES.md`；README 只在對外描述需變更時才改。
+Purpose: operational knowledge and "what to do when X breaks".
 
-4. Bug 修復且有代表性根因  
-   必加：`solutions.md`（追加於檔尾）。
+Include:
 
-5. 專案結構重排（檔案搬移、目錄改名）  
-   必改：`架構.txt`、`ARCHITECTURE.md`。
+- failure symptoms, root causes, and the actual fix steps
+- known tricky environment/setup issues
+
+Avoid:
+
+- design rationales without an operational action
+
+### 2.7 `test_scripts/TEST_SCRIPTS.md`
+
+Purpose: index of test/benchmark scripts and how to run them.
+
+Include:
+
+- what each script validates (workflow, integrity, benchmark)
+- how to run headless (Qt env vars), expected runtime, and where outputs go
 
 ---
 
-## 4. 建議更新流程（SOP）
+## 3. Feature-Specific Docs Placement
 
-1. 確認程式已合併且可執行。  
-2. 將本輪重要問題追加到 `solutions.md` 檔尾。  
-3. 先更新 `ARCHITECTURE.md`（邊界與流程）。  
-4. 更新 `FEATURES.md`（功能與函式入口）。  
-5. 更新 `架構.txt`（樹狀地圖）。  
-6. 同步更新 `README.md` 與 `README.zh-TW.md`（只保留摘要）。  
-7. 最後做一致性檢查（名稱、API 路徑、章節對齊、UTF-8）。
+Use this routing so readers can find information quickly:
+
+1. New UI entrypoints (menus, dialogs, new flows)
+   - Document in `docs/FEATURES.md` (what users see)
+   - Document in `docs/ARCHITECTURE.md` (controller/model pipeline + threading)
+
+2. Performance-sensitive or large-file workflows (e.g., PDF optimize)
+   - `docs/ARCHITECTURE.md` must include:
+     - the pipeline diagram
+     - what runs off the UI thread
+     - caching semantics (what is cached, lifetime, invalidation)
+     - any "pause background work" rules
+
+3. Unsupported controls / partial parity with other tools
+   - Put the list and rationale in a focused file (e.g., `docs/unsupported-optimizer.md`)
+   - Link to it from `docs/FEATURES.md` (do not duplicate the list in README)
+
+4. New scripts (benchmarks, validators)
+   - Add them to `test_scripts/TEST_SCRIPTS.md`
+   - If the script is a "contract" for a feature, link to it from `docs/ARCHITECTURE.md`
 
 ---
 
-## 5. 一致性檢查清單（提交前）
+## 4. Update Loop (PDCA)
 
-- `README.md` 與 `README.zh-TW.md` 的章節與重點是否一致。
-- README 是否避免放測試細節。
-- `FEATURES.md` 是否仍為段落式且含關鍵函式入口。
-- `ARCHITECTURE.md` 是否與目前實作邊界一致（尤其 `model.tools`）。
-- `架構.txt` 是否反映目前目錄與模組責任。
-- `solutions.md` 新增內容是否為「檔尾追加」且含根因與有效解決方案。
-- 所有檔案是否 UTF-8 可正常讀取。
+1. Plan
+   - decide what code behavior will change and list the impacted docs
+   - decide which file is the source of truth (usually `docs/FEATURES.md` or `docs/ARCHITECTURE.md`)
+2. Do
+   - implement the code change first
+   - update docs in the same change-set so they match the actual behavior (docs must not lead the code)
+3. Check
+   - run the minimal verification for the area touched
+   - sanity-check that docs do not contradict the UI behavior
+4. Act
+   - if users still get confused, move details to the right doc (README -> FEATURES/ARCHITECTURE -> solutions)
+
+---
+
+## 5. Quick Checklist
+
+- [ ] updated `docs/FEATURES.md` for user-visible behavior changes
+- [ ] updated `docs/ARCHITECTURE.md` for pipeline / threading / caching changes (with a graph if non-trivial)
+- [ ] updated `docs/架構.txt` if folders/entrypoints moved or a new major workflow was added
+- [ ] updated `test_scripts/TEST_SCRIPTS.md` if a new script was added or run steps changed
+- [ ] docs remain UTF-8 and render correctly on GitHub
