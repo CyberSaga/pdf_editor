@@ -560,7 +560,7 @@ def test_16_ctrl_shift_tab_on_sidebar_does_not_switch_sidebar_tabs(mvc, tmp_path
     assert model.get_active_session_id() == model.session_ids[2]
 
 
-def test_17_fit_to_view_targets_current_page_not_full_scene(mvc, tmp_path):
+def test_17_fit_to_view_syncs_zoom_state_to_current_page_fit_scale(mvc, tmp_path):
     _, view, controller = mvc
     path = _make_pdf(tmp_path / "fit_current_page.pdf", ["p1", "p2", "p3", "p4"])
     controller.open_pdf(str(path))
@@ -569,6 +569,10 @@ def test_17_fit_to_view_targets_current_page_not_full_scene(mvc, tmp_path):
 
     controller.change_page(2)
     _pump_events(100)
+    controller.change_scale(view.current_page, 1.6)
+    _pump_events(100)
+    expected_scale = view.compute_contain_scale_for_page(view.current_page)
+    assert expected_scale != pytest.approx(1.6, rel=1e-3)
     view._fit_to_view()
     _pump_events(50)
 
@@ -577,8 +581,26 @@ def test_17_fit_to_view_targets_current_page_not_full_scene(mvc, tmp_path):
     current_center = view.page_items[view.current_page].sceneBoundingRect().center()
     full_scene_center = view.scene.sceneRect().center()
 
+    assert view.scale == pytest.approx(expected_scale, rel=1e-3)
+    assert view.zoom_combo.currentText() == f"{int(round(expected_scale * 100))}%"
     assert abs(scene_center.y() - current_center.y()) < 20
     assert abs(scene_center.y() - full_scene_center.y()) > 100
+
+
+def test_17b_zoom_combo_keeps_only_default_options(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "zoom_combo_defaults.pdf", ["zoom"])
+    controller.open_pdf(str(path))
+    _pump_events(300)
+
+    defaults = [view.zoom_combo.itemText(i) for i in range(view.zoom_combo.count())]
+    assert defaults == ["50%", "75%", "100%", "125%", "150%", "200%"]
+
+    controller.change_scale(view.current_page, 1.33)
+    _pump_events(50)
+
+    assert view.zoom_combo.currentText() == "133%"
+    assert [view.zoom_combo.itemText(i) for i in range(view.zoom_combo.count())] == defaults
 
 
 def test_18_mode_checked_state_sync_and_restore(mvc, tmp_path):

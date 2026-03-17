@@ -1512,19 +1512,20 @@ class PDFView(QMainWindow):
 
     def _fit_to_view(self):
         target_rect = None
+        target_page = self.current_page
         if self.continuous_pages and self.page_items:
-            idx = min(max(self.current_page, 0), len(self.page_items) - 1)
-            target_rect = self.page_items[idx].sceneBoundingRect()
+            target_page = min(max(self.current_page, 0), len(self.page_items) - 1)
+            target_rect = self.page_items[target_page].sceneBoundingRect()
         elif self.page_items:
             target_rect = self.page_items[0].sceneBoundingRect()
+            target_page = 0
         elif self.scene.sceneRect().isValid():
             target_rect = self.scene.sceneRect()
 
         if not target_rect or not target_rect.isValid():
             return
 
-        self.graphics_view.fitInView(target_rect, Qt.KeepAspectRatio)
-        self.graphics_view.centerOn(target_rect.center())
+        self.sig_scale_changed.emit(target_page, self.compute_contain_scale_for_page(target_page))
 
     def _show_thumbnails_tab(self):
         self.left_sidebar.setCurrentIndex(0)
@@ -1986,8 +1987,6 @@ class PDFView(QMainWindow):
         text = f"{pct}%"
         if self.zoom_combo.currentText() != text:
             self.zoom_combo.blockSignals(True)
-            if self.zoom_combo.findText(text) < 0:
-                self.zoom_combo.addItem(text)
             self.zoom_combo.setCurrentText(text)
             self.zoom_combo.blockSignals(False)
 
