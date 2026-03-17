@@ -79,6 +79,8 @@ dist\main.exe
 
 - `Ctrl+O`: Open PDF
 - `Ctrl+P`: Open print dialog
+- `Ctrl+Alt+L`: Toggle left sidebar
+- `Ctrl+Alt+R`: Toggle right sidebar
 - `Ctrl+Z`: Undo
 - `Ctrl+Y`: Redo
 - `Ctrl+S`: Save

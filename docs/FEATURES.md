@@ -96,6 +96,20 @@ Core keyboard shortcuts include `Ctrl+Z` (undo), `Ctrl+Y` (redo), `Ctrl+S` (save
 `Esc` handling follows priority rules: close active editor/dialog first (and keep current mode), otherwise switch non-browse mode back to `browse`, otherwise run existing browse fallback (for example search sidebar close).  
 When closing with unsaved changes, confirmation dialogs provide explicit key hints and single-key actions: `Y` to save and `N` to discard (with `Esc` as cancel).
 
+Sidebar layout shortcuts:
+- `Ctrl+Alt+L` toggles the left sidebar (thumbnails/search/annotations/watermarks).
+  - When showing, if the remembered width is too small to be usable (`< 50px`), the sidebar snaps back to the default `260px` width.
+  - When showing, focus lands on the left sidebar tab bar (or on the search box if the active left tab is Search).
+  - When hiding, focus returns to the center PDF canvas so keyboard navigation does not get stuck.
+- `Ctrl+Alt+R` toggles the right sidebar (property inspector).
+  - When showing, if the remembered width is too small to be usable (`< 50px`), the sidebar snaps back to the default `280px` width.
+  - When showing, focus lands on the first focusable control in the active property card (fallback: the right sidebar container).
+  - When hiding, focus returns to the center PDF canvas.
+
+Zoom UI contract:
+- The zoom combo box is editable: users can type a custom percent, while the dropdown list remains the fixed preset set (`50%`, `75%`, `100%`, `125%`, `150%`, `200%`).
+- `適應畫面` (fit-to-view) uses the same zoom pipeline as manual zoom: the recorded zoom state and the visible percent are synchronized to the actual fitted scale so subsequent zoom adjustments remain accurate.
+
 ## 15. Native Printer Properties Entry
 
 In the unified print dialog, the printer selector row includes a `屬性` button beside the printer combo. On supported systems, this opens the OS-native printer properties/preferences dialog for the currently selected printer so users can adjust vendor-specific settings with system tools. Returned/default preferences are synchronized back into dialog controls (`paper_size`, `orientation`, `duplex`, `color_mode`, `dpi`, `copies`).
@@ -105,6 +119,7 @@ Hardware-field precedence is touch-based. `paper_size`, `orientation`, `duplex`,
 For some Windows vendor drivers, native properties update only private `DriverExtra` data and do not refresh public DEVMODE fields such as `dmColor` or `dmDefaultSource`. In that case, the app does not pretend it knows the exact native value: `color_mode` is shown as `依系統屬性`, while tray selection remains hidden from the app UI and continues to pass through from the system driver.
 Preview rendering is guarded against temporary invalid input. If page-range input becomes invalid during live editing, preview errors are shown inside the dialog and the UI event path keeps running.
 Print preview no longer requires building the full print snapshot before the dialog opens. Preview pages can be rendered directly from the live document, while the full print snapshot/temp PDF is generated only after the user confirms printing.
+The preview header shows a readable page summary (for example `第 1 頁 / 共 12 頁（本次列印 12 頁）`) instead of mojibake.
 Job-level settings remain app-owned regardless of native properties: `copies`, `dpi`, `collate`, page range, page subset, reverse order, and scaling are always taken from the unified print dialog.
 
 ## 16. Print Lifecycle Resilience (Windows)

@@ -1363,3 +1363,107 @@ def test_34_fullscreen_quick_button_sits_between_fit_and_undo_and_f5_toggles(mvc
     QTest.keyClick(view.graphics_view.viewport(), Qt.Key_F5)
     _pump_events(220)
     assert not view.isFullScreen()
+
+
+def test_35_ctrl_alt_l_toggles_left_sidebar_with_focus_and_width_fallback(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "left_sidebar_toggle.pdf", ["page 1"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(320)
+
+    baseline_left_width = view.main_splitter.sizes()[0]
+    assert view.left_sidebar_widget.isVisible()
+
+    view.graphics_view.viewport().setFocus()
+    _pump_events(30)
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_L, Qt.ControlModifier | Qt.AltModifier)
+    _pump_events(100)
+
+    assert not view.left_sidebar_widget.isVisible()
+    assert QApplication.focusWidget() in {view.graphics_view, view.graphics_view.viewport()}
+
+    view._left_sidebar_last_width = 36
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_L, Qt.ControlModifier | Qt.AltModifier)
+    _pump_events(100)
+
+    assert view.left_sidebar_widget.isVisible()
+    assert view.main_splitter.sizes()[0] >= max(200, baseline_left_width - 20)
+    assert QApplication.focusWidget() is view.left_sidebar.tabBar()
+
+
+def test_36_ctrl_f_reopens_hidden_left_sidebar_and_focuses_search(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "left_sidebar_search_reopen.pdf", ["alpha beta"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(320)
+
+    view.graphics_view.viewport().setFocus()
+    _pump_events(30)
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_L, Qt.ControlModifier | Qt.AltModifier)
+    _pump_events(100)
+    assert not view.left_sidebar_widget.isVisible()
+
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_F, Qt.ControlModifier)
+    _pump_events(100)
+
+    assert view.left_sidebar_widget.isVisible()
+    assert view.left_sidebar.currentIndex() == 1
+    assert QApplication.focusWidget() is view.search_input
+
+
+def test_37_ctrl_alt_r_toggles_right_sidebar_with_focus_and_width_fallback(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "right_sidebar_toggle.pdf", ["page 1"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(320)
+
+    baseline_right_width = view.main_splitter.sizes()[2]
+    view.set_mode("add_text")
+    _pump_events(80)
+    assert view.right_sidebar.isVisible()
+
+    view.graphics_view.viewport().setFocus()
+    _pump_events(30)
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_R, Qt.ControlModifier | Qt.AltModifier)
+    _pump_events(100)
+
+    assert not view.right_sidebar.isVisible()
+    assert QApplication.focusWidget() in {view.graphics_view, view.graphics_view.viewport()}
+
+    view._right_sidebar_last_width = 36
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_R, Qt.ControlModifier | Qt.AltModifier)
+    _pump_events(100)
+
+    assert view.right_sidebar.isVisible()
+    assert view.main_splitter.sizes()[2] >= max(240, baseline_right_width - 20)
+    assert QApplication.focusWidget() is view.text_font
+
+
+def test_38_fullscreen_restores_user_hidden_sidebars(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "fullscreen_hidden_sidebars.pdf", ["page 1", "page 2"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(400)
+
+    view.graphics_view.viewport().setFocus()
+    _pump_events(30)
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_L, Qt.ControlModifier | Qt.AltModifier)
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_R, Qt.ControlModifier | Qt.AltModifier)
+    _pump_events(120)
+
+    assert not view.left_sidebar_widget.isVisible()
+    assert not view.right_sidebar.isVisible()
+
+    _trigger_fullscreen(view)
+    assert view.isFullScreen()
+
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_Escape)
+    _pump_events(220)
+
+    assert not view.isFullScreen()
+    assert not view.left_sidebar_widget.isVisible()
+    assert not view.right_sidebar.isVisible()
