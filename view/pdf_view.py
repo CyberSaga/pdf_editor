@@ -943,6 +943,8 @@ class PDFView(QMainWindow):
         self._add_text_default_height_pt = 56.0
         self.current_page = 0
         self.scale = 1.0
+        self._left_sidebar_last_width = 260
+        self._right_sidebar_last_width = 280
         # 記錄目前場景內 pixmap 實際渲染時所使用的 scale。
         # self.scale 代表「期望的總縮放」，可能因 wheel zoom 超前於重渲；
         # _render_scale 追蹤已實際渲染進場景的 scale，供座標轉換使用。
@@ -998,6 +1000,7 @@ class PDFView(QMainWindow):
         self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.graphics_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.graphics_view.setFocusPolicy(Qt.StrongFocus)
+        self.right_sidebar.setFocusPolicy(Qt.StrongFocus)
         self.graphics_view.setMouseTracking(True)
         self.graphics_view.viewport().setMouseTracking(True)
         self.graphics_view.viewport().setFocusPolicy(Qt.StrongFocus)
@@ -1260,6 +1263,14 @@ class PDFView(QMainWindow):
         self._shortcut_escape = QShortcut(QKeySequence(Qt.Key_Escape), self)
         self._shortcut_escape.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._shortcut_escape.activated.connect(self._on_escape_shortcut)
+
+        self._shortcut_toggle_left_sidebar = QShortcut(QKeySequence("Ctrl+Alt+L"), self)
+        self._shortcut_toggle_left_sidebar.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._shortcut_toggle_left_sidebar.activated.connect(self.toggle_left_sidebar)
+
+        self._shortcut_toggle_right_sidebar = QShortcut(QKeySequence("Ctrl+Alt+R"), self)
+        self._shortcut_toggle_right_sidebar.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._shortcut_toggle_right_sidebar.activated.connect(self.toggle_right_sidebar)
 
     def _tab_shortcut_direction(self, key: int, modifiers: Qt.KeyboardModifiers) -> int:
         return _ctrl_tab_direction(key, modifiers)
@@ -1527,18 +1538,94 @@ class PDFView(QMainWindow):
 
         self.sig_scale_changed.emit(target_page, self.compute_contain_scale_for_page(target_page))
 
+    def _resolve_sidebar_width(self, remembered: int, default_width: int) -> int:
+        return default_width if remembered < 50 else remembered
+
+    def _apply_sidebar_sizes(self, *, left_width: int | None = None, right_width: int | None = None) -> None:
+        sizes = self.main_splitter.sizes()
+        total = sum(sizes)
+        if total <= 0:
+            total = max(self.main_splitter.width(), 1280)
+        left = left_width if left_width is not None else (sizes[0] if self.left_sidebar_widget.isVisible() else 0)
+        right = right_width if right_width is not None else (sizes[2] if self.right_sidebar.isVisible() else 0)
+        center = max(1, total - int(left) - int(right))
+        self.main_splitter.setSizes([max(0, int(left)), center, max(0, int(right))])
+
+    def _focus_left_sidebar_target(self) -> None:
+        if self.left_sidebar.currentIndex() == 1 and getattr(self, "search_input", None) is not None:
+            self.search_input.setFocus(Qt.ShortcutFocusReason)
+            self.search_input.selectAll()
+            return
+        self.left_sidebar.tabBar().setFocus(Qt.ShortcutFocusReason)
+
+    def _focus_right_sidebar_target(self) -> None:
+        current = self.right_stacked_widget.currentWidget()
+        if current is not None:
+            for child in current.findChildren(QWidget):
+                if child.focusPolicy() == Qt.NoFocus:
+                    continue
+                if not child.isEnabled() or not child.isVisibleTo(current):
+                    continue
+                child.setFocus(Qt.ShortcutFocusReason)
+                if child.hasFocus():
+                    return
+        self.right_sidebar.setFocus(Qt.ShortcutFocusReason)
+
+    def _ensure_left_sidebar_visible(self, *, focus_target: bool = False) -> None:
+        if not self.left_sidebar_widget.isVisible():
+            self.left_sidebar_widget.show()
+            self._apply_sidebar_sizes(
+                left_width=self._resolve_sidebar_width(self._left_sidebar_last_width, 260)
+            )
+        if focus_target:
+            self._focus_left_sidebar_target()
+
+    def toggle_left_sidebar(self) -> None:
+        if self.left_sidebar_widget.isVisible():
+            left_width = self.main_splitter.sizes()[0]
+            if left_width >= 50:
+                self._left_sidebar_last_width = left_width
+            self.left_sidebar_widget.hide()
+            self._apply_sidebar_sizes(left_width=0)
+            self._focus_page_canvas()
+            return
+        self.left_sidebar_widget.show()
+        self._apply_sidebar_sizes(
+            left_width=self._resolve_sidebar_width(self._left_sidebar_last_width, 260)
+        )
+        self._focus_left_sidebar_target()
+
+    def toggle_right_sidebar(self) -> None:
+        if self.right_sidebar.isVisible():
+            right_width = self.main_splitter.sizes()[2]
+            if right_width >= 50:
+                self._right_sidebar_last_width = right_width
+            self.right_sidebar.hide()
+            self._apply_sidebar_sizes(right_width=0)
+            self._focus_page_canvas()
+            return
+        self.right_sidebar.show()
+        self._apply_sidebar_sizes(
+            right_width=self._resolve_sidebar_width(self._right_sidebar_last_width, 280)
+        )
+        self._focus_right_sidebar_target()
+
     def _show_thumbnails_tab(self):
+        self._ensure_left_sidebar_visible()
         self.left_sidebar.setCurrentIndex(0)
 
     def _show_search_tab(self):
+        self._ensure_left_sidebar_visible()
         self.left_sidebar.setCurrentIndex(1)
-        self.search_input.setFocus()
+        self.search_input.setFocus(Qt.ShortcutFocusReason)
         self.search_input.selectAll()
 
     def _show_annotations_tab(self):
+        self._ensure_left_sidebar_visible()
         self.left_sidebar.setCurrentIndex(2)
 
     def _show_watermarks_tab(self):
+        self._ensure_left_sidebar_visible()
         self.left_sidebar.setCurrentIndex(3)
         self.sig_load_watermarks.emit()
 
