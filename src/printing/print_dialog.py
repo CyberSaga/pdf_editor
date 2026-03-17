@@ -716,7 +716,7 @@ class UnifiedPrintDialog(QDialog):
         pixmap = self._compose_preview_pixmap(image, options)
         self.preview_label.setPixmap(pixmap)
         self.page_info_label.setText(
-            f"蝚?{page_index + 1} ??/ ??{self.total_pages} ???祆活? {len(self._page_indices)} ??"
+            f"第 {page_index + 1} 頁 / 共 {self.total_pages} 頁（本次列印 {len(self._page_indices)} 頁）"
         )
         self.prev_btn.setEnabled(row > 0)
         self.next_btn.setEnabled(row < len(self._page_indices) - 1)

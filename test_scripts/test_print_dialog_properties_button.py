@@ -489,3 +489,32 @@ def test_preview_provider_supports_dialog_without_temp_pdf_path() -> None:
     finally:
         dialog.close()
 
+
+def test_preview_page_info_label_uses_readable_page_summary() -> None:
+    _ensure_app()
+    dispatcher = _FakeDispatcher(supports_properties=False)
+    printers = [PrinterDevice(name="Printer A", is_default=True, status="ready")]
+
+    def _preview_provider(page_index: int, dpi: int) -> QImage:
+        _ = (page_index, dpi)
+        image = QImage(120, 160, QImage.Format_RGB888)
+        image.fill(0xFFFFFF)
+        return image
+
+    dialog = UnifiedPrintDialog(
+        parent=None,
+        dispatcher=dispatcher,
+        printers=printers,
+        pdf_path="",
+        total_pages=12,
+        current_page=1,
+        job_name="test_job",
+        preview_page_provider=_preview_provider,
+    )
+    try:
+        dialog._page_indices = [0, 2, 4]
+        dialog._safe_render_preview()
+        assert dialog.page_info_label.text() == "第 1 頁 / 共 12 頁（本次列印 3 頁）"
+    finally:
+        dialog.close()
+
