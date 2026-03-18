@@ -12,8 +12,21 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from PySide6.QtCore import QPoint, QMimeData, QUrl, Qt
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtWidgets import QApplication
 import main as main_module
 from view.pdf_view import PDFView
+
+
+def _send_drop(widget, paths: list[Path]) -> None:
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path)) for path in paths])
+    pos = widget.rect().center()
+    drag_enter = QDragEnterEvent(pos, Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    QApplication.sendEvent(widget, drag_enter)
+    drop = QDropEvent(pos, Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    QApplication.sendEvent(widget, drop)
 
 
 def test_empty_launch_defers_controller_attachment_until_first_event_loop_tick() -> None:
@@ -91,3 +104,38 @@ def test_pdf_view_emits_shell_ready_after_deferred_hydration() -> None:
     finally:
         view.close()
         app.quit()
+
+
+def test_empty_launch_buffers_dropped_pdf_paths_until_controller_attaches(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    opened: list[str] = []
+
+    from controller.pdf_controller import PDFController
+
+    def fake_open_pdf(self, path: str) -> None:
+        opened.append(path)
+
+    monkeypatch.setattr(PDFController, "open_pdf", fake_open_pdf)
+
+    startup = main_module.run(argv=[], start_event_loop=False)
+    path = tmp_path / "dropped.pdf"
+    path.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+
+    try:
+        assert startup["view"].controller is None
+        _send_drop(startup["view"], [path])
+        assert opened == []
+        assert startup["view"].controller is None
+
+        for _ in range(5):
+            startup["app"].processEvents()
+
+        assert startup["view"].controller is startup["controller"]
+        assert startup["controller"].is_active
+        assert opened == [str(path)]
+    finally:
+        startup["view"].close()
+        startup["model"].close()
+        startup["app"].quit()

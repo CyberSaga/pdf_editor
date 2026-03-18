@@ -6,6 +6,12 @@ This document is the behavior-level source of truth for implemented features.
 
 The editor uses a multi-tab session model. Each tab keeps independent page index, zoom, mode, search state, tool state, and dirty state so switching tabs does not leak workflow state between documents. This behavior is coordinated by session-aware model and controller flows. Key functions include `open_pdf(...)`, `list_sessions()`, `activate_session_by_index(...)`, and controller tab switch handlers.
 
+Document intake now supports both explicit open and drag-and-drop:
+- `Ctrl+O` and file-picker open still work as before.
+- Users can drag one or more local PDF files onto the app window to open them as tabs in the same order they were dropped.
+- Non-PDF files, folders, and remote URLs are ignored silently.
+- On empty startup, an early drop is not lost: the shell can queue dropped PDF paths until the deferred controller attach finishes, then open them normally.
+
 ## 2. Modes and Interaction Rules
 
 The supported modes are `browse`, `edit_text`, `add_text`, `rect`, `highlight`, and `add_annotation`. In `edit_text` mode, clicking existing text enters edit on that target while clicking blank area does not create a new textbox. In `add_text` mode, click behavior is dedicated to insertion: if an editor is already open, clicking blank space commits and closes it; if no editor is active, clicking creates a new textbox editor. `rect`, `highlight`, and `add_annotation` are sticky modes: after each operation they remain active for repeated actions. Empty add-new commit is a no-op and does not create history. Mode toolbar buttons are checkable and synchronized to the active mode. Key functions include `set_mode(...)`, `_mouse_press(...)`, `_mouse_release(...)`, `_create_add_text_editor_at_scene(...)`, and `_finalize_text_edit(...)`.

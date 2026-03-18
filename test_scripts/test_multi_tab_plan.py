@@ -3,8 +3,8 @@ from pathlib import Path
 
 import fitz
 import pytest
-from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import Qt, QPoint, QMimeData, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeyEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QListView, QDialog
 
@@ -53,6 +53,16 @@ def _pump_events(ms: int = 250) -> None:
     while time.time() < end:
         app.processEvents()
         time.sleep(0.01)
+
+
+def _send_drop(widget, urls: list[QUrl]) -> None:
+    mime = QMimeData()
+    mime.setUrls(urls)
+    pos = widget.rect().center()
+    drag_enter = QDragEnterEvent(pos, Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    QApplication.sendEvent(widget, drag_enter)
+    drop = QDropEvent(pos, Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    QApplication.sendEvent(widget, drop)
 
 
 def _trigger_fullscreen(view: PDFView) -> None:
@@ -163,6 +173,54 @@ def test_02_duplicate_open_focus_existing(mvc, tmp_path):
     controller.open_pdf(str(a))
     assert len(model.session_ids) == 1
     assert model.get_active_session_id() == sid_first
+
+
+def test_drag_drop_opens_multiple_local_pdfs_in_order(mvc, tmp_path):
+    model, view, controller = mvc
+    first = _make_pdf(tmp_path / "drop_a.pdf", ["A"])
+    second = _make_pdf(tmp_path / "drop_b.pdf", ["B"])
+
+    controller.activate()
+    view.show()
+    _pump_events(100)
+
+    _send_drop(
+        view,
+        [QUrl.fromLocalFile(str(first)), QUrl.fromLocalFile(str(second))],
+    )
+    _pump_events(250)
+
+    assert len(model.session_ids) == 2
+    assert [Path(model.get_session_meta(sid)["path"]).name for sid in model.session_ids] == ["drop_a.pdf", "drop_b.pdf"]
+    assert model.get_active_session_id() == model.session_ids[-1]
+
+
+def test_drag_drop_ignores_non_pdf_folder_and_remote_urls(mvc, tmp_path):
+    model, view, controller = mvc
+    valid = _make_pdf(tmp_path / "valid.pdf", ["valid"])
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    non_pdf = tmp_path / "notes.txt"
+    non_pdf.write_text("not a pdf", encoding="utf-8")
+
+    controller.activate()
+    view.show()
+    _pump_events(100)
+
+    _send_drop(
+        view,
+        [
+            QUrl.fromLocalFile(str(folder)),
+            QUrl.fromLocalFile(str(non_pdf)),
+            QUrl("https://example.com/remote.pdf"),
+            QUrl.fromLocalFile(str(valid)),
+        ],
+    )
+    _pump_events(250)
+
+    assert len(model.session_ids) == 1
+    active_path = model.get_session_meta(model.get_active_session_id())["path"]
+    assert Path(active_path).name == "valid.pdf"
 
 
 def test_03_edit_in_a_undo_in_b_isolated(mvc, tmp_path):
