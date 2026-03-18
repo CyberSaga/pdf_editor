@@ -110,6 +110,35 @@ Fullscreen UX is implemented in the view, but coordinated by controller state:
 
 View emits open/switch/close intent. Controller calls model session operations. Model opens/activates/cleans session and tool hooks. Controller restores session UI state and schedules rendering/index batches.
 
+Open intake now has three entry shapes that still converge on the same controller/model path:
+- File picker: `PDFView` emits `sig_open_pdf(path)` after user selection.
+- CLI startup: `main.py` attaches/activates the controller immediately, then calls `controller.open_pdf(path)` for each argv path.
+- Window drag-and-drop: `PDFView` accepts local `.pdf` URLs, ignores folders/non-PDF/remote URLs, and emits `sig_open_pdf(path)` in dropped order when the controller is already active.
+
+For empty startup, drag-and-drop must respect the shell-first lifecycle. `PDFView` can receive drops before the controller is attached, so it keeps a lightweight in-view queue of pending paths. After `shell_ready`, `main.py` attaches/activates the controller, drains that queue, and replays each path through `controller.open_pdf(path)`. This preserves one open pipeline and avoids losing early drops.
+
+```mermaid
+flowchart TD
+  A["User opens via picker / CLI / drag-drop"] --> B{"Entry type"}
+  B -->|Picker| C["PDFView.emit sig_open_pdf(path)"]
+  B -->|CLI| D["main.py attach+activate controller"]
+  B -->|Drag-drop, controller active| E["PDFView emits sig_open_pdf(path) in drop order"]
+  B -->|Drag-drop, pre-attach shell| F["PDFView queues dropped local PDF paths"]
+  F --> G["PDFView emits shell_ready"]
+  G --> H["main.py attach+activate controller"]
+  H --> I["Drain queued paths"]
+  D --> J["controller.open_pdf(path)"]
+  I --> J
+  C --> J
+  E --> J
+  J --> K["PDFModel.open_pdf(..., append=True)"]
+```
+
+Key invariants:
+- Drag hover validation stays cheap on the UI thread: only local-URL and `.pdf` checks run during drag-enter / drag-move.
+- File existence checks for dropped paths happen only on drop, not on hover.
+- All successful opens still flow through `PDFController.open_pdf(...)`; drag-and-drop does not introduce a second open contract.
+
 ### 3.2 Edit Existing Text
 
 View hit-tests text and opens editor with target metadata. On commit, view emits `sig_edit_text(...)`. Controller creates `EditTextCommand` with page snapshot. Model runs transactional edit pipeline and page index rebuild. Controller refreshes affected view scope. Commit criteria include text, position, font, and size deltas so style-only edits are persisted. Empty text commits from existing-text edit are valid delete intents: the target textbox content is redacted and not reinserted, and history remains undo/redo-safe.

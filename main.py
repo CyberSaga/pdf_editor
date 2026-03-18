@@ -32,6 +32,8 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
             return
         view.controller = controller
         controller.activate()
+        for path in view.drain_pending_open_paths():
+            controller.open_pdf(path)
         controller_attached["done"] = True
 
     if not cli_args:

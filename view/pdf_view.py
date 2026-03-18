@@ -849,12 +849,15 @@ class PDFView(QMainWindow):
         self.setWindowTitle("視覺化 PDF 編輯器")
         self.setMinimumSize(1280, 800)
         self.setGeometry(100, 100, 1280, 800)
+        self.setAcceptDrops(True)
         self.total_pages = 0
         self.controller = None
         self._defer_heavy_panels = defer_heavy_panels
         self._heavy_panels_initialized = False
         self._deferred_hydration_scheduled = False
         self._shell_ready_emitted = False
+        self._pending_open_paths: list[str] = []
+        self._drag_drop_active = False
         self._doc_tab_signal_block = False
         self._mode_actions: dict[str, QAction] = {}
         self._mode_action_group = QActionGroup(self)
@@ -868,6 +871,7 @@ class PDFView(QMainWindow):
         # --- Central container: top toolbar area + main splitter ---
         central_container = QWidget(self)
         self.setCentralWidget(central_container)
+        central_container.setObjectName("dropHost")
         central_container.setMouseTracking(True)
         central_container.installEventFilter(self)
         main_layout = QVBoxLayout(central_container)
@@ -885,6 +889,7 @@ class PDFView(QMainWindow):
 
         # --- Main content: QSplitter (Left 260px | Center | Right 280px) ---
         self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setAcceptDrops(True)
 
         # Left sidebar: 260px, QTabWidget (縮圖 / 搜尋 / 註解列表 / 浮水印列表)
         self.left_sidebar = QTabWidget()
@@ -895,6 +900,7 @@ class PDFView(QMainWindow):
             self._setup_left_sidebar()
             self._heavy_panels_initialized = True
         self.left_sidebar_widget = QWidget()
+        self.left_sidebar_widget.setAcceptDrops(True)
         left_sidebar_layout = QVBoxLayout(self.left_sidebar_widget)
         left_sidebar_layout.setContentsMargins(0, 0, 0, 0)
         left_sidebar_layout.addWidget(self.left_sidebar)
@@ -902,12 +908,14 @@ class PDFView(QMainWindow):
 
         # Center: QGraphicsView (canvas)
         self.graphics_view = QGraphicsView(self)
+        self.graphics_view.setAcceptDrops(True)
         self.scene = QGraphicsScene(self)
         self.graphics_view.setScene(self.scene)
         self.main_splitter.addWidget(self.graphics_view)
 
         # Right sidebar: 280px, "屬性" dynamic inspector
         self.right_sidebar = QWidget()
+        self.right_sidebar.setAcceptDrops(True)
         right_sidebar_layout = QVBoxLayout(self.right_sidebar)
         right_sidebar_layout.setContentsMargins(0, 0, 0, 0)
         right_title = QLabel("屬性")
@@ -1003,8 +1011,10 @@ class PDFView(QMainWindow):
         self.right_sidebar.setFocusPolicy(Qt.StrongFocus)
         self.graphics_view.setMouseTracking(True)
         self.graphics_view.viewport().setMouseTracking(True)
+        self.graphics_view.viewport().setAcceptDrops(True)
         self.graphics_view.viewport().setFocusPolicy(Qt.StrongFocus)
         self.graphics_view.viewport().installEventFilter(self)
+        self._configure_drop_targets(central_container)
 
         self.graphics_view.wheelEvent = self._wheel_event
         self.graphics_view.mousePressEvent = self._mouse_press
@@ -1023,6 +1033,7 @@ class PDFView(QMainWindow):
             QGroupBox { border: 1px solid #E2E8F0; border-radius: 8px; margin-top: 8px; padding-top: 8px; }
             QPushButton { border-radius: 6px; padding: 6px 12px; }
             QLineEdit, QComboBox { border-radius: 6px; padding: 4px 8px; border: 1px solid #E2E8F0; }
+            QWidget#dropHost[dragActive="true"] { background: #EFF6FF; border: 2px dashed #0EA5E9; }
         """)
         self.graphics_view.setStyleSheet("QGraphicsView { background: #F1F5F9; border: none; }")
 
@@ -1047,6 +1058,118 @@ class PDFView(QMainWindow):
             return
         self._shell_ready_emitted = True
         self.shell_ready.emit()
+
+    def _configure_drop_targets(self, central_container: QWidget) -> None:
+        self._drop_target_widgets = (
+            self,
+            central_container,
+            self._toolbar_container,
+            self.document_tab_bar,
+            self.main_splitter,
+            self.left_sidebar_widget,
+            self.left_sidebar,
+            self.graphics_view,
+            self.graphics_view.viewport(),
+            self.right_sidebar,
+            self.right_stacked_widget,
+        )
+        # Avoid installing the same event filter multiple times on the same widget.
+        # Some widgets are already filtered elsewhere (for fullscreen hover, etc.).
+        self._drop_filter_installed_ids = {
+            id(central_container),
+            id(self.graphics_view.viewport()),
+        }
+        for widget in self._drop_target_widgets:
+            widget.setAcceptDrops(True)
+            if widget is not self and id(widget) not in self._drop_filter_installed_ids:
+                widget.installEventFilter(self)
+                self._drop_filter_installed_ids.add(id(widget))
+
+    def _extract_dropped_pdf_paths(self, mime_data, require_existing: bool = False) -> list[str]:
+        if mime_data is None or not mime_data.hasUrls():
+            return []
+        paths: list[str] = []
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            local_path = url.toLocalFile()
+            if not local_path:
+                continue
+            path = Path(local_path)
+            if path.suffix.lower() != ".pdf":
+                continue
+            if require_existing and not path.is_file():
+                continue
+            paths.append(str(path))
+        return paths
+
+    def _set_drag_drop_affordance(self, active: bool) -> None:
+        if self._drag_drop_active == active:
+            return
+        self._drag_drop_active = active
+        host = self.centralWidget()
+        if host is None:
+            return
+        host.setProperty("dragActive", active)
+        host.style().unpolish(host)
+        host.style().polish(host)
+        host.update()
+
+    def _queue_or_open_paths(self, paths: list[str]) -> None:
+        if not paths:
+            return
+        if self.controller is None or not getattr(self.controller, "is_active", False):
+            self._pending_open_paths.extend(paths)
+            return
+        for path in paths:
+            self.sig_open_pdf.emit(path)
+
+    def drain_pending_open_paths(self) -> list[str]:
+        paths = list(self._pending_open_paths)
+        self._pending_open_paths.clear()
+        return paths
+
+    def _handle_drag_drop_event(self, event) -> bool:
+        event_type = event.type()
+        if event_type == QEvent.DragLeave:
+            self._set_drag_drop_affordance(False)
+            event.accept()
+            return True
+
+        require_existing = event_type == QEvent.Drop
+        paths = self._extract_dropped_pdf_paths(event.mimeData(), require_existing=require_existing)
+        if not paths:
+            self._set_drag_drop_affordance(False)
+            event.ignore()
+            return True
+
+        if event_type == QEvent.Drop:
+            self._set_drag_drop_affordance(False)
+            self._queue_or_open_paths(paths)
+        else:
+            self._set_drag_drop_affordance(True)
+        event.acceptProposedAction()
+        return True
+
+    def dragEnterEvent(self, event):
+        if self._handle_drag_drop_event(event):
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if self._handle_drag_drop_event(event):
+            return
+        super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event):
+        if self._handle_drag_drop_event(event):
+            return
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        if self._handle_drag_drop_event(event):
+            return
+        super().dropEvent(event)
 
     def _build_fullscreen_exit_button(self) -> None:
         self._fullscreen_exit_button = QToolButton(self)
@@ -2097,6 +2220,14 @@ class PDFView(QMainWindow):
         super().keyPressEvent(event)
 
     def eventFilter(self, obj, event):
+        drop_targets = getattr(self, "_drop_target_widgets", ())
+        if obj in drop_targets and obj is not self and event.type() in (
+            QEvent.DragEnter,
+            QEvent.DragMove,
+            QEvent.DragLeave,
+            QEvent.Drop,
+        ):
+            return self._handle_drag_drop_event(event)
         graphics_view = getattr(self, "graphics_view", None)
         if graphics_view is not None and obj is graphics_view.viewport():
             if event.type() == QEvent.Leave:

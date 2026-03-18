@@ -52,6 +52,7 @@
       # - 不直接做資料層業務邏輯
       # - 可先顯示 shell，再延後 hydrate 左/右重面板
       # - deferred hydration 完成後發出 shell_ready
+      # - 視窗層 drag-and-drop intake：接收本機 PDF 拖放、預附加 queue、輕量 drag-over affordance
       # - 編輯意圖分流：edit_existing / add_new
       # - Inline editor 焦點守衛：字體/字級 popup 互動不提前 finalize
       # - 文字屬性按鈕：套用(提交) / 取消(捨棄)
@@ -103,6 +104,11 @@
       # 啟動生命週期回歸：shell_ready、deferred controller attach、CLI 直接開檔同步 attach/activate
 
 目前主要工作流程：
+0) 開啟文件（含拖放）：
+   - 檔案選擇：view(sig_open_pdf) -> controller(open_pdf) -> model(open_pdf)
+   - CLI：main.py attach/activate -> controller.open_pdf(path)
+   - 拖放：view 接收本機 PDF；若 controller 尚未 attach，先 queue，等 shell_ready 後由 main.py drain -> controller.open_pdf(path)
+
 1) 編輯既有文字：
    view(sig_edit_text) -> controller(EditTextCommand) -> model(edit_text)
    - 若編輯框內容清空並提交，視為刪除目標文字框內容（保留 Undo/Redo）
