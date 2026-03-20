@@ -66,7 +66,13 @@ Key functions include `ExportPagesDialog`, `_export_pages(...)`, `_resolve_image
 
 ## 10. Annotation, Watermark, Search, and OCR
 
-Annotations support rectangle, highlight, free-text, and visibility toggle behavior. Watermark workflows support add/update/remove with persisted metadata behavior. Search supports query and jump-to-result flow. OCR is optional and uses runtime dependency checks with actionable errors when required components are missing. Key functions include `model.tools.annotation.*`, `model.tools.watermark.*`, `model.tools.search.search_text(...)`, and `model.tools.ocr.ocr_pages(...)`.
+Annotations support rectangle, highlight, free-text, and visibility toggle behavior. Watermark workflows support add/update/remove with persisted metadata behavior. Search supports query and jump-to-result flow. OCR is optional and uses runtime dependency checks with actionable errors when required components are missing.
+
+Refresh behavior:
+- The annotation/watermark lists are controller-owned data refresh. Opening the sidebar tab does not force-refresh state.
+- Lists refresh after document open (deferred scan) and after add/update/remove actions that mutate annotation/watermark state.
+
+Key functions include `model.tools.annotation.*`, `model.tools.watermark.*`, `model.tools.search.search_text(...)`, and `model.tools.ocr.ocr_pages(...)`.
 
 ## 11. Browse Selection and Copy
 
@@ -74,9 +80,11 @@ Browse mode supports drag text selection with text-bounds snapping. Copy is avai
 
 ## 12. Performance and Progressive Loading
 
-Large PDF handling uses staged loading and batching to preserve interactivity while thumbnails, scene items, and indexes are built. Rendering and refresh scopes are coordinated to avoid blocking behavior and stale geometry. Key functions include controller batch scheduling and view continuous-scene rebuild paths.
+Large PDF handling uses staged loading and batching to preserve interactivity while thumbnails and indices are built. Continuous mode is placeholder-first: the view builds full-document scroll geometry immediately from placeholders, then the controller progressively renders only the visible pages (plus a small prefetch margin) and upgrades visible pages to high quality in the background. Rendering and refresh scopes are coordinated to avoid blocking behavior and stale geometry.
 
-Empty-launch startup also uses a shell-first path. When the app starts without an input file, `PDFView` can show a lightweight shell first, defer the heavy sidebars/property inspector until after the first UI turn, then let `main.py` attach and activate the controller only after the view emits `shell_ready`. Direct file-open startup keeps the synchronous path so `open_pdf(...)` still runs against a fully wired controller/view pair. Key functions include `main.run(...)`, `PDFView.ensure_heavy_panels_initialized()`, `PDFView.showEvent()`, `PDFView.shell_ready`, and `PDFController.activate()`.
+Key functions include controller visible render scheduling and view placeholder scene initialization.
+
+Empty-launch startup uses a shell-first path. When the app starts without an input file, it shows a lightweight `PDFView` shell and does not create `PDFModel` / `PDFController` until the user requests a document (open file dialog or drag-and-drop). When a document request occurs, the view queues paths and emits a backend-bootstrap request; `main.py` then creates model/controller, attaches/activates them, and drains queued open paths. Direct file-open startup keeps the synchronous path so `open_pdf(...)` still runs against a fully wired controller/view pair. Key functions include `main.run(...)`, `PDFView._queue_or_open_paths(...)`, `PDFView.sig_backend_bootstrap_requested`, and `PDFController.activate()`.
 
 Structural page operations (insert/delete) avoid full-document text reindex:
 - Inserted/imported pages are immediately indexed so their text is editable right away (hit-testing works without manual refresh).

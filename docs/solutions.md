@@ -1329,17 +1329,17 @@ logging 設定責任沒有集中在 app entrypoint，導致可匯入模組同時
 使用者在沒有直接開啟 PDF 的情況下啟動程式，主視窗偶發要 10 秒以上才真正顯示；同一次修復中也觀察到「第一次冷啟動特別慢」。
 
 **原因：**  
-- 問題不在 `PDFModel` 建立或一般 Qt 空白視窗，而是在真正的 `PDFView` + controller 啟動路徑。  
-- 根因是 no-PDF 啟動時太早建立完整互動鏈：`PDFView` 尚未完成 first show / first idle，就同時進行重型側欄/屬性面板建立與 controller-view 綁定，形成 initialization storm。  
-- 實測隔離後證明：單純 Qt 視窗、rich shell probe、甚至未綁定 controller 的 `PDFView` 都明顯更快；真正把 `view.controller` 提前接上後，pre-show stall 才會暴增。
+- 問題不是 Qt 空白視窗本身，而是 no-PDF 啟動時過早啟動「PDF 後端」(PyMuPDF / pikepdf / model/tools) 與完整互動鏈。  
+- 在 reboot-cold 的機器上，`PDFModel` / `PDFController` 的建立會觸發原生模組與暫存目錄初始化，可能單次就吃掉 10s+。  
+- 即使 UI 側欄/屬性面板做了 deferred/lazy hydration，只要後端仍在空啟動時 eager 建立，cold start 仍會被拖慢。  
+- 實測隔離後證明：單純 Qt 視窗、或未建立 PDF 後端的輕量 shell，都明顯更快。
 
 **有效解法（已實作）：**  
 - 採用 shell-first startup：`PDFView` 在 no-PDF 啟動時先顯示輕量 shell。  
-- 左側 sidebar 與右側 property inspector 改為 deferred hydration；等第一個 UI turn 後才建完整重面板。  
-- `PDFView` 在 deferred hydration 完成後發出 `shell_ready`。  
-- `main.py` 只在收到 `shell_ready` 後才 attach `view.controller` 並呼叫 `PDFController.activate()`；不再依賴分散的雙 `QTimer.singleShot(0, ...)`。  
-- `PDFController` 也拆成 cheap `__init__()` 與 `activate()`：signal wiring、print dispatcher、print worker bridge 等延後到 view ready 或 CLI 直接開檔時才初始化。  
-- CLI 直接開檔路徑仍維持同步 attach/activate/open，避免破壞原本開檔行為。
+- no-PDF 啟動時 **不建立** `PDFModel` / `PDFController`；只建立 `PDFView`（shell）。  
+- 當使用者真正「開檔 / 拖拉 PDF」時，View 會發出 `sig_backend_bootstrap_requested`，入口才建立 model/controller 並 attach + activate，然後 drain pending open paths。  
+- heavy panels (sidebar/property) 維持 lazy：只有在 open PDF 或使用者切換到需要的 tab/mode 時才初始化。  
+- CLI 直接開檔路徑仍維持同步 attach/activate/open（因為本來就是明確的 document request）。
 
 **檔案：**  
 - `main.py`  
@@ -1349,7 +1349,13 @@ logging 設定責任沒有集中在 app entrypoint，導致可匯入模組同時
 
 **驗證：**  
 - `pytest -q test_scripts/test_main_startup_behavior.py` -> pass  
-- 冷啟動實測從原本常見的 10s+ stall，降到約 3-4 秒可見主視窗，且不再卡在 pre-show 階段
+- no-PDF 冷啟動量測：應看到 `controller=None`，且 shell 在數秒內顯示。
+
+**冷啟動量測建議（避免誤判）：**
+- 必須在「全新 Python process」中量測（避免 import cache 低估 cold start）。
+- 量測時不要同時跑 pytest / 大量 IO / render，避免 CPU 搶奪導致數據失真。
+- 建議命令（PowerShell，repo root）：  
+  - `python -c "import time, main; t=time.perf_counter(); ctx=main.run(argv=[], start_event_loop=False); [ctx['app'].processEvents() for _ in range(5)]; print('cold_start_s', round(time.perf_counter()-t,4), 'controller', ctx['controller']); ctx['view'].close(); (ctx['model'] and ctx['model'].close()); ctx['app'].quit()"`
 
 ### 10.8 列印 helper 在不同啟動目錄/打包模式下失敗，且長列印易被誤判卡死（2026-03）
 
