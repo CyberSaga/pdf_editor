@@ -25,9 +25,9 @@ The project uses MVC with built-in tool extensions.
                                                 +-------------------------+
 ```
 
-Entry wiring happens in `main.py`, which instantiates `PDFModel`, `PDFView`, and `PDFController`.
+Entry wiring happens in `main.py`. CLI-open startup instantiates `PDFModel`, `PDFView`, and `PDFController` immediately; empty startup instantiates only `PDFView` until a document is requested.
 Application-level logging configuration is also owned by `main.py`; importable modules only acquire named loggers and do not call `logging.basicConfig(...)` at import time. Some modules may still apply narrow logger-level adjustments for extremely noisy third-party debug channels (for example PIL PNG chunk parsing).
-For empty startup (no CLI PDF paths), `main.py` now follows a shell-first lifecycle: show `PDFView`, let the view hydrate deferred panels, wait for `PDFView.shell_ready`, then attach/activate the controller. Direct CLI-open startup keeps the synchronous attach/activate/open path.
+For empty startup (no CLI PDF paths), `main.py` shows `PDFView` first and defers backend creation. When the user requests a document (open or drop), the view queues paths and emits `sig_backend_bootstrap_requested`; `main.py` then creates model/controller, attaches/activates them, and drains queued open paths. Direct CLI-open startup keeps the synchronous attach/activate/open path.
 
 ## 2. Layer Responsibilities
 
@@ -73,12 +73,17 @@ Mode registry includes `browse`, `edit_text`, `add_text`, `rect`, `highlight`, a
 
 Controller activation is now explicit. `PDFController.__init__()` keeps startup cheap, while `PDFController.activate()` performs view-signal wiring, print subsystem setup, and startup sync such as text-target granularity alignment. This keeps the no-document startup shell decoupled from full controller behavior until the UI is ready.
 
-For performance on large PDFs, controller schedules heavy work in small batches (scene rendering and text indexing). After structural operations or snapshot restore, controller also drains stale page indices in the background (`_schedule_stale_index_drain`), while the active/visible pages remain immediately usable via the model's `ensure_page_index_built(...)` contract.
+For performance on large PDFs, controller schedules heavy work in small batches (thumbnail rasterization, visible-page rendering, and text indexing). Continuous mode now uses a placeholder-first pipeline: the view allocates full-document scene geometry immediately from lightweight placeholders, then the controller progressively renders only the viewport window (plus a small prefetch margin) so the UI stays interactive even on 1000+ page PDFs. After structural operations or snapshot restore, controller also drains stale page indices in the background (`_schedule_stale_index_drain`), while the active/visible pages remain immediately usable via the model's `ensure_page_index_built(...)` contract.
 
 ### 2.4 View (`view/pdf_view.py`)
 
 View owns widgets, scene interactions, and signal emission. It does not mutate model business state directly.
-For empty startup it can defer building heavy sidebars/property panels, then emit `shell_ready` only after deferred hydration completes.
+For empty startup it can show a lightweight shell with no model/controller attached. When the user requests a document (open or drop), the view queues paths and emits a backend-bootstrap signal so `main.py` can create model/controller and drain pending open paths.
+
+Continuous mode rendering contracts:
+- `initialize_continuous_placeholders(...)` establishes the full scene rect and per-page y offsets for the entire document without rasterizing every page.
+- The view emits `sig_viewport_changed` when the user scrolls/resizes; the controller uses this as the steady-state trigger to schedule visible-page rendering.
+- Programmatic jumps (for example controller-driven navigation) may suppress `sig_viewport_changed` emissions to avoid double-scheduling the same visible render batch.
 
 The text editor state is split by intent:
 - `edit_existing` for updating existing text.
@@ -115,7 +120,7 @@ Open intake now has three entry shapes that still converge on the same controlle
 - CLI startup: `main.py` attaches/activates the controller immediately, then calls `controller.open_pdf(path)` for each argv path.
 - Window drag-and-drop: `PDFView` accepts local `.pdf` URLs, ignores folders/non-PDF/remote URLs, and emits `sig_open_pdf(path)` in dropped order when the controller is already active.
 
-For empty startup, drag-and-drop must respect the shell-first lifecycle. `PDFView` can receive drops before the controller is attached, so it keeps a lightweight in-view queue of pending paths. After `shell_ready`, `main.py` attaches/activates the controller, drains that queue, and replays each path through `controller.open_pdf(path)`. This preserves one open pipeline and avoids losing early drops.
+For empty startup, drag-and-drop must respect the backend-on-demand lifecycle. `PDFView` can receive drops before any model/controller exist, so it queues pending paths and requests backend bootstrap. `main.py` creates/attaches/activates the controller, drains that queue, and replays each path through `controller.open_pdf(path)`. This preserves one open pipeline and avoids losing early drops.
 
 ```mermaid
 flowchart TD
@@ -123,9 +128,9 @@ flowchart TD
   B -->|Picker| C["PDFView.emit sig_open_pdf(path)"]
   B -->|CLI| D["main.py attach+activate controller"]
   B -->|Drag-drop, controller active| E["PDFView emits sig_open_pdf(path) in drop order"]
-  B -->|Drag-drop, pre-attach shell| F["PDFView queues dropped local PDF paths"]
-  F --> G["PDFView emits shell_ready"]
-  G --> H["main.py attach+activate controller"]
+  B -->|Drag-drop, backend not ready| F["PDFView queues dropped local PDF paths"]
+  F --> G["PDFView emits sig_backend_bootstrap_requested"]
+  G --> H["main.py create+attach+activate controller"]
   H --> I["Drain queued paths"]
   D --> J["controller.open_pdf(path)"]
   I --> J
