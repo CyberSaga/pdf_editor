@@ -288,3 +288,160 @@ def test_change_scale_does_not_rerender_every_page_in_continuous_mode(
         assert len(calls) < len(model.doc)
     finally:
         _cleanup_startup(startup)
+
+
+def test_reset_empty_ui_tolerates_lazy_shell_without_heavy_panels() -> None:
+    from controller.pdf_controller import PDFController
+    from model.pdf_model import PDFModel
+
+    startup = main_module.run(argv=[], start_event_loop=False)
+    model = PDFModel()
+    controller = PDFController(model, startup["view"])
+    startup["view"].controller = controller
+    controller.activate()
+
+    try:
+        controller._reset_empty_ui()
+        assert startup["view"].left_sidebar.count() == 0
+        assert startup["view"].right_stacked_widget.count() == 1
+        assert not hasattr(startup["view"], "thumbnail_list")
+    finally:
+        model.close()
+        startup["view"].close()
+        startup["app"].quit()
+
+
+def test_empty_launch_cancelled_password_prompt_returns_to_empty_shell(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from model.pdf_model import PDFModel
+
+    pdf_path = _make_pdf(tmp_path / "encrypted-cancel.pdf", page_count=1)
+
+    def fake_open_pdf(self, path: str, password=None, append: bool = True):
+        raise RuntimeError("encrypted pdf")
+
+    monkeypatch.setattr(PDFModel, "open_pdf", fake_open_pdf)
+
+    startup = main_module.run(argv=[], start_event_loop=False)
+    startup["view"].ask_pdf_password = lambda path: None
+
+    try:
+        startup["view"]._queue_or_open_paths([str(pdf_path)])
+        for _ in range(5):
+            startup["app"].processEvents()
+
+        assert startup["controller"] is startup["view"].controller
+        assert startup["model"] is not None
+        assert startup["model"].get_active_session_id() is None
+        assert startup["view"].left_sidebar.count() == 0
+        assert startup["view"].right_stacked_widget.count() == 1
+        assert not hasattr(startup["view"], "thumbnail_list")
+    finally:
+        _cleanup_startup(startup)
+
+
+def test_panel_helpers_do_not_emit_sidebar_reload_signals() -> None:
+    startup = main_module.run(argv=[], start_event_loop=False)
+    view = startup["view"]
+    observed: list[str] = []
+
+    try:
+        view.sig_load_annotations.connect(lambda: observed.append("annotations"))
+        view.sig_load_watermarks.connect(lambda: observed.append("watermarks"))
+
+        view._show_annotations_tab()
+        view._show_annotation_panel()
+        view._show_watermarks_tab()
+        view._show_watermark_panel()
+
+        assert observed == []
+    finally:
+        _cleanup_startup(startup)
+
+
+def test_watermark_mutations_reload_sidebar_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = _make_pdf(tmp_path / "watermark-refresh.pdf", page_count=2)
+    startup = main_module.run(argv=[str(pdf_path)], start_event_loop=False)
+    controller = startup["controller"]
+    view = startup["view"]
+    observed: list[str] = []
+
+    def track_load() -> None:
+        observed.append("load")
+
+    try:
+        view.sig_load_watermarks.disconnect()
+    except RuntimeError:
+        pass
+    view.sig_load_watermarks.connect(track_load)
+
+    monkeypatch.setattr(controller, "load_watermarks", track_load)
+    monkeypatch.setattr(controller, "_invalidate_active_render_state", lambda clear_page_sizes=False: None)
+    monkeypatch.setattr(controller, "_rebuild_continuous_scene", lambda page_idx=0: None)
+    monkeypatch.setattr(controller, "_refresh_document_tabs", lambda: None)
+    monkeypatch.setattr(controller.model.tools.watermark, "add_watermark", lambda *args, **kwargs: None)
+    monkeypatch.setattr(controller.model.tools.watermark, "update_watermark", lambda *args, **kwargs: True)
+    monkeypatch.setattr(controller.model.tools.watermark, "remove_watermark", lambda *args, **kwargs: True)
+
+    try:
+        controller.add_watermark([1], "X", 45, 0.4, 24, (0.5, 0.5, 0.5), "helv", 0, 0, 1.3)
+        assert observed == ["load"]
+
+        observed.clear()
+        controller.update_watermark("wm-1", [1], "Y", 45, 0.4, 24, (0.5, 0.5, 0.5), "helv", 0, 0, 1.3)
+        assert observed == ["load"]
+
+        observed.clear()
+        controller.remove_watermark("wm-1")
+        assert observed == ["load"]
+    finally:
+        _cleanup_startup(startup)
+
+
+def test_show_page_schedules_visible_render_once_in_continuous_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = _make_pdf(tmp_path / "show-page-schedule.pdf", page_count=3)
+    startup = main_module.run(argv=[str(pdf_path)], start_event_loop=False)
+    controller = startup["controller"]
+    observed: list[tuple[tuple, dict]] = []
+
+    monkeypatch.setattr(
+        controller,
+        "_schedule_visible_render",
+        lambda *args, **kwargs: observed.append((args, kwargs)),
+    )
+
+    try:
+        controller.show_page(0)
+        assert len(observed) == 1
+    finally:
+        _cleanup_startup(startup)
+
+
+def test_rebuild_continuous_scene_schedules_visible_render_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = _make_pdf(tmp_path / "rebuild-scene-schedule.pdf", page_count=3)
+    startup = main_module.run(argv=[str(pdf_path)], start_event_loop=False)
+    controller = startup["controller"]
+    observed: list[tuple[tuple, dict]] = []
+
+    monkeypatch.setattr(
+        controller,
+        "_schedule_visible_render",
+        lambda *args, **kwargs: observed.append((args, kwargs)),
+    )
+
+    try:
+        controller._rebuild_continuous_scene(0)
+        assert len(observed) == 1
+    finally:
+        _cleanup_startup(startup)
