@@ -817,6 +817,7 @@ class PDFView(QMainWindow):
     sig_text_target_mode_changed = Signal(str)
     sig_page_changed = Signal(int)
     sig_scale_changed = Signal(int, float)
+    sig_viewport_changed = Signal()
     sig_toggle_fullscreen = Signal()
 
     # --- New Annotation Signals ---
@@ -836,6 +837,7 @@ class PDFView(QMainWindow):
     sig_insert_pages_from_file = Signal(str, list, int)  # source_file, source_pages, position
     sig_merge_pdfs_requested = Signal()
     sig_optimize_pdf_copy_requested = Signal()
+    sig_backend_bootstrap_requested = Signal()
 
     # --- 浮水印 Signals ---
     sig_add_watermark = Signal(list, str, float, float, int, tuple, str, float, float, float)  # pages, text, angle, opacity, font_size, color, font, offset_x, offset_y, line_spacing
@@ -1001,6 +1003,10 @@ class PDFView(QMainWindow):
         self.page_items: List[QGraphicsPixmapItem] = []
         self.page_y_positions: List[float] = []
         self.page_heights: List[float] = []
+        self._page_base_sizes: List[tuple[float, float]] = []
+        self._placeholder_pixmap = QPixmap(1, 1)
+        self._placeholder_pixmap.fill(QColor("#FFFFFF"))
+        self._thumbnail_layout_updating = False
         self._scroll_block = False
         self._scroll_handler_connected = False
         self.PAGE_GAP = 10
@@ -1120,6 +1126,7 @@ class PDFView(QMainWindow):
             return
         if self.controller is None or not getattr(self.controller, "is_active", False):
             self._pending_open_paths.extend(paths)
+            self.sig_backend_bootstrap_requested.emit()
             return
         for path in paths:
             self.sig_open_pdf.emit(path)
@@ -1319,7 +1326,6 @@ class PDFView(QMainWindow):
         self._clear_text_selection()
 
     def _complete_deferred_shell_startup(self) -> None:
-        self.ensure_heavy_panels_initialized()
         self._emit_shell_ready_once()
 
     def showEvent(self, event):
@@ -1734,20 +1740,24 @@ class PDFView(QMainWindow):
         self._focus_right_sidebar_target()
 
     def _show_thumbnails_tab(self):
+        self.ensure_heavy_panels_initialized()
         self._ensure_left_sidebar_visible()
         self.left_sidebar.setCurrentIndex(0)
 
     def _show_search_tab(self):
+        self.ensure_heavy_panels_initialized()
         self._ensure_left_sidebar_visible()
         self.left_sidebar.setCurrentIndex(1)
         self.search_input.setFocus(Qt.ShortcutFocusReason)
         self.search_input.selectAll()
 
     def _show_annotations_tab(self):
+        self.ensure_heavy_panels_initialized()
         self._ensure_left_sidebar_visible()
         self.left_sidebar.setCurrentIndex(2)
 
     def _show_watermarks_tab(self):
+        self.ensure_heavy_panels_initialized()
         self._ensure_left_sidebar_visible()
         self.left_sidebar.setCurrentIndex(3)
         self.sig_load_watermarks.emit()
@@ -1975,6 +1985,8 @@ class PDFView(QMainWindow):
 
     def set_mode(self, mode: str):
         mode = mode if mode in self._VALID_MODES else "browse"
+        if mode != "browse" and not self._heavy_panels_initialized:
+            self.ensure_heavy_panels_initialized()
         if self.text_editor:
             self._finalize_text_edit()
         if self.current_mode == 'browse' and mode != 'browse':
@@ -2249,6 +2261,8 @@ class PDFView(QMainWindow):
         return super().eventFilter(obj, event)
 
     def _update_thumbnail_layout_metrics(self) -> None:
+        if self._thumbnail_layout_updating:
+            return
         if not getattr(self, "thumbnail_list", None):
             return
         viewport = self.thumbnail_list.viewport()
@@ -2269,9 +2283,19 @@ class PDFView(QMainWindow):
         icon_h = max(88, int(icon_w * aspect))
         # Reserve only minimal label/padding area below the thumbnail.
         item_h = icon_h + 28
-        self.thumbnail_list.setSpacing(spacing)
-        self.thumbnail_list.setIconSize(QSize(icon_w, icon_h))
-        self.thumbnail_list.setGridSize(QSize(item_w, item_h))
+        self._thumbnail_layout_updating = True
+        try:
+            self.thumbnail_list.setSpacing(spacing)
+            self.thumbnail_list.setIconSize(QSize(icon_w, icon_h))
+            self.thumbnail_list.setGridSize(QSize(item_w, item_h))
+            # Hidden QListWidget instances may keep a stale scrollbar range
+            # until a layout pass is forced. Refresh explicitly so tests and
+            # offscreen open flows still get correct thumbnail scrolling
+            # behavior.
+            self.thumbnail_list.doItemsLayout()
+            self.thumbnail_list.updateGeometries()
+        finally:
+            self._thumbnail_layout_updating = False
 
     def _thumbnail_icon_aspect_ratio(self) -> float:
         """Return representative thumbnail icon height/width ratio."""
@@ -2340,6 +2364,7 @@ class PDFView(QMainWindow):
         self.page_items.clear()
         self.page_y_positions.clear()
         self.page_heights.clear()
+        self._page_base_sizes.clear()
         self.thumbnail_list.clear()
         self.total_pages = 0
         self.current_page = 0
@@ -2362,6 +2387,7 @@ class PDFView(QMainWindow):
         self.page_items.clear()
         self.page_y_positions.clear()
         self.page_heights.clear()
+        self._page_base_sizes.clear()
         if not pixmaps:
             return
         y = 0.0
@@ -2372,6 +2398,12 @@ class PDFView(QMainWindow):
             self.page_y_positions.append(y)
             h = pix.height()
             self.page_heights.append(h)
+            self._page_base_sizes.append(
+                (
+                    pix.width() / max(self.scale, 0.1),
+                    pix.height() / max(self.scale, 0.1),
+                )
+            )
             item = self.scene.addPixmap(pix)
             item.setPos(0, y)
             self.page_items.append(item)
@@ -2404,6 +2436,12 @@ class PDFView(QMainWindow):
             self.page_y_positions.append(y)
             h = pix.height()
             self.page_heights.append(h)
+            self._page_base_sizes.append(
+                (
+                    pix.width() / max(self.scale, 0.1),
+                    pix.height() / max(self.scale, 0.1),
+                )
+            )
             item = self.scene.addPixmap(pix)
             item.setPos(0, y)
             self.page_items.append(item)
@@ -2444,6 +2482,9 @@ class PDFView(QMainWindow):
         if idx != self.current_page and 0 <= idx < len(self.page_items):
             self.current_page = idx
             self._sync_thumbnail_selection()
+        self._update_page_counter()
+        self._update_status_bar()
+        self.sig_viewport_changed.emit()
 
     def _scene_y_to_page_index(self, scene_y: float) -> int:
         """將場景 Y 座標轉為頁碼索引。"""
@@ -2482,7 +2523,7 @@ class PDFView(QMainWindow):
         self.thumbnail_list.blockSignals(False)
 
     def scroll_to_page(self, page_idx: int):
-        """捲動至指定頁面，使該頁置中顯示。若目標頁尚未載入則捲動至最後已載入頁。"""
+        """捲動至指定頁面，使該頁置中顯示。"""
         if not self.page_y_positions or not self.page_heights:
             return
         n_pos = len(self.page_y_positions)
@@ -2503,16 +2544,79 @@ class PDFView(QMainWindow):
             self._update_status_bar()
         finally:
             self._scroll_block = False
+        self.sig_viewport_changed.emit()
 
     def update_page_in_scene(self, page_idx: int, pix: QPixmap):
         """更新連續場景中某一頁的 pixmap。"""
         if page_idx < 0 or page_idx >= len(self.page_items) or pix.isNull():
             return
         self.page_items[page_idx].setPixmap(pix)
-        # 若尺寸變了，更新高度記錄（同一 scale 下通常不變）
-        h = pix.height()
-        if page_idx < len(self.page_heights) and self.page_heights[page_idx] != h:
-            self.page_heights[page_idx] = h
+        self.page_items[page_idx].setTransform(QTransform())
+
+    def update_page_in_scene_scaled(self, page_idx: int, pix: QPixmap, rendered_scale: float, target_scale: float):
+        """更新連續場景中某一頁的 pixmap，必要時以 item transform 放大低解析度預覽。"""
+        if page_idx < 0 or page_idx >= len(self.page_items) or pix.isNull():
+            return
+        self.page_items[page_idx].setPixmap(pix)
+        scale_factor = max(0.1, float(target_scale)) / max(0.1, float(rendered_scale))
+        self.page_items[page_idx].setTransform(QTransform.fromScale(scale_factor, scale_factor))
+
+    def initialize_continuous_placeholders(
+        self,
+        page_sizes: List[tuple[float, float]],
+        scale: float,
+        initial_page_idx: int = 0,
+    ) -> None:
+        """Create full-document scene geometry immediately using lightweight placeholders."""
+        if self.text_editor:
+            self._finalize_text_edit()
+        self._clear_hover_highlight()
+        self._reset_browse_hover_cursor()
+        self._clear_text_selection()
+        self._disconnect_scroll_handler()
+        self.scene.clear()
+        self.page_items.clear()
+        self.page_y_positions.clear()
+        self.page_heights.clear()
+        self._page_base_sizes = list(page_sizes)
+        if not page_sizes:
+            return
+
+        y = 0.0
+        max_w = 0.0
+        target_scale = max(0.1, float(scale))
+        for width_pt, height_pt in page_sizes:
+            width_scene = max(1.0, float(width_pt) * target_scale)
+            height_scene = max(1.0, float(height_pt) * target_scale)
+            self.page_y_positions.append(y)
+            self.page_heights.append(height_scene)
+            item = self.scene.addPixmap(self._placeholder_pixmap)
+            item.setPos(0, y)
+            item.setTransform(QTransform.fromScale(width_scene, height_scene))
+            self.page_items.append(item)
+            max_w = max(max_w, width_scene)
+            y += height_scene + self.PAGE_GAP
+
+        self.scene.setSceneRect(0, 0, max(1, max_w), max(1, y))
+        self.graphics_view.setSceneRect(self.scene.sceneRect())
+        self.current_page = min(max(0, initial_page_idx), len(page_sizes) - 1)
+        self._render_scale = target_scale
+        self.graphics_view.setTransform(QTransform())
+        self._connect_scroll_handler()
+        self.scroll_to_page(self.current_page)
+        self._sync_thumbnail_selection()
+
+    def visible_page_range(self, prefetch: int = 0) -> tuple[int, int]:
+        if not self.page_y_positions:
+            return (0, -1)
+        viewport_rect = self.graphics_view.viewport().rect()
+        top_scene = self.graphics_view.mapToScene(viewport_rect.topLeft()).y()
+        bottom_scene = self.graphics_view.mapToScene(viewport_rect.bottomLeft()).y()
+        start = self._scene_y_to_page_index(top_scene) - max(0, int(prefetch))
+        end = self._scene_y_to_page_index(bottom_scene) + max(0, int(prefetch))
+        start = max(0, start)
+        end = min(len(self.page_y_positions) - 1, end)
+        return (start, end)
 
     def display_page(self, page_num: int, pix: QPixmap, highlight_rect: fitz.Rect = None):
         if self.text_editor:
@@ -3516,7 +3620,8 @@ class PDFView(QMainWindow):
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "開啟PDF", "", "PDF (*.pdf)")
-        if path: self.sig_open_pdf.emit(path)
+        if path:
+            self._queue_or_open_paths([path])
 
     def _print_document(self):
         if self.total_pages == 0:
@@ -3853,6 +3958,7 @@ class PDFView(QMainWindow):
             return
         if self.continuous_pages and self.page_items:
             # 連續模式：不 fit 整個場景，保留縮放與捲動位置
+            self.sig_viewport_changed.emit()
             return
         self.graphics_view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
         if self.scene.items():
