@@ -1760,7 +1760,6 @@ class PDFView(QMainWindow):
         self.ensure_heavy_panels_initialized()
         self._ensure_left_sidebar_visible()
         self.left_sidebar.setCurrentIndex(3)
-        self.sig_load_watermarks.emit()
 
     def _setup_left_sidebar(self):
         """Left sidebar: QTabWidget with 縮圖 / 搜尋 / 註解列表 / 浮水印列表. 260px."""
@@ -2365,91 +2364,15 @@ class PDFView(QMainWindow):
         self.page_y_positions.clear()
         self.page_heights.clear()
         self._page_base_sizes.clear()
-        self.thumbnail_list.clear()
+        thumbnail_list = getattr(self, "thumbnail_list", None)
+        if thumbnail_list is not None:
+            thumbnail_list.clear()
         self.total_pages = 0
         self.current_page = 0
         self._render_scale = self.scale if self.scale > 0 else 1.0
         self.clear_search_ui_state()
         self._update_page_counter()
         self._update_status_bar()
-
-    def display_all_pages_continuous(self, pixmaps: List[QPixmap]):
-        """建立連續頁面場景：所有頁面由上到下排列，可捲動切換。"""
-        if self.text_editor:
-            self._finalize_text_edit()
-        # Phase 5: scene.clear() 會銷毀所有場景物件，必須先重置 hover item 引用，
-        #          否則後續 setRect() 會操作已刪除的 C++ 物件，拋出 RuntimeError。
-        self._clear_hover_highlight()
-        self._reset_browse_hover_cursor()
-        self._clear_text_selection()
-        self._disconnect_scroll_handler()
-        self.scene.clear()
-        self.page_items.clear()
-        self.page_y_positions.clear()
-        self.page_heights.clear()
-        self._page_base_sizes.clear()
-        if not pixmaps:
-            return
-        y = 0.0
-        max_w = 0.0
-        for i, pix in enumerate(pixmaps):
-            if pix.isNull():
-                continue
-            self.page_y_positions.append(y)
-            h = pix.height()
-            self.page_heights.append(h)
-            self._page_base_sizes.append(
-                (
-                    pix.width() / max(self.scale, 0.1),
-                    pix.height() / max(self.scale, 0.1),
-                )
-            )
-            item = self.scene.addPixmap(pix)
-            item.setPos(0, y)
-            self.page_items.append(item)
-            max_w = max(max_w, pix.width())
-            y += h + self.PAGE_GAP
-        self.scene.setSceneRect(0, 0, max(1, max_w), max(1, y))
-        # 讓 view 使用與 scene 相同的 sceneRect，否則捲軸與可見區域會卡在開檔時單頁的 rect，無法捲動／跳頁
-        self.graphics_view.setSceneRect(self.scene.sceneRect())
-        self.current_page = 0
-        # pixmap 已以 self.scale 渲染完畢 → 更新 _render_scale
-        self._render_scale = self.scale
-        # view transform 重設為 identity：scale 已烘焙進 pixmap，不需再疊加 view 縮放
-        self.graphics_view.setTransform(QTransform())
-        self._connect_scroll_handler()
-        self.scroll_to_page(0)
-        self._sync_thumbnail_selection()
-
-    def append_pages_continuous(self, pixmaps: List[QPixmap], start_index: int):
-        """在連續場景中從 start_index 起追加一批頁面（用於分批載入）。"""
-        if not pixmaps:
-            return
-        if start_index == 0:
-            self.display_all_pages_continuous(pixmaps)
-            return
-        y = self.page_y_positions[-1] + self.page_heights[-1] + self.PAGE_GAP if self.page_y_positions else 0.0
-        max_w = self.scene.sceneRect().width() if self.scene.sceneRect().isValid() else 0.0
-        for i, pix in enumerate(pixmaps):
-            if pix.isNull():
-                continue
-            self.page_y_positions.append(y)
-            h = pix.height()
-            self.page_heights.append(h)
-            self._page_base_sizes.append(
-                (
-                    pix.width() / max(self.scale, 0.1),
-                    pix.height() / max(self.scale, 0.1),
-                )
-            )
-            item = self.scene.addPixmap(pix)
-            item.setPos(0, y)
-            self.page_items.append(item)
-            max_w = max(max_w, pix.width())
-            y += h + self.PAGE_GAP
-        self.scene.setSceneRect(0, 0, max(1, max_w), max(1, y))
-        self.graphics_view.setSceneRect(self.scene.sceneRect())
-        self._sync_thumbnail_selection()
 
     def _connect_scroll_handler(self):
         if self._scroll_handler_connected:
@@ -2522,7 +2445,7 @@ class PDFView(QMainWindow):
             self.thumbnail_list.scrollToItem(item, QAbstractItemView.PositionAtCenter)
         self.thumbnail_list.blockSignals(False)
 
-    def scroll_to_page(self, page_idx: int):
+    def scroll_to_page(self, page_idx: int, *, emit_viewport_changed: bool = True):
         """捲動至指定頁面，使該頁置中顯示。"""
         if not self.page_y_positions or not self.page_heights:
             return
@@ -2544,7 +2467,8 @@ class PDFView(QMainWindow):
             self._update_status_bar()
         finally:
             self._scroll_block = False
-        self.sig_viewport_changed.emit()
+        if emit_viewport_changed:
+            self.sig_viewport_changed.emit()
 
     def update_page_in_scene(self, page_idx: int, pix: QPixmap):
         """更新連續場景中某一頁的 pixmap。"""
@@ -2603,7 +2527,7 @@ class PDFView(QMainWindow):
         self._render_scale = target_scale
         self.graphics_view.setTransform(QTransform())
         self._connect_scroll_handler()
-        self.scroll_to_page(self.current_page)
+        self.scroll_to_page(self.current_page, emit_viewport_changed=False)
         self._sync_thumbnail_selection()
 
     def visible_page_range(self, prefetch: int = 0) -> tuple[int, int]:
@@ -3734,12 +3658,15 @@ class PDFView(QMainWindow):
 
     def _show_annotation_panel(self):
         """Toggle annotations panel in left sidebar (e.g. from Controller after add)."""
+        self.ensure_heavy_panels_initialized()
+        self._ensure_left_sidebar_visible()
         self.left_sidebar.setCurrentIndex(2)
 
     def _show_watermark_panel(self):
         """Toggle watermarks panel in left sidebar."""
+        self.ensure_heavy_panels_initialized()
+        self._ensure_left_sidebar_visible()
         self.left_sidebar.setCurrentIndex(3)
-        self.sig_load_watermarks.emit()
 
     def _show_add_watermark_dialog(self):
         if self.total_pages == 0:
@@ -3780,6 +3707,8 @@ class PDFView(QMainWindow):
         self.sig_remove_watermark.emit(wm_id)
 
     def populate_watermarks_list(self, watermarks: list):
+        if getattr(self, "watermark_list_widget", None) is None:
+            return
         self.watermark_list_widget.clear()
         self._selected_watermark_id = None
         for wm in watermarks:
@@ -3809,6 +3738,13 @@ class PDFView(QMainWindow):
         query = state.get("query", "")
         results = list(state.get("results", []))
         idx = int(state.get("index", -1))
+        if (
+            getattr(self, "search_input", None) is None
+            or getattr(self, "search_results_list", None) is None
+        ):
+            self.current_search_results = results
+            self.current_search_index = -1
+            return
         self.search_input.setText(query)
         self.display_search_results(results)
         if 0 <= idx < self.search_results_list.count():
@@ -3823,6 +3759,13 @@ class PDFView(QMainWindow):
     def display_search_results(self, results: List[Tuple[int, str, fitz.Rect]]):
         self.current_search_results = results
         self.current_search_index = -1
+        if (
+            getattr(self, "search_results_list", None) is None
+            or getattr(self, "search_status_label", None) is None
+            or getattr(self, "prev_btn", None) is None
+            or getattr(self, "next_btn", None) is None
+        ):
+            return
         self.search_results_list.clear()
         self.search_status_label.setText(f"找到 {len(results)} 個結果")
         self._update_status_bar()
@@ -3835,6 +3778,8 @@ class PDFView(QMainWindow):
             self.search_results_list.addItem(item)
 
     def populate_annotations_list(self, annotations: List[dict]):
+        if getattr(self, "annotation_list", None) is None:
+            return
         self.annotation_list.clear()
         for annot in annotations:
             item = QListWidgetItem(f"頁 {annot['page_num']+1}: {annot['text'][:30]}...")

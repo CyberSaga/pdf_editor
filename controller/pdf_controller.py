@@ -16,9 +16,7 @@ import uuid
 import fitz
 
 THUMB_BATCH_SIZE = 10
-SCENE_BATCH_SIZE = 3
 THUMB_BATCH_INTERVAL_MS = 30
-SCENE_BATCH_INTERVAL_MS = 0
 INDEX_BATCH_SIZE = 5
 INDEX_BATCH_INTERVAL_MS = 50
 FIRST_PAGE_PREVIEW_SCALE = 0.25
@@ -1660,40 +1658,6 @@ class PDFController:
                 lambda e=end, sid=session_id, g=gen: self._schedule_thumbnail_batch(e, sid, g),
             )
 
-    def _start_continuous_scene_loading(self, session_id: str, gen: int):
-        if (
-            self.model.get_active_session_id() != session_id
-            or self._load_gen_by_session.get(session_id) != gen
-            or not self.model.doc
-            or not self.view.continuous_pages
-        ):
-            return
-        QTimer.singleShot(0, lambda sid=session_id, g=gen: self._schedule_scene_batch(0, sid, g))
-
-    def _schedule_scene_batch(self, start: int, session_id: str, gen: int):
-        if (
-            self.model.get_active_session_id() != session_id
-            or self._load_gen_by_session.get(session_id) != gen
-            or not self.model.doc
-            or not self.view.continuous_pages
-        ):
-            return
-        n = len(self.model.doc)
-        end = min(start + SCENE_BATCH_SIZE, n)
-        pixmaps = [pixmap_to_qpixmap(self.model.get_page_pixmap(i + 1, self.view.scale)) for i in range(start, end)]
-        self.view.append_pages_continuous(pixmaps, start)
-        target = self._desired_scroll_page.get(session_id, 0)
-        if self.view.page_items:
-            self.view.scroll_to_page(min(target, len(self.view.page_items) - 1))
-        if end < n:
-            QTimer.singleShot(
-                SCENE_BATCH_INTERVAL_MS,
-                lambda e=end, sid=session_id, g=gen: self._schedule_scene_batch(e, sid, g),
-            )
-        else:
-            # 場景載完後才開始分批建立索引，避免開檔時 main thread 被 index 阻塞
-            QTimer.singleShot(0, lambda sid=session_id, g=gen: self._schedule_index_batch(0, sid, g))
-
     def _schedule_index_batch(self, start: int, session_id: str, gen: int):
         if (
             self.model.get_active_session_id() != session_id
@@ -1783,7 +1747,7 @@ class PDFController:
         if not self.model.doc or page_idx < 0 or page_idx >= len(self.model.doc):
             return
         if self.view.continuous_pages and self.view.page_items:
-            self.view.scroll_to_page(page_idx)
+            self.view.scroll_to_page(page_idx, emit_viewport_changed=False)
             sid = self.model.get_active_session_id()
             if sid:
                 self._schedule_visible_render(sid, immediate_page_idx=page_idx)
