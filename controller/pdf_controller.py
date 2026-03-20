@@ -7,6 +7,7 @@ from view.pdf_view import PDFView, ViewportAnchor, OptimizePdfDialog
 from typing import Callable, List, Tuple, Optional
 from utils.helpers import pixmap_to_qpixmap, show_error
 from pathlib import Path
+from collections import OrderedDict
 from dataclasses import dataclass, field
 import io
 import logging
@@ -21,6 +22,10 @@ SCENE_BATCH_INTERVAL_MS = 0
 INDEX_BATCH_SIZE = 5
 INDEX_BATCH_INTERVAL_MS = 50
 FIRST_PAGE_PREVIEW_SCALE = 0.25
+VISIBLE_PREFETCH_PAGES = 1
+VISIBLE_RENDER_BATCH_SIZE = 2
+LOW_RES_RENDER_SCALE = 0.5
+RENDER_CACHE_BUDGET_BYTES = 96 * 1024 * 1024
 
 from src.printing import PrintDispatcher, PrintingError, PrintHelperTerminatedError
 from src.printing.helper_protocol import PrintHelperJob
@@ -203,9 +208,15 @@ class PDFController:
         self._optimize_worker_bridge: Optional[_OptimizeWorkerBridge] = None
         self._optimize_paused_session_id: Optional[str] = None
         self._load_gen_by_session: dict[str, int] = {}
+        self._render_gen_by_session: dict[str, int] = {}
         self._stale_index_gen_by_session: dict[str, int] = {}
         self._session_ui_state: dict[str, SessionUIState] = {}
         self._desired_scroll_page: dict[str, int] = {}
+        self._page_sizes_by_session: dict[str, list[tuple[float, float]]] = {}
+        self._page_render_quality_by_session: dict[str, dict[int, str]] = {}
+        self._render_revision_by_session: dict[str, int] = {}
+        self._render_cache: OrderedDict[tuple[str, int, int, str, int], tuple[QPixmap, int]] = OrderedDict()
+        self._render_cache_total_bytes = 0
         self._fullscreen_session_snapshots: dict[str, FullscreenSessionSnapshot] = {}
         self._global_mode = self._normalize_mode(getattr(self.view, "current_mode", "browse"))
         self._signals_connected = False
@@ -259,6 +270,7 @@ class PDFController:
         self.view.sig_mode_changed.connect(self._update_mode)
         self.view.sig_page_changed.connect(self.change_page)
         self.view.sig_scale_changed.connect(self.change_scale)
+        self.view.sig_viewport_changed.connect(self._on_viewport_changed)
         self.view.sig_toggle_fullscreen.connect(self.toggle_fullscreen)
         self.view.sig_text_target_mode_changed.connect(self.set_text_target_mode)
 
@@ -298,6 +310,11 @@ class PDFController:
         self._load_gen_by_session[session_id] = gen
         return gen
 
+    def _next_render_gen(self, session_id: str) -> int:
+        gen = self._render_gen_by_session.get(session_id, 0) + 1
+        self._render_gen_by_session[session_id] = gen
+        return gen
+
     def _next_stale_index_gen(self, session_id: str) -> int:
         gen = self._stale_index_gen_by_session.get(session_id, 0) + 1
         self._stale_index_gen_by_session[session_id] = gen
@@ -307,6 +324,7 @@ class PDFController:
         if not session_id:
             return
         self._next_load_gen(session_id)
+        self._next_render_gen(session_id)
         self._next_stale_index_gen(session_id)
 
     def _capture_current_ui_state(self) -> None:
@@ -413,6 +431,173 @@ class PDFController:
         QTimer.singleShot(0, lambda sid=session_id, g=gen, a=anchor: self._restore_viewport_anchor_if_current(sid, g, a))
         QTimer.singleShot(180, lambda sid=session_id, g=gen, a=anchor: self._restore_viewport_anchor_if_current(sid, g, a))
 
+    def _session_page_sizes(self, session_id: str) -> list[tuple[float, float]]:
+        cached = self._page_sizes_by_session.get(session_id)
+        if cached and self.model.doc and len(cached) == len(self.model.doc):
+            return cached
+        if not self.model.doc:
+            return []
+        sizes = [(float(page.rect.width), float(page.rect.height)) for page in self.model.doc]
+        self._page_sizes_by_session[session_id] = sizes
+        return sizes
+
+    def _render_revision(self, session_id: str) -> int:
+        return self._render_revision_by_session.get(session_id, 0)
+
+    def _bump_render_revision(self, session_id: Optional[str] = None) -> None:
+        sid = session_id or self.model.get_active_session_id()
+        if not sid:
+            return
+        self._render_revision_by_session[sid] = self._render_revision_by_session.get(sid, 0) + 1
+        self._page_render_quality_by_session[sid] = {}
+        self._drop_render_cache_for_session(sid)
+
+    def _drop_render_cache_for_session(self, session_id: str) -> None:
+        doomed = [key for key in self._render_cache.keys() if key[0] == session_id]
+        for key in doomed:
+            _, cost = self._render_cache.pop(key)
+            self._render_cache_total_bytes = max(0, self._render_cache_total_bytes - cost)
+
+    def _render_cache_key(self, session_id: str, page_idx: int, rendered_scale: float, quality: str) -> tuple[str, int, int, str, int]:
+        return (
+            session_id,
+            page_idx,
+            int(round(rendered_scale * 1000)),
+            quality,
+            self._render_revision(session_id),
+        )
+
+    def _get_cached_render(self, session_id: str, page_idx: int, rendered_scale: float, quality: str) -> Optional[QPixmap]:
+        key = self._render_cache_key(session_id, page_idx, rendered_scale, quality)
+        cached = self._render_cache.pop(key, None)
+        if cached is None:
+            return None
+        pixmap, cost = cached
+        self._render_cache[key] = (pixmap, cost)
+        return pixmap
+
+    def _store_cached_render(self, session_id: str, page_idx: int, rendered_scale: float, quality: str, pixmap: QPixmap) -> None:
+        key = self._render_cache_key(session_id, page_idx, rendered_scale, quality)
+        cost = max(1, pixmap.width()) * max(1, pixmap.height()) * 4
+        previous = self._render_cache.pop(key, None)
+        if previous is not None:
+            self._render_cache_total_bytes = max(0, self._render_cache_total_bytes - previous[1])
+        self._render_cache[key] = (pixmap, cost)
+        self._render_cache_total_bytes += cost
+        while self._render_cache_total_bytes > RENDER_CACHE_BUDGET_BYTES and self._render_cache:
+            _, (_, old_cost) = self._render_cache.popitem(last=False)
+            self._render_cache_total_bytes = max(0, self._render_cache_total_bytes - old_cost)
+
+    def _render_scale_for_quality(self, target_scale: float, quality: str) -> float:
+        target = max(0.1, float(target_scale))
+        if quality != "low":
+            return target
+        return min(target, LOW_RES_RENDER_SCALE)
+
+    def _render_page_into_scene(self, session_id: str, page_idx: int, quality: str) -> bool:
+        if (
+            self.model.get_active_session_id() != session_id
+            or not self.model.doc
+            or page_idx < 0
+            or page_idx >= len(self.model.doc)
+        ):
+            return False
+        target_scale = max(0.1, float(self.view.scale))
+        rendered_scale = self._render_scale_for_quality(target_scale, quality)
+        cached = self._get_cached_render(session_id, page_idx, rendered_scale, quality)
+        if cached is None:
+            pix = self.model.get_page_pixmap(page_idx + 1, rendered_scale)
+            cached = pixmap_to_qpixmap(pix)
+            self._store_cached_render(session_id, page_idx, rendered_scale, quality, cached)
+        self.view.update_page_in_scene_scaled(page_idx, cached, rendered_scale, target_scale)
+        self._page_render_quality_by_session.setdefault(session_id, {})[page_idx] = quality
+        return True
+
+    def _visible_render_targets(self) -> tuple[list[int], list[int]]:
+        if not self.view.page_items:
+            return ([], [])
+        visible_start, visible_end = self.view.visible_page_range(prefetch=0)
+        prefetch_start, prefetch_end = self.view.visible_page_range(prefetch=VISIBLE_PREFETCH_PAGES)
+        visible_pages = list(range(visible_start, visible_end + 1)) if visible_end >= visible_start else []
+        prefetch_pages = list(range(prefetch_start, prefetch_end + 1)) if prefetch_end >= prefetch_start else []
+        return (visible_pages, prefetch_pages)
+
+    def _schedule_visible_render(self, session_id: str, immediate_page_idx: Optional[int] = None) -> None:
+        if not session_id or not self.model.doc or not self.view.continuous_pages:
+            return
+        gen = self._next_render_gen(session_id)
+        if immediate_page_idx is not None:
+            current_quality = self._page_render_quality_by_session.setdefault(session_id, {}).get(immediate_page_idx)
+            if current_quality not in {"low", "high"}:
+                self._render_page_into_scene(session_id, immediate_page_idx, "low")
+        QTimer.singleShot(0, lambda sid=session_id, g=gen: self._process_visible_render_batch(sid, g))
+
+    def _process_visible_render_batch(self, session_id: str, gen: int) -> None:
+        if (
+            self.model.get_active_session_id() != session_id
+            or self._render_gen_by_session.get(session_id) != gen
+            or not self.model.doc
+            or not self.view.continuous_pages
+        ):
+            return
+        visible_pages, prefetch_pages = self._visible_render_targets()
+        if not prefetch_pages:
+            return
+
+        page_quality = self._page_render_quality_by_session.setdefault(session_id, {})
+        candidates: list[tuple[int, str]] = []
+        for page_idx in visible_pages:
+            quality = page_quality.get(page_idx)
+            if quality is None:
+                candidates.append((page_idx, "low"))
+            elif quality == "low":
+                candidates.append((page_idx, "high"))
+        for page_idx in prefetch_pages:
+            if page_idx in visible_pages:
+                continue
+            quality = page_quality.get(page_idx)
+            if quality is None:
+                candidates.append((page_idx, "low"))
+
+        if not candidates:
+            return
+
+        rendered = 0
+        for page_idx, quality in candidates:
+            if self._render_page_into_scene(session_id, page_idx, quality):
+                rendered += 1
+            if rendered >= VISIBLE_RENDER_BATCH_SIZE:
+                break
+
+        if rendered > 0:
+            QTimer.singleShot(0, lambda sid=session_id, g=gen: self._process_visible_render_batch(sid, g))
+
+    def _schedule_deferred_sidebar_scans(self, session_id: str) -> None:
+        if not session_id:
+            return
+        revision = self._render_revision(session_id)
+        QTimer.singleShot(
+            0,
+            lambda sid=session_id, rev=revision: self._run_deferred_sidebar_scans(sid, rev),
+        )
+
+    def _run_deferred_sidebar_scans(self, session_id: str, revision: int) -> None:
+        if (
+            self.model.get_active_session_id() != session_id
+            or self._render_revision(session_id) != revision
+        ):
+            return
+        self.load_annotations()
+        self.load_watermarks()
+
+    def _invalidate_active_render_state(self, clear_page_sizes: bool = False) -> None:
+        session_id = self.model.get_active_session_id()
+        if not session_id:
+            return
+        self._bump_render_revision(session_id)
+        if clear_page_sizes:
+            self._page_sizes_by_session.pop(session_id, None)
+
     def enter_fullscreen(self) -> None:
         self.activate()
         if self._fullscreen_is_blocked():
@@ -457,6 +642,12 @@ class PDFController:
         if self.view.is_fullscreen_active() and self.model.doc:
             self._apply_fullscreen_fit_for_active_session()
 
+    def _on_viewport_changed(self) -> None:
+        session_id = self.model.get_active_session_id()
+        if not session_id or not self.view.continuous_pages:
+            return
+        self._schedule_visible_render(session_id)
+
     def _reset_empty_ui(self) -> None:
         self.annotations = []
         self.view.clear_document_tabs()
@@ -470,6 +661,7 @@ class PDFController:
         if not sid or not self.model.doc:
             self._reset_empty_ui()
             return
+        self.view.ensure_heavy_panels_initialized()
 
         state = self._get_ui_state(sid)
         if initial_page_idx is None:
@@ -479,19 +671,18 @@ class PDFController:
 
         self.view.scale = state.scale
         self.view.total_pages = len(self.model.doc)
-        first_pix = self.model.get_page_pixmap(initial_page_idx + 1, FIRST_PAGE_PREVIEW_SCALE)
-        qpix = pixmap_to_qpixmap(first_pix)
-        self.view.display_page(initial_page_idx, qpix)
+        self._page_render_quality_by_session[sid] = {}
+        self._session_page_sizes(sid)
+        self.view.initialize_continuous_placeholders(self._page_sizes_by_session[sid], state.scale, initial_page_idx)
         self.view.set_thumbnail_placeholders(len(self.model.doc))
-        self.load_annotations()
-        self.load_watermarks()
         self.view.apply_search_ui_state(state.search_state)
         self._apply_session_mode(self._global_mode)
         self._update_undo_redo_tooltips()
 
         gen = self._next_load_gen(sid)
         QTimer.singleShot(0, lambda sid=sid, gen=gen: self._schedule_thumbnail_batch(0, sid, gen))
-        QTimer.singleShot(0, lambda sid=sid, gen=gen: self._start_continuous_scene_loading(sid, gen))
+        self._schedule_visible_render(sid, immediate_page_idx=initial_page_idx)
+        self._schedule_deferred_sidebar_scans(sid)
         self._schedule_restore_viewport_anchor(sid, gen, state.viewport_anchor)
 
     def _switch_to_session_id(self, session_id: str) -> None:
@@ -1170,6 +1361,7 @@ class PDFController:
         actual_deleted_pages = self.model.delete_pages(pages)
         if not actual_deleted_pages:
             return
+        self._invalidate_active_render_state(clear_page_sizes=True)
         after = self.model._capture_doc_snapshot()
         cmd = SnapshotCommand(
             model=self.model,
@@ -1192,6 +1384,7 @@ class PDFController:
         actual_rotated_pages = self.model.rotate_pages(pages, degrees)
         if not actual_rotated_pages:
             return
+        self._invalidate_active_render_state(clear_page_sizes=True)
         after = self.model._capture_doc_snapshot()
         cmd = SnapshotCommand(
             model=self.model,
@@ -1212,6 +1405,7 @@ class PDFController:
     def add_highlight(self, page: int, rect: fitz.Rect, color: Tuple[float, float, float, float]):
         before = self.model._capture_doc_snapshot()
         self.model.tools.annotation.add_highlight(page, rect, color)
+        self._invalidate_active_render_state()
         after = self.model._capture_doc_snapshot()
         cmd = SnapshotCommand(
             model=self.model,
@@ -1231,6 +1425,7 @@ class PDFController:
     def add_rect(self, page: int, rect: fitz.Rect, color: Tuple[float, float, float, float], fill: bool):
         before = self.model._capture_doc_snapshot()
         self.model.tools.annotation.add_rect(page, rect, color, fill)
+        self._invalidate_active_render_state()
         after = self.model._capture_doc_snapshot()
         cmd = SnapshotCommand(
             model=self.model,
@@ -1286,6 +1481,7 @@ class PDFController:
                 target_mode=target_mode,
             )
             self.model.command_manager.execute(cmd)
+            self._invalidate_active_render_state()
             self.show_page(page_idx)
             self._update_undo_redo_tooltips()
         except Exception as e:
@@ -1319,6 +1515,7 @@ class PDFController:
                 before_page_snapshot_bytes=before_page_snapshot,
             )
             self.model.command_manager.execute(cmd)
+            self._invalidate_active_render_state()
             self.show_page(page_idx)
             self._update_undo_redo_tooltips()
         except Exception as e:
@@ -1379,6 +1576,7 @@ class PDFController:
             return
         last_cmd = self.model.command_manager._undo_stack[-1]
         self.model.command_manager.undo()
+        self._invalidate_active_render_state(clear_page_sizes=getattr(last_cmd, "is_structural", False))
         self._refresh_after_command(last_cmd)
         self._update_undo_redo_tooltips()
 
@@ -1388,6 +1586,7 @@ class PDFController:
             return
         next_cmd = self.model.command_manager._redo_stack[-1]
         self.model.command_manager.redo()
+        self._invalidate_active_render_state(clear_page_sizes=getattr(next_cmd, "is_structural", False))
         self._refresh_after_command(next_cmd)
         self._update_undo_redo_tooltips()
 
@@ -1424,7 +1623,7 @@ class PDFController:
             self._get_ui_state(sid).current_page = page_idx
         
     def change_scale(self, page_idx: int, scale: float):
-        """設定縮放比例：更新 view.scale，連續模式時所有頁面等齊重繪，並同步右上角縮放選單。"""
+        """設定縮放比例：連續模式先重建 placeholder 幾何，再只重繪可見頁。"""
         if not self.model.doc or page_idx < 0 or page_idx >= len(self.model.doc):
             return
         self.view.scale = scale
@@ -1557,31 +1756,37 @@ class PDFController:
             )
 
     def _on_request_rerender(self):
-        """觸控板縮放停止後的重渲回呼：以 self.view.scale 重新渲染所有頁面，確保清晰顯示。"""
+        """觸控板縮放停止後的重渲回呼：重建 placeholder 幾何並刷新可見區。"""
         if not self.model.doc:
             return
         self._rebuild_continuous_scene(self.view.current_page)
 
     def _rebuild_continuous_scene(self, scroll_to_page_idx: int = 0):
-        """重建連續頁面場景並捲動至指定頁。"""
+        """重建連續頁面 placeholder 場景並捲動至指定頁。"""
         if not self.model.doc or not self.view.continuous_pages:
             return
-        pixmaps = [pixmap_to_qpixmap(self.model.get_page_pixmap(i + 1, self.view.scale)) for i in range(len(self.model.doc))]
-        self.view.display_all_pages_continuous(pixmaps)
-        self.view.scroll_to_page(min(scroll_to_page_idx, len(self.model.doc) - 1))
+        session_id = self.model.get_active_session_id()
+        if not session_id:
+            return
+        self._page_render_quality_by_session[session_id] = {}
+        self.view.initialize_continuous_placeholders(
+            self._session_page_sizes(session_id),
+            self.view.scale,
+            min(scroll_to_page_idx, len(self.model.doc) - 1),
+        )
+        self._schedule_visible_render(
+            session_id,
+            immediate_page_idx=min(scroll_to_page_idx, len(self.model.doc) - 1),
+        )
 
     def show_page(self, page_idx: int):
         if not self.model.doc or page_idx < 0 or page_idx >= len(self.model.doc):
             return
         if self.view.continuous_pages and self.view.page_items:
-            n_loaded = len(self.view.page_items)
-            if page_idx >= n_loaded:
-                self.view.scroll_to_page(n_loaded - 1)
-                return
-            pix = self.model.get_page_pixmap(page_idx + 1, self.view.scale)
-            qpix = pixmap_to_qpixmap(pix)
-            self.view.update_page_in_scene(page_idx, qpix)
             self.view.scroll_to_page(page_idx)
+            sid = self.model.get_active_session_id()
+            if sid:
+                self._schedule_visible_render(sid, immediate_page_idx=page_idx)
         else:
             pix = self.model.get_page_pixmap(page_idx + 1, self.view.scale)
             qpix = pixmap_to_qpixmap(pix)
@@ -1635,6 +1840,7 @@ class PDFController:
             before = self.model._capture_doc_snapshot()
             # Model expects 1-based page number
             new_annot_xref = self.model.tools.annotation.add_annotation(page_idx + 1, doc_point, text)
+            self._invalidate_active_render_state()
             after = self.model._capture_doc_snapshot()
             cmd = SnapshotCommand(
                 model=self.model,
@@ -1670,6 +1876,7 @@ class PDFController:
         """Show or hide all annotations."""
         if not self.model.doc: return
         self.model.tools.annotation.toggle_annotations_visibility(visible)
+        self._invalidate_active_render_state()
         self.show_page(self.view.current_page)
         logger.debug(f"設定註解可見性為 {visible}")
 
@@ -1711,6 +1918,7 @@ class PDFController:
             actual_inserted_pages = self.model.insert_blank_page(position)
             if not actual_inserted_pages:
                 return
+            self._invalidate_active_render_state(clear_page_sizes=True)
             after = self.model._capture_doc_snapshot()
             cmd = SnapshotCommand(
                 model=self.model,
@@ -1744,6 +1952,7 @@ class PDFController:
             actual_inserted_pages = self.model.insert_pages_from_file(source_file, source_pages, position)
             if not actual_inserted_pages:
                 return
+            self._invalidate_active_render_state(clear_page_sizes=True)
             after = self.model._capture_doc_snapshot()
             cmd = SnapshotCommand(
                 model=self.model,
@@ -1777,6 +1986,7 @@ class PDFController:
             return
         try:
             self.model.tools.watermark.add_watermark(pages, text, angle, opacity, font_size, color, font, offset_x, offset_y, line_spacing)
+            self._invalidate_active_render_state()
             self._rebuild_continuous_scene(self.view.current_page)
             self.load_watermarks()
             self.view._show_watermark_panel()
@@ -1790,6 +2000,7 @@ class PDFController:
         if not self.model.doc:
             return
         if self.model.tools.watermark.update_watermark(wm_id, text=text, pages=pages, angle=angle, opacity=opacity, font_size=font_size, color=color, font=font, offset_x=offset_x, offset_y=offset_y, line_spacing=line_spacing):
+            self._invalidate_active_render_state()
             self._rebuild_continuous_scene(self.view.current_page)
             self.load_watermarks()
             self._refresh_document_tabs()
@@ -1799,6 +2010,7 @@ class PDFController:
         if not self.model.doc:
             return
         if self.model.tools.watermark.remove_watermark(wm_id):
+            self._invalidate_active_render_state()
             self._rebuild_continuous_scene(self.view.current_page)
             self.load_watermarks()
             self._refresh_document_tabs()

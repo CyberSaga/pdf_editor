@@ -2,6 +2,7 @@ import logging
 import sys
 from typing import Any
 
+
 def _configure_logging() -> logging.Logger:
     logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
     return logging.getLogger(__name__)
@@ -13,31 +14,36 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
     _configure_logging()
 
     from PySide6.QtWidgets import QApplication
-    from model.pdf_model import PDFModel
     from view.pdf_view import PDFView
-    from controller.pdf_controller import PDFController
 
     app = QApplication.instance()
     if app is None:
         app = QApplication([sys.argv[0], *cli_args])
 
-    model = PDFModel()
     view = PDFView(defer_heavy_panels=not cli_args)
+    startup_ctx: dict[str, Any] = {
+        "app": app,
+        "model": None,
+        "view": view,
+        "controller": None,
+    }
 
-    controller = PDFController(model, view)
-    controller_attached = {"done": False}
+    def attach_and_activate_controller() -> Any:
+        controller = startup_ctx["controller"]
+        if controller is not None:
+            return controller
+        from model.pdf_model import PDFModel
+        from controller.pdf_controller import PDFController
 
-    def attach_and_activate_controller() -> None:
-        if controller_attached["done"]:
-            return
+        model = PDFModel()
+        controller = PDFController(model, view)
         view.controller = controller
         controller.activate()
+        startup_ctx["model"] = model
+        startup_ctx["controller"] = controller
         for path in view.drain_pending_open_paths():
             controller.open_pdf(path)
-        controller_attached["done"] = True
-
-    if not cli_args:
-        view.shell_ready.connect(attach_and_activate_controller)
+        return controller
 
     view.show()
 
@@ -45,15 +51,12 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
         attach_and_activate_controller()
         view.ensure_heavy_panels_initialized()
         for path in cli_args:
-            controller.open_pdf(path)
+            startup_ctx["controller"].open_pdf(path)
+    else:
+        view.sig_backend_bootstrap_requested.connect(attach_and_activate_controller)
 
     if not start_event_loop:
-        return {
-            "app": app,
-            "model": model,
-            "view": view,
-            "controller": controller,
-        }
+        return startup_ctx
 
     return app.exec()
 
