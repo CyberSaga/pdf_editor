@@ -75,6 +75,8 @@ class StreamReflowPlan:
     shifts: list = field(default_factory=list)      # list[DeltaShift]
     warnings: list = field(default_factory=list)
     delta_y_total: float = 0.0
+    original_rect: object = None   # 使用者指定的原始編輯矩形（visual 座標）
+    new_height: float = 0.0        # 估算的新文字高度（供 apply_shifts 設 insert rect 用）
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -147,6 +149,7 @@ class TrackBEngine:
             font=font,
             size=size,
             page_rect=page.rect,
+            original_rect=edited_rect,
         )
 
         # Step 4: 套用位移
@@ -217,18 +220,25 @@ class TrackBEngine:
                         color_rgb = (0, 0, 0)
 
                     # 建構 char positions（如果有 chars 資訊）
+                    # rawdict 模式：spans 無 'text' key，文字從 chars[*]['c'] 重建
                     char_positions = []
-                    if "chars" in span:
-                        for ch in span["chars"]:
-                            ch_bbox = fitz.Rect(ch["bbox"])
-                            char_positions.append((
-                                ch_bbox.x0, ch_bbox.y0, ch["c"]
-                            ))
+                    chars_list = span.get("chars", [])
+                    for ch in chars_list:
+                        ch_bbox = fitz.Rect(ch["bbox"])
+                        char_positions.append((
+                            ch_bbox.x0, ch_bbox.y0, ch.get("c", "")
+                        ))
+                    # 優先從 chars 重建文字（rawdict 格式），否則嘗試 'text' key
+                    span_text = (
+                        "".join(ch.get("c", "") for ch in chars_list)
+                        if chars_list
+                        else span.get("text", "")
+                    )
 
                     stream_span = StreamSpan(
                         span_idx=span_idx,
                         bbox=bbox,
-                        text=span.get("text", ""),
+                        text=span_text,
                         font_name=span.get("font", ""),
                         font_size=span.get("size", 12.0),
                         color_rgb=color_rgb,
@@ -256,6 +266,7 @@ class TrackBEngine:
         font: str,
         size: float,
         page_rect: fitz.Rect,
+        original_rect: fitz.Rect = None,
     ) -> StreamReflowPlan:
         """
         計算精準的 span-level 位移。
@@ -266,6 +277,7 @@ class TrackBEngine:
           - 逐 span 計算新 bbox，並做防干擾檢查（不與圖片/其他靜態塊重疊）
         """
         plan = StreamReflowPlan(edited_span_idx=edited_span_idx)
+        plan.original_rect = original_rect  # 保存供 apply_shifts 使用
 
         # 找出被編輯的 span
         edited_span = None
@@ -279,29 +291,43 @@ class TrackBEngine:
             return plan
 
         # 估算高度變化
-        # 使用原始文字內容估算舊高度，而非 bbox.height（bbox 可能比實際文字高很多）
+        # 優先使用 original_rect.width（使用者指定寬度），避免 tight bbox 寬度造成誤差
+        est_width = (
+            original_rect.width if original_rect is not None
+            else edited_span.bbox.width
+        )
+        # 安全下限：寬度過小時高度估算會爆炸，回退至頁面寬度 50%
+        min_safe_width = max(size * 3, 30.0)
+        if est_width < min_safe_width:
+            page_w = page_rect.width if page_rect else 595.0
+            est_width = max(est_width, page_w * 0.5)
+            plan.warnings.append(f"est_width 過小，已回退至 {est_width:.1f}pt")
         old_height = self._estimate_span_height(
             original_text or edited_span.text,
             size,
-            edited_span.bbox.width,
+            est_width,
         )
         new_height = self._estimate_span_height(
-            new_text, size, edited_span.bbox.width,
+            new_text, size, est_width,
         )
         plan.delta_y_total = new_height - old_height
+        plan.new_height = new_height  # 供 apply_shifts 計算正確 insert rect 高度
 
         if abs(plan.delta_y_total) < self._position_tolerance:
             # 高度變化太小，不需要位移後續 span
             return plan
 
         # 被編輯 span 自身的 rewrite
+        # 使用 original_rect 的 x 範圍以取得正確寬度（避免 tight bbox 造成文字過窄）
+        base_x0 = original_rect.x0 if original_rect else edited_span.bbox.x0
+        base_x1 = original_rect.x1 if original_rect else edited_span.bbox.x1
         plan.shifts.append(DeltaShift(
             span_idx=edited_span_idx,
             old_bbox=fitz.Rect(edited_span.bbox),
             new_bbox=fitz.Rect(
-                edited_span.bbox.x0,
+                base_x0,
                 edited_span.bbox.y0,
-                edited_span.bbox.x1,
+                base_x1,
                 edited_span.bbox.y0 + new_height,
             ),
             delta_x=0,
@@ -425,8 +451,23 @@ class TrackBEngine:
 
             for shift in plan.shifts:
                 idx = shift.span_idx
-                if idx < len(flat_spans):
-                    sp = flat_spans[idx]
+                # 用 old_bbox 中心點比對現有 span（flat index 在 redact 後會失效）
+                cx = shift.old_bbox.x0 + shift.old_bbox.width / 2
+                cy = shift.old_bbox.y0 + shift.old_bbox.height / 2
+                best_sp = None
+                best_dist = float("inf")
+                for sp in flat_spans:
+                    sr = fitz.Rect(sp["bbox"])
+                    if sr.contains(fitz.Point(cx, cy)):
+                        dist = abs(sr.x0 - shift.old_bbox.x0) + abs(sr.y0 - shift.old_bbox.y0)
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_sp = sp
+                # fallback: 仍用 flat index
+                if best_sp is None and idx < len(flat_spans):
+                    best_sp = flat_spans[idx]
+                if best_sp is not None:
+                    sp = best_sp
                     span_info[idx] = {
                         "text": shift.rewrite_text or sp.get("text", ""),
                         "font": sp.get("font", font),
@@ -437,7 +478,7 @@ class TrackBEngine:
                     }
                 else:
                     plan.warnings.append(
-                        f"Span {idx} 超出 flat_spans 範圍 (len={len(flat_spans)})"
+                        f"Span {idx} 無法以 bbox 比對（flat_spans len={len(flat_spans)}）"
                     )
 
             # ── Phase 2: 精準 Redact ──
@@ -469,7 +510,9 @@ class TrackBEngine:
                     f"font-size: {info['size']}pt; "
                     f"color: rgb({int(sp_color[0]*255)},"
                     f"{int(sp_color[1]*255)},"
-                    f"{int(sp_color[2]*255)}); }}"
+                    f"{int(sp_color[2]*255)}); "
+                    f"word-wrap: break-word; overflow-wrap: break-word; "
+                    f"box-sizing: border-box; }}"
                 )
 
                 rc = page.insert_htmlbox(new_bbox, text, css=css)
@@ -591,7 +634,13 @@ class TrackBEngine:
     def _find_edited_span(
         self, analysis: StreamAnalysis, edited_rect: fitz.Rect,
     ) -> Optional[int]:
-        """找出與 edited_rect 重疊最大的 span 索引。"""
+        """找出與 edited_rect 重疊最大的 span 索引。
+
+        注意：rawdict 模式對部分 CJK 字型可能回傳 text=''，
+        因此不做文字內容過濾，只以 bbox 面積決定最佳 span。
+        若所有 span 的 text 都為空，Track B 無法實際修改文字，
+        此時上層應回退到 Track A。
+        """
         best_idx = None
         best_overlap = 0.0
 
@@ -604,25 +653,58 @@ class TrackBEngine:
                 best_overlap = area
                 best_idx = sp.span_idx
 
+        # 若找到的 span text 為空（CJK 不可解碼字型），回傳 None 讓上層回退 Track A
+        if best_idx is not None:
+            found_sp = next(sp for sp in analysis.spans if sp.span_idx == best_idx)
+            if not found_sp.text.strip():
+                logger.warning(
+                    f"Track B: found span {best_idx} but text is empty "
+                    f"(non-decodable font), falling back to Track A"
+                )
+                return None
+
         return best_idx
+
+    @staticmethod
+    def _count_display_width(text: str, size: float) -> float:
+        """CJK 字元視為全形（size*1.0），其餘視為半形（size*0.6）。"""
+        cjk_w = size * 1.0
+        lat_w = size * 0.6
+        total = 0.0
+        for ch in text:
+            cp = ord(ch)
+            if (
+                0x1100 <= cp <= 0x11FF or
+                0x2E80 <= cp <= 0x2FFF or
+                0x3000 <= cp <= 0x9FFF or
+                0xA000 <= cp <= 0xA4CF or
+                0xAC00 <= cp <= 0xD7AF or
+                0xF900 <= cp <= 0xFAFF or
+                0xFE10 <= cp <= 0xFE4F or
+                0xFF00 <= cp <= 0xFFEF or
+                0x20000 <= cp <= 0x2FA1F
+            ):
+                total += cjk_w
+            else:
+                total += lat_w
+        return total
 
     def _estimate_span_height(
         self, text: str, size: float, width: float,
     ) -> float:
-        """估算文字在指定寬度內的高度。"""
+        """估算文字在指定寬度內的高度（CJK-aware）。"""
         if not text:
             return 0.0
-
-        avg_char_width = size * 0.6
-        chars_per_line = max(1, int(width / avg_char_width))
 
         lines = text.split("\n")
         total_lines = 0
         for line in lines:
-            total_lines += max(
-                1,
-                (len(line) + chars_per_line - 1) // chars_per_line,
-            )
+            if not line:
+                total_lines += 1
+                continue
+            display_w = self._count_display_width(line, size)
+            wrapped = max(1, int((display_w / width) + 0.99)) if width > 0 else 1
+            total_lines += wrapped
 
         return total_lines * size * 1.2
 
