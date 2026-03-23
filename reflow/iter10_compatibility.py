@@ -181,7 +181,7 @@ reopened.close()
 # 刻意不提供正確密碼，驗證程式能優雅地跳過而非拋例外。
 # 以 libreoffice-writer-password.pdf 為測試對象，
 # 正確密碼是 openpassword / permissionpassword，但這裡故意不提供。
-_pw_pdf = pathlib.Path("test_files/sample-files-main/libreoffice-writer-password.pdf")
+_pw_pdf = pathlib.Path("test_files/sample-files-main/005-libreoffice-writer-password/libreoffice-writer-password.pdf")
 c7a_ok = False
 c7a_detail = "file_not_found"
 if _pw_pdf.exists():
