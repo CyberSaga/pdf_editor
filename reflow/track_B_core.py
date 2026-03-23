@@ -380,11 +380,7 @@ class TrackBEngine:
         plan.delta_y_total = new_height - old_height
         plan.new_height = new_height  # 供 apply_shifts 計算正確 insert rect 高度
 
-        if abs(plan.delta_y_total) < self._position_tolerance:
-            # 高度變化太小，不需要位移後續 span
-            return plan
-
-        # 被編輯 span 自身的 rewrite
+        # 被編輯 span 自身的 rewrite（無論高度是否改變，都必須更新文字）
         # 使用 original_rect 的 x 範圍以取得正確寬度（避免 tight bbox 造成文字過窄）
         base_x0 = original_rect.x0 if original_rect else edited_span.bbox.x0
         base_x1 = original_rect.x1 if original_rect else edited_span.bbox.x1
@@ -401,6 +397,10 @@ class TrackBEngine:
             delta_y=0,
             rewrite_text=new_text,
         ))
+
+        if abs(plan.delta_y_total) < self._position_tolerance:
+            # 高度變化太小，不需要位移後續 span
+            return plan
 
         # 找出需要位移的後續 spans
         edited_bottom = edited_span.bbox.y1
