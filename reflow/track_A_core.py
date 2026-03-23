@@ -159,6 +159,72 @@ class TrackAEngine:
             "warnings": plan.warnings,
         }
 
+    def apply_displacement_only(
+        self,
+        doc: fitz.Document,
+        page_idx: int,
+        edited_rect: fitz.Rect,
+        new_text: str,
+        original_text: str = "",
+        font: str = "helv",
+        size: float = 12.0,
+        color: tuple = (0, 0, 0),
+    ) -> dict:
+        """
+        只位移受影響的後續塊，不重新處理已編輯的塊。
+
+        與 apply_reflow() 的差異：跳過 execute_reflow() 的 edited block
+        redact/re-insert 步驟，只執行 _reflow_affected_blocks()。
+
+        適合在 model.edit_text() 已完成文字替換後呼叫，避免對同一塊
+        二次 redact/re-insert（double-processing bug）。
+        """
+        page = doc[page_idx]
+
+        # Step 1: 在 model.edit_text() 修改後的頁面上重新分析佈局
+        layout = self.analyze_layout(page, page_idx)
+
+        # Step 2: 找到被編輯的塊（用原始 rect 定位）
+        edited_block_idx = self._find_edited_block(layout, edited_rect)
+        if edited_block_idx is None:
+            logger.debug(f"Track A displacement: 找不到 edited block at {edited_rect}，跳過")
+            return {"success": True, "plan": None, "warnings": ["edited block not found, skipped"]}
+
+        # Step 3: 計算受影響塊的位移規劃
+        plan = self.compute_reflow_plan(
+            layout=layout,
+            edited_block_idx=edited_block_idx,
+            new_text=new_text,
+            original_text=original_text,
+            font=font,
+            size=size,
+            original_rect=edited_rect,
+        )
+
+        if not plan.affected_blocks:
+            return {"success": True, "plan": plan, "warnings": plan.warnings}
+
+        # Step 4: 預讀受影響塊（在任何 redaction 前）
+        pre_block_data = self._pre_read_affected_blocks(page, plan)
+
+        # Step 5: 只移動後續受影響塊（不碰 edited block）
+        try:
+            self._reflow_affected_blocks(
+                doc=doc,
+                page_idx=page_idx,
+                plan=plan,
+                font=font,
+                size=size,
+                color=color,
+                pre_block_data=pre_block_data,
+            )
+        except Exception as e:
+            logger.error(f"Track A displacement _reflow_affected_blocks 失敗: {e}", exc_info=True)
+            plan.warnings.append(f"displacement exception: {e}")
+            return {"success": False, "plan": plan, "warnings": plan.warnings}
+
+        return {"success": True, "plan": plan, "warnings": plan.warnings}
+
     # ── Step 1: 佈局分析 ─────────────────────────────────────────────────
 
     def analyze_layout(self, page: fitz.Page, page_idx: int) -> LayoutAnalysis:
@@ -750,12 +816,21 @@ class TrackAEngine:
                         bv = (raw_color & 0xFF) / 255.0
                         block_color = (rv, gv, bv)
 
+            # 從第一行 bbox 計算實際行高（供 re-insert CSS 行距繼承）
+            lines = b.get("lines", [])
+            if lines:
+                first_line_h = fitz.Rect(lines[0]["bbox"]).height
+                block_line_height = max(first_line_h, block_size * 0.9)
+            else:
+                block_line_height = block_size * 1.2
+
             block_data[block_idx] = {
                 "text": block_text,
                 "font": block_font,
                 "size": block_size,
                 "color": block_color,
                 "old_bbox": fitz.Rect(b["bbox"]),
+                "line_height": block_line_height,
             }
 
         return block_data
@@ -874,9 +949,11 @@ class TrackAEngine:
                 continue
 
             font_name = self._resolve_font(info["font"])
+            lh = info.get("line_height", info["size"] * 1.2)
             css = (
                 f"* {{ font-family: {font_name}; "
                 f"font-size: {info['size']}pt; "
+                f"line-height: {lh:.2f}pt; "
                 f"color: rgb({int(info['color'][0]*255)},"
                 f"{int(info['color'][1]*255)},"
                 f"{int(info['color'][2]*255)}); "

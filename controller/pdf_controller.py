@@ -1458,8 +1458,41 @@ class PDFController:
         try:
             page_idx = page - 1
 
+            # 擷取 viewport anchor（在任何頁面變動前），供編輯後還原捲軸位置
+            anchor = self.view.capture_viewport_anchor()
+
             # Phase 4: 透過 CommandManager 執行，支援頁面快照 undo/redo
             snapshot = self.model._capture_page_snapshot(page_idx)
+
+            # Displacement reflow callback（Track B → Track A fallback）
+            # 在 model.edit_text() 完成後，只移動後續受影響塊，不重新處理 edited block
+            _doc = self.model.doc
+            _rect = fitz.Rect(rect)
+            _new_text = new_text
+            _original_text = original_text or ""
+            _font = font
+            _size = float(size)
+            _color = color
+
+            def _reflow_fn():
+                try:
+                    from reflow.track_B_core import TrackBEngine
+                    from reflow.track_A_core import TrackAEngine
+                    result_b = TrackBEngine().apply_displacement_only(
+                        doc=_doc, page_idx=page_idx,
+                        edited_rect=_rect, new_text=_new_text,
+                        original_text=_original_text,
+                        font=_font, size=_size, color=_color,
+                    )
+                    if not result_b.get("success", False):
+                        TrackAEngine().apply_displacement_only(
+                            doc=_doc, page_idx=page_idx,
+                            edited_rect=_rect, new_text=_new_text,
+                            original_text=_original_text,
+                            font=_font, size=_size, color=_color,
+                        )
+                except Exception as _e:
+                    logger.warning(f"edit_text reflow_fn 失敗（不影響主編輯）: {_e}")
 
             cmd = EditTextCommand(
                 model=self.model,
@@ -1477,11 +1510,15 @@ class PDFController:
                 new_rect=new_rect,
                 target_span_id=target_span_id,
                 target_mode=target_mode,
+                reflow_fn=_reflow_fn,
             )
             self.model.command_manager.execute(cmd)
             self._invalidate_active_render_state()
             self.show_page(page_idx)
             self._update_undo_redo_tooltips()
+            # 還原 viewport anchor（避免頁面重繪後捲軸跳位）
+            QTimer.singleShot(0, lambda a=anchor: self.view.restore_viewport_anchor(a))
+            QTimer.singleShot(180, lambda a=anchor: self.view.restore_viewport_anchor(a))
         except Exception as e:
             logger.error(f"編輯文字失敗: {e}")
             show_error(self.view, f"編輯失敗: {e}")
@@ -1590,6 +1627,9 @@ class PDFController:
 
     def _refresh_after_command(self, cmd) -> None:
         """undo/redo 後，依指令類型決定重新整理範圍。"""
+        # 擷取 anchor（undo/redo 前的捲軸位置，避免頁面跳動）
+        anchor = self.view.capture_viewport_anchor()
+
         is_structural = getattr(cmd, 'is_structural', False)
         if is_structural:
             page_idx = min(self.view.current_page, len(self.model.doc) - 1)
@@ -1610,6 +1650,10 @@ class PDFController:
             # 非結構性但包含 FreeText 的操作（add_annotation）需更新列表
             if getattr(cmd, '_command_type', '') == 'add_annotation':
                 self.load_annotations()
+
+        # 還原 viewport anchor，避免 undo/redo 後捲軸跳位
+        QTimer.singleShot(0, lambda a=anchor: self.view.restore_viewport_anchor(a))
+        QTimer.singleShot(180, lambda a=anchor: self.view.restore_viewport_anchor(a))
 
     def change_page(self, page_idx: int):
         if not self.model.doc or page_idx < 0 or page_idx >= len(self.model.doc):

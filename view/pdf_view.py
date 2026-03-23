@@ -3251,7 +3251,14 @@ class PDFView(QMainWindow):
         editor.setFont(QFont(qt_font, int(font_size)))
 
         r, g, b = [int(c * 255) for c in color]
-        editor.setStyleSheet(f"background-color: rgba(255, 255, 150, 0.8); border: 1px solid blue; color: rgb({r},{g},{b});")
+        # 透明編輯框：停止 viewport 自動填色，讓使用者可以透過編輯框看到 PDF 內容
+        editor.setAutoFillBackground(False)
+        editor.viewport().setAutoFillBackground(False)
+        editor.setStyleSheet(
+            f"QTextEdit {{ background: transparent; border: 1.5px dashed rgba(30,120,255,0.75); "
+            f"color: rgb({r},{g},{b}); selection-background-color: rgba(30,120,255,0.25); }}"
+            f"QTextEdit QScrollBar {{ background: transparent; }}"
+        )
 
         editor.setFixedWidth(max(scaled_width, 80))
         editor.setMinimumHeight(max(scaled_rect.height, 40))

@@ -1765,8 +1765,18 @@ class PDFModel:
         self.doc.insert_pdf(snapshot_doc, from_page=0, to_page=0, start_at=page_num_0based)
         snapshot_doc.close()
 
-    def _build_insert_css(self, size: float, color: tuple, font_hint: str = "helv") -> str:
-        """建構 insert_htmlbox 所需的 CSS 樣式字串"""
+    def _build_insert_css(
+        self,
+        size: float,
+        color: tuple,
+        font_hint: str = "helv",
+        line_height: float = 0.0,
+    ) -> str:
+        """建構 insert_htmlbox 所需的 CSS 樣式字串。
+
+        line_height: 實際行高（pt）。0 表示自動計算（size × 1.2，或從字體 metrics 取得）。
+        正確的行高能讓 re-insert 後的文字行距與原 PDF 一致。
+        """
         resolved_font = self._resolve_add_text_font(font_hint)
         cjk_companion = self._resolve_cjk_companion_font(resolved_font)
         font_face_rules = []
@@ -1775,10 +1785,21 @@ class PDFModel:
             if css_rule:
                 font_face_rules.append(css_rule)
         font_face_block = "\n".join(font_face_rules)
+
+        # 行高：優先使用傳入值，否則從字體 metrics 計算
+        if line_height <= 0:
+            try:
+                font_obj = fitz.Font(resolved_font)
+                line_height = max(size * 1.1, (font_obj.ascender - font_obj.descender) * size)
+            except Exception:
+                line_height = size * 1.2
+        line_height = round(max(size, line_height), 2)
+
         return f"""
             {font_face_block}
             span {{
                 font-size: {size}pt;
+                line-height: {line_height}pt;
                 white-space: pre-wrap;
                 word-break: break-all;
                 overflow-wrap: anywhere;
