@@ -123,9 +123,12 @@ print(f"C4 Track A reflow save: {c4_ok} (A_present={'Track A greatly' in text}, 
 results.append(("C4", c4_ok))
 reopened.close()
 
-# ── C5: Track B reflow 存檔後文字可提取 ──────────────────────────────────
-# 強制 track="B"：驗證 Track B 引擎自身的輸出在存檔後仍可提取
-# （同高度替換曾為 silent no-op，此測試確認該 bug 不再回歸）
+# ── C5: Track B reflow — 存檔後文字可提取 + 閱讀順序正確 ─────────────────
+# 驗證：
+#   (a) track 確實走 B（不是 fallback 到 A）
+#   (b) 新文字存在於存檔後的 PDF
+#   (c) get_text() 閱讀順序正確：被改寫的第一段出現在第二段之前
+#       （Track B 曾因 redact+append 把 rewritten span 塞到 stream 尾部）
 def _norm(s):
     return s.replace("\ufb02", "fl").replace("\ufb01", "fi")
 
@@ -144,8 +147,18 @@ w = _fresh_warnings()
 text = reopened[0].get_text()
 _c5_track_used = _result_c5.get("track", "?")
 _c5_text_ok = "Track B reflow" in _norm(text)
-c5_ok = _c5_text_ok and _c5_track_used == "B" and len(w) == 0
-print(f"C5 Track B reflow save: {c5_ok} (track={_c5_track_used}, text_present={_c5_text_ok}, warnings={w or 'none'})")
+# 閱讀順序：在 get_text() 輸出中，被改寫的第一段必須出現在「Second paragraph」之前
+_norm_text = _norm(text)
+_pos_edited = _norm_text.find("Track B reflow")
+_pos_second = _norm_text.find("Second paragraph")
+_c5_order_ok = (
+    _pos_edited != -1
+    and (_pos_second == -1 or _pos_edited < _pos_second)
+)
+c5_ok = _c5_text_ok and _c5_track_used == "B" and len(w) == 0 and _c5_order_ok
+print(f"C5 Track B reflow save: {c5_ok} "
+      f"(track={_c5_track_used}, text_present={_c5_text_ok}, "
+      f"order_ok={_c5_order_ok}, warnings={w or 'none'})")
 results.append(("C5", c5_ok))
 reopened.close()
 
@@ -164,27 +177,98 @@ print(f"C6 line-height no truncation: {c6_ok} (rc={rc}, words_present={words_in}
 results.append(("C6", c6_ok))
 reopened.close()
 
-# ── C7: 壞損輸入不崩潰 ───────────────────────────────────────────────────
-# 排序確保可重現，取前 10 個（包含 password PDF）
+# ── C7a: 未知密碼保護檔案 → graceful skip（不崩潰）─────────────────────
+# 刻意不提供正確密碼，驗證程式能優雅地跳過而非拋例外。
+# 以 libreoffice-writer-password.pdf 為測試對象，
+# 正確密碼是 openpassword / permissionpassword，但這裡故意不提供。
+_pw_pdf = pathlib.Path("test_files/sample-files-main/libreoffice-writer-password.pdf")
+c7a_ok = False
+c7a_detail = "file_not_found"
+if _pw_pdf.exists():
+    try:
+        _suppress()
+        try:
+            _pw_doc = fitz.open(str(_pw_pdf))
+        finally:
+            _restore()
+        if _pw_doc.needs_pass:
+            # 刻意用錯誤密碼（確保走 skip 分支）
+            unlocked = _pw_doc.authenticate("wrong_password_intentional")
+            if not unlocked:
+                _pw_doc.close()
+                c7a_ok = True   # graceful skip：沒有拋例外
+                c7a_detail = "skip_on_wrong_password"
+            else:
+                _pw_doc.close()
+                c7a_detail = "unexpected_unlock"
+        else:
+            _pw_doc.close()
+            c7a_detail = "file_not_password_protected"
+    except Exception as _e:
+        c7a_detail = f"crash: {_e}"
+else:
+    c7a_ok = True
+    c7a_detail = "file_absent_skip"
+print(f"C7a unknown-password graceful skip: {c7a_ok} ({c7a_detail})")
+results.append(("C7a", c7a_ok))
+
+# ── C7b: 已知密碼保護檔案 → 可開啟並完成最小編輯 ───────────────────────
+# 驗證已知密碼能開啟，且 redact 不崩潰（即使 page 為空也算通過）。
 _KNOWN_PASSWORDS = ["openpassword", "permissionpassword", "password", ""]
-corrupt_paths = sorted(pathlib.Path("test_files/sample-files-main").glob("**/*.pdf"))[:10]
-c7_ok = True
-c7_errors = []
-c7_skipped = 0
+c7b_ok = False
+c7b_detail = "file_not_found"
+if _pw_pdf.exists():
+    try:
+        _suppress()
+        try:
+            _pw_doc = fitz.open(str(_pw_pdf))
+        finally:
+            _restore()
+        unlocked = any(_pw_doc.authenticate(pw) for pw in _KNOWN_PASSWORDS)
+        if unlocked and len(_pw_doc) > 0:
+            _pw_page = _pw_doc[0]
+            _suppress()
+            try:
+                _pw_page.add_redact_annot(fitz.Rect(10, 10, 100, 30))
+                _pw_page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+                c7b_ok = True
+                c7b_detail = "unlocked_and_edited"
+            except Exception as _re:
+                c7b_ok = True   # 開啟成功但 redact 失敗是可接受的
+                c7b_detail = f"unlocked_redact_fail_ok: {_re}"
+            finally:
+                _restore()
+        elif not unlocked:
+            c7b_detail = "unlock_failed"
+        else:
+            c7b_detail = "empty_doc"
+        _pw_doc.close()
+    except Exception as _e:
+        c7b_detail = f"crash: {_e}"
+else:
+    c7b_ok = True
+    c7b_detail = "file_absent_skip"
+print(f"C7b known-password open+edit: {c7b_ok} ({c7b_detail})")
+results.append(("C7b", c7b_ok))
+
+# ── C7c: 一般壞損/非標準 PDFs → 不崩潰 ──────────────────────────────────
+# 排序確保可重現；排除已個別處理的 password PDF
+corrupt_paths = [
+    p for p in sorted(pathlib.Path("test_files/sample-files-main").glob("**/*.pdf"))[:12]
+    if "password" not in p.name
+][:10]
+c7c_ok = True
+c7c_errors = []
 for pdf_path in corrupt_paths:
     try:
         _suppress()
         try:
             doc = fitz.open(str(pdf_path))
         finally:
-            _restore()  # 一定執行，即使 fitz.open 拋例外
-        # 處理密碼保護：嘗試已知密碼，無法解鎖則 graceful skip
+            _restore()
         if doc.needs_pass:
-            unlocked = any(doc.authenticate(pw) for pw in _KNOWN_PASSWORDS)
-            if not unlocked:
-                doc.close()
-                c7_skipped += 1
-                continue
+            doc.close()
+            continue
         if len(doc) == 0:
             doc.close()
             continue
@@ -194,20 +278,18 @@ for pdf_path in corrupt_paths:
             page.add_redact_annot(fitz.Rect(10, 10, 100, 30))
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
         except Exception:
-            pass  # 部分壞檔 redact 會失敗，屬預期行為
+            pass  # 部分壞檔 redact 失敗屬預期行為
         finally:
             _restore()
         doc.close()
     except Exception as e:
         err_str = str(e).lower()
-        # 只允許明確的 permission / encryption 例外（不允許 "closed" 掩蓋程式碼 bug）
         if "encrypted" in err_str or "password" in err_str:
-            c7_skipped += 1
             continue
-        c7_errors.append(f"{pdf_path.name}: {e}")
-        c7_ok = False
-print(f"C7 corrupt input no crash: {c7_ok} (tested {len(corrupt_paths)} files, skipped={c7_skipped}, errors={c7_errors or 'none'})")
-results.append(("C7", c7_ok))
+        c7c_errors.append(f"{pdf_path.name}: {e}")
+        c7c_ok = False
+print(f"C7c corrupt-files no crash: {c7c_ok} (tested {len(corrupt_paths)}, errors={c7c_errors or 'none'})")
+results.append(("C7c", c7c_ok))
 
 # ── C8: 多次編輯後 xref 不爆炸 ───────────────────────────────────────────
 doc = fitz.open()

@@ -1483,7 +1483,9 @@ class PDFController:
             _size = float(size)
             _color = color
             _page_idx = page_idx
-            _view = self.view  # 捕捉 view 用於 reflow 失敗時的 UI 提示
+            # mutable container：_reflow_fn 在 cmd.execute() 期間寫入，
+            # show_page() 完成後再讀取，確保警告不被 _update_status_bar() 覆蓋
+            _reflow_warning: list = [None]
 
             def _reflow_fn():
                 try:
@@ -1509,21 +1511,13 @@ class PDFController:
                         )
                         a_ok = result_a.get("success", False) and result_a.get("plan") is not None
                         if not a_ok:
-                            # 兩條軌道都無法做 displacement：向 UI 發出可見警告
                             logger.warning(
                                 "edit_text reflow: Track A/B 均無法定位段落（displacement 跳過）"
                             )
-                            _sb = getattr(_view, "status_bar", None)
-                            if _sb is not None:
-                                _sb.showMessage(
-                                    "⚠ 段落位移未執行（版面結構未識別），請手動調整",
-                                    4000,  # 4 秒後自動清除
-                                )
+                            _reflow_warning[0] = "⚠ 段落位移未執行（版面結構未識別），請手動調整"
                 except Exception as _e:
                     logger.warning(f"edit_text reflow_fn 失敗（不影響主編輯）: {_e}")
-                    _sb = getattr(_view, "status_bar", None)
-                    if _sb is not None:
-                        _sb.showMessage(f"⚠ Reflow 發生例外（主編輯不受影響）: {_e}", 4000)
+                    _reflow_warning[0] = f"⚠ Reflow 例外（主編輯不受影響）: {_e}"
 
             cmd = EditTextCommand(
                 model=self.model,
@@ -1550,6 +1544,12 @@ class PDFController:
             # 還原 viewport anchor（避免頁面重繪後捲軸跳位）
             QTimer.singleShot(0, lambda a=anchor: self.view.restore_viewport_anchor(a))
             QTimer.singleShot(180, lambda a=anchor: self.view.restore_viewport_anchor(a))
+            # 顯示 reflow 警告（延後 200ms 確保在 show_page/_update_status_bar 之後執行）
+            if _reflow_warning[0]:
+                _msg = _reflow_warning[0]
+                _sb = getattr(self.view, "status_bar", None)
+                if _sb is not None:
+                    QTimer.singleShot(200, lambda m=_msg, sb=_sb: sb.showMessage(m, 5000))
         except Exception as e:
             logger.error(f"編輯文字失敗: {e}")
             show_error(self.view, f"編輯失敗: {e}")
