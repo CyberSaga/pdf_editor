@@ -175,6 +175,73 @@ class TrackBEngine:
             "warnings": plan.warnings,
         }
 
+    def apply_displacement_only(
+        self,
+        doc: fitz.Document,
+        page_idx: int,
+        edited_rect: fitz.Rect,
+        new_text: str,
+        original_text: str = "",
+        font: str = "helv",
+        size: float = 12.0,
+        color: tuple = (0, 0, 0),
+    ) -> dict:
+        """
+        只位移受影響的後續 spans，不重新處理已編輯的 span。
+
+        與 apply_reflow() 的差異：過濾掉 edited span 自身的 shift
+        （rewrite_text is not None），只套用後續 spans 的位移。
+
+        適合在 model.edit_text() 已完成文字替換後呼叫。
+        """
+        page = doc[page_idx]
+
+        # Step 1: 分析當前 content stream（model.edit_text 修改後）
+        analysis = self.analyze_stream(page, page_idx)
+
+        # Step 2: 找出被編輯的 span
+        edited_span_idx = self._find_edited_span(analysis, edited_rect)
+        if edited_span_idx is None:
+            logger.debug(f"Track B displacement: 找不到 edited span at {edited_rect}，跳過")
+            return {"success": True, "plan": None, "warnings": ["edited span not found, skipped"]}
+
+        # Step 3: 計算位移（包含 edited span + 後續 spans）
+        plan = self.compute_shifts(
+            analysis=analysis,
+            edited_span_idx=edited_span_idx,
+            new_text=new_text,
+            original_text=original_text,
+            font=font,
+            size=size,
+            page_rect=page.rect,
+            original_rect=edited_rect,
+        )
+
+        # 過濾掉 edited span 本身的 shift（rewrite_text is not None 表示是 edited span）
+        displacement_shifts = [s for s in plan.shifts if s.rewrite_text is None]
+
+        if not displacement_shifts:
+            return {"success": True, "plan": plan, "warnings": plan.warnings}
+
+        # 只套用後續 spans 的位移
+        plan.shifts = displacement_shifts
+        try:
+            success = self.apply_shifts(
+                doc=doc,
+                page_idx=page_idx,
+                plan=plan,
+                new_text="",   # 不影響 edited span，此值不被使用
+                font=font,
+                size=size,
+                color=color,
+            )
+        except Exception as e:
+            logger.error(f"Track B displacement apply_shifts 失敗: {e}", exc_info=True)
+            plan.warnings.append(f"displacement exception: {e}")
+            return {"success": False, "plan": plan, "warnings": plan.warnings}
+
+        return {"success": success, "plan": plan, "warnings": plan.warnings}
+
     # ── Step 1: Content Stream 分析 ──────────────────────────────────────
 
     def analyze_stream(self, page: fitz.Page, page_idx: int) -> StreamAnalysis:
@@ -505,9 +572,16 @@ class TrackBEngine:
                 font_name = self._resolve_font(info["font"])
                 sp_color = info["color"]
 
+                lh = info["size"] * 1.2
+                try:
+                    _fo = fitz.Font(font_name)
+                    lh = max(info["size"], (_fo.ascender - _fo.descender) * info["size"])
+                except Exception:
+                    pass
                 css = (
                     f"* {{ font-family: {font_name}; "
                     f"font-size: {info['size']}pt; "
+                    f"line-height: {lh:.2f}pt; "
                     f"color: rgb({int(sp_color[0]*255)},"
                     f"{int(sp_color[1]*255)},"
                     f"{int(sp_color[2]*255)}); "

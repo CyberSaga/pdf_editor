@@ -113,6 +113,7 @@ class EditTextCommand(EditCommand):
         new_rect: Optional[Any] = None,     # 拖曳移動後的目標位置（None = 不移動）
         target_span_id: Optional[str] = None,
         target_mode: Optional[str] = None,
+        reflow_fn: Optional[Any] = None,    # callable()，在 model.edit_text() 後呼叫做 displacement reflow
     ):
         self._model = model
         self._page_num = page_num
@@ -129,6 +130,7 @@ class EditTextCommand(EditCommand):
         self._new_rect = fitz.Rect(new_rect) if new_rect is not None else None
         self._target_span_id = target_span_id
         self._target_mode = target_mode
+        self._reflow_fn = reflow_fn         # displacement reflow callback（Track A/B）
         self._executed = False              # 防止在未 execute 前呼叫 undo
 
     @property
@@ -158,6 +160,12 @@ class EditTextCommand(EditCommand):
             target_span_id=self._target_span_id,
             target_mode=self._target_mode,
         )
+        # Displacement reflow：將後續塊向上/下推移（Track A/B 引擎）
+        if self._reflow_fn is not None:
+            try:
+                self._reflow_fn()
+            except Exception as _rf_e:
+                logger.warning(f"EditTextCommand reflow_fn 失敗（不影響主編輯）: {_rf_e}")
         self._executed = True
         logger.debug(f"EditTextCommand.execute(): {self.description}")
 
