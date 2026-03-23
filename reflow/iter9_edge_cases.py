@@ -8,6 +8,7 @@
   E5 - 頁底溢位防護（edited block 接近頁底）
   E6 - 純文字刪除（new_text = ""）
   E7 - 多次 reflow 後文字內容完整性
+  E8 - Track B 同高度替換不再 silent no-op（回歸測試）
 """
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
@@ -293,6 +294,34 @@ results.append(("E7", e7_stable_preserved and e7_short_a))
 render(page, OUT / "e7_multi_edit_after.png")
 doc.close()
 
+# ── E8: Track B 同高度替換不再 silent no-op ───────────────────────────────
+# 回歸：compute_shifts 曾在 delta_y < tolerance 時提前 return，
+# 導致 rewrite_text shift 從未加入 → 文字不變。
+from reflow.track_B_core import TrackBEngine as _TrackBEngine
+
+doc = fitz.open()
+page = doc.new_page(width=595, height=842)
+# 使用足夠高度（30pt > 12pt line-height）確保 insert_textbox 實際放入文字
+page.insert_textbox(fitz.Rect(72, 72, 400, 102), "Original same-height.", fontname="helv", fontsize=12)
+
+engine_b = _TrackBEngine()
+res = engine_b.apply_reflow(
+    doc=doc, page_idx=0,
+    edited_rect=fitz.Rect(72, 72, 400, 102),
+    new_text="Replaced same-height.",
+    original_text="Original same-height.",
+    font="helv", size=12.0, color=(0, 0, 0),
+)
+text_after = page.get_text()
+e8_success = res.get("success", False)
+e8_text_ok = "Replaced same-height" in text_after
+e8_old_gone = "Original same-height" not in text_after
+e8_ok = e8_success and e8_text_ok and e8_old_gone
+print(f"E8 Track B same-height no-op regression: {e8_ok} "
+      f"(success={e8_success}, new_present={e8_text_ok}, old_gone={e8_old_gone})")
+results.append(("E8", e8_ok))
+doc.close()
+
 # ── Summary ─────────────────────────────────────────────────────────────
 print(f"\n{'='*70}")
 passed = sum(1 for _, ok in results if ok)
@@ -300,3 +329,4 @@ for label, ok in results:
     print(f"  [{label}] {'PASS ✓' if ok else 'FAIL ✗'}")
 print(f"\n{passed}/{len(results)} PASS")
 print("=" * 70)
+sys.exit(0 if passed == len(results) else 1)

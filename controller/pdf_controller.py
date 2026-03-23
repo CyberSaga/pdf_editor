@@ -1483,6 +1483,7 @@ class PDFController:
             _size = float(size)
             _color = color
             _page_idx = page_idx
+            _view = self.view  # 捕捉 view 用於 reflow 失敗時的 UI 提示
 
             def _reflow_fn():
                 try:
@@ -1500,14 +1501,29 @@ class PDFController:
                     # fallback 條件：明確失敗 OR Track B 未找到 span（plan is None）
                     b_ok = result_b.get("success", False) and result_b.get("plan") is not None
                     if not b_ok:
-                        TrackAEngine().apply_displacement_only(
+                        result_a = TrackAEngine().apply_displacement_only(
                             doc=_doc, page_idx=_page_idx,
                             edited_rect=_edit_rect, new_text=_new_text,
                             original_text=_original_text,
                             font=_font, size=_size, color=_color,
                         )
+                        a_ok = result_a.get("success", False) and result_a.get("plan") is not None
+                        if not a_ok:
+                            # 兩條軌道都無法做 displacement：向 UI 發出可見警告
+                            logger.warning(
+                                "edit_text reflow: Track A/B 均無法定位段落（displacement 跳過）"
+                            )
+                            _sb = getattr(_view, "status_bar", None)
+                            if _sb is not None:
+                                _sb.showMessage(
+                                    "⚠ 段落位移未執行（版面結構未識別），請手動調整",
+                                    4000,  # 4 秒後自動清除
+                                )
                 except Exception as _e:
                     logger.warning(f"edit_text reflow_fn 失敗（不影響主編輯）: {_e}")
+                    _sb = getattr(_view, "status_bar", None)
+                    if _sb is not None:
+                        _sb.showMessage(f"⚠ Reflow 發生例外（主編輯不受影響）: {_e}", 4000)
 
             cmd = EditTextCommand(
                 model=self.model,
