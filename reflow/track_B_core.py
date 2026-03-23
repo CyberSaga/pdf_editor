@@ -516,6 +516,12 @@ class TrackBEngine:
                     for span in line.get("spans", []):
                         flat_spans.append(span)
 
+            def _span_text(sp_dict: dict) -> str:
+                """從 rawdict span 取出文字（rawdict 無 'text' key，需從 chars 重建）"""
+                return sp_dict.get("text") or "".join(
+                    c.get("c", "") for c in sp_dict.get("chars", [])
+                )
+
             for shift in plan.shifts:
                 idx = shift.span_idx
                 # 用 old_bbox 中心點比對現有 span（flat index 在 redact 後會失效）
@@ -536,7 +542,7 @@ class TrackBEngine:
                 if best_sp is not None:
                     sp = best_sp
                     span_info[idx] = {
-                        "text": shift.rewrite_text or sp.get("text", ""),
+                        "text": shift.rewrite_text or _span_text(sp),
                         "font": sp.get("font", font),
                         "size": sp.get("size", size),
                         "color": self._parse_span_color(sp.get("color", 0)),
@@ -548,16 +554,22 @@ class TrackBEngine:
                         f"Span {idx} 無法以 bbox 比對（flat_spans len={len(flat_spans)}）"
                     )
 
-            # ── Phase 1.5: 收集未修改的後續 spans，以維持正確閱讀順序 ──
+            # ── Phase 1.5: 收集同欄未修改的後續 spans，以維持正確閱讀順序 ──
             # 問題根源：insert_htmlbox 永遠 append 到 content stream 尾部。
             # 若只 redact 被編輯的 span 再重新插入，它會出現在所有「原本在它之後」
             # 的未修改 span 的後面，導致 get_text() 的閱讀順序顛倒。
-            # 解法：把位於修改區域「同高度或以下」的未修改 span 也一起 redact+reinsert，
-            # 讓 Phase 3 能以視覺位置排序（y0, x0）重建正確的 stream 順序。
+            # 解法：把位於「同一欄位且在修改區域同高度或以下」的未修改 span 也一起
+            # redact+reinsert，讓 Phase 3 以視覺位置排序（y0, x0）重建正確的 stream 順序。
+            # 欄位判定：span 中心點必須落在所有修改 span 的 x 範圍 ± 10% 頁寬內。
             if span_info:
                 min_modified_y0 = min(
                     info["old_bbox"].y0 for info in span_info.values()
                 )
+                # 欄位 x 範圍：所有修改 span 的聯集 x0/x1
+                col_x0 = min(info["old_bbox"].x0 for info in span_info.values())
+                col_x1 = max(info["old_bbox"].x1 for info in span_info.values())
+                page_w = page.rect.width if page.rect else 595.0
+                col_margin = page_w * 0.10
                 # 用 (x0, y0) rounded key 判斷是否已在 span_info 中
                 covered = {
                     (round(info["old_bbox"].x0, 1), round(info["old_bbox"].y0, 1))
@@ -571,10 +583,11 @@ class TrackBEngine:
                         continue
                     if sp_bbox.y0 < min_modified_y0 - self._position_tolerance:
                         continue
-                    # rawdict 格式下 span 無 "text" key，需從 chars 重建
-                    sp_text = sp.get("text") or "".join(
-                        c.get("c", "") for c in sp.get("chars", [])
-                    )
+                    # 欄位隔離：span 中心 x 必須在修改欄位的 x 範圍內
+                    sp_cx = sp_bbox.x0 + sp_bbox.width / 2
+                    if sp_cx < col_x0 - col_margin or sp_cx > col_x1 + col_margin:
+                        continue
+                    sp_text = _span_text(sp)
                     if not sp_text.strip():
                         continue
                     span_info[passthrough_key] = {

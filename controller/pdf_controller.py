@@ -1544,12 +1544,20 @@ class PDFController:
             # 還原 viewport anchor（避免頁面重繪後捲軸跳位）
             QTimer.singleShot(0, lambda a=anchor: self.view.restore_viewport_anchor(a))
             QTimer.singleShot(180, lambda a=anchor: self.view.restore_viewport_anchor(a))
-            # 顯示 reflow 警告（延後 200ms 確保在 show_page/_update_status_bar 之後執行）
+            # 顯示 reflow 警告：使用 override 機制確保不被 _update_status_bar 覆蓋
             if _reflow_warning[0]:
                 _msg = _reflow_warning[0]
-                _sb = getattr(self.view, "status_bar", None)
-                if _sb is not None:
-                    QTimer.singleShot(200, lambda m=_msg, sb=_sb: sb.showMessage(m, 5000))
+                _view_ref = self.view
+                if hasattr(_view_ref, "set_status_bar_override_message"):
+                    _view_ref.set_status_bar_override_message(_msg)
+                    # 5 秒後自動清除 override
+                    QTimer.singleShot(5000, lambda v=_view_ref:
+                        v.set_status_bar_override_message(None))
+                else:
+                    _sb = getattr(_view_ref, "status_bar", None)
+                    if _sb is not None:
+                        QTimer.singleShot(200, lambda m=_msg, sb=_sb:
+                            sb.showMessage(m, 5000))
         except Exception as e:
             logger.error(f"編輯文字失敗: {e}")
             show_error(self.view, f"編輯失敗: {e}")
