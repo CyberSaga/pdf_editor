@@ -124,24 +124,28 @@ results.append(("C4", c4_ok))
 reopened.close()
 
 # ── C5: Track B reflow 存檔後文字可提取 ──────────────────────────────────
-# 使用 auto track：先嘗試 Track B，失敗時回退 Track A（測試目的是輸出相容性）
+# 強制 track="B"：驗證 Track B 引擎自身的輸出在存檔後仍可提取
+# （同高度替換曾為 silent no-op，此測試確認該 bug 不再回歸）
+def _norm(s):
+    return s.replace("\ufb02", "fl").replace("\ufb01", "fi")
+
 doc = _make_doc()
-apply_object_edit(
+_result_c5 = apply_object_edit(
     page=doc[0],
     object_info={"original_rect": fitz.Rect(72, 72, 400, 110), "font": "helv", "size": 12.0,
                  "color": (0, 0, 0), "original_text": "First paragraph: original content.", "page_rotation": 0},
-    changes={"new_text": "Track B reflow test with significantly expanded text to verify second block shifts.",
+    changes={"new_text": "Track B reflow test same-height replace.",
              "font": "helv", "size": 12.0, "color": (0, 0, 0), "reflow_enabled": True},
-    track="auto",
+    track="B",
 )
 _fresh_warnings()
 reopened = _save_and_reopen(doc)
 w = _fresh_warnings()
 text = reopened[0].get_text()
-# normalize ligatures for comparison
-_norm = lambda s: s.replace("\ufb02", "fl").replace("\ufb01", "fi")
-c5_ok = "Track B reflow" in _norm(text) and len(w) == 0
-print(f"C5 Track B reflow save: {c5_ok} (text_present={'Track B reflow' in _norm(text)}, warnings={w or 'none'})")
+_c5_track_used = _result_c5.get("track", "?")
+_c5_text_ok = "Track B reflow" in _norm(text)
+c5_ok = _c5_text_ok and _c5_track_used == "B" and len(w) == 0
+print(f"C5 Track B reflow save: {c5_ok} (track={_c5_track_used}, text_present={_c5_text_ok}, warnings={w or 'none'})")
 results.append(("C5", c5_ok))
 reopened.close()
 
@@ -161,37 +165,48 @@ results.append(("C6", c6_ok))
 reopened.close()
 
 # ── C7: 壞損輸入不崩潰 ───────────────────────────────────────────────────
-corrupt_paths = list(pathlib.Path("test_files/sample-files-main").glob("**/*.pdf"))[:5]
+# 排序確保可重現，取前 10 個（包含 password PDF）
+_KNOWN_PASSWORDS = ["openpassword", "permissionpassword", "password", ""]
+corrupt_paths = sorted(pathlib.Path("test_files/sample-files-main").glob("**/*.pdf"))[:10]
 c7_ok = True
 c7_errors = []
+c7_skipped = 0
 for pdf_path in corrupt_paths:
     try:
         _suppress()
-        doc = fitz.open(str(pdf_path))
-        _restore()
-        # Encrypted / password-protected: graceful skip
+        try:
+            doc = fitz.open(str(pdf_path))
+        finally:
+            _restore()  # 一定執行，即使 fitz.open 拋例外
+        # 處理密碼保護：嘗試已知密碼，無法解鎖則 graceful skip
         if doc.needs_pass:
-            doc.close()
-            continue
+            unlocked = any(doc.authenticate(pw) for pw in _KNOWN_PASSWORDS)
+            if not unlocked:
+                doc.close()
+                c7_skipped += 1
+                continue
         if len(doc) == 0:
             doc.close()
             continue
         page = doc[0]
-        # Try to run edit on first page
+        _suppress()
         try:
             page.add_redact_annot(fitz.Rect(10, 10, 100, 30))
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
         except Exception:
-            pass  # Expected for some corrupted files
+            pass  # 部分壞檔 redact 會失敗，屬預期行為
+        finally:
+            _restore()
         doc.close()
     except Exception as e:
         err_str = str(e).lower()
-        # encrypted / password-protected → graceful skip, not a crash
-        if "encrypted" in err_str or "password" in err_str or "closed" in err_str:
+        # 只允許明確的 permission / encryption 例外（不允許 "closed" 掩蓋程式碼 bug）
+        if "encrypted" in err_str or "password" in err_str:
+            c7_skipped += 1
             continue
         c7_errors.append(f"{pdf_path.name}: {e}")
         c7_ok = False
-print(f"C7 corrupt input no crash: {c7_ok} (tested {len(corrupt_paths)} files, errors={c7_errors or 'none'})")
+print(f"C7 corrupt input no crash: {c7_ok} (tested {len(corrupt_paths)} files, skipped={c7_skipped}, errors={c7_errors or 'none'})")
 results.append(("C7", c7_ok))
 
 # ── C8: 多次編輯後 xref 不爆炸 ───────────────────────────────────────────
@@ -231,3 +246,4 @@ for label, ok in results:
     print(f"  [{label}] {'PASS ✓' if ok else 'FAIL ✗'}")
 print(f"\n{passed}/{len(results)} PASS")
 print("=" * 70)
+sys.exit(0 if passed == len(results) else 1)
