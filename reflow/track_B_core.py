@@ -548,12 +548,49 @@ class TrackBEngine:
                         f"Span {idx} 無法以 bbox 比對（flat_spans len={len(flat_spans)}）"
                     )
 
+            # ── Phase 1.5: 收集未修改的後續 spans，以維持正確閱讀順序 ──
+            # 問題根源：insert_htmlbox 永遠 append 到 content stream 尾部。
+            # 若只 redact 被編輯的 span 再重新插入，它會出現在所有「原本在它之後」
+            # 的未修改 span 的後面，導致 get_text() 的閱讀順序顛倒。
+            # 解法：把位於修改區域「同高度或以下」的未修改 span 也一起 redact+reinsert，
+            # 讓 Phase 3 能以視覺位置排序（y0, x0）重建正確的 stream 順序。
+            if span_info:
+                min_modified_y0 = min(
+                    info["old_bbox"].y0 for info in span_info.values()
+                )
+                # 用 (x0, y0) rounded key 判斷是否已在 span_info 中
+                covered = {
+                    (round(info["old_bbox"].x0, 1), round(info["old_bbox"].y0, 1))
+                    for info in span_info.values()
+                }
+                passthrough_key = 1_000_000  # 避免與 plan.shifts 的 span_idx 衝突
+                for sp in flat_spans:
+                    sp_bbox = fitz.Rect(sp["bbox"])
+                    sp_key = (round(sp_bbox.x0, 1), round(sp_bbox.y0, 1))
+                    if sp_key in covered:
+                        continue
+                    if sp_bbox.y0 < min_modified_y0 - self._position_tolerance:
+                        continue
+                    # rawdict 格式下 span 無 "text" key，需從 chars 重建
+                    sp_text = sp.get("text") or "".join(
+                        c.get("c", "") for c in sp.get("chars", [])
+                    )
+                    if not sp_text.strip():
+                        continue
+                    span_info[passthrough_key] = {
+                        "text": sp_text,
+                        "font": sp.get("font", font),
+                        "size": sp.get("size", size),
+                        "color": self._parse_span_color(sp.get("color", 0)),
+                        "old_bbox": sp_bbox,
+                        "new_bbox": sp_bbox,  # 原位置（未位移）
+                    }
+                    passthrough_key += 1
+
             # ── Phase 2: 精準 Redact ──
-            # 使用 quads（如果可用）提高精準度
             for idx, info in span_info.items():
                 old_rect = info["old_bbox"]
-                # 建立 redact annotation（使用 rect + 無填充）
-                annot = page.add_redact_annot(
+                page.add_redact_annot(
                     old_rect,
                     text="",               # 不自動插入替換文字
                     fill=False,            # 不填白色背景
@@ -562,8 +599,12 @@ class TrackBEngine:
             # 一次性 apply（減少 content stream 重建次數）
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
 
-            # ── Phase 3: Re-insert 到新位置 ──
-            for idx, info in sorted(span_info.items()):
+            # ── Phase 3: Re-insert 以視覺位置（y0, x0）排序 ──
+            # 以 new_bbox 的視覺位置排序，確保 content stream 與視覺順序一致
+            for info in sorted(
+                span_info.values(),
+                key=lambda d: (d["new_bbox"].y0, d["new_bbox"].x0),
+            ):
                 text = info["text"]
                 if not text.strip():
                     continue
@@ -602,7 +643,7 @@ class TrackBEngine:
                         )
                     except Exception as e:
                         plan.warnings.append(
-                            f"Span {idx} re-insert 失敗: {e}"
+                            f"Span re-insert 失敗 at {new_bbox}: {e}"
                         )
 
             return True
