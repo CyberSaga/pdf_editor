@@ -72,7 +72,28 @@ def apply_object_edit(
     result: dict = {"success": False, "track": track, "warnings": [],
                     "interference_count": 0, "elapsed_ms": 0.0}
 
-    if track == "B":
+    if track == "C":
+        from reflow.track_C_core import TrackCEngine
+        # Normalize changes: accept both ObjectChanges dataclass and plain dict
+        # (mirrors the _normalize_changes pattern in TrackBEngine)
+        if hasattr(changes, "__dataclass_fields__"):
+            ch = {k: getattr(changes, k) for k in changes.__dataclass_fields__}
+        elif isinstance(changes, dict):
+            ch = changes
+        else:
+            ch = {}
+        engine_c = TrackCEngine()
+        result = engine_c.apply_edit(
+            doc=page.parent,
+            page_idx=page.number,
+            target_rect=object_info.get("original_rect", fitz.Rect()),
+            target_text=object_info.get("original_text", ""),
+            new_text=ch.get("new_text", ""),
+        )
+        result.setdefault("warnings", [])
+        result.setdefault("interference_count", 0)
+
+    elif track == "B":
         engine_b = TrackBEngine()
         result = engine_b.apply_object_edit(page, object_info, changes)
 
