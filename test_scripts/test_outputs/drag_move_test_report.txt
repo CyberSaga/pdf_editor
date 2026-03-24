@@ -1,21 +1,21 @@
 ========================================================================
 Drag-Move Text Box Feature Test Report
-Time: 2026-03-01 22:28:54
+Time: 2026-03-23 15:47:10
 ========================================================================
 
 Concept                                      OK  FAIL   ERR  SKIP    Rate    Time
 ------------------------------------------------------------------------
 A Basic Move                                  1     0     0     0  100.0%   0.04s
-B Move + Edit Text                            1     0     0     0  100.0%   0.03s
-C Moved Block Not Lost                        1     0     0     0  100.0%   0.04s
-D Other Block Not Lost                        1     0     0     0  100.0%   0.03s
-E Vertical Text Move                          1     0     0     0  100.0%   0.03s
-F Boundary Clamp                              1     0     0     0  100.0%   0.03s
-G sample-files-main (32 PDFs)                24     0     0     8  100.0%   8.54s
-H veraPDF representative (6 PDFs)             4     0     0     2  100.0%   0.08s
-I Logic Simulation                            2     0     0     0  100.0%   0.06s
+B Move + Edit Text                            1     0     0     0  100.0%   0.02s
+C Moved Block Not Lost                        1     0     0     0  100.0%   0.03s
+D Other Block Not Lost                        1     0     0     0  100.0%   0.02s
+E Vertical Text Move                          1     0     0     0  100.0%   0.02s
+F Boundary Clamp                              1     0     0     0  100.0%   0.02s
+G sample-files-main (32 PDFs)                24     0     0     8  100.0%   6.97s
+H veraPDF representative (6 PDFs)             4     0     0     2  100.0%   0.04s
+I Logic Simulation                            2     0     0     0  100.0%   0.05s
 ------------------------------------------------------------------------
-Total                                        36     0     0    10  100.0%   8.88s
+Total                                        36     0     0    10  100.0%   7.21s
 
 ========================================================================
 Conclusion

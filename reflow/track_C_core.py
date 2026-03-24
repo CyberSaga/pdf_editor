@@ -573,6 +573,21 @@ class TrackCEngine:
             if target_text in op.decoded_text
         )
 
+    @staticmethod
+    def _is_form_xobject(page: fitz.Page, xobj_name: str) -> bool:
+        """Return True if xobj_name is a Form XObject (not an Image XObject).
+
+        Strategy: page.get_images() lists all Image XObjects by their resource
+        name (index 7).  Any Do-referenced name absent from that list is treated
+        as a Form XObject (which includes fitz's /fzFrm* inserts).
+        """
+        try:
+            image_names = {img[7] for img in page.get_images(full=True)}
+            return xobj_name not in image_names
+        except Exception:
+            return True  # conservative: treat unknown as Form
+
+
     # ── Post-edit verification ───────────────────────────────────────────────
 
     @staticmethod
@@ -676,9 +691,14 @@ class TrackCEngine:
             except Exception as exc:
                 return False, f"cannot read content stream xref {xref}: {exc}"
 
-            # 3. Form XObject (Do operator) present
-            if RE_DO.search(stream):
-                return False, "form xobject"
+            # 3. Form XObject — Phase 1 limitation: any Form XObject on the page
+            #    causes rejection.  Image XObjects (photos, backgrounds) are
+            #    correctly excluded via _is_form_xobject().
+            #    Overlap-aware Form XObject handling is deferred to Phase 2.
+            for m in RE_DO.finditer(stream):
+                xobj_name = m.group(1).decode("latin-1", errors="replace")
+                if self._is_form_xobject(page, xobj_name):
+                    return False, "form xobject"
 
             blocks = self._parse_bt_et_blocks(stream, xref, doc, page)
             all_blocks.extend(blocks)
@@ -741,6 +761,11 @@ class TrackCEngine:
               "matched_xref": int,
               "matched_tj_range": (raw_start, raw_end),   # offsets in original stream
             }
+
+        Phase 1 scope: handles replacement only when target_text is entirely
+        within a single STR item of the matched TJ/Tj operator.  Cross-STR-item
+        cases (target spans multiple STR items separated by KERN values) are
+        rejected by can_handle() before reaching this method.
 
         Never raises: all exceptions are caught and returned as success=False.
         """

@@ -6,7 +6,7 @@ Tests:
   1. test_simple_replacement        — fitz-generated PDF, replace one word
   2. test_kerning_preserved         — byte-level: KERN items unchanged after edit
   3. test_different_length_no_crash — longer/shorter replacement succeeds
-  4. test_can_handle_rejects_form_xobject  — insert_htmlbox → rejected
+  4. test_can_handle_form_xobject_phase1   — Form → reject; Image → not rejected
   5. test_can_handle_rejects_identity_h   — Arabic PDF → rejected
   6. test_verification_catches_bad_edit   — stream corruption → failure reported
   7. test_no_silent_fail_on_missing_text  — text not on page → explicit rejection
@@ -361,31 +361,52 @@ def test_different_length_no_crash():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Test 4: can_handle rejects Form XObject (insert_htmlbox)
+# Test 4: can_handle Form/Image XObject behaviour (Phase 1)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def test_can_handle_rejects_form_xobject():
-    """insert_htmlbox creates a Form XObject (Do operator) → Track C must reject."""
-    doc = fitz.open()
-    page = doc.new_page(width=595, height=842)
-
-    # insert_htmlbox creates a Form XObject
-    page.insert_htmlbox(
-        fitz.Rect(72, 72, 500, 200),
-        "<p>Hello World from htmlbox</p>",
-    )
-
+def test_can_handle_form_xobject_phase1():
+    """Phase 1: any Form XObject on the page → reject.
+    Image XObjects must NOT trigger 'form xobject' rejection.
+    """
     engine = TrackCEngine()
-    rect = fitz.Rect(72, 72, 500, 200)
-    ok, reason = engine.can_handle(page, "Hello", "Hi", rect)
 
-    assert not ok, "can_handle should have rejected form xobject"
-    assert reason == "form xobject", (
-        f"Expected reason 'form xobject', got: {reason!r}"
+    # Case A: page has a Form XObject (insert_htmlbox) → must reject
+    doc_form = fitz.open()
+    page_form = doc_form.new_page(width=595, height=842)
+    page_form.insert_text((50, 50), "Hello World")
+    page_form.insert_htmlbox(fitz.Rect(72, 400, 500, 600), "<p>HTML</p>")
+    ok_a, reason_a = engine.can_handle(
+        page_form, "Hello", "Hi", fitz.Rect(50, 40, 200, 60)
     )
+    assert not ok_a and reason_a == "form xobject", (
+        f"Expected (False, 'form xobject'), got ({ok_a}, {reason_a!r})"
+    )
+    doc_form.close()
 
-    print("  [PASS] test_can_handle_rejects_form_xobject")
-    doc.close()
+    # Case B: page has only an Image XObject + text → must NOT reject with "form xobject"
+    doc_img = fitz.open()
+    page_img = doc_img.new_page(width=595, height=842)
+    page_img.insert_text((50, 50), "Hello World")
+    img = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 10, 10))
+    img.set_rect(img.irect, (200, 200, 200))
+    page_img.insert_image(fitz.Rect(100, 300, 300, 500), pixmap=img)
+    td = page_img.get_text("rawdict")
+    hello_rect = None
+    for blk in td.get("blocks", []):
+        if blk.get("type") != 0:
+            continue
+        for line in blk.get("lines", []):
+            for span in line.get("spans", []):
+                if "Hello" in "".join(c.get("c", "") for c in span.get("chars", [])):
+                    hello_rect = fitz.Rect(span["bbox"])
+    assert hello_rect is not None
+    _, reason_b = engine.can_handle(page_img, "Hello", "Hi", hello_rect)
+    assert reason_b != "form xobject", (
+        f"Image XObject must not trigger 'form xobject'; got: {reason_b!r}"
+    )
+    doc_img.close()
+
+    print("  [PASS] test_can_handle_form_xobject_phase1")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -508,12 +529,32 @@ def test_no_silent_fail_on_missing_text():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Test 8: Real sample PDFs — at least 1 span per file must succeed or be cleanly rejected
+# Test 8: Real sample PDFs — fixed per-sample expected outcomes
 # ──────────────────────────────────────────────────────────────────────────────
+
+# Fixed expected outcomes for each real PDF sample.
+# Changing a PDF's behaviour (e.g. multicolumn.pdf going from rejected to success
+# when cross-kern-boundary support is added) requires an explicit update here.
+_EXPECTED_OUTCOMES: dict[str, tuple[str, str]] = {
+    "reportlab-overlay.pdf": ("success", ""),
+    "pdflatex-outline.pdf": ("success", ""),
+    "multicolumn.pdf": ("rejected", "ambiguous split: target text crosses kern boundary"),
+}
+
 
 def _try_edit_first_latin_span(pdf_path: Path) -> dict:
     """
-    Open a real PDF, find the first WinAnsi/latin span, try a Track C edit.
+    Open a real PDF, find the FIRST eligible ASCII span, and try a Track C edit.
+
+    Eligibility criteria (text-only — NOT can_handle):
+      - ASCII-only text (ord < 128 for every char)
+      - At least 4 chars total
+      - At least 3 alpha chars following the 3-char target prefix
+        (ensures the replacement word uses chars from the same span but
+        independent of the target itself)
+
+    The can_handle result is reported as-is on the first eligible span.  We
+    do NOT scan past a rejection to find an easier span.
 
     Returns a result dict with keys:
       status : "success" | "rejected" | "error"
@@ -522,7 +563,6 @@ def _try_edit_first_latin_span(pdf_path: Path) -> dict:
     """
     doc = fitz.open(str(pdf_path))
     engine = TrackCEngine()
-    last_rejection = "no suitable latin span found"
 
     try:
         for page_idx in range(min(3, len(doc))):
@@ -536,47 +576,56 @@ def _try_edit_first_latin_span(pdf_path: Path) -> dict:
                         chars = span.get("chars", [])
                         text = "".join(c.get("c", "") for c in chars) or span.get("text", "")
                         text = text.strip()
-                        # Need at least 4 chars so we have 3 to replace + context
-                        if len(text) < 4:
-                            continue
-                        # Only try ASCII spans (clearly latin-1)
-                        if not all(ord(c) < 128 for c in text):
+                        # Basic text filter: ASCII-only, at least 4 chars
+                        if len(text) < 4 or not all(ord(c) < 128 for c in text):
                             continue
 
                         target = text[:3]
-                        # Use the last character of target repeated, so we're
-                        # guaranteed it's in the font subset (same char, already there).
-                        new_word = target[-1] * len(target)
+                        # Replacement: alpha chars from LATER in the same span.
+                        # These chars are guaranteed to be in the font subset (they
+                        # appear in this span) but are independent of the target prefix.
+                        rest_alpha = [c for c in text[3:] if c.isalpha()]
+                        if len(rest_alpha) < len(target):
+                            # Not enough independent context chars — skip this span
+                            continue
+                        new_word = "".join(rest_alpha[:len(target)])
                         rect = fitz.Rect(span["bbox"])
 
+                        # First eligible span found — report its result, win or lose.
                         ok, reason = engine.can_handle(page, target, new_word, rect)
                         if not ok:
-                            # Not a crash — keep searching for a workable span
-                            last_rejection = reason
-                            continue
+                            return {"status": "rejected", "reason": reason, "span": text}
 
-                        # Capture stream before edit for kerning check
+                        # Snapshot ALL content streams before the edit.
+                        # apply_edit may touch any xref; we need the right "before" copy.
                         xrefs = page.get_contents()
-                        stream_before = doc.xref_stream(xrefs[0]) if xrefs else b""
+                        streams_before = {xr: doc.xref_stream(xr) for xr in xrefs}
 
-                        result = engine.apply_edit(
-                            doc, page_idx, rect, target, new_word
-                        )
+                        result = engine.apply_edit(doc, page_idx, rect, target, new_word)
                         if not result["success"]:
-                            # Verification failure is an error (not a clean rejection)
                             return {
                                 "status": "error",
                                 "reason": result["reason"],
                                 "span": text,
                             }
 
-                        # Byte-level kerning check
-                        matched_xref = result.get("matched_xref", xrefs[0] if xrefs else 0)
+                        # Byte-level kerning check: KERN sequence in matched TJ op
+                        matched_xref = result.get("matched_xref")
+                        if matched_xref is None or matched_xref not in streams_before:
+                            return {
+                                "status": "error",
+                                "reason": (
+                                    f"matched_xref {matched_xref!r} not in "
+                                    f"pre-edit snapshot {list(streams_before)}"
+                                ),
+                                "span": text,
+                            }
+
+                        stream_before = streams_before[matched_xref]
                         stream_after = doc.xref_stream(matched_xref)
                         tj_start, tj_end = result["matched_tj_range"]
 
                         before_items = _extract_tj_op_items(stream_before, tj_start, tj_end)
-                        # Re-find TJ op end in new stream
                         blocks_after = engine._parse_bt_et_blocks(
                             stream_after, matched_xref, doc, doc[page_idx]
                         )
@@ -589,14 +638,22 @@ def _try_edit_first_latin_span(pdf_path: Path) -> dict:
                             if new_tj_end is not None:
                                 break
 
-                        if new_tj_end is not None:
-                            after_items = _extract_tj_op_items(
-                                stream_after, tj_start, new_tj_end
-                            )
-                            _assert_kerning_preserved(
-                                before_items, after_items,
-                                label=f"{pdf_path.name}: "
-                            )
+                        # Missing new_tj_end is a hard error, not a silent skip
+                        if new_tj_end is None:
+                            return {
+                                "status": "error",
+                                "reason": (
+                                    f"TJ op at stream offset {tj_start} not found "
+                                    f"in post-edit stream — kerning cannot be verified"
+                                ),
+                                "span": text,
+                            }
+
+                        after_items = _extract_tj_op_items(stream_after, tj_start, new_tj_end)
+                        _assert_kerning_preserved(
+                            before_items, after_items,
+                            label=f"{pdf_path.name}: "
+                        )
 
                         return {"status": "success", "reason": "", "span": text}
 
@@ -605,7 +662,7 @@ def _try_edit_first_latin_span(pdf_path: Path) -> dict:
     finally:
         doc.close()
 
-    return {"status": "rejected", "reason": last_rejection, "span": ""}
+    return {"status": "rejected", "reason": "no eligible span found", "span": ""}
 
 
 def test_real_pdfs():
@@ -627,7 +684,8 @@ def test_real_pdfs():
         else:
             print(f"  [FAIL] {path.name}  reason={r['reason']!r}")
 
-    # No raw exceptions allowed — all failures must be explicit clean rejections
+    # Hard requirement: no uncaught exceptions — every outcome must be an
+    # explicit "success" or "rejected", never a raw crash.
     crashes = [r for r in results if r[0] == "error"]
     assert not crashes, (
         f"These PDFs caused errors (not clean rejections):\n"
@@ -635,17 +693,34 @@ def test_real_pdfs():
     )
 
     successes = [r for r in results if r[0] == "success"]
-    print(f"\n  Summary: {len(successes)} success(es) out of {len(results)} tried")
+    rejections = [r for r in results if r[0] == "rejected"]
+    print(
+        f"\n  Summary: {len(successes)} success(es), "
+        f"{len(rejections)} rejection(s) out of {len(results)} tried"
+    )
 
-    # Spike acceptance criterion: at least 3 real PDFs must succeed
-    assert len(successes) >= 3, (
-        f"Track C spike requires at least 3 real-PDF successes; got {len(successes)}.\n"
-        "Rejections:\n"
-        + "\n".join(
-            f"  {name}: {reason}"
-            for status, name, span, reason in results
-            if status != "success"
-        )
+    # Per-sample assertion: each PDF must match its fixed expected outcome.
+    # To change an expected outcome (e.g. after adding cross-kern-boundary support),
+    # update _EXPECTED_OUTCOMES explicitly — do not adjust a numeric threshold.
+    mismatches = []
+    for status, name, span, reason in results:
+        if status == "skip":
+            continue
+        expected = _EXPECTED_OUTCOMES.get(name)
+        if expected is None:
+            continue  # unknown sample — no assertion
+        exp_status, exp_reason = expected
+        if status != exp_status:
+            mismatches.append(
+                f"  {name}: expected status={exp_status!r}, got {status!r} (reason={reason!r})"
+            )
+        elif exp_status == "rejected" and exp_reason and exp_reason not in reason:
+            mismatches.append(
+                f"  {name}: expected rejection reason containing {exp_reason!r}, got {reason!r}"
+            )
+
+    assert not mismatches, (
+        "Per-sample expected outcomes not met:\n" + "\n".join(mismatches)
     )
     print("  [PASS] test_real_pdfs")
 
@@ -658,7 +733,7 @@ TESTS = [
     test_simple_replacement,
     test_kerning_preserved,
     test_different_length_no_crash,
-    test_can_handle_rejects_form_xobject,
+    test_can_handle_form_xobject_phase1,
     test_can_handle_rejects_identity_h,
     test_verification_catches_bad_edit,
     test_no_silent_fail_on_missing_text,
