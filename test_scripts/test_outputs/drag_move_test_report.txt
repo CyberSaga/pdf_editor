@@ -1,28 +1,35 @@
 ========================================================================
 Drag-Move Text Box Feature Test Report
-Time: 2026-03-23 15:47:10
+Time: 2026-03-25 21:59:01
 ========================================================================
 
 Concept                                      OK  FAIL   ERR  SKIP    Rate    Time
 ------------------------------------------------------------------------
 A Basic Move                                  1     0     0     0  100.0%   0.04s
-B Move + Edit Text                            1     0     0     0  100.0%   0.02s
-C Moved Block Not Lost                        1     0     0     0  100.0%   0.03s
+B Move + Edit Text                            1     0     0     0  100.0%   0.03s
+C Moved Block Not Lost                        1     0     0     0  100.0%   0.02s
 D Other Block Not Lost                        1     0     0     0  100.0%   0.02s
 E Vertical Text Move                          1     0     0     0  100.0%   0.02s
 F Boundary Clamp                              1     0     0     0  100.0%   0.02s
-G sample-files-main (32 PDFs)                24     0     0     8  100.0%   6.97s
-H veraPDF representative (6 PDFs)             4     0     0     2  100.0%   0.04s
-I Logic Simulation                            2     0     0     0  100.0%   0.05s
+G sample-files-main (32 PDFs)                21     0     3     8   87.5%  13.39s
+H veraPDF representative (6 PDFs)             4     0     0     2  100.0%   0.07s
+I Logic Simulation                            2     0     0     0  100.0%   0.07s
 ------------------------------------------------------------------------
-Total                                        36     0     0    10  100.0%   7.21s
+Total                                        33     0     3    10   91.7%  13.70s
+
+========================================================================
+Failure/Error Details
+========================================================================
+[ERROR] G-habibi-oneline-cmap.pdf
+        Exception: overlap edit verification failed: target_present=False, protected_ok=True, missing_protected=[]
+[ERROR] G-habibi-rotated.pdf
+        Exception: overlap edit verification failed: target_present=False, protected_ok=True, missing_protected=[]
+[ERROR] G-habibi.pdf
+        Exception: overlap edit verification failed: target_present=False, protected_ok=True, missing_protected=[]
 
 ========================================================================
 Conclusion
 ========================================================================
-All effective tests passed. Feature can be considered STABLE.
-Remaining suggestions:
-  1. Manual end-to-end testing with real CJK PDFs.
-  2. Add undo/redo coverage for drag-move operations.
-  3. Consider visual drag feedback (border color change).
+Pass rate 91.7% with minor failures (3 cases).
+Core functionality stable. Review failures above.
 ========================================================================
