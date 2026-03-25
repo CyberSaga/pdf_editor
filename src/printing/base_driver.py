@@ -19,7 +19,7 @@ OVERRIDABLE_PRINT_FIELDS = frozenset(
 )
 
 
-@dataclass(slots=True)
+@dataclass
 class PrinterDevice:
     """System printer metadata."""
 
@@ -29,7 +29,7 @@ class PrinterDevice:
     raw: Optional[Dict[str, object]] = None
 
 
-@dataclass(slots=True)
+@dataclass
 class PrintJobOptions:
     """User-selected print options."""
 
@@ -93,7 +93,7 @@ class PrintJobOptions:
         )
 
 
-@dataclass(slots=True)
+@dataclass
 class PrintJobResult:
     """Submission result for a print job."""
 

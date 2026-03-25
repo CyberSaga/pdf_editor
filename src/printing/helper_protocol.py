@@ -10,7 +10,7 @@ from typing import Any
 from .base_driver import PrintJobOptions
 
 
-@dataclass(slots=True)
+@dataclass
 class PrintHelperJob:
     """Immutable job payload handed to the helper subprocess."""
 

@@ -12,7 +12,7 @@ from PySide6.QtGui import QImage
 from .errors import RenderingError
 
 
-@dataclass(slots=True)
+@dataclass
 class RenderedPage:
     """Rendered page payload for print bridge."""
 

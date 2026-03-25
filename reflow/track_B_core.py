@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 track_B_core.py — 低階 content stream 精準操作版（Track B 核心引擎）
 
