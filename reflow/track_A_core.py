@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 track_A_core.py — Vision LLM 重生頁面版（Track A 核心引擎）
 

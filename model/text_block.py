@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import difflib
 import logging
 import math
@@ -11,6 +13,16 @@ from typing import Optional
 import fitz
 
 _RE_WS_STRIP = re.compile(r"\s+")
+# Unicode ligature → decomposed chars — mirrors pdf_model._LIGATURE_MAP
+_LIGATURE_MAP = {
+    '\ufb00': 'ff',   # ﬀ
+    '\ufb01': 'fi',   # ﬁ
+    '\ufb02': 'fl',   # ﬂ
+    '\ufb03': 'ffi',  # ﬃ
+    '\ufb04': 'ffl',  # ﬄ
+    '\ufb05': 'st',   # ﬅ (long s + t)
+    '\ufb06': 'st',   # ﬆ
+}
 logger = logging.getLogger(__name__)
 
 
@@ -759,12 +771,21 @@ class TextBlockManager:
 
         return paragraphs
 
+    @staticmethod
+    def _expand_ligatures(text: str) -> str:
+        for lig, expanded in _LIGATURE_MAP.items():
+            if lig in text:
+                text = text.replace(lig, expanded)
+        return text
+
     def _match_by_text(
         self,
         candidates: list[TextBlock],
         original_text: str,
     ) -> Optional[TextBlock]:
-        original_clean = _RE_WS_STRIP.sub("", original_text.strip()).lower()
+        original_clean = self._expand_ligatures(
+            _RE_WS_STRIP.sub("", original_text.strip()).lower()
+        )
         if not original_clean:
             return None
 
@@ -772,7 +793,9 @@ class TextBlockManager:
         best_similarity = 0.5
 
         for block in candidates:
-            block_clean = _RE_WS_STRIP.sub("", block.text.strip()).lower()
+            block_clean = self._expand_ligatures(
+                _RE_WS_STRIP.sub("", block.text.strip()).lower()
+            )
             if not block_clean:
                 continue
 

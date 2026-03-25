@@ -1,4 +1,6 @@
-﻿import fitz
+﻿from __future__ import annotations
+
+import fitz
 import tempfile
 import os
 import shutil
@@ -2281,6 +2283,32 @@ class PDFModel:
             effective_target_mode = (target_mode or self.text_target_mode or "run").strip().lower()
         if effective_target_mode not in {"run", "paragraph"}:
             effective_target_mode = "run"
+        # Safety: "run" mode without an explicit span_id is ambiguous for multi-run
+        # blocks — the caller likely intended block-level replacement.  Auto-promote
+        # to "paragraph" to avoid orphaning sibling runs.
+        # Exception: if the original_text is clearly shorter than the target block
+        # (< 60% of block text), the caller likely wants a sub-section edit; stay in
+        # run mode so we don't clobber the whole block.
+        if effective_target_mode == "run" and not target_span_id:
+            _should_promote = True
+            if original_text:
+                _probe_block = self.block_manager.find_by_rect(
+                    page_idx, rect, original_text=original_text, doc=self.doc
+                )
+                if _probe_block and _probe_block.text:
+                    _norm_orig = self._normalize_text_for_compare(original_text)
+                    _norm_block = self._normalize_text_for_compare(_probe_block.text)
+                    if _norm_block and len(_norm_orig) < len(_norm_block) * 0.6:
+                        _should_promote = False
+                        logger.debug(
+                            "keeping run mode: original_text (%d chars) < 60%% of block text (%d chars)",
+                            len(_norm_orig), len(_norm_block),
+                        )
+            if _should_promote:
+                effective_target_mode = "paragraph"
+                logger.debug(
+                    "auto-promoted target_mode run→paragraph (no explicit span_id)"
+                )
         overlap_cluster: list[EditableSpan] = []
         protected_spans: list[EditableSpan] = []
 

@@ -1,4 +1,6 @@
-﻿from PySide6.QtWidgets import (
+﻿from __future__ import annotations
+
+from PySide6.QtWidgets import (
     QApplication, QColorDialog, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
     QListWidget, QToolBar, QInputDialog, QMessageBox, QMenu, QFileDialog,
     QListWidgetItem, QWidget, QVBoxLayout, QPushButton, QLabel,

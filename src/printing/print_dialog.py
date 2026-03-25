@@ -40,7 +40,7 @@ from .layout import (
 from .pdf_renderer import PDFRenderer
 
 
-@dataclass(slots=True)
+@dataclass
 class UnifiedPrintDialogResult:
     options: PrintJobOptions
     page_indices: List[int]
