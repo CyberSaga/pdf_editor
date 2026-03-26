@@ -1457,9 +1457,14 @@ class PDFController:
         if not self.model.doc or page < 1 or page > len(self.model.doc): return
         try:
             page_idx = page - 1
+            view = getattr(self, "view", None)
 
             # 擷取 viewport anchor（在任何頁面變動前），供編輯後還原捲軸位置
-            anchor = self.view.capture_viewport_anchor()
+            anchor = (
+                view.capture_viewport_anchor()
+                if (view is not None and hasattr(view, "capture_viewport_anchor"))
+                else None
+            )
 
             # Phase 4: 透過 CommandManager 執行，支援頁面快照 undo/redo
             snapshot = self.model._capture_page_snapshot(page_idx)
@@ -1538,16 +1543,18 @@ class PDFController:
                 reflow_fn=_reflow_fn,
             )
             self.model.command_manager.execute(cmd)
-            self._invalidate_active_render_state()
+            if hasattr(self, "_invalidate_active_render_state") and hasattr(self.model, "get_active_session_id"):
+                self._invalidate_active_render_state()
             self.show_page(page_idx)
             self._update_undo_redo_tooltips()
             # 還原 viewport anchor（避免頁面重繪後捲軸跳位）
-            QTimer.singleShot(0, lambda a=anchor: self.view.restore_viewport_anchor(a))
-            QTimer.singleShot(180, lambda a=anchor: self.view.restore_viewport_anchor(a))
+            if anchor is not None and view is not None and hasattr(view, "restore_viewport_anchor"):
+                QTimer.singleShot(0, lambda a=anchor, v=view: v.restore_viewport_anchor(a))
+                QTimer.singleShot(180, lambda a=anchor, v=view: v.restore_viewport_anchor(a))
             # 顯示 reflow 警告：使用 override 機制確保不被 _update_status_bar 覆蓋
             if _reflow_warning[0]:
                 _msg = _reflow_warning[0]
-                _view_ref = self.view
+                _view_ref = view
                 if hasattr(_view_ref, "set_status_bar_override_message"):
                     _view_ref.set_status_bar_override_message(_msg)
                     # 5 秒後自動清除 override

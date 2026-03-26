@@ -10,17 +10,74 @@ from PySide6.QtWidgets import (
     QStatusBar, QGroupBox, QToolButton, QProgressDialog, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip
 )
 from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QActionGroup, QCloseEvent, QTextOption, QShortcut, QFontMetrics, QGuiApplication
-from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint, QEvent, QSize, QRect
+from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint, QEvent, QSize, QRect, QObject
 from typing import List, Tuple, Optional
 from pathlib import Path
 from dataclasses import dataclass
 from utils.helpers import pixmap_to_qpixmap, parse_pages, show_error
 from model.pdf_model import PdfAuditReport, PdfOptimizeOptions, PDFModel
 import logging
+import unicodedata
 import warnings
 import fitz
 
 logger = logging.getLogger(__name__)
+
+_LIGATURE_EXPAND = {
+    "\ufb00": "ff",
+    "\ufb01": "fi",
+    "\ufb02": "fl",
+    "\ufb03": "ffi",
+    "\ufb04": "ffl",
+    "\ufb05": "st",
+    "\ufb06": "st",
+}
+
+
+def _normalize_for_edit_compare(text: str) -> str:
+    """Normalize editor text for no-op comparisons."""
+    if not text:
+        return ""
+    for ligature, expanded in _LIGATURE_EXPAND.items():
+        text = text.replace(ligature, expanded)
+    text = unicodedata.normalize("NFKC", text)
+    return " ".join(text.split()).strip()
+
+
+class _EditorShortcutForwarder(QObject):
+    """Forward common window shortcuts while the embedded editor has focus."""
+
+    def __init__(self, view) -> None:
+        super().__init__(view if isinstance(view, QObject) else None)
+        self._view = view
+
+    def _trigger(self, action_name: str, fallback_name: str | None = None) -> bool:
+        action = getattr(self._view, action_name, None)
+        if action is not None and hasattr(action, "trigger"):
+            action.trigger()
+            return True
+        if fallback_name:
+            fallback = getattr(self._view, fallback_name, None)
+            if callable(fallback):
+                fallback()
+                return True
+        return False
+
+    def eventFilter(self, obj, event):
+        if event.type() != QEvent.KeyPress:
+            return False
+        modifiers = event.modifiers()
+        if not (modifiers & Qt.ControlModifier):
+            return False
+        if event.key() == Qt.Key_S and not (modifiers & Qt.ShiftModifier):
+            return self._trigger("_action_save", "_save")
+        if event.key() == Qt.Key_Z and not (modifiers & Qt.ShiftModifier):
+            return self._trigger("_action_undo")
+        if event.key() == Qt.Key_Y:
+            return self._trigger("_action_redo")
+        if event.key() == Qt.Key_Z and (modifiers & Qt.ShiftModifier):
+            return self._trigger("_action_redo")
+        return False
 
 
 @dataclass(frozen=True)
@@ -2167,6 +2224,7 @@ class PDFView(QMainWindow):
             self.sig_toggle_fullscreen.emit()
             return True
         if self.text_editor:
+            self._discard_text_edit_once = True
             self._finalize_text_edit()
             self._focus_page_canvas()
             return True
@@ -2420,6 +2478,16 @@ class PDFView(QMainWindow):
             if scene_y < end:
                 return i
         return len(self.page_y_positions) - 1
+
+    def _should_start_editor_drag(self, dx: float, dy: float) -> bool:
+        return (dx * dx + dy * dy) > 9
+
+    def _resolve_editor_page_idx_for_drag(self, editor_top_y: float) -> int:
+        if not self.continuous_pages or not self.page_y_positions:
+            return getattr(self, "_editing_page_idx", self.current_page)
+        editor_widget = self.text_editor.widget() if (self.text_editor and self.text_editor.widget()) else None
+        editor_height = float(editor_widget.height()) if editor_widget else 0.0
+        return self._scene_y_to_page_index(editor_top_y + (editor_height / 2.0))
 
     def _scene_pos_to_page_and_doc_point(self, scene_pos: QPointF) -> Tuple[int, fitz.Point]:
         """將場景座標轉為 (頁索引, 文件座標)。連續模式會扣掉頁頂偏移。
@@ -2755,7 +2823,7 @@ class PDFView(QMainWindow):
             if self._drag_pending and self._drag_start_scene_pos is not None:
                 dx = scene_pos.x() - self._drag_start_scene_pos.x()
                 dy = scene_pos.y() - self._drag_start_scene_pos.y()
-                if dx * dx + dy * dy > 25:  # 超過 5px → 確認為拖曳
+                if self._should_start_editor_drag(dx, dy):
                     self._drag_pending = False
                     self._drag_active = True
                     self.graphics_view.viewport().setCursor(Qt.ClosedHandCursor)
@@ -2766,10 +2834,12 @@ class PDFView(QMainWindow):
                         self._pending_text_info = None
                         # 記錄剛建立的編輯框初始位置，並立即套用當前偏移量
                         self._drag_editor_start_pos = self.text_editor.pos()
-                        page_idx = getattr(self, '_editing_page_idx', self.current_page)
+                        raw_y = self._drag_editor_start_pos.y() + dy
+                        page_idx = self._resolve_editor_page_idx_for_drag(raw_y)
+                        self._editing_page_idx = page_idx
                         clamped_x, clamped_y = self._clamp_editor_pos_to_page(
                             self._drag_editor_start_pos.x() + dx,
-                            self._drag_editor_start_pos.y() + dy,
+                            raw_y,
                             page_idx
                         )
                         self.text_editor.setPos(clamped_x, clamped_y)
@@ -2781,7 +2851,8 @@ class PDFView(QMainWindow):
                 dy = scene_pos.y() - self._drag_start_scene_pos.y()
                 raw_x = self._drag_editor_start_pos.x() + dx
                 raw_y = self._drag_editor_start_pos.y() + dy
-                page_idx = getattr(self, '_editing_page_idx', self.current_page)
+                page_idx = self._resolve_editor_page_idx_for_drag(raw_y)
+                self._editing_page_idx = page_idx
                 new_x, new_y = self._clamp_editor_pos_to_page(raw_x, raw_y, page_idx)
                 self.text_editor.setPos(new_x, new_y)
                 return  # 拖曳中不觸發 ScrollHandDrag
@@ -3289,6 +3360,8 @@ class PDFView(QMainWindow):
 
         self.text_editor = self.scene.addWidget(editor)
         self.text_editor.setPos(pos_x, pos_y)
+        self._editor_shortcut_forwarder = _EditorShortcutForwarder(self)
+        editor.installEventFilter(self._editor_shortcut_forwarder)
         # Ensure Esc works even when the embedded QTextEdit has focus inside QGraphicsProxyWidget.
         editor_esc = QShortcut(QKeySequence(Qt.Key_Escape), editor)
         editor_esc.setContext(Qt.ShortcutContext.WidgetShortcut)
@@ -3441,7 +3514,10 @@ class PDFView(QMainWindow):
         editor = self.text_editor.widget()
         new_text = editor.toPlainText()
         original_text_prop = editor.property("original_text")
-        text_changed = new_text != original_text_prop
+        text_changed = (
+            _normalize_for_edit_compare(new_text)
+            != _normalize_for_edit_compare(original_text_prop or "")
+        )
 
         # 取得原始 rect（用於在 PDF 中找到舊文字塊）與當前 rect（拖曳後的新位置）
         original_rect = self._editing_original_rect  # 編輯開始時的原始位置
@@ -3520,28 +3596,30 @@ class PDFView(QMainWindow):
                     logger.error(f"發送新增文字框信號時出錯: {e}")
             return
 
-        if (text_changed or position_changed or font_changed or size_changed) and original_rect:
-            try:
-                original_text = getattr(self, 'editing_original_text', None)
-                vertical_shift_left = getattr(self, 'vertical_shift_left_cb', None)
-                vsl = vertical_shift_left.isChecked() if vertical_shift_left else True
-                # 若位置有變動，傳入 new_rect；否則傳 None（維持原位）
-                new_rect_arg = current_rect if position_changed else None
-                self.sig_edit_text.emit(
-                    edit_page + 1,
-                    original_rect,      # 原始位置（供模型找到舊文字塊）
-                    new_text,
-                    current_font,
-                    current_size,
-                    original_color,
-                    original_text,
-                    vsl,
-                    new_rect_arg,       # 目標新位置（None = 不移動）
-                    target_span_id,
-                    target_mode,
-                )
-            except Exception as e:
-                logger.error(f"發送編輯信號時出錯: {e}")
+        if not (text_changed or position_changed or font_changed or size_changed) or not original_rect:
+            return
+
+        try:
+            original_text = getattr(self, 'editing_original_text', None)
+            vertical_shift_left = getattr(self, 'vertical_shift_left_cb', None)
+            vsl = vertical_shift_left.isChecked() if vertical_shift_left else True
+            # 若位置有變動，傳入 new_rect；否則傳 None（維持原位）
+            new_rect_arg = current_rect if position_changed else None
+            self.sig_edit_text.emit(
+                edit_page + 1,
+                original_rect,      # 原始位置（供模型找到舊文字塊）
+                new_text,
+                current_font,
+                current_size,
+                original_color,
+                original_text,
+                vsl,
+                new_rect_arg,       # 目標新位置（None = 不移動）
+                target_span_id,
+                target_mode,
+            )
+        except Exception as e:
+            logger.error(f"發送編輯信號時出錯: {e}")
 
     def _show_context_menu(self, pos):
         menu = QMenu(self)
