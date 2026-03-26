@@ -33,6 +33,8 @@ _LIGATURE_EXPAND = {
     "\ufb06": "st",
 }
 
+_DEFAULT_EDITOR_MASK_COLOR = QColor("#FFFFFF")
+
 
 def _normalize_for_edit_compare(text: str) -> str:
     """Normalize editor text for no-op comparisons."""
@@ -42,6 +44,26 @@ def _normalize_for_edit_compare(text: str) -> str:
         text = text.replace(ligature, expanded)
     text = unicodedata.normalize("NFKC", text)
     return " ".join(text.split()).strip()
+
+
+def _average_image_rect_color(image, rect: QRect) -> QColor:
+    bounded = rect.intersected(image.rect())
+    if bounded.isEmpty():
+        return QColor(_DEFAULT_EDITOR_MASK_COLOR)
+    total_r = 0
+    total_g = 0
+    total_b = 0
+    count = 0
+    for y in range(bounded.top(), bounded.bottom() + 1):
+        for x in range(bounded.left(), bounded.right() + 1):
+            color = image.pixelColor(x, y)
+            total_r += color.red()
+            total_g += color.green()
+            total_b += color.blue()
+            count += 1
+    if count <= 0:
+        return QColor(_DEFAULT_EDITOR_MASK_COLOR)
+    return QColor(total_r // count, total_g // count, total_b // count)
 
 
 class _EditorShortcutForwarder(QObject):
@@ -63,6 +85,30 @@ class _EditorShortcutForwarder(QObject):
                 return True
         return False
 
+    def _editor_widget(self):
+        editor = getattr(self._view, "text_editor", None)
+        if editor is None or not hasattr(editor, "widget"):
+            return None
+        return editor.widget()
+
+    def _handle_editor_undo(self) -> bool:
+        widget = self._editor_widget()
+        if widget is None:
+            return True
+        document = widget.document() if hasattr(widget, "document") else None
+        if document is not None and document.isUndoAvailable():
+            widget.undo()
+        return True
+
+    def _handle_editor_redo(self) -> bool:
+        widget = self._editor_widget()
+        if widget is None:
+            return True
+        document = widget.document() if hasattr(widget, "document") else None
+        if document is not None and document.isRedoAvailable():
+            widget.redo()
+        return True
+
     def eventFilter(self, obj, event):
         if event.type() != QEvent.KeyPress:
             return False
@@ -72,11 +118,11 @@ class _EditorShortcutForwarder(QObject):
         if event.key() == Qt.Key_S and not (modifiers & Qt.ShiftModifier):
             return self._trigger("_action_save", "_save")
         if event.key() == Qt.Key_Z and not (modifiers & Qt.ShiftModifier):
-            return self._trigger("_action_undo")
+            return self._handle_editor_undo()
         if event.key() == Qt.Key_Y:
-            return self._trigger("_action_redo")
+            return self._handle_editor_redo()
         if event.key() == Qt.Key_Z and (modifiers & Qt.ShiftModifier):
-            return self._trigger("_action_redo")
+            return self._handle_editor_redo()
         return False
 
 
@@ -2479,6 +2525,75 @@ class PDFView(QMainWindow):
                 return i
         return len(self.page_y_positions) - 1
 
+    def _build_text_editor_stylesheet(self, text_rgb: tuple[int, int, int], mask_color: QColor) -> str:
+        r, g, b = text_rgb
+        return (
+            f"QTextEdit {{ background: rgb({mask_color.red()},{mask_color.green()},{mask_color.blue()}); "
+            f"border: 1.5px dashed rgba(30,120,255,0.75); color: rgb({r},{g},{b}); "
+            f"selection-background-color: rgba(30,120,255,0.25); }}"
+            f"QTextEdit QScrollBar {{ background: transparent; }}"
+        )
+
+    def _current_text_editor_scene_rect(self) -> QRectF | None:
+        if not self.text_editor or not self.text_editor.widget():
+            return None
+        if hasattr(self.text_editor, "sceneBoundingRect"):
+            return self.text_editor.sceneBoundingRect()
+        pos = self.text_editor.pos() if hasattr(self.text_editor, "pos") else QPointF(0, 0)
+        widget = self.text_editor.widget()
+        return QRectF(pos.x(), pos.y(), float(widget.width()), float(widget.height()))
+
+    def _sample_page_mask_color(self, page_idx: int, scene_rect: QRectF) -> QColor:
+        if (
+            page_idx < 0
+            or page_idx >= len(getattr(self, "page_items", []))
+            or scene_rect.isEmpty()
+        ):
+            return QColor(_DEFAULT_EDITOR_MASK_COLOR)
+        page_item = self.page_items[page_idx]
+        if page_item is None or not hasattr(page_item, "pixmap"):
+            return QColor(_DEFAULT_EDITOR_MASK_COLOR)
+        pixmap = page_item.pixmap()
+        if pixmap is None or pixmap.isNull():
+            return QColor(_DEFAULT_EDITOR_MASK_COLOR)
+        image = pixmap.toImage()
+        item_rect = page_item.sceneBoundingRect()
+        if item_rect.isEmpty():
+            return QColor(_DEFAULT_EDITOR_MASK_COLOR)
+
+        local_rect = scene_rect.intersected(item_rect)
+        if local_rect.isEmpty():
+            return QColor(_DEFAULT_EDITOR_MASK_COLOR)
+
+        scale_x = image.width() / max(1.0, item_rect.width())
+        scale_y = image.height() / max(1.0, item_rect.height())
+        inset_x = min(local_rect.width() * 0.15, 6.0)
+        inset_y = min(local_rect.height() * 0.15, 6.0)
+        sample_rect = local_rect.adjusted(inset_x, inset_y, -inset_x, -inset_y)
+        if sample_rect.isEmpty():
+            sample_rect = local_rect
+
+        image_rect = QRect(
+            max(0, int((sample_rect.left() - item_rect.left()) * scale_x)),
+            max(0, int((sample_rect.top() - item_rect.top()) * scale_y)),
+            max(1, int(sample_rect.width() * scale_x)),
+            max(1, int(sample_rect.height() * scale_y)),
+        )
+        return _average_image_rect_color(image, image_rect)
+
+    def _refresh_text_editor_mask_color(self) -> None:
+        if not self.text_editor or not self.text_editor.widget():
+            return
+        page_idx = getattr(self, "_editing_page_idx", self.current_page)
+        scene_rect = self._current_text_editor_scene_rect()
+        if scene_rect is None:
+            return
+        editor = self.text_editor.widget()
+        text_rgb = editor.property("text_rgb") or (0, 0, 0)
+        mask_color = self._sample_page_mask_color(page_idx, scene_rect)
+        editor.setStyleSheet(self._build_text_editor_stylesheet(text_rgb, mask_color))
+        editor.setProperty("mask_rgb", (mask_color.red(), mask_color.green(), mask_color.blue()))
+
     def _should_start_editor_drag(self, dx: float, dy: float) -> bool:
         return (dx * dx + dy * dy) > 9
 
@@ -2855,6 +2970,7 @@ class PDFView(QMainWindow):
                 self._editing_page_idx = page_idx
                 new_x, new_y = self._clamp_editor_pos_to_page(raw_x, raw_y, page_idx)
                 self.text_editor.setPos(new_x, new_y)
+                self._refresh_text_editor_mask_color()
                 return  # 拖曳中不觸發 ScrollHandDrag
 
             # ── hover 高亮（僅 edit_text）──
@@ -3324,14 +3440,12 @@ class PDFView(QMainWindow):
         editor.setFont(QFont(qt_font, int(font_size)))
 
         r, g, b = [int(c * 255) for c in color]
-        # 透明編輯框：停止 viewport 自動填色，讓使用者可以透過編輯框看到 PDF 內容
+        text_rgb = (r, g, b)
+        editor.setProperty("text_rgb", text_rgb)
+        # 停止 viewport 自動填色，改由場景底圖取樣出的 mask 色填入 editor 背景。
         editor.setAutoFillBackground(False)
         editor.viewport().setAutoFillBackground(False)
-        editor.setStyleSheet(
-            f"QTextEdit {{ background: transparent; border: 1.5px dashed rgba(30,120,255,0.75); "
-            f"color: rgb({r},{g},{b}); selection-background-color: rgba(30,120,255,0.25); }}"
-            f"QTextEdit QScrollBar {{ background: transparent; }}"
-        )
+        editor.setStyleSheet(self._build_text_editor_stylesheet(text_rgb, QColor(_DEFAULT_EDITOR_MASK_COLOR)))
 
         editor.setFixedWidth(max(scaled_width, 80))
         editor.setMinimumHeight(max(scaled_rect.height, 40))
@@ -3360,6 +3474,7 @@ class PDFView(QMainWindow):
 
         self.text_editor = self.scene.addWidget(editor)
         self.text_editor.setPos(pos_x, pos_y)
+        self._refresh_text_editor_mask_color()
         self._editor_shortcut_forwarder = _EditorShortcutForwarder(self)
         editor.installEventFilter(self._editor_shortcut_forwarder)
         # Ensure Esc works even when the embedded QTextEdit has focus inside QGraphicsProxyWidget.
