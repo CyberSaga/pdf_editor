@@ -14,8 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, Qt
+from PySide6.QtGui import QColor, QImage, QKeyEvent
 
 import view.pdf_view as pdf_view
 
@@ -33,20 +33,66 @@ class _FakeEditorWidget:
         self._text = text
         self._original_text = original_text
         self._height = height
+        self._properties: dict[str, object] = {}
+        self.stylesheet = ""
 
     def toPlainText(self) -> str:
         return self._text
 
     def property(self, name: str):
+        if name in self._properties:
+            return self._properties[name]
         if name == "original_text":
             return self._original_text
         return None
+
+    def setProperty(self, name: str, value) -> None:
+        self._properties[name] = value
 
     def height(self) -> int:
         return self._height
 
     def width(self) -> int:
         return 120
+
+    def setStyleSheet(self, stylesheet: str) -> None:
+        self.stylesheet = stylesheet
+
+
+class _FakeEditorDocument:
+    def __init__(self, undo_available: bool = False, redo_available: bool = False) -> None:
+        self._undo_available = undo_available
+        self._redo_available = redo_available
+
+    def isUndoAvailable(self) -> bool:
+        return self._undo_available
+
+    def isRedoAvailable(self) -> bool:
+        return self._redo_available
+
+
+class _FakeShortcutEditorWidget(_FakeEditorWidget):
+    def __init__(
+        self,
+        text: str = "text",
+        original_text: str = "text",
+        *,
+        undo_available: bool = False,
+        redo_available: bool = False,
+    ) -> None:
+        super().__init__(text, original_text)
+        self._document = _FakeEditorDocument(undo_available=undo_available, redo_available=redo_available)
+        self.undo_calls = 0
+        self.redo_calls = 0
+
+    def document(self) -> _FakeEditorDocument:
+        return self._document
+
+    def undo(self) -> None:
+        self.undo_calls += 1
+
+    def redo(self) -> None:
+        self.redo_calls += 1
 
 
 class _FakeProxy:
@@ -71,6 +117,29 @@ class _FakeProxy:
 
     def pos(self) -> QPointF:
         return self._pos
+
+
+class _FakePixmap:
+    def __init__(self, image: QImage) -> None:
+        self._image = image
+
+    def isNull(self) -> bool:
+        return False
+
+    def toImage(self) -> QImage:
+        return self._image
+
+
+class _FakePageItem:
+    def __init__(self, image: QImage, rect: QRectF) -> None:
+        self._pixmap = _FakePixmap(image)
+        self._rect = rect
+
+    def pixmap(self) -> _FakePixmap:
+        return self._pixmap
+
+    def sceneBoundingRect(self) -> QRectF:
+        return self._rect
 
 
 class _FakeScene:
@@ -135,6 +204,12 @@ def _make_view() -> pdf_view.PDFView:
     view._fullscreen_active = False
     view.current_mode = "browse"
     return view
+
+
+def _make_image(width: int, height: int, color: QColor) -> QImage:
+    image = QImage(width, height, QImage.Format_RGB32)
+    image.fill(color)
+    return image
 
 
 def test_finalize_skips_emit_for_normalized_noop_edit() -> None:
@@ -215,7 +290,58 @@ def test_drag_across_page_updates_editing_page_idx(monkeypatch: pytest.MonkeyPat
     assert captured_pages == [1]
 
 
-def test_editor_shortcut_forwarder_routes_common_actions() -> None:
+def test_average_image_rect_color_returns_local_average() -> None:
+    average_fn = getattr(pdf_view, "_average_image_rect_color", None)
+    assert average_fn is not None
+
+    image = _make_image(2, 2, QColor(0, 0, 0))
+    image.setPixelColor(0, 0, QColor(10, 20, 30))
+    image.setPixelColor(1, 0, QColor(30, 40, 50))
+    image.setPixelColor(0, 1, QColor(50, 60, 70))
+    image.setPixelColor(1, 1, QColor(70, 80, 90))
+
+    color = average_fn(image, QRect(0, 0, 2, 2))
+
+    assert (color.red(), color.green(), color.blue()) == (40, 50, 60)
+
+
+def test_sample_page_mask_color_uses_local_scene_crop() -> None:
+    view = _make_view()
+    sample_fn = getattr(view, "_sample_page_mask_color", None)
+    assert sample_fn is not None
+
+    image = _make_image(10, 10, QColor(20, 30, 40))
+    for x in range(5, 10):
+        for y in range(5, 10):
+            image.setPixelColor(x, y, QColor(200, 210, 220))
+
+    view.page_items = [_FakePageItem(image, QRectF(0, 0, 100, 100))]
+
+    color = sample_fn(0, QRectF(60, 60, 20, 20))
+
+    assert (color.red(), color.green(), color.blue()) == (200, 210, 220)
+
+
+def test_drag_move_refreshes_editor_mask_color(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseMoveEvent", lambda *args, **kwargs: None)
+    view = _make_view()
+    view.current_mode = "edit_text"
+    view.text_editor = _FakeProxy(_FakeEditorWidget("text", "text"), pos=QPointF(10, 10))
+    view._drag_pending = False
+    view._drag_active = True
+    view._drag_start_scene_pos = QPointF(0, 0)
+    view._drag_editor_start_pos = QPointF(10, 10)
+    view._editing_page_idx = 0
+    view._clamp_editor_pos_to_page = lambda x, y, page_idx: (x, y)
+    refresh_calls: list[bool] = []
+    view._refresh_text_editor_mask_color = lambda: refresh_calls.append(True)
+
+    view._mouse_move(_FakeMouseEvent(4, 4))
+
+    assert refresh_calls == [True]
+
+
+def test_editor_shortcut_forwarder_keeps_save_forwarding() -> None:
     forwarder_cls = getattr(pdf_view, "_EditorShortcutForwarder", None)
     assert forwarder_cls is not None
 
@@ -232,14 +358,77 @@ def test_editor_shortcut_forwarder_routes_common_actions() -> None:
         _action_save=_Action("save"),
         _action_undo=_Action("undo"),
         _action_redo=_Action("redo"),
+        text_editor=None,
     )
     forwarder = forwarder_cls(view)
 
     assert forwarder.eventFilter(None, QKeyEvent(QEvent.KeyPress, Qt.Key_S, Qt.ControlModifier)) is True
+    assert triggered == ["save"]
+
+
+def test_editor_shortcut_forwarder_uses_local_undo_redo_history() -> None:
+    forwarder_cls = getattr(pdf_view, "_EditorShortcutForwarder", None)
+    assert forwarder_cls is not None
+
+    triggered: list[str] = []
+
+    class _Action:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def trigger(self) -> None:
+            triggered.append(self.name)
+
+    widget = _FakeShortcutEditorWidget(undo_available=True, redo_available=True)
+    view = SimpleNamespace(
+        _action_save=_Action("save"),
+        _action_undo=_Action("undo"),
+        _action_redo=_Action("redo"),
+        text_editor=_FakeProxy(widget),
+    )
+    forwarder = forwarder_cls(view)
+
     assert forwarder.eventFilter(None, QKeyEvent(QEvent.KeyPress, Qt.Key_Z, Qt.ControlModifier)) is True
     assert forwarder.eventFilter(None, QKeyEvent(QEvent.KeyPress, Qt.Key_Y, Qt.ControlModifier)) is True
     assert forwarder.eventFilter(
         None,
         QKeyEvent(QEvent.KeyPress, Qt.Key_Z, Qt.ControlModifier | Qt.ShiftModifier),
     ) is True
-    assert triggered == ["save", "undo", "redo", "redo"]
+
+    assert widget.undo_calls == 1
+    assert widget.redo_calls == 2
+    assert triggered == []
+
+
+def test_editor_shortcut_forwarder_consumes_empty_local_history_without_fallback() -> None:
+    forwarder_cls = getattr(pdf_view, "_EditorShortcutForwarder", None)
+    assert forwarder_cls is not None
+
+    triggered: list[str] = []
+
+    class _Action:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def trigger(self) -> None:
+            triggered.append(self.name)
+
+    widget = _FakeShortcutEditorWidget(undo_available=False, redo_available=False)
+    view = SimpleNamespace(
+        _action_save=_Action("save"),
+        _action_undo=_Action("undo"),
+        _action_redo=_Action("redo"),
+        text_editor=_FakeProxy(widget),
+    )
+    forwarder = forwarder_cls(view)
+
+    assert forwarder.eventFilter(None, QKeyEvent(QEvent.KeyPress, Qt.Key_Z, Qt.ControlModifier)) is True
+    assert forwarder.eventFilter(None, QKeyEvent(QEvent.KeyPress, Qt.Key_Y, Qt.ControlModifier)) is True
+    assert forwarder.eventFilter(
+        None,
+        QKeyEvent(QEvent.KeyPress, Qt.Key_Z, Qt.ControlModifier | Qt.ShiftModifier),
+    ) is True
+
+    assert widget.undo_calls == 0
+    assert widget.redo_calls == 0
+    assert triggered == []
