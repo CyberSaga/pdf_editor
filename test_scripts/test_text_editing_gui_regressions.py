@@ -95,6 +95,19 @@ class _FakeShortcutEditorWidget(_FakeEditorWidget):
         self.redo_calls += 1
 
 
+class _FakeAction:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.enabled = True
+        self.triggered = 0
+
+    def trigger(self) -> None:
+        self.triggered += 1
+
+    def setEnabled(self, enabled: bool) -> None:
+        self.enabled = bool(enabled)
+
+
 class _FakeProxy:
     def __init__(self, widget: _FakeEditorWidget, pos: QPointF | None = None) -> None:
         self._widget = widget
@@ -290,6 +303,20 @@ def test_drag_across_page_updates_editing_page_idx(monkeypatch: pytest.MonkeyPat
     assert captured_pages == [1]
 
 
+def test_drag_page_resolution_stays_on_origin_page_when_present() -> None:
+    view = _make_view()
+    view.continuous_pages = True
+    view.page_y_positions = [0, 100]
+    view.page_heights = [80, 80]
+    view.text_editor = _FakeProxy(_FakeEditorWidget("text", "text", height=40), pos=QPointF(10, 70))
+    view._editing_page_idx = 0
+    view._editing_origin_page_idx = 0
+
+    page_idx = view._resolve_editor_page_idx_for_drag(85)
+
+    assert page_idx == 0
+
+
 def test_average_image_rect_color_returns_local_average() -> None:
     average_fn = getattr(pdf_view, "_average_image_rect_color", None)
     assert average_fn is not None
@@ -345,45 +372,45 @@ def test_editor_shortcut_forwarder_keeps_save_forwarding() -> None:
     forwarder_cls = getattr(pdf_view, "_EditorShortcutForwarder", None)
     assert forwarder_cls is not None
 
-    triggered: list[str] = []
-
-    class _Action:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-        def trigger(self) -> None:
-            triggered.append(self.name)
-
     view = SimpleNamespace(
-        _action_save=_Action("save"),
-        _action_undo=_Action("undo"),
-        _action_redo=_Action("redo"),
+        _action_save=_FakeAction("save"),
+        _action_undo=_FakeAction("undo"),
+        _action_redo=_FakeAction("redo"),
         text_editor=None,
     )
     forwarder = forwarder_cls(view)
 
     assert forwarder.eventFilter(None, QKeyEvent(QEvent.KeyPress, Qt.Key_S, Qt.ControlModifier)) is True
-    assert triggered == ["save"]
+    assert view._action_save.triggered == 1
+
+
+def test_editor_shortcut_forwarder_handles_escape_before_ctrl_guard() -> None:
+    forwarder_cls = getattr(pdf_view, "_EditorShortcutForwarder", None)
+    assert forwarder_cls is not None
+
+    observed: list[str] = []
+    view = SimpleNamespace(
+        _action_save=_FakeAction("save"),
+        _action_undo=_FakeAction("undo"),
+        _action_redo=_FakeAction("redo"),
+        text_editor=object(),
+        _handle_escape=lambda: observed.append("escape") or True,
+    )
+    forwarder = forwarder_cls(view)
+
+    assert forwarder.eventFilter(None, QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)) is True
+    assert observed == ["escape"]
 
 
 def test_editor_shortcut_forwarder_uses_local_undo_redo_history() -> None:
     forwarder_cls = getattr(pdf_view, "_EditorShortcutForwarder", None)
     assert forwarder_cls is not None
 
-    triggered: list[str] = []
-
-    class _Action:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-        def trigger(self) -> None:
-            triggered.append(self.name)
-
     widget = _FakeShortcutEditorWidget(undo_available=True, redo_available=True)
     view = SimpleNamespace(
-        _action_save=_Action("save"),
-        _action_undo=_Action("undo"),
-        _action_redo=_Action("redo"),
+        _action_save=_FakeAction("save"),
+        _action_undo=_FakeAction("undo"),
+        _action_redo=_FakeAction("redo"),
         text_editor=_FakeProxy(widget),
     )
     forwarder = forwarder_cls(view)
@@ -397,27 +424,19 @@ def test_editor_shortcut_forwarder_uses_local_undo_redo_history() -> None:
 
     assert widget.undo_calls == 1
     assert widget.redo_calls == 2
-    assert triggered == []
+    assert view._action_undo.triggered == 0
+    assert view._action_redo.triggered == 0
 
 
 def test_editor_shortcut_forwarder_consumes_empty_local_history_without_fallback() -> None:
     forwarder_cls = getattr(pdf_view, "_EditorShortcutForwarder", None)
     assert forwarder_cls is not None
 
-    triggered: list[str] = []
-
-    class _Action:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-        def trigger(self) -> None:
-            triggered.append(self.name)
-
     widget = _FakeShortcutEditorWidget(undo_available=False, redo_available=False)
     view = SimpleNamespace(
-        _action_save=_Action("save"),
-        _action_undo=_Action("undo"),
-        _action_redo=_Action("redo"),
+        _action_save=_FakeAction("save"),
+        _action_undo=_FakeAction("undo"),
+        _action_redo=_FakeAction("redo"),
         text_editor=_FakeProxy(widget),
     )
     forwarder = forwarder_cls(view)
@@ -431,4 +450,19 @@ def test_editor_shortcut_forwarder_consumes_empty_local_history_without_fallback
 
     assert widget.undo_calls == 0
     assert widget.redo_calls == 0
-    assert triggered == []
+    assert view._action_undo.triggered == 0
+    assert view._action_redo.triggered == 0
+
+
+def test_toggle_document_undo_redo_actions_disables_and_reenables() -> None:
+    view = _make_view()
+    view._action_undo = _FakeAction("undo")
+    view._action_redo = _FakeAction("redo")
+
+    view._set_document_undo_redo_enabled(False)
+    assert view._action_undo.enabled is False
+    assert view._action_redo.enabled is False
+
+    view._set_document_undo_redo_enabled(True)
+    assert view._action_undo.enabled is True
+    assert view._action_redo.enabled is True
