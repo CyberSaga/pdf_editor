@@ -112,6 +112,16 @@ class _EditorShortcutForwarder(QObject):
     def eventFilter(self, obj, event):
         if event.type() != QEvent.KeyPress:
             return False
+        # Shortcut ownership:
+        # focused inline editor
+        #     |-- Escape -> discard editor
+        #     |-- Ctrl+S -> window save
+        #     |-- Ctrl+Z/Y -> local editor undo/redo only
+        # editor closed
+        #     |-- Ctrl+Z/Y -> document undo/redo
+        if event.key() == Qt.Key_Escape:
+            handler = getattr(self._view, "_handle_escape", None)
+            return bool(handler()) if callable(handler) else False
         modifiers = event.modifiers()
         if not (modifiers & Qt.ControlModifier):
             return False
@@ -1731,6 +1741,8 @@ class PDFView(QMainWindow):
         ):
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             self.addAction(action)
+        self._action_undo.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self._action_redo.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self._action_fullscreen.setShortcut(QKeySequence(Qt.Key_F5))
 
     def _make_mode_action(self, text: str, mode: str) -> QAction:
@@ -2138,6 +2150,12 @@ class PDFView(QMainWindow):
 
     def _on_escape_shortcut(self) -> None:
         self._handle_escape()
+
+    def _set_document_undo_redo_enabled(self, enabled: bool) -> None:
+        for action_name in ("_action_undo", "_action_redo"):
+            action = getattr(self, action_name, None)
+            if action is not None and hasattr(action, "setEnabled"):
+                action.setEnabled(bool(enabled))
 
     def _is_widget_owned_by_main(self, widget: QWidget) -> bool:
         current = widget
@@ -2598,6 +2616,9 @@ class PDFView(QMainWindow):
         return (dx * dx + dy * dy) > 9
 
     def _resolve_editor_page_idx_for_drag(self, editor_top_y: float) -> int:
+        origin_page_idx = getattr(self, "_editing_origin_page_idx", None)
+        if origin_page_idx is not None:
+            return origin_page_idx
         if not self.continuous_pages or not self.page_y_positions:
             return getattr(self, "_editing_page_idx", self.current_page)
         editor_widget = self.text_editor.widget() if (self.text_editor and self.text_editor.widget()) else None
@@ -3425,6 +3446,7 @@ class PDFView(QMainWindow):
 
         self.editing_rect = rect
         self._editing_original_rect = fitz.Rect(rect)  # 保存原始位置，拖曳時不覆蓋
+        self._editing_origin_page_idx = page_idx
         y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0
         pos_x = scaled_rect.x0
         pos_y = y0 + scaled_rect.y0
@@ -3477,18 +3499,7 @@ class PDFView(QMainWindow):
         self._refresh_text_editor_mask_color()
         self._editor_shortcut_forwarder = _EditorShortcutForwarder(self)
         editor.installEventFilter(self._editor_shortcut_forwarder)
-        # Ensure Esc works even when the embedded QTextEdit has focus inside QGraphicsProxyWidget.
-        editor_esc = QShortcut(QKeySequence(Qt.Key_Escape), editor)
-        editor_esc.setContext(Qt.ShortcutContext.WidgetShortcut)
-        editor_esc.activated.connect(self._on_escape_shortcut)
-        editor._escape_shortcut = editor_esc
-        original_key_press = editor.keyPressEvent
-        def _editor_key_press(event):
-            if event.key() == Qt.Key_Escape and self._handle_escape():
-                event.accept()
-                return
-            original_key_press(event)
-        editor.keyPressEvent = _editor_key_press
+        self._set_document_undo_redo_enabled(False)
         original_focus_out = editor.focusOutEvent
         def _editor_focus_out(event):
             self._on_editor_focus_out(event, original_focus_out)
@@ -3680,11 +3691,13 @@ class PDFView(QMainWindow):
             except (TypeError, RuntimeError):
                 pass
             self._edit_font_family_connected = False
+        self._set_document_undo_redo_enabled(True)
         if hasattr(self, 'editing_font_name'): del self.editing_font_name
         if hasattr(self, '_editing_initial_font_name'): del self._editing_initial_font_name
         if hasattr(self, '_editing_initial_size'): del self._editing_initial_size
         if hasattr(self, 'editing_color'): del self.editing_color
         if hasattr(self, '_editing_page_idx'): del self._editing_page_idx
+        if hasattr(self, '_editing_origin_page_idx'): del self._editing_origin_page_idx
         if hasattr(self, '_editing_rotation'): del self._editing_rotation
         target_span_id = getattr(self, 'editing_target_span_id', None)
         if hasattr(self, 'editing_target_span_id'): del self.editing_target_span_id

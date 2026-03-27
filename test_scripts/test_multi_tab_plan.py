@@ -112,6 +112,25 @@ def _edit_first_run(controller: PDFController, new_text: str) -> None:
     )
 
 
+def _open_inline_editor_for_first_run(model: PDFModel, view: PDFView) -> tuple:
+    model.ensure_page_index_built(1)
+    runs = [r for r in model.block_manager.get_runs(0) if (r.text or "").strip()]
+    assert runs, "no editable run on page 1"
+    run = runs[0]
+
+    rs = view._render_scale if view._render_scale > 0 else 1.0
+    y0 = view.page_y_positions[0] if view.page_y_positions else 0.0
+    sx = ((run.bbox.x0 + run.bbox.x1) * 0.5) * rs
+    sy = y0 + ((run.bbox.y0 + run.bbox.y1) * 0.5) * rs
+    click_pos = view.graphics_view.mapFromScene(sx, sy)
+
+    viewport = view.graphics_view.viewport()
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, click_pos)
+    _pump_events(260)
+    assert view.text_editor is not None
+    return run, viewport
+
+
 class _FakeEvent:
     def __init__(self):
         self.accepted = False
@@ -696,6 +715,87 @@ def test_19_escape_with_editor_closes_editor_but_keeps_mode(mvc, tmp_path):
     assert view.text_editor is None
     assert view.current_mode == "add_text"
     _assert_mode_checked(view, "add_text")
+
+
+def test_19a_inline_existing_text_escape_discards_changes(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf(tmp_path / "esc_inline_edit.pdf", ["inline edit seed"])
+    controller.open_pdf(str(path))
+    _pump_events(350)
+
+    view.set_mode("edit_text")
+    _pump_events(60)
+
+    run, _ = _open_inline_editor_for_first_run(model, view)
+    before_undo = model.command_manager.undo_count
+
+    QTest.keyClicks(view.text_editor.widget(), " TEST")
+    _pump_events(80)
+    assert "TEST" in view.text_editor.widget().toPlainText()
+
+    QTest.keyClick(view.text_editor.widget(), Qt.Key_Escape)
+    _pump_events(180)
+
+    assert view.text_editor is None
+    assert model.command_manager.undo_count == before_undo
+    assert _norm(run.text) in _norm(model.doc[0].get_text("text"))
+
+
+def test_19aa_inline_existing_text_ctrl_z_undoes_locally(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf(tmp_path / "ctrlz_inline_local.pdf", ["local undo seed"])
+    controller.open_pdf(str(path))
+    _pump_events(350)
+
+    view.set_mode("edit_text")
+    _pump_events(60)
+
+    run, _ = _open_inline_editor_for_first_run(model, view)
+    original_editor_text = view.text_editor.widget().toPlainText()
+
+    QTest.keyClick(view.text_editor.widget(), Qt.Key_End)
+    _pump_events(40)
+    QTest.keyClicks(view.text_editor.widget(), "X")
+    _pump_events(80)
+    assert view.text_editor.widget().toPlainText().endswith("X")
+
+    QTest.keyClick(view.text_editor.widget(), Qt.Key_Z, Qt.ControlModifier)
+    _pump_events(180)
+
+    assert view.text_editor is not None
+    assert _norm(view.text_editor.widget().toPlainText()) == _norm(original_editor_text)
+
+
+def test_19ab_inline_existing_text_ctrl_z_after_commit_undoes_document(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf(tmp_path / "ctrlz_inline_commit.pdf", ["commit undo seed"])
+    controller.open_pdf(str(path))
+    _pump_events(350)
+
+    view.set_mode("edit_text")
+    _pump_events(60)
+
+    run, viewport = _open_inline_editor_for_first_run(model, view)
+    before_undo = model.command_manager.undo_count
+
+    QTest.keyClick(view.text_editor.widget(), Qt.Key_End)
+    _pump_events(40)
+    QTest.keyClicks(view.text_editor.widget(), "X")
+    _pump_events(80)
+
+    editor_scene_rect = view.text_editor.mapRectToScene(view.text_editor.boundingRect())
+    outside_pos = view.graphics_view.mapFromScene(editor_scene_rect.bottomRight() + QPoint(40, 40))
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, outside_pos)
+    _pump_events(220)
+
+    assert view.text_editor is None
+    assert model.command_manager.undo_count == before_undo + 1
+    assert _norm("commit undo seedx") in _norm(model.doc[0].get_text("text"))
+
+    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_Z, Qt.ControlModifier)
+    _pump_events(220)
+
+    assert _norm(run.text) in _norm(model.doc[0].get_text("text"))
 
 
 def test_19b_font_size_menu_keeps_editor_and_outside_focus_finalizes_editor(mvc, tmp_path):
