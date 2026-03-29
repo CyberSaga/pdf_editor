@@ -922,6 +922,7 @@ class PDFView(QMainWindow):
     sig_add_highlight = Signal(int, object, object)
     sig_add_rect = Signal(int, object, object, bool)
     sig_edit_text = Signal(int, object, str, str, int, tuple, str, bool, object, object, str)  # ..., new_rect(optional), target_span_id(optional), target_mode
+    sig_move_text_across_pages = Signal(int, object, int, object, str, str, int, tuple, str, object, str)
     sig_add_textbox = Signal(int, object, str, str, int, tuple)  # page_num, visual_rect, text, font, size, color
     sig_jump_to_result = Signal(int, object)
     sig_search = Signal(str)
@@ -2616,9 +2617,6 @@ class PDFView(QMainWindow):
         return (dx * dx + dy * dy) > 9
 
     def _resolve_editor_page_idx_for_drag(self, editor_top_y: float) -> int:
-        origin_page_idx = getattr(self, "_editing_origin_page_idx", None)
-        if origin_page_idx is not None:
-            return origin_page_idx
         if not self.continuous_pages or not self.page_y_positions:
             return getattr(self, "_editing_page_idx", self.current_page)
         editor_widget = self.text_editor.widget() if (self.text_editor and self.text_editor.widget()) else None
@@ -3662,6 +3660,7 @@ class PDFView(QMainWindow):
         font_changed = (str(current_font).lower() != str(initial_font).lower())
         size_changed = current_size != initial_size
         edit_page = getattr(self, '_editing_page_idx', self.current_page)
+        origin_page = getattr(self, '_editing_origin_page_idx', edit_page)
         edit_intent = getattr(self, 'editing_intent', 'edit_existing')
         discard_changes = bool(getattr(self, "_discard_text_edit_once", False))
         self._discard_text_edit_once = False
@@ -3724,7 +3723,8 @@ class PDFView(QMainWindow):
                     logger.error(f"發送新增文字框信號時出錯: {e}")
             return
 
-        if not (text_changed or position_changed or font_changed or size_changed) or not original_rect:
+        page_changed = origin_page != edit_page
+        if not (text_changed or position_changed or font_changed or size_changed or page_changed) or not original_rect:
             return
 
         try:
@@ -3733,19 +3733,34 @@ class PDFView(QMainWindow):
             vsl = vertical_shift_left.isChecked() if vertical_shift_left else True
             # 若位置有變動，傳入 new_rect；否則傳 None（維持原位）
             new_rect_arg = current_rect if position_changed else None
-            self.sig_edit_text.emit(
-                edit_page + 1,
-                original_rect,      # 原始位置（供模型找到舊文字塊）
-                new_text,
-                current_font,
-                current_size,
-                original_color,
-                original_text,
-                vsl,
-                new_rect_arg,       # 目標新位置（None = 不移動）
-                target_span_id,
-                target_mode,
-            )
+            if page_changed and current_rect is not None:
+                self.sig_move_text_across_pages.emit(
+                    origin_page + 1,
+                    original_rect,
+                    edit_page + 1,
+                    current_rect,
+                    new_text,
+                    current_font,
+                    current_size,
+                    original_color,
+                    original_text,
+                    target_span_id,
+                    target_mode,
+                )
+            else:
+                self.sig_edit_text.emit(
+                    edit_page + 1,
+                    original_rect,      # 原始位置（供模型找到舊文字塊）
+                    new_text,
+                    current_font,
+                    current_size,
+                    original_color,
+                    original_text,
+                    vsl,
+                    new_rect_arg,       # 目標新位置（None = 不移動）
+                    target_span_id,
+                    target_mode,
+                )
         except Exception as e:
             logger.error(f"發送編輯信號時出錯: {e}")
 

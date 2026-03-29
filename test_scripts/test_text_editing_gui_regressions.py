@@ -203,6 +203,7 @@ def _make_view() -> pdf_view.PDFView:
     view.scene = _FakeScene()
     view.text_size = _FakeCombo()
     view.sig_edit_text = _FakeSignal()
+    view.sig_move_text_across_pages = _FakeSignal()
     view.current_page = 0
     view.continuous_pages = False
     view.page_y_positions = []
@@ -314,7 +315,37 @@ def test_drag_page_resolution_stays_on_origin_page_when_present() -> None:
 
     page_idx = view._resolve_editor_page_idx_for_drag(85)
 
-    assert page_idx == 0
+    assert page_idx == 1
+
+
+def test_finalize_cross_page_existing_text_emits_move_signal_only() -> None:
+    view = _make_view()
+    original_rect = fitz.Rect(10, 20, 120, 50)
+    current_rect = fitz.Rect(16, 12, 126, 42)
+    view.text_editor = _FakeProxy(_FakeEditorWidget("moved text", "source text"))
+    view._editing_original_rect = fitz.Rect(original_rect)
+    view.editing_rect = fitz.Rect(current_rect)
+    view.editing_font_name = "helv"
+    view._editing_initial_font_name = "helv"
+    view.editing_color = (0, 0, 0)
+    view._editing_initial_size = 12
+    view.editing_original_text = "source text"
+    view._editing_page_idx = 1
+    view._editing_origin_page_idx = 0
+    view.editing_target_span_id = "span-1"
+    view.editing_target_mode = "run"
+    view.editing_intent = "edit_existing"
+
+    view._finalize_text_edit_impl()
+
+    assert view.sig_edit_text.calls == []
+    assert len(view.sig_move_text_across_pages.calls) == 1
+    call = view.sig_move_text_across_pages.calls[0]
+    assert call[0] == 1
+    assert call[1] == original_rect
+    assert call[2] == 2
+    assert call[3] == current_rect
+    assert call[4] == "moved text"
 
 
 def test_average_image_rect_color_returns_local_average() -> None:

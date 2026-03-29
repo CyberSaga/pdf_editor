@@ -299,7 +299,11 @@ class SnapshotCommand(EditCommand):
     """
 
     _STRUCTURAL_TYPES = frozenset({
-        "delete_pages", "insert_blank_page", "insert_pages_from_file", "merge_pdfs"
+        "delete_pages",
+        "insert_blank_page",
+        "insert_pages_from_file",
+        "merge_pdfs",
+        "move_text_across_pages",
     })
 
     def __init__(
