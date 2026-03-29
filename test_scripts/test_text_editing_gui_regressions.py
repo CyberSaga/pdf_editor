@@ -304,7 +304,7 @@ def test_drag_across_page_updates_editing_page_idx(monkeypatch: pytest.MonkeyPat
     assert captured_pages == [1]
 
 
-def test_drag_page_resolution_stays_on_origin_page_when_present() -> None:
+def test_drag_page_resolution_follows_cross_page_target_when_present() -> None:
     view = _make_view()
     view.continuous_pages = True
     view.page_y_positions = [0, 100]

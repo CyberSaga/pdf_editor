@@ -1,5 +1,6 @@
 import time
 from pathlib import Path
+import sys
 
 import fitz
 import pytest
@@ -7,6 +8,10 @@ from PySide6.QtCore import Qt, QPoint, QMimeData, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeyEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QListView, QDialog
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from controller.pdf_controller import PDFController
 from model.pdf_model import PDFModel
@@ -129,6 +134,42 @@ def _open_inline_editor_for_first_run(model: PDFModel, view: PDFView) -> tuple:
     _pump_events(260)
     assert view.text_editor is not None
     return run, viewport
+
+
+def _load_pdf_and_open_inline_editor(
+    controller: PDFController,
+    model: PDFModel,
+    view: PDFView,
+    path: Path,
+    *,
+    mode: str = "edit_text",
+) -> tuple:
+    view.show()
+    view.activateWindow()
+    _pump_events(120)
+    controller.open_pdf(str(path))
+    _pump_events(350)
+    view.set_mode(mode)
+    _pump_events(60)
+    return _open_inline_editor_for_first_run(model, view)
+
+
+def _click_outside_active_editor(view: PDFView, viewport) -> None:
+    editor_scene_rect = view.text_editor.mapRectToScene(view.text_editor.boundingRect())
+    outside_pos = view.graphics_view.mapFromScene(editor_scene_rect.bottomRight() + QPoint(40, 40))
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, outside_pos)
+    _pump_events(220)
+
+
+def _active_shortcut_target(view: PDFView):
+    app = QApplication.instance()
+    assert app is not None
+    view.show()
+    view.activateWindow()
+    if app.focusWidget() is None:
+        view._focus_page_canvas()
+    _pump_events(120)
+    return app.focusWidget() or view.graphics_view
 
 
 class _FakeEvent:
@@ -720,13 +761,7 @@ def test_19_escape_with_editor_closes_editor_but_keeps_mode(mvc, tmp_path):
 def test_19a_inline_existing_text_escape_discards_changes(mvc, tmp_path):
     model, view, controller = mvc
     path = _make_pdf(tmp_path / "esc_inline_edit.pdf", ["inline edit seed"])
-    controller.open_pdf(str(path))
-    _pump_events(350)
-
-    view.set_mode("edit_text")
-    _pump_events(60)
-
-    run, _ = _open_inline_editor_for_first_run(model, view)
+    run, _ = _load_pdf_and_open_inline_editor(controller, model, view, path)
     before_undo = model.command_manager.undo_count
 
     QTest.keyClicks(view.text_editor.widget(), " TEST")
@@ -744,14 +779,10 @@ def test_19a_inline_existing_text_escape_discards_changes(mvc, tmp_path):
 def test_19aa_inline_existing_text_ctrl_z_undoes_locally(mvc, tmp_path):
     model, view, controller = mvc
     path = _make_pdf(tmp_path / "ctrlz_inline_local.pdf", ["local undo seed"])
-    controller.open_pdf(str(path))
-    _pump_events(350)
-
-    view.set_mode("edit_text")
-    _pump_events(60)
-
-    run, _ = _open_inline_editor_for_first_run(model, view)
+    _, _ = _load_pdf_and_open_inline_editor(controller, model, view, path)
     original_editor_text = view.text_editor.widget().toPlainText()
+    before_undo = model.command_manager.undo_count
+    before_redo = model.command_manager.redo_count
 
     QTest.keyClick(view.text_editor.widget(), Qt.Key_End)
     _pump_events(40)
@@ -764,38 +795,125 @@ def test_19aa_inline_existing_text_ctrl_z_undoes_locally(mvc, tmp_path):
 
     assert view.text_editor is not None
     assert _norm(view.text_editor.widget().toPlainText()) == _norm(original_editor_text)
+    assert model.command_manager.undo_count == before_undo
+    assert model.command_manager.redo_count == before_redo
+
+
+def test_19aaa_inline_existing_text_ctrl_z_on_real_multicolor_pdf_keeps_document_undo_idle(mvc):
+    model, view, controller = mvc
+    path = Path(__file__).resolve().parents[1] / "test_files" / "2.pdf"
+    if not path.exists():
+        pytest.skip("test_files/2.pdf is not available")
+
+    _, _ = _load_pdf_and_open_inline_editor(controller, model, view, path)
+    original_editor_text = view.text_editor.widget().toPlainText()
+    before_undo = model.command_manager.undo_count
+    before_redo = model.command_manager.redo_count
+
+    QTest.keyClick(view.text_editor.widget(), Qt.Key_End)
+    _pump_events(40)
+    QTest.keyClicks(view.text_editor.widget(), "X")
+    _pump_events(80)
+    assert view.text_editor.widget().toPlainText().endswith("X")
+
+    QTest.keyClick(view.text_editor.widget(), Qt.Key_Z, Qt.ControlModifier)
+    _pump_events(180)
+
+    assert view.text_editor is not None
+    assert _norm(view.text_editor.widget().toPlainText()) == _norm(original_editor_text)
+    assert model.command_manager.undo_count == before_undo
+    assert model.command_manager.redo_count == before_redo
 
 
 def test_19ab_inline_existing_text_ctrl_z_after_commit_undoes_document(mvc, tmp_path):
     model, view, controller = mvc
     path = _make_pdf(tmp_path / "ctrlz_inline_commit.pdf", ["commit undo seed"])
-    controller.open_pdf(str(path))
-    _pump_events(350)
-
-    view.set_mode("edit_text")
-    _pump_events(60)
-
-    run, viewport = _open_inline_editor_for_first_run(model, view)
+    run, viewport = _load_pdf_and_open_inline_editor(controller, model, view, path)
     before_undo = model.command_manager.undo_count
+    before_redo = model.command_manager.redo_count
 
     QTest.keyClick(view.text_editor.widget(), Qt.Key_End)
     _pump_events(40)
     QTest.keyClicks(view.text_editor.widget(), "X")
     _pump_events(80)
 
-    editor_scene_rect = view.text_editor.mapRectToScene(view.text_editor.boundingRect())
-    outside_pos = view.graphics_view.mapFromScene(editor_scene_rect.bottomRight() + QPoint(40, 40))
-    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, outside_pos)
-    _pump_events(220)
+    _click_outside_active_editor(view, viewport)
 
     assert view.text_editor is None
     assert model.command_manager.undo_count == before_undo + 1
+    assert model.command_manager.redo_count == before_redo
     assert _norm("commit undo seedx") in _norm(model.doc[0].get_text("text"))
 
-    QTest.keyClick(view.graphics_view.viewport(), Qt.Key_Z, Qt.ControlModifier)
+    shortcut_target = _active_shortcut_target(view)
+    QTest.keyClick(shortcut_target, Qt.Key_Z, Qt.ControlModifier)
     _pump_events(220)
 
+    assert model.command_manager.redo_count == before_redo + 1
     assert _norm(run.text) in _norm(model.doc[0].get_text("text"))
+
+    shortcut_target = _active_shortcut_target(view)
+    QTest.keyClick(shortcut_target, Qt.Key_Y, Qt.ControlModifier)
+    _pump_events(220)
+
+    assert model.command_manager.undo_count == before_undo + 1
+    assert model.command_manager.redo_count == before_redo
+    assert _norm("commit undo seedx") in _norm(model.doc[0].get_text("text"))
+
+
+def test_19ac_inline_existing_text_cross_page_move_roundtrips_via_document_undo_redo(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf(tmp_path / "cross_page_gui_move.pdf", ["MOVE_ME", "KEEP_PAGE_TWO"])
+    run, viewport = _load_pdf_and_open_inline_editor(controller, model, view, path)
+    before_undo = model.command_manager.undo_count
+    before_redo = model.command_manager.redo_count
+
+    editor_scene_rect = view.text_editor.mapRectToScene(view.text_editor.boundingRect())
+    start = view.graphics_view.mapFromScene(editor_scene_rect.center())
+    rs = view._render_scale if view._render_scale > 0 else 1.0
+    dest_scene = QPoint(
+        int(editor_scene_rect.center().x()),
+        int(view.page_y_positions[1] + (72 * rs)),
+    )
+    end = view.graphics_view.mapFromScene(dest_scene)
+
+    QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, start)
+    _pump_events(40)
+    QTest.mouseMove(viewport, end, 20)
+    _pump_events(120)
+    QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, end)
+    _pump_events(180)
+
+    assert view.text_editor is not None
+    assert getattr(view, "_editing_page_idx", 0) == 1
+
+    QTest.mouseClick(view.text_apply_btn, Qt.LeftButton, Qt.NoModifier, view.text_apply_btn.rect().center())
+    _pump_events(250)
+
+    assert view.text_editor is None
+    assert model.command_manager.undo_count == before_undo + 1
+    assert model.command_manager.redo_count == before_redo
+    assert "move_me" not in _norm(model.doc[0].get_text("text"))
+    assert "move_me" in _norm(model.doc[1].get_text("text"))
+    assert "keep_page_two" in _norm(model.doc[1].get_text("text"))
+
+    shortcut_target = _active_shortcut_target(view)
+    QTest.keyClick(shortcut_target, Qt.Key_Z, Qt.ControlModifier)
+    _pump_events(220)
+
+    assert model.command_manager.redo_count == before_redo + 1
+    assert "move_me" in _norm(model.doc[0].get_text("text"))
+    assert "move_me" not in _norm(model.doc[1].get_text("text"))
+    assert "keep_page_two" in _norm(model.doc[1].get_text("text"))
+
+    shortcut_target = _active_shortcut_target(view)
+    QTest.keyClick(shortcut_target, Qt.Key_Y, Qt.ControlModifier)
+    _pump_events(220)
+
+    assert model.command_manager.undo_count == before_undo + 1
+    assert model.command_manager.redo_count == before_redo
+    assert "move_me" not in _norm(model.doc[0].get_text("text"))
+    assert "move_me" in _norm(model.doc[1].get_text("text"))
+    assert "keep_page_two" in _norm(model.doc[1].get_text("text"))
 
 
 def test_19b_font_size_menu_keeps_editor_and_outside_focus_finalizes_editor(mvc, tmp_path):
