@@ -9,6 +9,7 @@ from utils.helpers import pixmap_to_qpixmap, show_error
 from pathlib import Path
 from collections import OrderedDict
 from dataclasses import dataclass, field
+import difflib
 import io
 import logging
 import tempfile
@@ -259,6 +260,7 @@ class PDFController:
         self.view.sig_add_highlight.connect(self.add_highlight)
         self.view.sig_add_rect.connect(self.add_rect)
         self.view.sig_edit_text.connect(self.edit_text)
+        self.view.sig_move_text_across_pages.connect(self.move_text_across_pages)
         self.view.sig_add_textbox.connect(self.add_textbox)
         self.view.sig_jump_to_result.connect(self.jump_to_result)
         self.view.sig_search.connect(self.search_text)
@@ -1569,6 +1571,181 @@ class PDFController:
             logger.error(f"編輯文字失敗: {e}")
             show_error(self.view, f"編輯失敗: {e}")
         
+    def move_text_across_pages(
+        self,
+        source_page: int,
+        source_rect: fitz.Rect,
+        destination_page: int,
+        destination_rect: fitz.Rect,
+        new_text: str,
+        font: str,
+        size: int,
+        color: tuple,
+        original_text: str = None,
+        target_span_id: str = None,
+        target_mode: str = None,
+    ) -> None:
+        if new_text is None:
+            new_text = ""
+        if not new_text.strip():
+            show_error(self.view, "跨頁移動失敗：文字內容不可為空。")
+            return
+        if not self.model.doc:
+            return
+        if source_page == destination_page:
+            self.edit_text(
+                source_page,
+                source_rect,
+                new_text,
+                font,
+                size,
+                color,
+                original_text=original_text,
+                vertical_shift_left=True,
+                new_rect=destination_rect,
+                target_span_id=target_span_id,
+                target_mode=target_mode,
+            )
+            return
+
+        page_count = len(self.model.doc)
+        if (
+            source_page < 1
+            or destination_page < 1
+            or source_page > page_count
+            or destination_page > page_count
+        ):
+            show_error(self.view, "跨頁移動失敗：頁碼超出範圍。")
+            return
+
+        try:
+            self.model.ensure_page_index_built(source_page)
+            self.model.ensure_page_index_built(destination_page)
+
+            resolved_target_span_id = self._resolve_cross_page_move_source_span_id(
+                source_page=source_page,
+                source_rect=source_rect,
+                original_text=original_text,
+                target_span_id=target_span_id,
+            )
+            if not resolved_target_span_id:
+                raise RuntimeError("找不到要移動的原始文字。")
+
+            before_snapshot = self.model._capture_doc_snapshot()
+
+            # cross-page move
+            #   preflight source
+            #     -> fail: no mutation + clear error
+            #     -> pass:
+            #          capture before
+            #          delete source
+            #          add destination
+            #            -> fail: restore before + refresh UI + error
+            #            -> pass: capture after + record one undo entry
+            self.model.edit_text(
+                source_page,
+                source_rect,
+                "",
+                font,
+                size,
+                color,
+                original_text=original_text,
+                vertical_shift_left=True,
+                new_rect=None,
+                target_span_id=resolved_target_span_id,
+                target_mode=target_mode,
+            )
+
+            self.model.ensure_page_index_built(source_page)
+            if self.model.block_manager.find_run_by_id(source_page - 1, resolved_target_span_id) is not None:
+                raise RuntimeError("原始文字刪除未完成，已取消跨頁移動。")
+
+            self.model.add_textbox(
+                destination_page,
+                destination_rect,
+                new_text,
+                font=font,
+                size=size,
+                color=color,
+            )
+
+            after_snapshot = self.model._capture_doc_snapshot()
+            cmd = SnapshotCommand(
+                model=self.model,
+                command_type="move_text_across_pages",
+                affected_pages=sorted({source_page, destination_page}),
+                before_bytes=before_snapshot,
+                after_bytes=after_snapshot,
+                description="跨頁移動文字",
+            )
+            self.model.command_manager.record(cmd)
+            self._invalidate_active_render_state()
+            self._update_thumbnails()
+            self.show_page(destination_page - 1)
+            self._update_undo_redo_tooltips()
+        except Exception as e:
+            before_snapshot = locals().get("before_snapshot")
+            if before_snapshot:
+                try:
+                    self.model.replace_active_document_from_snapshot(
+                        before_snapshot,
+                        affected_pages=sorted({source_page, destination_page}),
+                    )
+                    self._invalidate_active_render_state()
+                    self._update_thumbnails()
+                    self.show_page(source_page - 1)
+                    self._update_undo_redo_tooltips()
+                except Exception as restore_error:
+                    logger.error("move_text_across_pages restore failed: %s", restore_error)
+            logger.error("跨頁移動文字失敗: %s", e)
+            show_error(self.view, f"跨頁移動文字失敗: {e}")
+
+    def _resolve_cross_page_move_source_span_id(
+        self,
+        source_page: int,
+        source_rect: fitz.Rect,
+        original_text: str = None,
+        target_span_id: str = None,
+    ) -> Optional[str]:
+        page_idx = source_page - 1
+        if target_span_id:
+            source_run = self.model.block_manager.find_run_by_id(page_idx, target_span_id)
+            if source_run is not None:
+                return target_span_id
+
+        target = self.model.block_manager.find_by_rect(
+            page_idx,
+            source_rect,
+            original_text=original_text,
+            doc=self.model.doc,
+        )
+        if not target:
+            return None
+
+        candidate_spans = self.model.block_manager.find_overlapping_runs(
+            page_idx,
+            target.layout_rect,
+            tol=0.5,
+        )
+        if not candidate_spans:
+            return None
+        if len(candidate_spans) == 1:
+            return candidate_spans[0].span_id
+
+        text_probe = self.model._normalize_text_for_compare(original_text or target.text or "")
+        if not text_probe:
+            return candidate_spans[-1].span_id
+
+        ranked = sorted(
+            candidate_spans,
+            key=lambda span: difflib.SequenceMatcher(
+                None,
+                text_probe,
+                self.model._normalize_text_for_compare(span.text),
+            ).ratio(),
+        )
+        return ranked[-1].span_id
+
     def add_textbox(
         self,
         page: int,
