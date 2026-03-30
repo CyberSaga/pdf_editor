@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint, QEvent, 
 from typing import List, Tuple, Optional
 from pathlib import Path
 from dataclasses import dataclass
+from enum import Enum
 from utils.helpers import pixmap_to_qpixmap, parse_pages, show_error
 from model.pdf_model import PdfAuditReport, PdfOptimizeOptions, PDFModel
 import logging
@@ -34,6 +35,45 @@ _LIGATURE_EXPAND = {
 }
 
 _DEFAULT_EDITOR_MASK_COLOR = QColor("#FFFFFF")
+
+
+class TextEditFinalizeReason(str, Enum):
+    APPLY = "apply"
+    CLICK_AWAY = "click_away"
+    CANCEL_BUTTON = "cancel_button"
+    ESCAPE = "escape"
+    SAVE_SHORTCUT = "save_shortcut"
+    MODE_SWITCH = "mode_switch"
+    FOCUS_OUTSIDE = "focus_outside"
+    CLOSE_DOCUMENT = "close_document"
+
+
+class TextEditOutcome(str, Enum):
+    DISCARDED = "discarded"
+    NO_OP = "no_op"
+    COMMITTED = "committed"
+
+
+@dataclass(frozen=True)
+class TextEditDelta:
+    text_changed: bool
+    style_changed: bool
+    position_changed: bool
+    page_changed: bool
+
+    @property
+    def any_change(self) -> bool:
+        return self.text_changed or self.style_changed or self.position_changed or self.page_changed
+
+
+@dataclass(frozen=True)
+class TextEditFinalizeResult:
+    reason: TextEditFinalizeReason
+    outcome: TextEditOutcome
+    intent: str
+    edit_page: int
+    origin_page: int
+    delta: TextEditDelta
 
 
 def _normalize_for_edit_compare(text: str) -> str:
@@ -125,6 +165,8 @@ class _EditorShortcutForwarder(QObject):
         modifiers = event.modifiers()
         if not (modifiers & Qt.ControlModifier):
             return False
+        if event.key() == Qt.Key_S and (modifiers & Qt.ShiftModifier):
+            return self._trigger("_action_save_as", "_save_as")
         if event.key() == Qt.Key_S and not (modifiers & Qt.ShiftModifier):
             return self._trigger("_action_save", "_save")
         if event.key() == Qt.Key_Z and not (modifiers & Qt.ShiftModifier):
@@ -1106,7 +1148,7 @@ class PDFView(QMainWindow):
         self._edit_focus_guard_connected = False
         self._edit_focus_check_pending = False
         self._finalizing_text_edit = False
-        self._discard_text_edit_once = False
+        self._last_text_edit_finalize_result: TextEditFinalizeResult | None = None
         # Phase 5: edit_text 模式下的 hover 文字塊高亮
         self._hover_highlight_item = None       # QGraphicsRectItem | None
         self._last_hover_scene_pos = None       # QPointF | None（節流用）
@@ -1430,8 +1472,7 @@ class PDFView(QMainWindow):
     def cancel_interaction_for_fullscreen(self) -> None:
         # Cancel any in-progress editor or partial gesture before switching to browse+fullscreen.
         if self.text_editor:
-            self._discard_text_edit_once = True
-            self._finalize_text_edit()
+            self._finalize_text_edit(TextEditFinalizeReason.MODE_SWITCH)
         self.drawing_start = None
         self._drag_pending = False
         self._drag_active = False
@@ -2066,14 +2107,12 @@ class PDFView(QMainWindow):
     def _on_text_apply_clicked(self):
         # "Apply" commits current inline-editor content/style to the PDF.
         if self.text_editor and self.text_editor.widget():
-            self._finalize_text_edit()
+            self._finalize_text_edit(TextEditFinalizeReason.APPLY)
 
     def _on_text_cancel_clicked(self):
         if not self.text_editor or not self.text_editor.widget():
             return
-        # One-shot discard flag consumed by _finalize_text_edit_impl.
-        self._discard_text_edit_once = True
-        self._finalize_text_edit()
+        self._finalize_text_edit(TextEditFinalizeReason.CANCEL_BUTTON)
 
     def _update_status_bar(self):
         """更新狀態列：已修改、模式、快捷鍵、頁/縮放；搜尋模式時顯示找到 X 個結果 • 按 Esc 關閉搜尋."""
@@ -2265,7 +2304,7 @@ class PDFView(QMainWindow):
                 return
         if self._is_scene_focus_within_editor():
             return
-        self._finalize_text_edit()
+        self._finalize_text_edit(TextEditFinalizeReason.FOCUS_OUTSIDE)
 
     def _on_app_focus_changed(self, _old: QWidget, new: QWidget) -> None:
         # App-level safety net for focus moves that bypass QTextEdit focusOut details.
@@ -2289,8 +2328,7 @@ class PDFView(QMainWindow):
             self.sig_toggle_fullscreen.emit()
             return True
         if self.text_editor:
-            self._discard_text_edit_once = True
-            self._finalize_text_edit()
+            self._finalize_text_edit(TextEditFinalizeReason.ESCAPE)
             self._focus_page_canvas()
             return True
 
@@ -3614,27 +3652,49 @@ class PDFView(QMainWindow):
             else None,
         )
 
-    def _finalize_text_edit(self):
+    def _finalize_text_edit(
+        self,
+        reason: TextEditFinalizeReason = TextEditFinalizeReason.CLICK_AWAY,
+    ) -> TextEditFinalizeResult | None:
         # Re-entrancy-safe wrapper: cleanup is done once even if multiple blur events fire.
         if self._finalizing_text_edit:
-            return
+            return self._last_text_edit_finalize_result
         if not self.text_editor or not self.text_editor.widget():
             self._set_edit_focus_guard(False)
             self._edit_focus_check_pending = False
-            return
+            return None
         self._finalizing_text_edit = True
         try:
-            self._finalize_text_edit_impl()
+            result = self._finalize_text_edit_impl(reason)
+            self._last_text_edit_finalize_result = result
+            logger.debug(
+                "text edit finalize: reason=%s intent=%s outcome=%s delta=%s",
+                result.reason.value,
+                result.intent,
+                result.outcome.value,
+                result.delta,
+            )
+            return result
         finally:
             self._set_edit_focus_guard(False)
             self._edit_focus_check_pending = False
             self._finalizing_text_edit = False
 
-    def _finalize_text_edit_impl(self):
-        if not self.text_editor or not self.text_editor.widget(): return
+    def _finalize_text_edit_impl(
+        self,
+        reason: TextEditFinalizeReason = TextEditFinalizeReason.CLICK_AWAY,
+    ) -> TextEditFinalizeResult:
+        if not self.text_editor or not self.text_editor.widget():
+            raise RuntimeError("Cannot finalize text edit without an active editor")
 
+        # Finalize pipeline:
+        #   collect editor snapshot -> classify delta -> tear down UI editor
+        #      -> discard => no mutation
+        #      -> no delta => no-op
+        #      -> add_new => emit add textbox
+        #      -> page move => emit cross-page move
+        #      -> else => emit edit-text command path
         # Snapshot editor state before removing proxy widget from the scene.
-        # 1. Get all necessary data out of the editor
         editor = self.text_editor.widget()
         new_text = editor.toPlainText()
         original_text_prop = editor.property("original_text")
@@ -3662,8 +3722,12 @@ class PDFView(QMainWindow):
         edit_page = getattr(self, '_editing_page_idx', self.current_page)
         origin_page = getattr(self, '_editing_origin_page_idx', edit_page)
         edit_intent = getattr(self, 'editing_intent', 'edit_existing')
-        discard_changes = bool(getattr(self, "_discard_text_edit_once", False))
-        self._discard_text_edit_once = False
+        delta = TextEditDelta(
+            text_changed=text_changed,
+            style_changed=(font_changed or size_changed),
+            position_changed=position_changed,
+            page_changed=(origin_page != edit_page),
+        )
 
         # 重置拖曳狀態
         self._drag_pending = False
@@ -3704,9 +3768,20 @@ class PDFView(QMainWindow):
         if hasattr(self, 'editing_target_mode'): del self.editing_target_mode
         if hasattr(self, 'editing_intent'): del self.editing_intent
 
-        # "Cancel" should close editor and keep document unchanged.
-        if discard_changes:
-            return
+        if reason in {
+            TextEditFinalizeReason.CANCEL_BUTTON,
+            TextEditFinalizeReason.ESCAPE,
+            TextEditFinalizeReason.MODE_SWITCH,
+            TextEditFinalizeReason.CLOSE_DOCUMENT,
+        }:
+            return TextEditFinalizeResult(
+                reason=reason,
+                outcome=TextEditOutcome.DISCARDED,
+                intent=edit_intent,
+                edit_page=edit_page,
+                origin_page=origin_page,
+                delta=delta,
+            )
 
         if edit_intent == 'add_new':
             if new_text.strip() and current_rect is not None:
@@ -3721,11 +3796,32 @@ class PDFView(QMainWindow):
                     )
                 except Exception as e:
                     logger.error(f"發送新增文字框信號時出錯: {e}")
-            return
+                return TextEditFinalizeResult(
+                    reason=reason,
+                    outcome=TextEditOutcome.COMMITTED,
+                    intent=edit_intent,
+                    edit_page=edit_page,
+                    origin_page=origin_page,
+                    delta=delta,
+                )
+            return TextEditFinalizeResult(
+                reason=reason,
+                outcome=TextEditOutcome.NO_OP,
+                intent=edit_intent,
+                edit_page=edit_page,
+                origin_page=origin_page,
+                delta=delta,
+            )
 
-        page_changed = origin_page != edit_page
-        if not (text_changed or position_changed or font_changed or size_changed or page_changed) or not original_rect:
-            return
+        if not delta.any_change or not original_rect:
+            return TextEditFinalizeResult(
+                reason=reason,
+                outcome=TextEditOutcome.NO_OP,
+                intent=edit_intent,
+                edit_page=edit_page,
+                origin_page=origin_page,
+                delta=delta,
+            )
 
         try:
             original_text = getattr(self, 'editing_original_text', None)
@@ -3733,7 +3829,7 @@ class PDFView(QMainWindow):
             vsl = vertical_shift_left.isChecked() if vertical_shift_left else True
             # 若位置有變動，傳入 new_rect；否則傳 None（維持原位）
             new_rect_arg = current_rect if position_changed else None
-            if page_changed and current_rect is not None:
+            if delta.page_changed and current_rect is not None:
                 self.sig_move_text_across_pages.emit(
                     origin_page + 1,
                     original_rect,
@@ -3763,6 +3859,14 @@ class PDFView(QMainWindow):
                 )
         except Exception as e:
             logger.error(f"發送編輯信號時出錯: {e}")
+        return TextEditFinalizeResult(
+            reason=reason,
+            outcome=TextEditOutcome.COMMITTED,
+            intent=edit_intent,
+            edit_page=edit_page,
+            origin_page=origin_page,
+            delta=delta,
+        )
 
     def _show_context_menu(self, pos):
         menu = QMenu(self)
@@ -3792,9 +3896,13 @@ class PDFView(QMainWindow):
 
     def _save(self):
         """存回原檔（Ctrl+S），若適用則使用增量更新。"""
+        if self.text_editor and self.text_editor.widget():
+            self._finalize_text_edit(TextEditFinalizeReason.SAVE_SHORTCUT)
         self.sig_save.emit()
 
     def _save_as(self):
+        if self.text_editor and self.text_editor.widget():
+            self._finalize_text_edit(TextEditFinalizeReason.SAVE_SHORTCUT)
         path, _ = QFileDialog.getSaveFileName(self, "另存PDF", "", "PDF (*.pdf)")
         if path: self.sig_save_as.emit(path)
 
