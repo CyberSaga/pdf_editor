@@ -246,15 +246,13 @@ def test_finalize_skips_emit_for_normalized_noop_edit() -> None:
 def test_escape_marks_current_editor_as_discard_before_finalize() -> None:
     view = _make_view()
     view.text_editor = object()
-    observed: list[bool] = []
+    observed = []
     focus_calls: list[bool] = []
-    view._finalize_text_edit = lambda: observed.append(
-        bool(getattr(view, "_discard_text_edit_once", False))
-    )
+    view._finalize_text_edit = lambda reason=pdf_view.TextEditFinalizeReason.CLICK_AWAY: observed.append(reason)
     view._focus_page_canvas = lambda: focus_calls.append(True)
 
     assert view._handle_escape() is True
-    assert observed == [True]
+    assert observed == [pdf_view.TextEditFinalizeReason.ESCAPE]
     assert focus_calls == [True]
 
 
@@ -415,6 +413,29 @@ def test_editor_shortcut_forwarder_keeps_save_forwarding() -> None:
     assert view._action_save.triggered == 1
 
 
+def test_editor_shortcut_forwarder_keeps_save_as_forwarding() -> None:
+    forwarder_cls = getattr(pdf_view, "_EditorShortcutForwarder", None)
+    assert forwarder_cls is not None
+
+    view = SimpleNamespace(
+        _action_save=_FakeAction("save"),
+        _action_save_as=_FakeAction("save_as"),
+        _action_undo=_FakeAction("undo"),
+        _action_redo=_FakeAction("redo"),
+        text_editor=None,
+    )
+    forwarder = forwarder_cls(view)
+
+    assert (
+        forwarder.eventFilter(
+            None,
+            QKeyEvent(QEvent.KeyPress, Qt.Key_S, Qt.ControlModifier | Qt.ShiftModifier),
+        )
+        is True
+    )
+    assert view._action_save_as.triggered == 1
+
+
 def test_editor_shortcut_forwarder_handles_escape_before_ctrl_guard() -> None:
     forwarder_cls = getattr(pdf_view, "_EditorShortcutForwarder", None)
     assert forwarder_cls is not None
@@ -457,6 +478,78 @@ def test_editor_shortcut_forwarder_uses_local_undo_redo_history() -> None:
     assert widget.redo_calls == 2
     assert view._action_undo.triggered == 0
     assert view._action_redo.triggered == 0
+
+
+def test_save_shortcut_finalizes_editor_before_emitting_save() -> None:
+    view = _make_view()
+    recorded = []
+    view.text_editor = _FakeProxy(_FakeEditorWidget("text", "text"))
+    view.sig_save = _FakeSignal()
+    view._finalize_text_edit = lambda reason=pdf_view.TextEditFinalizeReason.CLICK_AWAY: recorded.append(reason)
+
+    view._save()
+
+    assert recorded == [pdf_view.TextEditFinalizeReason.SAVE_SHORTCUT]
+    assert view.sig_save.calls == [()]
+
+
+def test_save_as_shortcut_finalizes_editor_before_emitting_save_as(monkeypatch: pytest.MonkeyPatch) -> None:
+    view = _make_view()
+    recorded = []
+    view.text_editor = _FakeProxy(_FakeEditorWidget("text", "text"))
+    view.sig_save_as = _FakeSignal()
+    view._finalize_text_edit = lambda reason=pdf_view.TextEditFinalizeReason.CLICK_AWAY: recorded.append(reason)
+    monkeypatch.setattr(pdf_view.QFileDialog, "getSaveFileName", lambda *args, **kwargs: ("out.pdf", "PDF (*.pdf)"))
+
+    view._save_as()
+
+    assert recorded == [pdf_view.TextEditFinalizeReason.SAVE_SHORTCUT]
+    assert view.sig_save_as.calls == [("out.pdf",)]
+
+
+def test_finalize_noop_records_explicit_result() -> None:
+    view = _make_view()
+    original_text = "o\ufb03ce   plan"
+    view.text_editor = _FakeProxy(_FakeEditorWidget("office plan", original_text))
+    view._editing_original_rect = fitz.Rect(10, 20, 120, 50)
+    view.editing_rect = fitz.Rect(10, 20, 120, 50)
+    view.editing_font_name = "helv"
+    view._editing_initial_font_name = "helv"
+    view.editing_color = (0, 0, 0)
+    view._editing_initial_size = 12
+    view.editing_original_text = original_text
+
+    result = view._finalize_text_edit_impl(pdf_view.TextEditFinalizeReason.CLICK_AWAY)
+
+    assert result.reason is pdf_view.TextEditFinalizeReason.CLICK_AWAY
+    assert result.outcome is pdf_view.TextEditOutcome.NO_OP
+    assert result.delta.text_changed is False
+    assert result.delta.position_changed is False
+    assert view.sig_edit_text.calls == []
+
+
+def test_finalize_position_only_existing_text_records_commit_result() -> None:
+    view = _make_view()
+    original_rect = fitz.Rect(10, 20, 120, 50)
+    moved_rect = fitz.Rect(14, 30, 124, 60)
+    view.text_editor = _FakeProxy(_FakeEditorWidget("same text", "same text"))
+    view._editing_original_rect = fitz.Rect(original_rect)
+    view.editing_rect = fitz.Rect(moved_rect)
+    view.editing_font_name = "helv"
+    view._editing_initial_font_name = "helv"
+    view.editing_color = (0, 0, 0)
+    view._editing_initial_size = 12
+    view.editing_original_text = "same text"
+    view.editing_intent = "edit_existing"
+
+    result = view._finalize_text_edit_impl(pdf_view.TextEditFinalizeReason.CLICK_AWAY)
+
+    assert result.outcome is pdf_view.TextEditOutcome.COMMITTED
+    assert result.delta.text_changed is False
+    assert result.delta.position_changed is True
+    assert result.delta.page_changed is False
+    assert len(view.sig_edit_text.calls) == 1
+    assert view.sig_edit_text.calls[0][8] == moved_rect
 
 
 def test_editor_shortcut_forwarder_consumes_empty_local_history_without_fallback() -> None:
