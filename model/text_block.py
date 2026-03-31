@@ -24,6 +24,7 @@ _LIGATURE_MAP = {
     '\ufb06': 'st',   # ﬆ
 }
 logger = logging.getLogger(__name__)
+_BULLET_PREFIXES = ("- ", "* ", "\u2022 ", "\u25aa ", "\u25cf ")
 
 
 def rotation_degrees_from_dir(dir_tuple) -> int:
@@ -92,6 +93,15 @@ def _kind_compatible(prev_kind: str, curr_kind: str) -> bool:
     if prev_kind == "latin" and curr_kind == "latin":
         return True
     return False
+
+
+def _starts_bullet_item(text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if stripped.startswith(_BULLET_PREFIXES):
+        return True
+    return bool(re.match(r"^\d+[.)]\s+", stripped))
 
 
 @dataclass
@@ -724,11 +734,31 @@ class TextBlockManager:
                 line_map.setdefault(r.line_idx, []).append(r)
 
             line_texts: list[str] = []
+            line_boxes: list[fitz.Rect] = []
             for line_idx in sorted(line_map.keys()):
                 parts = [seg.text.strip() for seg in sorted(line_map[line_idx], key=lambda s: s.span_idx) if seg.text.strip()]
                 if parts:
+                    line_runs = sorted(line_map[line_idx], key=lambda s: s.span_idx)
                     line_texts.append(" ".join(parts))
-            para_text = "\n".join(line_texts).strip()
+                    line_bbox = fitz.Rect(line_runs[0].bbox)
+                    for run in line_runs[1:]:
+                        line_bbox.include_rect(run.bbox)
+                    line_boxes.append(line_bbox)
+            para_parts: list[str] = []
+            for idx, line_text in enumerate(line_texts):
+                if idx == 0:
+                    para_parts.append(line_text)
+                    continue
+                prev_box = line_boxes[idx - 1]
+                curr_box = line_boxes[idx]
+                prev_height = max(prev_box.height, 0.0)
+                gap = curr_box.y0 - prev_box.y1
+                if _starts_bullet_item(line_text) or (prev_height > 0 and gap > prev_height * 0.5):
+                    para_parts.append("\n")
+                elif para_parts and not para_parts[-1].endswith((" ", "\n", "-")):
+                    para_parts.append(" ")
+                para_parts.append(line_text)
+            para_text = "".join(para_parts).strip()
             if not para_text:
                 continue
 

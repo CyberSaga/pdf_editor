@@ -3,7 +3,7 @@ from PySide6.QtGui import QImage, QPixmap, QShortcut, QKeySequence
 from PySide6.QtCore import QTimer, QObject, QThread, Qt, Signal, Slot
 from model.pdf_model import PDFModel
 from model.edit_commands import EditTextCommand, SnapshotCommand, AddTextboxCommand
-from view.pdf_view import PDFView, ViewportAnchor, OptimizePdfDialog
+from view.pdf_view import PDFView, ViewportAnchor, OptimizePdfDialog, EditTextRequest
 from typing import Callable, List, Tuple, Optional
 from utils.helpers import pixmap_to_qpixmap, show_error
 from pathlib import Path
@@ -1441,18 +1441,45 @@ class PDFController:
 
     def edit_text(
         self,
-        page: int,
-        rect: fitz.Rect,
-        new_text: str,
-        font: str,
-        size: int,
-        color: tuple,
+        page: int | EditTextRequest,
+        rect: fitz.Rect | None = None,
+        new_text: str | None = None,
+        font: str | None = None,
+        size: int | None = None,
+        color: tuple | None = None,
         original_text: str = None,
         vertical_shift_left: bool = True,
         new_rect=None,
         target_span_id: str = None,
         target_mode: str = None,
     ):
+        if isinstance(page, EditTextRequest):
+            request = page
+        else:
+            request = EditTextRequest(
+                page=page,
+                rect=rect,
+                new_text=new_text or "",
+                font=font or "helv",
+                size=int(size or 12),
+                color=color or (0.0, 0.0, 0.0),
+                original_text=original_text,
+                vertical_shift_left=vertical_shift_left,
+                new_rect=new_rect,
+                target_span_id=target_span_id,
+                target_mode=target_mode,
+            )
+        page = request.page
+        rect = request.rect
+        new_text = request.new_text
+        font = request.font
+        size = request.size
+        color = request.color
+        original_text = request.original_text
+        vertical_shift_left = request.vertical_shift_left
+        new_rect = request.new_rect
+        target_span_id = request.target_span_id
+        target_mode = request.target_mode
         # Empty string is a valid "delete textbox content" intent from inline edit.
         if new_text is None:
             new_text = ""

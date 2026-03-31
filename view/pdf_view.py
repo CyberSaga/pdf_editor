@@ -9,180 +9,34 @@ from PySide6.QtWidgets import (
     QScrollArea, QCheckBox, QTabWidget, QSplitter, QFrame, QSizePolicy, QSlider, QTabBar, QListView, QAbstractItemView,
     QStatusBar, QGroupBox, QToolButton, QProgressDialog, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip
 )
-from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QActionGroup, QCloseEvent, QTextOption, QShortcut, QFontMetrics, QGuiApplication
+from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QPen, QBrush, QTransform, QAction, QActionGroup, QCloseEvent, QShortcut, QFontMetrics, QGuiApplication
 from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint, QEvent, QSize, QRect, QObject
 from typing import List, Tuple, Optional
 from pathlib import Path
-from dataclasses import dataclass
-from enum import Enum
 from utils.helpers import pixmap_to_qpixmap, parse_pages, show_error
 from model.pdf_model import PdfAuditReport, PdfOptimizeOptions, PDFModel
+from view.text_editing import (
+    _DEFAULT_EDITOR_MASK_COLOR,
+    _EditorShortcutForwarder,
+    _average_image_rect_color,
+    _normalize_for_edit_compare,
+    EditTextRequest,
+    InlineTextEditor,
+    TextEditDelta,
+    TextEditDragState,
+    TextEditFinalizeReason,
+    TextEditFinalizeResult,
+    TextEditGeometryConstants,
+    TextEditManager,
+    TextEditOutcome,
+    TextEditUIConstants,
+    ViewportAnchor,
+)
 import logging
-import unicodedata
 import warnings
 import fitz
 
 logger = logging.getLogger(__name__)
-
-_LIGATURE_EXPAND = {
-    "\ufb00": "ff",
-    "\ufb01": "fi",
-    "\ufb02": "fl",
-    "\ufb03": "ffi",
-    "\ufb04": "ffl",
-    "\ufb05": "st",
-    "\ufb06": "st",
-}
-
-_DEFAULT_EDITOR_MASK_COLOR = QColor("#FFFFFF")
-
-
-class TextEditFinalizeReason(str, Enum):
-    APPLY = "apply"
-    CLICK_AWAY = "click_away"
-    CANCEL_BUTTON = "cancel_button"
-    ESCAPE = "escape"
-    SAVE_SHORTCUT = "save_shortcut"
-    MODE_SWITCH = "mode_switch"
-    FOCUS_OUTSIDE = "focus_outside"
-    CLOSE_DOCUMENT = "close_document"
-
-
-class TextEditOutcome(str, Enum):
-    DISCARDED = "discarded"
-    NO_OP = "no_op"
-    COMMITTED = "committed"
-
-
-@dataclass(frozen=True)
-class TextEditDelta:
-    text_changed: bool
-    style_changed: bool
-    position_changed: bool
-    page_changed: bool
-
-    @property
-    def any_change(self) -> bool:
-        return self.text_changed or self.style_changed or self.position_changed or self.page_changed
-
-
-@dataclass(frozen=True)
-class TextEditFinalizeResult:
-    reason: TextEditFinalizeReason
-    outcome: TextEditOutcome
-    intent: str
-    edit_page: int
-    origin_page: int
-    delta: TextEditDelta
-
-
-def _normalize_for_edit_compare(text: str) -> str:
-    """Normalize editor text for no-op comparisons."""
-    if not text:
-        return ""
-    for ligature, expanded in _LIGATURE_EXPAND.items():
-        text = text.replace(ligature, expanded)
-    text = unicodedata.normalize("NFKC", text)
-    return " ".join(text.split()).strip()
-
-
-def _average_image_rect_color(image, rect: QRect) -> QColor:
-    bounded = rect.intersected(image.rect())
-    if bounded.isEmpty():
-        return QColor(_DEFAULT_EDITOR_MASK_COLOR)
-    total_r = 0
-    total_g = 0
-    total_b = 0
-    count = 0
-    for y in range(bounded.top(), bounded.bottom() + 1):
-        for x in range(bounded.left(), bounded.right() + 1):
-            color = image.pixelColor(x, y)
-            total_r += color.red()
-            total_g += color.green()
-            total_b += color.blue()
-            count += 1
-    if count <= 0:
-        return QColor(_DEFAULT_EDITOR_MASK_COLOR)
-    return QColor(total_r // count, total_g // count, total_b // count)
-
-
-class _EditorShortcutForwarder(QObject):
-    """Forward common window shortcuts while the embedded editor has focus."""
-
-    def __init__(self, view) -> None:
-        super().__init__(view if isinstance(view, QObject) else None)
-        self._view = view
-
-    def _trigger(self, action_name: str, fallback_name: str | None = None) -> bool:
-        action = getattr(self._view, action_name, None)
-        if action is not None and hasattr(action, "trigger"):
-            action.trigger()
-            return True
-        if fallback_name:
-            fallback = getattr(self._view, fallback_name, None)
-            if callable(fallback):
-                fallback()
-                return True
-        return False
-
-    def _editor_widget(self):
-        editor = getattr(self._view, "text_editor", None)
-        if editor is None or not hasattr(editor, "widget"):
-            return None
-        return editor.widget()
-
-    def _handle_editor_undo(self) -> bool:
-        widget = self._editor_widget()
-        if widget is None:
-            return True
-        document = widget.document() if hasattr(widget, "document") else None
-        if document is not None and document.isUndoAvailable():
-            widget.undo()
-        return True
-
-    def _handle_editor_redo(self) -> bool:
-        widget = self._editor_widget()
-        if widget is None:
-            return True
-        document = widget.document() if hasattr(widget, "document") else None
-        if document is not None and document.isRedoAvailable():
-            widget.redo()
-        return True
-
-    def eventFilter(self, obj, event):
-        if event.type() != QEvent.KeyPress:
-            return False
-        # Shortcut ownership:
-        # focused inline editor
-        #     |-- Escape -> discard editor
-        #     |-- Ctrl+S -> window save
-        #     |-- Ctrl+Z/Y -> local editor undo/redo only
-        # editor closed
-        #     |-- Ctrl+Z/Y -> document undo/redo
-        if event.key() == Qt.Key_Escape:
-            handler = getattr(self._view, "_handle_escape", None)
-            return bool(handler()) if callable(handler) else False
-        modifiers = event.modifiers()
-        if not (modifiers & Qt.ControlModifier):
-            return False
-        if event.key() == Qt.Key_S and (modifiers & Qt.ShiftModifier):
-            return self._trigger("_action_save_as", "_save_as")
-        if event.key() == Qt.Key_S and not (modifiers & Qt.ShiftModifier):
-            return self._trigger("_action_save", "_save")
-        if event.key() == Qt.Key_Z and not (modifiers & Qt.ShiftModifier):
-            return self._handle_editor_undo()
-        if event.key() == Qt.Key_Y:
-            return self._handle_editor_redo()
-        if event.key() == Qt.Key_Z and (modifiers & Qt.ShiftModifier):
-            return self._handle_editor_redo()
-        return False
-
-
-@dataclass(frozen=True)
-class ViewportAnchor:
-    page_idx: int
-    horizontal_value: int
-    vertical_value: int
 
 
 def _ctrl_tab_direction(key: int, modifiers: Qt.KeyboardModifiers) -> int:
@@ -963,7 +817,7 @@ class PDFView(QMainWindow):
     sig_export_pages = Signal(list, str, bool, int, str)
     sig_add_highlight = Signal(int, object, object)
     sig_add_rect = Signal(int, object, object, bool)
-    sig_edit_text = Signal(int, object, str, str, int, tuple, str, bool, object, object, str)  # ..., new_rect(optional), target_span_id(optional), target_mode
+    sig_edit_text = Signal(object)  # EditTextRequest
     sig_move_text_across_pages = Signal(int, object, int, object, str, str, int, tuple, str, object, str)
     sig_add_textbox = Signal(int, object, str, str, int, tuple)  # page_num, visual_rect, text, font, size, color
     sig_jump_to_result = Signal(int, object)
@@ -1129,6 +983,7 @@ class PDFView(QMainWindow):
         # 拖曳移動文字框的狀態機
         self._drag_pending: bool = False        # 滑鼠已按下在文字塊，尚未判定點擊或拖曳
         self._drag_active: bool = False         # 正在拖曳中
+        self._text_edit_drag_state = TextEditDragState.IDLE
         self._drag_start_scene_pos = None       # 按下時的場景座標（QPointF）
         self._drag_editor_start_pos = None      # 按下時 proxy widget 的位置（QPointF）
         self._pending_text_info = None          # 待定狀態下存放的文字塊資訊（drag_pending 且無編輯框時）
@@ -1144,11 +999,13 @@ class PDFView(QMainWindow):
         self._selected_text_rect_doc = None
         self._selected_text_page_idx = None
         self._selected_text_cached = ""
+        self._selected_text_hit_info = None
         # Inline-editor focus lifecycle guards.
         self._edit_focus_guard_connected = False
         self._edit_focus_check_pending = False
         self._finalizing_text_edit = False
         self._last_text_edit_finalize_result: TextEditFinalizeResult | None = None
+        self.text_edit_manager = TextEditManager(self)
         # Phase 5: edit_text 模式下的 hover 文字塊高亮
         self._hover_highlight_item = None       # QGraphicsRectItem | None
         self._last_hover_scene_pos = None       # QPointF | None（節流用）
@@ -1372,11 +1229,9 @@ class PDFView(QMainWindow):
         if not self._fullscreen_active:
             self._set_fullscreen_exit_button_visible(False)
             return
-        # Reveal the exit affordance only in a shallow top band or near the button.
-        top_band_height = 24
-        button_rect = self._fullscreen_exit_button.geometry()
-        should_show = pos.y() <= top_band_height or button_rect.adjusted(-8, -8, 8, 8).contains(pos)
-        self._set_fullscreen_exit_button_visible(should_show)
+        # Keep the exit affordance visible throughout fullscreen; hover should
+        # only refresh its geometry/stacking, not control discoverability.
+        self._set_fullscreen_exit_button_visible(True)
 
     def is_fullscreen_active(self) -> bool:
         return self._fullscreen_active
@@ -1413,8 +1268,13 @@ class PDFView(QMainWindow):
         self.right_sidebar.hide()
         self.statusBar().hide()
         self._fullscreen_active = True
-        self._set_fullscreen_exit_button_visible(False)
+        self._set_fullscreen_exit_button_visible(True)
         self.showFullScreen()
+        self.activateWindow()
+        self.raise_()
+        self.setFocus(Qt.ActiveWindowFocusReason)
+        self.graphics_view.setFocus(Qt.ActiveWindowFocusReason)
+        self.graphics_view.viewport().setFocus(Qt.ActiveWindowFocusReason)
         self._update_fullscreen_exit_button_geometry()
 
     def exit_fullscreen_ui(self) -> None:
@@ -1476,6 +1336,7 @@ class PDFView(QMainWindow):
         self.drawing_start = None
         self._drag_pending = False
         self._drag_active = False
+        self._text_edit_drag_state = TextEditDragState.IDLE
         self._drag_start_scene_pos = None
         self._drag_editor_start_pos = None
         self._pending_text_info = None
@@ -1547,7 +1408,7 @@ class PDFView(QMainWindow):
         self._shortcut_prev_doc_tab_back.activated.connect(lambda: self._cycle_document_tab(-1))
 
         self._shortcut_escape = QShortcut(QKeySequence(Qt.Key_Escape), self)
-        self._shortcut_escape.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._shortcut_escape.setContext(Qt.ShortcutContext.WindowShortcut)
         self._shortcut_escape.activated.connect(self._on_escape_shortcut)
 
         self._shortcut_toggle_left_sidebar = QShortcut(QKeySequence("Ctrl+Alt+L"), self)
@@ -1755,6 +1616,9 @@ class PDFView(QMainWindow):
         right_layout.addWidget(QLabel(" "))
         right_layout.addWidget(self.zoom_combo)
         right_layout.addWidget(self.fit_view_btn)
+        # right_layout already contributes 6px between adjacent items.
+        # Use another 6px spacer so the visible gap between these two buttons is 12px total.
+        right_layout.addSpacing(6)
         right_layout.addWidget(self.fullscreen_quick_btn)
         # 根因 2 排除：移除 stretch，避免佔滿剩餘空間、把 QToolBar 擠成只顯示溢出
         # right_layout.addWidget(QWidget(), 1) 已移除
@@ -2069,12 +1933,15 @@ class PDFView(QMainWindow):
         text_layout.addWidget(self.text_target_mode_combo)
         self.text_apply_btn = QPushButton("套用")
         self.text_cancel_btn = QPushButton("取消")
+        self.text_apply_btn.setEnabled(False)
+        self.text_cancel_btn.setEnabled(False)
         self.text_apply_btn.clicked.connect(self._on_text_apply_clicked)
         self.text_cancel_btn.clicked.connect(self._on_text_cancel_clicked)
         text_layout.addWidget(self.text_apply_btn)
         text_layout.addWidget(self.text_cancel_btn)
         text_layout.addStretch()
         self.right_stacked_widget.addWidget(self.text_card)
+        self._sync_text_property_panel_state()
 
     def _choose_rect_color(self):
         color = QColorDialog.getColor(self.rect_color, self, "選擇矩形顏色")
@@ -2114,6 +1981,91 @@ class PDFView(QMainWindow):
             return
         self._finalize_text_edit(TextEditFinalizeReason.CANCEL_BUTTON)
 
+    def _set_text_property_actions_enabled(self, enabled: bool) -> None:
+        for attr in ("text_apply_btn", "text_cancel_btn"):
+            button = getattr(self, attr, None)
+            if button is not None and hasattr(button, "setEnabled"):
+                button.setEnabled(bool(enabled))
+
+    def _set_text_property_font_and_size(
+        self,
+        font_name: Optional[str],
+        font_size: Optional[float | int],
+    ) -> None:
+        if getattr(self, "text_font", None) is None or getattr(self, "text_size", None) is None:
+            return
+
+        if font_name:
+            self._set_text_font_by_pdf(str(font_name))
+
+        if font_size is None:
+            return
+
+        try:
+            size_value = int(round(float(font_size)))
+        except (TypeError, ValueError):
+            return
+
+        size_str = str(size_value)
+        if self.text_size.findText(size_str) == -1:
+            self.text_size.addItem(size_str)
+        self.text_size.setCurrentText(size_str)
+
+    def _selected_text_has_context(self) -> bool:
+        return bool(
+            getattr(self, "current_mode", "browse") == "browse"
+            and (
+                getattr(self, "_selected_text_cached", "")
+                or getattr(self, "_selected_text_rect_doc", None) is not None
+            )
+        )
+
+    def _sync_text_property_panel_state(self) -> None:
+        text_card = getattr(self, "text_card", None)
+        stacked = getattr(self, "right_stacked_widget", None)
+        if text_card is None or stacked is None:
+            return
+
+        text_editor = getattr(self, "text_editor", None)
+        editor_widget = text_editor.widget() if (text_editor and text_editor.widget()) else None
+        has_live_editor = editor_widget is not None
+        self._set_text_property_actions_enabled(has_live_editor)
+
+        if has_live_editor:
+            font = editor_widget.font() if hasattr(editor_widget, "font") else None
+            if font is not None:
+                self._set_text_property_font_and_size(font.family(), font.pointSize())
+            stacked.setCurrentWidget(text_card)
+            return
+
+        current_mode = getattr(self, "current_mode", "browse")
+
+        if current_mode in ("add_text", "edit_text"):
+            stacked.setCurrentWidget(text_card)
+            return
+
+        if self._selected_text_has_context():
+            info = getattr(self, "_selected_text_hit_info", None)
+            if info is not None:
+                self._set_text_property_font_and_size(
+                    getattr(info, "font", None),
+                    getattr(info, "size", None),
+                )
+                target_mode = getattr(info, "target_mode", None)
+                combo = getattr(self, "text_target_mode_combo", None)
+                if combo is not None and target_mode in ("run", "paragraph"):
+                    idx = combo.findData(target_mode)
+                    if idx >= 0:
+                        combo.blockSignals(True)
+                        combo.setCurrentIndex(idx)
+                        combo.blockSignals(False)
+            stacked.setCurrentWidget(text_card)
+            return
+
+        page_info_card = getattr(self, "page_info_card", None)
+        if page_info_card is not None:
+            stacked.setCurrentWidget(page_info_card)
+
     def _update_status_bar(self):
         """更新狀態列：已修改、模式、快捷鍵、頁/縮放；搜尋模式時顯示找到 X 個結果 • 按 Esc 關閉搜尋."""
         if getattr(self, "_status_bar_override_message", None):
@@ -2151,6 +2103,7 @@ class PDFView(QMainWindow):
         # 切換模式時清除所有拖曳/待定狀態
         self._drag_pending = False
         self._drag_active = False
+        self._text_edit_drag_state = TextEditDragState.IDLE
         self._drag_start_scene_pos = None
         self._drag_editor_start_pos = None
         self._pending_text_info = None
@@ -2186,6 +2139,7 @@ class PDFView(QMainWindow):
             self.graphics_view.setDragMode(QGraphicsView.ScrollHandDrag)
             self._reset_browse_hover_cursor()
             self.right_stacked_widget.setCurrentWidget(self.page_info_card)
+        self._sync_text_property_panel_state()
         self._update_status_bar()
 
     def _on_escape_shortcut(self) -> None:
@@ -2404,19 +2358,23 @@ class PDFView(QMainWindow):
             return self._handle_drag_drop_event(event)
         graphics_view = getattr(self, "graphics_view", None)
         if graphics_view is not None and obj is graphics_view.viewport():
+            if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+                if self._handle_escape():
+                    event.accept()
+                    return True
             if event.type() == QEvent.Leave:
                 if self.current_mode == 'browse':
                     self._reset_browse_hover_cursor()
-                if self._fullscreen_active:
-                    self._set_fullscreen_exit_button_visible(False)
             elif event.type() == QEvent.MouseMove and self._fullscreen_active:
                 pos = graphics_view.viewport().mapTo(self, event.position().toPoint())
                 self._update_fullscreen_exit_hover(pos)
         if obj is self or obj is self.centralWidget():
+            if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+                if self._handle_escape():
+                    event.accept()
+                    return True
             if event.type() == QEvent.MouseMove and self._fullscreen_active:
                 self._update_fullscreen_exit_hover(event.position().toPoint())
-            elif event.type() == QEvent.Leave and self._fullscreen_active:
-                self._set_fullscreen_exit_button_visible(False)
         thumb_list = getattr(self, "thumbnail_list", None)
         if thumb_list is not None and obj is thumb_list.viewport() and event.type() == QEvent.Resize:
             self._update_thumbnail_layout_metrics()
@@ -2591,14 +2549,15 @@ class PDFView(QMainWindow):
             f"QTextEdit QScrollBar {{ background: transparent; }}"
         )
 
+    def _ensure_text_edit_manager(self) -> TextEditManager:
+        manager = getattr(self, "text_edit_manager", None)
+        if manager is None:
+            manager = TextEditManager(self)
+            self.text_edit_manager = manager
+        return manager
+
     def _current_text_editor_scene_rect(self) -> QRectF | None:
-        if not self.text_editor or not self.text_editor.widget():
-            return None
-        if hasattr(self.text_editor, "sceneBoundingRect"):
-            return self.text_editor.sceneBoundingRect()
-        pos = self.text_editor.pos() if hasattr(self.text_editor, "pos") else QPointF(0, 0)
-        widget = self.text_editor.widget()
-        return QRectF(pos.x(), pos.y(), float(widget.width()), float(widget.height()))
+        return self._ensure_text_edit_manager().current_text_editor_scene_rect()
 
     def _sample_page_mask_color(self, page_idx: int, scene_rect: QRectF) -> QColor:
         if (
@@ -2624,8 +2583,8 @@ class PDFView(QMainWindow):
 
         scale_x = image.width() / max(1.0, item_rect.width())
         scale_y = image.height() / max(1.0, item_rect.height())
-        inset_x = min(local_rect.width() * 0.15, 6.0)
-        inset_y = min(local_rect.height() * 0.15, 6.0)
+        inset_x = min(local_rect.width() * TextEditUIConstants.MASK_SAMPLE_INSET_RATIO, TextEditUIConstants.MASK_SAMPLE_INSET_MAX_PX)
+        inset_y = min(local_rect.height() * TextEditUIConstants.MASK_SAMPLE_INSET_RATIO, TextEditUIConstants.MASK_SAMPLE_INSET_MAX_PX)
         sample_rect = local_rect.adjusted(inset_x, inset_y, -inset_x, -inset_y)
         if sample_rect.isEmpty():
             sample_rect = local_rect
@@ -2639,20 +2598,11 @@ class PDFView(QMainWindow):
         return _average_image_rect_color(image, image_rect)
 
     def _refresh_text_editor_mask_color(self) -> None:
-        if not self.text_editor or not self.text_editor.widget():
-            return
-        page_idx = getattr(self, "_editing_page_idx", self.current_page)
-        scene_rect = self._current_text_editor_scene_rect()
-        if scene_rect is None:
-            return
-        editor = self.text_editor.widget()
-        text_rgb = editor.property("text_rgb") or (0, 0, 0)
-        mask_color = self._sample_page_mask_color(page_idx, scene_rect)
-        editor.setStyleSheet(self._build_text_editor_stylesheet(text_rgb, mask_color))
-        editor.setProperty("mask_rgb", (mask_color.red(), mask_color.green(), mask_color.blue()))
+        self._ensure_text_edit_manager().refresh_text_editor_mask_color()
 
     def _should_start_editor_drag(self, dx: float, dy: float) -> bool:
-        return (dx * dx + dy * dy) > 9
+        threshold = TextEditGeometryConstants.DRAG_START_DISTANCE_PX
+        return (dx * dx + dy * dy) > (threshold * threshold)
 
     def _resolve_editor_page_idx_for_drag(self, editor_top_y: float) -> int:
         if not self.continuous_pages or not self.page_y_positions:
@@ -2912,12 +2862,14 @@ class PDFView(QMainWindow):
                     if editor_scene_rect.contains(scene_pos):
                         self._drag_pending = True
                         self._drag_active = False
+                        self._text_edit_drag_state = TextEditDragState.PENDING
                         self._pending_text_info = None
                         self._drag_start_scene_pos = scene_pos
                         self._drag_editor_start_pos = self.text_editor.pos()
                         return
                     self._drag_pending = False
                     self._drag_active = False
+                    self._text_edit_drag_state = TextEditDragState.IDLE
                     self._pending_text_info = None
                     self._finalize_text_edit()
                     return
@@ -2932,6 +2884,7 @@ class PDFView(QMainWindow):
                         # 點擊在編輯框內：進入待定狀態（等 release/move 決定是游標定位還是拖曳）
                         self._drag_pending = True
                         self._drag_active = False
+                        self._text_edit_drag_state = TextEditDragState.PENDING
                         self._pending_text_info = None  # 已有編輯框，不需 pending_text_info
                         self._drag_start_scene_pos = scene_pos
                         self._drag_editor_start_pos = self.text_editor.pos()
@@ -2940,6 +2893,7 @@ class PDFView(QMainWindow):
                         # 點擊在編輯框外：先結束編輯
                         self._drag_pending = False
                         self._drag_active = False
+                        self._text_edit_drag_state = TextEditDragState.IDLE
                         self._pending_text_info = None
                         self._finalize_text_edit()
                         # Fall through：繼續判斷是否點到了新文字塊
@@ -2967,6 +2921,7 @@ class PDFView(QMainWindow):
                         )
                         self._drag_pending = True
                         self._drag_active = False
+                        self._text_edit_drag_state = TextEditDragState.PENDING
                         self._drag_start_scene_pos = scene_pos
                         self._drag_editor_start_pos = None  # 尚無編輯框
                         return
@@ -2998,6 +2953,7 @@ class PDFView(QMainWindow):
                 if self._should_start_editor_drag(dx, dy):
                     self._drag_pending = False
                     self._drag_active = True
+                    self._text_edit_drag_state = TextEditDragState.ACTIVE
                     self.graphics_view.viewport().setCursor(Qt.ClosedHandCursor)
 
                     # 若尚無編輯框（點的是新文字塊），此時才建立並進入拖曳
@@ -3265,6 +3221,7 @@ class PDFView(QMainWindow):
         self._selected_text_page_idx = page_idx
         self._selected_text_rect_doc = fitz.Rect(doc_rect)
         self._selected_text_cached = selected_text
+        self._selected_text_hit_info = self._resolve_text_info_for_doc_rect(page_idx, doc_rect)
         rs = self._render_scale if self._render_scale > 0 else 1.0
         y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0.0
         precise_scene = QRectF(
@@ -3275,6 +3232,7 @@ class PDFView(QMainWindow):
         )
         self._text_selection_rect_item.setRect(precise_scene)
         self._text_selection_rect_item.setVisible(True)
+        self._sync_text_property_panel_state()
 
     def _clear_text_selection(self) -> None:
         self._text_selection_active = False
@@ -3285,6 +3243,7 @@ class PDFView(QMainWindow):
         self._selected_text_rect_doc = None
         self._selected_text_page_idx = None
         self._selected_text_cached = ""
+        self._selected_text_hit_info = None
         if self._text_selection_rect_item is not None:
             try:
                 if self._text_selection_rect_item.scene():
@@ -3292,6 +3251,123 @@ class PDFView(QMainWindow):
             except Exception:
                 pass
             self._text_selection_rect_item = None
+        self._sync_text_property_panel_state()
+
+    def _resolve_text_info_for_doc_rect(self, page_idx: int, doc_rect: fitz.Rect):
+        controller = getattr(self, "controller", None)
+        if controller is None or doc_rect is None:
+            return None
+        try:
+            center = fitz.Point((doc_rect.x0 + doc_rect.x1) / 2.0, (doc_rect.y0 + doc_rect.y1) / 2.0)
+            return controller.get_text_info_at_point(page_idx + 1, center)
+        except Exception:
+            return None
+
+    def _resolve_text_info_for_context_menu_pos(self, pos: QPoint):
+        if self.current_mode != "browse":
+            return None
+        controller = getattr(self, "controller", None)
+        graphics_view = getattr(self, "graphics_view", None)
+        if controller is None or graphics_view is None:
+            return None
+        try:
+            scene_pos = graphics_view.mapToScene(pos)
+            page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
+            info = controller.get_text_info_at_point(page_idx + 1, doc_point)
+        except Exception:
+            return None
+        if info is None:
+            return None
+        return page_idx, info
+
+    def _select_all_text_on_current_page(self) -> bool:
+        if self.total_pages <= 0:
+            return False
+        controller = getattr(self, "controller", None)
+        model = getattr(controller, "model", None) if controller is not None else None
+        if model is None or not getattr(model, "doc", None):
+            return False
+
+        page_idx = min(max(self.current_page, 0), self.total_pages - 1)
+        try:
+            page_rect = fitz.Rect(model.doc[page_idx].rect)
+        except Exception:
+            return False
+
+        try:
+            selected_text = controller.get_text_in_rect(page_idx + 1, page_rect)
+        except Exception:
+            selected_text = ""
+        if not selected_text.strip():
+            return False
+
+        precise_doc_rect = fitz.Rect(page_rect)
+        try:
+            precise = controller.get_text_bounds(page_idx + 1, page_rect)
+            if precise is not None and precise.width > 0 and precise.height > 0:
+                precise_doc_rect = fitz.Rect(precise)
+        except Exception:
+            pass
+
+        self._selected_text_page_idx = page_idx
+        self._selected_text_rect_doc = precise_doc_rect
+        self._selected_text_cached = selected_text
+        self._selected_text_hit_info = self._resolve_text_info_for_doc_rect(page_idx, precise_doc_rect)
+
+        if self._text_selection_rect_item is None and getattr(self, "scene", None) is not None:
+            pen = QPen(QColor(30, 120, 255, 200), 2)
+            brush = QBrush(QColor(30, 120, 255, 35))
+            self._text_selection_rect_item = self.scene.addRect(QRectF(), pen, brush)
+            self._text_selection_rect_item.setZValue(11)
+
+        if self._text_selection_rect_item is not None:
+            rs = self._render_scale if self._render_scale > 0 else 1.0
+            y0 = self.page_y_positions[page_idx] if (
+                self.continuous_pages and page_idx < len(self.page_y_positions)
+            ) else 0.0
+            scene_rect = QRectF(
+                precise_doc_rect.x0 * rs,
+                y0 + precise_doc_rect.y0 * rs,
+                max(1.0, precise_doc_rect.width * rs),
+                max(1.0, precise_doc_rect.height * rs),
+            )
+            self._text_selection_rect_item.setRect(scene_rect)
+            self._text_selection_rect_item.setVisible(True)
+
+        self._sync_text_property_panel_state()
+        return True
+
+    def _zoom_relative(self, factor: float) -> None:
+        try:
+            new_scale = float(self.scale) * float(factor)
+        except (TypeError, ValueError):
+            return
+        new_scale = max(0.1, min(4.0, new_scale))
+        self.sig_scale_changed.emit(self.current_page, new_scale)
+
+    def _start_text_edit_from_hit(self, page_idx: int, info) -> bool:
+        if info is None:
+            return False
+        try:
+            self.set_mode("edit_text")
+            self.editing_font_name = info.font
+            self.editing_color = info.color
+            self.editing_original_text = info.target_text
+            self._editing_page_idx = page_idx
+            self._create_text_editor(
+                info.target_bbox,
+                info.target_text,
+                info.font,
+                info.size,
+                info.color,
+                info.rotation,
+                info.target_span_id,
+                getattr(info, "target_mode", "run"),
+            )
+            return True
+        except Exception as exc:
+            logger.error("open edit text from context menu failed: %s", exc)
+            return False
 
     def _copy_selected_text_to_clipboard(self) -> bool:
         text = (self._selected_text_cached or "").strip()
@@ -3397,6 +3473,7 @@ class PDFView(QMainWindow):
 
             if self._drag_pending:
                 self._drag_pending = False
+                self._text_edit_drag_state = TextEditDragState.IDLE
                 if self.text_editor:
                     # 已開啟編輯框（點的是框內）→ 定位游標
                     editor = self.text_editor.widget()
@@ -3416,6 +3493,7 @@ class PDFView(QMainWindow):
             if self._drag_active:
                 # 拖曳結束 → 更新 editing_rect 為新的 PDF 座標（已被 clamp 在頁內）
                 self._drag_active = False
+                self._text_edit_drag_state = TextEditDragState.IDLE
                 self._pending_text_info = None
                 if self.current_mode == 'add_text':
                     self.graphics_view.viewport().setCursor(Qt.IBeamCursor)
@@ -3471,78 +3549,17 @@ class PDFView(QMainWindow):
         editor_intent: str = "edit_existing",
     ):
         """建立文字編輯框，設定寬度與換行以預覽渲染後的排版（與 PDF insert_htmlbox 一致）。"""
-        if self.text_editor:
-            self._finalize_text_edit()
-
-        page_idx = getattr(self, '_editing_page_idx', self.current_page)
-        render_width_pt = self.controller.model.get_render_width_for_edit(page_idx + 1, rect, rotation, font_size)
-        rs = self._render_scale if self._render_scale > 0 else 1.0
-        scaled_width = int(render_width_pt * rs)
-        scaled_rect = rect * rs
-
-        self.editing_rect = rect
-        self._editing_original_rect = fitz.Rect(rect)  # 保存原始位置，拖曳時不覆蓋
-        self._editing_origin_page_idx = page_idx
-        y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0
-        pos_x = scaled_rect.x0
-        pos_y = y0 + scaled_rect.y0
-
-        editor = QTextEdit(text)
-        editor.setProperty("original_text", text)
-        self._editing_rotation = rotation
-        self.editing_target_span_id = target_span_id
-        self.editing_target_mode = target_mode if target_mode in ("run", "paragraph") else "run"
-        self.editing_intent = editor_intent if editor_intent in ("edit_existing", "add_new") else "edit_existing"
-
-        qt_font = self._pdf_font_to_qt(font_name)
-        editor.setFont(QFont(qt_font, int(font_size)))
-
-        r, g, b = [int(c * 255) for c in color]
-        text_rgb = (r, g, b)
-        editor.setProperty("text_rgb", text_rgb)
-        # 停止 viewport 自動填色，改由場景底圖取樣出的 mask 色填入 editor 背景。
-        editor.setAutoFillBackground(False)
-        editor.viewport().setAutoFillBackground(False)
-        editor.setStyleSheet(self._build_text_editor_stylesheet(text_rgb, QColor(_DEFAULT_EDITOR_MASK_COLOR)))
-
-        editor.setFixedWidth(max(scaled_width, 80))
-        editor.setMinimumHeight(max(scaled_rect.height, 40))
-        editor.setLineWrapMode(QTextEdit.WidgetWidth)
-        editor.setWordWrapMode(QTextOption.WrapAnywhere)
-
-        size_str = str(round(font_size))
-        if self.text_size.findText(size_str) == -1:
-            self.text_size.addItem(size_str)
-            items = sorted([self.text_size.itemText(i) for i in range(self.text_size.count())], key=int)
-            self.text_size.clear()
-            self.text_size.addItems(items)
-        self.text_size.setCurrentText(size_str)
-        normalized_font = self._qt_font_to_pdf(font_name)
-        self._set_text_font_by_pdf(normalized_font)
-        self._editing_initial_font_name = normalized_font
-        self._editing_initial_size = int(round(font_size))
-        if not hasattr(self, "editing_font_name"):
-            self.editing_font_name = normalized_font
-        if not getattr(self, '_edit_font_size_connected', False):
-            self.text_size.currentTextChanged.connect(self._on_edit_font_size_changed)
-            self._edit_font_size_connected = True
-        if not getattr(self, '_edit_font_family_connected', False):
-            self.text_font.currentIndexChanged.connect(self._on_edit_font_family_changed)
-            self._edit_font_family_connected = True
-
-        self.text_editor = self.scene.addWidget(editor)
-        self.text_editor.setPos(pos_x, pos_y)
-        self._refresh_text_editor_mask_color()
-        self._editor_shortcut_forwarder = _EditorShortcutForwarder(self)
-        editor.installEventFilter(self._editor_shortcut_forwarder)
-        self._set_document_undo_redo_enabled(False)
-        original_focus_out = editor.focusOutEvent
-        def _editor_focus_out(event):
-            self._on_editor_focus_out(event, original_focus_out)
-        editor.focusOutEvent = _editor_focus_out
-        # Activate app-level focus guard only for active inline edit sessions.
-        self._set_edit_focus_guard(True)
-        editor.setFocus()
+        self._ensure_text_edit_manager().create_text_editor(
+            rect=rect,
+            text=text,
+            font_name=font_name,
+            font_size=font_size,
+            color=color,
+            rotation=rotation,
+            target_span_id=target_span_id,
+            target_mode=target_mode,
+            editor_intent=editor_intent,
+        )
 
     def _pdf_font_to_qt(self, font_name: str) -> str:
         """將 PDF 字型名稱映射為 Qt 可用字型，使預覽與渲染外觀相近。"""
@@ -3615,266 +3632,51 @@ class PDFView(QMainWindow):
         return "helv"
 
     def _on_edit_font_family_changed(self, *_):
-        if not self.text_editor or not self.text_editor.widget():
-            return
-        editor = self.text_editor.widget()
-        selected_pdf_font = self._qt_font_to_pdf(
-            str(self.text_font.currentData() or self.text_font.currentText())
-        )
-        f = editor.font()
-        f.setFamily(self._pdf_font_to_qt(selected_pdf_font))
-        editor.setFont(f)
-        self.editing_font_name = selected_pdf_font
-        QTimer.singleShot(
-            0,
-            lambda: editor.setFocus(Qt.OtherFocusReason)
-            if (self.text_editor and self.text_editor.widget() is editor)
-            else None,
-        )
+        self._ensure_text_edit_manager().on_edit_font_family_changed(*_)
 
     def _on_edit_font_size_changed(self, size_str: str):
         """編輯中變更字級時，更新編輯框字型以即時預覽。"""
-        if not self.text_editor or not self.text_editor.widget():
-            return
-        try:
-            sz = int(size_str)
-        except (ValueError, TypeError):
-            return
-        editor = self.text_editor.widget()
-        f = editor.font()
-        f.setPointSize(sz)
-        editor.setFont(f)
-        # Return caret focus back to editor so user can continue typing immediately.
-        QTimer.singleShot(
-            0,
-            lambda: editor.setFocus(Qt.OtherFocusReason)
-            if (self.text_editor and self.text_editor.widget() is editor)
-            else None,
-        )
+        self._ensure_text_edit_manager().on_edit_font_size_changed(size_str)
 
     def _finalize_text_edit(
         self,
         reason: TextEditFinalizeReason = TextEditFinalizeReason.CLICK_AWAY,
     ) -> TextEditFinalizeResult | None:
-        # Re-entrancy-safe wrapper: cleanup is done once even if multiple blur events fire.
-        if self._finalizing_text_edit:
-            return self._last_text_edit_finalize_result
-        if not self.text_editor or not self.text_editor.widget():
-            self._set_edit_focus_guard(False)
-            self._edit_focus_check_pending = False
-            return None
-        self._finalizing_text_edit = True
-        try:
-            result = self._finalize_text_edit_impl(reason)
-            self._last_text_edit_finalize_result = result
-            logger.debug(
-                "text edit finalize: reason=%s intent=%s outcome=%s delta=%s",
-                result.reason.value,
-                result.intent,
-                result.outcome.value,
-                result.delta,
-            )
-            return result
-        finally:
-            self._set_edit_focus_guard(False)
-            self._edit_focus_check_pending = False
-            self._finalizing_text_edit = False
+        return self._ensure_text_edit_manager().finalize_text_edit(reason)
 
     def _finalize_text_edit_impl(
         self,
         reason: TextEditFinalizeReason = TextEditFinalizeReason.CLICK_AWAY,
     ) -> TextEditFinalizeResult:
-        if not self.text_editor or not self.text_editor.widget():
-            raise RuntimeError("Cannot finalize text edit without an active editor")
-
-        # Finalize pipeline:
-        #   collect editor snapshot -> classify delta -> tear down UI editor
-        #      -> discard => no mutation
-        #      -> no delta => no-op
-        #      -> add_new => emit add textbox
-        #      -> page move => emit cross-page move
-        #      -> else => emit edit-text command path
-        # Snapshot editor state before removing proxy widget from the scene.
-        editor = self.text_editor.widget()
-        new_text = editor.toPlainText()
-        original_text_prop = editor.property("original_text")
-        text_changed = (
-            _normalize_for_edit_compare(new_text)
-            != _normalize_for_edit_compare(original_text_prop or "")
-        )
-
-        # 取得原始 rect（用於在 PDF 中找到舊文字塊）與當前 rect（拖曳後的新位置）
-        original_rect = self._editing_original_rect  # 編輯開始時的原始位置
-        current_rect = self.editing_rect              # 可能已被拖曳更新
-        position_changed = (
-            original_rect is not None and current_rect is not None and
-            (abs(current_rect.x0 - original_rect.x0) > 0.5 or
-             abs(current_rect.y0 - original_rect.y0) > 0.5)
-        )
-
-        current_font = getattr(self, 'editing_font_name', 'helv')
-        initial_font = getattr(self, '_editing_initial_font_name', current_font)
-        original_color = getattr(self, 'editing_color', (0,0,0))
-        current_size = int(self.text_size.currentText())
-        initial_size = int(getattr(self, '_editing_initial_size', current_size))
-        font_changed = (str(current_font).lower() != str(initial_font).lower())
-        size_changed = current_size != initial_size
-        edit_page = getattr(self, '_editing_page_idx', self.current_page)
-        origin_page = getattr(self, '_editing_origin_page_idx', edit_page)
-        edit_intent = getattr(self, 'editing_intent', 'edit_existing')
-        delta = TextEditDelta(
-            text_changed=text_changed,
-            style_changed=(font_changed or size_changed),
-            position_changed=position_changed,
-            page_changed=(origin_page != edit_page),
-        )
-
-        # 重置拖曳狀態
-        self._drag_pending = False
-        self._drag_active = False
-        self._drag_start_scene_pos = None
-        self._drag_editor_start_pos = None
-        self._pending_text_info = None
-
-        proxy_to_remove = self.text_editor
-        self.text_editor = None  # 先清除，防止 focusOutEvent 遞迴呼叫
-        if proxy_to_remove.scene():
-            self.scene.removeItem(proxy_to_remove)
-        self.editing_rect = None
-        self._editing_original_rect = None
-        if getattr(self, '_edit_font_size_connected', False):
-            try:
-                self.text_size.currentTextChanged.disconnect(self._on_edit_font_size_changed)
-            except (TypeError, RuntimeError):
-                pass
-            self._edit_font_size_connected = False
-        if getattr(self, '_edit_font_family_connected', False):
-            try:
-                self.text_font.currentIndexChanged.disconnect(self._on_edit_font_family_changed)
-            except (TypeError, RuntimeError):
-                pass
-            self._edit_font_family_connected = False
-        self._set_document_undo_redo_enabled(True)
-        if hasattr(self, 'editing_font_name'): del self.editing_font_name
-        if hasattr(self, '_editing_initial_font_name'): del self._editing_initial_font_name
-        if hasattr(self, '_editing_initial_size'): del self._editing_initial_size
-        if hasattr(self, 'editing_color'): del self.editing_color
-        if hasattr(self, '_editing_page_idx'): del self._editing_page_idx
-        if hasattr(self, '_editing_origin_page_idx'): del self._editing_origin_page_idx
-        if hasattr(self, '_editing_rotation'): del self._editing_rotation
-        target_span_id = getattr(self, 'editing_target_span_id', None)
-        if hasattr(self, 'editing_target_span_id'): del self.editing_target_span_id
-        target_mode = getattr(self, 'editing_target_mode', 'run')
-        if hasattr(self, 'editing_target_mode'): del self.editing_target_mode
-        if hasattr(self, 'editing_intent'): del self.editing_intent
-
-        if reason in {
-            TextEditFinalizeReason.CANCEL_BUTTON,
-            TextEditFinalizeReason.ESCAPE,
-            TextEditFinalizeReason.MODE_SWITCH,
-            TextEditFinalizeReason.CLOSE_DOCUMENT,
-        }:
-            return TextEditFinalizeResult(
-                reason=reason,
-                outcome=TextEditOutcome.DISCARDED,
-                intent=edit_intent,
-                edit_page=edit_page,
-                origin_page=origin_page,
-                delta=delta,
-            )
-
-        if edit_intent == 'add_new':
-            if new_text.strip() and current_rect is not None:
-                try:
-                    self.sig_add_textbox.emit(
-                        edit_page + 1,
-                        current_rect,
-                        new_text,
-                        current_font or self._add_text_default_pdf_font,
-                        current_size,
-                        original_color,
-                    )
-                except Exception as e:
-                    logger.error(f"發送新增文字框信號時出錯: {e}")
-                return TextEditFinalizeResult(
-                    reason=reason,
-                    outcome=TextEditOutcome.COMMITTED,
-                    intent=edit_intent,
-                    edit_page=edit_page,
-                    origin_page=origin_page,
-                    delta=delta,
-                )
-            return TextEditFinalizeResult(
-                reason=reason,
-                outcome=TextEditOutcome.NO_OP,
-                intent=edit_intent,
-                edit_page=edit_page,
-                origin_page=origin_page,
-                delta=delta,
-            )
-
-        if not delta.any_change or not original_rect:
-            return TextEditFinalizeResult(
-                reason=reason,
-                outcome=TextEditOutcome.NO_OP,
-                intent=edit_intent,
-                edit_page=edit_page,
-                origin_page=origin_page,
-                delta=delta,
-            )
-
-        try:
-            original_text = getattr(self, 'editing_original_text', None)
-            vertical_shift_left = getattr(self, 'vertical_shift_left_cb', None)
-            vsl = vertical_shift_left.isChecked() if vertical_shift_left else True
-            # 若位置有變動，傳入 new_rect；否則傳 None（維持原位）
-            new_rect_arg = current_rect if position_changed else None
-            if delta.page_changed and current_rect is not None:
-                self.sig_move_text_across_pages.emit(
-                    origin_page + 1,
-                    original_rect,
-                    edit_page + 1,
-                    current_rect,
-                    new_text,
-                    current_font,
-                    current_size,
-                    original_color,
-                    original_text,
-                    target_span_id,
-                    target_mode,
-                )
-            else:
-                self.sig_edit_text.emit(
-                    edit_page + 1,
-                    original_rect,      # 原始位置（供模型找到舊文字塊）
-                    new_text,
-                    current_font,
-                    current_size,
-                    original_color,
-                    original_text,
-                    vsl,
-                    new_rect_arg,       # 目標新位置（None = 不移動）
-                    target_span_id,
-                    target_mode,
-                )
-        except Exception as e:
-            logger.error(f"發送編輯信號時出錯: {e}")
-        return TextEditFinalizeResult(
-            reason=reason,
-            outcome=TextEditOutcome.COMMITTED,
-            intent=edit_intent,
-            edit_page=edit_page,
-            origin_page=origin_page,
-            delta=delta,
-        )
+        return self._ensure_text_edit_manager().finalize_text_edit_impl(reason)
 
     def _show_context_menu(self, pos):
-        menu = QMenu(self)
-        if self.current_mode == 'browse' and (self._selected_text_cached or self._selected_text_rect_doc is not None):
+        menu = QMenu()
+        text_hit = self._resolve_text_info_for_context_menu_pos(pos)
+
+        selected_text_cached = getattr(self, "_selected_text_cached", "")
+        selected_text_rect_doc = getattr(self, "_selected_text_rect_doc", None)
+        if self.current_mode == 'browse' and (selected_text_cached or selected_text_rect_doc is not None):
             menu.addAction("Copy Selected Text", self._copy_selected_text_to_clipboard)
+        if self.current_mode == 'browse':
+            menu.addAction("Select All", self._select_all_text_on_current_page)
+            if text_hit is not None:
+                page_idx, info = text_hit
+                menu.addAction(
+                    "Edit Text",
+                    lambda checked=False, idx=page_idx, hit=info: self._start_text_edit_from_hit(idx, hit),
+                )
+            menu.addSeparator()
+            menu.addAction("Zoom In", lambda: self._zoom_relative(1.1))
+            menu.addAction("Zoom Out", lambda: self._zoom_relative(1 / 1.1))
+            menu.addAction("Fit to View", self._fit_to_view)
+            menu.addSeparator()
+        if self._fullscreen_active:
+            menu.addAction("離開全螢幕", self.sig_toggle_fullscreen.emit)
             menu.addSeparator()
         menu.addAction("旋轉頁面", self._rotate_pages)
-        menu.exec_(self.graphics_view.mapToGlobal(pos))
+        global_pos = self.graphics_view.mapToGlobal(pos) if getattr(self, "graphics_view", None) is not None else pos
+        menu.exec_(global_pos)
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "開啟PDF", "", "PDF (*.pdf)")

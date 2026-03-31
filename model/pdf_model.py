@@ -35,6 +35,8 @@ from model.tools import ToolManager
 _RE_HTML_TEXT_PARTS = re.compile(r'([\u4e00-\u9fff\u3040-\u30ff]+|[^\u4e00-\u9fff\u3040-\u30ff\n ]+| +|\n)')
 _RE_WS_STRIP = re.compile(r'\s+')
 _RE_CJK = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff]+')
+_BULLET_PREFIXES = ("- ", "* ", "\u2022 ", "\u25aa ", "\u25cf ")
+_RE_NUMBERED_BULLET = re.compile(r"^\d+[.)]\s+")
 
 # Unicode ligature → 分解字元對照表
 # PyMuPDF 的 insert_htmlbox 渲染會將字母組合替換為 Unicode 合字（如 fi→ﬁ），
@@ -702,6 +704,67 @@ class PDFModel:
                 hit += 1
         return hit / len(tokens)
 
+    @staticmethod
+    def _starts_bullet_item(text: str) -> bool:
+        stripped = (text or "").strip()
+        if not stripped:
+            return False
+        if stripped.startswith(_BULLET_PREFIXES):
+            return True
+        return bool(_RE_NUMBERED_BULLET.match(stripped))
+
+    def _compose_block_text_for_hit(self, block: dict) -> str:
+        """
+        Build editable text for fallback point-hit extraction.
+        Wrapped lines are joined with spaces, while bullets / large visual gaps keep line breaks.
+        """
+        lines = block.get("lines", []) or []
+        if not lines:
+            return ""
+
+        line_texts: list[str] = []
+        line_boxes: list[fitz.Rect] = []
+        for line in lines:
+            parts = [
+                (span.get("text", "") or "").strip()
+                for span in (line.get("spans", []) or [])
+                if (span.get("text", "") or "").strip()
+            ]
+            if not parts:
+                continue
+            line_texts.append(" ".join(parts))
+            bbox = line.get("bbox")
+            if bbox is not None:
+                line_boxes.append(fitz.Rect(bbox))
+                continue
+            spans = line.get("spans", []) or []
+            if spans:
+                line_box = fitz.Rect(spans[0].get("bbox", (0, 0, 0, 0)))
+                for span in spans[1:]:
+                    line_box.include_rect(fitz.Rect(span.get("bbox", (0, 0, 0, 0))))
+                line_boxes.append(line_box)
+            else:
+                line_boxes.append(fitz.Rect(0, 0, 0, 0))
+
+        if not line_texts:
+            return ""
+
+        composed: list[str] = []
+        for idx, line_text in enumerate(line_texts):
+            if idx == 0:
+                composed.append(line_text)
+                continue
+            prev_box = line_boxes[idx - 1]
+            curr_box = line_boxes[idx]
+            prev_height = max(prev_box.height, 0.0)
+            gap = curr_box.y0 - prev_box.y1
+            if self._starts_bullet_item(line_text) or (prev_height > 0 and gap > prev_height * 0.5):
+                composed.append("\n")
+            elif composed and not composed[-1].endswith((" ", "\n", "-")):
+                composed.append(" ")
+            composed.append(line_text)
+        return "".join(composed).strip()
+
     def _normalized_similarity(self, left: str, right: str) -> float:
         """Similarity score on normalized strings (0..1)."""
         norm_left = self._normalize_text_for_compare(left)
@@ -1246,7 +1309,6 @@ class PDFModel:
             if point not in rect:
                 continue
 
-            full_text = []
             font_name = "helv"
             font_size = 12.0
             color_int = 0
@@ -1262,12 +1324,7 @@ class PDFModel:
 
             rgb_int = fitz.sRGB_to_rgb(color_int) if color_int else (0, 0, 0)
             color = tuple(c / 255.0 for c in rgb_int)
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    full_text.append(span.get("text", ""))
-                full_text.append("\n")
-
-            text_content = "".join(full_text).rstrip("\n")
+            text_content = self._compose_block_text_for_hit(block)
             fallback_span_id = f"p{page_idx}_b{block_idx}_l0_s0"
             return TextHit(
                 target_span_id=fallback_span_id,
@@ -1763,9 +1820,36 @@ class PDFModel:
     def _restore_page_from_snapshot(self, page_num_0based: int, snapshot_bytes: bytes) -> None:
         """用 bytes 快照替換 doc 中指定頁面（undo / rollback 時呼叫）"""
         snapshot_doc = fitz.open("pdf", snapshot_bytes)
-        self.doc.delete_page(page_num_0based)
-        self.doc.insert_pdf(snapshot_doc, from_page=0, to_page=0, start_at=page_num_0based)
-        snapshot_doc.close()
+        try:
+            if snapshot_doc.page_count < 1:
+                raise ValueError("snapshot restore requires at least one page")
+
+            insert_at = page_num_0based
+            self.doc.insert_pdf(snapshot_doc, from_page=0, to_page=0, start_at=insert_at)
+            try:
+                self.doc.delete_page(insert_at + 1)
+            except Exception as delete_err:
+                cleanup_err: Exception | None = None
+                try:
+                    self.doc.delete_page(insert_at)
+                except Exception as err:
+                    cleanup_err = err
+                if cleanup_err is not None:
+                    logger.error(
+                        "snapshot restore cleanup failed: page=%s delete_error=%s cleanup_error=%s",
+                        page_num_0based + 1,
+                        delete_err,
+                        cleanup_err,
+                    )
+                    raise RuntimeError(
+                        f"snapshot restore inserted replacement page but could not restore original state: "
+                        f"delete_error={delete_err}; cleanup_error={cleanup_err}"
+                    ) from cleanup_err
+                raise RuntimeError(
+                    f"snapshot restore inserted replacement page but could not remove original page: {delete_err}"
+                ) from delete_err
+        finally:
+            snapshot_doc.close()
 
     def _build_insert_css(
         self,
@@ -2428,6 +2512,30 @@ class PDFModel:
                 logger.warning("unable to resolve target block for span %s", resolved_target_span_id)
                 return
 
+            resolved_font = self._resolve_add_text_font(font)
+            current_font = self._resolve_add_text_font(target.font or "helv")
+            current_text_norm = self._normalize_text_for_compare(target.text or "")
+            requested_text_norm = self._normalize_text_for_compare(new_text)
+            size_unchanged = abs(float(size) - float(target.size)) <= 0.01
+            target_color = tuple(float(c) for c in (target.color or (0.0, 0.0, 0.0)))
+            request_color = tuple(float(c) for c in (color or (0.0, 0.0, 0.0)))
+            color_unchanged = len(target_color) == len(request_color) and all(
+                abs(a - b) <= 0.001 for a, b in zip(target_color, request_color)
+            )
+            if (
+                new_rect is None
+                and requested_text_norm == current_text_norm
+                and resolved_font == current_font
+                and size_unchanged
+                and color_unchanged
+            ):
+                logger.debug(
+                    "edit_text no-op: page=%s span=%s text/style unchanged; skip geometry re-estimation",
+                    page_num,
+                    resolved_target_span_id,
+                )
+                return
+
             rotation = int(target_rotation)
             is_vertical = rotation in (90, 270)
             insert_rotate = self._insert_rotate_for_htmlbox(rotation)
@@ -2457,7 +2565,6 @@ class PDFModel:
             )
 
             # ═══════════ Step 3: 智能插入（三策略）═══════════
-            resolved_font = self._resolve_add_text_font(font)
             html_content = self._convert_text_to_html(
                 new_text, int(size), color, latin_font=resolved_font
             )
@@ -2541,9 +2648,11 @@ class PDFModel:
                     _probe_used_h = insert_rect.height - _probe_spare
                     _probe_y1 = insert_rect.y0 + _probe_used_h + 4.0
                     _probe_y1 = float(min(max(_probe_y1, base_y1), page_rect.y1))
-                    if _probe_y1 > redact_rect.y1 + 2.0:
+                    height_growth = _probe_y1 - redact_rect.y1
+                    meaningful_growth = max(0.5, float(size) * 0.2)
+                    if height_growth > meaningful_growth:
                         logger.debug(
-                            f"換行預估溢出 {_probe_y1 - redact_rect.y1:.1f}pt，"
+                            f"換行預估溢出 {height_growth:.1f}pt，"
                             "預先推移下方文字塊（pre-push）"
                         )
                         self._push_down_overlapping_text(
@@ -2552,6 +2661,12 @@ class PDFModel:
                             new_bottom=_probe_y1,
                             edit_x0=x0,
                             edit_x1=x1,
+                        )
+                    else:
+                        logger.debug(
+                            "Pre-push probe skipped: growth %.2fpt <= threshold %.2fpt",
+                            height_growth,
+                            meaningful_growth,
                         )
                 except Exception as _probe_err:
                     logger.debug(f"Pre-push probe 失敗（忽略）: {_probe_err}")
@@ -2841,12 +2956,19 @@ class PDFModel:
             raise
         except Exception as e:
             logger.error(f"編輯文字時發生非預期錯誤: {e}")
+            rollback_error: Exception | None = None
             try:
                 rollback_flag = True
                 self._restore_page_from_snapshot(page_idx, snapshot_bytes)
                 self.block_manager.rebuild_page(page_idx, self.doc)
-            except Exception:
-                pass
+            except Exception as rollback_err:
+                rollback_error = rollback_err
+                logger.error(
+                    "編輯文字回滾失敗: page=%s original_error=%s rollback_error=%s",
+                    page_num,
+                    e,
+                    rollback_err,
+                )
             _duration = time.perf_counter() - _t0
             logger.debug(
                 "edit_transaction page=%s target_span_id=%s target_mode=%s cluster_size=%s protected_count=%s rollback_flag=%s duration_ms=%s",
@@ -2858,6 +2980,10 @@ class PDFModel:
                 rollback_flag,
                 round(_duration * 1000, 2),
             )
+            if rollback_error is not None:
+                raise RuntimeError(
+                    f"編輯文字失敗且回滾失敗: {e}; rollback: {rollback_error}"
+                ) from rollback_error
             raise RuntimeError(f"編輯文字失敗: {e}") from e
 
         # Phase 4: undo/redo 已由 CommandManager (EditTextCommand) 全權負責，

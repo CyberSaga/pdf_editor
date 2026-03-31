@@ -376,6 +376,8 @@ class CommandManager:
         command_manager.mark_saved()
     """
 
+    MAX_UNDO_STACK_SIZE = 100
+
     def __init__(self):
         self._undo_stack: list[EditCommand] = []
         self._redo_stack: list[EditCommand] = []
@@ -397,6 +399,7 @@ class CommandManager:
         """
         cmd.execute()
         self._undo_stack.append(cmd)
+        self._trim_undo_stack_if_needed()
 
         # 新操作使原 redo 歷史失效
         if self._redo_stack:
@@ -425,6 +428,7 @@ class CommandManager:
             cmd: 已執行完的 EditCommand 物件（SnapshotCommand 等）。
         """
         self._undo_stack.append(cmd)
+        self._trim_undo_stack_if_needed()
         if self._redo_stack:
             logger.debug(
                 f"CommandManager.record(): 清空 redo 堆疊（{len(self._redo_stack)} 筆）"
@@ -446,8 +450,9 @@ class CommandManager:
             logger.debug("CommandManager.undo(): undo 堆疊為空，無可撤銷")
             return False
 
-        cmd = self._undo_stack.pop()
+        cmd = self._undo_stack[-1]
         cmd.undo()
+        self._undo_stack.pop()
         self._redo_stack.append(cmd)
 
         logger.debug(
@@ -468,9 +473,11 @@ class CommandManager:
             logger.debug("CommandManager.redo(): redo 堆疊為空，無可重做")
             return False
 
-        cmd = self._redo_stack.pop()
+        cmd = self._redo_stack[-1]
         cmd.execute()
+        self._redo_stack.pop()
         self._undo_stack.append(cmd)
+        self._trim_undo_stack_if_needed()
 
         logger.debug(
             f"CommandManager.redo(): {cmd.description}，"
@@ -511,6 +518,18 @@ class CommandManager:
     # ──────────────────────────────────────────────────────────────────────────
     # 狀態查詢
     # ──────────────────────────────────────────────────────────────────────────
+
+    def _trim_undo_stack_if_needed(self) -> None:
+        overflow = len(self._undo_stack) - self.MAX_UNDO_STACK_SIZE
+        if overflow <= 0:
+            return
+        del self._undo_stack[:overflow]
+        self._saved_stack_size = max(0, self._saved_stack_size - overflow)
+        logger.debug(
+            "CommandManager: evicted %s oldest undo commands to enforce max=%s",
+            overflow,
+            self.MAX_UNDO_STACK_SIZE,
+        )
 
     def can_undo(self) -> bool:
         """是否有可撤銷的操作（供 UI 啟用/停用 Undo 按鈕）。"""
