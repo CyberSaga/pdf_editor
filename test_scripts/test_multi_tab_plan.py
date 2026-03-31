@@ -7,7 +7,7 @@ import pytest
 from PySide6.QtCore import Qt, QPoint, QMimeData, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeyEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QListView, QDialog
+from PySide6.QtWidgets import QApplication, QListView, QDialog, QMenu
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -1522,7 +1522,7 @@ def test_30_fullscreen_blocked_while_print_busy_or_modal(mvc, tmp_path, monkeypa
         _pump_events(80)
 
 
-def test_31_fullscreen_top_edge_hover_reveals_exit_button(mvc, tmp_path):
+def test_31_fullscreen_exit_button_stays_visible(mvc, tmp_path):
     _, view, controller = mvc
     path = _make_pdf(tmp_path / "fullscreen_hover_exit.pdf", ["hover exit"])
     view.show()
@@ -1534,7 +1534,7 @@ def test_31_fullscreen_top_edge_hover_reveals_exit_button(mvc, tmp_path):
 
     exit_button = getattr(view, "_fullscreen_exit_button", None)
     assert exit_button is not None, "fullscreen exit button missing"
-    assert not exit_button.isVisible()
+    assert exit_button.isVisible()
 
     center_widget = view.centralWidget()
     view._update_fullscreen_exit_hover(QPoint(center_widget.width() // 2, 2))
@@ -1543,7 +1543,7 @@ def test_31_fullscreen_top_edge_hover_reveals_exit_button(mvc, tmp_path):
 
     view._update_fullscreen_exit_hover(QPoint(center_widget.width() // 2, max(30, center_widget.height() // 2)))
     _pump_events(80)
-    assert not exit_button.isVisible()
+    assert exit_button.isVisible()
 
 
 def test_32_fullscreen_tab_switch_restores_each_visited_tab_state(mvc, tmp_path):
@@ -1638,6 +1638,48 @@ def test_34_fullscreen_quick_button_sits_between_fit_and_undo_and_f5_toggles(mvc
 
     QTest.keyClick(view.graphics_view.viewport(), Qt.Key_F5)
     _pump_events(220)
+    assert not view.isFullScreen()
+
+
+def test_34a_fullscreen_quick_button_has_12px_gap_from_fit_button(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "fullscreen_quick_spacing.pdf", ["quick spacing"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(320)
+
+    fit_right = view.fit_view_btn.geometry().right()
+    fullscreen_left = view.fullscreen_quick_btn.geometry().left()
+
+    assert fullscreen_left - fit_right - 1 == 12
+
+
+def test_34b_fullscreen_context_menu_offers_exit_action_and_triggers_toggle(mvc, tmp_path, monkeypatch):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "fullscreen_context_menu.pdf", ["context menu"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(320)
+    _trigger_fullscreen(view)
+    assert view.isFullScreen()
+
+    observed: list[str] = []
+
+    def _fake_exec(menu: QMenu, *args, **kwargs):
+        labels = [action.text() for action in menu.actions() if action.text()]
+        observed.extend(labels)
+        for action in menu.actions():
+            if action.text() == "離開全螢幕":
+                action.trigger()
+                break
+        return None
+
+    monkeypatch.setattr(QMenu, "exec_", _fake_exec)
+
+    view._show_context_menu(view.graphics_view.viewport().rect().center())
+    _pump_events(120)
+
+    assert "離開全螢幕" in observed
     assert not view.isFullScreen()
 
 

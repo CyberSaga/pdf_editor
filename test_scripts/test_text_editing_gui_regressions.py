@@ -14,8 +14,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QImage, QKeyEvent
+from PySide6.QtWidgets import QComboBox, QPushButton, QStackedWidget, QWidget, QMenu
 
 import view.pdf_view as pdf_view
 
@@ -186,6 +187,11 @@ class _FakeGraphicsView:
     def viewport(self) -> _FakeViewport:
         return self._viewport
 
+    def mapToGlobal(self, pos) -> QPoint:
+        if hasattr(pos, "x") and hasattr(pos, "y"):
+            return QPoint(int(pos.x()), int(pos.y()))
+        return QPoint(0, 0)
+
 
 class _FakeMouseEvent:
     def __init__(self, x: float, y: float) -> None:
@@ -220,6 +226,47 @@ def _make_view() -> pdf_view.PDFView:
     return view
 
 
+def _attach_text_property_panel(view: pdf_view.PDFView) -> None:
+    view.page_info_card = QWidget()
+    view.text_card = QWidget()
+    view.right_stacked_widget = QStackedWidget()
+    view.right_stacked_widget.addWidget(view.page_info_card)
+    view.right_stacked_widget.addWidget(view.text_card)
+    view.right_stacked_widget.setCurrentWidget(view.page_info_card)
+    view.text_apply_btn = QPushButton("套用")
+    view.text_cancel_btn = QPushButton("取消")
+    view.text_font = QComboBox()
+    view.text_font.addItem("Sans (helv)", "helv")
+    view.text_font.addItem("Serif (tiro)", "tiro")
+    view.text_font.addItem("Mono (cour)", "cour")
+    view.text_font.addItem("CJK Serif (china-ts)", "china-ts")
+    view.text_size = QComboBox()
+    view.text_size.addItems(["8", "10", "12", "14", "16", "18"])
+    view.text_target_mode_combo = QComboBox()
+    view.text_target_mode_combo.addItem("run", "run")
+    view.text_target_mode_combo.addItem("paragraph", "paragraph")
+    view._selected_text_cached = ""
+    view._selected_text_rect_doc = None
+    view._selected_text_page_idx = None
+    view._selected_text_hit_info = None
+
+
+def _capture_context_menu_labels(
+    monkeypatch: pytest.MonkeyPatch,
+    view: pdf_view.PDFView,
+    pos: QPoint | None = None,
+) -> list[str]:
+    labels: list[str] = []
+
+    def _fake_exec(menu: QMenu, *args, **kwargs):
+        labels.extend([action.text() for action in menu.actions() if action.text()])
+        return None
+
+    monkeypatch.setattr(QMenu, "exec_", _fake_exec)
+    view._show_context_menu(pos or QPoint(0, 0))
+    return labels
+
+
 def _make_image(width: int, height: int, color: QColor) -> QImage:
     image = QImage(width, height, QImage.Format_RGB32)
     image.fill(color)
@@ -241,6 +288,86 @@ def test_finalize_skips_emit_for_normalized_noop_edit() -> None:
     view._finalize_text_edit_impl()
 
     assert view.sig_edit_text.calls == []
+
+
+def test_text_property_panel_helper_disables_actions_without_editor(qapp) -> None:
+    view = _make_view()
+    _attach_text_property_panel(view)
+
+    view._sync_text_property_panel_state()
+
+    assert view.right_stacked_widget.currentWidget() is view.page_info_card
+    assert view.text_apply_btn.isEnabled() is False
+    assert view.text_cancel_btn.isEnabled() is False
+
+
+def test_text_property_panel_helper_shows_selection_state_without_enabling_actions(qapp) -> None:
+    view = _make_view()
+    _attach_text_property_panel(view)
+    view._selected_text_cached = "selected text"
+    view._selected_text_rect_doc = fitz.Rect(10, 10, 40, 20)
+    view._selected_text_page_idx = 0
+    view._selected_text_hit_info = SimpleNamespace(font="cour", size=14)
+
+    view._sync_text_property_panel_state()
+
+    assert view.right_stacked_widget.currentWidget() is view.text_card
+    assert view.text_font.currentData() == "cour"
+    assert view.text_size.currentText() == "14"
+    assert view.text_apply_btn.isEnabled() is False
+    assert view.text_cancel_btn.isEnabled() is False
+
+
+def test_text_property_panel_helper_enables_actions_for_live_editor(qapp) -> None:
+    view = _make_view()
+    _attach_text_property_panel(view)
+    view.text_editor = _FakeProxy(_FakeEditorWidget("text", "text"))
+
+    view._sync_text_property_panel_state()
+
+    assert view.right_stacked_widget.currentWidget() is view.text_card
+    assert view.text_apply_btn.isEnabled() is True
+    assert view.text_cancel_btn.isEnabled() is True
+
+
+def test_context_menu_includes_safe_browse_actions_for_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    view = _make_view()
+    view.total_pages = 1
+    view.scale = 1.0
+    view._selected_text_cached = "selected text"
+    view._selected_text_rect_doc = fitz.Rect(10, 10, 40, 20)
+
+    labels = _capture_context_menu_labels(monkeypatch, view)
+
+    assert "Copy Selected Text" in labels
+    assert "Select All" in labels
+    assert "Zoom In" in labels
+    assert "Zoom Out" in labels
+    assert "Fit to View" in labels
+
+
+def test_context_menu_offers_edit_text_when_point_hits_editable_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    view = _make_view()
+    view.total_pages = 1
+    view.scale = 1.0
+    view.controller = SimpleNamespace(
+        get_text_info_at_point=lambda page_num, point: SimpleNamespace(
+            target_bbox=fitz.Rect(10, 10, 40, 20),
+            target_text="editable",
+            font="helv",
+            size=12,
+            color=(0.0, 0.0, 0.0),
+            rotation=0,
+            target_span_id="span-1",
+            target_mode="run",
+        )
+    )
+    view._scene_pos_to_page_and_doc_point = lambda scene_pos: (0, fitz.Point(20, 20))
+    view.graphics_view = _FakeGraphicsView()
+
+    labels = _capture_context_menu_labels(monkeypatch, view, QPoint(12, 12))
+
+    assert "Edit Text" in labels
 
 
 def test_escape_marks_current_editor_as_discard_before_finalize() -> None:
@@ -549,7 +676,9 @@ def test_finalize_position_only_existing_text_records_commit_result() -> None:
     assert result.delta.position_changed is True
     assert result.delta.page_changed is False
     assert len(view.sig_edit_text.calls) == 1
-    assert view.sig_edit_text.calls[0][8] == moved_rect
+    payload = view.sig_edit_text.calls[0][0]
+    assert isinstance(payload, pdf_view.EditTextRequest)
+    assert payload.new_rect == moved_rect
 
 
 def test_editor_shortcut_forwarder_consumes_empty_local_history_without_fallback() -> None:
