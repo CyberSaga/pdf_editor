@@ -975,6 +975,9 @@ class PDFView(QMainWindow):
         self._zoom_debounce_timer = QTimer(self)
         self._zoom_debounce_timer.setSingleShot(True)
         self._zoom_debounce_timer.timeout.connect(self._on_zoom_debounce)
+        self._outline_redraw_timer = QTimer(self)
+        self._outline_redraw_timer.setSingleShot(True)
+        self._outline_redraw_timer.timeout.connect(self._draw_all_block_outlines)
         self.drawing_start = None
         self.text_editor: QGraphicsProxyWidget = None
         self.editing_intent = "edit_existing"
@@ -2131,17 +2134,17 @@ class PDFView(QMainWindow):
         self._drag_start_scene_pos = None
         self._drag_editor_start_pos = None
         self._pending_text_info = None
-        # Phase 5: 離開 edit_text 模式時清除 hover 高亮與 block outlines
         _prev_mode = self.current_mode
         if mode != 'edit_text':
             self._clear_hover_highlight()
             self._clear_all_block_outlines()
+            self._outline_redraw_timer.stop()
             try:
-                self.sig_viewport_changed.disconnect(self._draw_all_block_outlines)
+                self.sig_viewport_changed.disconnect(self._schedule_outline_redraw)
             except Exception:
                 pass
             try:
-                self.sig_scale_changed.disconnect(self._draw_all_block_outlines)
+                self.sig_scale_changed.disconnect(self._schedule_outline_redraw)
             except Exception:
                 pass
         self.current_mode = mode
@@ -2172,11 +2175,11 @@ class PDFView(QMainWindow):
             self._draw_all_block_outlines()
             if _prev_mode != 'edit_text':   # only connect on mode transition, not re-entry
                 try:
-                    self.sig_viewport_changed.connect(self._draw_all_block_outlines)
+                    self.sig_viewport_changed.connect(self._schedule_outline_redraw)
                 except Exception:
                     pass
                 try:
-                    self.sig_scale_changed.connect(self._draw_all_block_outlines)
+                    self.sig_scale_changed.connect(self._schedule_outline_redraw)
                 except Exception:
                     pass
         else:
@@ -3504,6 +3507,10 @@ class PDFView(QMainWindow):
                 pass
         self._block_outline_items.clear()
         self._hover_hidden_outline_key = None
+
+    def _schedule_outline_redraw(self, *args) -> None:
+        """Debounce outline redraws driven by scroll/zoom signals (80 ms collapse window)."""
+        self._outline_redraw_timer.start(80)
 
     def _update_hover_highlight(self, scene_pos: QPointF) -> None:
         """查詢滑鼠下方的文字塊，以半透明藍框標示可點擊範圍。"""
