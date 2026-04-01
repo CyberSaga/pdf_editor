@@ -492,6 +492,16 @@ class TextEditManager:
         view.text_editor = None
         if proxy_to_remove.scene():
             view.scene.removeItem(proxy_to_remove)
+        # Restore dim outline for the block that was just edited
+        try:
+            active_key = getattr(view, '_active_outline_key', None)
+            if active_key is not None:
+                outline = view._block_outline_items.get(active_key)
+                if outline is not None:
+                    outline.setVisible(True)
+                view._active_outline_key = None
+        except Exception:
+            pass
         view.editing_rect = None
         view._editing_original_rect = None
         if getattr(view, "_edit_font_size_connected", False):
@@ -534,7 +544,7 @@ class TextEditManager:
         if reason in {
             TextEditFinalizeReason.CANCEL_BUTTON,
             TextEditFinalizeReason.ESCAPE,
-            TextEditFinalizeReason.MODE_SWITCH,
+            # MODE_SWITCH removed — falls through to commit (same as CLICK_AWAY)
             TextEditFinalizeReason.CLOSE_DOCUMENT,
         }:
             return TextEditFinalizeResult(
