@@ -99,10 +99,11 @@ Text style controls include explicit commit/cancel buttons:
 - `取消` discards current inline edit session changes.
 
 Mode behavior boundary:
-- In `edit_text`, blank-click does not create new textbox.
+- In `edit_text`, blank-click does not create new textbox. All visible text block bounds are drawn as persistent outlines (`_draw_all_block_outlines`) so users can see editable zones without hovering. The cursor changes to IBeam when hovering over any text block.
 - In `add_text`, blank-click commits open editor; otherwise it creates a new textbox editor.
 - In `rect`, `highlight`, and `add_annotation`, each tool is sticky for repeated operations.
 - Mode actions are checkable and remain synchronized with the active mode state.
+- Switching away from `edit_text` with an open editor auto-commits the edit (same path as CLICK_AWAY) and shows a brief toast notification. Previously this silently discarded edits.
 - `Esc` priority is: close active editor/dialog first (keep mode), else revert non-browse mode to `browse`, else run browse fallback behavior.
 
 Fullscreen UX is implemented in the view, but coordinated by controller state:
