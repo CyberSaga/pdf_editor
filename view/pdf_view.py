@@ -1009,6 +1009,10 @@ class PDFView(QMainWindow):
         # Phase 5: edit_text 模式下的 hover 文字塊高亮
         self._hover_highlight_item = None       # QGraphicsRectItem | None
         self._last_hover_scene_pos = None       # QPointF | None（節流用）
+        # Block outlines: persistent dim outlines visible while in edit_text mode
+        self._block_outline_items: dict = {}    # (page_idx, block_idx) → QGraphicsRectItem
+        self._hover_hidden_outline_key = None   # key of outline hidden during hover
+        self._active_outline_key = None         # key of outline hidden during active edit
         
         self.graphics_view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
@@ -1527,6 +1531,8 @@ class PDFView(QMainWindow):
         self._action_undo.setShortcut(QKeySequence("Ctrl+Z"))
         self._action_redo = tb_common.addAction("重做", self.sig_redo.emit)
         self._action_redo.setShortcut(QKeySequence("Ctrl+Y"))
+        self._redo_mac_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
+        self._redo_mac_shortcut.activated.connect(self.sig_redo.emit)
         self._action_fullscreen = tb_common.addAction("全螢幕", self.sig_toggle_fullscreen.emit)
         tb_common.addAction("縮圖", self._show_thumbnails_tab)
         tb_common.addAction("搜尋", self._show_search_tab)
@@ -2091,12 +2097,30 @@ class PDFView(QMainWindow):
         self._status_bar_override_message = message or None
         self._update_status_bar()
 
+    def _show_toast(self, message: str, duration_ms: int = 1500) -> None:
+        """Show a brief overlay toast message at the bottom-center of the viewport."""
+        toast = QLabel(message, self.graphics_view.viewport())
+        toast.setAlignment(Qt.AlignCenter)
+        toast.setStyleSheet(
+            "background-color: rgba(40,40,40,200); color: white; "
+            "border-radius: 6px; padding: 6px 14px; font-size: 13px;"
+        )
+        toast.adjustSize()
+        vp = self.graphics_view.viewport()
+        x = (vp.width() - toast.width()) // 2
+        y = vp.height() - toast.height() - 24
+        toast.move(x, y)
+        toast.show()
+        QTimer.singleShot(duration_ms, toast.deleteLater)
+
     def set_mode(self, mode: str):
         mode = mode if mode in self._VALID_MODES else "browse"
         if mode != "browse" and not self._heavy_panels_initialized:
             self.ensure_heavy_panels_initialized()
         if self.text_editor:
-            self._finalize_text_edit()
+            result = self._finalize_text_edit(TextEditFinalizeReason.MODE_SWITCH)
+            if result is not None and result.outcome == TextEditOutcome.COMMITTED:
+                self._show_toast("文字已儲存")
         if self.current_mode == 'browse' and mode != 'browse':
             self._reset_browse_hover_cursor()
             self._clear_text_selection()
@@ -2107,9 +2131,19 @@ class PDFView(QMainWindow):
         self._drag_start_scene_pos = None
         self._drag_editor_start_pos = None
         self._pending_text_info = None
-        # Phase 5: 離開 edit_text 模式時清除 hover 高亮
+        # Phase 5: 離開 edit_text 模式時清除 hover 高亮與 block outlines
+        _prev_mode = self.current_mode
         if mode != 'edit_text':
             self._clear_hover_highlight()
+            self._clear_all_block_outlines()
+            try:
+                self.sig_viewport_changed.disconnect(self._draw_all_block_outlines)
+            except Exception:
+                pass
+            try:
+                self.sig_scale_changed.disconnect(self._draw_all_block_outlines)
+            except Exception:
+                pass
         self.current_mode = mode
         self._sync_mode_checked_state(mode)
         self.sig_mode_changed.emit(mode)
@@ -2135,6 +2169,16 @@ class PDFView(QMainWindow):
                 self._add_text_default_font_applied = True
         elif mode == 'edit_text':
             self.right_stacked_widget.setCurrentWidget(self.text_card)
+            self._draw_all_block_outlines()
+            if _prev_mode != 'edit_text':   # only connect on mode transition, not re-entry
+                try:
+                    self.sig_viewport_changed.connect(self._draw_all_block_outlines)
+                except Exception:
+                    pass
+                try:
+                    self.sig_scale_changed.connect(self._draw_all_block_outlines)
+                except Exception:
+                    pass
         else:
             self.graphics_view.setDragMode(QGraphicsView.ScrollHandDrag)
             self._reset_browse_hover_cursor()
@@ -3413,6 +3457,54 @@ class PDFView(QMainWindow):
         clamped_y = max(page_y0, min(y, page_y1 - h))
         return clamped_x, clamped_y
 
+    def _draw_all_block_outlines(self, *args) -> None:
+        """Draw persistent dim outlines around text blocks on visible pages (edit_text mode only)."""
+        self._clear_all_block_outlines()
+        if not hasattr(self, 'controller') or not self.controller.model.doc:
+            return
+        rs = self._render_scale if self._render_scale > 0 else 1.0
+        try:
+            start_page, end_page = self.visible_page_range(prefetch=1)
+        except Exception:
+            return
+        pen = QPen(QColor(100, 149, 237, 120), 1.0, Qt.DashLine)
+        brush = QBrush(Qt.NoBrush)
+        for page_idx in range(start_page, end_page + 1):
+            page_num = page_idx + 1
+            try:
+                self.controller.model.ensure_page_index_built(page_num)
+                blocks = self.controller.model.block_manager.get_blocks(page_num)
+            except Exception:
+                continue
+            y0 = (self.page_y_positions[page_idx]
+                  if (self.continuous_pages and page_idx < len(self.page_y_positions))
+                  else 0.0)
+            for block_idx, block in enumerate(blocks):
+                try:
+                    br = block.rect
+                    scene_rect = QRectF(br.x0 * rs, y0 + br.y0 * rs,
+                                        br.width * rs, br.height * rs)
+                    item = self.scene.addRect(scene_rect, pen, brush)
+                    item.setZValue(8)
+                    self._block_outline_items[(page_idx, block_idx)] = item
+                except Exception:
+                    continue
+        # Re-hide outlines for active-editing block (survives redraw)
+        if self._active_outline_key is not None:
+            outline = self._block_outline_items.get(self._active_outline_key)
+            if outline is not None:
+                outline.setVisible(False)
+
+    def _clear_all_block_outlines(self) -> None:
+        """Remove all persistent block outline items from the scene."""
+        for item in self._block_outline_items.values():
+            try:
+                self.scene.removeItem(item)
+            except Exception:
+                pass
+        self._block_outline_items.clear()
+        self._hover_hidden_outline_key = None
+
     def _update_hover_highlight(self, scene_pos: QPointF) -> None:
         """查詢滑鼠下方的文字塊，以半透明藍框標示可點擊範圍。"""
         try:
@@ -3442,8 +3534,39 @@ class PDFView(QMainWindow):
                     self._hover_highlight_item.setRect(scene_rect)
                     self._hover_highlight_item.setPen(pen)
                     self._hover_highlight_item.setBrush(brush)
+                # IBeam cursor signals the block is editable (guard: don't override drag cursor)
+                if self.current_mode == 'edit_text' and self._text_edit_drag_state == TextEditDragState.IDLE:
+                    self.graphics_view.viewport().setCursor(Qt.IBeamCursor)
+                # Hide dim outline for hovered block; restore previously hidden one
+                if self.current_mode == 'edit_text':
+                    try:
+                        blocks = self.controller.model.block_manager.get_blocks(page_idx + 1)
+                        hit_key = None
+                        for bidx, blk in enumerate(blocks):
+                            br = blk.rect
+                            if (br.x0 <= doc_rect.x0 + 1 and br.y0 <= doc_rect.y0 + 1
+                                    and br.x1 >= doc_rect.x1 - 1 and br.y1 >= doc_rect.y1 - 1):
+                                hit_key = (page_idx, bidx)
+                                break
+                        if hit_key != self._hover_hidden_outline_key:
+                            # Restore previously hidden outline
+                            if self._hover_hidden_outline_key is not None:
+                                prev = self._block_outline_items.get(self._hover_hidden_outline_key)
+                                if prev is not None:
+                                    prev.setVisible(True)
+                                self._hover_hidden_outline_key = None
+                            # Hide new hovered block's outline
+                            if hit_key is not None:
+                                outline = self._block_outline_items.get(hit_key)
+                                if outline is not None:
+                                    outline.setVisible(False)
+                                self._hover_hidden_outline_key = hit_key
+                    except Exception:
+                        pass
             else:
                 self._clear_hover_highlight()
+                if self.current_mode == 'edit_text' and self._text_edit_drag_state == TextEditDragState.IDLE:
+                    self.graphics_view.viewport().setCursor(Qt.ArrowCursor)
         except Exception as e:
             logger.debug(f"hover highlight update failed: {e}")
             self._clear_hover_highlight()
@@ -3458,6 +3581,15 @@ class PDFView(QMainWindow):
                 pass
             self._hover_highlight_item = None
         self._last_hover_scene_pos = None
+        # Restore any dim outline hidden by hover
+        if self._hover_hidden_outline_key is not None:
+            prev = self._block_outline_items.get(self._hover_hidden_outline_key)
+            if prev is not None:
+                try:
+                    prev.setVisible(True)
+                except Exception:
+                    pass
+            self._hover_hidden_outline_key = None
 
     def _mouse_release(self, event):
         pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
@@ -3560,6 +3692,22 @@ class PDFView(QMainWindow):
             target_mode=target_mode,
             editor_intent=editor_intent,
         )
+        # Hide the dim block outline for the block being edited
+        try:
+            page_idx = getattr(self, '_editing_page_idx', self.current_page)
+            page_num = page_idx + 1
+            blocks = self.controller.model.block_manager.get_blocks(page_num)
+            for bidx, blk in enumerate(blocks):
+                br = blk.rect
+                if (abs(br.x0 - rect.x0) < 2 and abs(br.y0 - rect.y0) < 2
+                        and abs(br.x1 - rect.x1) < 2 and abs(br.y1 - rect.y1) < 2):
+                    self._active_outline_key = (page_idx, bidx)
+                    outline = self._block_outline_items.get(self._active_outline_key)
+                    if outline is not None:
+                        outline.setVisible(False)
+                    break
+        except Exception:
+            pass
 
     def _pdf_font_to_qt(self, font_name: str) -> str:
         """將 PDF 字型名稱映射為 Qt 可用字型，使預覽與渲染外觀相近。"""

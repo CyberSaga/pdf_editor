@@ -2646,7 +2646,7 @@ class PDFModel:
                     )
                     _probe_doc.close()
                     _probe_used_h = insert_rect.height - _probe_spare
-                    _probe_y1 = insert_rect.y0 + _probe_used_h + 4.0
+                    _probe_y1 = insert_rect.y0 + _probe_used_h
                     _probe_y1 = float(min(max(_probe_y1, base_y1), page_rect.y1))
                     height_growth = _probe_y1 - redact_rect.y1
                     meaningful_growth = max(0.5, float(size) * 0.2)
@@ -2783,7 +2783,7 @@ class PDFModel:
                 # 避免 _text_fits_in_rect 因 HTML escape / 字型差異導致全部 probe 失敗，
                 # 進而使 new_layout_rect 退化成整頁高度、抓到其他 block 的文字。
                 text_used_height = new_layout_rect.height - spare_height
-                computed_y1 = new_layout_rect.y0 + text_used_height + 4.0
+                computed_y1 = new_layout_rect.y0 + text_used_height
                 # 至少覆蓋原始 block 高度，避免 layout_rect 過小
                 computed_y1 = max(computed_y1, base_y1)
                 shrunk_rect = fitz.Rect(

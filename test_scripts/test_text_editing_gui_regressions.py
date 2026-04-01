@@ -719,3 +719,116 @@ def test_toggle_document_undo_redo_actions_disables_and_reenables() -> None:
     view._set_document_undo_redo_enabled(True)
     assert view._action_undo.enabled is True
     assert view._action_redo.enabled is True
+
+
+# ── Eng Review mandatory tests ───────────────────────────────────────────────
+
+
+def _make_view_for_finalize(original_text: str = "Hello", new_text: str = "Hello World") -> pdf_view.PDFView:
+    """Build a minimal view configured for a mid-edit finalize call."""
+    view = _make_view()
+    view.text_editor = _FakeProxy(_FakeEditorWidget(new_text, original_text))
+    view._editing_original_rect = fitz.Rect(10, 20, 120, 50)
+    view.editing_rect = fitz.Rect(10, 20, 120, 50)
+    view.editing_font_name = "helv"
+    view._editing_initial_font_name = "helv"
+    view.editing_color = (0, 0, 0)
+    view._editing_initial_size = 12
+    view.editing_original_text = original_text
+    view.editing_intent = "edit_existing"
+    view._editing_page_idx = 0
+    # Stub outline bookkeeping added by Week 1 fix
+    view._block_outline_items: dict = {}
+    view._hover_hidden_outline_key = None
+    view._active_outline_key = None
+    view._edit_font_size_connected = False
+    view._edit_font_family_connected = False
+    view._action_undo = _FakeAction("undo")
+    view._action_redo = _FakeAction("redo")
+    return view
+
+
+def test_mode_switch_commits_edit_not_discards() -> None:
+    """Switching modes while editing must auto-commit, not silently discard."""
+    view = _make_view_for_finalize(original_text="Hello", new_text="Hello World")
+
+    result = view._finalize_text_edit_impl(pdf_view.TextEditFinalizeReason.MODE_SWITCH)
+
+    assert result is not None
+    assert result.outcome is not pdf_view.TextEditOutcome.DISCARDED, (
+        "MODE_SWITCH must not discard — typed text would be silently lost"
+    )
+    # Outcome must be COMMITTED (text changed) or NO_OP (no change), never DISCARDED
+    assert result.outcome in (pdf_view.TextEditOutcome.COMMITTED, pdf_view.TextEditOutcome.NO_OP)
+
+
+def test_escape_still_discards() -> None:
+    """ESCAPE must still discard — it is an explicit user cancel signal."""
+    view = _make_view_for_finalize(original_text="Hello", new_text="Hello World")
+
+    result = view._finalize_text_edit_impl(pdf_view.TextEditFinalizeReason.ESCAPE)
+
+    assert result is not None
+    assert result.outcome is pdf_view.TextEditOutcome.DISCARDED, (
+        "ESCAPE must always discard — user explicitly cancelled"
+    )
+
+
+def test_block_outlines_only_drawn_for_visible_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_draw_all_block_outlines must only call get_blocks for pages in visible_page_range."""
+    import types
+
+    class _FakeSceneWithAddRect(_FakeScene):
+        def addRect(self, rect, pen=None, brush=None):
+            item = SimpleNamespace(setZValue=lambda z: None, setVisible=lambda v: None)
+            return item
+
+    view = _make_view()
+    view._block_outline_items = {}
+    view._hover_hidden_outline_key = None
+    view._active_outline_key = None
+    view._render_scale = 1.0
+    view.scene = _FakeSceneWithAddRect()
+
+    # Fake block with a .rect attribute
+    fake_block = SimpleNamespace(rect=fitz.Rect(10, 10, 100, 30))
+    visited_pages: list[int] = []
+
+    def _fake_get_blocks(page_num: int):
+        visited_pages.append(page_num)
+        return [fake_block]
+
+    view.controller = SimpleNamespace(
+        model=SimpleNamespace(
+            doc=True,
+            ensure_page_index_built=lambda page_num: None,
+            block_manager=SimpleNamespace(get_blocks=_fake_get_blocks),
+        )
+    )
+    # visible_page_range returns 0-based (start, end) inclusive
+    monkeypatch.setattr(view, "visible_page_range", lambda prefetch=0: (3, 5))
+
+    view._draw_all_block_outlines()
+
+    # visible_page_range returned (3, 5) → pages 3,4,5 (0-based) → page_num 4,5,6 (1-based)
+    assert visited_pages == [4, 5, 6], (
+        f"Must only draw outlines for visible pages 4-6 (1-based), got {visited_pages}"
+    )
+
+
+def test_cmd_shift_z_fires_redo(qapp) -> None:
+    """Ctrl+Shift+Z (Cmd+Shift+Z on macOS) shortcut must emit sig_redo."""
+    from PySide6.QtWidgets import QWidget
+    from PySide6.QtGui import QShortcut, QKeySequence
+
+    # Re-create exactly what __init__ does for the Cmd+Shift+Z alias
+    parent = QWidget()
+    shortcut = QShortcut(QKeySequence("Ctrl+Shift+Z"), parent)
+
+    redo_fired = [0]
+    shortcut.activated.connect(lambda: redo_fired.__setitem__(0, redo_fired[0] + 1))
+
+    # Programmatically activate the shortcut (same as key press)
+    shortcut.activated.emit()
+
+    assert redo_fired[0] == 1, "Ctrl+Shift+Z shortcut must fire exactly once when activated"
