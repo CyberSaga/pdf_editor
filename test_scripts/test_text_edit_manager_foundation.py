@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 
 from view.pdf_view import PDFView
 import view.pdf_view as pdf_view
+from view.text_editing import MoveTextRequest
 
 
 class _FakeSignal:
@@ -113,3 +114,103 @@ def test_finalize_emits_typed_edit_request_payload() -> None:
     assert isinstance(payload, request_cls)
     assert payload.new_rect == moved_rect
     assert payload.page == 1
+
+
+def test_sig_move_text_emits_move_text_request() -> None:
+    view = _make_view()
+    original_rect = fitz.Rect(10, 20, 120, 50)
+    current_rect = fitz.Rect(16, 12, 126, 42)
+    view.text_editor = _FakeProxy(_FakeEditorWidget("moved text", "source text"))
+    view._editing_original_rect = fitz.Rect(original_rect)
+    view.editing_rect = fitz.Rect(current_rect)
+    view.editing_font_name = "helv"
+    view._editing_initial_font_name = "helv"
+    view.editing_color = (0, 0, 0)
+    view._editing_initial_size = 12
+    view.editing_original_text = "source text"
+    view._editing_page_idx = 1
+    view._editing_origin_page_idx = 0
+    view.editing_target_span_id = "span-1"
+    view.editing_target_mode = "run"
+    view.editing_intent = "edit_existing"
+
+    view._finalize_text_edit_impl()
+
+    assert len(view.sig_move_text_across_pages.calls) == 1
+    assert isinstance(view.sig_move_text_across_pages.calls[0][0], MoveTextRequest)
+
+
+def test_move_text_request_fields_match_session() -> None:
+    view = _make_view()
+    original_rect = fitz.Rect(10, 20, 120, 50)
+    current_rect = fitz.Rect(16, 12, 126, 42)
+    view.text_editor = _FakeProxy(_FakeEditorWidget("moved text", "source text"))
+    view._editing_original_rect = fitz.Rect(original_rect)
+    view.editing_rect = fitz.Rect(current_rect)
+    view.editing_font_name = "helv"
+    view._editing_initial_font_name = "helv"
+    view.editing_color = (0, 0, 0)
+    view._editing_initial_size = 12
+    view.editing_original_text = "source text"
+    view._editing_page_idx = 1
+    view._editing_origin_page_idx = 0
+    view.editing_target_span_id = "span-1"
+    view.editing_target_mode = "run"
+    view.editing_intent = "edit_existing"
+
+    view._finalize_text_edit_impl()
+
+    request = view.sig_move_text_across_pages.calls[0][0]
+    assert request.source_page == 1
+    assert request.destination_page == 2
+    assert request.new_text == "moved text"
+    assert request.font == "helv"
+    assert request.original_text == "source text"
+    assert request.target_span_id == "span-1"
+    assert request.target_mode == "run"
+    assert request.source_rect == original_rect
+    assert request.destination_rect == current_rect
+
+
+def test_controller_accepts_move_text_request() -> None:
+    from unittest.mock import MagicMock, patch
+    from controller.pdf_controller import PDFController
+
+    mock_view = MagicMock()
+    mock_model = MagicMock()
+    mock_model.doc = [None, None, None]  # truthy, len() == 3
+
+    controller = PDFController.__new__(PDFController)
+    controller.view = mock_view
+    controller.model = mock_model
+
+    destination_rect = fitz.Rect(5, 5, 100, 35)
+    source_rect = fitz.Rect(10, 20, 120, 50)
+    # source_page == destination_page triggers the edit_text reroute path,
+    # which lets us verify that MoveTextRequest fields are correctly extracted
+    # without wiring up the full cross-page model pipeline.
+    request = MoveTextRequest(
+        source_page=2,
+        source_rect=source_rect,
+        destination_page=2,
+        destination_rect=destination_rect,
+        new_text="hello world",
+        font="helv",
+        size=12,
+        color=(0, 0, 0),
+        original_text="old text",
+        target_span_id="span-1",
+        target_mode="run",
+    )
+
+    with patch.object(controller, "edit_text") as mock_edit_text:
+        controller.move_text_across_pages(request)
+
+    mock_edit_text.assert_called_once()
+    call_kwargs = mock_edit_text.call_args
+    args, kwargs = call_kwargs
+    assert args[0] == 2          # source_page
+    assert args[1] == source_rect
+    assert args[2] == "hello world"
+    assert args[3] == "helv"
+    assert kwargs.get("new_rect") == destination_rect

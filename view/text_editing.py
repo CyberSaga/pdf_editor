@@ -113,6 +113,21 @@ class EditTextRequest:
 
 
 @dataclass(frozen=True)
+class MoveTextRequest:
+    source_page: int
+    source_rect: fitz.Rect
+    destination_page: int
+    destination_rect: fitz.Rect
+    new_text: str
+    font: str
+    size: int
+    color: tuple
+    original_text: str | None = None
+    target_span_id: str | None = None
+    target_mode: str | None = None
+
+
+@dataclass(frozen=True)
 class TextEditSession:
     original_rect: fitz.Rect | None
     current_rect: fitz.Rect | None
@@ -601,19 +616,20 @@ class TextEditManager:
             vertical_shift_left_value = vertical_shift_left.isChecked() if vertical_shift_left else True
             new_rect_arg = session.current_rect if position_changed else None
             if delta.page_changed and session.current_rect is not None:
-                view.sig_move_text_across_pages.emit(
-                    session.origin_page + 1,
-                    session.original_rect,
-                    session.edit_page + 1,
-                    session.current_rect,
-                    new_text,
-                    session.current_font,
-                    session.current_size,
-                    session.original_color,
-                    session.original_text,
-                    session.target_span_id,
-                    session.target_mode,
+                move_request = MoveTextRequest(
+                    source_page=session.origin_page + 1,
+                    source_rect=session.original_rect,
+                    destination_page=session.edit_page + 1,
+                    destination_rect=session.current_rect,
+                    new_text=new_text,
+                    font=session.current_font,
+                    size=session.current_size,
+                    color=session.original_color,
+                    original_text=session.original_text,
+                    target_span_id=session.target_span_id,
+                    target_mode=session.target_mode,
                 )
+                view.sig_move_text_across_pages.emit(move_request)
             else:
                 request = EditTextRequest(
                     page=session.edit_page + 1,
