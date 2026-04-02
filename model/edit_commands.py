@@ -4,6 +4,7 @@ import fitz
 import io
 import logging
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import Optional, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -11,6 +12,13 @@ if TYPE_CHECKING:
     from model.pdf_model import PDFModel
 
 logger = logging.getLogger(__name__)
+
+
+class EditTextResult(str, Enum):
+    SUCCESS = "success"
+    NO_CHANGE = "no_change"
+    TARGET_BLOCK_NOT_FOUND = "target_block_not_found"
+    TARGET_SPAN_NOT_FOUND = "target_span_not_found"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -105,7 +113,7 @@ class EditTextCommand(EditCommand):
         rect: fitz.Rect,
         new_text: str,
         font: str,
-        size: int,
+        size: float,
         color: tuple,
         original_text: Optional[str],
         vertical_shift_left: bool,
@@ -122,8 +130,9 @@ class EditTextCommand(EditCommand):
         self._rect = fitz.Rect(rect)        # 存副本，避免被外部改動
         self._new_text = new_text
         self._font = font
-        self._size = size
+        self._size = float(size)
         self._color = color
+        self.result: EditTextResult = EditTextResult.SUCCESS
         self._original_text = original_text
         self._vertical_shift_left = vertical_shift_left
         self._page_snapshot_bytes = page_snapshot_bytes
@@ -144,12 +153,12 @@ class EditTextCommand(EditCommand):
         )
         return f"編輯文字「{preview}」（頁面 {self._page_num}）"
 
-    def execute(self) -> None:
+    def execute(self) -> bool:
         """
         執行文字編輯：直接委派給 model.edit_text()。
         快照已在 CommandManager.execute() 建構本物件時事先擷取，此處不重複。
         """
-        self._model.edit_text(
+        self.result = self._model.edit_text(
             self._page_num,
             self._rect,
             self._new_text,
@@ -162,6 +171,13 @@ class EditTextCommand(EditCommand):
             target_span_id=self._target_span_id,
             target_mode=self._target_mode,
         )
+        if self.result is not EditTextResult.SUCCESS:
+            self._executed = False
+            logger.debug(
+                "EditTextCommand.execute(): skipped record for result=%s",
+                self.result.value,
+            )
+            return False
         # Displacement reflow：將後續塊向上/下推移（Track A/B 引擎）
         if self._reflow_fn is not None:
             try:
@@ -170,6 +186,7 @@ class EditTextCommand(EditCommand):
                 logger.warning(f"EditTextCommand reflow_fn 失敗（不影響主編輯）: {_rf_e}")
         self._executed = True
         logger.debug(f"EditTextCommand.execute(): {self.description}")
+        return True
 
     def undo(self) -> None:
         """
@@ -397,7 +414,13 @@ class CommandManager:
             cmd: 已建構（含快照）且尚未 execute() 的 EditCommand 物件。
         注意：若指令已在外部執行完（如 SnapshotCommand），請改用 record()。
         """
-        cmd.execute()
+        executed = cmd.execute()
+        if executed is False:
+            logger.debug(
+                "CommandManager.execute(): command skipped undo record: %s",
+                cmd.description,
+            )
+            return
         self._undo_stack.append(cmd)
         self._trim_undo_stack_if_needed()
 
@@ -474,7 +497,13 @@ class CommandManager:
             return False
 
         cmd = self._redo_stack[-1]
-        cmd.execute()
+        executed = cmd.execute()
+        if executed is False:
+            logger.debug(
+                "CommandManager.redo(): command redo skipped: %s",
+                cmd.description,
+            )
+            return False
         self._redo_stack.pop()
         self._undo_stack.append(cmd)
         self._trim_undo_stack_if_needed()

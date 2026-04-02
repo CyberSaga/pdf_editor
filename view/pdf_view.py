@@ -1643,6 +1643,9 @@ class PDFView(QMainWindow):
 
         self._action_undo.setToolTip("復原（無可撤銷操作）")
         self._action_redo.setToolTip("重做（無可重做操作）")
+        self._global_undo_enabled = False
+        self._global_redo_enabled = False
+        self._set_undo_redo_action_state(False, False)
 
         # Ensure shortcuts remain active even when the source toolbar tab is hidden.
         for action in (
@@ -2101,12 +2104,16 @@ class PDFView(QMainWindow):
         self._status_bar_override_message = message or None
         self._update_status_bar()
 
-    def _show_toast(self, message: str, duration_ms: int = 1500) -> None:
+    def _show_toast(self, message: str, duration_ms: int = 1500, tone: str = "success") -> None:
         """Show a brief overlay toast message at the bottom-center of the viewport."""
         toast = QLabel(message, self.graphics_view.viewport())
         toast.setAlignment(Qt.AlignCenter)
+        if tone == "error":
+            background = "rgba(180,40,40,220)"
+        else:
+            background = "rgba(40,40,40,200)"
         toast.setStyleSheet(
-            "background-color: rgba(40,40,40,200); color: white; "
+            f"background-color: {background}; color: white; "
             "border-radius: 6px; padding: 6px 14px; font-size: 13px;"
         )
         toast.adjustSize()
@@ -2194,10 +2201,35 @@ class PDFView(QMainWindow):
         self._handle_escape()
 
     def _set_document_undo_redo_enabled(self, enabled: bool) -> None:
-        for action_name in ("_action_undo", "_action_redo"):
-            action = getattr(self, action_name, None)
+        self._set_undo_redo_action_state(bool(enabled), bool(enabled))
+
+    def _set_undo_redo_action_state(self, undo_enabled: bool, redo_enabled: bool) -> None:
+        action_pairs = (
+            (getattr(self, "_action_undo", None), undo_enabled),
+            (getattr(self, "_action_undo_right", None), undo_enabled),
+            (getattr(self, "_action_redo", None), redo_enabled),
+            (getattr(self, "_action_redo_right", None), redo_enabled),
+        )
+        for action, enabled in action_pairs:
             if action is not None and hasattr(action, "setEnabled"):
                 action.setEnabled(bool(enabled))
+
+    def _refresh_undo_redo_action_state(self) -> None:
+        undo_enabled = bool(getattr(self, "_global_undo_enabled", False))
+        redo_enabled = bool(getattr(self, "_global_redo_enabled", False))
+        editor_proxy = getattr(self, "text_editor", None)
+        editor_widget = editor_proxy.widget() if (editor_proxy and editor_proxy.widget()) else None
+        if editor_widget is not None and hasattr(editor_widget, "document"):
+            document = editor_widget.document()
+            if document is not None:
+                undo_enabled = bool(document.isUndoAvailable())
+                redo_enabled = bool(document.isRedoAvailable())
+        self._set_undo_redo_action_state(undo_enabled, redo_enabled)
+
+    def update_undo_redo_enabled(self, undo_enabled: bool, redo_enabled: bool) -> None:
+        self._global_undo_enabled = bool(undo_enabled)
+        self._global_redo_enabled = bool(redo_enabled)
+        self._refresh_undo_redo_action_state()
 
     def _is_widget_owned_by_main(self, widget: QWidget) -> bool:
         current = widget

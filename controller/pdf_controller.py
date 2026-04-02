@@ -4,7 +4,7 @@ from PySide6.QtWidgets import QMessageBox, QApplication, QFileDialog, QDialog, Q
 from PySide6.QtGui import QImage, QPixmap, QShortcut, QKeySequence
 from PySide6.QtCore import QTimer, QObject, QThread, Qt, Signal, Slot
 from model.pdf_model import PDFModel
-from model.edit_commands import EditTextCommand, SnapshotCommand, AddTextboxCommand
+from model.edit_commands import EditTextCommand, SnapshotCommand, AddTextboxCommand, EditTextResult
 from view.pdf_view import PDFView, ViewportAnchor, OptimizePdfDialog, EditTextRequest, MoveTextRequest
 from typing import Callable, List, Tuple, Optional
 from utils.helpers import pixmap_to_qpixmap, show_error
@@ -1441,13 +1441,29 @@ class PDFController:
         self.show_page(page - 1)
         self._update_undo_redo_tooltips()
 
+    def _edit_result_to_message(self, result: EditTextResult) -> str | None:
+        if result is EditTextResult.TARGET_BLOCK_NOT_FOUND:
+            return "找不到可編輯的文字區塊"
+        if result is EditTextResult.TARGET_SPAN_NOT_FOUND:
+            return "找不到要編輯的文字內容"
+        return None
+
+    def _show_edit_result_feedback(self, result: EditTextResult) -> None:
+        message = self._edit_result_to_message(result)
+        if not message:
+            return
+        if hasattr(self.view, "_show_toast"):
+            self.view._show_toast(message, duration_ms=2500, tone="error")
+            return
+        show_error(self.view, message)
+
     def edit_text(
         self,
         page: int | EditTextRequest,
         rect: fitz.Rect | None = None,
         new_text: str | None = None,
         font: str | None = None,
-        size: int | None = None,
+        size: float | None = None,
         color: tuple | None = None,
         original_text: str = None,
         vertical_shift_left: bool = True,
@@ -1463,7 +1479,7 @@ class PDFController:
                 rect=rect,
                 new_text=new_text or "",
                 font=font or "helv",
-                size=int(size or 12),
+                size=float(size or 12.0),
                 color=color or (0.0, 0.0, 0.0),
                 original_text=original_text,
                 vertical_shift_left=vertical_shift_left,
@@ -1574,6 +1590,10 @@ class PDFController:
                 reflow_fn=_reflow_fn,
             )
             self.model.command_manager.execute(cmd)
+            if cmd.result is not EditTextResult.SUCCESS:
+                self._show_edit_result_feedback(cmd.result)
+                self._update_undo_redo_tooltips()
+                return
             if hasattr(self, "_invalidate_active_render_state") and hasattr(self.model, "get_active_session_id"):
                 self._invalidate_active_render_state()
             self.show_page(page_idx)
@@ -1667,7 +1687,7 @@ class PDFController:
             #          add destination
             #            -> fail: restore before + refresh UI + error
             #            -> pass: capture after + record one undo entry
-            self.model.edit_text(
+            source_edit_result = self.model.edit_text(
                 source_page,
                 source_rect,
                 "",
@@ -1680,6 +1700,8 @@ class PDFController:
                 target_span_id=resolved_target_span_id,
                 target_mode=target_mode,
             )
+            if source_edit_result is not EditTextResult.SUCCESS:
+                raise RuntimeError(self._edit_result_to_message(source_edit_result) or "跨頁移動前無法移除來源文字")
 
             self.model.ensure_page_index_built(source_page)
             if self.model.block_manager.find_run_by_id(source_page - 1, resolved_target_span_id) is not None:
@@ -1777,7 +1799,7 @@ class PDFController:
         visual_rect: fitz.Rect,
         text: str,
         font: str,
-        size: int,
+        size: float,
         color: tuple,
     ) -> None:
         if not text.strip():
@@ -2060,6 +2082,8 @@ class PDFController:
     def _update_undo_redo_tooltips(self) -> None:
         """更新 View 的 undo/redo 按鈕 tooltip，顯示下一步操作描述。"""
         cm = self.model.command_manager
+        undo_enabled = cm.can_undo()
+        redo_enabled = cm.can_redo()
         if cm.can_undo():
             last = cm._undo_stack[-1]
             undo_tip = f"復原：{last.description}"
@@ -2071,6 +2095,8 @@ class PDFController:
         else:
             redo_tip = "重做（無可重做操作）"
         self.view.update_undo_redo_tooltips(undo_tip, redo_tip)
+        if hasattr(self.view, "update_undo_redo_enabled"):
+            self.view.update_undo_redo_enabled(undo_enabled, redo_enabled)
         self._refresh_document_tabs()
 
     def _update_mode(self, mode: str):

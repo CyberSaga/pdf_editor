@@ -88,7 +88,7 @@ class EditTextRequest:
     rect: fitz.Rect
     new_text: str
     font: str
-    size: float
+    size: int
     color: tuple
     original_text: str | None = None
     vertical_shift_left: bool = True
@@ -110,21 +110,6 @@ class EditTextRequest:
             self.target_span_id,
             self.target_mode,
         )
-
-
-@dataclass(frozen=True)
-class MoveTextRequest:
-    source_page: int
-    source_rect: fitz.Rect
-    destination_page: int
-    destination_rect: fitz.Rect
-    new_text: str
-    font: str
-    size: float
-    color: tuple
-    original_text: str | None = None
-    target_span_id: str | None = None
-    target_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -372,18 +357,7 @@ class TextEditManager:
         view._editor_shortcut_forwarder = _EditorShortcutForwarder(view)
         editor.installEventFilter(view._editor_shortcut_forwarder)
         editor.focus_out_requested.connect(view._schedule_finalize_on_focus_change)
-        document = editor.document() if hasattr(editor, "document") else None
-        refresh_undo_redo = getattr(view, "_refresh_undo_redo_action_state", None)
-        if document is not None and callable(refresh_undo_redo):
-            try:
-                document.undoAvailable.connect(refresh_undo_redo)
-                document.redoAvailable.connect(refresh_undo_redo)
-            except (TypeError, RuntimeError):
-                logger.debug("editor undo/redo signal hookup skipped")
-        if callable(refresh_undo_redo):
-            refresh_undo_redo()
-        else:
-            view._set_document_undo_redo_enabled(False)
+        view._set_document_undo_redo_enabled(False)
         view._set_edit_focus_guard(True)
         sync_panel = getattr(view, "_sync_text_property_panel_state", None)
         if callable(sync_panel):
@@ -518,16 +492,6 @@ class TextEditManager:
         view.text_editor = None
         if proxy_to_remove.scene():
             view.scene.removeItem(proxy_to_remove)
-        # Restore dim outline for the block that was just edited
-        try:
-            active_key = getattr(view, '_active_outline_key', None)
-            if active_key is not None:
-                outline = view._block_outline_items.get(active_key)
-                if outline is not None:
-                    outline.setVisible(True)
-                view._active_outline_key = None
-        except Exception:
-            pass
         view.editing_rect = None
         view._editing_original_rect = None
         if getattr(view, "_edit_font_size_connected", False):
@@ -542,11 +506,7 @@ class TextEditManager:
             except (TypeError, RuntimeError):
                 logger.debug("text font disconnect skipped during finalize")
             view._edit_font_family_connected = False
-        refresh_undo_redo = getattr(view, "_refresh_undo_redo_action_state", None)
-        if callable(refresh_undo_redo):
-            refresh_undo_redo()
-        else:
-            view._set_document_undo_redo_enabled(True)
+        view._set_document_undo_redo_enabled(True)
         if hasattr(view, "editing_font_name"):
             del view.editing_font_name
         if hasattr(view, "_editing_initial_font_name"):
@@ -574,7 +534,7 @@ class TextEditManager:
         if reason in {
             TextEditFinalizeReason.CANCEL_BUTTON,
             TextEditFinalizeReason.ESCAPE,
-            # MODE_SWITCH removed — falls through to commit (same as CLICK_AWAY)
+            TextEditFinalizeReason.MODE_SWITCH,
             TextEditFinalizeReason.CLOSE_DOCUMENT,
         }:
             return TextEditFinalizeResult(
@@ -631,20 +591,19 @@ class TextEditManager:
             vertical_shift_left_value = vertical_shift_left.isChecked() if vertical_shift_left else True
             new_rect_arg = session.current_rect if position_changed else None
             if delta.page_changed and session.current_rect is not None:
-                move_request = MoveTextRequest(
-                    source_page=session.origin_page + 1,
-                    source_rect=session.original_rect,
-                    destination_page=session.edit_page + 1,
-                    destination_rect=session.current_rect,
-                    new_text=new_text,
-                    font=session.current_font,
-                    size=session.current_size,
-                    color=session.original_color,
-                    original_text=session.original_text,
-                    target_span_id=session.target_span_id,
-                    target_mode=session.target_mode,
+                view.sig_move_text_across_pages.emit(
+                    session.origin_page + 1,
+                    session.original_rect,
+                    session.edit_page + 1,
+                    session.current_rect,
+                    new_text,
+                    session.current_font,
+                    session.current_size,
+                    session.original_color,
+                    session.original_text,
+                    session.target_span_id,
+                    session.target_mode,
                 )
-                view.sig_move_text_across_pages.emit(move_request)
             else:
                 request = EditTextRequest(
                     page=session.edit_page + 1,
