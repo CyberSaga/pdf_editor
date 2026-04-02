@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import fitz
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -196,7 +197,7 @@ def test_controller_accepts_move_text_request() -> None:
         destination_rect=destination_rect,
         new_text="hello world",
         font="helv",
-        size=12,
+        size=12.5,
         color=(0, 0, 0),
         original_text="old text",
         target_span_id="span-1",
@@ -213,4 +214,103 @@ def test_controller_accepts_move_text_request() -> None:
     assert args[1] == source_rect
     assert args[2] == "hello world"
     assert args[3] == "helv"
+    assert args[4] == 12.5
     assert kwargs.get("new_rect") == destination_rect
+
+
+def test_controller_updates_undo_redo_enabled_state_from_command_manager() -> None:
+    from types import SimpleNamespace
+    from controller.pdf_controller import PDFController
+
+    controller = PDFController.__new__(PDFController)
+    controller.model = SimpleNamespace(
+        command_manager=SimpleNamespace(
+            can_undo=lambda: True,
+            can_redo=lambda: False,
+            _undo_stack=[SimpleNamespace(description="編輯文字")],
+            _redo_stack=[],
+        )
+    )
+    recorded: list[tuple[bool, bool]] = []
+    controller.view = SimpleNamespace(
+        update_undo_redo_tooltips=lambda undo_tip, redo_tip: None,
+        update_undo_redo_enabled=lambda undo_enabled, redo_enabled: recorded.append(
+            (undo_enabled, redo_enabled)
+        ),
+    )
+    controller._refresh_document_tabs = lambda: None
+
+    controller._update_undo_redo_tooltips()
+
+    assert recorded == [(True, False)]
+
+
+def test_controller_edit_text_shows_error_toast_for_invalid_result() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+    from controller.pdf_controller import PDFController
+    from model.edit_commands import EditTextResult
+
+    class _FakeEditTextCommand:
+        def __init__(self, *args, **kwargs) -> None:
+            self.result = EditTextResult.TARGET_BLOCK_NOT_FOUND
+
+    controller = PDFController.__new__(PDFController)
+    controller.model = SimpleNamespace(
+        doc=[object()],
+        _capture_page_snapshot=lambda _page_idx: b"snapshot",
+        command_manager=SimpleNamespace(execute=lambda cmd: None),
+    )
+    controller.view = SimpleNamespace(
+        capture_viewport_anchor=lambda: None,
+        _show_toast=MagicMock(),
+    )
+    controller.show_page = MagicMock()
+    controller._update_undo_redo_tooltips = MagicMock()
+
+    with patch("controller.pdf_controller.EditTextCommand", _FakeEditTextCommand):
+        controller.edit_text(
+            1,
+            fitz.Rect(10, 10, 40, 20),
+            "new text",
+            "helv",
+            12,
+            (0.0, 0.0, 0.0),
+            "old text",
+        )
+
+    controller.view._show_toast.assert_called_once()
+    controller.show_page.assert_not_called()
+
+
+def test_edit_text_command_initializes_result_before_execute() -> None:
+    from model.edit_commands import EditTextCommand, EditTextResult
+
+    command = EditTextCommand(
+        model=SimpleNamespace(),
+        page_num=1,
+        rect=fitz.Rect(0, 0, 10, 10),
+        new_text="hello",
+        font="helv",
+        size=12.0,
+        color=(0.0, 0.0, 0.0),
+        original_text="old",
+        vertical_shift_left=True,
+        page_snapshot_bytes=b"snapshot",
+        old_block_id="block-1",
+        old_block_text="old",
+    )
+
+    assert command.result is EditTextResult.SUCCESS
+
+
+def test_edit_command_execute_contract_stays_optional_for_non_edit_text_commands() -> None:
+    from model.edit_commands import EditCommand
+
+    assert EditCommand.execute.__annotations__.get("return") in (None, type(None), "None")
+
+
+def test_edit_text_command_execute_annotation_is_bool() -> None:
+    from model.edit_commands import EditTextCommand
+
+    assert EditTextCommand.execute.__annotations__.get("return") in (bool, "bool")
