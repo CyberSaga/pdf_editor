@@ -19,6 +19,7 @@ from PySide6.QtGui import QColor, QImage, QKeyEvent
 from PySide6.QtWidgets import QComboBox, QPushButton, QStackedWidget, QWidget, QMenu
 
 import view.pdf_view as pdf_view
+from view.text_editing import MoveTextRequest
 
 
 class _FakeSignal:
@@ -466,11 +467,13 @@ def test_finalize_cross_page_existing_text_emits_move_signal_only() -> None:
     assert view.sig_edit_text.calls == []
     assert len(view.sig_move_text_across_pages.calls) == 1
     call = view.sig_move_text_across_pages.calls[0]
-    assert call[0] == 1
-    assert call[1] == original_rect
-    assert call[2] == 2
-    assert call[3] == current_rect
-    assert call[4] == "moved text"
+    request = call[0]
+    assert isinstance(request, MoveTextRequest)
+    assert request.source_page == 1
+    assert request.source_rect == original_rect
+    assert request.destination_page == 2
+    assert request.destination_rect == current_rect
+    assert request.new_text == "moved text"
 
 
 def test_average_image_rect_color_returns_local_average() -> None:

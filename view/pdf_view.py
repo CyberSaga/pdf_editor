@@ -21,6 +21,7 @@ from view.text_editing import (
     _average_image_rect_color,
     _normalize_for_edit_compare,
     EditTextRequest,
+    MoveTextRequest,
     InlineTextEditor,
     TextEditDelta,
     TextEditDragState,
@@ -818,7 +819,7 @@ class PDFView(QMainWindow):
     sig_add_highlight = Signal(int, object, object)
     sig_add_rect = Signal(int, object, object, bool)
     sig_edit_text = Signal(object)  # EditTextRequest
-    sig_move_text_across_pages = Signal(int, object, int, object, str, str, int, tuple, str, object, str)
+    sig_move_text_across_pages = Signal(object)  # MoveTextRequest
     sig_add_textbox = Signal(int, object, str, str, int, tuple)  # page_num, visual_rect, text, font, size, color
     sig_jump_to_result = Signal(int, object)
     sig_search = Signal(str)

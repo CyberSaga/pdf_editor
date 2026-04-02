@@ -5,7 +5,7 @@ from PySide6.QtGui import QImage, QPixmap, QShortcut, QKeySequence
 from PySide6.QtCore import QTimer, QObject, QThread, Qt, Signal, Slot
 from model.pdf_model import PDFModel
 from model.edit_commands import EditTextCommand, SnapshotCommand, AddTextboxCommand
-from view.pdf_view import PDFView, ViewportAnchor, OptimizePdfDialog, EditTextRequest
+from view.pdf_view import PDFView, ViewportAnchor, OptimizePdfDialog, EditTextRequest, MoveTextRequest
 from typing import Callable, List, Tuple, Optional
 from utils.helpers import pixmap_to_qpixmap, show_error
 from pathlib import Path
@@ -1600,22 +1600,18 @@ class PDFController:
             logger.error(f"編輯文字失敗: {e}")
             show_error(self.view, f"編輯失敗: {e}")
         
-    def move_text_across_pages(
-        self,
-        source_page: int,
-        source_rect: fitz.Rect,
-        destination_page: int,
-        destination_rect: fitz.Rect,
-        new_text: str,
-        font: str,
-        size: int,
-        color: tuple,
-        original_text: str = None,
-        target_span_id: str = None,
-        target_mode: str = None,
-    ) -> None:
-        if new_text is None:
-            new_text = ""
+    def move_text_across_pages(self, request: MoveTextRequest) -> None:
+        source_page = request.source_page
+        source_rect = request.source_rect
+        destination_page = request.destination_page
+        destination_rect = request.destination_rect
+        new_text = request.new_text or ""
+        font = request.font
+        size = request.size
+        color = request.color
+        original_text = request.original_text
+        target_span_id = request.target_span_id
+        target_mode = request.target_mode
         if not new_text.strip():
             show_error(self.view, "跨頁移動失敗：文字內容不可為空。")
             return
