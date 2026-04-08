@@ -75,7 +75,9 @@ from model.pdf_model import PdfAuditReport, PDFModel, PdfOptimizeOptions
 from utils.helpers import parse_pages, show_error
 from view.text_editing import (
     _DEFAULT_EDITOR_MASK_COLOR,
+    _EditorShortcutForwarder,  # noqa: F401 — re-exported for tests and legacy imports
     EditTextRequest,  # noqa: F401 — re-exported for controller
+    InlineTextEditor,  # noqa: F401 — re-exported for tests and legacy imports
     MoveTextRequest,  # noqa: F401 — re-exported for controller
     TextEditDragState,
     TextEditFinalizeReason,

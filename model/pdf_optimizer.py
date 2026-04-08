@@ -446,12 +446,16 @@ def can_use_parallel_image_rewrite() -> bool:
         return True
     main_module = sys.modules.get("__main__")
     main_file = getattr(main_module, "__file__", None)
-    if not main_file:
-        return False
-    try:
-        return Path(main_file).exists()
-    except OSError:
-        return False
+    candidate_paths = [main_file, sys.argv[0] if sys.argv else None, sys.executable]
+    for candidate in candidate_paths:
+        if not candidate:
+            continue
+        try:
+            if Path(candidate).exists():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def rewrite_images_serially(

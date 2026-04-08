@@ -1634,18 +1634,49 @@ class PDFController:
             logger.error(f"編輯文字失敗: {e}")
             show_error(self.view, f"編輯失敗: {e}")
 
-    def move_text_across_pages(self, request: MoveTextRequest) -> None:
-        source_page = request.source_page
-        source_rect = request.source_rect
-        destination_page = request.destination_page
-        destination_rect = request.destination_rect
-        new_text = request.new_text or ""
-        font = request.font
-        size = request.size
-        color = request.color
-        original_text = request.original_text
-        target_span_id = request.target_span_id
-        target_mode = request.target_mode
+    def move_text_across_pages(
+        self,
+        request: MoveTextRequest | int | None = None,
+        source_rect: fitz.Rect | None = None,
+        destination_page: int | None = None,
+        destination_rect: fitz.Rect | None = None,
+        new_text: str | None = None,
+        font: str | None = None,
+        size: float | None = None,
+        color: tuple | None = None,
+        original_text: str | None = None,
+        target_span_id: str | None = None,
+        target_mode: str | None = None,
+        **legacy_kwargs,
+    ) -> None:
+        if isinstance(request, MoveTextRequest):
+            move_request = request
+        else:
+            move_request = MoveTextRequest(
+                source_page=int(legacy_kwargs.pop("source_page", request or 0)),
+                source_rect=legacy_kwargs.pop("source_rect", source_rect),
+                destination_page=int(legacy_kwargs.pop("destination_page", destination_page)),
+                destination_rect=legacy_kwargs.pop("destination_rect", destination_rect),
+                new_text=legacy_kwargs.pop("new_text", new_text) or "",
+                font=legacy_kwargs.pop("font", font) or "helv",
+                size=float(legacy_kwargs.pop("size", size) or 12.0),
+                color=legacy_kwargs.pop("color", color) or (0.0, 0.0, 0.0),
+                original_text=legacy_kwargs.pop("original_text", original_text),
+                target_span_id=legacy_kwargs.pop("target_span_id", target_span_id),
+                target_mode=legacy_kwargs.pop("target_mode", target_mode),
+            )
+
+        source_page = move_request.source_page
+        source_rect = move_request.source_rect
+        destination_page = move_request.destination_page
+        destination_rect = move_request.destination_rect
+        new_text = move_request.new_text or ""
+        font = move_request.font
+        size = move_request.size
+        color = move_request.color
+        original_text = move_request.original_text
+        target_span_id = move_request.target_span_id
+        target_mode = move_request.target_mode
         if not new_text.strip():
             show_error(self.view, "跨頁移動失敗：文字內容不可為空。")
             return
