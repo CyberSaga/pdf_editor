@@ -16,10 +16,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QImage, QKeyEvent
-from PySide6.QtWidgets import QComboBox, QPushButton, QStackedWidget, QWidget, QMenu
+from PySide6.QtWidgets import QComboBox, QMenu, QPushButton, QStackedWidget, QWidget
 
 import view.pdf_view as pdf_view
-from view.text_editing import MoveTextRequest
+from model.edit_requests import MoveTextRequest
 
 
 class _FakeSignal:
@@ -838,8 +838,8 @@ def test_block_outlines_only_drawn_for_visible_pages(monkeypatch: pytest.MonkeyP
 
 def test_cmd_shift_z_fires_redo(qapp) -> None:
     """Ctrl+Shift+Z (Cmd+Shift+Z on macOS) shortcut must emit sig_redo."""
+    from PySide6.QtGui import QKeySequence, QShortcut
     from PySide6.QtWidgets import QWidget
-    from PySide6.QtGui import QShortcut, QKeySequence
 
     # Re-create exactly what __init__ does for the Cmd+Shift+Z alias
     parent = QWidget()

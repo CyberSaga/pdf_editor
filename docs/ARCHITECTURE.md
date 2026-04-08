@@ -63,6 +63,8 @@ Command classes define history boundaries:
 - `SnapshotCommand` for document-level structural operations.
 - `CommandManager` for undo/redo stacks.
 
+Shared typed text-edit payloads live in `model/edit_requests.py`. `EditTextRequest` and `MoveTextRequest` are intentionally Qt-free so both the controller and the command layer can import them without reversing the view -> controller -> model dependency direction. `view/text_editing.py` re-exports those types for compatibility with existing UI imports.
+
 `AddTextboxCommand` stores strict before-page snapshots, captures after-page snapshots on first execute, and restores only the target page on undo/redo.
 
 ### 2.3 Controller (`controller/pdf_controller.py`)
@@ -79,6 +81,7 @@ For performance on large PDFs, controller schedules heavy work in small batches 
 
 View owns widgets, scene interactions, and signal emission. It does not mutate model business state directly.
 For empty startup it can show a lightweight shell with no model/controller attached. When the user requests a document (open or drop), the view queues paths and emits a backend-bootstrap signal so `main.py` can create model/controller and drain pending open paths.
+Typed text-edit signal payloads are shared model-layer dataclasses imported through `view/text_editing.py`; the view must not define duplicate request classes locally.
 
 Continuous mode rendering contracts:
 - `initialize_continuous_placeholders(...)` establishes the full scene rect and per-page y offsets for the entire document without rasterizing every page.

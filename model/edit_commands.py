@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-import fitz
 import io
 import logging
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Optional, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
+
+import fitz
+
+from model.edit_requests import EditTextRequest
 
 if TYPE_CHECKING:
     # 避免循環 import：只在型別檢查期間引入 PDFModel
@@ -143,6 +146,37 @@ class EditTextCommand(EditCommand):
         self._target_mode = target_mode
         self._reflow_fn = reflow_fn         # displacement reflow callback（Track A/B）
         self._executed = False              # 防止在未 execute 前呼叫 undo
+
+    @classmethod
+    def from_request(
+        cls,
+        model: Any,
+        request: EditTextRequest,
+        page_snapshot_bytes: bytes,
+        old_block_id: Optional[str] = None,
+        old_block_text: Optional[str] = None,
+        reflow_fn: Optional[Any] = None,
+    ) -> EditTextCommand:
+        instance = cls(
+            model=model,
+            page_num=request.page,
+            rect=request.rect,
+            new_text=request.new_text if request.new_text is not None else "",
+            font=request.font,
+            size=request.size,
+            color=request.color,
+            original_text=request.original_text,
+            vertical_shift_left=request.vertical_shift_left,
+            page_snapshot_bytes=page_snapshot_bytes,
+            old_block_id=old_block_id,
+            old_block_text=old_block_text,
+            new_rect=request.new_rect,
+            target_span_id=request.target_span_id,
+            target_mode=request.target_mode,
+            reflow_fn=reflow_fn,
+        )
+        instance._request = request
+        return instance
 
     @property
     def description(self) -> str:

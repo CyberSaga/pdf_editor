@@ -1,22 +1,50 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QMessageBox, QApplication, QFileDialog, QDialog, QProgressDialog
-from PySide6.QtGui import QImage, QPixmap, QShortcut, QKeySequence
-from PySide6.QtCore import QTimer, QObject, QThread, Qt, Signal, Slot
-from model.pdf_model import PDFModel
-from model.edit_commands import EditTextCommand, SnapshotCommand, AddTextboxCommand, EditTextResult
-from view.pdf_view import PDFView, ViewportAnchor, OptimizePdfDialog, EditTextRequest, MoveTextRequest
-from typing import Callable, List, Tuple, Optional
-from utils.helpers import pixmap_to_qpixmap, show_error
-from pathlib import Path
-from collections import OrderedDict
-from dataclasses import dataclass, field
 import difflib
 import io
 import logging
 import tempfile
 import uuid
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, List, Optional, Tuple
+
 import fitz
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QProgressDialog
+
+from model.edit_commands import AddTextboxCommand, EditTextCommand, EditTextResult, SnapshotCommand
+from model.edit_requests import EditTextRequest, MoveTextRequest
+from model.pdf_model import PDFModel
+from src.printing import PrintDispatcher, PrintHelperTerminatedError, PrintingError
+from src.printing.helper_protocol import PrintHelperJob
+from src.printing.messages import (
+    PRINT_CLOSING_MESSAGE as CLEAN_PRINT_CLOSING_MESSAGE,
+)
+from src.printing.messages import (
+    PRINT_PREPARING_MESSAGE as CLEAN_PRINT_PREPARING_MESSAGE,
+)
+from src.printing.messages import (
+    PRINT_STALLED_MESSAGE as CLEAN_PRINT_STALLED_MESSAGE,
+)
+from src.printing.messages import (
+    PRINT_STATUS_MESSAGE as CLEAN_PRINT_STATUS_MESSAGE,
+)
+from src.printing.messages import (
+    PRINT_SUBMITTING_MESSAGE as CLEAN_PRINT_SUBMITTING_MESSAGE,
+)
+from src.printing.messages import (
+    PRINT_TERMINATE_BUTTON_TEXT as CLEAN_PRINT_TERMINATE_BUTTON_TEXT,
+)
+from src.printing.messages import (
+    PRINT_TERMINATING_MESSAGE as CLEAN_PRINT_TERMINATING_MESSAGE,
+)
+from src.printing.print_dialog import UnifiedPrintDialog
+from src.printing.subprocess_runner import PrintSubprocessRunner
+from utils.helpers import pixmap_to_qpixmap, show_error
+from view.pdf_view import OptimizePdfDialog, PDFView, ViewportAnchor
 
 THUMB_BATCH_SIZE = 10
 THUMB_BATCH_INTERVAL_MS = 30
@@ -27,20 +55,6 @@ VISIBLE_PREFETCH_PAGES = 1
 VISIBLE_RENDER_BATCH_SIZE = 2
 LOW_RES_RENDER_SCALE = 0.5
 RENDER_CACHE_BUDGET_BYTES = 96 * 1024 * 1024
-
-from src.printing import PrintDispatcher, PrintingError, PrintHelperTerminatedError
-from src.printing.helper_protocol import PrintHelperJob
-from src.printing.messages import (
-    PRINT_CLOSING_MESSAGE as CLEAN_PRINT_CLOSING_MESSAGE,
-    PRINT_PREPARING_MESSAGE as CLEAN_PRINT_PREPARING_MESSAGE,
-    PRINT_STALLED_MESSAGE as CLEAN_PRINT_STALLED_MESSAGE,
-    PRINT_STATUS_MESSAGE as CLEAN_PRINT_STATUS_MESSAGE,
-    PRINT_SUBMITTING_MESSAGE as CLEAN_PRINT_SUBMITTING_MESSAGE,
-    PRINT_TERMINATE_BUTTON_TEXT as CLEAN_PRINT_TERMINATE_BUTTON_TEXT,
-    PRINT_TERMINATING_MESSAGE as CLEAN_PRINT_TERMINATING_MESSAGE,
-)
-from src.printing.print_dialog import UnifiedPrintDialog
-from src.printing.subprocess_runner import PrintSubprocessRunner
 
 logger = logging.getLogger(__name__)
 
@@ -1487,23 +1501,11 @@ class PDFController:
                 target_span_id=target_span_id,
                 target_mode=target_mode,
             )
-        page = request.page
-        rect = request.rect
-        new_text = request.new_text
-        font = request.font
-        size = request.size
-        color = request.color
-        original_text = request.original_text
-        vertical_shift_left = request.vertical_shift_left
-        new_rect = request.new_rect
-        target_span_id = request.target_span_id
-        target_mode = request.target_mode
         # Empty string is a valid "delete textbox content" intent from inline edit.
-        if new_text is None:
-            new_text = ""
-        if not self.model.doc or page < 1 or page > len(self.model.doc): return
+        new_text = request.new_text if request.new_text is not None else ""
+        page_idx = request.page - 1
+        if not self.model.doc or request.page < 1 or request.page > len(self.model.doc): return
         try:
-            page_idx = page - 1
             view = getattr(self, "view", None)
 
             # 擷取 viewport anchor（在任何頁面變動前），供編輯後還原捲軸位置
@@ -1527,13 +1529,12 @@ class PDFController:
             # 3. Track B fallback 條件：plan is None（span not found）也要 fallback，
             #    不能只看 success flag（Track B 找不到 span 時仍回傳 success=True）。
             _model = self.model
-            _edit_rect = fitz.Rect(new_rect if new_rect is not None else rect)
-            _orig_rect = fitz.Rect(rect)
+            _edit_rect = fitz.Rect(request.new_rect if request.new_rect is not None else request.rect)
             _new_text = new_text
-            _original_text = original_text or ""
-            _font = font
-            _size = float(size)
-            _color = color
+            _original_text = request.original_text or ""
+            _font = request.font
+            _size = float(request.size)
+            _color = request.color
             _page_idx = page_idx
             # mutable container：_reflow_fn 在 cmd.execute() 期間寫入，
             # show_page() 完成後再讀取，確保警告不被 _update_status_bar() 覆蓋
@@ -1544,8 +1545,8 @@ class PDFController:
                     _doc = _model.doc   # 每次執行時取當前有效 doc（非閉包時的舊 doc）
                     if _doc is None:
                         return
-                    from reflow.track_B_core import TrackBEngine
                     from reflow.track_A_core import TrackAEngine
+                    from reflow.track_B_core import TrackBEngine
                     result_b = TrackBEngine().apply_displacement_only(
                         doc=_doc, page_idx=_page_idx,
                         edited_rect=_edit_rect, new_text=_new_text,
@@ -1571,22 +1572,12 @@ class PDFController:
                     logger.warning(f"edit_text reflow_fn 失敗（不影響主編輯）: {_e}")
                     _reflow_warning[0] = f"⚠ Reflow 例外（主編輯不受影響）: {_e}"
 
-            cmd = EditTextCommand(
+            cmd = EditTextCommand.from_request(
                 model=self.model,
-                page_num=page,
-                rect=rect,
-                new_text=new_text,
-                font=font,
-                size=size,
-                color=color,
-                original_text=original_text,
-                vertical_shift_left=vertical_shift_left,
+                request=request,
                 page_snapshot_bytes=snapshot,
-                old_block_id=target_span_id,
-                old_block_text=original_text,
-                new_rect=new_rect,
-                target_span_id=target_span_id,
-                target_mode=target_mode,
+                old_block_id=request.target_span_id,
+                old_block_text=request.original_text,
                 reflow_fn=_reflow_fn,
             )
             self.model.command_manager.execute(cmd)
@@ -1639,17 +1630,19 @@ class PDFController:
             return
         if source_page == destination_page:
             self.edit_text(
-                source_page,
-                source_rect,
-                new_text,
-                font,
-                size,
-                color,
-                original_text=original_text,
-                vertical_shift_left=True,
-                new_rect=destination_rect,
-                target_span_id=target_span_id,
-                target_mode=target_mode,
+                EditTextRequest(
+                    page=source_page,
+                    rect=source_rect,
+                    new_text=new_text,
+                    font=font,
+                    size=size,
+                    color=color,
+                    original_text=original_text,
+                    vertical_shift_left=True,
+                    new_rect=destination_rect,
+                    target_span_id=target_span_id,
+                    target_mode=target_mode,
+                )
             )
             return
 
