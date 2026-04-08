@@ -18,7 +18,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 import fitz
 
@@ -591,7 +591,7 @@ class TrackCEngine:
     # ── Post-edit verification ───────────────────────────────────────────────
 
     @staticmethod
-    def _find_stable_span(page: fitz.Page, exclude_rect: fitz.Rect) -> Optional[str]:
+    def _find_stable_span(page: fitz.Page, exclude_rect: fitz.Rect) -> str | None:
         """Return a short stable text snippet from outside exclude_rect."""
         try:
             td = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
@@ -621,7 +621,7 @@ class TrackCEngine:
         target_rect: fitz.Rect,
         old_text: str,
         new_text: str,
-        stable_text: Optional[str],
+        stable_text: str | None,
     ) -> str:
         """Run 4 post-edit checks. Returns "" on success or a failure reason."""
         page = doc[page_idx]

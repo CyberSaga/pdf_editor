@@ -1,29 +1,82 @@
 ﻿from __future__ import annotations
 
-from PySide6.QtWidgets import (
-    QApplication, QColorDialog, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QListWidget, QToolBar, QInputDialog, QMessageBox, QMenu, QFileDialog,
-    QListWidgetItem, QWidget, QVBoxLayout, QPushButton, QLabel,
-    QComboBox, QDoubleSpinBox, QTextEdit, QGraphicsProxyWidget, QLineEdit, QHBoxLayout, QRadioButton,
-    QStackedWidget, QDialog, QSpinBox, QDialogButtonBox, QFormLayout,
-    QScrollArea, QCheckBox, QTabWidget, QSplitter, QFrame, QSizePolicy, QSlider, QTabBar, QListView, QAbstractItemView,
-    QStatusBar, QGroupBox, QToolButton, QProgressDialog, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip
-)
-from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QPen, QBrush, QTransform, QAction, QActionGroup, QCloseEvent, QShortcut, QFontMetrics, QGuiApplication
-from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint, QEvent, QSize, QRect, QObject
-from typing import List, Tuple, Optional
+import logging
 from pathlib import Path
-from utils.helpers import pixmap_to_qpixmap, parse_pages, show_error
-from model.pdf_model import PdfAuditReport, PdfOptimizeOptions, PDFModel
+
+import fitz
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QBrush,
+    QCloseEvent,
+    QColor,
+    QCursor,
+    QFontMetrics,
+    QGuiApplication,
+    QIcon,
+    QKeySequence,
+    QPen,
+    QPixmap,
+    QShortcut,
+    QTransform,
+)
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QCheckBox,
+    QColorDialog,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGraphicsPixmapItem,
+    QGraphicsProxyWidget,
+    QGraphicsScene,
+    QGraphicsView,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListView,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QProgressDialog,
+    QPushButton,
+    QRadioButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QSplitter,
+    QStackedWidget,
+    QStatusBar,
+    QTabBar,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
+    QToolBar,
+    QToolButton,
+    QToolTip,
+    QVBoxLayout,
+    QWidget,
+)
+
+from model.pdf_model import PdfAuditReport, PDFModel, PdfOptimizeOptions
+from utils.helpers import parse_pages, show_error
 from view.text_editing import (
     _DEFAULT_EDITOR_MASK_COLOR,
-    _EditorShortcutForwarder,
-    _average_image_rect_color,
-    _normalize_for_edit_compare,
-    EditTextRequest,
-    MoveTextRequest,
-    InlineTextEditor,
-    TextEditDelta,
+    EditTextRequest,  # noqa: F401 — re-exported for controller
+    MoveTextRequest,  # noqa: F401 — re-exported for controller
     TextEditDragState,
     TextEditFinalizeReason,
     TextEditFinalizeResult,
@@ -32,10 +85,8 @@ from view.text_editing import (
     TextEditOutcome,
     TextEditUIConstants,
     ViewportAnchor,
+    _average_image_rect_color,
 )
-import logging
-import warnings
-import fitz
 
 logger = logging.getLogger(__name__)
 
@@ -635,7 +686,7 @@ class WatermarkDialog(QDialog):
 
         self.color_btn = QPushButton()
         self.watermark_color = QColor(180, 180, 180)
-        self.color_btn.setStyleSheet(f"background-color: rgb(180,180,180);")
+        self.color_btn.setStyleSheet("background-color: rgb(180,180,180);")
         self.color_btn.clicked.connect(self._choose_color)
         form_layout.addRow("顏色:", self.color_btn)
 
@@ -785,7 +836,7 @@ class ExportPagesDialog(QDialog):
     def _on_scope_changed(self, checked: bool):
         self.pages_edit.setEnabled(not checked)
 
-    def get_values(self) -> Tuple[List[int], int, bool]:
+    def get_values(self) -> tuple[list[int], int, bool]:
         if self.current_page_radio.isChecked():
             pages = [self.current_page]
         else:
@@ -838,13 +889,13 @@ class PDFView(QMainWindow):
     sig_load_annotations = Signal()
     sig_jump_to_annotation = Signal(int) # By xref
     sig_toggle_annotations_visibility = Signal(bool)
-    
+
     # --- Snapshot Signal ---
     sig_snapshot_page = Signal(int)
 
     # --- Zoom Re-render Signal ---
     sig_request_rerender = Signal()
-    
+
     # --- Insert Pages Signals ---
     sig_insert_blank_page = Signal(int)  # position (1-based)
     sig_insert_pages_from_file = Signal(str, list, int)  # source_file, source_pages, position
@@ -953,7 +1004,7 @@ class PDFView(QMainWindow):
         # --- Status Bar ---
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
-        self._status_bar_override_message: Optional[str] = None
+        self._status_bar_override_message: str | None = None
         self._build_fullscreen_exit_button()
 
         # --- State Variables ---
@@ -1017,16 +1068,16 @@ class PDFView(QMainWindow):
         self._block_outline_items: dict = {}    # (page_idx, block_idx) → QGraphicsRectItem
         self._hover_hidden_outline_key = None   # key of outline hidden during hover
         self._active_outline_key = None         # key of outline hidden during active edit
-        
+
         self.graphics_view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
 
         # 連續捲動模式：所有頁面由上到下連結，滑動 scrollbar 切換頁面
         self.continuous_pages = True
-        self.page_items: List[QGraphicsPixmapItem] = []
-        self.page_y_positions: List[float] = []
-        self.page_heights: List[float] = []
-        self._page_base_sizes: List[tuple[float, float]] = []
+        self.page_items: list[QGraphicsPixmapItem] = []
+        self.page_y_positions: list[float] = []
+        self.page_heights: list[float] = []
+        self._page_base_sizes: list[tuple[float, float]] = []
         self._placeholder_pixmap = QPixmap(1, 1)
         self._placeholder_pixmap.fill(QColor("#FFFFFF"))
         self._thumbnail_layout_updating = False
@@ -1051,7 +1102,7 @@ class PDFView(QMainWindow):
         self.graphics_view.mouseReleaseEvent = self._mouse_release
         self.graphics_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.graphics_view.customContextMenuRequested.connect(self._show_context_menu)
-        
+
         self.resizeEvent = self._resize_event
         self.set_mode("browse")
         self._apply_scale()
@@ -1317,7 +1368,7 @@ class PDFView(QMainWindow):
             vertical_value=self.graphics_view.verticalScrollBar().value(),
         )
 
-    def restore_viewport_anchor(self, anchor: Optional[ViewportAnchor]) -> None:
+    def restore_viewport_anchor(self, anchor: ViewportAnchor | None) -> None:
         if anchor is None:
             return
         self.scroll_to_page(max(0, anchor.page_idx))
@@ -1440,7 +1491,7 @@ class PDFView(QMainWindow):
         self.document_tab_bar.setCurrentIndex((current + direction) % tab_count)
         return True
 
-    def set_document_tabs(self, tabs: List[dict], active_index: int) -> None:
+    def set_document_tabs(self, tabs: list[dict], active_index: int) -> None:
         self._doc_tab_signal_block = True
         self.document_tab_bar.blockSignals(True)
         try:
@@ -1883,7 +1934,7 @@ class PDFView(QMainWindow):
         rect_layout.addWidget(QLabel("矩形設定"))
         self.rect_color = QColor(0, 120, 212, 255)  # #0078D4
         self.rect_color_btn = QPushButton("矩形顏色")
-        self.rect_color_btn.setStyleSheet(f"background-color: #0078D4; color: white;")
+        self.rect_color_btn.setStyleSheet("background-color: #0078D4; color: white;")
         self.rect_color_btn.clicked.connect(self._choose_rect_color)
         rect_layout.addWidget(self.rect_color_btn)
         rect_layout.addWidget(QLabel("透明度"))
@@ -2002,8 +2053,8 @@ class PDFView(QMainWindow):
 
     def _set_text_property_font_and_size(
         self,
-        font_name: Optional[str],
-        font_size: Optional[float | int],
+        font_name: str | None,
+        font_size: float | int | None,
     ) -> None:
         if getattr(self, "text_font", None) is None or getattr(self, "text_size", None) is None:
             return
@@ -2100,7 +2151,7 @@ class PDFView(QMainWindow):
         if getattr(self, "status_bar", None):
             self.status_bar.showMessage(" • ".join(parts))
 
-    def set_status_bar_override_message(self, message: Optional[str]) -> None:
+    def set_status_bar_override_message(self, message: str | None) -> None:
         self._status_bar_override_message = message or None
         self._update_status_bar()
 
@@ -2147,18 +2198,19 @@ class PDFView(QMainWindow):
             self._clear_hover_highlight()
             self._clear_all_block_outlines()
             self._outline_redraw_timer.stop()
-            try:
-                self.sig_viewport_changed.disconnect(self._schedule_outline_redraw)
-            except Exception:
-                pass
-            try:
-                self.sig_scale_changed.disconnect(self._schedule_outline_redraw)
-            except Exception:
-                pass
+            if _prev_mode == 'edit_text':
+                try:
+                    self.sig_viewport_changed.disconnect(self._schedule_outline_redraw)
+                except Exception:
+                    pass
+                try:
+                    self.sig_scale_changed.disconnect(self._schedule_outline_redraw)
+                except Exception:
+                    pass
         self.current_mode = mode
         self._sync_mode_checked_state(mode)
         self.sig_mode_changed.emit(mode)
-        
+
         if mode in ['rect', 'highlight', 'add_annotation']:
             self.graphics_view.setDragMode(QGraphicsView.NoDrag)
             self.graphics_view.viewport().setCursor(Qt.CrossCursor)
@@ -2521,7 +2573,7 @@ class PDFView(QMainWindow):
                 return min(1.6, max(0.5, ratio))
         return default_ratio
 
-    def update_thumbnails(self, thumbnails: List[QPixmap]):
+    def update_thumbnails(self, thumbnails: list[QPixmap]):
         """一次設定全部縮圖（相容舊流程）。"""
         self.thumbnail_list.clear()
         for i, pix in enumerate(thumbnails):
@@ -2541,7 +2593,7 @@ class PDFView(QMainWindow):
         self._update_page_counter()
         self._update_status_bar()
 
-    def update_thumbnail_batch(self, start_index: int, pixmaps: List[QPixmap]):
+    def update_thumbnail_batch(self, start_index: int, pixmaps: list[QPixmap]):
         """從 start_index 起更新一批縮圖的圖示。"""
         for i, pix in enumerate(pixmaps):
             row = start_index + i
@@ -2691,7 +2743,7 @@ class PDFView(QMainWindow):
         editor_height = float(editor_widget.height()) if editor_widget else 0.0
         return self._scene_y_to_page_index(editor_top_y + (editor_height / 2.0))
 
-    def _scene_pos_to_page_and_doc_point(self, scene_pos: QPointF) -> Tuple[int, fitz.Point]:
+    def _scene_pos_to_page_and_doc_point(self, scene_pos: QPointF) -> tuple[int, fitz.Point]:
         """將場景座標轉為 (頁索引, 文件座標)。連續模式會扣掉頁頂偏移。
         
         注意：scene 座標 = PDF_points × _render_scale（pixmap 實際渲染 scale），
@@ -2759,7 +2811,7 @@ class PDFView(QMainWindow):
 
     def initialize_continuous_placeholders(
         self,
-        page_sizes: List[tuple[float, float]],
+        page_sizes: list[tuple[float, float]],
         scale: float,
         initial_page_idx: int = 0,
     ) -> None:
@@ -3123,7 +3175,7 @@ class PDFView(QMainWindow):
         y = min(max(scene_pos.y(), page_rect.top()), page_rect.bottom())
         return QPointF(x, y)
 
-    def _scene_rect_to_doc_rect(self, scene_rect: QRectF, page_idx: int) -> Optional[fitz.Rect]:
+    def _scene_rect_to_doc_rect(self, scene_rect: QRectF, page_idx: int) -> fitz.Rect | None:
         rs = self._render_scale if self._render_scale > 0 else 1.0
         y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0.0
         x0 = min(scene_rect.left(), scene_rect.right()) / rs
@@ -3704,7 +3756,7 @@ class PDFView(QMainWindow):
             color = self.rect_color.getRgbF()
             fill = QMessageBox.question(self, "矩形", "是否填滿?") == QMessageBox.Yes
             self.sig_add_rect.emit(page_idx + 1, fitz_rect, color, fill)
-        
+
         self.drawing_start = None
         QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
 
@@ -3877,7 +3929,7 @@ class PDFView(QMainWindow):
             return
         self.sig_print_requested.emit()
 
-    def ask_pdf_password(self, path: str) -> Optional[str]:
+    def ask_pdf_password(self, path: str) -> str | None:
         """開啟加密 PDF 時彈出密碼輸入框，回傳使用者輸入的密碼；若取消則回傳 None。"""
         dlg = PDFPasswordDialog(self, file_path=path)
         if dlg.exec() == QDialog.Accepted:
@@ -4061,7 +4113,7 @@ class PDFView(QMainWindow):
             "index": self.current_search_index,
         }
 
-    def apply_search_ui_state(self, state: Optional[dict]) -> None:
+    def apply_search_ui_state(self, state: dict | None) -> None:
         state = state or {}
         query = state.get("query", "")
         results = list(state.get("results", []))
@@ -4084,7 +4136,7 @@ class PDFView(QMainWindow):
     def clear_search_ui_state(self) -> None:
         self.apply_search_ui_state({"query": "", "results": [], "index": -1})
 
-    def display_search_results(self, results: List[Tuple[int, str, fitz.Rect]]):
+    def display_search_results(self, results: list[tuple[int, str, fitz.Rect]]):
         self.current_search_results = results
         self.current_search_index = -1
         if (
@@ -4105,7 +4157,7 @@ class PDFView(QMainWindow):
             item.setData(Qt.UserRole, (page_num, rect))
             self.search_results_list.addItem(item)
 
-    def populate_annotations_list(self, annotations: List[dict]):
+    def populate_annotations_list(self, annotations: list[dict]):
         if getattr(self, "annotation_list", None) is None:
             return
         self.annotation_list.clear()
@@ -4139,7 +4191,7 @@ class PDFView(QMainWindow):
         if self.total_pages == 0:
             show_error(self, "沒有開啟的PDF文件")
             return
-        
+
         # 詢問插入位置，預設為當前頁面之後
         default_position = self.current_page + 2  # 轉換為 1-based，並插入到當前頁之後
         position, ok = QInputDialog.getInt(
@@ -4159,7 +4211,7 @@ class PDFView(QMainWindow):
         if self.total_pages == 0:
             show_error(self, "沒有開啟的PDF文件")
             return
-        
+
         # 選擇來源PDF檔案
         source_file, _ = QFileDialog.getOpenFileName(
             self,
@@ -4169,7 +4221,7 @@ class PDFView(QMainWindow):
         )
         if not source_file:
             return
-        
+
         # 開啟來源檔案以獲取總頁數
         try:
             source_doc = fitz.open(source_file)
@@ -4178,7 +4230,7 @@ class PDFView(QMainWindow):
         except Exception as e:
             show_error(self, f"無法讀取來源檔案: {e}")
             return
-        
+
         # 詢問要插入的頁碼
         pages_text, ok = QInputDialog.getText(
             self,
@@ -4187,7 +4239,7 @@ class PDFView(QMainWindow):
         )
         if not ok or not pages_text:
             return
-        
+
         # 解析頁碼
         try:
             source_pages = parse_pages(pages_text, source_total_pages)
@@ -4197,7 +4249,7 @@ class PDFView(QMainWindow):
         except ValueError as e:
             show_error(self, f"頁碼格式錯誤: {e}")
             return
-        
+
         # 詢問插入位置
         default_position = self.current_page + 2  # 轉換為 1-based，並插入到當前頁之後
         position, ok = QInputDialog.getInt(

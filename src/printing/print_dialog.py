@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
 
-from PySide6.QtCore import QEvent, QRectF, QTimer, Qt
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
-from PySide6.QtGui import QPageSize
+from PySide6.QtCore import QEvent, QRectF, Qt, QTimer
+from PySide6.QtGui import QColor, QImage, QPageSize, QPainter, QPen, QPixmap
 from PySide6.QtPrintSupport import QPrinterInfo
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -29,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .base_driver import PrintJobOptions, PrinterDevice
+from .base_driver import PrinterDevice, PrintJobOptions
 from .dispatcher import PrintDispatcher
 from .errors import PrintingError
 from .layout import (
@@ -43,7 +42,7 @@ from .pdf_renderer import PDFRenderer
 @dataclass
 class UnifiedPrintDialogResult:
     options: PrintJobOptions
-    page_indices: List[int]
+    page_indices: list[int]
 
 
 class UnifiedPrintDialog(QDialog):
@@ -51,12 +50,12 @@ class UnifiedPrintDialog(QDialog):
         self,
         parent,
         dispatcher: PrintDispatcher,
-        printers: List[PrinterDevice],
+        printers: list[PrinterDevice],
         pdf_path: str,
         total_pages: int,
         current_page: int,
         job_name: str,
-        preview_page_provider: Optional[Callable[[int, int], QImage]] = None,
+        preview_page_provider: Callable[[int, int], QImage] | None = None,
     ) -> None:
         super().__init__(parent)
         self.dispatcher = dispatcher
@@ -67,11 +66,11 @@ class UnifiedPrintDialog(QDialog):
         self.job_name = job_name
         self.renderer = PDFRenderer()
 
-        self._printer_map: Dict[str, PrinterDevice] = {p.name: p for p in printers}
-        self._page_indices: List[int] = []
-        self._preview_cache: Dict[tuple[int, int], QImage] = {}
-        self._result: Optional[UnifiedPrintDialogResult] = None
-        self._printer_preferences: Dict[str, object] = {}
+        self._printer_map: dict[str, PrinterDevice] = {p.name: p for p in printers}
+        self._page_indices: list[int] = []
+        self._preview_cache: dict[tuple[int, int], QImage] = {}
+        self._result: UnifiedPrintDialogResult | None = None
+        self._printer_preferences: dict[str, object] = {}
         self._touched_hardware_fields: set[str] = set()
         self._syncing_printer_preferences = False
         self._preview_page_provider = preview_page_provider
@@ -88,10 +87,10 @@ class UnifiedPrintDialog(QDialog):
         self._wire_signals()
         self._schedule_preview_refresh()
 
-    def result_data(self) -> Optional[UnifiedPrintDialogResult]:
+    def result_data(self) -> UnifiedPrintDialogResult | None:
         return self._result
 
-    def eventFilter(self, watched, event):  # noqa: N802 (Qt override)
+    def eventFilter(self, watched, event):
         if watched is self.preview_label:
             if event.type() == QEvent.Resize:
                 self._safe_render_preview()
@@ -388,7 +387,7 @@ class UnifiedPrintDialog(QDialog):
         finally:
             self._syncing_printer_preferences = False
 
-    def _load_printer_preferences(self, printer_name: str) -> Dict[str, object]:
+    def _load_printer_preferences(self, printer_name: str) -> dict[str, object]:
         getter = getattr(self.dispatcher, "get_printer_preferences", None)
         if not callable(getter):
             return {}
@@ -400,7 +399,7 @@ class UnifiedPrintDialog(QDialog):
             return {}
         return data if isinstance(data, dict) else {}
 
-    def _apply_printer_preferences(self, prefs: Dict[str, object]) -> None:
+    def _apply_printer_preferences(self, prefs: dict[str, object]) -> None:
         self._printer_preferences = dict(prefs or {})
         opaque_fields = {
             str(item).strip()
@@ -441,10 +440,10 @@ class UnifiedPrintDialog(QDialog):
         if isinstance(copies, int):
             self.copies_spin.setValue(max(self.copies_spin.minimum(), min(self.copies_spin.maximum(), copies)))
 
-    def _update_inherited_property_fields(self, prefs: Dict[str, object]) -> None:
+    def _update_inherited_property_fields(self, prefs: dict[str, object]) -> None:
         _ = prefs
 
-    def _current_hardware_values(self) -> Dict[str, str]:
+    def _current_hardware_values(self) -> dict[str, str]:
         return {
             "paper_size": str(self.paper_combo.currentData() or "auto"),
             "orientation": str(self.orientation_combo.currentData() or "auto"),
@@ -452,9 +451,9 @@ class UnifiedPrintDialog(QDialog):
             "color_mode": str(self.color_combo.currentData() or "color"),
         }
 
-    def _resolve_hardware_values(self) -> tuple[Dict[str, str], set[str]]:
+    def _resolve_hardware_values(self) -> tuple[dict[str, str], set[str]]:
         current_values = self._current_hardware_values()
-        effective_values: Dict[str, str] = {}
+        effective_values: dict[str, str] = {}
         override_fields: set[str] = set()
         for field_name, current_value in current_values.items():
             pref_value = self._printer_preferences.get(field_name)
@@ -773,7 +772,7 @@ class UnifiedPrintDialog(QDialog):
 
         return QPixmap.fromImage(canvas)
 
-    def accept(self) -> None:  # noqa: D401
+    def accept(self) -> None:
         try:
             options = self._build_submission_options()
             page_indices = self.dispatcher.resolve_page_indices_for_count(

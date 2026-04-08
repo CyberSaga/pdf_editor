@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Regression tests for print dialog native printer properties button."""
 
 from __future__ import annotations
@@ -9,8 +8,8 @@ import tempfile
 from pathlib import Path
 
 import fitz
-from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QApplication
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -20,7 +19,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.printing.base_driver import PrinterDevice
 from src.printing.print_dialog import UnifiedPrintDialog
-
 
 _OPEN_RESULT_UNSET = object()
 

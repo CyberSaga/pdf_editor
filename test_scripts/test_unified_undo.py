@@ -1,10 +1,13 @@
-﻿# -*- coding: utf-8 -*-
-"""
+﻿"""
 Phase 6 測試：統一 undo 堆疊
 流程：刪頁 → 編輯文字 → undo × 2 → redo × 2 → 確認頁數與文字都正確復原
 """
-import sys, io, tempfile, fitz
+import io
+import sys
+import tempfile
 from pathlib import Path
+
+import fitz
 
 if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -13,8 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from model.edit_commands import CommandManager, EditTextCommand, SnapshotCommand
 from model.pdf_model import PDFModel
-from model.edit_commands import SnapshotCommand, EditTextCommand, CommandManager
 
 
 def make_two_page_pdf(path: str) -> None:

@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 import sys
 import tempfile
 import zipfile
 from pathlib import Path
-
 
 MEASURE_SNIPPET = r"""
 import json

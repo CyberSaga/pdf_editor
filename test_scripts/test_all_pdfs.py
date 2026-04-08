@@ -1,5 +1,4 @@
-﻿# -*- coding: utf-8 -*-
-"""
+﻿"""
 test_all_pdfs.py — 全 test_files 目錄 PDF 批次測試
 ====================================================
 測試策略（三層）：
@@ -18,9 +17,8 @@ test_all_pdfs.py — 全 test_files 目錄 PDF 批次測試
   test_outputs/error_log.txt   — 所有錯誤與異常的詳細記錄
   終端機 stdout   — 進度概覽 + 最終統計
 """
-import sys
 import io
-import os
+import sys
 import time
 import traceback
 from pathlib import Path
@@ -32,9 +30,9 @@ if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 import logging
+
 logging.disable(logging.CRITICAL)   # 批次測試期間關閉所有 log，避免大量 I/O
 
-import fitz
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -314,7 +312,7 @@ def main():
     total_err = counts[Result.ERR_OPEN] + counts[Result.ERR_INDEX] + counts[Result.ERR_EDIT]
     print(f"  總錯誤數：{total_err}")
     if total_err == 0:
-        print(f"\n  所有可開啟的 PDF 均通過測試 ✓")
+        print("\n  所有可開啟的 PDF 均通過測試 ✓")
     else:
         print(f"\n  詳細錯誤已記錄至 {ERROR_LOG.name}，請查閱後修正。")
     print(f"{'='*65}\n")

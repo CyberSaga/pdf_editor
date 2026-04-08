@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class OcrTool(ToolExtension):
-    def __init__(self, model: "PDFModel") -> None:
+    def __init__(self, model: PDFModel) -> None:
         self._model = model
 
     def ocr_pages(self, pages: list[int]) -> dict:

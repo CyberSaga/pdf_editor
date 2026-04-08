@@ -1,8 +1,12 @@
 """iter7_perf_and_vision.py — 效能量測 + 多場景 Vision 驗證"""
-import sys, pathlib, time
+import pathlib
+import sys
+import time
+
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import fitz
+
 from reflow.unified_command import apply_object_edit
 
 ROOT = pathlib.Path(__file__).parent.parent
@@ -114,7 +118,7 @@ if v2_pdf.exists():
                      "color": (0,0,0), "reflow_enabled": True},
             track="auto")
         render_page(page, OUT / "v2_excel_after.png")
-        print(f"  V2 excel_table.pdf: OK")
+        print("  V2 excel_table.pdf: OK")
     doc.close()
 
 # Scenario V3: 1.pdf
@@ -138,7 +142,7 @@ if v3_pdf.exists():
                      "font": "helv", "size": 12.0, "color": (0,0,0), "reflow_enabled": True},
             track="auto")
         render_page(page, OUT / "v3_simple_after.png")
-        print(f"  V3 1.pdf: OK")
+        print("  V3 1.pdf: OK")
     doc.close()
 
 # Scenario V4: Synthetic multi-column (the key UX scenario)
@@ -168,7 +172,7 @@ apply_object_edit(page=page4,
     track="A")
 
 render_page(page4, OUT / "v4_multicol_after.png")
-print(f"  V4 multi-column: OK")
+print("  V4 multi-column: OK")
 doc4.close()
 
 print(f"\n★ Vision PNG 輸出: {OUT}/")

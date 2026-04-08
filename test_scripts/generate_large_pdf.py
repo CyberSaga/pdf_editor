@@ -1,5 +1,4 @@
-﻿# -*- coding: utf-8 -*-
-"""
+﻿"""
 generate_large_pdf.py — 產生極大 PDF（壓力測試用）
 ====================================================
 依「超大 PDF 壓力測試」計畫：產生 500～1000 頁（可調）的 PDF，
@@ -10,9 +9,8 @@ generate_large_pdf.py — 產生極大 PDF（壓力測試用）
   python test_scripts/generate_large_pdf.py --pages 1000 --output large_stress.pdf
   python test_scripts/generate_large_pdf.py --pages 500
 """
-import sys
-import os
 import argparse
+import sys
 from pathlib import Path
 
 if sys.platform == "win32" and __name__ == "__main__":

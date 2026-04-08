@@ -10,12 +10,14 @@
   E7 - 多次 reflow 後文字內容完整性
   E8 - Track B 同高度替換不再 silent no-op（回歸測試）
 """
-import sys, pathlib
+import pathlib
+import sys
+
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import fitz
+
 from reflow.unified_command import apply_object_edit
-from reflow.track_A_core import TrackAEngine
 
 OUT = pathlib.Path(__file__).parent / "_vision_output" / "iter9"
 OUT.mkdir(parents=True, exist_ok=True)

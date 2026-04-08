@@ -1,10 +1,11 @@
-import re
-from typing import List, Tuple
-from PySide6.QtWidgets import QColorDialog, QMessageBox
-from PySide6.QtGui import QColor
-import fitz  # PyMuPDF
+from __future__ import annotations
 
-def parse_pages(input_str: str, total_pages: int) -> List[int]:
+import fitz  # PyMuPDF
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QColorDialog, QMessageBox
+
+
+def parse_pages(input_str: str, total_pages: int) -> list[int]:
     """解析頁碼輸入，如 '1,3-5' -> [1,3,4,5]"""
     pages = set()
     for part in input_str.split(','):
@@ -27,8 +28,8 @@ def show_error(parent, message: str):
     """錯誤彈出"""
     QMessageBox.critical(parent, "錯誤", message)
 
-def pixmap_to_qpixmap(pix: fitz.Pixmap) -> 'QPixmap':
-    from PySide6.QtGui import QPixmap, QImage
+def pixmap_to_qpixmap(pix: fitz.Pixmap) -> QPixmap:
     """fitz.Pixmap轉QPixmap"""
+    from PySide6.QtGui import QImage, QPixmap
     img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGBA8888 if pix.alpha else QImage.Format_RGB888)
     return QPixmap.fromImage(img)

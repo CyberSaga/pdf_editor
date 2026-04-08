@@ -20,24 +20,21 @@ reflow_agent_loop.py — 主控多軌並行迭代循環腳本
 """
 
 import argparse
-import copy
 import json
 import logging
-import os
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 # 確保 pdf_editor 根目錄在 sys.path 中
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from reflow.test_suite import ReflowTestSuite, TestResult
 from reflow.track_A_core import TrackAEngine
 from reflow.track_B_core import TrackBEngine
-from reflow.test_suite import ReflowTestSuite, TestResult
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +335,7 @@ class ReflowAgentLoop:
 
     # ── 階段 1：定義評估基準 ───────────────────────────────────────────────
 
-    def define_evaluation_baseline(self, test_pdfs: Optional[list] = None):
+    def define_evaluation_baseline(self, test_pdfs: list | None = None):
         """
         階段 1：掃描 test_dir，產生評分表 + 邊界案例清單，並印出摘要。
 

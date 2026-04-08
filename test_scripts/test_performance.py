@@ -12,16 +12,18 @@ test_performance.py — Phase 6 效能測試
   python test_performance.py
   python test_performance.py --rounds 50    # 自訂編輯次數
 """
-import sys
-import time
-import fitz
-import tempfile
-import os
 import argparse
+import os
+import sys
+import tempfile
+import time
+
+import fitz
 
 # 確保 import 路徑
 sys.path.insert(0, os.path.dirname(__file__))
 from model.pdf_model import PDFModel
+
 
 # ──────────────────────────────────────────────────
 # 輔助：建立多頁測試 PDF

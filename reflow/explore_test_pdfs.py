@@ -1,8 +1,8 @@
 """
 explore_test_pdfs.py — 探索 test_files/ 中的 PDF 結構，找合適的測試段落
 """
-import sys
 from pathlib import Path
+
 import fitz
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -32,5 +32,5 @@ for fname in pdfs:
         size = spans[0]["size"] if spans else 0
         print(f"  [{i}] bbox={tuple(round(x,1) for x in b['bbox'])} "
               f"lines={len(b.get('lines',[]))} font={font} size={size:.1f}")
-        print(f"      text={repr(text[:80])}")
+        print(f"      text={text[:80]!r}")
     doc.close()

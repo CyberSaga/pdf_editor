@@ -1,9 +1,12 @@
 """iter5b_delta_debug.py — 診斷真實 PDF 的 delta_y 過大問題"""
-import sys, pathlib
+import pathlib
+import sys
+
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import fitz
-from reflow.track_A_core import TrackAEngine, LayoutAnalysis
+
+from reflow.track_A_core import TrackAEngine
 
 ROOT = pathlib.Path(__file__).parent.parent
 res_pdf = ROOT / "test_files" / "reservation_table.pdf"
@@ -51,6 +54,6 @@ print(f"new_height = {new_height:.2f}pt")
 print(f"delta_y = {new_height - old_height:.2f}pt")
 
 # Show all block positions to understand what "overflow" means
-print(f"\nAll blocks y0 positions (should show table rows):")
+print("\nAll blocks y0 positions (should show table rows):")
 for bl in layout.blocks:
     print(f"  [{bl.reading_order}] y0={bl.bbox.y0:.1f} y1={bl.bbox.y1:.1f} '{bl.text[:30]}'")

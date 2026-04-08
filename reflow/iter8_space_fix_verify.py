@@ -1,8 +1,11 @@
 """iter8_space_fix_verify.py — 驗證 shouldmove 空格修復 + 新 v4 vision 輸出"""
-import sys, pathlib
+import pathlib
+import sys
+
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import fitz
+
 from reflow.unified_command import apply_object_edit
 
 OUT = pathlib.Path(__file__).parent / "_vision_output" / "iter8"
@@ -42,7 +45,7 @@ render(page, OUT / "t1_space_after.png")
 td = page.get_text("text")
 has_space_bug = "shouldmove" in td
 print(f"  'shouldmove' bug present: {has_space_bug}")
-print(f"  Page text snippet: {repr(td[:300])}")
+print(f"  Page text snippet: {td[:300]!r}")
 doc.close()
 
 t1_pass = not has_space_bug
@@ -82,7 +85,7 @@ render(page4, OUT / "t2_multicol_after.png")
 td4 = page4.get_text("text")
 has_bug = "shouldmove" in td4
 print(f"  'shouldmove' in moved para: {has_bug}")
-print(f"  Page text: {repr(td4[:400])}")
+print(f"  Page text: {td4[:400]!r}")
 doc4.close()
 
 t2_pass = not has_bug
@@ -124,5 +127,5 @@ all_pass = t1_pass and t2_pass and t3_pass
 print(f"\n{'='*70}")
 print(f"iter8 結果: {'3/3 PASS ✓' if all_pass else 'FAILED'}")
 print(f"Vision PNG: {OUT}/")
-print(f"  t1_space_after.png  — 應顯示 'should move' 有空格")
-print(f"  t2_multicol_before/after.png — 左欄移動，右欄不動")
+print("  t1_space_after.png  — 應顯示 'should move' 有空格")
+print("  t2_multicol_before/after.png — 左欄移動，右欄不動")

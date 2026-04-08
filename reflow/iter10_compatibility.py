@@ -11,12 +11,13 @@
   C8  多次連續編輯後存檔，xref 長度合理（無無限膨脹）
 """
 import io
-import sys
 import pathlib
+import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import fitz
+
 from reflow.unified_command import apply_object_edit
 
 OUT = pathlib.Path(__file__).parent / "_vision_output" / "iter10"

@@ -23,7 +23,7 @@ import uuid
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING
 
 import fitz
 
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("PIL").setLevel(logging.INFO)
 logging.getLogger("PIL.PngImagePlugin").setLevel(logging.INFO)
 
-_IMAGE_REWRITE_WORKER_DOC: Optional[fitz.Document] = None
+_IMAGE_REWRITE_WORKER_DOC: fitz.Document | None = None
 _MIN_PARALLEL_IMAGE_REWRITES = 4
 _MAX_PARALLEL_IMAGE_WORKERS = 4
 
@@ -224,7 +224,7 @@ def normalize_optimize_options(options: PdfOptimizeOptions) -> PdfOptimizeOption
     return options
 
 
-def resolve_file_backed_optimize_source(model: "PDFModel", session_id: Optional[str]) -> Optional[Path]:
+def resolve_file_backed_optimize_source(model: PDFModel, session_id: str | None) -> Path | None:
     if not session_id or not model.doc:
         return None
     session = model._sessions_by_id.get(session_id)
@@ -246,7 +246,7 @@ def resolve_file_backed_optimize_source(model: "PDFModel", session_id: Optional[
     return source_path
 
 
-def current_document_size_bytes(model: "PDFModel", session_id: Optional[str]) -> int:
+def current_document_size_bytes(model: PDFModel, session_id: str | None) -> int:
     if not model.doc:
         raise RuntimeError("沒有可最佳化的 PDF")
     source_path = model._resolve_file_backed_optimize_source(session_id)
@@ -255,7 +255,7 @@ def current_document_size_bytes(model: "PDFModel", session_id: Optional[str]) ->
     return len(model.doc.tobytes(garbage=0, no_new_id=1))
 
 
-def build_working_doc_for_optimized_copy(model: "PDFModel", session_id: Optional[str]) -> fitz.Document:
+def build_working_doc_for_optimized_copy(model: PDFModel, session_id: str | None) -> fitz.Document:
     """
     Optimize-copy pipeline:
       live doc -> disposable working doc -> tool save prep
@@ -276,7 +276,7 @@ def build_working_doc_for_optimized_copy(model: "PDFModel", session_id: Optional
     return prepared_doc
 
 
-def make_active_audit_cache_key(model: "PDFModel") -> Optional[tuple]:
+def make_active_audit_cache_key(model: PDFModel) -> tuple | None:
     session_id = model.get_active_session_id()
     if not session_id or not model.doc:
         return None
@@ -323,7 +323,7 @@ def xref_size_bytes(doc: fitz.Document, xref: int) -> int:
     return size
 
 
-def build_pdf_audit_report(model: "PDFModel", doc: fitz.Document | None = None) -> PdfAuditReport:
+def build_pdf_audit_report(model: PDFModel, doc: fitz.Document | None = None) -> PdfAuditReport:
     target_doc = doc if doc is not None else model.doc
     if target_doc is None:
         raise RuntimeError("沒有可審計的 PDF")
@@ -395,10 +395,10 @@ def build_pdf_audit_report(model: "PDFModel", doc: fitz.Document | None = None) 
 
 
 def apply_optimize_options(
-    model: "PDFModel",
+    model: PDFModel,
     working_doc: fitz.Document,
     options: PdfOptimizeOptions,
-    source_path: Optional[Path] = None,
+    source_path: Path | None = None,
 ) -> None:
     if options.content_cleanup:
         for page_index in range(len(working_doc)):
@@ -455,7 +455,7 @@ def can_use_parallel_image_rewrite() -> bool:
 
 
 def rewrite_images_serially(
-    model: "PDFModel",
+    model: PDFModel,
     working_doc: fitz.Document,
     image_usage: dict[int, dict[str, float | int]],
     options: PdfOptimizeOptions,
@@ -474,7 +474,7 @@ def rewrite_images_serially(
 
 
 def collect_extracted_images(
-    model: "PDFModel",
+    model: PDFModel,
     working_doc: fitz.Document,
     image_usage: dict[int, dict[str, float | int]],
 ) -> list[tuple[int, int, float, bytes]]:
@@ -499,7 +499,7 @@ def collect_extracted_images(
 
 
 def rewrite_images_from_source_in_parallel(
-    model: "PDFModel",
+    model: PDFModel,
     working_doc: fitz.Document,
     image_usage: dict[int, dict[str, float | int]],
     options: PdfOptimizeOptions,
@@ -532,7 +532,7 @@ def rewrite_images_from_source_in_parallel(
 
 
 def rewrite_extracted_images_in_parallel(
-    model: "PDFModel",
+    model: PDFModel,
     working_doc: fitz.Document,
     extracted_images: list[tuple[int, int, float, bytes]],
     options: PdfOptimizeOptions,
@@ -570,10 +570,10 @@ def rewrite_extracted_images_in_parallel(
 
 
 def rewrite_images_with_pillow(
-    model: "PDFModel",
+    model: PDFModel,
     working_doc: fitz.Document,
     options: PdfOptimizeOptions,
-    source_path: Optional[Path] = None,
+    source_path: Path | None = None,
 ) -> None:
     if Image is None:
         raise RuntimeError("圖像最佳化需要 Pillow，請先安裝 optional-requirements.txt。")
@@ -639,7 +639,7 @@ def fast_save_kwargs(options: PdfOptimizeOptions) -> dict[str, int]:
 
 
 def postprocess_optimized_pdf_with_pikepdf(
-    model: "PDFModel",
+    model: PDFModel,
     source_path: Path,
     options: PdfOptimizeOptions,
 ) -> None:
@@ -669,7 +669,7 @@ def postprocess_optimized_pdf_with_pikepdf(
 
 
 def save_optimized_working_doc(
-    model: "PDFModel",
+    model: PDFModel,
     working_doc: fitz.Document,
     temp_save: Path,
     options: PdfOptimizeOptions,
@@ -693,7 +693,7 @@ def save_optimized_working_doc(
 
 
 def save_optimized_copy(
-    model: "PDFModel",
+    model: PDFModel,
     new_path: str,
     options: PdfOptimizeOptions | None = None,
 ) -> PdfOptimizationResult:

@@ -1,5 +1,4 @@
-﻿# -*- coding: utf-8 -*-
-"""
+﻿"""
 test_drag_move.py -- drag-move text box feature test
 =====================================================
 Test coverage:
@@ -16,15 +15,14 @@ Test coverage:
 Usage:
   python test_scripts/test_drag_move.py
 """
-import sys
+import difflib
 import io
 import os
-import time
-import difflib
-import traceback
+import sys
 import tempfile
+import time
+import traceback
 from pathlib import Path
-from typing import Optional, List, Tuple
 
 # Script-style integration runner; keep out of pytest auto-collection.
 __test__ = False
@@ -272,9 +270,7 @@ def test_C_moved_block_not_lost(result):
             norm_text = _norm(text)
             import difflib as _dl
             norm_full = _norm(full_text)
-            if len(norm_text) < 5:
-                found_in_full = True
-            elif norm_text[:20] in norm_full:
+            if len(norm_text) < 5 or norm_text[:20] in norm_full:
                 found_in_full = True
             else:
                 ratio = _dl.SequenceMatcher(None, norm_text[:30], norm_full[:200]).ratio()
@@ -668,9 +664,8 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     report_path = OUTPUT_DIR / "drag_move_test_report.txt"
     import contextlib
-    with open(str(report_path), "w", encoding="utf-8") as f:
-        with contextlib.redirect_stdout(f):
-            print_report(groups)
+    with open(str(report_path), "w", encoding="utf-8") as f, contextlib.redirect_stdout(f):
+        print_report(groups)
     print(f"\nReport saved to: {report_path}")
 
 

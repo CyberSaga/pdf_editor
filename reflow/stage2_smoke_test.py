@@ -145,7 +145,7 @@ doc4.close()
 # 5. UnifiedObjectCommand captured_anchor 屬性
 # ─────────────────────────────────────────────
 print("\n[5] UnifiedObjectCommand captured_anchor")
-from reflow.unified_command import UnifiedObjectCommand, ObjectChanges
+from reflow.unified_command import ObjectChanges, UnifiedObjectCommand
 
 
 class _MockModel:
@@ -186,7 +186,7 @@ mock_model.doc.close()
 # 6. 執行 pytest
 # ─────────────────────────────────────────────
 print("\n[6] Running pytest reflow/test_suite.py ...")
-import subprocess, os
+import subprocess
 
 result_pytest = subprocess.run(
     [sys.executable, "-m", "pytest", "reflow/test_suite.py", "-v", "--tb=short", "-q"],

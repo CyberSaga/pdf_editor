@@ -22,7 +22,7 @@ class AnnotationTool(ToolExtension):
     _ANNOT_STRIKEOUT = 10
     _ANNOT_REDACT = 12
 
-    def __init__(self, model: "PDFModel") -> None:
+    def __init__(self, model: PDFModel) -> None:
         self._model = model
 
     def add_highlight(self, page_num: int, rect: fitz.Rect, color: tuple[float, float, float, float]) -> None:

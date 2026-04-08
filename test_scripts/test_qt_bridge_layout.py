@@ -1,18 +1,17 @@
-# -*- coding: utf-8 -*-
 """Regression tests for Qt bridge page-layout and override behavior."""
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
-import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.printing.base_driver import PrintJobOptions
 from src.printing import qt_bridge as qtb
+from src.printing.base_driver import PrintJobOptions
 
 
 class _FakePrinter:

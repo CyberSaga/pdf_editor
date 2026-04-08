@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class ToolManager:
-    def __init__(self, model: "PDFModel") -> None:
+    def __init__(self, model: PDFModel) -> None:
         self._model = model
 
         self.annotation = AnnotationTool(model)

@@ -1,34 +1,35 @@
 ﻿from __future__ import annotations
 
-import fitz
-import tempfile
-import os
-import shutil
-import logging
-import math
-import time
-from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Iterator
-from contextlib import contextmanager
-from pathlib import Path
-import uuid
 import difflib  # 相似度比對
+import html as _html_mod
 import io  # 用於 BytesIO 記憶體 stream（文件推薦 in-memory PDF）
 import json
+import logging
+import math
+import os
 import re
-import html as _html_mod
+import shutil
+import tempfile
+import time
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
 
-from model.text_block import (
-    TextBlock,
-    TextBlockManager,
-    EditableSpan,
-    EditableParagraph,
-    rotation_degrees_from_dir,
-)
-from model.edit_commands import CommandManager, EditTextCommand, EditTextResult
+import fitz
+
 # Optimizer internals live in `model/pdf_optimizer.py`.
 # `PDFModel` keeps the public facade stable and delegates to the internal module.
 from model import pdf_optimizer
+from model.edit_commands import CommandManager, EditTextResult
+from model.text_block import (
+    EditableParagraph,
+    EditableSpan,
+    TextBlock,
+    TextBlockManager,
+    rotation_degrees_from_dir,
+)
 from model.tools import ToolManager
 
 # [優化 1] 模組級正則預編譯：避免每次呼叫 _convert_text_to_html / _normalize_text_for_compare 時重新編譯，提升效能
@@ -84,7 +85,7 @@ class TextHit:
     rotation: int
     cluster_span_ids: list[str]
     target_mode: str = "run"
-    target_paragraph_id: Optional[str] = None
+    target_paragraph_id: str | None = None
 
     # Keep tuple compatibility for existing callers/tests.
     def _legacy(self) -> tuple:
@@ -130,7 +131,7 @@ class DocumentSession:
     display_name: str
     original_path: str
     doc: fitz.Document
-    saved_path: Optional[str] = None
+    saved_path: str | None = None
     block_manager: TextBlockManager = field(default_factory=TextBlockManager)
     command_manager: CommandManager = field(default_factory=CommandManager)
     pending_edits: list = field(default_factory=list)
@@ -140,11 +141,11 @@ class PDFModel:
     def __init__(self):
         self._sessions_by_id: dict[str, DocumentSession] = {}
         self._session_ids: list[str] = []
-        self._active_session_id: Optional[str] = None
+        self._active_session_id: str | None = None
         self._path_to_session_id: dict[str, str] = {}
-        self._legacy_doc: Optional[fitz.Document] = None
-        self._legacy_original_path: Optional[str] = None
-        self._legacy_saved_path: Optional[str] = None
+        self._legacy_doc: fitz.Document | None = None
+        self._legacy_original_path: str | None = None
+        self._legacy_saved_path: str | None = None
         self._legacy_block_manager: TextBlockManager = TextBlockManager()
         self._legacy_command_manager: CommandManager = CommandManager()
         self._legacy_edit_count: int = 0
@@ -155,8 +156,8 @@ class PDFModel:
         # Text target granularity: "run" or "paragraph" (UI can override on startup).
         self.text_target_mode: str = "run"
         self.tools = ToolManager(self)
-        self._audit_report_cache_key: Optional[tuple] = None
-        self._audit_report_cache_value: Optional[PdfAuditReport] = None
+        self._audit_report_cache_key: tuple | None = None
+        self._audit_report_cache_value: PdfAuditReport | None = None
         self._initialize_temp_dir()
         # 全局 glyph 高度調整（文件推薦，import 後設定一次）
         try:
@@ -176,7 +177,7 @@ class PDFModel:
         except Exception:
             return repr(exc)
 
-    def _active_session(self) -> Optional[DocumentSession]:
+    def _active_session(self) -> DocumentSession | None:
         if not self._active_session_id:
             return None
         return self._sessions_by_id.get(self._active_session_id)
@@ -211,12 +212,12 @@ class PDFModel:
             })
         return out
 
-    def get_session_id_by_index(self, index: int) -> Optional[str]:
+    def get_session_id_by_index(self, index: int) -> str | None:
         if index < 0 or index >= len(self._session_ids):
             return None
         return self._session_ids[index]
 
-    def get_active_session_id(self) -> Optional[str]:
+    def get_active_session_id(self) -> str | None:
         return self._active_session_id
 
     def get_active_session_index(self) -> int:
@@ -227,7 +228,7 @@ class PDFModel:
         except ValueError:
             return -1
 
-    def find_session_by_path(self, path: str) -> Optional[str]:
+    def find_session_by_path(self, path: str) -> str | None:
         canonical = self._canonicalize_path(path)
         return self._path_to_session_id.get(canonical)
 
@@ -255,7 +256,7 @@ class PDFModel:
     def get_dirty_session_ids(self) -> list[str]:
         return [sid for sid in self._session_ids if self.session_has_unsaved_changes(sid)]
 
-    def get_session_meta(self, session_id: str) -> Optional[dict]:
+    def get_session_meta(self, session_id: str) -> dict | None:
         session = self._sessions_by_id.get(session_id)
         if not session:
             return None
@@ -305,12 +306,12 @@ class PDFModel:
             self.save_as(new_path)
 
     @property
-    def doc(self) -> Optional[fitz.Document]:
+    def doc(self) -> fitz.Document | None:
         session = self._active_session()
         return session.doc if session else self._legacy_doc
 
     @doc.setter
-    def doc(self, value: Optional[fitz.Document]) -> None:
+    def doc(self, value: fitz.Document | None) -> None:
         session = self._active_session()
         if session:
             session.doc = value
@@ -318,12 +319,12 @@ class PDFModel:
             self._legacy_doc = value
 
     @property
-    def original_path(self) -> Optional[str]:
+    def original_path(self) -> str | None:
         session = self._active_session()
         return session.original_path if session else self._legacy_original_path
 
     @original_path.setter
-    def original_path(self, value: Optional[str]) -> None:
+    def original_path(self, value: str | None) -> None:
         session = self._active_session()
         if session:
             session.original_path = value
@@ -331,12 +332,12 @@ class PDFModel:
             self._legacy_original_path = value
 
     @property
-    def saved_path(self) -> Optional[str]:
+    def saved_path(self) -> str | None:
         session = self._active_session()
         return session.saved_path if session else self._legacy_saved_path
 
     @saved_path.setter
-    def saved_path(self, value: Optional[str]) -> None:
+    def saved_path(self, value: str | None) -> None:
         session = self._active_session()
         if session:
             session.saved_path = value
@@ -413,7 +414,7 @@ class PDFModel:
             test_file.touch()
             test_file.unlink()
         except (PermissionError, OSError) as e:
-            logger.error(f"無法創建臨時目錄: {str(e)}")
+            logger.error(f"無法創建臨時目錄: {e!s}")
             # 後備：使用當前工作目錄下的自訂臨時目錄
             fallback_dir = Path.cwd() / "pdf_temp"
             try:
@@ -421,12 +422,12 @@ class PDFModel:
                 self.temp_dir = tempfile.TemporaryDirectory(dir=str(fallback_dir))
                 logger.debug(f"使用後備臨時目錄: {self.temp_dir.name}")
             except Exception as e:
-                raise RuntimeError(f"無法創建後備臨時目錄: {str(e)}")
+                raise RuntimeError(f"無法創建後備臨時目錄: {e!s}")
 
     def __del__(self):
         self.close()
 
-    def open_pdf(self, path: str, password: Optional[str] = None, append: bool = False) -> str:
+    def open_pdf(self, path: str, password: str | None = None, append: bool = False) -> str:
         """
         開啟 PDF 檔案並建立文字塊索引。
 
@@ -505,11 +506,11 @@ class PDFModel:
             # self.block_manager.build_index(self.doc)
             return session_id
         except PermissionError as e:
-            logger.error(f"無權限存取檔案: {str(e)}")
-            raise PermissionError(f"無權限存取檔案: {str(e)}")
+            logger.error(f"無權限存取檔案: {e!s}")
+            raise PermissionError(f"無權限存取檔案: {e!s}")
         except Exception as e:
-            logger.error(f"開啟PDF失敗: {str(e)}")
-            raise RuntimeError(f"開啟PDF失敗: {str(e)}")
+            logger.error(f"開啟PDF失敗: {e!s}")
+            raise RuntimeError(f"開啟PDF失敗: {e!s}")
 
     def ensure_page_index_built(self, page_num: int) -> None:
         """
@@ -529,7 +530,7 @@ class PDFModel:
         if self.block_manager.page_state(page_idx) in {"missing", "stale"}:
             self.block_manager.rebuild_page(page_idx, self.doc)
 
-    def refresh_structural_indexes(self, affected_pages: List[int]) -> None:
+    def refresh_structural_indexes(self, affected_pages: list[int]) -> None:
         """
         Refresh page text indices after a document snapshot restore (undo/redo) that may have changed content.
 
@@ -809,9 +810,9 @@ class PDFModel:
         self,
         page_idx: int,
         probe_rect: fitz.Rect,
-        original_text: Optional[str],
-        preferred_run_id: Optional[str] = None,
-    ) -> Optional[EditableParagraph]:
+        original_text: str | None,
+        preferred_run_id: str | None = None,
+    ) -> EditableParagraph | None:
         """Resolve the best paragraph target by geometry + text similarity.
 
         This is used to recover from stale run IDs after page rebuilds.
@@ -835,7 +836,7 @@ class PDFModel:
             candidates = paragraphs
 
         has_probe_text = bool(self._normalize_text_for_compare(original_text or ""))
-        best_para: Optional[EditableParagraph] = None
+        best_para: EditableParagraph | None = None
         best_key = None
 
         for para in candidates:
@@ -917,7 +918,7 @@ class PDFModel:
             logger.debug("臨時目錄已清理")
             self.temp_dir = None
 
-    def delete_pages(self, pages: List[int]) -> List[int]:
+    def delete_pages(self, pages: list[int]) -> list[int]:
         """
         Delete pages (1-based) and return the actual deleted pages (1-based, sorted).
 
@@ -957,7 +958,7 @@ class PDFModel:
                 self.block_manager.rebuild_page(anchor_idx, self.doc)
         return actual_deleted_pages
 
-    def rotate_pages(self, pages: List[int], degrees: int) -> List[int]:
+    def rotate_pages(self, pages: list[int], degrees: int) -> list[int]:
         """
         Rotate pages and return the actual rotated pages (1-based, sorted).
 
@@ -999,7 +1000,7 @@ class PDFModel:
 
     def export_pages(
         self,
-        pages: List[int],
+        pages: list[int],
         output_path: str,
         as_image: bool = False,
         dpi: int = 300,
@@ -1060,7 +1061,7 @@ class PDFModel:
         finally:
             new_doc.close()
 
-    def insert_blank_page(self, position: int) -> List[int]:
+    def insert_blank_page(self, position: int) -> list[int]:
         """
         Insert one blank page and return the actual inserted page number (1-based).
 
@@ -1082,7 +1083,7 @@ class PDFModel:
             pos_value = int(position)
         except (TypeError, ValueError):
             pos_value = 1
-        
+
         # 獲取當前第一頁的尺寸作為新頁面的尺寸
         if len(self.doc) > 0:
             first_page = self.doc[0]
@@ -1093,12 +1094,12 @@ class PDFModel:
             # 如果文件為空，使用標準 A4 尺寸
             width = 595  # A4 width in points
             height = 842  # A4 height in points
-        
+
         # 轉換為 0-based 索引，並確保不超出範圍
         insert_at = min(pos_value - 1, len(self.doc))
         if insert_at < 0:
             insert_at = 0
-        
+
         # 插入空白頁面
         self.doc.new_page(insert_at, width=width, height=height)
         logger.debug(f"在位置 {insert_at + 1} 插入空白頁面，尺寸: {width}x{height}")
@@ -1107,7 +1108,7 @@ class PDFModel:
         self.block_manager.rebuild_page(insert_at, self.doc)
         return [insert_at + 1]
 
-    def insert_pages_from_file(self, source_file: str, source_pages: List[int], position: int) -> List[int]:
+    def insert_pages_from_file(self, source_file: str, source_pages: list[int], position: int) -> list[int]:
         """
         Insert pages from another PDF and return the actual inserted page numbers (1-based, ascending).
 
@@ -1126,11 +1127,11 @@ class PDFModel:
         """
         if not self.doc:
             raise ValueError("沒有開啟的PDF文件")
-        
+
         source_path = Path(source_file)
         if not source_path.exists():
             raise FileNotFoundError(f"來源檔案不存在: {source_file}")
-        
+
         try:
             try:
                 pos_value = int(position)
@@ -1139,12 +1140,12 @@ class PDFModel:
 
             # 開啟來源PDF
             source_doc = fitz.open(str(source_path))
-            
+
             # 轉換為 0-based 索引
             insert_at = min(pos_value - 1, len(self.doc))
             if insert_at < 0:
                 insert_at = 0
-            
+
             max_source = len(source_doc)
             normalized_source: list[int] = []
             for value in source_pages or []:
@@ -1189,7 +1190,7 @@ class PDFModel:
             logger.error(f"從檔案插入頁面失敗: {e}")
             raise RuntimeError(f"從檔案插入頁面失敗: {e}")
 
-    def compose_merged_document(self, ordered_sources: List[dict]) -> fitz.Document:
+    def compose_merged_document(self, ordered_sources: list[dict]) -> fitz.Document:
         if not self.doc:
             raise ValueError("沒有開啟的PDF文件")
 
@@ -1227,7 +1228,7 @@ class PDFModel:
 
         return merged
 
-    def open_merge_source(self, path: str, password: Optional[str] = None) -> dict:
+    def open_merge_source(self, path: str, password: str | None = None) -> dict:
         src_path = Path(path).resolve()
         if not src_path.exists():
             raise FileNotFoundError(f"來源檔案不存在: {path}")
@@ -1273,7 +1274,7 @@ class PDFModel:
     def get_print_watermarks(self) -> list[dict]:
         return json.loads(json.dumps(self.tools.watermark.get_watermarks(), ensure_ascii=False))
 
-    def get_text_info_at_point(self, page_num: int, point: fitz.Point) -> Optional[TextHit]:
+    def get_text_info_at_point(self, page_num: int, point: fitz.Point) -> TextHit | None:
         """Return topmost editable run info at point using stable run/span identity."""
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             return None
@@ -1475,7 +1476,7 @@ class PDFModel:
         else:
             color_rgb = (0.0, 0.0, 0.0)
 
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
         bounded_visual = fitz.Rect(visual_rect)
         insert_rect = fitz.Rect(visual_rect)
         repaired_once = False
@@ -1601,16 +1602,16 @@ class PDFModel:
     def _normalize_optimize_options(options: PdfOptimizeOptions) -> PdfOptimizeOptions:
         return pdf_optimizer.normalize_optimize_options(options)
 
-    def _resolve_file_backed_optimize_source(self, session_id: Optional[str]) -> Optional[Path]:
+    def _resolve_file_backed_optimize_source(self, session_id: str | None) -> Path | None:
         return pdf_optimizer.resolve_file_backed_optimize_source(self, session_id)
 
-    def _current_document_size_bytes(self, session_id: Optional[str]) -> int:
+    def _current_document_size_bytes(self, session_id: str | None) -> int:
         return pdf_optimizer.current_document_size_bytes(self, session_id)
 
-    def _build_working_doc_for_optimized_copy(self, session_id: Optional[str]) -> fitz.Document:
+    def _build_working_doc_for_optimized_copy(self, session_id: str | None) -> fitz.Document:
         return pdf_optimizer.build_working_doc_for_optimized_copy(self, session_id)
 
-    def _make_active_audit_cache_key(self) -> Optional[tuple]:
+    def _make_active_audit_cache_key(self) -> tuple | None:
         return pdf_optimizer.make_active_audit_cache_key(self)
 
     @staticmethod
@@ -1628,7 +1629,7 @@ class PDFModel:
         self,
         working_doc: fitz.Document,
         options: PdfOptimizeOptions,
-        source_path: Optional[Path] = None,
+        source_path: Path | None = None,
     ) -> None:
         pdf_optimizer.apply_optimize_options(self, working_doc, options, source_path=source_path)
 
@@ -1680,7 +1681,7 @@ class PDFModel:
         self,
         working_doc: fitz.Document,
         options: PdfOptimizeOptions,
-        source_path: Optional[Path] = None,
+        source_path: Path | None = None,
     ) -> None:
         pdf_optimizer.rewrite_images_with_pillow(self, working_doc, options, source_path=source_path)
 
@@ -1709,7 +1710,7 @@ class PDFModel:
         self.doc = fitz.open("pdf", snapshot_bytes)
         logger.debug(f"_restore_doc_from_snapshot: 已還原文件（{len(snapshot_bytes)} bytes）")
 
-    def replace_active_document_from_snapshot(self, snapshot_bytes: bytes, affected_pages: Optional[List[int]] = None) -> None:
+    def replace_active_document_from_snapshot(self, snapshot_bytes: bytes, affected_pages: list[int] | None = None) -> None:
         if not snapshot_bytes:
             raise ValueError("缺少文件快照")
         self._restore_doc_from_snapshot(snapshot_bytes)
@@ -1763,7 +1764,7 @@ class PDFModel:
         """Capture one-page snapshot without any whole-document fallback."""
         if not self.doc or page_num_0based < 0 or page_num_0based >= len(self.doc):
             raise ValueError(f"無效頁碼: {page_num_0based + 1}")
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
 
         # 1) direct page copy with annotations
         try:
@@ -2335,11 +2336,11 @@ class PDFModel:
         font: str,
         size: float,
         color: tuple,
-        original_text: Optional[str],
-        new_rect: Optional[fitz.Rect],
-        resolved_target_span_id: Optional[str],
+        original_text: str | None,
+        new_rect: fitz.Rect | None,
+        resolved_target_span_id: str | None,
         effective_target_mode: str,
-    ) -> tuple[EditTextResult, Optional[_EditTextResolveResult]]:
+    ) -> tuple[EditTextResult, _EditTextResolveResult | None]:
         target_span = None
         if resolved_target_span_id:
             target_span = self.block_manager.find_run_by_id(page_idx, resolved_target_span_id)
@@ -2499,7 +2500,7 @@ class PDFModel:
         size: float,
         color: tuple,
         vertical_shift_left: bool,
-        new_rect: Optional[fitz.Rect],
+        new_rect: fitz.Rect | None,
         snapshot_bytes: bytes,
         resolve_result: _EditTextResolveResult,
     ) -> fitz.Rect:
@@ -2782,9 +2783,7 @@ class PDFModel:
         page_token_coverage = self._token_coverage_ratio(new_text, norm_page)
         exact_present = (norm_new in norm_page) or (bool(norm_clip) and norm_new in norm_clip)
         has_complex_script = self._has_complex_script(new_text)
-        if not norm_new:
-            target_present = True
-        elif exact_present:
+        if not norm_new or exact_present:
             target_present = True
         elif resolve_result.effective_target_mode == "paragraph":
             if has_complex_script:
@@ -2870,8 +2869,8 @@ class PDFModel:
                   original_text: str = None,
                   vertical_shift_left: bool = True,
                   new_rect: fitz.Rect = None,
-                  target_span_id: Optional[str] = None,
-                  target_mode: Optional[str] = None) -> EditTextResult:
+                  target_span_id: str | None = None,
+                  target_mode: str | None = None) -> EditTextResult:
         """
         編輯文字：五步流程 + 三策略智能插入。
 
@@ -2945,7 +2944,7 @@ class PDFModel:
                 logger.debug(
                     "auto-promoted target_mode run→paragraph (no explicit span_id)"
                 )
-        resolve_result: Optional[_EditTextResolveResult] = None
+        resolve_result: _EditTextResolveResult | None = None
 
         # ── Step 0: 擷取 page-level 快照，供回滾使用 ──
         snapshot_bytes = self._capture_page_snapshot(page_idx)
@@ -3067,7 +3066,7 @@ class PDFModel:
         #          此處不再呼叫 _save_state()，避免雙重儲存浪費 I/O。
 
     # _save_state() 已於 Phase 6 移除，所有 undo/redo 由 CommandManager 統一管理。
-    
+
     def _full_save_to_path(self, path: str):
         """
         完整儲存到指定路徑。若目標路徑與目前開啟的檔案相同（doc.name），
@@ -3169,7 +3168,7 @@ class PDFModel:
         self.edit_count = 0
         if active_sid:
             self.tools.on_session_saved(active_sid)
-    
+
     def has_unsaved_changes(self) -> bool:
         """檢查是否有未儲存的變更（Phase 6：統一由 command_manager 管理）。"""
         sid = self.get_active_session_id()

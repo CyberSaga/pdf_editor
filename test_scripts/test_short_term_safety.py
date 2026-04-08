@@ -18,9 +18,9 @@ if str(ROOT) not in sys.path:
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QApplication
 
+import view.pdf_view as pdf_view
 from model.edit_commands import CommandManager, EditCommand
 from model.pdf_model import PDFModel
-import view.pdf_view as pdf_view
 
 
 class _NamedCommand(EditCommand):
@@ -122,17 +122,16 @@ def test_edit_text_reports_rollback_failures(caplog: pytest.LogCaptureFixture, m
             monkeypatch.setattr(model, "_convert_text_to_html", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("primary failure")))
             monkeypatch.setattr(model, "_restore_page_from_snapshot", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("rollback failure")))
 
-            with caplog.at_level(logging.ERROR):
-                with pytest.raises(RuntimeError, match="rollback failure"):
-                    model.edit_text(
-                        page_num=1,
-                        rect=fitz.Rect(target.layout_rect),
-                        new_text="Edited text",
-                        font=target.font,
-                        size=max(8, int(round(target.size))),
-                        color=target.color,
-                        original_text=target.text,
-                    )
+            with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError, match="rollback failure"):
+                model.edit_text(
+                    page_num=1,
+                    rect=fitz.Rect(target.layout_rect),
+                    new_text="Edited text",
+                    font=target.font,
+                    size=max(8, int(round(target.size))),
+                    color=target.color,
+                    original_text=target.text,
+                )
 
             assert "rollback failure" in caplog.text.lower()
             assert "primary failure" in caplog.text.lower()

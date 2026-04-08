@@ -19,10 +19,9 @@ track_A_core.py — Vision LLM 重生頁面版（Track A 核心引擎）
   - 輸出透過 UnifiedObjectCommand 封裝
 """
 
-import logging
 import inspect
+import logging
 from dataclasses import dataclass, field
-from typing import Optional
 
 import fitz
 
@@ -581,7 +580,7 @@ class TrackAEngine:
 
     def _find_edited_block(
         self, layout: LayoutAnalysis, edited_rect: fitz.Rect,
-    ) -> Optional[int]:
+    ) -> int | None:
         """找出與 edited_rect 重疊最大的塊索引。
 
         跳過以下不合格的塊：
@@ -661,7 +660,7 @@ class TrackAEngine:
 
     def _find_column_for_block(
         self, layout: LayoutAnalysis, block: BlockLayout,
-    ) -> Optional[fitz.Rect]:
+    ) -> fitz.Rect | None:
         """找出包含指定塊的欄位。"""
         center_x = block.bbox.x0 + block.bbox.width / 2
         for col in layout.columns:
@@ -751,7 +750,7 @@ class TrackAEngine:
         }
         return font_map.get(font.lower(), font)
 
-    def _pre_read_affected_blocks(self, page: fitz.Page, plan: "ReflowPlan") -> dict:
+    def _pre_read_affected_blocks(self, page: fitz.Page, plan: ReflowPlan) -> dict:
         """
         在任何 redaction 之前讀取受影響塊的文字。
 
@@ -841,7 +840,7 @@ class TrackAEngine:
         self,
         doc: fitz.Document,
         page_idx: int,
-        plan: "ReflowPlan",
+        plan: ReflowPlan,
         font: str,
         size: float,
         color: tuple,
@@ -1161,7 +1160,7 @@ class TrackAEngine:
         page: fitz.Page,
         target_rect: fitz.Rect,
         stroke_color: tuple,
-        fill_color: Optional[tuple] = None,
+        fill_color: tuple | None = None,
     ) -> bool:
         """透過 annotation API 變更顏色。回傳是否成功。"""
         best, best_area = None, 0.0
@@ -1210,7 +1209,7 @@ class TrackAEngine:
         page: fitz.Page,
         target_rect: fitz.Rect,
         fill: bool,
-        fill_color: Optional[tuple] = None,
+        fill_color: tuple | None = None,
     ) -> bool:
         """透過 annotation API 切換填滿狀態。回傳是否成功。"""
         best, best_area = None, 0.0

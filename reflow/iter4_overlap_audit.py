@@ -1,9 +1,13 @@
 """iter4_overlap_audit.py — 診斷 verify_no_overlap 回報的重疊原因"""
-import sys, pathlib
+import pathlib
+import sys
+
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import fitz
+
 from reflow.track_A_core import TrackAEngine
+
 
 def make_two_block_doc():
     doc = fitz.open()

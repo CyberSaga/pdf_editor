@@ -21,11 +21,9 @@ track_B_core.py — 低階 content stream 精準操作版（Track B 核心引擎
   - 輸出透過 UnifiedObjectCommand 封裝
 """
 
-import logging
 import inspect
-import re
+import logging
 from dataclasses import dataclass, field
-from typing import Optional
 
 import fitz
 
@@ -67,7 +65,7 @@ class DeltaShift:
     new_bbox: fitz.Rect
     delta_x: float = 0.0
     delta_y: float = 0.0
-    rewrite_text: Optional[str] = None  # 若不為 None，表示需要改寫文字內容
+    rewrite_text: str | None = None  # 若不為 None，表示需要改寫文字內容
 
 
 @dataclass
@@ -763,7 +761,7 @@ class TrackBEngine:
 
     def _find_edited_span(
         self, analysis: StreamAnalysis, edited_rect: fitz.Rect,
-    ) -> Optional[int]:
+    ) -> int | None:
         """找出與 edited_rect 重疊最大的 span 索引。
 
         注意：rawdict 模式對部分 CJK 字型可能回傳 text=''，
@@ -1147,7 +1145,7 @@ class TrackBEngine:
         page: fitz.Page,
         target_rect: fitz.Rect,
         stroke_color: tuple,
-        fill_color: Optional[tuple] = None,
+        fill_color: tuple | None = None,
     ) -> bool:
         best, best_area = None, 0.0
         for annot in page.annots():
@@ -1190,7 +1188,7 @@ class TrackBEngine:
         page: fitz.Page,
         target_rect: fitz.Rect,
         fill: bool,
-        fill_color: Optional[tuple] = None,
+        fill_color: tuple | None = None,
     ) -> bool:
         best, best_area = None, 0.0
         for annot in page.annots():

@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from typing import List
-
 from PySide6.QtCore import QRectF, QSizeF
-from PySide6.QtGui import QPainter
+from PySide6.QtGui import QPageLayout, QPageSize, QPainter
 from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QPageLayout, QPageSize
 
 from .base_driver import PrintJobOptions, PrintJobResult
 from .errors import PrintJobSubmissionError
@@ -167,7 +164,7 @@ def _draw_page_image(
 
 def raster_print_pdf(
     pdf_path: str,
-    page_indices: List[int],
+    page_indices: list[int],
     options: PrintJobOptions,
     renderer: PDFRenderer | None = None,
 ) -> PrintJobResult:

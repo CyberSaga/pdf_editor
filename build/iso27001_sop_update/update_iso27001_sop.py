@@ -10,7 +10,6 @@ from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Pt
 
-
 DEFAULT_OUTPUT_NAME = "ISO27001審查項目SOP_附件加密與隨身碟加密.pptx"
 
 

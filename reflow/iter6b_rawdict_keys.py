@@ -1,5 +1,7 @@
 """iter6b_rawdict_keys.py — 確認 rawdict span 有哪些 keys"""
-import sys, pathlib
+import pathlib
+import sys
+
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 import fitz
 

@@ -1,10 +1,9 @@
-# -*- coding: utf-8 -*-
 """Regression tests for char-level run reconstruction from rawdict."""
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import fitz
 

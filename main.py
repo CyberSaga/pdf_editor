@@ -16,6 +16,7 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
     _configure_logging()
 
     from PySide6.QtWidgets import QApplication
+
     from view.pdf_view import PDFView
 
     app = QApplication.instance()
@@ -34,8 +35,8 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
         controller = startup_ctx["controller"]
         if controller is not None:
             return controller
-        from model.pdf_model import PDFModel
         from controller.pdf_controller import PDFController
+        from model.pdf_model import PDFModel
 
         model = PDFModel()
         controller = PDFController(model, view)

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Logic checks for unified print dialog pipeline."""
 
 from __future__ import annotations

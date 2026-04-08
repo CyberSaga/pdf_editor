@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Iterator, List, Tuple
 
 import fitz
 from PySide6.QtGui import QImage
@@ -51,7 +51,7 @@ class PDFRenderer:
         self,
         page_index: int,
         page: fitz.Page,
-        cache: "OrderedDict[int, fitz.DisplayList]",
+        cache: OrderedDict[int, fitz.DisplayList],
     ) -> fitz.DisplayList:
         if page_index in cache:
             dlist = cache.pop(page_index)
@@ -67,7 +67,7 @@ class PDFRenderer:
     def iter_page_images(
         self,
         pdf_path: str,
-        page_indices: List[int],
+        page_indices: list[int],
         dpi: int,
     ) -> Iterator[RenderedPage]:
         """Stream page images in requested order."""
@@ -75,7 +75,7 @@ class PDFRenderer:
         matrix = fitz.Matrix(zoom, zoom)
 
         doc = fitz.open(pdf_path)
-        cache: "OrderedDict[int, fitz.DisplayList]" = OrderedDict()
+        cache: OrderedDict[int, fitz.DisplayList] = OrderedDict()
         try:
             for page_index in page_indices:
                 if page_index < 0 or page_index >= len(doc):
@@ -100,9 +100,9 @@ class PDFRenderer:
     def render_all_to_images(
         self,
         pdf_path: str,
-        page_indices: List[int],
+        page_indices: list[int],
         dpi: int,
-    ) -> List[RenderedPage]:
+    ) -> list[RenderedPage]:
         """
         Naive baseline path for benchmarks.
 
@@ -112,7 +112,7 @@ class PDFRenderer:
         return list(self.iter_page_images(pdf_path, page_indices, dpi))
 
     @staticmethod
-    def parse_page_ranges(page_ranges: str | None, total_pages: int) -> List[int]:
+    def parse_page_ranges(page_ranges: str | None, total_pages: int) -> list[int]:
         """Parse page-ranges like '1,3,5-7' into 0-based indices."""
         if total_pages <= 0:
             return []
