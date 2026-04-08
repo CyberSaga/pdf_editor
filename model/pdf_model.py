@@ -1988,19 +1988,28 @@ class PDFModel:
         is_serif  = "times" in low or "roman" in low or "georgia" in low
 
         if is_mono:
-            if is_bold and is_italic: return "cour-bi"
-            if is_bold:               return "cour-b"
-            if is_italic:             return "cour-i"
+            if is_bold and is_italic:
+                return "cour-bi"
+            if is_bold:
+                return "cour-b"
+            if is_italic:
+                return "cour-i"
             return "cour"
         if is_serif:
-            if is_bold and is_italic: return "tibo"
-            if is_bold:               return "tib"
-            if is_italic:             return "tiit"
+            if is_bold and is_italic:
+                return "tibo"
+            if is_bold:
+                return "tib"
+            if is_italic:
+                return "tiit"
             return "tiro"
         # sans-serif (Helvetica / Arial / 其他)
-        if is_bold and is_italic: return "heit"
-        if is_bold:               return "hebo"
-        if is_italic:             return "heit"
+        if is_bold and is_italic:
+            return "heit"
+        if is_bold:
+            return "hebo"
+        if is_italic:
+            return "heit"
         return "helv"
 
     def _needs_cjk_font(self, text: str) -> bool:
@@ -2863,6 +2872,48 @@ class PDFModel:
     # Phase 3: 五步流程 + 三策略 edit_text
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _resolve_effective_target_mode(
+        self,
+        *,
+        target_mode: str | None,
+        target_span_id: str | None,
+        new_rect: fitz.Rect | None,
+        page_idx: int,
+        rect: fitz.Rect,
+        original_text: str | None,
+    ) -> str:
+        """Determine effective target mode from caller hints and heuristics."""
+        if target_mode is None:
+            if new_rect is not None and not target_span_id:
+                effective = "paragraph"
+            elif target_span_id:
+                effective = "run"
+            else:
+                effective = "paragraph"
+        else:
+            effective = (target_mode or self.text_target_mode or "run").strip().lower()
+        if effective not in {"run", "paragraph"}:
+            effective = "run"
+        if effective == "run" and not target_span_id:
+            should_promote = True
+            if original_text:
+                probe_block = self.block_manager.find_by_rect(
+                    page_idx, rect, original_text=original_text, doc=self.doc
+                )
+                if probe_block and probe_block.text:
+                    norm_orig = self._normalize_text_for_compare(original_text)
+                    norm_block = self._normalize_text_for_compare(probe_block.text)
+                    if norm_block and len(norm_orig) < len(norm_block) * 0.6:
+                        should_promote = False
+                        logger.debug(
+                            "keeping run mode: original_text (%d chars) < 60%% of block text (%d chars)",
+                            len(norm_orig), len(norm_block),
+                        )
+            if should_promote:
+                effective = "paragraph"
+                logger.debug("auto-promoted target_mode run->paragraph (no explicit span_id)")
+        return effective
+
     def edit_text(self, page_num: int, rect: fitz.Rect, new_text: str,
                   font: str = "helv", size: float = 12.0,
                   color: tuple = (0.0, 0.0, 0.0),
@@ -2902,48 +2953,14 @@ class PDFModel:
         page_rect = page.rect
         rollback_flag = False
         resolved_target_span_id = target_span_id
-        if target_mode is None:
-            if new_rect is not None and not target_span_id:
-                # Legacy drag-move callers (without explicit span/mode) historically
-                # expect block-level relocation semantics.
-                effective_target_mode = "paragraph"
-            elif target_span_id:
-                # Explicit span-id without explicit mode should stay span-precise.
-                effective_target_mode = "run"
-            else:
-                # Legacy rect-based edit callers (no explicit id/mode) historically
-                # operate on a full paragraph/block scope.
-                effective_target_mode = "paragraph"
-        else:
-            effective_target_mode = (target_mode or self.text_target_mode or "run").strip().lower()
-        if effective_target_mode not in {"run", "paragraph"}:
-            effective_target_mode = "run"
-        # Safety: "run" mode without an explicit span_id is ambiguous for multi-run
-        # blocks — the caller likely intended block-level replacement.  Auto-promote
-        # to "paragraph" to avoid orphaning sibling runs.
-        # Exception: if the original_text is clearly shorter than the target block
-        # (< 60% of block text), the caller likely wants a sub-section edit; stay in
-        # run mode so we don't clobber the whole block.
-        if effective_target_mode == "run" and not target_span_id:
-            _should_promote = True
-            if original_text:
-                _probe_block = self.block_manager.find_by_rect(
-                    page_idx, rect, original_text=original_text, doc=self.doc
-                )
-                if _probe_block and _probe_block.text:
-                    _norm_orig = self._normalize_text_for_compare(original_text)
-                    _norm_block = self._normalize_text_for_compare(_probe_block.text)
-                    if _norm_block and len(_norm_orig) < len(_norm_block) * 0.6:
-                        _should_promote = False
-                        logger.debug(
-                            "keeping run mode: original_text (%d chars) < 60%% of block text (%d chars)",
-                            len(_norm_orig), len(_norm_block),
-                        )
-            if _should_promote:
-                effective_target_mode = "paragraph"
-                logger.debug(
-                    "auto-promoted target_mode run→paragraph (no explicit span_id)"
-                )
+        effective_target_mode = self._resolve_effective_target_mode(
+            target_mode=target_mode,
+            target_span_id=target_span_id,
+            new_rect=new_rect,
+            page_idx=page_idx,
+            rect=rect,
+            original_text=original_text,
+        )
         resolve_result: _EditTextResolveResult | None = None
 
         # ── Step 0: 擷取 page-level 快照，供回滾使用 ──
