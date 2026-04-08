@@ -1,22 +1,24 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QMessageBox, QApplication, QFileDialog, QDialog, QProgressDialog
-from PySide6.QtGui import QImage, QPixmap, QShortcut, QKeySequence
-from PySide6.QtCore import QTimer, QObject, QThread, Qt, Signal, Slot
-from model.pdf_model import PDFModel
-from model.edit_commands import EditTextCommand, SnapshotCommand, AddTextboxCommand, EditTextResult
-from view.pdf_view import PDFView, ViewportAnchor, OptimizePdfDialog, EditTextRequest, MoveTextRequest
-from typing import Callable, List, Tuple, Optional
-from utils.helpers import pixmap_to_qpixmap, show_error
-from pathlib import Path
-from collections import OrderedDict
-from dataclasses import dataclass, field
 import difflib
 import io
 import logging
 import tempfile
 import uuid
+from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+
 import fitz
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QProgressDialog
+
+from model.edit_commands import AddTextboxCommand, EditTextCommand, EditTextResult, SnapshotCommand
+from model.pdf_model import PDFModel
+from utils.helpers import pixmap_to_qpixmap, show_error
+from view.pdf_view import EditTextRequest, MoveTextRequest, OptimizePdfDialog, PDFView, ViewportAnchor
 
 THUMB_BATCH_SIZE = 10
 THUMB_BATCH_INTERVAL_MS = 30
@@ -28,15 +30,27 @@ VISIBLE_RENDER_BATCH_SIZE = 2
 LOW_RES_RENDER_SCALE = 0.5
 RENDER_CACHE_BUDGET_BYTES = 96 * 1024 * 1024
 
-from src.printing import PrintDispatcher, PrintingError, PrintHelperTerminatedError
+from src.printing import PrintDispatcher, PrintHelperTerminatedError, PrintingError
 from src.printing.helper_protocol import PrintHelperJob
 from src.printing.messages import (
     PRINT_CLOSING_MESSAGE as CLEAN_PRINT_CLOSING_MESSAGE,
+)
+from src.printing.messages import (
     PRINT_PREPARING_MESSAGE as CLEAN_PRINT_PREPARING_MESSAGE,
+)
+from src.printing.messages import (
     PRINT_STALLED_MESSAGE as CLEAN_PRINT_STALLED_MESSAGE,
+)
+from src.printing.messages import (
     PRINT_STATUS_MESSAGE as CLEAN_PRINT_STATUS_MESSAGE,
+)
+from src.printing.messages import (
     PRINT_SUBMITTING_MESSAGE as CLEAN_PRINT_SUBMITTING_MESSAGE,
+)
+from src.printing.messages import (
     PRINT_TERMINATE_BUTTON_TEXT as CLEAN_PRINT_TERMINATE_BUTTON_TEXT,
+)
+from src.printing.messages import (
     PRINT_TERMINATING_MESSAGE as CLEAN_PRINT_TERMINATING_MESSAGE,
 )
 from src.printing.print_dialog import UnifiedPrintDialog
@@ -67,7 +81,7 @@ class SessionUIState:
     scale: float = 1.0
     search_state: dict = field(default_factory=lambda: {"query": "", "results": [], "index": -1})
     mode: str = "browse"
-    viewport_anchor: Optional[ViewportAnchor] = None
+    viewport_anchor: ViewportAnchor | None = None
 
 
 @dataclass
@@ -194,20 +208,20 @@ class PDFController:
         self.model = model
         self.view = view
         self.annotations = []
-        self.print_dispatcher: Optional[PrintDispatcher] = None
+        self.print_dispatcher: PrintDispatcher | None = None
         self._print_dialog = None
-        self._print_progress_dialog: Optional[QProgressDialog] = None
-        self._print_thread: Optional[QThread] = None
-        self._print_worker: Optional[_PrintSubmissionWorker] = None
-        self._print_runner: Optional[PrintSubprocessRunner] = None
-        self._print_worker_bridge: Optional[_PrintWorkerBridge] = None
+        self._print_progress_dialog: QProgressDialog | None = None
+        self._print_thread: QThread | None = None
+        self._print_worker: _PrintSubmissionWorker | None = None
+        self._print_runner: PrintSubprocessRunner | None = None
+        self._print_worker_bridge: _PrintWorkerBridge | None = None
         self._print_close_pending = False
         self._print_stalled = False
-        self._optimize_progress_dialog: Optional[QProgressDialog] = None
-        self._optimize_thread: Optional[QThread] = None
-        self._optimize_worker: Optional[_OptimizePdfCopyWorker] = None
-        self._optimize_worker_bridge: Optional[_OptimizeWorkerBridge] = None
-        self._optimize_paused_session_id: Optional[str] = None
+        self._optimize_progress_dialog: QProgressDialog | None = None
+        self._optimize_thread: QThread | None = None
+        self._optimize_worker: _OptimizePdfCopyWorker | None = None
+        self._optimize_worker_bridge: _OptimizeWorkerBridge | None = None
+        self._optimize_paused_session_id: str | None = None
         self._load_gen_by_session: dict[str, int] = {}
         self._render_gen_by_session: dict[str, int] = {}
         self._stale_index_gen_by_session: dict[str, int] = {}
@@ -281,10 +295,10 @@ class PDFController:
         self.view.sig_load_annotations.connect(self.load_annotations)
         self.view.sig_jump_to_annotation.connect(self.jump_to_annotation)
         self.view.sig_toggle_annotations_visibility.connect(self.toggle_annotations_visibility)
-        
+
         # Snapshot connection
         self.view.sig_snapshot_page.connect(self.snapshot_page)
-        
+
         # Insert pages connections
         self.view.sig_insert_blank_page.connect(self.insert_blank_page)
         self.view.sig_insert_pages_from_file.connect(self.insert_pages_from_file)
@@ -322,7 +336,7 @@ class PDFController:
         self._stale_index_gen_by_session[session_id] = gen
         return gen
 
-    def _pause_session_background_loading(self, session_id: Optional[str]) -> None:
+    def _pause_session_background_loading(self, session_id: str | None) -> None:
         if not session_id:
             return
         self._next_load_gen(session_id)
@@ -365,7 +379,7 @@ class PDFController:
     def _empty_search_state(self) -> dict:
         return {"query": "", "results": [], "index": -1}
 
-    def _capture_fullscreen_snapshot(self, session_id: Optional[str] = None, use_current_view: bool = True) -> None:
+    def _capture_fullscreen_snapshot(self, session_id: str | None = None, use_current_view: bool = True) -> None:
         sid = session_id or self.model.get_active_session_id()
         if not sid or sid in self._fullscreen_session_snapshots:
             return
@@ -418,7 +432,7 @@ class PDFController:
     def _restore_active_fullscreen_anchor(self, snapshot: FullscreenSessionSnapshot) -> None:
         self.view.restore_viewport_anchor(snapshot.anchor)
 
-    def _restore_viewport_anchor_if_current(self, session_id: str, gen: int, anchor: Optional[ViewportAnchor]) -> None:
+    def _restore_viewport_anchor_if_current(self, session_id: str, gen: int, anchor: ViewportAnchor | None) -> None:
         if anchor is None:
             return
         if self.model.get_active_session_id() != session_id:
@@ -427,7 +441,7 @@ class PDFController:
             return
         self.view.restore_viewport_anchor(anchor)
 
-    def _schedule_restore_viewport_anchor(self, session_id: str, gen: int, anchor: Optional[ViewportAnchor]) -> None:
+    def _schedule_restore_viewport_anchor(self, session_id: str, gen: int, anchor: ViewportAnchor | None) -> None:
         if anchor is None:
             return
         QTimer.singleShot(0, lambda sid=session_id, g=gen, a=anchor: self._restore_viewport_anchor_if_current(sid, g, a))
@@ -446,7 +460,7 @@ class PDFController:
     def _render_revision(self, session_id: str) -> int:
         return self._render_revision_by_session.get(session_id, 0)
 
-    def _bump_render_revision(self, session_id: Optional[str] = None) -> None:
+    def _bump_render_revision(self, session_id: str | None = None) -> None:
         sid = session_id or self.model.get_active_session_id()
         if not sid:
             return
@@ -469,7 +483,7 @@ class PDFController:
             self._render_revision(session_id),
         )
 
-    def _get_cached_render(self, session_id: str, page_idx: int, rendered_scale: float, quality: str) -> Optional[QPixmap]:
+    def _get_cached_render(self, session_id: str, page_idx: int, rendered_scale: float, quality: str) -> QPixmap | None:
         key = self._render_cache_key(session_id, page_idx, rendered_scale, quality)
         cached = self._render_cache.pop(key, None)
         if cached is None:
@@ -524,7 +538,7 @@ class PDFController:
         prefetch_pages = list(range(prefetch_start, prefetch_end + 1)) if prefetch_end >= prefetch_start else []
         return (visible_pages, prefetch_pages)
 
-    def _schedule_visible_render(self, session_id: str, immediate_page_idx: Optional[int] = None) -> None:
+    def _schedule_visible_render(self, session_id: str, immediate_page_idx: int | None = None) -> None:
         if not session_id or not self.model.doc or not self.view.continuous_pages:
             return
         gen = self._next_render_gen(session_id)
@@ -658,7 +672,7 @@ class PDFController:
         self.view.populate_watermarks_list([])
         self.view.update_undo_redo_tooltips("復原（無可撤銷操作）", "重做（無可重做操作）")
 
-    def _render_active_session(self, initial_page_idx: Optional[int] = None) -> None:
+    def _render_active_session(self, initial_page_idx: int | None = None) -> None:
         sid = self.model.get_active_session_id()
         if not sid or not self.model.doc:
             self._reset_empty_ui()
@@ -794,7 +808,7 @@ class PDFController:
             return
         self.save_ordered_sources_as_new(ordered_sources, path)
 
-    def merge_ordered_sources_into_current(self, ordered_sources: List[dict]) -> None:
+    def merge_ordered_sources_into_current(self, ordered_sources: list[dict]) -> None:
         if not self.model.doc:
             raise ValueError("沒有開啟的PDF文件")
 
@@ -822,7 +836,7 @@ class PDFController:
         self._schedule_stale_index_drain()
         self._update_undo_redo_tooltips()
 
-    def save_ordered_sources_as_new(self, ordered_sources: List[dict], output_path: str) -> None:
+    def save_ordered_sources_as_new(self, ordered_sources: list[dict], output_path: str) -> None:
         merged_doc = self.model.compose_merged_document(ordered_sources)
         try:
             merged_doc.save(output_path, garbage=0)
@@ -830,7 +844,7 @@ class PDFController:
             merged_doc.close()
         self.open_pdf(output_path)
 
-    def _resolve_merge_file(self, entry: dict) -> Optional[dict]:
+    def _resolve_merge_file(self, entry: dict) -> dict | None:
         path = (entry or {}).get("path")
         if not path:
             return None
@@ -1146,7 +1160,7 @@ class PDFController:
         self._print_progress_dialog.deleteLater()
         self._print_progress_dialog = None
 
-    def _set_print_status_message(self, message: Optional[str]) -> None:
+    def _set_print_status_message(self, message: str | None) -> None:
         if hasattr(self.view, "set_status_bar_override_message"):
             self.view.set_status_bar_override_message(message)
             return
@@ -1357,7 +1371,7 @@ class PDFController:
         finally:
             self._print_dialog = None
 
-    def delete_pages(self, pages: List[int]):
+    def delete_pages(self, pages: list[int]):
         before = self.model._capture_doc_snapshot()
         # Model is the source of truth: it sanitizes dirty input and returns the actual deleted pages.
         actual_deleted_pages = self.model.delete_pages(pages)
@@ -1380,7 +1394,7 @@ class PDFController:
         self._schedule_stale_index_drain()
         self._update_undo_redo_tooltips()
 
-    def rotate_pages(self, pages: List[int], degrees: int):
+    def rotate_pages(self, pages: list[int], degrees: int):
         before = self.model._capture_doc_snapshot()
         # Model sanitizes and returns the actual rotated pages for metadata correctness.
         actual_rotated_pages = self.model.rotate_pages(pages, degrees)
@@ -1401,10 +1415,10 @@ class PDFController:
         self._rebuild_continuous_scene(self.view.current_page)
         self._update_undo_redo_tooltips()
 
-    def export_pages(self, pages: List[int], path: str, as_image: bool, dpi: int, image_format: str):
+    def export_pages(self, pages: list[int], path: str, as_image: bool, dpi: int, image_format: str):
         self.model.export_pages(pages, path, as_image=as_image, dpi=dpi, image_format=image_format)
 
-    def add_highlight(self, page: int, rect: fitz.Rect, color: Tuple[float, float, float, float]):
+    def add_highlight(self, page: int, rect: fitz.Rect, color: tuple[float, float, float, float]):
         before = self.model._capture_doc_snapshot()
         self.model.tools.annotation.add_highlight(page, rect, color)
         self._invalidate_active_render_state()
@@ -1424,7 +1438,7 @@ class PDFController:
     def get_text_bounds(self, page: int, rough_rect: fitz.Rect) -> fitz.Rect:
         return self.model.tools.annotation.get_text_bounds(page, rough_rect)
 
-    def add_rect(self, page: int, rect: fitz.Rect, color: Tuple[float, float, float, float], fill: bool):
+    def add_rect(self, page: int, rect: fitz.Rect, color: tuple[float, float, float, float], fill: bool):
         before = self.model._capture_doc_snapshot()
         self.model.tools.annotation.add_rect(page, rect, color, fill)
         self._invalidate_active_render_state()
@@ -1544,8 +1558,8 @@ class PDFController:
                     _doc = _model.doc   # 每次執行時取當前有效 doc（非閉包時的舊 doc）
                     if _doc is None:
                         return
-                    from reflow.track_B_core import TrackBEngine
                     from reflow.track_A_core import TrackAEngine
+                    from reflow.track_B_core import TrackBEngine
                     result_b = TrackBEngine().apply_displacement_only(
                         doc=_doc, page_idx=_page_idx,
                         edited_rect=_edit_rect, new_text=_new_text,
@@ -1619,7 +1633,7 @@ class PDFController:
         except Exception as e:
             logger.error(f"編輯文字失敗: {e}")
             show_error(self.view, f"編輯失敗: {e}")
-        
+
     def move_text_across_pages(self, request: MoveTextRequest) -> None:
         source_page = request.source_page
         source_rect = request.source_rect
@@ -1753,7 +1767,7 @@ class PDFController:
         source_rect: fitz.Rect,
         original_text: str = None,
         target_span_id: str = None,
-    ) -> Optional[str]:
+    ) -> str | None:
         page_idx = source_page - 1
         if target_span_id:
             source_run = self.model.block_manager.find_run_by_id(page_idx, target_span_id)
@@ -1850,7 +1864,7 @@ class PDFController:
             state = self._get_ui_state(sid)
             state.current_page = max(0, page_num - 1)
 
-    def ocr_pages(self, pages: List[int]):
+    def ocr_pages(self, pages: list[int]):
         if not self.model.doc:
             show_error(self.view, "No PDF is open.")
             return {}
@@ -1933,7 +1947,7 @@ class PDFController:
         sid = self.model.get_active_session_id()
         if sid:
             self._get_ui_state(sid).current_page = page_idx
-        
+
     def change_scale(self, page_idx: int, scale: float):
         """設定縮放比例：連續模式先重建 placeholder 幾何，再只重繪可見頁。"""
         if not self.model.doc or page_idx < 0 or page_idx >= len(self.model.doc):
@@ -2117,7 +2131,7 @@ class PDFController:
     def add_annotation(self, page_idx: int, doc_point: fitz.Point, text: str):
         """Handle request to add a new annotation. doc_point 已由 view 轉為文件座標。"""
         if not self.model.doc: return
-        
+
         try:
             before = self.model._capture_doc_snapshot()
             # Model expects 1-based page number
@@ -2168,22 +2182,22 @@ class PDFController:
             logger.warning(f"無效頁碼: {page_idx}")
             show_error(self.view, "無效的頁碼")
             return
-        
+
         try:
             # 獲取包含所有註解的扁平化頁面影像
             # 使用較高的縮放比例以獲得更好的品質
             pix = self.model.get_page_snapshot(page_idx + 1, scale=2.0)
-            
+
             # 轉換為 QPixmap
             qpix = pixmap_to_qpixmap(pix)
-            
+
             # 複製到剪貼簿
             clipboard = QApplication.clipboard()
             clipboard.setPixmap(qpix)
-            
+
             logger.debug(f"頁面 {page_idx + 1} 的快照已複製到剪貼簿，尺寸: {qpix.width()}x{qpix.height()}")
             QMessageBox.information(self.view, "快照成功", f"頁面 {page_idx + 1} 的快照已複製到剪貼簿")
-            
+
         except Exception as e:
             logger.error(f"快照失敗: {e}")
             show_error(self.view, f"快照失敗: {e}")
@@ -2193,7 +2207,7 @@ class PDFController:
         if not self.model.doc:
             show_error(self.view, "沒有開啟的PDF文件")
             return
-        
+
         try:
             before = self.model._capture_doc_snapshot()
             # Model clamps/sanitizes position and returns the actual inserted page number.
@@ -2222,12 +2236,12 @@ class PDFController:
             logger.error(f"插入空白頁面失敗: {e}")
             show_error(self.view, f"插入空白頁面失敗: {e}")
 
-    def insert_pages_from_file(self, source_file: str, source_pages: List[int], position: int):
+    def insert_pages_from_file(self, source_file: str, source_pages: list[int], position: int):
         """從其他檔案插入頁面"""
         if not self.model.doc:
             show_error(self.view, "沒有開啟的PDF文件")
             return
-        
+
         try:
             before = self.model._capture_doc_snapshot()
             # Model validates source pages and returns the actual inserted target positions.
