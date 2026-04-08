@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Helper-process print pipeline tests."""
 
 from __future__ import annotations
@@ -6,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 import time
 from pathlib import Path
 

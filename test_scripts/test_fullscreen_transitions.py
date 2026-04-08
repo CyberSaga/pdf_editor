@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from test_multi_tab_plan import (
+from test_multi_tab_plan import (  # noqa: F401 — re-exported for pytest collection
     qapp,
     mvc,
     test_26_fullscreen_no_document_is_noop,

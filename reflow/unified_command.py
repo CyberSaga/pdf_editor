@@ -19,16 +19,15 @@ unified_command.py — UnifiedObjectCommand 類別
   - 使用 capture_viewport_anchor / restore_viewport_anchor 做視窗鎖定
 """
 
-import io
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Any, Optional, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import fitz
 
 if TYPE_CHECKING:
-    from model.pdf_model import PDFModel
+    pass
 
 # 延遲 import 以避免循環依賴
 from model.edit_commands import EditCommand
@@ -130,28 +129,28 @@ class ObjectChanges:
     使用方式：只填需要變更的欄位，其餘留 None。
     """
     # 文字 reflow 參數
-    new_text: Optional[str] = None
-    original_text: Optional[str] = None
-    font: Optional[str] = None
-    size: Optional[float] = None
-    color: Optional[tuple] = None           # (r, g, b)，0.0~1.0
+    new_text: str | None = None
+    original_text: str | None = None
+    font: str | None = None
+    size: float | None = None
+    color: tuple | None = None           # (r, g, b)，0.0~1.0
     reflow_enabled: bool = True             # 是否啟用後續塊 reflow
 
     # 物件屬性參數
-    new_color: Optional[tuple] = None       # 形狀新顏色 (r, g, b)
-    new_opacity: Optional[float] = None     # 透明度 0.0~1.0
-    new_fill: Optional[bool] = None         # 是否填滿
-    new_fill_color: Optional[tuple] = None  # 填滿顏色 (r, g, b)
+    new_color: tuple | None = None       # 形狀新顏色 (r, g, b)
+    new_opacity: float | None = None     # 透明度 0.0~1.0
+    new_fill: bool | None = None         # 是否填滿
+    new_fill_color: tuple | None = None  # 填滿顏色 (r, g, b)
 
     # 旋轉參數
-    rotation_angle: Optional[float] = None  # 旋轉角度（度）
+    rotation_angle: float | None = None  # 旋轉角度（度）
 
     # 移動參數
-    new_rect: Optional[Any] = None          # 新位置 fitz.Rect
+    new_rect: Any | None = None          # 新位置 fitz.Rect
 
     # 進階參數
-    target_span_id: Optional[str] = None    # 精準 span 定位
-    target_mode: Optional[str] = None       # "run" | "paragraph"
+    target_span_id: str | None = None    # 精準 span 定位
+    target_mode: str | None = None       # "run" | "paragraph"
     vertical_shift_left: bool = True        # 垂直文字左移
     track_preference: str = "auto"          # "A" | "B" | "auto"
 
@@ -416,7 +415,7 @@ class UnifiedObjectCommand(EditCommand):
             target_annot.update()
             logger.debug(f"物件透明度已更新: opacity={new_opacity}")
         else:
-            logger.warning(f"找不到目標 annotation，無法變更透明度")
+            logger.warning("找不到目標 annotation，無法變更透明度")
 
     # ── 操作分派：object_fill ────────────────────────────────────────────
 
@@ -437,7 +436,7 @@ class UnifiedObjectCommand(EditCommand):
             target_annot.update()
             logger.debug(f"物件填滿已更新: fill={new_fill}")
         else:
-            logger.warning(f"找不到目標 annotation，無法切換填滿")
+            logger.warning("找不到目標 annotation，無法切換填滿")
 
     # ── 操作分派：textbox_rotate ─────────────────────────────────────────
 
@@ -562,7 +561,7 @@ class UnifiedObjectCommand(EditCommand):
 
     def _find_target_annotation(
         self, page: fitz.Page, target_rect: fitz.Rect,
-    ) -> Optional[fitz.Annot]:
+    ) -> fitz.Annot | None:
         """找出頁面中與 target_rect 重疊最大的 annotation。"""
         best_annot = None
         best_overlap = 0.0

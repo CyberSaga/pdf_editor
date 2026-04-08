@@ -1,11 +1,10 @@
-# -*- coding: utf-8 -*-
 """Targeted overlap-edit regression tests."""
 
 from __future__ import annotations
 
+import sys
 import tempfile
 from pathlib import Path
-import sys
 
 import fitz
 

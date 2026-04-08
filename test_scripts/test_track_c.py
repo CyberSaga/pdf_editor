@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 test_track_c.py — Track C Engine: Isolated Feasibility Spike Tests
 
@@ -22,8 +21,6 @@ Run:
 from __future__ import annotations
 
 import io
-import os
-import re
 import sys
 import traceback
 from pathlib import Path
@@ -33,8 +30,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import fitz
-
-from reflow.track_C_core import TrackCEngine, TJItem, TJOp
+from reflow.track_C_core import TrackCEngine
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Real sample PDF paths (relative to ROOT)
@@ -240,8 +236,8 @@ def test_simple_replacement():
     # Verify via get_text
     page_text = doc[0].get_text("text")
     assert "Hi" in page_text, f"'Hi' not found after edit (got: {page_text!r})"
-    assert "Hello" not in page_text, f"'Hello' still present after edit"
-    assert "World" in page_text, f"'World' was damaged by edit"
+    assert "Hello" not in page_text, "'Hello' still present after edit"
+    assert "World" in page_text, "'World' was damaged by edit"
     assert "Stable reference span here." in page_text, "Stable span was damaged"
 
     print("  [PASS] test_simple_replacement")
@@ -319,7 +315,7 @@ def test_kerning_preserved():
 
     # Verify text content is correct
     page_text = doc[0].get_text("text")
-    assert "Hi" in page_text, f"'Hi' not found after edit"
+    assert "Hi" in page_text, "'Hi' not found after edit"
     assert "World" in page_text, "'World' was damaged"
 
     print("  [PASS] test_kerning_preserved")
@@ -688,7 +684,7 @@ def test_real_pdfs():
     # explicit "success" or "rejected", never a raw crash.
     crashes = [r for r in results if r[0] == "error"]
     assert not crashes, (
-        f"These PDFs caused errors (not clean rejections):\n"
+        "These PDFs caused errors (not clean rejections):\n"
         + "\n".join(f"  {name}: {reason}" for _, name, _, reason in crashes)
     )
 

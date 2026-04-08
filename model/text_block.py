@@ -8,7 +8,6 @@ import statistics
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Optional
 
 import fitz
 
@@ -294,28 +293,28 @@ class TextBlockManager:
     def get_paragraphs(self, page_num: int) -> list[EditableParagraph]:
         return self._paragraph_index.get(page_num, [])
 
-    def find_by_id(self, page_num: int, block_id: str) -> Optional[TextBlock]:
+    def find_by_id(self, page_num: int, block_id: str) -> TextBlock | None:
         for block in self._index.get(page_num, []):
             if block.block_id == block_id:
                 return block
         return None
 
-    def find_span_by_id(self, page_num: int, span_id: str) -> Optional[EditableSpan]:
+    def find_span_by_id(self, page_num: int, span_id: str) -> EditableSpan | None:
         for span in self._span_index.get(page_num, []):
             if span.span_id == span_id:
                 return span
         return None
 
-    def find_run_by_id(self, page_num: int, run_id: str) -> Optional[EditableSpan]:
+    def find_run_by_id(self, page_num: int, run_id: str) -> EditableSpan | None:
         return self.find_span_by_id(page_num, run_id)
 
-    def find_paragraph_by_id(self, page_num: int, paragraph_id: str) -> Optional[EditableParagraph]:
+    def find_paragraph_by_id(self, page_num: int, paragraph_id: str) -> EditableParagraph | None:
         for para in self._paragraph_index.get(page_num, []):
             if para.paragraph_id == paragraph_id:
                 return para
         return None
 
-    def find_paragraph_for_run(self, page_num: int, run_id: str) -> Optional[EditableParagraph]:
+    def find_paragraph_for_run(self, page_num: int, run_id: str) -> EditableParagraph | None:
         para_id = self._run_to_paragraph.get(page_num, {}).get(run_id)
         if not para_id:
             return None
@@ -359,9 +358,9 @@ class TextBlockManager:
         self,
         page_num: int,
         rect: fitz.Rect,
-        original_text: Optional[str] = None,
-        doc: Optional[fitz.Document] = None,
-    ) -> Optional[TextBlock]:
+        original_text: str | None = None,
+        doc: fitz.Document | None = None,
+    ) -> TextBlock | None:
         candidates = [
             b for b in self._index.get(page_num, []) if fitz.Rect(b.layout_rect).intersects(rect)
         ]
@@ -398,7 +397,7 @@ class TextBlockManager:
         page_num: int,
         raw_index: int,
         block: dict,
-    ) -> Optional[TextBlock]:
+    ) -> TextBlock | None:
         if block.get("type") != 0:
             return None
 
@@ -583,7 +582,7 @@ class TextBlockManager:
         hard_gap_tol = max(gap_tol * 2.2, median_extent * 1.2)
         cross_tol = max(1.0, median_extent * 0.75)
 
-        def _finalize(run: dict, run_idx: int) -> Optional[EditableSpan]:
+        def _finalize(run: dict, run_idx: int) -> EditableSpan | None:
             text_value = "".join(run["text_parts"]).strip()
             if not text_value:
                 return None
@@ -613,7 +612,7 @@ class TextBlockManager:
 
         runs: list[EditableSpan] = []
         run_idx = 0
-        current: Optional[dict] = None
+        current: dict | None = None
         for ch in chars:
             text_value = ch["text"]
             if not text_value:
@@ -654,17 +653,7 @@ class TextBlockManager:
             kind_changed = not _kind_compatible(str(current["last_kind"]), str(ch["kind"]))
 
             should_break = False
-            if cross_delta > cross_tol:
-                should_break = True
-            elif gap > hard_gap_tol:
-                should_break = True
-            elif size_delta > max(0.9, float(current["last_size"]) * 0.25):
-                should_break = True
-            elif color_changed:
-                should_break = True
-            elif kind_changed:
-                should_break = True
-            elif gap > gap_tol:
+            if cross_delta > cross_tol or gap > hard_gap_tol or size_delta > max(0.9, float(current["last_size"]) * 0.25) or color_changed or kind_changed or gap > gap_tol:
                 should_break = True
 
             if should_break:
@@ -812,14 +801,14 @@ class TextBlockManager:
         self,
         candidates: list[TextBlock],
         original_text: str,
-    ) -> Optional[TextBlock]:
+    ) -> TextBlock | None:
         original_clean = self._expand_ligatures(
             _RE_WS_STRIP.sub("", original_text.strip()).lower()
         )
         if not original_clean:
             return None
 
-        best_block: Optional[TextBlock] = None
+        best_block: TextBlock | None = None
         best_similarity = 0.5
 
         for block in candidates:
@@ -849,10 +838,10 @@ class TextBlockManager:
         self,
         candidates: list[TextBlock],
         rect: fitz.Rect,
-    ) -> Optional[TextBlock]:
+    ) -> TextBlock | None:
         rect_cx = rect.x0 + rect.width / 2
         rect_cy = rect.y0 + rect.height / 2
-        best_block: Optional[TextBlock] = None
+        best_block: TextBlock | None = None
         min_distance = float("inf")
 
         for block in candidates:
@@ -869,9 +858,9 @@ class TextBlockManager:
         self,
         page_num: int,
         rect: fitz.Rect,
-        original_text: Optional[str],
+        original_text: str | None,
         doc: fitz.Document,
-    ) -> Optional[TextBlock]:
+    ) -> TextBlock | None:
         page = doc[page_num]
         blocks_raw = page.get_text("dict", flags=0).get("blocks", [])
         temp_blocks: list[TextBlock] = []

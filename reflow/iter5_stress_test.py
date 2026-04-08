@@ -1,8 +1,13 @@
 """iter5_stress_test.py — 多 PDF 壓力測試（表格、多欄、CJK、旋轉頁面）"""
-import sys, pathlib, time, traceback
+import pathlib
+import sys
+import time
+import traceback
+
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import fitz
+
 from reflow.track_A_core import TrackAEngine
 from reflow.track_B_core import TrackBEngine
 from reflow.unified_command import apply_object_edit

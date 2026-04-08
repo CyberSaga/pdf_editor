@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Focused model-level regressions for Track A/B follow-up fixes.
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Controller-level print flow regressions."""
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 import controller.pdf_controller as pdf_controller_module
 from controller.pdf_controller import PDFController
 from model.pdf_model import PDFModel
-from src.printing.base_driver import PrintJobOptions, PrintJobResult, PrinterDevice
+from src.printing.base_driver import PrinterDevice, PrintJobOptions, PrintJobResult
 from src.printing.errors import PrintHelperTerminatedError
 from src.printing.messages import (
     PRINT_CLOSING_MESSAGE,
@@ -78,7 +77,7 @@ class _FakePrintDispatcher:
 
 
 class _CancelDialog:
-    instances: list["_CancelDialog"] = []
+    instances: list[_CancelDialog] = []
 
     def __init__(self, *args, **kwargs) -> None:
         self.args = args
@@ -103,7 +102,7 @@ class _CancelDialog:
 
 
 class _AcceptDialog:
-    instances: list["_AcceptDialog"] = []
+    instances: list[_AcceptDialog] = []
 
     def __init__(self, *args, **kwargs) -> None:
         self.args = args
@@ -270,7 +269,7 @@ def test_print_document_runs_in_background_and_defers_close_until_helper_finishe
             finished = Signal()
             raw_message = Signal(str)
 
-            instances: list["_FakeRunner"] = []
+            instances: list[_FakeRunner] = []
 
             def __init__(self, job, *_args, **_kwargs) -> None:
                 super().__init__()
@@ -392,7 +391,7 @@ def test_stalled_print_helper_can_be_terminated_without_closing_main_window(monk
             finished = Signal()
             raw_message = Signal(str)
 
-            instances: list["_FakeRunner"] = []
+            instances: list[_FakeRunner] = []
 
             def __init__(self, job, *_args, **_kwargs) -> None:
                 super().__init__()

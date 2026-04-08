@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import sys
 import time
-import shutil
 from pathlib import Path
 
 import fitz
 import pytest
 from PIL import Image
 from PySide6.QtWidgets import QApplication, QDialog
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -655,7 +654,7 @@ def test_large_file_optimize_submission_keeps_progress_dialog_responsive(
     assert elapsed < 0.15
     assert controller._optimize_progress_dialog is not None
     assert controller._optimize_progress_dialog.isVisible()
-    assert getattr(controller.view, "_action_optimize_copy").isEnabled() is False
+    assert controller.view._action_optimize_copy.isEnabled() is False
     _pump_events(120)
     assert controller._optimize_progress_dialog is not None
     assert controller._optimize_progress_dialog.isVisible()
@@ -664,8 +663,9 @@ def test_large_file_optimize_submission_keeps_progress_dialog_responsive(
 
 @pytest.mark.parametrize("source_name", LARGE_PDF_NAMES)
 def test_large_file_optimized_copy_passes_integrity_validation(tmp_path: Path, source_name: str) -> None:
-    from model.pdf_model import PDFModel
     from test_scripts.validate_optimized_pdf import validate_pdf_integrity
+
+    from model.pdf_model import PDFModel
 
     source = _large_pdf_path(source_name)
     output = tmp_path / f"{source.stem}.optimized.pdf"

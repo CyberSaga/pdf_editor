@@ -12,10 +12,10 @@ T14: Vision 渲染確認（before/after PNG diff）
   python reflow/stage3_runner.py
 """
 
-import sys
-import time
 import subprocess
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -63,7 +63,7 @@ def run_strict_tests():
 
     from reflow.track_A_core import TrackAEngine
     from reflow.track_B_core import TrackBEngine
-    from reflow.unified_command import apply_object_edit, UnifiedObjectCommand, ObjectChanges
+    from reflow.unified_command import ObjectChanges, UnifiedObjectCommand, apply_object_edit
 
     base_info = {
         "font": "helv", "size": 12.0, "color": (0, 0, 0),
@@ -296,7 +296,7 @@ def run_t11_real_pdf():
     block_count_before = len([b for b in page.get_text("dict")["blocks"] if b["type"] == 0])
 
     print(f"         目標 block: rect={tuple(round(x,1) for x in target_block['bbox'])}")
-    print(f"         原文: {repr(original_text[:60])}")
+    print(f"         原文: {original_text[:60]!r}")
 
     r = TrackAEngine().apply_object_edit(
         page,
@@ -407,7 +407,7 @@ def run_t13_unified_command_execute():
       (c) undo() 不崩潰（snapshot 機制可用性）
     """
     print("\n[T13] 整合路徑：apply_object_edit 修改頁面 + Command 封裝")
-    from reflow.unified_command import apply_object_edit, UnifiedObjectCommand, ObjectChanges
+    from reflow.unified_command import ObjectChanges, UnifiedObjectCommand, apply_object_edit
 
     # ── (a) 直接呼叫 apply_object_edit，驗證頁面文字確實改變 ──────────────
     doc = fitz.open()
@@ -424,15 +424,15 @@ def run_t13_unified_command_execute():
         track="A",
     )
     text_after = page.get_text("text").strip()
-    print(f"         apply_object_edit: before={repr(text_before[:40])}")
-    print(f"         apply_object_edit: after ={repr(text_after[:40])}")
+    print(f"         apply_object_edit: before={text_before[:40]!r}")
+    print(f"         apply_object_edit: after ={text_after[:40]!r}")
     check("T13a apply_object_edit success", r["success"], str(r.get("warnings")))
     check("T13a 頁面文字實際改變",
           text_after != text_before,
-          f"before={repr(text_before[:40])}, after={repr(text_after[:40])}")
+          f"before={text_before[:40]!r}, after={text_after[:40]!r}")
     check("T13a 新文字出現在頁面",
           "After" in text_after,
-          f"after={repr(text_after[:100])}")
+          f"after={text_after[:100]!r}")
     doc.close()
 
     # ── (b) UnifiedObjectCommand.execute() 不崩潰 ─────────────────────────
@@ -576,7 +576,7 @@ def run_t14_vision_render():
           f"diff={diff_px} pixels")
 
     print(f"\n         ★ PNG 輸出目錄: {out_dir}")
-    print(f"         請以 vision 工具開啟下列圖片確認外觀：")
+    print("         請以 vision 工具開啟下列圖片確認外觀：")
     for png in sorted(out_dir.glob("*.png")):
         print(f"           {png.name}")
 

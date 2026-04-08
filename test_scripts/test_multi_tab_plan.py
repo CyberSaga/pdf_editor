@@ -1,13 +1,13 @@
+import sys
 import time
 from pathlib import Path
-import sys
 
 import fitz
 import pytest
-from PySide6.QtCore import Qt, QPoint, QMimeData, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeyEvent
+from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QListView, QDialog, QMenu
+from PySide6.QtWidgets import QApplication, QDialog, QListView, QMenu
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:

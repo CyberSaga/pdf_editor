@@ -25,6 +25,13 @@ Text targeting supports `run` and `paragraph` granularity. The UI control `æ–‡å­
 Existing-text editing is transactional: resolve target, build overlap cluster, redact once, replay protected content, insert replacement text, validate output, and rollback on failure. This protects non-target content and maintains deterministic undo/redo through command boundaries. Key functions include `edit_text(...)`, `_resolve_paragraph_candidate(...)`, `_restore_page_from_snapshot(...)`, and `EditTextCommand` execution paths.
 Style-only edits are first-class: if only font and/or size changes (without text change), commit still records a history entry and persists to page content.
 Clearing all text in an existing inline editor and committing is treated as an intentional delete operation for that target textbox content (not a revert/no-op), and remains fully undo/redo-compatible via `EditTextCommand`.
+Edit commits are now typed at the view boundary. Same-page commits emit `EditTextRequest`; cross-page moves emit `MoveTextRequest` instead of the older long positional signal signature.
+If the target block or target span can no longer be resolved at commit time, the controller shows targeted failure feedback and does not create an undo-history entry for that attempted edit.
+
+Cross-page move behavior:
+- Dragging an existing text edit to another page commits as a move, not as two separate user-visible history actions.
+- The source text is removed first, the destination textbox is inserted second, and the operation records one `SnapshotCommand` only if the whole move succeeds.
+- If any step fails, the document is restored from the pre-move snapshot so users do not end up with half-applied moves.
 
 ## 5. Add Textbox as True Page Text
 
@@ -81,6 +88,7 @@ Browse mode supports drag text selection with text-bounds snapping. Copy is avai
 ## 12. Performance and Progressive Loading
 
 Large PDF handling uses staged loading and batching to preserve interactivity while thumbnails and indices are built. Continuous mode is placeholder-first: the view builds full-document scroll geometry immediately from placeholders, then the controller progressively renders only the visible pages (plus a small prefetch margin) and upgrades visible pages to high quality in the background. Rendering and refresh scopes are coordinated to avoid blocking behavior and stale geometry.
+In `edit_text` mode, persistent text-block outlines on visible pages are also viewport-friendly: scroll/zoom-driven outline redraws are debounced through an 80 ms single-shot timer so rapid scrollbar ticks collapse to one redraw instead of repeatedly rebuilding all visible outline items.
 
 Key functions include controller visible render scheduling and view placeholder scene initialization.
 

@@ -1,5 +1,7 @@
 """run_diagnose.py — 執行診斷腳本驗證 execute_reflow 修正效果"""
-import subprocess, sys
+import subprocess
+import sys
+
 result = subprocess.run(
     [sys.executable, "reflow/diagnose_position.py"],
     capture_output=True, text=True,

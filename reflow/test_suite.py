@@ -14,14 +14,10 @@ test_suite.py — 自動視覺 diff + 文字選取 + 防干擾 測試套件
   - file_compat:     多 viewer 開啟不崩（基本檢查）
 """
 
-import io
 import logging
-import math
-import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import fitz
 
@@ -116,8 +112,8 @@ class ReflowTestSuite:
         after_png: bytes,
         page: fitz.Page,
         edited_rect: fitz.Rect,
-        weights: Optional[dict] = None,
-        original_page: Optional[fitz.Page] = None,
+        weights: dict | None = None,
+        original_page: fitz.Page | None = None,
     ) -> TestResult:
         """
         對單一 PDF 頁面的 reflow 結果進行全面評分。
@@ -255,7 +251,7 @@ class ReflowTestSuite:
         self,
         page: fitz.Page,
         edited_rect: fitz.Rect,
-        original_page: Optional[fitz.Page] = None,
+        original_page: fitz.Page | None = None,
     ) -> MisdeleteCheckResult:
         """
         檢查是否有非目標文字塊被誤刪。
@@ -742,7 +738,7 @@ class ReflowTestSuite:
 import pytest
 
 
-def _find_test_pdf() -> Optional[str]:
+def _find_test_pdf() -> str | None:
     """尋找可用的測試 PDF。"""
     test_dirs = [
         Path(__file__).resolve().parent.parent / "test_files",
@@ -945,7 +941,7 @@ class TestUnifiedCommand:
 
     def test_import(self):
         """確認 UnifiedObjectCommand 可正確 import。"""
-        from reflow.unified_command import UnifiedObjectCommand, ObjectChanges
+        from reflow.unified_command import ObjectChanges, UnifiedObjectCommand
         assert UnifiedObjectCommand is not None
         assert ObjectChanges is not None
 
@@ -959,7 +955,7 @@ class TestUnifiedCommand:
 
     def test_operation_type_inference(self):
         """操作類型自動推斷。"""
-        from reflow.unified_command import UnifiedObjectCommand, ObjectChanges
+        from reflow.unified_command import ObjectChanges, UnifiedObjectCommand
 
         # 模擬 model（只需最少介面）
         class MockModel:

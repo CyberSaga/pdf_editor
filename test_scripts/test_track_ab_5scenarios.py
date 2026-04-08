@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Track A/B 五大 UX 場景診斷測試
 ────────────────────────────────
@@ -10,11 +9,10 @@ Scenario 3: 編輯框預覽位置 vs 最終落地位置一致性
 Scenario 4: 多次連續編輯 + undo/redo → viewport 文字狀態正確
 Scenario 5: 多行段落樣式繼承 → 字型/大小/顏色穩定
 """
-import sys
 import io
-import tempfile
-import difflib
 import logging
+import sys
+import tempfile
 from pathlib import Path
 
 import fitz
@@ -26,8 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from model.pdf_model import PDFModel
 from model.edit_commands import EditTextCommand
+from model.pdf_model import PDFModel
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("test_5scenarios")

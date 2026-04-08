@@ -1,5 +1,7 @@
 """iter6_rawdict_debug.py — dict vs rawdict text extraction 比較"""
-import sys, pathlib
+import pathlib
+import sys
+
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 import fitz
 

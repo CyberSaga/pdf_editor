@@ -4,22 +4,20 @@ import argparse
 import csv
 import shutil
 import subprocess
-import sys
 import time
+from collections.abc import Callable
+from ctypes import windll
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 
 import pyautogui
 import pygetwindow as gw
 import pyperclip
+import win32com.client
 import win32gui
 import win32ui
-import win32com.client
-from ctypes import windll
 from PIL import Image, ImageChops, ImageGrab, ImageStat
-
 
 __test__ = False
 

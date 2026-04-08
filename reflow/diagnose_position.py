@@ -5,6 +5,7 @@ diagnose_position.py — 精確診斷編輯後各塊位置
 """
 import sys
 from pathlib import Path
+
 import fitz
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -39,7 +40,7 @@ def dump_blocks(page, label):
     for i, b in enumerate(blocks):
         text = "".join(s["text"] for l in b.get("lines",[]) for s in l.get("spans",[]))
         print(f"    [{i}] y0={b['bbox'][1]:.1f} y1={b['bbox'][3]:.1f} "
-              f"h={b['bbox'][3]-b['bbox'][1]:.1f}  {repr(text[:50])}")
+              f"h={b['bbox'][3]-b['bbox'][1]:.1f}  {text[:50]!r}")
     return blocks
 
 # ── 場景：短文字 → 長文字，下方有段落塊 ─────────────────────────────────────
@@ -80,7 +81,7 @@ render_with_boxes(page, OUT / "diag_after.png", "AFTER")
 
 # 計算實際位移
 if blocks_before and blocks_after:
-    print(f"\n  ── 位移量 ──")
+    print("\n  ── 位移量 ──")
     before_below_y0 = max(b["bbox"][1] for b in blocks_before[1:]) if len(blocks_before)>1 else None
     after_below_y0  = min(b["bbox"][1] for b in blocks_after  if b["bbox"][1] > 120) if blocks_after else None
     if before_below_y0 and after_below_y0:

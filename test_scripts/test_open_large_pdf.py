@@ -1,5 +1,4 @@
-﻿# -*- coding: utf-8 -*-
-"""
+﻿"""
 test_open_large_pdf.py — 超大 PDF 開檔壓力測試（headless）
 ==========================================================
 依「超大 PDF 壓力測試」計畫：對極大 PDF 執行 Model.open_pdf 並量測耗時，
@@ -12,11 +11,9 @@ test_open_large_pdf.py — 超大 PDF 開檔壓力測試（headless）
   python test_scripts/test_open_large_pdf.py --path path/to/large.pdf
   python test_scripts/test_open_large_pdf.py --path test_scripts/test_outputs/large_stress.pdf
 """
-import sys
-import os
-import time
 import argparse
-import tempfile
+import sys
+import time
 from pathlib import Path
 
 if sys.platform == "win32" and __name__ == "__main__":

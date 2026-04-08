@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import List
-
 from .pdf_renderer import PDFRenderer
 
 _PAGE_SUBSET_VALUES = {"all", "odd", "even"}
@@ -19,7 +17,7 @@ def resolve_page_indices(
     page_ranges: str | None,
     page_subset: str | None = "all",
     reverse_order: bool = False,
-) -> List[int]:
+) -> list[int]:
     """
     Resolve final 0-based page indices after applying:
     1) page range parsing

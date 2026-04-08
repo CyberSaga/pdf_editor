@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Regression tests for controller-driven cross-page text moves."""
 
 from __future__ import annotations
