@@ -20,13 +20,3 @@
 - Priority: P2
 - Depends on / blocked by: Current MoveTextRequest + foundation tests plan must land first.
 
-## Fix size field type in EditTextRequest and MoveTextRequest
-
-- What: Change `size: int` to `size: float` in both `EditTextRequest` and `MoveTextRequest` dataclasses in `view/text_editing.py`.
-- Why: PyMuPDF returns font sizes as floats (`span["size"]` is float). Coercing to `int` silently truncates 9.5pt → 9pt, corrupting style fidelity on every text edit that uses fractional font sizes.
-- Pros: Correct type; no silent data loss; matches PyMuPDF's actual data model.
-- Cons: May require updating callers that pass int literals for size (trivial in Python since int is assignment-compatible with float); may need test fixture updates.
-- Context: Both dataclasses currently use `int`. This is a pre-existing issue in `EditTextRequest` that should be fixed at the same time as `MoveTextRequest` to avoid two separate migrations. Discovered during eng review cross-model analysis (2026-04-01).
-- Effort: S (human: 30 min / CC: ~5 min)
-- Priority: P2
-- Depends on / blocked by: None (independent fix, but do both dataclasses together).

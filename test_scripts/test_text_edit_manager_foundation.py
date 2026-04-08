@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import os
 import sys
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
 import fitz
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from view.pdf_view import PDFView
 import view.pdf_view as pdf_view
+from view.pdf_view import PDFView
 from view.text_editing import MoveTextRequest
 
 
@@ -79,6 +81,25 @@ def _make_view() -> PDFView:
     view._set_document_undo_redo_enabled = lambda enabled: None
     view.sig_add_textbox = _FakeSignal()
     return view
+
+
+def test_pdf_view_init_does_not_warn_about_outline_disconnects(qapp):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        view = PDFView()
+        try:
+            assert hasattr(view, "text_edit_manager")
+            assert view.text_edit_manager is not None
+        finally:
+            view.close()
+
+    disconnect_warnings = [
+        warning
+        for warning in caught
+        if issubclass(warning.category, RuntimeWarning)
+        and "Failed to disconnect" in str(warning.message)
+    ]
+    assert disconnect_warnings == []
 
 
 def test_pdf_view_exposes_text_edit_manager_on_real_init(qapp):
@@ -175,6 +196,7 @@ def test_move_text_request_fields_match_session() -> None:
 
 def test_controller_accepts_move_text_request() -> None:
     from unittest.mock import MagicMock, patch
+
     from controller.pdf_controller import PDFController
 
     mock_view = MagicMock()
@@ -220,6 +242,7 @@ def test_controller_accepts_move_text_request() -> None:
 
 def test_controller_updates_undo_redo_enabled_state_from_command_manager() -> None:
     from types import SimpleNamespace
+
     from controller.pdf_controller import PDFController
 
     controller = PDFController.__new__(PDFController)
@@ -248,6 +271,7 @@ def test_controller_updates_undo_redo_enabled_state_from_command_manager() -> No
 def test_controller_edit_text_shows_error_toast_for_invalid_result() -> None:
     from types import SimpleNamespace
     from unittest.mock import MagicMock, patch
+
     from controller.pdf_controller import PDFController
     from model.edit_commands import EditTextResult
 

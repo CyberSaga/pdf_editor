@@ -63,6 +63,7 @@ Command classes define history boundaries:
 - `SnapshotCommand` for document-level structural operations.
 - `CommandManager` for undo/redo stacks.
 
+`EditTextCommand` now carries an `EditTextResult` outcome (`success`, `no_change`, `target_block_not_found`, `target_span_not_found`). When execution does not succeed, `CommandManager.execute()` / redo skip undo-stack recording for that command instead of creating a no-op history entry.
 `AddTextboxCommand` stores strict before-page snapshots, captures after-page snapshots on first execute, and restores only the target page on undo/redo.
 
 ### 2.3 Controller (`controller/pdf_controller.py`)
@@ -89,6 +90,10 @@ The text editor state is split by intent:
 - `edit_existing` for updating existing text.
 - `add_new` for inserting new page text.
 
+Typed edit payloads are part of the view/controller boundary:
+- `EditTextRequest` packages same-page edit commits.
+- `MoveTextRequest` packages cross-page text moves and replaces the previous positional `sig_move_text_across_pages(...)` signature.
+
 Inline editor finalization is guarded by focus context:
 - Focus transitions inside text-edit context (editor widget, text property panel, combo popups) keep the session alive.
 - Focus transitions outside the edit context finalize the current inline editor.
@@ -100,6 +105,7 @@ Text style controls include explicit commit/cancel buttons:
 
 Mode behavior boundary:
 - In `edit_text`, blank-click does not create new textbox. All visible text block bounds are drawn as persistent outlines (`_draw_all_block_outlines`) so users can see editable zones without hovering. The cursor changes to IBeam when hovering over any text block.
+- Outline redraws driven by scroll and zoom are debounced through `_schedule_outline_redraw()` (80 ms single-shot timer) so rapid viewport events collapse to one redraw instead of rebuilding 30 to 90 `QGraphicsRectItem`s on every tick.
 - In `add_text`, blank-click commits open editor; otherwise it creates a new textbox editor.
 - In `rect`, `highlight`, and `add_annotation`, each tool is sticky for repeated operations.
 - Mode actions are checkable and remain synchronized with the active mode state.
@@ -147,7 +153,13 @@ Key invariants:
 
 ### 3.2 Edit Existing Text
 
-View hit-tests text and opens editor with target metadata. On commit, view emits `sig_edit_text(...)`. Controller creates `EditTextCommand` with page snapshot. Model runs transactional edit pipeline and page index rebuild. Controller refreshes affected view scope. Commit criteria include text, position, font, and size deltas so style-only edits are persisted. Empty text commits from existing-text edit are valid delete intents: the target textbox content is redacted and not reinserted, and history remains undo/redo-safe.
+View hit-tests text and opens editor with target metadata. On commit, view emits `sig_edit_text(EditTextRequest)`. Controller creates `EditTextCommand` with page snapshot. Model runs transactional edit pipeline and page index rebuild. Controller refreshes affected view scope. Commit criteria include text, position, font, and size deltas so style-only edits are persisted. Empty text commits from existing-text edit are valid delete intents: the target textbox content is redacted and not reinserted, and history remains undo/redo-safe.
+
+Edit command failure handling is explicit:
+- If model edit execution returns `TARGET_BLOCK_NOT_FOUND` or `TARGET_SPAN_NOT_FOUND`, controller surfaces targeted user feedback and does not record a history entry.
+- No-op / failed edit executions must not create undoable commands.
+
+Cross-page moves use a separate typed flow. When an inline edit changes page, the view emits `sig_move_text_across_pages(MoveTextRequest)`. Controller resolves the source span, captures a document snapshot, deletes the source text, inserts the destination textbox, and records a single `SnapshotCommand` only if the full move succeeds. Failure restores the document from the pre-move snapshot and refreshes both affected pages.
 
 ### 3.3 Add New Textbox
 
@@ -156,6 +168,10 @@ View computes visual insertion rect and opens add editor. On commit, view emits 
 ### 3.4 Undo / Redo
 
 Controller invokes command manager undo/redo. Commands restore page/doc snapshots according to command type. Controller then refreshes the minimal required UI scope and tooltip descriptions.
+
+Undo/redo enablement is split between document history and the active inline editor:
+- Global document actions reflect `CommandManager.can_undo()` / `can_redo()`.
+- While an inline text editor is active, toolbar actions temporarily reflect the editor document's own undo/redo availability.
 
 ### 3.5 Export Pages
 

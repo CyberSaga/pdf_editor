@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
 import logging
 import unicodedata
+from dataclasses import dataclass
+from enum import Enum
+
 import fitz
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, QRect, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QTextCursor, QTextOption
 from PySide6.QtWidgets import QTextEdit
 

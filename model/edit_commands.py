@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import fitz
-import io
 import logging
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Optional, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+import fitz
 
 if TYPE_CHECKING:
     # 避免循環 import：只在型別檢查期間引入 PDFModel
-    from model.pdf_model import PDFModel
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -115,15 +115,15 @@ class EditTextCommand(EditCommand):
         font: str,
         size: float,
         color: tuple,
-        original_text: Optional[str],
+        original_text: str | None,
         vertical_shift_left: bool,
         page_snapshot_bytes: bytes,         # execute() 前擷取的頁面 bytes 快照
-        old_block_id: Optional[str],        # 目標 block 的 ID（供 undo 後索引驗證用）
-        old_block_text: Optional[str],      # 目標 block 修改前的文字（Log / debug 用）
-        new_rect: Optional[Any] = None,     # 拖曳移動後的目標位置（None = 不移動）
-        target_span_id: Optional[str] = None,
-        target_mode: Optional[str] = None,
-        reflow_fn: Optional[Any] = None,    # callable()，在 model.edit_text() 後呼叫做 displacement reflow
+        old_block_id: str | None,        # 目標 block 的 ID（供 undo 後索引驗證用）
+        old_block_text: str | None,      # 目標 block 修改前的文字（Log / debug 用）
+        new_rect: Any | None = None,     # 拖曳移動後的目標位置（None = 不移動）
+        target_span_id: str | None = None,
+        target_mode: str | None = None,
+        reflow_fn: Any | None = None,    # callable()，在 model.edit_text() 後呼叫做 displacement reflow
     ):
         self._model = model
         self._page_num = page_num
@@ -197,7 +197,7 @@ class EditTextCommand(EditCommand):
         依賴 Phase 3 加入 pdf_model.py 的兩個 helper 方法。
         """
         if not self._executed:
-            logger.warning(f"EditTextCommand.undo(): 尚未執行過，跳過還原")
+            logger.warning("EditTextCommand.undo(): 尚未執行過，跳過還原")
             return
 
         page_num_0based = self._page_num - 1
@@ -242,7 +242,7 @@ class AddTextboxCommand(EditCommand):
         self._size = int(size)
         self._color = color
         self._before_page_snapshot_bytes = before_page_snapshot_bytes
-        self._after_page_snapshot_bytes: Optional[bytes] = None
+        self._after_page_snapshot_bytes: bytes | None = None
         self._executed = False
 
     @property
