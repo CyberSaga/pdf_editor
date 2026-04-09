@@ -20,6 +20,12 @@ The supported modes are `browse`, `edit_text`, `add_text`, `rect`, `highlight`, 
 
 Text targeting supports `run` and `paragraph` granularity. The UI control `文字選取粒度` defaults to `paragraph`, and startup sync aligns model state to that UI default. For compatibility and overlap safety, when an explicit `target_span_id` is present and mode is not explicitly provided, execution resolves to `run` precision. Key functions include `_on_text_target_mode_changed(...)`, `set_text_target_mode(...)`, `get_text_info_at_point(...)`, and `edit_text(...)` mode resolution.
 
+Effective target-mode resolution in `edit_text(...)`:
+- If `target_mode` is omitted and `target_span_id` is omitted, edits default to `paragraph` scope (legacy rect-based behavior).
+- If `target_mode` is omitted but `target_span_id` is present, edits default to `run` scope (span-precise).
+- If `target_mode="run"` is requested without an explicit `target_span_id`, the edit auto-promotes to `paragraph` to avoid partially clobbering multi-run blocks.
+  - Exception: when `original_text` is clearly a sub-section of the block (normalized length < 60% of the resolved block text), the edit stays in `run` mode.
+
 ## 4. Transactional Text Editing
 
 Existing-text editing is transactional: resolve target, build overlap cluster, redact once, replay protected content, insert replacement text, validate output, and rollback on failure. This protects non-target content and maintains deterministic undo/redo through command boundaries. Key functions include `edit_text(...)`, `_resolve_paragraph_candidate(...)`, `_restore_page_from_snapshot(...)`, and `EditTextCommand` execution paths.
