@@ -30,6 +30,7 @@ Desktop PDF editor written in Python with a Qt UI.
 - Feature behavior: `docs/FEATURES.md`
 - Architecture and boundaries: `docs/ARCHITECTURE.md`
 - Issue history and fixes: `docs/solutions.md`
+- Doc update methodology (contributors): `docs/Methodology_for_Writing_Docs.md`
 - Test script index: `test_scripts/TEST_SCRIPTS.md`
 
 ## 3. Requirements

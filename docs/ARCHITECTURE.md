@@ -40,6 +40,17 @@ The text rendering path now resolves style tokens and supports custom CJK-family
 
 Snapshot APIs include `_capture_doc_snapshot()`, `_restore_doc_from_snapshot(...)`, `_capture_page_snapshot(...)`, `_capture_page_snapshot_strict(...)`, and `_restore_page_from_snapshot(...)`.
 
+#### Transactional Text Editing Phases (Helper Boundaries)
+
+`PDFModel.edit_text(...)` is implemented as a transactional pipeline and is structured into independently testable helper phases:
+
+- Target-mode resolution: `_resolve_effective_target_mode(...)`
+- Phase 1 (resolve): `_resolve_edit_target(...)`
+- Phase 2 (mutate): `_apply_redact_insert(...)`
+- Phase 3 (verify + index): `_verify_rebuild_edit(...)`
+
+This structure is enforced by per-phase unit tests using real PyMuPDF documents (no mocks) in `test_scripts/test_edit_text_helpers.py`.
+
 #### Structural Page Operations and Text Indexing
 
 Structural operations (insert/delete pages) are model-owned correctness logic. The model must sanitize dirty inputs and return the actual effected pages so the controller can synchronize UI and undo metadata without re-deriving page numbers.

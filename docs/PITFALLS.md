@@ -15,6 +15,26 @@
 
 ---
 
+## Cross-page move controller signature drift breaks legacy callers
+
+**Area:** `controller/pdf_controller.py` ??`move_text_across_pages`  
+**Symptom:** Tests or integrations fail with `TypeError` (unexpected keyword args or missing positional args) when calling `move_text_across_pages(...)`.  
+**Cause:** Controller entrypoint was narrowed to a typed `MoveTextRequest` only, while some call sites still pass legacy keyword arguments.  
+**Fix:** Accept both `MoveTextRequest` and legacy kwargs, normalize into a request, and keep the typed pipeline underneath.  
+**File:** `controller/pdf_controller.py`
+
+---
+
+## Windows parallel image rewrite disabled under pytest / non-script launchers
+
+**Area:** `model/pdf_optimizer.py` ??`can_use_parallel_image_rewrite`  
+**Symptom:** Image-heavy optimize-copy takes the serial path; tests expecting the parallel hook fail.  
+**Cause:** Windows spawn-safety gate relied only on `__main__.__file__`, which may be unset or non-file under pytest/embedded launchers.  
+**Fix:** Treat `sys.argv[0]` and `sys.executable` as valid spawn anchors when present, enabling multiprocessing when it is actually safe.  
+**File:** `model/pdf_optimizer.py`
+
+---
+
 ## TEXT_PRESERVE_LIGATURES breaks push-down re-insert
 
 **Area:** `model/pdf_model.py` — `_push_down_overlapping_text`  
