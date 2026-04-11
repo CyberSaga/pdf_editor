@@ -468,6 +468,24 @@ def test_06e_landscape_thumbnail_does_not_create_tall_blank_cell(mvc, tmp_path):
     assert grid_size.height() <= icon_size.height() + 36
 
 
+def test_06f_thumbnail_layout_caps_width_and_centers_in_wide_sidebar(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "thumb_wide_sidebar.pdf", ["p1", "p2", "p3"])
+    view.resize(1600, 900)
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(500)
+    view._apply_sidebar_sizes(left_width=380, right_width=280)
+    _pump_events(120)
+    view._update_thumbnail_layout_metrics()
+    _pump_events(120)
+
+    margins = view.thumbnail_list.viewportMargins()
+    assert margins.left() > 0
+    assert margins.left() == margins.right()
+    assert view.thumbnail_list.gridSize().width() <= 280
+
+
 def test_07_close_modified_tab_cancel_keeps_tab(mvc, tmp_path, monkeypatch):
     model, _, controller = mvc
     a = _make_pdf(tmp_path / "A.pdf", ["A"])

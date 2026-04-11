@@ -2529,14 +2529,17 @@ class PDFView(QMainWindow):
         viewport = self.thumbnail_list.viewport()
         if viewport is None:
             return
-        viewport_w = max(1, viewport.width())
-        if viewport_w <= 1:
+        total_w = max(1, self.thumbnail_list.width())
+        if total_w <= 1:
             return
         # Root cause note:
         # The visible "gap" between thumbnails was mostly oversized per-item cell height
         # (icon box too tall), not QListWidget spacing itself.
         spacing = 1
-        item_w = max(120, viewport_w - 12)
+        max_item_w = 280
+        available_w = max(120, total_w - 12)
+        item_w = min(available_w, max_item_w)
+        horizontal_margin = max(0, (available_w - item_w) // 2)
         icon_w = max(96, item_w - 18)
         # Match icon box height to actual thumbnail aspect ratio to avoid large blank
         # space inside each cell (especially for landscape pages).
@@ -2546,6 +2549,7 @@ class PDFView(QMainWindow):
         item_h = icon_h + 28
         self._thumbnail_layout_updating = True
         try:
+            self.thumbnail_list.setViewportMargins(horizontal_margin, 0, horizontal_margin, 0)
             self.thumbnail_list.setSpacing(spacing)
             self.thumbnail_list.setIconSize(QSize(icon_w, icon_h))
             self.thumbnail_list.setGridSize(QSize(item_w, item_h))
