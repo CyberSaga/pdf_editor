@@ -49,6 +49,31 @@ def _make_bullets_pdf(path: Path) -> None:
     doc.close()
 
 
+def _make_two_line_pdf(path: Path) -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=200)
+    page.insert_text(fitz.Point(72, 72), "Alpha Beta Gamma", fontsize=12, fontname="helv")
+    page.insert_text(fitz.Point(72, 92), "Delta Epsilon Zeta", fontsize=12, fontname="helv")
+    doc.save(path, garbage=0)
+    doc.close()
+
+
+def _make_multi_run_lines_pdf(path: Path) -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=360, height=240)
+    rows = [
+        (72, ("Alpha", "Beta", "Gamma")),
+        (96, ("Delta", "Epsilon", "Zeta")),
+        (120, ("Eta", "Theta", "Iota")),
+    ]
+    x_positions = (72, 132, 222)
+    for y, words in rows:
+        for x, word in zip(x_positions, words):
+            page.insert_text(fitz.Point(x, y), word, fontsize=12, fontname="helv")
+    doc.save(path, garbage=0)
+    doc.close()
+
+
 def test_fallback_extraction_space_joins_wrapped_lines() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "wrapped.pdf"
@@ -112,5 +137,145 @@ def test_bullet_items_keep_semantic_breaks() -> None:
             normalized = "\n".join(part.strip() for part in bullet_block.text.splitlines() if part.strip())
             assert "- Alpha item" in normalized
             assert "- Beta item" in normalized
+        finally:
+            model.close()
+
+
+def test_get_text_in_rect_expands_partial_clip_to_whole_visual_lines() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "two-lines.pdf"
+        _make_two_line_pdf(path)
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            partial_rect = fitz.Rect(100, 60, 170, 100)
+
+            selected = model.get_text_in_rect(1, partial_rect)
+
+            assert selected == "Alpha Beta Gamma\nDelta Epsilon Zeta"
+        finally:
+            model.close()
+
+
+def test_get_text_bounds_expands_partial_clip_to_full_visual_line_bounds() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "two-lines.pdf"
+        _make_two_line_pdf(path)
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            page = model.doc[0]
+            partial_rect = fitz.Rect(100, 60, 170, 100)
+
+            bounds = model.tools.annotation.get_text_bounds(1, partial_rect)
+
+            words = page.get_text("words", sort=True)
+            selected_lines = {(int(word[5]), int(word[6])) for word in words if fitz.Rect(word[:4]).intersects(partial_rect)}
+            line_words = [word for word in words if (int(word[5]), int(word[6])) in selected_lines]
+            expected = fitz.Rect(
+                min(word[0] for word in line_words),
+                min(word[1] for word in line_words),
+                max(word[2] for word in line_words),
+                max(word[3] for word in line_words),
+            )
+
+            assert bounds == expected
+        finally:
+            model.close()
+
+
+def test_run_anchored_selection_uses_partial_boundary_lines_and_full_middle_lines() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "multi-run-lines.pdf"
+        _make_multi_run_lines_pdf(path)
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            model.ensure_page_index_built(1)
+            runs = model.block_manager.get_runs(0)
+            texts = [run.text.strip() for run in runs if run.text.strip()]
+            start_run = next(run for run in runs if run.text.strip() == "Beta")
+            end_run = next(run for run in runs if run.text.strip() == "Theta")
+
+            selected_text, bounds = model.get_text_selection_snapshot_from_run(
+                1,
+                start_run.span_id,
+                fitz.Point((end_run.bbox.x0 + end_run.bbox.x1) / 2.0, (end_run.bbox.y0 + end_run.bbox.y1) / 2.0),
+            )
+
+            assert texts[:9] == ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta", "Iota"]
+            assert selected_text == "Beta Gamma\nDelta Epsilon Zeta\nEta Theta"
+            assert bounds is not None
+
+            selected_runs = [run for run in runs if run.text.strip() in {"Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta"}]
+            expected = fitz.Rect(selected_runs[0].bbox)
+            for run in selected_runs[1:]:
+                expected.include_rect(fitz.Rect(run.bbox))
+            assert bounds == expected
+        finally:
+            model.close()
+
+
+def test_run_anchored_selection_keeps_reading_order_for_backward_drag_same_line() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "multi-run-lines.pdf"
+        _make_multi_run_lines_pdf(path)
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            model.ensure_page_index_built(1)
+            runs = model.block_manager.get_runs(0)
+            start_run = next(run for run in runs if run.text.strip() == "Gamma")
+            end_run = next(run for run in runs if run.text.strip() == "Alpha")
+
+            selected_text, bounds = model.get_text_selection_snapshot_from_run(
+                1,
+                start_run.span_id,
+                fitz.Point((end_run.bbox.x0 + end_run.bbox.x1) / 2.0, (end_run.bbox.y0 + end_run.bbox.y1) / 2.0),
+            )
+
+            assert selected_text == "Alpha Beta Gamma"
+            assert bounds is not None
+        finally:
+            model.close()
+
+
+def test_exact_run_hit_ignores_block_whitespace_fallback() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "multi-run-lines.pdf"
+        _make_multi_run_lines_pdf(path)
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            point = fitz.Point(180, 67)
+
+            default_hit = model.get_text_info_at_point(1, point)
+            exact_hit = model.get_text_info_at_point(1, point, allow_fallback=False)
+
+            assert default_hit is not None
+            assert exact_hit is None
+        finally:
+            model.close()
+
+
+def test_run_anchored_selection_uses_nearest_run_when_mouseup_is_in_block_whitespace() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "multi-run-lines.pdf"
+        _make_multi_run_lines_pdf(path)
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            model.ensure_page_index_built(1)
+            runs = model.block_manager.get_runs(0)
+            start_run = next(run for run in runs if run.text.strip() == "Beta")
+
+            selected_text, bounds = model.get_text_selection_snapshot_from_run(
+                1,
+                start_run.span_id,
+                fitz.Point(175, 115),
+            )
+
+            assert selected_text == "Beta Gamma\nDelta Epsilon Zeta\nEta Theta"
+            assert bounds is not None
         finally:
             model.close()
