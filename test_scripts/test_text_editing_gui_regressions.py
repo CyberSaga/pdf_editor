@@ -870,3 +870,44 @@ def test_save_as_uses_current_document_default_path_when_present(monkeypatch: py
     assert view.sig_save_as.calls == [("out.pdf",)]
 
 
+def test_block_outlines_follow_run_boxes_in_run_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeSceneWithAddRect(_FakeScene):
+        def __init__(self) -> None:
+            super().__init__()
+            self.added_rects: list[QRectF] = []
+
+        def addRect(self, rect, pen=None, brush=None):
+            self.added_rects.append(QRectF(rect))
+            return SimpleNamespace(setZValue=lambda z: None, setVisible=lambda v: None)
+
+    view = _make_view()
+    view._block_outline_items = {}
+    view._hover_hidden_outline_key = None
+    view._active_outline_key = None
+    view._render_scale = 1.0
+    view.scene = _FakeSceneWithAddRect()
+    view.page_y_positions = [0.0]
+    view.continuous_pages = False
+
+    fake_run = SimpleNamespace(bbox=fitz.Rect(20, 30, 70, 44))
+    fake_block = SimpleNamespace(rect=fitz.Rect(10, 10, 180, 90))
+
+    view.controller = SimpleNamespace(
+        model=SimpleNamespace(
+            doc=True,
+            text_target_mode="run",
+            ensure_page_index_built=lambda page_num: None,
+            block_manager=SimpleNamespace(
+                get_runs=lambda page_idx: [fake_run],
+                get_paragraphs=lambda page_idx: [],
+                get_blocks=lambda page_idx: [fake_block],
+            ),
+        )
+    )
+    monkeypatch.setattr(view, "visible_page_range", lambda prefetch=0: (0, 0))
+
+    view._draw_all_block_outlines()
+
+    assert view.scene.added_rects == [QRectF(20.0, 30.0, 50.0, 14.0)]
+
+
