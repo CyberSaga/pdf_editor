@@ -2694,6 +2694,34 @@ class PDFView(QMainWindow):
             f"QTextEdit QScrollBar {{ background: transparent; }}"
         )
 
+    def _iter_outline_targets(self, page_idx: int) -> list[tuple[tuple[int, int], fitz.Rect]]:
+        if not hasattr(self, "controller") or not getattr(self.controller.model, "doc", None):
+            return []
+        model = self.controller.model
+        manager = model.block_manager
+        mode = (getattr(model, "text_target_mode", "run") or "run").lower()
+
+        targets: list[tuple[tuple[int, int], fitz.Rect]] = []
+        if mode == "paragraph":
+            for target_idx, para in enumerate(manager.get_paragraphs(page_idx)):
+                rect = fitz.Rect(getattr(para, "bbox", fitz.Rect()))
+                if not rect.is_empty:
+                    targets.append(((page_idx, target_idx), rect))
+        else:
+            for target_idx, run in enumerate(manager.get_runs(page_idx)):
+                rect = fitz.Rect(getattr(run, "bbox", fitz.Rect()))
+                if not rect.is_empty:
+                    targets.append(((page_idx, target_idx), rect))
+
+        if targets:
+            return targets
+
+        for target_idx, block in enumerate(manager.get_blocks(page_idx)):
+            rect = fitz.Rect(getattr(block, "rect", fitz.Rect()))
+            if not rect.is_empty:
+                targets.append(((page_idx, target_idx), rect))
+        return targets
+
     def _ensure_text_edit_manager(self) -> TextEditManager:
         manager = getattr(self, "text_edit_manager", None)
         if manager is None:
@@ -3574,20 +3602,19 @@ class PDFView(QMainWindow):
             page_num = page_idx + 1
             try:
                 self.controller.model.ensure_page_index_built(page_num)
-                blocks = self.controller.model.block_manager.get_blocks(page_num)
+                outline_targets = self._iter_outline_targets(page_idx)
             except Exception:
                 continue
             y0 = (self.page_y_positions[page_idx]
                   if (self.continuous_pages and page_idx < len(self.page_y_positions))
                   else 0.0)
-            for block_idx, block in enumerate(blocks):
+            for outline_key, doc_rect in outline_targets:
                 try:
-                    br = block.rect
-                    scene_rect = QRectF(br.x0 * rs, y0 + br.y0 * rs,
-                                        br.width * rs, br.height * rs)
+                    scene_rect = QRectF(doc_rect.x0 * rs, y0 + doc_rect.y0 * rs,
+                                        doc_rect.width * rs, doc_rect.height * rs)
                     item = self.scene.addRect(scene_rect, pen, brush)
                     item.setZValue(8)
-                    self._block_outline_items[(page_idx, block_idx)] = item
+                    self._block_outline_items[outline_key] = item
                 except Exception:
                     continue
         # Re-hide outlines for active-editing block (survives redraw)
@@ -3645,13 +3672,11 @@ class PDFView(QMainWindow):
                 # Hide dim outline for hovered block; restore previously hidden one
                 if self.current_mode == 'edit_text':
                     try:
-                        blocks = self.controller.model.block_manager.get_blocks(page_idx + 1)
                         hit_key = None
-                        for bidx, blk in enumerate(blocks):
-                            br = blk.rect
-                            if (br.x0 <= doc_rect.x0 + 1 and br.y0 <= doc_rect.y0 + 1
-                                    and br.x1 >= doc_rect.x1 - 1 and br.y1 >= doc_rect.y1 - 1):
-                                hit_key = (page_idx, bidx)
+                        for outline_key, outline_rect in self._iter_outline_targets(page_idx):
+                            if (outline_rect.x0 <= doc_rect.x0 + 1 and outline_rect.y0 <= doc_rect.y0 + 1
+                                    and outline_rect.x1 >= doc_rect.x1 - 1 and outline_rect.y1 >= doc_rect.y1 - 1):
+                                hit_key = outline_key
                                 break
                         if hit_key != self._hover_hidden_outline_key:
                             # Restore previously hidden outline
@@ -3800,13 +3825,10 @@ class PDFView(QMainWindow):
         # Hide the dim block outline for the block being edited
         try:
             page_idx = getattr(self, '_editing_page_idx', self.current_page)
-            page_num = page_idx + 1
-            blocks = self.controller.model.block_manager.get_blocks(page_num)
-            for bidx, blk in enumerate(blocks):
-                br = blk.rect
-                if (abs(br.x0 - rect.x0) < 2 and abs(br.y0 - rect.y0) < 2
-                        and abs(br.x1 - rect.x1) < 2 and abs(br.y1 - rect.y1) < 2):
-                    self._active_outline_key = (page_idx, bidx)
+            for outline_key, outline_rect in self._iter_outline_targets(page_idx):
+                if (abs(outline_rect.x0 - rect.x0) < 2 and abs(outline_rect.y0 - rect.y0) < 2
+                        and abs(outline_rect.x1 - rect.x1) < 2 and abs(outline_rect.y1 - rect.y1) < 2):
+                    self._active_outline_key = outline_key
                     outline = self._block_outline_items.get(self._active_outline_key)
                     if outline is not None:
                         outline.setVisible(False)
