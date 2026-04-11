@@ -1,5 +1,23 @@
 # TODOS
 
+## Done (2026-04-11) -- Fix custom landscape PDF output orientation on raster print
+
+- What: Fixed the Qt raster print bridge so custom source-sized landscape pages no longer serialize as portrait pages in PDF output.
+- Why: Qt expects custom `QPageSize` dimensions in portrait order and applies orientation separately. We were passing already-landscape dimensions plus `Landscape`, which flipped A3 landscape source pages back to A3 portrait in the generated PDF.
+- Outcome: Mixed jobs now keep pages 13-15 landscape for the provided postal monthly report fixture, and the print regression suite covers the custom landscape contract directly.
+
+## Done (2026-04-11) -- Phase 4 print parity tranche
+
+- What: Closed `B1`, `UX4`, and `UX5` by keeping paper/orientation `auto` under app ownership, applying source-following per-page layout on the Qt raster path, and forcing Linux/mac fixed-layout overrides onto raster instead of direct PDF submission.
+- Why: The old dialog merged printer-default paper/orientation back into the app UI, and the raster bridge only set page layout once per job, which broke mixed-size/mixed-orientation source printing and risked mutating native printer expectations.
+- Outcome: Printing now follows the source file page-by-page when paper/orientation are left on `auto`, while explicit paper/orientation choices remain real job overrides without silently rewriting printer defaults.
+
+## Deferred (2026-04-11) -- Real-mouse verification for browse-selection boundary lines
+
+- What: Leave a follow-up note that the user still reports whole-line expansion during physical mouse drags, even though the committed run-anchored browse-selection fix and automated viewport checks look correct.
+- Why: This should stay visible, but it is no longer the active critical path for the campaign.
+- Outcome: Resume from Phase 4 print parity (`B1`, then `UX4`, then `UX5`) and revisit the real-mouse browse-selection report afterward unless reprioritized sooner.
+
 ## Done (2026-04-11) -- Tighten run-anchored browse hits for real-mouse drags
 
 - What: Added a strict run-hit path for browse-mode selection so mouse-down and mouse-up resolution no longer fall back to coarse block hits when the pointer lands in whitespace inside a text row.
