@@ -1052,7 +1052,10 @@ class PDFView(QMainWindow):
         self._text_selection_start_scene_pos = None
         self._text_selection_rect_item = None
         self._text_selection_live_doc_rect = None
+        self._text_selection_live_text = ""
         self._text_selection_last_scene_pos = None
+        self._text_selection_start_span_id = None
+        self._text_selection_start_hit_info = None
         self._selected_text_rect_doc = None
         self._selected_text_page_idx = None
         self._selected_text_cached = ""
@@ -1083,6 +1086,7 @@ class PDFView(QMainWindow):
         self._placeholder_pixmap = QPixmap(1, 1)
         self._placeholder_pixmap.fill(QColor("#FFFFFF"))
         self._thumbnail_layout_updating = False
+        self._save_as_default_path = ""
         self._scroll_block = False
         self._scroll_handler_connected = False
         self.PAGE_GAP = 10
@@ -1514,6 +1518,12 @@ class PDFView(QMainWindow):
         finally:
             self.document_tab_bar.blockSignals(False)
             self._doc_tab_signal_block = False
+
+    def set_save_as_default_path(self, path: str | None) -> None:
+        candidate = str(path or "").strip()
+        if candidate and not Path(candidate).suffix:
+            candidate = f"{candidate}.pdf"
+        self._save_as_default_path = candidate
 
     def clear_document_tabs(self) -> None:
         self.set_document_tabs([], -1)
@@ -2522,14 +2532,17 @@ class PDFView(QMainWindow):
         viewport = self.thumbnail_list.viewport()
         if viewport is None:
             return
-        viewport_w = max(1, viewport.width())
-        if viewport_w <= 1:
+        total_w = max(1, self.thumbnail_list.width())
+        if total_w <= 1:
             return
         # Root cause note:
         # The visible "gap" between thumbnails was mostly oversized per-item cell height
         # (icon box too tall), not QListWidget spacing itself.
         spacing = 1
-        item_w = max(120, viewport_w - 12)
+        max_item_w = 280
+        available_w = max(120, total_w - 12)
+        item_w = min(available_w, max_item_w)
+        horizontal_margin = max(0, (available_w - item_w) // 2)
         icon_w = max(96, item_w - 18)
         # Match icon box height to actual thumbnail aspect ratio to avoid large blank
         # space inside each cell (especially for landscape pages).
@@ -2539,6 +2552,7 @@ class PDFView(QMainWindow):
         item_h = icon_h + 28
         self._thumbnail_layout_updating = True
         try:
+            self.thumbnail_list.setViewportMargins(horizontal_margin, 0, horizontal_margin, 0)
             self.thumbnail_list.setSpacing(spacing)
             self.thumbnail_list.setIconSize(QSize(icon_w, icon_h))
             self.thumbnail_list.setGridSize(QSize(item_w, item_h))
@@ -2677,11 +2691,39 @@ class PDFView(QMainWindow):
     def _build_text_editor_stylesheet(self, text_rgb: tuple[int, int, int], mask_color: QColor) -> str:
         r, g, b = text_rgb
         return (
-            f"QTextEdit {{ background: rgb({mask_color.red()},{mask_color.green()},{mask_color.blue()}); "
+            f"QTextEdit {{ background: transparent; "
             f"border: 1.5px dashed rgba(30,120,255,0.75); color: rgb({r},{g},{b}); "
             f"selection-background-color: rgba(30,120,255,0.25); }}"
             f"QTextEdit QScrollBar {{ background: transparent; }}"
         )
+
+    def _iter_outline_targets(self, page_idx: int) -> list[tuple[tuple[int, int], fitz.Rect]]:
+        if not hasattr(self, "controller") or not getattr(self.controller.model, "doc", None):
+            return []
+        model = self.controller.model
+        manager = model.block_manager
+        mode = (getattr(model, "text_target_mode", "run") or "run").lower()
+
+        targets: list[tuple[tuple[int, int], fitz.Rect]] = []
+        if mode == "paragraph":
+            for target_idx, para in enumerate(manager.get_paragraphs(page_idx)):
+                rect = fitz.Rect(getattr(para, "bbox", fitz.Rect()))
+                if not rect.is_empty:
+                    targets.append(((page_idx, target_idx), rect))
+        else:
+            for target_idx, run in enumerate(manager.get_runs(page_idx)):
+                rect = fitz.Rect(getattr(run, "bbox", fitz.Rect()))
+                if not rect.is_empty:
+                    targets.append(((page_idx, target_idx), rect))
+
+        if targets:
+            return targets
+
+        for target_idx, block in enumerate(manager.get_blocks(page_idx)):
+            rect = fitz.Rect(getattr(block, "rect", fitz.Rect()))
+            if not rect.is_empty:
+                targets.append(((page_idx, target_idx), rect))
+        return targets
 
     def _ensure_text_edit_manager(self) -> TextEditManager:
         manager = getattr(self, "text_edit_manager", None)
@@ -2980,7 +3022,11 @@ class PDFView(QMainWindow):
             if self.current_mode == 'browse':
                 page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
                 try:
-                    info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
+                    info = self.controller.get_text_info_at_point(
+                        page_idx + 1,
+                        doc_point,
+                        allow_fallback=False,
+                    )
                 except Exception:
                     info = None
                 if info:
@@ -3144,7 +3190,11 @@ class PDFView(QMainWindow):
                 self._reset_browse_hover_cursor()
                 return
             page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
-            info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
+            info = self.controller.get_text_info_at_point(
+                page_idx + 1,
+                doc_point,
+                allow_fallback=False,
+            )
             if info:
                 if not self._browse_text_cursor_active:
                     self.graphics_view.viewport().setCursor(Qt.IBeamCursor)
@@ -3258,11 +3308,27 @@ class PDFView(QMainWindow):
         self._reset_browse_hover_cursor()
         self._clear_text_selection()
         start_pos = self._clamp_scene_point_to_page(scene_pos, page_idx)
+        try:
+            hit_page_idx, doc_point = self._scene_pos_to_page_and_doc_point(start_pos)
+            if hit_page_idx != page_idx:
+                return
+            start_hit = self.controller.get_text_info_at_point(
+                page_idx + 1,
+                doc_point,
+                allow_fallback=False,
+            )
+        except Exception:
+            start_hit = None
+        if start_hit is None or not getattr(start_hit, "target_span_id", None):
+            return
         self._text_selection_active = True
         self._text_selection_page_idx = page_idx
         self._text_selection_start_scene_pos = start_pos
         self._text_selection_live_doc_rect = None
+        self._text_selection_live_text = ""
         self._text_selection_last_scene_pos = None
+        self._text_selection_start_span_id = start_hit.target_span_id
+        self._text_selection_start_hit_info = start_hit
         pen = QPen(QColor(30, 120, 255, 220), 1)
         brush = QBrush(QColor(30, 120, 255, 35))
         rect = QRectF(start_pos, start_pos).normalized()
@@ -3285,31 +3351,38 @@ class PDFView(QMainWindow):
         self._text_selection_last_scene_pos = scene_pos
 
         end_pos = self._clamp_scene_point_to_page(scene_pos, self._text_selection_page_idx)
-        rough_scene_rect = QRectF(self._text_selection_start_scene_pos, end_pos).normalized()
-        rough_doc_rect = self._scene_rect_to_doc_rect(rough_scene_rect, self._text_selection_page_idx)
-        if rough_doc_rect is None:
+        try:
+            end_page_idx, end_doc_point = self._scene_pos_to_page_and_doc_point(end_pos)
+        except Exception:
+            end_page_idx, end_doc_point = self._text_selection_page_idx, None
+        if end_doc_point is None or end_page_idx != self._text_selection_page_idx:
             self._text_selection_live_doc_rect = None
+            self._text_selection_live_text = ""
             self._text_selection_rect_item.setVisible(False)
             return
 
         try:
-            selected_text = self.controller.get_text_in_rect(self._text_selection_page_idx + 1, rough_doc_rect)
+            selected_text, precise_doc_rect = self.controller.get_text_selection_snapshot_from_run(
+                self._text_selection_page_idx + 1,
+                self._text_selection_start_span_id,
+                end_doc_point,
+            )
         except Exception:
             selected_text = ""
+            precise_doc_rect = None
         if not selected_text.strip():
             self._text_selection_live_doc_rect = None
+            self._text_selection_live_text = ""
+            self._text_selection_rect_item.setVisible(False)
+            return
+        if precise_doc_rect is None or precise_doc_rect.width <= 0 or precise_doc_rect.height <= 0:
+            self._text_selection_live_doc_rect = None
+            self._text_selection_live_text = ""
             self._text_selection_rect_item.setVisible(False)
             return
 
-        precise_doc_rect = fitz.Rect(rough_doc_rect)
-        try:
-            precise = self.controller.get_text_bounds(self._text_selection_page_idx + 1, rough_doc_rect)
-            if precise is not None and precise.width > 0 and precise.height > 0:
-                precise_doc_rect = fitz.Rect(precise)
-        except Exception:
-            pass
-
         self._text_selection_live_doc_rect = precise_doc_rect
+        self._text_selection_live_text = selected_text
         rs = self._render_scale if self._render_scale > 0 else 1.0
         y0 = self.page_y_positions[self._text_selection_page_idx] if (
             self.continuous_pages and self._text_selection_page_idx < len(self.page_y_positions)
@@ -3345,17 +3418,14 @@ class PDFView(QMainWindow):
         if doc_rect is None:
             self._clear_text_selection()
             return
-        try:
-            selected_text = self.controller.get_text_in_rect(page_idx + 1, doc_rect)
-        except Exception:
-            selected_text = ""
+        selected_text = (getattr(self, "_text_selection_live_text", "") or "").strip()
         if not selected_text.strip():
             self._clear_text_selection()
             return
         self._selected_text_page_idx = page_idx
         self._selected_text_rect_doc = fitz.Rect(doc_rect)
         self._selected_text_cached = selected_text
-        self._selected_text_hit_info = self._resolve_text_info_for_doc_rect(page_idx, doc_rect)
+        self._selected_text_hit_info = getattr(self, "_text_selection_start_hit_info", None)
         rs = self._render_scale if self._render_scale > 0 else 1.0
         y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0.0
         precise_scene = QRectF(
@@ -3373,7 +3443,10 @@ class PDFView(QMainWindow):
         self._text_selection_page_idx = None
         self._text_selection_start_scene_pos = None
         self._text_selection_live_doc_rect = None
+        self._text_selection_live_text = ""
         self._text_selection_last_scene_pos = None
+        self._text_selection_start_span_id = None
+        self._text_selection_start_hit_info = None
         self._selected_text_rect_doc = None
         self._selected_text_page_idx = None
         self._selected_text_cached = ""
@@ -3563,20 +3636,19 @@ class PDFView(QMainWindow):
             page_num = page_idx + 1
             try:
                 self.controller.model.ensure_page_index_built(page_num)
-                blocks = self.controller.model.block_manager.get_blocks(page_num)
+                outline_targets = self._iter_outline_targets(page_idx)
             except Exception:
                 continue
             y0 = (self.page_y_positions[page_idx]
                   if (self.continuous_pages and page_idx < len(self.page_y_positions))
                   else 0.0)
-            for block_idx, block in enumerate(blocks):
+            for outline_key, doc_rect in outline_targets:
                 try:
-                    br = block.rect
-                    scene_rect = QRectF(br.x0 * rs, y0 + br.y0 * rs,
-                                        br.width * rs, br.height * rs)
+                    scene_rect = QRectF(doc_rect.x0 * rs, y0 + doc_rect.y0 * rs,
+                                        doc_rect.width * rs, doc_rect.height * rs)
                     item = self.scene.addRect(scene_rect, pen, brush)
                     item.setZValue(8)
-                    self._block_outline_items[(page_idx, block_idx)] = item
+                    self._block_outline_items[outline_key] = item
                 except Exception:
                     continue
         # Re-hide outlines for active-editing block (survives redraw)
@@ -3634,13 +3706,11 @@ class PDFView(QMainWindow):
                 # Hide dim outline for hovered block; restore previously hidden one
                 if self.current_mode == 'edit_text':
                     try:
-                        blocks = self.controller.model.block_manager.get_blocks(page_idx + 1)
                         hit_key = None
-                        for bidx, blk in enumerate(blocks):
-                            br = blk.rect
-                            if (br.x0 <= doc_rect.x0 + 1 and br.y0 <= doc_rect.y0 + 1
-                                    and br.x1 >= doc_rect.x1 - 1 and br.y1 >= doc_rect.y1 - 1):
-                                hit_key = (page_idx, bidx)
+                        for outline_key, outline_rect in self._iter_outline_targets(page_idx):
+                            if (outline_rect.x0 <= doc_rect.x0 + 1 and outline_rect.y0 <= doc_rect.y0 + 1
+                                    and outline_rect.x1 >= doc_rect.x1 - 1 and outline_rect.y1 >= doc_rect.y1 - 1):
+                                hit_key = outline_key
                                 break
                         if hit_key != self._hover_hidden_outline_key:
                             # Restore previously hidden outline
@@ -3789,13 +3859,10 @@ class PDFView(QMainWindow):
         # Hide the dim block outline for the block being edited
         try:
             page_idx = getattr(self, '_editing_page_idx', self.current_page)
-            page_num = page_idx + 1
-            blocks = self.controller.model.block_manager.get_blocks(page_num)
-            for bidx, blk in enumerate(blocks):
-                br = blk.rect
-                if (abs(br.x0 - rect.x0) < 2 and abs(br.y0 - rect.y0) < 2
-                        and abs(br.x1 - rect.x1) < 2 and abs(br.y1 - rect.y1) < 2):
-                    self._active_outline_key = (page_idx, bidx)
+            for outline_key, outline_rect in self._iter_outline_targets(page_idx):
+                if (abs(outline_rect.x0 - rect.x0) < 2 and abs(outline_rect.y0 - rect.y0) < 2
+                        and abs(outline_rect.x1 - rect.x1) < 2 and abs(outline_rect.y1 - rect.y1) < 2):
+                    self._active_outline_key = outline_key
                     outline = self._block_outline_items.get(self._active_outline_key)
                     if outline is not None:
                         outline.setVisible(False)
@@ -3947,8 +4014,10 @@ class PDFView(QMainWindow):
     def _save_as(self):
         if self.text_editor and self.text_editor.widget():
             self._finalize_text_edit(TextEditFinalizeReason.SAVE_SHORTCUT)
-        path, _ = QFileDialog.getSaveFileName(self, "另存PDF", "", "PDF (*.pdf)")
-        if path: self.sig_save_as.emit(path)
+        default_path = getattr(self, "_save_as_default_path", "")
+        path, _ = QFileDialog.getSaveFileName(self, "另存PDF", default_path, "PDF (*.pdf)")
+        if path:
+            self.sig_save_as.emit(path)
 
     def _optimize_pdf_copy(self):
         if self.total_pages == 0:

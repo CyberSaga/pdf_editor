@@ -1274,7 +1274,12 @@ class PDFModel:
     def get_print_watermarks(self) -> list[dict]:
         return json.loads(json.dumps(self.tools.watermark.get_watermarks(), ensure_ascii=False))
 
-    def get_text_info_at_point(self, page_num: int, point: fitz.Point) -> TextHit | None:
+    def get_text_info_at_point(
+        self,
+        page_num: int,
+        point: fitz.Point,
+        allow_fallback: bool = True,
+    ) -> TextHit | None:
         """Return topmost editable run info at point using stable run/span identity."""
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             return None
@@ -1315,6 +1320,9 @@ class PDFModel:
                 cluster_span_ids=[s.span_id for s in cluster],
                 target_mode="run",
             )
+
+        if not allow_fallback:
+            return None
 
         # Backward-compatible fallback if span extraction misses the point.
         page = self.doc[page_idx]
@@ -1360,10 +1368,208 @@ class PDFModel:
         """Extract plain text in a rectangle for browse-mode copy."""
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             return ""
-        page = self.doc[page_num - 1]
+        text, _ = self.get_text_selection_snapshot(page_num, rect)
+        return text
+
+    def get_text_selection_bounds(self, page_num: int, rect: fitz.Rect) -> fitz.Rect | None:
+        """Return browse-mode selection bounds snapped to whole visual lines."""
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return None
+        _, bounds = self.get_text_selection_snapshot(page_num, rect)
+        return fitz.Rect(bounds) if bounds is not None else None
+
+    def get_text_selection_snapshot(self, page_num: int, rect: fitz.Rect) -> tuple[str, fitz.Rect | None]:
+        """Resolve browse-mode text selection by snapping intersected clips to full line units."""
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return "", None
+
+        def _extract_line_text(line_dict: dict) -> str:
+            spans_data = line_dict.get("spans") or []
+            chunks: list[str] = []
+            for span_dict in spans_data:
+                span_text = span_dict.get("text")
+                if span_text is None:
+                    span_text = "".join((char.get("c") or "") for char in (span_dict.get("chars") or []))
+                chunks.append(span_text)
+            return "".join(chunks).strip()
+
+        page_idx = page_num - 1
+        page = self.doc[page_idx]
         clipped = self._clamp_rect_to_page(fitz.Rect(rect), page.rect)
-        text = page.get_text("text", clip=clipped, sort=True)
-        return (text or "").strip()
+        self.ensure_page_index_built(page_num)
+
+        spans = self.block_manager.get_runs(page_idx)
+        if not spans:
+            text = (page.get_text("text", clip=clipped, sort=True) or "").strip()
+            return text, (fitz.Rect(clipped) if text else None)
+
+        selected_keys: set[tuple[int, int]] = set()
+        grouped_spans: dict[tuple[int, int], list] = {}
+        for span in spans:
+            key = (int(span.block_idx), int(span.line_idx))
+            grouped_spans.setdefault(key, []).append(span)
+            if fitz.Rect(span.bbox).intersects(clipped):
+                selected_keys.add(key)
+
+        if not selected_keys:
+            return "", None
+
+        raw_blocks = page.get_text("dict", flags=0).get("blocks", [])
+        line_texts: list[str] = []
+        line_rects: list[fitz.Rect] = []
+        for key in sorted(selected_keys):
+            line_spans = sorted(
+                grouped_spans.get(key, []),
+                key=lambda item: (int(item.span_idx), float(item.bbox.x0), float(item.bbox.y0)),
+            )
+            block_idx, line_idx = key
+            raw_line = None
+            if 0 <= block_idx < len(raw_blocks):
+                block_lines = raw_blocks[block_idx].get("lines") or []
+                if 0 <= line_idx < len(block_lines):
+                    raw_line = block_lines[line_idx]
+
+            if raw_line is not None:
+                line_text = _extract_line_text(raw_line)
+                line_bbox = fitz.Rect(raw_line.get("bbox") or line_spans[0].bbox)
+            else:
+                line_text = " ".join((span.text or "").strip() for span in line_spans if (span.text or "").strip()).strip()
+                x0 = min(float(span.bbox.x0) for span in line_spans)
+                y0 = min(float(span.bbox.y0) for span in line_spans)
+                x1 = max(float(span.bbox.x1) for span in line_spans)
+                y1 = max(float(span.bbox.y1) for span in line_spans)
+                line_bbox = fitz.Rect(x0, y0, x1, y1)
+
+            if not line_text:
+                continue
+            line_texts.append(line_text)
+            line_rects.append(line_bbox)
+
+        if not line_texts or not line_rects:
+            return "", None
+
+        bounds = fitz.Rect(line_rects[0])
+        for line_rect in line_rects[1:]:
+            bounds.include_rect(line_rect)
+        return "\n".join(line_texts).strip(), bounds
+
+    def get_text_selection_snapshot_from_run(
+        self,
+        page_num: int,
+        start_span_id: str,
+        end_point: fitz.Point,
+    ) -> tuple[str, fitz.Rect | None]:
+        """Resolve browse-mode selection from a start run to an end point on the same page."""
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return "", None
+
+        page_idx = page_num - 1
+        self.ensure_page_index_built(page_num)
+        runs = self.block_manager.get_runs(page_idx)
+        if not runs:
+            return "", None
+
+        start_run = self.block_manager.find_run_by_id(page_idx, start_span_id)
+        if start_run is None:
+            return "", None
+
+        def _distance_sq_to_rect(point: fitz.Point, rect: fitz.Rect) -> float:
+            dx = 0.0
+            if point.x < rect.x0:
+                dx = rect.x0 - point.x
+            elif point.x > rect.x1:
+                dx = point.x - rect.x1
+            dy = 0.0
+            if point.y < rect.y0:
+                dy = rect.y0 - point.y
+            elif point.y > rect.y1:
+                dy = point.y - rect.y1
+            return dx * dx + dy * dy
+
+        end_run = self.get_text_info_at_point(page_num, end_point, allow_fallback=False)
+        resolved_end_run = None
+        if end_run is not None and getattr(end_run, "target_span_id", None):
+            resolved_end_run = self.block_manager.find_run_by_id(page_idx, end_run.target_span_id)
+        if resolved_end_run is None:
+            resolved_end_run = min(
+                runs,
+                key=lambda run: _distance_sq_to_rect(end_point, fitz.Rect(run.bbox)),
+            )
+
+        run_ids = [run.span_id for run in runs]
+        try:
+            start_idx = run_ids.index(start_run.span_id)
+            end_idx = run_ids.index(resolved_end_run.span_id)
+        except ValueError:
+            return "", None
+
+        range_start = min(start_idx, end_idx)
+        range_end = max(start_idx, end_idx)
+        selected_runs = runs[range_start:range_end + 1]
+        if not selected_runs:
+            return "", None
+
+        def _same_visual_line(left, right) -> bool:
+            left_rect = fitz.Rect(left.bbox)
+            right_rect = fitz.Rect(right.bbox)
+            left_rotation = int(getattr(left, "rotation", 0)) % 360
+            right_rotation = int(getattr(right, "rotation", 0)) % 360
+            if left_rotation != right_rotation:
+                return False
+            tol = 2.0
+            if left_rotation in (90, 270):
+                return not (left_rect.x1 < right_rect.x0 - tol or right_rect.x1 < left_rect.x0 - tol)
+            return not (left_rect.y1 < right_rect.y0 - tol or right_rect.y1 < left_rect.y0 - tol)
+
+        line_groups: list[list] = []
+        run_to_line_idx: dict[str, int] = {}
+        for run in runs:
+            if line_groups and _same_visual_line(line_groups[-1][-1], run):
+                line_groups[-1].append(run)
+            else:
+                line_groups.append([run])
+            run_to_line_idx[run.span_id] = len(line_groups) - 1
+
+        start_line_idx = run_to_line_idx.get(start_run.span_id)
+        end_line_idx = run_to_line_idx.get(resolved_end_run.span_id)
+        if start_line_idx is None or end_line_idx is None:
+            return "", None
+
+        def _slice_for_group(group_idx: int) -> list:
+            group_runs = line_groups[group_idx]
+            group_ids = [run.span_id for run in group_runs]
+            if start_line_idx == end_line_idx == group_idx:
+                left = min(group_ids.index(start_run.span_id), group_ids.index(resolved_end_run.span_id))
+                right = max(group_ids.index(start_run.span_id), group_ids.index(resolved_end_run.span_id))
+                return group_runs[left:right + 1]
+            if group_idx == start_line_idx:
+                start_pos = group_ids.index(start_run.span_id)
+                return group_runs[start_pos:]
+            if group_idx == end_line_idx:
+                end_pos = group_ids.index(resolved_end_run.span_id)
+                return group_runs[:end_pos + 1]
+            return group_runs
+
+        line_texts: list[str] = []
+        line_rects: list[fitz.Rect] = []
+        for group_idx in range(min(start_line_idx, end_line_idx), max(start_line_idx, end_line_idx) + 1):
+            line_runs = _slice_for_group(group_idx)
+            line_text = " ".join((run.text or "").strip() for run in line_runs if (run.text or "").strip()).strip()
+            if not line_text:
+                continue
+            line_texts.append(line_text)
+            line_rect = fitz.Rect(line_runs[0].bbox)
+            for run in line_runs[1:]:
+                line_rect.include_rect(fitz.Rect(run.bbox))
+            line_rects.append(line_rect)
+
+        if not line_texts or not line_rects:
+            return "", None
+
+        bounds = fitz.Rect(line_rects[0])
+        for line_rect in line_rects[1:]:
+            bounds.include_rect(line_rect)
+        return "\n".join(line_texts).strip(), bounds
 
     def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect, rotation: int = 0, font_size: float = 12) -> float:
         """取得編輯時會使用的換行寬度（points），供編輯框預覽與 PDF 渲染一致。"""
@@ -2549,6 +2755,59 @@ class PDFModel:
             base_layout = clamped_new
         else:
             base_layout = fitz.Rect(resolve_result.target.layout_rect)
+
+        member_spans = [
+            span for span in resolve_result.overlap_cluster
+            if span.span_id in resolve_result.target_member_span_ids
+        ]
+        single_line_members = (
+            bool(member_spans)
+            and max(float(span.bbox.y1) for span in member_spans) - min(float(span.bbox.y0) for span in member_spans)
+            <= max(2.0, float(size) * 1.5)
+        )
+
+        if (
+            not resolve_result.is_vertical
+            and new_rect is None
+            and "\n" not in new_text
+            and single_line_members
+            and not self._needs_cjk_font(new_text)
+        ):
+            margin = 15
+            right_margin_pt = max(60.0, min(120.0, float(size) * 2.0))
+            right_safe = page_rect.x1 - right_margin_pt
+            available_w = max(0.0, right_safe - max(float(base_layout.x0), page_rect.x0) - margin)
+            insert_font = self._resolve_font_for_push(resolve_result.resolved_font)
+            try:
+                font_obj = fitz.Font(insert_font)
+                text_width = font_obj.text_length(new_text, fontsize=size)
+            except Exception:
+                insert_font = "helv"
+                text_width = fitz.Font(insert_font).text_length(new_text, fontsize=size)
+            if 0 < text_width <= available_w:
+                origin_span = min(
+                    member_spans,
+                    key=lambda span: (float(span.origin.x), float(span.origin.y)),
+                )
+                origin = fitz.Point(
+                    float(origin_span.origin.x),
+                    float(origin_span.origin.y),
+                )
+                page.insert_text(
+                    origin,
+                    new_text,
+                    fontname=insert_font,
+                    fontsize=float(size),
+                    color=tuple(float(c) for c in color),
+                    rotate=0,
+                )
+                original_bbox = self._rect_union([fitz.Rect(span.bbox) for span in member_spans])
+                return fitz.Rect(
+                    original_bbox.x0,
+                    original_bbox.y0,
+                    min(original_bbox.x0 + text_width, page_rect.x1 - 10),
+                    original_bbox.y1,
+                )
 
         if resolve_result.is_vertical:
             if new_rect is not None:

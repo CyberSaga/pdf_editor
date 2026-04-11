@@ -37,6 +37,7 @@ Model owns document correctness and persistence behavior. It manages sessions (`
 
 Important text APIs include `get_text_info_at_point(...)`, `edit_text(...)`, `add_textbox(...)`, and `set_text_target_mode(...)`.
 The text rendering path now resolves style tokens and supports custom CJK-family embedding for insert-html flows (for example `microsoft jhenghei`, `pmingliu`, `dfkai-sb`) when local font files are available.
+Browse-mode selection is also model-owned: legacy rectangle helpers still exist, but the primary browse drag path now uses a run-anchored resolver. Mouse-down locks the start run, mouse-up resolves the end run, boundary lines stay partial, and only the fully covered lines between them expand to whole-line units. `get_text_info_at_point(...)` now has a strict-hit option (`allow_fallback=False`) so browse selection can reject coarse block fallback hits while other flows keep backward-compatible text-block behavior.
 
 Snapshot APIs include `_capture_doc_snapshot()`, `_restore_doc_from_snapshot(...)`, `_capture_page_snapshot(...)`, `_capture_page_snapshot_strict(...)`, and `_restore_page_from_snapshot(...)`.
 
@@ -48,6 +49,7 @@ Snapshot APIs include `_capture_doc_snapshot()`, `_restore_doc_from_snapshot(...
 - Phase 1 (resolve): `_resolve_edit_target(...)`
 - Phase 2 (mutate): `_apply_redact_insert(...)`
 - Phase 3 (verify + index): `_verify_rebuild_edit(...)`
+- Horizontal single-line edits that still fit on one line use an origin-preserving `insert_text(...)` fast path inside `_apply_redact_insert(...)`; wrapped / dragged / vertical cases still use the existing htmlbox flow.
 
 This structure is enforced by per-phase unit tests using real PyMuPDF documents (no mocks) in `test_scripts/test_edit_text_helpers.py`.
 
@@ -80,6 +82,7 @@ Command classes define history boundaries:
 ### 2.3 Controller (`controller/pdf_controller.py`)
 
 Controller is the only mutation coordinator between View and Model. It normalizes mode transitions, creates/executes commands, controls refresh scopes, and preserves per-session UI state.
+Document-tab refresh also synchronizes the active session's Save As suggestion into the view, so the view-owned `另存PDF` dialog opens with the current tab's path/name instead of a blank or stale filename.
 
 Mode registry includes `browse`, `edit_text`, `add_text`, `rect`, `highlight`, and `add_annotation`.
 
@@ -91,15 +94,18 @@ For performance on large PDFs, controller schedules heavy work in small batches 
 
 View owns widgets, scene interactions, and signal emission. It does not mutate model business state directly.
 For empty startup it can show a lightweight shell with no model/controller attached. When the user requests a document (open or drop), the view queues paths and emits a backend-bootstrap signal so `main.py` can create model/controller and drain pending open paths.
+The view also owns the Save As dialog invocation (`_save_as()`), but the controller supplies the active-session default path through `set_save_as_default_path(...)`.
 
 Continuous mode rendering contracts:
 - `initialize_continuous_placeholders(...)` establishes the full scene rect and per-page y offsets for the entire document without rasterizing every page.
 - The view emits `sig_viewport_changed` when the user scrolls/resizes; the controller uses this as the steady-state trigger to schedule visible-page rendering.
 - Programmatic jumps (for example controller-driven navigation) may suppress `sig_viewport_changed` emissions to avoid double-scheduling the same visible render batch.
+- Thumbnail layout metrics are view-owned; when the left sidebar becomes unusually wide, the thumbnail column caps its content width and uses symmetric viewport margins so thumbnails stay centered instead of stretching indefinitely.
 
 The text editor state is split by intent:
 - `edit_existing` for updating existing text.
 - `add_new` for inserting new page text.
+- Browse-mode drag selection still starts in the view, but the actual copied text and highlight bounds are resolved through the model's run-anchored selection helpers so the MVC boundary stays intact. Start requires a direct run hit via strict hit-testing (`allow_fallback=False`); the end point may snap to the nearest run on the same page only after exact-run hit detection misses.
 
 Typed edit payloads are part of the view/controller boundary:
 - `EditTextRequest` packages same-page edit commits.
@@ -115,13 +121,15 @@ Text style controls include explicit commit/cancel buttons:
 - `取消` discards current inline edit session changes.
 
 Mode behavior boundary:
-- In `edit_text`, blank-click does not create new textbox. All visible text block bounds are drawn as persistent outlines (`_draw_all_block_outlines`) so users can see editable zones without hovering. The cursor changes to IBeam when hovering over any text block.
+- In `edit_text`, blank-click does not create new textbox. All visible selectable text targets are drawn as persistent outlines (`_draw_all_block_outlines`) so users can see editable zones without hovering. In `run` mode the outlines follow run boxes; in `paragraph` mode they follow paragraph boxes instead of coarse block rectangles.
 - Outline redraws driven by scroll and zoom are debounced through `_schedule_outline_redraw()` (80 ms single-shot timer) so rapid viewport events collapse to one redraw instead of rebuilding 30 to 90 `QGraphicsRectItem`s on every tick.
+- When the selected text target is rotated (`90/180/270`), the inline editor proxy is laid out with rotation-aware geometry and the proxy itself is rotated, so the editor content matches the source text orientation instead of always appearing upright.
 - In `add_text`, blank-click commits open editor; otherwise it creates a new textbox editor.
 - In `rect`, `highlight`, and `add_annotation`, each tool is sticky for repeated operations.
 - Mode actions are checkable and remain synchronized with the active mode state.
 - Switching away from `edit_text` with an open editor auto-commits the edit (same path as CLICK_AWAY) and shows a brief toast notification. Previously this silently discarded edits.
 - `Esc` priority is: close active editor/dialog first (keep mode), else revert non-browse mode to `browse`, else run browse fallback behavior.
+- The inline editor keeps the real text color and its widget background stays transparent, but the view now inserts a sampled-color scene mask item behind the editor proxy so the already-rendered PDF text does not visually overlap the live edit layer.
 
 Fullscreen UX is implemented in the view, but coordinated by controller state:
 - View owns chrome visibility, fullscreen enter/exit, top-edge exit affordance, and viewport anchor helpers.
