@@ -1083,6 +1083,7 @@ class PDFView(QMainWindow):
         self._placeholder_pixmap = QPixmap(1, 1)
         self._placeholder_pixmap.fill(QColor("#FFFFFF"))
         self._thumbnail_layout_updating = False
+        self._save_as_default_path = ""
         self._scroll_block = False
         self._scroll_handler_connected = False
         self.PAGE_GAP = 10
@@ -1514,6 +1515,12 @@ class PDFView(QMainWindow):
         finally:
             self.document_tab_bar.blockSignals(False)
             self._doc_tab_signal_block = False
+
+    def set_save_as_default_path(self, path: str | None) -> None:
+        candidate = str(path or "").strip()
+        if candidate and not Path(candidate).suffix:
+            candidate = f"{candidate}.pdf"
+        self._save_as_default_path = candidate
 
     def clear_document_tabs(self) -> None:
         self.set_document_tabs([], -1)
@@ -3947,8 +3954,10 @@ class PDFView(QMainWindow):
     def _save_as(self):
         if self.text_editor and self.text_editor.widget():
             self._finalize_text_edit(TextEditFinalizeReason.SAVE_SHORTCUT)
-        path, _ = QFileDialog.getSaveFileName(self, "另存PDF", "", "PDF (*.pdf)")
-        if path: self.sig_save_as.emit(path)
+        default_path = getattr(self, "_save_as_default_path", "")
+        path, _ = QFileDialog.getSaveFileName(self, "另存PDF", default_path, "PDF (*.pdf)")
+        if path:
+            self.sig_save_as.emit(path)
 
     def _optimize_pdf_copy(self):
         if self.total_pages == 0:
