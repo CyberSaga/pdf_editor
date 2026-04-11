@@ -5,6 +5,96 @@
 
 ---
 
+## Rotated text editors need proxy geometry, not just a stored rotation flag
+
+**Area:** `view/text_editing.py`  
+**Symptom:** Editing rotated text opens an upright editor, so the content orientation does not match the underlying PDF text.  
+**Cause:** The edit flow carried `rotation` through hit-testing and width estimation, but never applied rotation-aware geometry or proxy rotation when creating the inline editor.  
+**Fix:** Compute rotation-aware editor width/height/position before adding the widget to the scene, then rotate the proxy itself for `90/180/270` targets.  
+**File:** `view/text_editing.py`
+
+---
+
+## Single-line htmlbox edits can drift the text anchor
+
+**Area:** `model/pdf_model.py`  
+**Symptom:** Editing a one-line text run that still fits on one line nudges the text right/down after commit, even though the user did not drag it.  
+**Cause:** The generic htmlbox edit path re-laid out simple one-line edits with different text metrics than the original `insert_text(...)` origin.  
+**Fix:** In `_apply_redact_insert(...)`, use an origin-preserving `insert_text(...)` fast path for horizontal single-line edits that still fit without wrapping; keep htmlbox for wrapped, dragged, and vertical edits.  
+**File:** `model/pdf_model.py`
+
+---
+
+## Edit-mode outlines must follow selectable targets, not coarse blocks
+
+**Area:** `view/pdf_view.py`  
+**Symptom:** The dim edit outlines cover blank space around text, making empty areas look selectable.  
+**Cause:** `_draw_all_block_outlines()` used block rectangles from the text index instead of the actual run/paragraph target boxes used by hit-testing.  
+**Fix:** Build outlines from run boxes in `run` mode and paragraph boxes in `paragraph` mode, with block rectangles only as a fallback.  
+**File:** `view/pdf_view.py`
+
+---
+
+## Transparent inline editors still need a separate scene mask
+
+**Area:** `view/pdf_view.py`, `view/text_editing.py`  
+**Symptom:** If the editor widget is transparent without any backing mask, the live edit text overlaps the already-rendered PDF text and becomes hard to read.  
+**Cause:** The sampled page color was only being fed into the editor stylesheet; there was no separate scene-layer mask item covering the display-layer text under the editor.  
+**Fix:** Keep the editor widget transparent, but create/update a sampled-color scene rect behind the editor proxy and remove it on finalize.  
+**File:** `view/pdf_view.py`, `view/text_editing.py`
+
+---
+
+## Raw clip extraction returns chopped words for drag selection
+
+**Area:** `model/pdf_model.py`, `model/tools/annotation_tool.py`
+**Symptom:** Drag-selecting across the middle of a line copies clipped fragments like `a Beta Gamm` and draws a too-narrow highlight box instead of selecting the whole line.
+**Cause:** Browse-mode selection previously delegated directly to `page.get_text(..., clip=...)` / clipped-word bounds, which obey the drag rectangle literally and do not snap to visual line units.
+**Fix:** Resolve intersected line keys from the text index, then rebuild copied text and highlight bounds from the full visual lines in the model. Keep the view on the same typed controller/model boundary.
+**File:** `model/pdf_model.py`, `model/tools/annotation_tool.py`
+
+---
+
+## Run-anchored browse selection cannot rely on cached `(block_idx, line_idx)` alone
+
+**Area:** `model/pdf_model.py`
+**Symptom:** When visually aligned words were inserted or extracted as separate runs, browse selection treated each word as its own line, producing output like `Beta\nGamma` instead of `Beta Gamma`.
+**Cause:** The text index can contain separate runs on the same visual row with different cached block/line ids, so grouping by `(block_idx, line_idx)` alone is not enough for line snapping.
+**Fix:** Build visual line groups from run reading order plus geometry overlap, then apply the start-run / end-run slicing rules against those visual groups.
+**File:** `model/pdf_model.py`
+
+---
+
+## Browse selection must not use block fallback for run anchoring
+
+**Area:** `model/pdf_model.py`, `controller/pdf_controller.py`, `view/pdf_view.py`
+**Symptom:** A real mouse drag that starts or ends slightly inside row whitespace can appear to expand the boundary line to the whole row instead of staying anchored to the intended word/run.
+**Cause:** `get_text_info_at_point(...)` has a backward-compatible block fallback for coarse text hits. Browse-mode selection was reusing that fallback for its run-anchored start/end resolution, so near-misses inside a text block silently degraded to the block's fallback span.
+**Fix:** Add a strict hit-testing path (`allow_fallback=False`) and require browse-mode start/end resolution to use it. If exact run hit misses on mouse-up, the model then resolves the nearest run explicitly instead of accepting a coarse block fallback.
+**File:** `model/pdf_model.py`, `controller/pdf_controller.py`, `view/pdf_view.py`
+
+---
+
+## Save As default path can drift from the active tab
+
+**Area:** `controller/pdf_controller.py`, `view/pdf_view.py`  
+**Symptom:** `Ctrl+Shift+S` opens with a blank filename or the previously active tab's path after switching tabs or saving to a new file.  
+**Cause:** The Save As dialog is view-owned, but its default path was never refreshed when the active session changed or when `save_as()` updated `saved_path`.  
+**Fix:** Refresh the view's Save As default path from active-session metadata during `_refresh_document_tabs()`, and have `_save_as()` pass that value into `QFileDialog.getSaveFileName(...)`.  
+**File:** `controller/pdf_controller.py`, `view/pdf_view.py`
+
+---
+
+## Wide thumbnail sidebars should center, not endlessly stretch
+
+**Area:** `view/pdf_view.py`  
+**Symptom:** Expanding the left sidebar makes thumbnails grow too wide and visually awkward instead of keeping a readable centered column.  
+**Cause:** Thumbnail layout metrics previously used the full sidebar width for every resize, with no width cap or centering behavior.  
+**Fix:** Cap thumbnail cell width and apply symmetric viewport margins when the sidebar exceeds that cap so the column remains centered.  
+**File:** `view/pdf_view.py`
+
+---
+
 ## PyMuPDF font sizes are floats, not ints
 
 **Area:** `model/pdf_model.py`, `view/text_editing.py`  
