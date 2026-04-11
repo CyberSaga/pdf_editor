@@ -7,7 +7,7 @@ from enum import Enum
 
 import fitz
 from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QTextCursor, QTextOption
+from PySide6.QtGui import QBrush, QColor, QFont, QPen, QTextCursor, QTextOption
 from PySide6.QtWidgets import QTextEdit
 
 logger = logging.getLogger(__name__)
@@ -268,37 +268,37 @@ def _average_image_rect_color(image, rect: QRect) -> QColor:
     return QColor(total_r // count, total_g // count, total_b // count)
 
 
+def _compute_editor_proxy_layout(
+    *,
+    scaled_rect: fitz.Rect,
+    scaled_width: int,
+    page_y_offset: float,
+    rotation: int,
+) -> tuple[int, int, float, float, int]:
+    normalized_rotation = int(rotation) % 360
+    width_px = max(int(round(scaled_width)), TextEditUIConstants.MIN_EDITOR_WIDTH_PX)
+    height_px = max(int(round(scaled_rect.height)), TextEditUIConstants.MIN_EDITOR_HEIGHT_PX)
+    pos_x = float(scaled_rect.x0)
+    pos_y = float(page_y_offset + scaled_rect.y0)
+
+    if normalized_rotation in (90, 270):
+        width_px = max(int(round(scaled_rect.height)), TextEditUIConstants.MIN_EDITOR_WIDTH_PX)
+        height_px = max(int(round(scaled_rect.width)), TextEditUIConstants.MIN_EDITOR_HEIGHT_PX)
+        if normalized_rotation == 90:
+            pos_x += height_px
+        else:
+            pos_y += width_px
+    elif normalized_rotation == 180:
+        pos_x += width_px
+        pos_y += height_px
+
+    return width_px, height_px, pos_x, pos_y, normalized_rotation
+
+
 class TextEditManager:
     def __init__(self, view) -> None:
         self._view = view
 
-    def current_text_editor_scene_rect(self) -> QRectF | None:
-        editor = getattr(self._view, "text_editor", None)
-        if not editor or not editor.widget():
-            return None
-        if hasattr(editor, "sceneBoundingRect"):
-            return editor.sceneBoundingRect()
-        pos = editor.pos() if hasattr(editor, "pos") else QPointF(0, 0)
-        widget = editor.widget()
-        return QRectF(pos.x(), pos.y(), float(widget.width()), float(widget.height()))
-
-    def refresh_text_editor_mask_color(self) -> None:
-        editor_proxy = getattr(self._view, "text_editor", None)
-        if not editor_proxy or not editor_proxy.widget():
-            return
-        page_idx = getattr(self._view, "_editing_page_idx", self._view.current_page)
-        scene_rect = self.current_text_editor_scene_rect()
-        if scene_rect is None:
-            return
-        editor = editor_proxy.widget()
-        text_rgb = editor.property("text_rgb") or (0, 0, 0)
-        mask_color = self._view._sample_page_mask_color(page_idx, scene_rect)
-        editor.setStyleSheet(self._view._build_text_editor_stylesheet(text_rgb, mask_color))
-        editor.setProperty("mask_rgb", (mask_color.red(), mask_color.green(), mask_color.blue()))
-
-    def create_text_editor(
-        self,
-        rect: fitz.Rect,
     def _clear_text_editor_mask_item(self) -> None:
         mask_item = getattr(self._view, "_text_editor_mask_item", None)
         if mask_item is None:
@@ -335,6 +335,36 @@ class TextEditManager:
         if editor_proxy is not None and hasattr(editor_proxy, "setZValue"):
             editor_proxy.setZValue(12)
 
+    def current_text_editor_scene_rect(self) -> QRectF | None:
+        editor = getattr(self._view, "text_editor", None)
+        if not editor or not editor.widget():
+            return None
+        if hasattr(editor, "sceneBoundingRect"):
+            return editor.sceneBoundingRect()
+        pos = editor.pos() if hasattr(editor, "pos") else QPointF(0, 0)
+        widget = editor.widget()
+        return QRectF(pos.x(), pos.y(), float(widget.width()), float(widget.height()))
+
+    def refresh_text_editor_mask_color(self) -> None:
+        editor_proxy = getattr(self._view, "text_editor", None)
+        if not editor_proxy or not editor_proxy.widget():
+            self._clear_text_editor_mask_item()
+            return
+        page_idx = getattr(self._view, "_editing_page_idx", self._view.current_page)
+        scene_rect = self.current_text_editor_scene_rect()
+        if scene_rect is None:
+            self._clear_text_editor_mask_item()
+            return
+        editor = editor_proxy.widget()
+        text_rgb = editor.property("text_rgb") or (0, 0, 0)
+        mask_color = self._view._sample_page_mask_color(page_idx, scene_rect)
+        self._sync_text_editor_mask_item(scene_rect, mask_color)
+        editor.setStyleSheet(self._view._build_text_editor_stylesheet(text_rgb, mask_color))
+        editor.setProperty("mask_rgb", (mask_color.red(), mask_color.green(), mask_color.blue()))
+
+    def create_text_editor(
+        self,
+        rect: fitz.Rect,
         text: str,
         font_name: str,
         font_size: float,
@@ -348,25 +378,26 @@ class TextEditManager:
         if view.text_editor:
             view._finalize_text_edit()
 
-            self._clear_text_editor_mask_item()
         page_idx = getattr(view, "_editing_page_idx", view.current_page)
         render_width_pt = view.controller.model.get_render_width_for_edit(page_idx + 1, rect, rotation, font_size)
         rs = view._render_scale if view._render_scale > 0 else 1.0
         scaled_width = int(render_width_pt * rs)
-            self._clear_text_editor_mask_item()
         scaled_rect = rect * rs
 
         view.editing_rect = rect
         view._editing_original_rect = fitz.Rect(rect)
-        self._sync_text_editor_mask_item(scene_rect, mask_color)
         view._editing_origin_page_idx = page_idx
         y0 = view.page_y_positions[page_idx] if (view.continuous_pages and page_idx < len(view.page_y_positions)) else 0
-        pos_x = scaled_rect.x0
-        pos_y = y0 + scaled_rect.y0
+        editor_width_px, editor_height_px, pos_x, pos_y, normalized_rotation = _compute_editor_proxy_layout(
+            scaled_rect=scaled_rect,
+            scaled_width=scaled_width,
+            page_y_offset=y0,
+            rotation=rotation,
+        )
 
         editor = InlineTextEditor(text)
         editor.setProperty("original_text", text)
-        view._editing_rotation = rotation
+        view._editing_rotation = normalized_rotation
         view.editing_target_span_id = target_span_id
         view.editing_target_mode = target_mode if target_mode in ("run", "paragraph") else "run"
         view.editing_intent = editor_intent if editor_intent in ("edit_existing", "add_new") else "edit_existing"
@@ -381,8 +412,11 @@ class TextEditManager:
         editor.viewport().setAutoFillBackground(False)
         editor.setStyleSheet(view._build_text_editor_stylesheet(text_rgb, QColor(_DEFAULT_EDITOR_MASK_COLOR)))
 
-        editor.setFixedWidth(max(scaled_width, TextEditUIConstants.MIN_EDITOR_WIDTH_PX))
-        editor.setMinimumHeight(max(scaled_rect.height, TextEditUIConstants.MIN_EDITOR_HEIGHT_PX))
+        editor.setFixedWidth(editor_width_px)
+        if normalized_rotation in (90, 270):
+            editor.setFixedHeight(editor_height_px)
+        else:
+            editor.setMinimumHeight(editor_height_px)
         editor.setLineWrapMode(QTextEdit.WidgetWidth)
         editor.setWordWrapMode(QTextOption.WrapAnywhere)
 
@@ -408,6 +442,10 @@ class TextEditManager:
 
         view.text_editor = view.scene.addWidget(editor)
         view.text_editor.setPos(pos_x, pos_y)
+        if hasattr(view.text_editor, "setTransformOriginPoint"):
+            view.text_editor.setTransformOriginPoint(0.0, 0.0)
+        if hasattr(view.text_editor, "setRotation"):
+            view.text_editor.setRotation(float(normalized_rotation))
         self.refresh_text_editor_mask_color()
         view._editor_shortcut_forwarder = _EditorShortcutForwarder(view)
         editor.installEventFilter(view._editor_shortcut_forwarder)
@@ -558,6 +596,7 @@ class TextEditManager:
         view.text_editor = None
         if proxy_to_remove.scene():
             view.scene.removeItem(proxy_to_remove)
+        self._clear_text_editor_mask_item()
         # Restore dim outline for the block that was just edited
         try:
             active_key = getattr(view, '_active_outline_key', None)
@@ -596,7 +635,6 @@ class TextEditManager:
         if hasattr(view, "editing_color"):
             del view.editing_color
         if hasattr(view, "_editing_page_idx"):
-        self._clear_text_editor_mask_item()
             del view._editing_page_idx
         if hasattr(view, "_editing_origin_page_idx"):
             del view._editing_origin_page_idx
