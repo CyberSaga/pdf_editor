@@ -2688,7 +2688,7 @@ class PDFView(QMainWindow):
     def _build_text_editor_stylesheet(self, text_rgb: tuple[int, int, int], mask_color: QColor) -> str:
         r, g, b = text_rgb
         return (
-            f"QTextEdit {{ background: rgb({mask_color.red()},{mask_color.green()},{mask_color.blue()}); "
+            f"QTextEdit {{ background: transparent; "
             f"border: 1.5px dashed rgba(30,120,255,0.75); color: rgb({r},{g},{b}); "
             f"selection-background-color: rgba(30,120,255,0.25); }}"
             f"QTextEdit QScrollBar {{ background: transparent; }}"
