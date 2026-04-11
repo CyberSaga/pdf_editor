@@ -299,6 +299,42 @@ class TextEditManager:
     def create_text_editor(
         self,
         rect: fitz.Rect,
+    def _clear_text_editor_mask_item(self) -> None:
+        mask_item = getattr(self._view, "_text_editor_mask_item", None)
+        if mask_item is None:
+            return
+        try:
+            if mask_item.scene():
+                self._view.scene.removeItem(mask_item)
+        except Exception:
+            logger.debug("text editor mask removal skipped")
+        self._view._text_editor_mask_item = None
+
+    def _sync_text_editor_mask_item(self, scene_rect: QRectF, mask_color: QColor) -> None:
+        if scene_rect.isEmpty() or not hasattr(self._view, "scene"):
+            self._clear_text_editor_mask_item()
+            return
+        if not hasattr(self._view.scene, "addRect"):
+            return
+        brush = QBrush(mask_color)
+        pen = QPen(Qt.NoPen)
+        mask_item = getattr(self._view, "_text_editor_mask_item", None)
+        if mask_item is None:
+            mask_item = self._view.scene.addRect(scene_rect, pen, brush)
+            self._view._text_editor_mask_item = mask_item
+        else:
+            if hasattr(mask_item, "setRect"):
+                mask_item.setRect(scene_rect)
+            if hasattr(mask_item, "setBrush"):
+                mask_item.setBrush(brush)
+            if hasattr(mask_item, "setPen"):
+                mask_item.setPen(pen)
+        if hasattr(mask_item, "setZValue"):
+            mask_item.setZValue(11)
+        editor_proxy = getattr(self._view, "text_editor", None)
+        if editor_proxy is not None and hasattr(editor_proxy, "setZValue"):
+            editor_proxy.setZValue(12)
+
         text: str,
         font_name: str,
         font_size: float,
@@ -312,14 +348,17 @@ class TextEditManager:
         if view.text_editor:
             view._finalize_text_edit()
 
+            self._clear_text_editor_mask_item()
         page_idx = getattr(view, "_editing_page_idx", view.current_page)
         render_width_pt = view.controller.model.get_render_width_for_edit(page_idx + 1, rect, rotation, font_size)
         rs = view._render_scale if view._render_scale > 0 else 1.0
         scaled_width = int(render_width_pt * rs)
+            self._clear_text_editor_mask_item()
         scaled_rect = rect * rs
 
         view.editing_rect = rect
         view._editing_original_rect = fitz.Rect(rect)
+        self._sync_text_editor_mask_item(scene_rect, mask_color)
         view._editing_origin_page_idx = page_idx
         y0 = view.page_y_positions[page_idx] if (view.continuous_pages and page_idx < len(view.page_y_positions)) else 0
         pos_x = scaled_rect.x0
@@ -557,6 +596,7 @@ class TextEditManager:
         if hasattr(view, "editing_color"):
             del view.editing_color
         if hasattr(view, "_editing_page_idx"):
+        self._clear_text_editor_mask_item()
             del view._editing_page_idx
         if hasattr(view, "_editing_origin_page_idx"):
             del view._editing_origin_page_idx

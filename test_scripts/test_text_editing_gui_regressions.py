@@ -911,3 +911,13 @@ def test_block_outlines_follow_run_boxes_in_run_mode(monkeypatch: pytest.MonkeyP
     assert view.scene.added_rects == [QRectF(20.0, 30.0, 50.0, 14.0)]
 
 
+def test_build_text_editor_stylesheet_keeps_editor_background_transparent() -> None:
+    view = _make_view()
+
+    stylesheet = view._build_text_editor_stylesheet((12, 34, 56), QColor(200, 210, 220))
+
+    assert "background: transparent" in stylesheet
+    assert "color: rgb(12,34,56)" in stylesheet
+    assert "background: rgb(" not in stylesheet
+
+
