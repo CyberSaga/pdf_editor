@@ -921,3 +921,51 @@ def test_build_text_editor_stylesheet_keeps_editor_background_transparent() -> N
     assert "background: rgb(" not in stylesheet
 
 
+def test_create_text_editor_rotates_proxy_for_vertical_text(monkeypatch: pytest.MonkeyPatch, qapp) -> None:
+    class _FakeSceneWithAddWidget(_FakeScene):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_proxy: _FakeProxy | None = None
+
+        def addWidget(self, widget):
+            self.last_proxy = _FakeProxy(widget)
+            return self.last_proxy
+
+    view = _make_view()
+    _attach_text_property_panel(view)
+    view.scene = _FakeSceneWithAddWidget()
+    view._render_scale = 1.0
+    view.controller = SimpleNamespace(
+        model=SimpleNamespace(get_render_width_for_edit=lambda *args, **kwargs: 40.0)
+    )
+    view._refresh_undo_redo_action_state = lambda: None
+    view._set_document_undo_redo_enabled = lambda enabled: None
+    view._set_edit_focus_guard = lambda enabled: None
+    view._sync_text_property_panel_state = lambda: None
+
+    manager = pdf_view.TextEditManager(view)
+    manager.refresh_text_editor_mask_color = lambda: None
+
+    monkeypatch.setattr(text_editing, "InlineTextEditor", _FakeInlineTextEditor)
+    monkeypatch.setattr(text_editing, "_EditorShortcutForwarder", lambda view: object())
+
+    manager.create_text_editor(
+        rect=fitz.Rect(10, 20, 50, 120),
+        text="vertical text",
+        font_name="helv",
+        font_size=12.0,
+        color=(0.0, 0.0, 0.0),
+        rotation=90,
+        target_span_id="span-rotated",
+        target_mode="run",
+    )
+
+    proxy = view.scene.last_proxy
+    assert proxy is not None
+    assert proxy.rotation == 90.0
+    assert proxy.transform_origin == QPointF(0.0, 0.0)
+    assert proxy.pos() == QPointF(50.0, 20.0)
+    assert proxy.widget().width() == 100
+    assert proxy.widget().height() == 40
+
+
