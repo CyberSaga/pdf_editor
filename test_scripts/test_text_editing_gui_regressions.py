@@ -851,3 +851,22 @@ def test_cmd_shift_z_fires_redo(qapp) -> None:
     shortcut.activated.emit()
 
     assert redo_fired[0] == 1, "Ctrl+Shift+Z shortcut must fire exactly once when activated"
+def test_save_as_uses_current_document_default_path_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    view = _make_view()
+    view.sig_save_as = _FakeSignal()
+    view._save_as_default_path = str(Path("C:/tmp/Current Draft.pdf"))
+    captured: dict[str, object] = {}
+
+    def _fake_get_save_file_name(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return ("out.pdf", "PDF (*.pdf)")
+
+    monkeypatch.setattr(pdf_view.QFileDialog, "getSaveFileName", _fake_get_save_file_name)
+
+    view._save_as()
+
+    assert captured["args"][2] == view._save_as_default_path
+    assert view.sig_save_as.calls == [("out.pdf",)]
+
+

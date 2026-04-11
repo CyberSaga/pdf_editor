@@ -579,6 +579,25 @@ def test_10_save_as_path_collision_blocked(mvc, tmp_path, monkeypatch):
     assert any("已在其他分頁開啟" in e for e in errors)
 
 
+def test_10a_active_session_updates_view_save_as_default_path(mvc, tmp_path):
+    _, view, controller = mvc
+    a = _make_pdf(tmp_path / "A.pdf", ["A"])
+    b = _make_pdf(tmp_path / "B.pdf", ["B"])
+
+    controller.open_pdf(str(a))
+    _pump_events(250)
+    assert view._save_as_default_path == str(a)
+
+    controller.open_pdf(str(b))
+    _pump_events(250)
+    assert view._save_as_default_path == str(b)
+
+    out = tmp_path / "B-copy.pdf"
+    controller.save_as(str(out))
+    _pump_events(120)
+    assert view._save_as_default_path == str(out)
+
+
 def test_11_close_last_tab_resets_ui(mvc, tmp_path, monkeypatch):
     model, view, controller = mvc
     a = _make_pdf(tmp_path / "A.pdf", ["A"])

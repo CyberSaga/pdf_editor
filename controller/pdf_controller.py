@@ -366,6 +366,17 @@ class PDFController:
         tabs = self.model.list_sessions()
         active_idx = self.model.get_active_session_index()
         self.view.set_document_tabs(tabs, active_idx)
+        active_sid = self.model.get_active_session_id()
+        default_save_as_path = None
+        if active_sid:
+            meta = self.model.get_session_meta(active_sid) or {}
+            default_save_as_path = (
+                meta.get("saved_path")
+                or meta.get("path")
+                or meta.get("display_name")
+                or "未命名.pdf"
+            )
+        self.view.set_save_as_default_path(default_save_as_path)
 
     def _normalize_mode(self, mode: str) -> str:
         return mode if mode in self._VALID_MODES else "browse"
