@@ -219,11 +219,15 @@ class LinuxPrinterDriver(PrinterDriver):
             normalized.page_subset != "all" or normalized.reverse_order
         )
         requires_custom_scaling = normalized.scale_mode == "custom"
+        requires_fixed_layout = bool(
+            {"paper_size", "orientation"} & set(normalized.override_fields)
+        )
         direct_path_allowed = (
             normalized.transport in ("auto", "direct_pdf")
             and normalized.output_pdf_path is None
             and not requires_exact_page_order
             and not requires_custom_scaling
+            and not requires_fixed_layout
         )
 
         if direct_path_allowed and self.supports_direct_pdf:
