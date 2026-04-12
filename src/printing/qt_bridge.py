@@ -99,6 +99,11 @@ def _to_q_page_size(
         source_rect.width(),
         source_rect.height(),
     )
+    # Qt expects the custom base size in portrait order and applies the
+    # requested orientation separately; passing already-landscape dimensions
+    # here causes custom PDF output pages to flip back to portrait.
+    if width_pt > height_pt:
+        width_pt, height_pt = height_pt, width_pt
     return QPageSize(QSizeF(width_pt, height_pt), QPageSize.Point, "pdf-source-page")
 
 
