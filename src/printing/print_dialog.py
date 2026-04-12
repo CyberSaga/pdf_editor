@@ -412,15 +412,13 @@ class UnifiedPrintDialog(QDialog):
             return
         applied_prefs = self._printer_preferences
 
-        if "paper_size" in applied_prefs:
-            idx = self.paper_combo.findData(applied_prefs.get("paper_size"))
-            if idx >= 0:
-                self.paper_combo.setCurrentIndex(idx)
+        auto_paper_idx = self.paper_combo.findData("auto")
+        if auto_paper_idx >= 0:
+            self.paper_combo.setCurrentIndex(auto_paper_idx)
 
-        if "orientation" in applied_prefs:
-            idx = self.orientation_combo.findData(applied_prefs.get("orientation"))
-            if idx >= 0:
-                self.orientation_combo.setCurrentIndex(idx)
+        auto_orientation_idx = self.orientation_combo.findData("auto")
+        if auto_orientation_idx >= 0:
+            self.orientation_combo.setCurrentIndex(auto_orientation_idx)
 
         if "duplex" in applied_prefs:
             idx = self.duplex_combo.findData(applied_prefs.get("duplex"))
@@ -456,6 +454,11 @@ class UnifiedPrintDialog(QDialog):
         effective_values: dict[str, str] = {}
         override_fields: set[str] = set()
         for field_name, current_value in current_values.items():
+            if field_name in {"paper_size", "orientation"}:
+                effective_values[field_name] = current_value
+                if current_value != "auto":
+                    override_fields.add(field_name)
+                continue
             pref_value = self._printer_preferences.get(field_name)
             if field_name in self._touched_hardware_fields:
                 if current_value == "system":
@@ -472,7 +475,6 @@ class UnifiedPrintDialog(QDialog):
                 effective_values[field_name] = str(pref_value)
             else:
                 effective_values[field_name] = current_value
-                override_fields.add(field_name)
         return effective_values, override_fields
 
     def _build_effective_options(self) -> PrintJobOptions:

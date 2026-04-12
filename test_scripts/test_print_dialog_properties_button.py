@@ -150,20 +150,66 @@ def test_properties_button_syncs_dialog_fields_from_system_preferences() -> None
         )
         try:
             dialog.printer_properties_btn.click()
-            assert dialog.paper_combo.currentData() == "letter"
-            assert dialog.orientation_combo.currentData() == "landscape"
+            assert dialog.paper_combo.currentData() == "auto"
+            assert dialog.orientation_combo.currentData() == "auto"
             assert dialog.duplex_combo.currentData() == "long"
             assert dialog.color_combo.currentData() == "grayscale"
             assert dialog.dpi_spin.value() == 600
             assert dialog.copies_spin.value() == 3
             effective = dialog._build_effective_options()
             submission = dialog._build_submission_options()
-            assert effective.paper_size == "letter"
+            assert effective.paper_size == "auto"
+            assert effective.orientation == "auto"
             assert effective.duplex == "long"
             assert effective.color_mode == "grayscale"
             assert effective.override_fields == set()
             assert submission.override_fields == set()
             assert submission.paper_tray == "auto"
+        finally:
+            dialog.close()
+
+
+def test_properties_button_keeps_auto_paper_and_orientation_app_owned() -> None:
+    _ensure_app()
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "sample.pdf"
+        _make_single_page_pdf(pdf_path)
+        dispatcher = _FakeDispatcher(supports_properties=True)
+        dispatcher.printer_preferences = {
+            "paper_size": "letter",
+            "orientation": "landscape",
+            "duplex": "long",
+            "color_mode": "grayscale",
+        }
+        printers = [PrinterDevice(name="Printer A", is_default=True, status="ready")]
+
+        dialog = UnifiedPrintDialog(
+            parent=None,
+            dispatcher=dispatcher,
+            printers=printers,
+            pdf_path=str(pdf_path),
+            total_pages=1,
+            current_page=1,
+            job_name="test_job",
+        )
+        try:
+            assert dialog.paper_combo.currentData() == "auto"
+            assert dialog.orientation_combo.currentData() == "auto"
+
+            dialog.printer_properties_btn.click()
+
+            assert dialog.paper_combo.currentData() == "auto"
+            assert dialog.orientation_combo.currentData() == "auto"
+            assert dialog.duplex_combo.currentData() == "long"
+            assert dialog.color_combo.currentData() == "grayscale"
+
+            effective = dialog._build_effective_options()
+            submission = dialog._build_submission_options()
+            assert effective.paper_size == "auto"
+            assert effective.orientation == "auto"
+            assert submission.paper_size == "auto"
+            assert submission.orientation == "auto"
+            assert submission.override_fields == set()
         finally:
             dialog.close()
 
@@ -225,8 +271,8 @@ def test_user_changed_hardware_field_marks_only_that_override() -> None:
 
             effective = dialog._build_effective_options()
             submission = dialog._build_submission_options()
-            assert effective.paper_size == "letter"
-            assert effective.orientation == "landscape"
+            assert effective.paper_size == "auto"
+            assert effective.orientation == "auto"
             assert effective.duplex == "short"
             assert effective.color_mode == "grayscale"
             assert submission.override_fields == {"duplex"}
@@ -272,8 +318,8 @@ def test_opening_properties_resets_touched_overrides() -> None:
             dialog.printer_properties_btn.click()
 
             submission = dialog._build_submission_options()
-            assert submission.paper_size == "a4"
-            assert submission.orientation == "portrait"
+            assert submission.paper_size == "auto"
+            assert submission.orientation == "auto"
             assert submission.duplex == "none"
             assert submission.color_mode == "grayscale"
             assert submission.override_fields == set()
@@ -416,8 +462,8 @@ def test_switching_printers_resets_touched_overrides_and_loads_new_defaults() ->
             dialog.printer_combo.setCurrentIndex(printer_b_idx)
 
             submission = dialog._build_submission_options()
-            assert submission.paper_size == "a4"
-            assert submission.orientation == "portrait"
+            assert submission.paper_size == "auto"
+            assert submission.orientation == "auto"
             assert submission.duplex == "none"
             assert submission.color_mode == "color"
             assert submission.override_fields == set()
