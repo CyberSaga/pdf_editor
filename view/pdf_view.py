@@ -1869,8 +1869,10 @@ class PDFView(QMainWindow):
         self.thumbnail_list.setWrapping(False)
         self.thumbnail_list.setMovement(QListView.Static)
         self.thumbnail_list.setResizeMode(QListView.Adjust)
+        self.thumbnail_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.thumbnail_list.viewport().installEventFilter(self)
         self.thumbnail_list.itemClicked.connect(self._on_thumbnail_clicked)
+        self.thumbnail_list.customContextMenuRequested.connect(self._show_thumbnail_context_menu)
         self.left_sidebar.addTab(self.thumbnail_list, "縮圖")
         QTimer.singleShot(0, self._update_thumbnail_layout_metrics)
 
@@ -2961,6 +2963,39 @@ class PDFView(QMainWindow):
         row = self.thumbnail_list.row(item)
         self.sig_page_changed.emit(row)
 
+    def _show_thumbnail_context_menu(self, pos) -> None:
+        thumbnail_list = getattr(self, "thumbnail_list", None)
+        if thumbnail_list is None:
+            return
+        item = thumbnail_list.itemAt(pos)
+        if item is None:
+            return
+        row = thumbnail_list.row(item)
+        if row < 0:
+            return
+        page_num = row + 1
+        thumbnail_list.setCurrentRow(row)
+
+        menu = QMenu()
+        menu.addAction("刪除此頁", lambda checked=False, p=page_num: self._delete_specific_pages([p]))
+        menu.addSeparator()
+        menu.addAction("向右旋轉 90°", lambda checked=False, p=page_num: self._rotate_specific_pages([p], 90))
+        menu.addAction("向左旋轉 90°", lambda checked=False, p=page_num: self._rotate_specific_pages([p], 270))
+        menu.addSeparator()
+        menu.addAction("匯出此頁...", lambda checked=False, p=page_num: self._export_specific_pages([p]))
+        menu.addSeparator()
+        menu.addAction("在此頁之前插入空白頁", lambda checked=False, p=page_num: self._insert_blank_page_at(p))
+        menu.addAction("在此頁之後插入空白頁", lambda checked=False, p=page_num: self._insert_blank_page_at(p + 1))
+        menu.addAction(
+            "在此頁之前插入其他 PDF 頁面...",
+            lambda checked=False, p=page_num: self._insert_pages_from_file_at(p),
+        )
+        menu.addAction(
+            "在此頁之後插入其他 PDF 頁面...",
+            lambda checked=False, p=page_num: self._insert_pages_from_file_at(p + 1),
+        )
+        menu.exec_(thumbnail_list.viewport().mapToGlobal(pos))
+
     def _on_search_result_clicked(self, item):
         data = item.data(Qt.UserRole)
         row = self.search_results_list.row(item)
@@ -4033,6 +4068,13 @@ class PDFView(QMainWindow):
                 if parsed: self.sig_delete_pages.emit(parsed)
             except ValueError: show_error(self, "頁碼格式錯誤")
 
+    def _delete_specific_pages(self, pages: list[int]) -> None:
+        if self.total_pages == 0:
+            show_error(self, "沒有開啟的PDF文件")
+            return
+        if pages:
+            self.sig_delete_pages.emit(sorted(set(int(page) for page in pages)))
+
     def _rotate_pages(self):
         pages, ok = QInputDialog.getText(self, "旋轉頁面", "輸入頁碼 (如 1,3-5):")
         if ok and pages:
@@ -4042,6 +4084,13 @@ class PDFView(QMainWindow):
                     parsed = parse_pages(pages, self.total_pages)
                     if parsed: self.sig_rotate_pages.emit(parsed, degrees)
                 except ValueError: show_error(self, "頁碼格式錯誤")
+
+    def _rotate_specific_pages(self, pages: list[int], degrees: int) -> None:
+        if self.total_pages == 0:
+            show_error(self, "沒有開啟的PDF文件")
+            return
+        if pages:
+            self.sig_rotate_pages.emit(sorted(set(int(page) for page in pages)), degrees)
 
     @staticmethod
     def _normalize_image_extension(ext: str) -> str:
@@ -4097,6 +4146,31 @@ class PDFView(QMainWindow):
                 path = f"{path}.pdf"
 
         self.sig_export_pages.emit(pages, path, as_image, dpi, image_format)
+
+    def _export_specific_pages(self, pages: list[int]) -> None:
+        if self.total_pages == 0:
+            show_error(self, "沒有可匯出的 PDF")
+            return
+        if not pages:
+            return
+
+        filters = "PDF (*.pdf);;JPEG (*.jpg *.jpeg);;PNG (*.png);;TIFF (*.tif *.tiff)"
+        path, selected_filter = QFileDialog.getSaveFileName(self, "匯出頁面", "", filters)
+        if not path:
+            return
+
+        lowered = (selected_filter or "").lower()
+        as_image = "pdf" not in lowered
+        image_format = "png"
+        if as_image:
+            image_format = self._resolve_image_format(path, selected_filter)
+            if not Path(path).suffix:
+                path = f"{path}.{image_format}"
+        else:
+            if not Path(path).suffix:
+                path = f"{path}.pdf"
+
+        self.sig_export_pages.emit(sorted(set(int(page) for page in pages)), path, as_image, 300, image_format)
 
     def _show_search_panel(self):
         """Trigger search mode: switch left sidebar to Search tab, focus input (e.g. from Controller)."""
@@ -4277,6 +4351,13 @@ class PDFView(QMainWindow):
         if ok:
             self.sig_insert_blank_page.emit(position)
 
+    def _insert_blank_page_at(self, position: int) -> None:
+        if self.total_pages == 0:
+            show_error(self, "沒有開啟的PDF文件")
+            return
+        bounded = max(1, min(int(position), self.total_pages + 1))
+        self.sig_insert_blank_page.emit(bounded)
+
     def _insert_pages_from_file(self):
         """從其他檔案插入頁面"""
         if self.total_pages == 0:
@@ -4334,6 +4415,48 @@ class PDFView(QMainWindow):
         )
         if ok:
             self.sig_insert_pages_from_file.emit(source_file, source_pages, position)
+
+    def _insert_pages_from_file_at(self, position: int) -> None:
+        if self.total_pages == 0:
+            show_error(self, "沒有開啟的PDF文件")
+            return
+
+        source_file, _ = QFileDialog.getOpenFileName(
+            self,
+            "選擇來源PDF檔案",
+            "",
+            "PDF (*.pdf)"
+        )
+        if not source_file:
+            return
+
+        try:
+            source_doc = fitz.open(source_file)
+            source_total_pages = len(source_doc)
+            source_doc.close()
+        except Exception as e:
+            show_error(self, f"無法讀取來源檔案: {e}")
+            return
+
+        pages_text, ok = QInputDialog.getText(
+            self,
+            "選擇要插入的頁面",
+            f"輸入來源檔案中的頁碼 (如 1,3-5，總頁數: {source_total_pages}):"
+        )
+        if not ok or not pages_text:
+            return
+
+        try:
+            source_pages = parse_pages(pages_text, source_total_pages)
+            if not source_pages:
+                show_error(self, "沒有選擇有效的頁面")
+                return
+        except ValueError as e:
+            show_error(self, f"頁碼格式錯誤: {e}")
+            return
+
+        bounded = max(1, min(int(position), self.total_pages + 1))
+        self.sig_insert_pages_from_file.emit(source_file, source_pages, bounded)
 
     def _apply_scale(self):
         transform = QTransform().scale(self.scale, self.scale)
