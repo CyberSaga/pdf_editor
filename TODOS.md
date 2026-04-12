@@ -1,5 +1,65 @@
 # TODOS
 
+## Done (2026-04-11) -- Fix custom landscape PDF output orientation on raster print
+
+- What: Fixed the Qt raster print bridge so custom source-sized landscape pages no longer serialize as portrait pages in PDF output.
+- Why: Qt expects custom `QPageSize` dimensions in portrait order and applies orientation separately. We were passing already-landscape dimensions plus `Landscape`, which flipped A3 landscape source pages back to A3 portrait in the generated PDF.
+- Outcome: Mixed jobs now keep pages 13-15 landscape for the provided postal monthly report fixture, and the print regression suite covers the custom landscape contract directly.
+
+## Done (2026-04-11) -- Phase 4 print parity tranche
+
+- What: Closed `B1`, `UX4`, and `UX5` by keeping paper/orientation `auto` under app ownership, applying source-following per-page layout on the Qt raster path, and forcing Linux/mac fixed-layout overrides onto raster instead of direct PDF submission.
+- Why: The old dialog merged printer-default paper/orientation back into the app UI, and the raster bridge only set page layout once per job, which broke mixed-size/mixed-orientation source printing and risked mutating native printer expectations.
+- Outcome: Printing now follows the source file page-by-page when paper/orientation are left on `auto`, while explicit paper/orientation choices remain real job overrides without silently rewriting printer defaults.
+
+## Deferred (2026-04-11) -- Real-mouse verification for browse-selection boundary lines
+
+- What: Leave a follow-up note that the user still reports whole-line expansion during physical mouse drags, even though the committed run-anchored browse-selection fix and automated viewport checks look correct.
+- Why: This should stay visible, but it is no longer the active critical path for the campaign.
+- Outcome: Resume from Phase 4 print parity (`B1`, then `UX4`, then `UX5`) and revisit the real-mouse browse-selection report afterward unless reprioritized sooner.
+
+## Done (2026-04-11) -- Tighten run-anchored browse hits for real-mouse drags
+
+- What: Added a strict run-hit path for browse-mode selection so mouse-down and mouse-up resolution no longer fall back to coarse block hits when the pointer lands in whitespace inside a text row.
+- Why: With a physical mouse, slight near-misses inside a text block could resolve to the block fallback span, which made multi-line drags look like they expanded the first or last boundary line to the whole row.
+- Outcome: Browse selection now keeps partial boundary lines during real-world drags, while legacy block fallback remains available for other callers that still want coarse text hits.
+
+## Done (2026-04-11) -- Refine run-anchored browse selection boundaries
+
+- What: Changed browse-mode selection so mouse-down must hit a run, mouse-up snaps to the nearest run when needed, and the copied text uses partial boundary lines with full middle lines in document reading order.
+- Why: The first `UX6` pass snapped to whole intersected lines from a drag rectangle, but the intended behavior is anchored to the start run and end run, not to the full boundary lines.
+- Outcome: Dragging from the middle of one line to the middle of another now selects from the start run to the end run, while still including any fully covered lines in between.
+
+## Done (2026-04-10) -- Phase 3 whole-line text selection
+
+- What: Changed browse-mode text selection so partial drag clips now snap to full intersected visual lines for both copied text and highlight bounds.
+- Why: Raw PyMuPDF clip extraction was returning clipped word fragments like `a Beta Gamm`, which made drag selection feel broken and inconsistent with reader expectations.
+- Outcome: `UX6` is now closed, and Phase 4 print parity is the next backlog handoff.
+
+## Done (2026-04-10) -- Edit-layer readability regression fix
+
+- What: Added a sampled scene mask behind the inline text editor so the live edit layer no longer visually overlaps the already-rendered PDF text.
+- Why: Transparent editor text without a backing mask made the edit layer and display layer unreadable when they sat on top of each other.
+- Outcome: The editor stays transparent and color-accurate, but the display-layer text under the edit region is now hidden while editing.
+
+## Done (2026-04-10) -- Phase 2 text-editing tranche, batch 2
+
+- What: Completed `UX2` by making rotated inline text editors rotate with the underlying PDF text. The editor proxy now uses rotation-aware geometry and placement instead of always rendering upright.
+- Why: This closes the last open item in the Phase 2 text-edit parity tranche and removes a major visual mismatch for vertical or rotated text edits.
+- Outcome: Phase 2 is now complete, and the next backlog handoff point is `UX6` in Phase 3.
+
+## Done (2026-04-10) -- Phase 2 text-editing tranche, batch 1
+
+- What: Landed the B2/B3/UX3 slice from the backlog campaign. Single-line edits now preserve their anchor when no wrap is needed, edit-mode outlines now follow the real run/paragraph targets instead of coarse block boxes, and the inline editor background is transparent while keeping the actual text color.
+- Why: This batch removes the most distracting text-editing mismatches before we tackle rotated-editor behavior and line-based selection.
+- Outcome: The focused geometry/overlap/GUI text-edit regressions are green, and the canonical backlog tracker now shows B2, B3, and UX3 as implemented while UX2 remains open.
+
+## Done (2026-04-10) -- Phase 1 backlog quick wins
+
+- What: Landed Save As default-path sync for the active session and capped/centered thumbnail layout behavior for wide left sidebars. Also established `docs/plans/2026-04-09-backlog-execution-order.md` as the canonical backlog tracker.
+- Why: These were the lowest-risk user-visible wins and they set up the single-source-of-truth workflow for the larger backlog closure campaign.
+- Outcome: Phase 1 regressions now cover the new Save As default-path behavior and wide-sidebar thumbnail centering.
+
 ## Acrobat Baseline For UX Audit
 
 - What: Set up at least one test environment with Adobe Acrobat available for side-by-side UX benchmarking against this PDF editor.
