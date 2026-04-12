@@ -2129,11 +2129,24 @@ class PDFController:
         if sid:
             self._get_ui_state(sid).current_page = page_idx
 
-    def get_text_info_at_point(self, page_num: int, point: fitz.Point):
-        return self.model.get_text_info_at_point(page_num, point)
+    def get_text_info_at_point(
+        self,
+        page_num: int,
+        point: fitz.Point,
+        allow_fallback: bool = True,
+    ):
+        return self.model.get_text_info_at_point(page_num, point, allow_fallback=allow_fallback)
 
     def get_text_in_rect(self, page_num: int, rect: fitz.Rect) -> str:
         return self.model.get_text_in_rect(page_num, rect)
+
+    def get_text_selection_snapshot_from_run(
+        self,
+        page_num: int,
+        start_span_id: str,
+        end_point: fitz.Point,
+    ) -> tuple[str, fitz.Rect | None]:
+        return self.model.get_text_selection_snapshot_from_run(page_num, start_span_id, end_point)
 
     def _update_undo_redo_tooltips(self) -> None:
         """更新 View 的 undo/redo 按鈕 tooltip，顯示下一步操作描述。"""
