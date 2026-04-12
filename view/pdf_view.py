@@ -4015,9 +4015,24 @@ class PDFView(QMainWindow):
             menu.addAction("Zoom Out", lambda: self._zoom_relative(1 / 1.1))
             menu.addAction("Fit to View", self._fit_to_view)
             menu.addSeparator()
+            current_page_num = self.current_page + 1
+            menu.addAction("匯出目前頁面...", lambda checked=False, p=current_page_num: self._export_specific_pages([p]))
+            menu.addAction("向右旋轉目前頁面 90°", lambda checked=False, p=current_page_num: self._rotate_specific_pages([p], 90))
+            menu.addAction("向左旋轉目前頁面 90°", lambda checked=False, p=current_page_num: self._rotate_specific_pages([p], 270))
+            menu.addAction("刪除目前頁面", lambda checked=False, p=current_page_num: self._delete_specific_pages([p]))
+            menu.addAction("在目前頁面後插入空白頁", lambda checked=False, p=current_page_num: self._insert_blank_page_at(p + 1))
+            menu.addAction(
+                "在目前頁面後插入其他 PDF 頁面...",
+                lambda checked=False, p=current_page_num: self._insert_pages_from_file_at(p + 1),
+            )
+            menu.addSeparator()
         if self._fullscreen_active:
             menu.addAction("離開全螢幕", self.sig_toggle_fullscreen.emit)
             menu.addSeparator()
+        menu.addAction("另存PDF", self._save_as)
+        menu.addAction("列印...", self._print_document)
+        menu.addAction("另存為最佳化的副本", self._optimize_pdf_copy)
+        menu.addSeparator()
         menu.addAction("旋轉頁面", self._rotate_pages)
         global_pos = self.graphics_view.mapToGlobal(pos) if getattr(self, "graphics_view", None) is not None else pos
         menu.exec_(global_pos)
