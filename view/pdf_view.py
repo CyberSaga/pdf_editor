@@ -1052,7 +1052,10 @@ class PDFView(QMainWindow):
         self._text_selection_start_scene_pos = None
         self._text_selection_rect_item = None
         self._text_selection_live_doc_rect = None
+        self._text_selection_live_text = ""
         self._text_selection_last_scene_pos = None
+        self._text_selection_start_span_id = None
+        self._text_selection_start_hit_info = None
         self._selected_text_rect_doc = None
         self._selected_text_page_idx = None
         self._selected_text_cached = ""
@@ -3019,7 +3022,11 @@ class PDFView(QMainWindow):
             if self.current_mode == 'browse':
                 page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
                 try:
-                    info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
+                    info = self.controller.get_text_info_at_point(
+                        page_idx + 1,
+                        doc_point,
+                        allow_fallback=False,
+                    )
                 except Exception:
                     info = None
                 if info:
@@ -3183,7 +3190,11 @@ class PDFView(QMainWindow):
                 self._reset_browse_hover_cursor()
                 return
             page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
-            info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
+            info = self.controller.get_text_info_at_point(
+                page_idx + 1,
+                doc_point,
+                allow_fallback=False,
+            )
             if info:
                 if not self._browse_text_cursor_active:
                     self.graphics_view.viewport().setCursor(Qt.IBeamCursor)
@@ -3297,11 +3308,27 @@ class PDFView(QMainWindow):
         self._reset_browse_hover_cursor()
         self._clear_text_selection()
         start_pos = self._clamp_scene_point_to_page(scene_pos, page_idx)
+        try:
+            hit_page_idx, doc_point = self._scene_pos_to_page_and_doc_point(start_pos)
+            if hit_page_idx != page_idx:
+                return
+            start_hit = self.controller.get_text_info_at_point(
+                page_idx + 1,
+                doc_point,
+                allow_fallback=False,
+            )
+        except Exception:
+            start_hit = None
+        if start_hit is None or not getattr(start_hit, "target_span_id", None):
+            return
         self._text_selection_active = True
         self._text_selection_page_idx = page_idx
         self._text_selection_start_scene_pos = start_pos
         self._text_selection_live_doc_rect = None
+        self._text_selection_live_text = ""
         self._text_selection_last_scene_pos = None
+        self._text_selection_start_span_id = start_hit.target_span_id
+        self._text_selection_start_hit_info = start_hit
         pen = QPen(QColor(30, 120, 255, 220), 1)
         brush = QBrush(QColor(30, 120, 255, 35))
         rect = QRectF(start_pos, start_pos).normalized()
@@ -3324,31 +3351,38 @@ class PDFView(QMainWindow):
         self._text_selection_last_scene_pos = scene_pos
 
         end_pos = self._clamp_scene_point_to_page(scene_pos, self._text_selection_page_idx)
-        rough_scene_rect = QRectF(self._text_selection_start_scene_pos, end_pos).normalized()
-        rough_doc_rect = self._scene_rect_to_doc_rect(rough_scene_rect, self._text_selection_page_idx)
-        if rough_doc_rect is None:
+        try:
+            end_page_idx, end_doc_point = self._scene_pos_to_page_and_doc_point(end_pos)
+        except Exception:
+            end_page_idx, end_doc_point = self._text_selection_page_idx, None
+        if end_doc_point is None or end_page_idx != self._text_selection_page_idx:
             self._text_selection_live_doc_rect = None
+            self._text_selection_live_text = ""
             self._text_selection_rect_item.setVisible(False)
             return
 
         try:
-            selected_text = self.controller.get_text_in_rect(self._text_selection_page_idx + 1, rough_doc_rect)
+            selected_text, precise_doc_rect = self.controller.get_text_selection_snapshot_from_run(
+                self._text_selection_page_idx + 1,
+                self._text_selection_start_span_id,
+                end_doc_point,
+            )
         except Exception:
             selected_text = ""
+            precise_doc_rect = None
         if not selected_text.strip():
             self._text_selection_live_doc_rect = None
+            self._text_selection_live_text = ""
+            self._text_selection_rect_item.setVisible(False)
+            return
+        if precise_doc_rect is None or precise_doc_rect.width <= 0 or precise_doc_rect.height <= 0:
+            self._text_selection_live_doc_rect = None
+            self._text_selection_live_text = ""
             self._text_selection_rect_item.setVisible(False)
             return
 
-        precise_doc_rect = fitz.Rect(rough_doc_rect)
-        try:
-            precise = self.controller.get_text_bounds(self._text_selection_page_idx + 1, rough_doc_rect)
-            if precise is not None and precise.width > 0 and precise.height > 0:
-                precise_doc_rect = fitz.Rect(precise)
-        except Exception:
-            pass
-
         self._text_selection_live_doc_rect = precise_doc_rect
+        self._text_selection_live_text = selected_text
         rs = self._render_scale if self._render_scale > 0 else 1.0
         y0 = self.page_y_positions[self._text_selection_page_idx] if (
             self.continuous_pages and self._text_selection_page_idx < len(self.page_y_positions)
@@ -3384,17 +3418,14 @@ class PDFView(QMainWindow):
         if doc_rect is None:
             self._clear_text_selection()
             return
-        try:
-            selected_text = self.controller.get_text_in_rect(page_idx + 1, doc_rect)
-        except Exception:
-            selected_text = ""
+        selected_text = (getattr(self, "_text_selection_live_text", "") or "").strip()
         if not selected_text.strip():
             self._clear_text_selection()
             return
         self._selected_text_page_idx = page_idx
         self._selected_text_rect_doc = fitz.Rect(doc_rect)
         self._selected_text_cached = selected_text
-        self._selected_text_hit_info = self._resolve_text_info_for_doc_rect(page_idx, doc_rect)
+        self._selected_text_hit_info = getattr(self, "_text_selection_start_hit_info", None)
         rs = self._render_scale if self._render_scale > 0 else 1.0
         y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0.0
         precise_scene = QRectF(
@@ -3412,7 +3443,10 @@ class PDFView(QMainWindow):
         self._text_selection_page_idx = None
         self._text_selection_start_scene_pos = None
         self._text_selection_live_doc_rect = None
+        self._text_selection_live_text = ""
         self._text_selection_last_scene_pos = None
+        self._text_selection_start_span_id = None
+        self._text_selection_start_hit_info = None
         self._selected_text_rect_doc = None
         self._selected_text_page_idx = None
         self._selected_text_cached = ""
