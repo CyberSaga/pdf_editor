@@ -191,8 +191,7 @@ def raster_print_pdf(
     except StopIteration as exc:
         raise PrintJobSubmissionError("No rendered pages available.") from exc
 
-    if {"paper_size", "orientation"} & set(normalized.override_fields):
-        _set_page_layout(printer, _fitz_rect_to_qrectf(first.page_rect), normalized)
+    _set_page_layout(printer, _fitz_rect_to_qrectf(first.page_rect), normalized)
 
     painter = QPainter()
     if not painter.begin(printer):
@@ -203,8 +202,7 @@ def raster_print_pdf(
     try:
         _draw_page_image(painter, printer, first, normalized)
         for rendered in pages_iter:
-            # QPrinter blocks page-layout changes while active; changing here
-            # only emits warnings and does not take effect on most backends.
+            _set_page_layout(printer, _fitz_rect_to_qrectf(rendered.page_rect), normalized)
             printer.newPage()
             _draw_page_image(painter, printer, rendered, normalized)
     except Exception as exc:
