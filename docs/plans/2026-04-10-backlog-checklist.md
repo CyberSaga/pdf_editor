@@ -2,16 +2,16 @@
 
 Purpose: keep a compact, current execution checklist alongside `TODOS.md` so backlog state survives conversation compaction and quick handoffs.
 
-Last updated: 2026-04-11
+Last updated: 2026-04-12
 Canonical tracker: `docs/plans/2026-04-09-backlog-execution-order.md`
-Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor/.worktrees/codex-backlog-closure-campaign`
+Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 
 ## Current State
 
-- Current phase: Phase 5 context-menu improvements
-- Current batch status: Phase 4 complete; browse-selection follow-up deferred
-- Resume from: `F6`
-- Next likely phase after `F6`: complete the rest of Phase 5 (`F7`)
+- Current phase: Phase 7 (`B4`) baseline-to-closure planning
+- Current batch status: `B4` Slice 1 complete for preset-aware optimize-copy performance; open/page-change improvements still pending
+- Resume from: measured `B4` wins for open and page-change flows
+- Next likely phase after optimize-copy slice: implement the first open/page-change speedup slice
 
 ## Completed In This Campaign
 
@@ -29,6 +29,8 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor/.worktrees/codex-
 - [x] `UX4` Print auto-orientation follows each source page
 - [x] `UX5` Print auto paper size follows each source page, while Linux/mac fixed-layout overrides fall back to raster
 - [x] Fix Qt custom-page PDF output so landscape source pages stay landscape in generated PDF files
+- [x] `F6` Thumbnail right-click page operations reuse the existing page helpers/signals
+- [x] `F7` Browse-mode scene context menu now exposes richer page/file actions
 
 ## Deferred Follow-ups
 
@@ -36,26 +38,26 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor/.worktrees/codex-
 
 ## Active / Next
 
-- [ ] `F6` Thumbnail right-click page operations
-- [ ] `F7` Richer right-click menus everywhere
+- [ ] Implement measured `B4` wins for open and page-change flows
+- [ ] Review/approve child plans for `F1`, `F2`, `F3`, `F4`, and `UX7`
 
 ## Remaining Backlog
 
 - [ ] `B4` Performance profiling plus shipped speed improvements
-- [ ] `F1` Child plan for object manipulation
-- [ ] `F2` Child plan for Surya OCR
-- [ ] `F3` Child plan for shell/file-explorer integration
-- [ ] `F4` Child plan for color profile switching
-- [ ] `UX7` Child plan for macOS native menu bar
+- [ ] `F1` Review/approve child plan for object manipulation
+- [ ] `F2` Review/approve child plan for Surya OCR
+- [ ] `F3` Review/approve child plan for shell/file-explorer integration
+- [ ] `F4` Review/approve child plan for color profile switching
+- [ ] `UX7` Review/approve child plan for macOS native menu bar
 
 ## Child Plans Still Needed
 
-- [ ] `docs/plans/2026-04-10-object-manipulation.md`
-- [ ] `docs/plans/2026-04-10-surya-ocr.md`
-- [ ] `docs/plans/2026-04-10-shell-integration.md`
-- [ ] `docs/plans/2026-04-10-color-profile-switching.md`
-- [ ] `docs/plans/2026-04-10-macos-native-menu-bar.md`
-- [ ] `docs/plans/2026-04-10-performance-closure-plan.md`
+- [x] `docs/plans/2026-04-10-object-manipulation.md`
+- [x] `docs/plans/2026-04-10-surya-ocr.md`
+- [x] `docs/plans/2026-04-10-shell-integration.md`
+- [x] `docs/plans/2026-04-10-color-profile-switching.md`
+- [x] `docs/plans/2026-04-10-macos-native-menu-bar.md`
+- [x] `docs/plans/2026-04-10-performance-closure-plan.md`
 
 ## Verification Snapshot
 
@@ -69,6 +71,14 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor/.worktrees/codex-
 - [x] `python -m pytest -q test_scripts/test_text_extraction_line_joining.py -k "get_text_in_rect_expands_partial_clip_to_whole_visual_lines or get_text_bounds_expands_partial_clip_to_full_visual_line_bounds"`
 - [x] `python -m pytest -q test_scripts/test_text_extraction_line_joining.py test_scripts/test_text_editing_gui_regressions.py`
 - [x] `python -m pytest -q test_scripts/test_print_dialog_logic.py test_scripts/test_print_dialog_properties_button.py test_scripts/test_qt_bridge_layout.py test_scripts/test_linux_driver_overrides.py test_scripts/test_win_driver_properties.py test_scripts/test_print_controller_flow.py`
+- [x] `python -m pytest -q test_scripts/test_thumbnail_context_menu.py`
+- [x] `python -m pytest -q test_scripts/test_scene_context_menu.py test_scripts/test_thumbnail_context_menu.py`
+- [x] `python -m pytest -q test_scripts/test_thumbnail_context_menu.py test_scripts/test_multi_tab_plan.py -k "test_06a or test_06b or test_06f"`
+- [x] `python test_scripts/measure_startup_time.py`
+- [x] `python test_scripts/test_open_large_pdf.py --pages 300 --first-page`
+- [x] `python test_scripts/test_performance.py --rounds 10`
+- [x] `python -m pytest -q test_scripts/test_performance_script_runner.py`
+- [x] `python -m pytest -q test_scripts/test_pdf_optimize_workflow.py -k "optimize or parallel or clean_session"`
 - [x] Manual raster-to-PDF check with `郵政-A7自用層技服案-115.03月份工作月報.pdf`: output pages 13-15 confirmed as A3 landscape after the Qt custom-page fix
 - [ ] Clear legacy `ruff` debt still reported in `view/pdf_view.py`
 
@@ -80,5 +90,9 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor/.worktrees/codex-
 - Print auto paper/orientation are now app-owned and source-following. Native printer properties still sync duplex/color/DPI/copies, but printer-default paper/orientation must not overwrite the dialog's `auto` state.
 - Linux/mac direct-PDF printing is still allowed for source-following auto jobs. If the user explicitly fixes paper size or orientation in-app, the driver must force the raster path so per-page/source layout semantics are preserved.
 - Qt custom page sizes must be created in portrait order before applying landscape orientation. Passing already-landscape dimensions into `QPageSize(..., Point, ...)` makes generated PDF output flip back to portrait.
+- Thumbnail and scene context menus now share page-specific helper methods for delete/rotate/export/insert actions. Keep those helpers centralized in the view so the two right-click surfaces do not drift apart.
+- `test_scripts/test_performance.py` now runs cleanly from the repo root without a manual `PYTHONPATH` override. Keep that script self-contained, because it is part of the `B4` baseline capture path.
+- Current `B4` baselines on this machine: startup/import+instantiate `PDFModel` ~0.444s; synthetic 300-page open ~20ms with first page render ~8ms; page renders on the same file were ~7.93ms (page 1), ~1.43ms (page 150), and ~1.13ms (page 300); repeated edit benchmark averaged ~34ms over 10 rounds; optimize-copy on `test_files/1.pdf` with the balanced preset took ~0.087s and saved ~21.8%; optimize-copy on `test_files/2024_ASHRAE_content.pdf` exceeded the initial 124s probe timeout, so large-file optimize is the highest-risk `B4` hotspot.
+- After `B4` Slice 1 on this machine: startup/import+instantiate `PDFModel` measured ~0.235s; synthetic 300-page open stayed healthy at ~18ms with first page render ~5ms; page renders on the same file measured ~4.6ms (page 1), ~0.67ms (page 150), and ~0.61ms (page 300); repeated edit benchmark averaged ~21ms over 10 rounds; optimize-copy on `test_files/1.pdf` with the balanced preset took ~0.037s and still saved ~21.8%; optimize-copy on `test_files/2024_ASHRAE_content.pdf` now measures ~15.6s for `快速`, ~20.4s for `平衡` with ~37.9% saved, and ~23.2s for `極致壓縮` with ~57.8% saved.
 - `view/pdf_view.py` still carries pre-existing `E701` lint debt; avoid mixing cleanup-only edits into behavior batches unless explicitly planned.
 - Keep `docs/plans/2026-04-09-backlog-execution-order.md` as the source of truth for statuses; update this checklist as the compact execution mirror.

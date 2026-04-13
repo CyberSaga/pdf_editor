@@ -1836,8 +1836,18 @@ class PDFModel:
         working_doc: fitz.Document,
         options: PdfOptimizeOptions,
         source_path: Path | None = None,
+        *,
+        original_bytes: int | None = None,
+        image_usage: dict[int, dict[str, float | int]] | None = None,
     ) -> None:
-        pdf_optimizer.apply_optimize_options(self, working_doc, options, source_path=source_path)
+        pdf_optimizer.apply_optimize_options(
+            self,
+            working_doc,
+            options,
+            source_path=source_path,
+            original_bytes=original_bytes,
+            image_usage=image_usage,
+        )
 
     @staticmethod
     def _image_rewrite_settings(options: PdfOptimizeOptions) -> dict[str, int | bool]:
@@ -1888,8 +1898,18 @@ class PDFModel:
         working_doc: fitz.Document,
         options: PdfOptimizeOptions,
         source_path: Path | None = None,
+        *,
+        image_usage: dict[int, dict[str, float | int]] | None = None,
+        allow_extracted_parallel_fallback: bool = True,
     ) -> None:
-        pdf_optimizer.rewrite_images_with_pillow(self, working_doc, options, source_path=source_path)
+        pdf_optimizer.rewrite_images_with_pillow(
+            self,
+            working_doc,
+            options,
+            source_path=source_path,
+            image_usage=image_usage,
+            allow_extracted_parallel_fallback=allow_extracted_parallel_fallback,
+        )
 
     @staticmethod
     def _requires_post_save_packaging(options: PdfOptimizeOptions) -> bool:
@@ -2756,6 +2776,59 @@ class PDFModel:
         else:
             base_layout = fitz.Rect(resolve_result.target.layout_rect)
 
+        member_spans = [
+            span for span in resolve_result.overlap_cluster
+            if span.span_id in resolve_result.target_member_span_ids
+        ]
+        single_line_members = (
+            bool(member_spans)
+            and max(float(span.bbox.y1) for span in member_spans) - min(float(span.bbox.y0) for span in member_spans)
+            <= max(2.0, float(size) * 1.5)
+        )
+
+        if (
+            not resolve_result.is_vertical
+            and new_rect is None
+            and "\n" not in new_text
+            and single_line_members
+            and not self._needs_cjk_font(new_text)
+        ):
+            margin = 15
+            right_margin_pt = max(60.0, min(120.0, float(size) * 2.0))
+            right_safe = page_rect.x1 - right_margin_pt
+            available_w = max(0.0, right_safe - max(float(base_layout.x0), page_rect.x0) - margin)
+            insert_font = self._resolve_font_for_push(resolve_result.resolved_font)
+            try:
+                font_obj = fitz.Font(insert_font)
+                text_width = font_obj.text_length(new_text, fontsize=size)
+            except Exception:
+                insert_font = "helv"
+                text_width = fitz.Font(insert_font).text_length(new_text, fontsize=size)
+            if 0 < text_width <= available_w:
+                origin_span = min(
+                    member_spans,
+                    key=lambda span: (float(span.origin.x), float(span.origin.y)),
+                )
+                origin = fitz.Point(
+                    float(origin_span.origin.x),
+                    float(origin_span.origin.y),
+                )
+                page.insert_text(
+                    origin,
+                    new_text,
+                    fontname=insert_font,
+                    fontsize=float(size),
+                    color=tuple(float(c) for c in color),
+                    rotate=0,
+                )
+                original_bbox = self._rect_union([fitz.Rect(span.bbox) for span in member_spans])
+                return fitz.Rect(
+                    original_bbox.x0,
+                    original_bbox.y0,
+                    min(original_bbox.x0 + text_width, page_rect.x1 - 10),
+                    original_bbox.y1,
+                )
+
         if resolve_result.is_vertical:
             if new_rect is not None:
                 base_y1 = float(base_layout.y1)
@@ -2961,59 +3034,6 @@ class PDFModel:
         full_page_text = page.get_text("text")
         norm_new = self._normalize_text_for_compare(new_text)
         norm_page = self._normalize_text_for_compare(full_page_text)
-
-        member_spans = [
-            span for span in resolve_result.overlap_cluster
-            if span.span_id in resolve_result.target_member_span_ids
-        ]
-        single_line_members = (
-            bool(member_spans)
-            and max(float(span.bbox.y1) for span in member_spans) - min(float(span.bbox.y0) for span in member_spans)
-            <= max(2.0, float(size) * 1.5)
-        )
-
-        if (
-            not resolve_result.is_vertical
-            and new_rect is None
-            and "\n" not in new_text
-            and single_line_members
-            and not self._needs_cjk_font(new_text)
-        ):
-            margin = 15
-            right_margin_pt = max(60.0, min(120.0, float(size) * 2.0))
-            right_safe = page_rect.x1 - right_margin_pt
-            available_w = max(0.0, right_safe - max(float(base_layout.x0), page_rect.x0) - margin)
-            insert_font = self._resolve_font_for_push(resolve_result.resolved_font)
-            try:
-                font_obj = fitz.Font(insert_font)
-                text_width = font_obj.text_length(new_text, fontsize=size)
-            except Exception:
-                insert_font = "helv"
-                text_width = fitz.Font(insert_font).text_length(new_text, fontsize=size)
-            if 0 < text_width <= available_w:
-                origin_span = min(
-                    member_spans,
-                    key=lambda span: (float(span.origin.x), float(span.origin.y)),
-                )
-                origin = fitz.Point(
-                    float(origin_span.origin.x),
-                    float(origin_span.origin.y),
-                )
-                page.insert_text(
-                    origin,
-                    new_text,
-                    fontname=insert_font,
-                    fontsize=float(size),
-                    color=tuple(float(c) for c in color),
-                    rotate=0,
-                )
-                original_bbox = self._rect_union([fitz.Rect(span.bbox) for span in member_spans])
-                return fitz.Rect(
-                    original_bbox.x0,
-                    original_bbox.y0,
-                    min(original_bbox.x0 + text_width, page_rect.x1 - 10),
-                    original_bbox.y1,
-                )
 
         if norm_new and norm_new in norm_page:
             sim_ratio = 1.0

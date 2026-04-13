@@ -1,5 +1,29 @@
 # TODOS
 
+## Done (2026-04-12) -- B4 Slice 1 preset-aware optimize-copy performance
+
+- What: Added explicit execution profiles for the three optimize-copy presets so `快速` skips content cleanup/font subsetting and avoids the slower extracted-image parallel fallback, `平衡` keeps the heavier pipeline for small jobs but downgrades cleanup on large jobs, and `極致壓縮` preserves the full compression-first path.
+- Why: The first measured `B4` hotspot was large-file optimize-copy, not open or page-change. The old implementation used nearly the same expensive pipeline for all presets, which left too much latency on the table for the speed-first and balanced modes.
+- Outcome: Large-file optimize-copy on `test_files/2024_ASHRAE_content.pdf` now measures about `15.6s` for `快速`, `20.4s` for `平衡` with about `37.9%` saved, and `23.2s` for `極致壓縮` with about `57.8%` saved. `B4` remains open for open/page-change work, but the optimize-copy slice is now a shipped measured win.
+
+## Done (2026-04-12) -- B4 baseline capture and performance-plan handoff
+
+- What: Captured fresh baseline numbers for startup, synthetic large-file open, page render, repeated-edit latency, and a first optimize-copy sample, then wrote the dedicated `B4` child plan for closing performance with measured wins.
+- Why: The backlog requires `B4` to stay open until we have both baseline evidence and shipped before/after improvements. We had planning placeholders, but not a concrete performance handoff with real numbers and hotspots.
+- Outcome: `B4` is now `in_progress` instead of vague-open. The plan identifies large-file optimize-copy as the highest-risk hotspot on this machine, and the next step is shipping measured wins for open, page-change, and optimize-copy flows.
+
+## Done (2026-04-12) -- Make repeated-edit benchmark self-contained
+
+- What: Fixed `test_scripts/test_performance.py` so it can import the repo modules when run directly from the repo root, and added a subprocess regression that proves the script works without a manual `PYTHONPATH` override.
+- Why: The repeated-edit benchmark is part of the `B4` baseline path. A benchmark that only works with ad-hoc shell setup makes the performance campaign brittle and easy to mis-measure.
+- Outcome: `python test_scripts/test_performance.py --rounds 1` now works as documented, and future profiling sessions can rely on it without hidden environment setup.
+
+## Done (2026-04-12) -- Phase 5 context-menu improvements
+
+- What: Added thumbnail right-click page operations and expanded the browse-mode scene context menu with richer page/file actions, all routed through shared page-specific helper methods in the view.
+- Why: The backlog called for higher-utility right-click flows after print parity, and the app already had the underlying delete/rotate/export/insert signals; it just lacked page-aware context-menu entry points.
+- Outcome: Phase 5 is now closed. Thumbnails expose direct page operations, and the main browse context menu now surfaces current-page export/rotate/delete/insert plus file actions like Save As, Print, and optimized copy.
+
 ## Done (2026-04-11) -- Fix custom landscape PDF output orientation on raster print
 
 - What: Fixed the Qt raster print bridge so custom source-sized landscape pages no longer serialize as portrait pages in PDF output.

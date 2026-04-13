@@ -288,6 +288,160 @@ def test_save_optimized_copy_prefers_parallel_image_rewrite_for_dirty_session(
         model.close()
 
 
+def test_fast_preset_skips_content_cleanup(tmp_path: Path, monkeypatch) -> None:
+    from model.pdf_model import PDFModel
+
+    source = _make_pdf_with_image(tmp_path / "fast-cleanup-source.pdf")
+    output = tmp_path / "fast-cleanup-output.pdf"
+
+    clean_calls: list[int] = []
+
+    def fake_clean_contents(page):
+        clean_calls.append(page.number)
+
+    monkeypatch.setattr(fitz.Page, "clean_contents", fake_clean_contents)
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source))
+        result = model.save_optimized_copy(str(output), model.preset_optimize_options("快速"))
+
+        assert result.optimized_bytes > 0
+        assert clean_calls == []
+    finally:
+        model.close()
+
+
+def test_fast_preset_skips_font_subsetting(tmp_path: Path, monkeypatch) -> None:
+    from model.pdf_model import PDFModel
+
+    source = _make_pdf_with_image(tmp_path / "fast-font-source.pdf")
+    output = tmp_path / "fast-font-output.pdf"
+
+    subset_calls: list[int] = []
+
+    def fake_subset_fonts(doc):
+        subset_calls.append(len(doc))
+
+    monkeypatch.setattr(fitz.Document, "subset_fonts", fake_subset_fonts)
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source))
+        result = model.save_optimized_copy(str(output), model.preset_optimize_options("快速"))
+
+        assert result.optimized_bytes > 0
+        assert subset_calls == []
+    finally:
+        model.close()
+
+
+def test_balanced_preset_keeps_cleanup_and_subset_for_small_jobs(tmp_path: Path, monkeypatch) -> None:
+    from model.pdf_model import PDFModel
+
+    source = _make_pdf_with_image(tmp_path / "balanced-small-source.pdf")
+    output = tmp_path / "balanced-small-output.pdf"
+
+    clean_calls: list[int] = []
+    subset_calls: list[int] = []
+
+    def fake_clean_contents(page):
+        clean_calls.append(page.number)
+
+    def fake_subset_fonts(doc):
+        subset_calls.append(len(doc))
+
+    monkeypatch.setattr(fitz.Page, "clean_contents", fake_clean_contents)
+    monkeypatch.setattr(fitz.Document, "subset_fonts", fake_subset_fonts)
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source))
+        result = model.save_optimized_copy(str(output), model.preset_optimize_options("平衡"))
+
+        assert result.optimized_bytes > 0
+        assert clean_calls
+        assert subset_calls
+    finally:
+        model.close()
+
+
+def test_balanced_preset_skips_cleanup_for_large_jobs(tmp_path: Path, monkeypatch) -> None:
+    from model.pdf_model import PDFModel
+    from model import pdf_optimizer
+
+    source = _make_pdf_with_many_images(tmp_path / "balanced-large-source.pdf", image_count=40)
+    output = tmp_path / "balanced-large-output.pdf"
+
+    clean_calls: list[int] = []
+    subset_calls: list[int] = []
+    rewrite_calls: list[int] = []
+
+    def fake_clean_contents(page):
+        clean_calls.append(page.number)
+
+    def fake_subset_fonts(doc):
+        subset_calls.append(len(doc))
+
+    def fake_rewrite_images(
+        self,
+        working_doc,
+        options,
+        source_path=None,
+        *,
+        image_usage=None,
+        allow_extracted_parallel_fallback=True,
+    ):
+        rewrite_calls.append(len(working_doc))
+
+    monkeypatch.setattr(fitz.Page, "clean_contents", fake_clean_contents)
+    monkeypatch.setattr(fitz.Document, "subset_fonts", fake_subset_fonts)
+    monkeypatch.setattr(PDFModel, "_rewrite_images_with_pillow", fake_rewrite_images, raising=False)
+    monkeypatch.setattr(pdf_optimizer, "is_large_optimize_job", lambda original_bytes, image_usage: True)
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source))
+        result = model.save_optimized_copy(str(output), model.preset_optimize_options("平衡"))
+
+        assert result.optimized_bytes > 0
+        assert clean_calls == []
+        assert subset_calls
+        assert rewrite_calls
+    finally:
+        model.close()
+
+
+def test_extreme_preset_keeps_cleanup_and_subset_for_large_jobs(tmp_path: Path, monkeypatch) -> None:
+    from model.pdf_model import PDFModel
+
+    source = _make_pdf_with_many_images(tmp_path / "extreme-large-source.pdf", image_count=40)
+    output = tmp_path / "extreme-large-output.pdf"
+
+    clean_calls: list[int] = []
+    subset_calls: list[int] = []
+
+    def fake_clean_contents(page):
+        clean_calls.append(page.number)
+
+    def fake_subset_fonts(doc):
+        subset_calls.append(len(doc))
+
+    monkeypatch.setattr(fitz.Page, "clean_contents", fake_clean_contents)
+    monkeypatch.setattr(fitz.Document, "subset_fonts", fake_subset_fonts)
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source))
+        result = model.save_optimized_copy(str(output), model.preset_optimize_options("極致壓縮"))
+
+        assert result.optimized_bytes > 0
+        assert clean_calls
+        assert subset_calls
+    finally:
+        model.close()
+
+
 def test_save_optimized_copy_dirty_session_preserves_unsaved_edits(tmp_path: Path, monkeypatch) -> None:
     from model.pdf_model import PDFModel, PdfOptimizeOptions
 
