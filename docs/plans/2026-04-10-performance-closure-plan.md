@@ -58,6 +58,26 @@ Preset-aware optimize-copy routing is now landed.
 
 This closes the optimize-copy portion of the first `B4` slice and shifts the next priority to open/page-change improvements.
 
+## Slice 2 Results (2026-04-13)
+
+Open/page-change responsiveness work is now landed.
+
+- Controller open now prioritizes the initial visible page before background thumbnails/sidebar scans.
+- Visible-render scheduling now coalesces repeated page-change and viewport-triggered requests instead of restarting the render queue on every tick.
+- New benchmark script: `python test_scripts/benchmark_ui_open_render.py --path ...`
+
+Current UI-path measurements on this machine:
+
+- `test_files/1.pdf`
+  - startup to placeholders: about `391.7ms`
+  - initial page high-quality ready: about `15.6ms`
+- `test_files/2024_ASHRAE_content.pdf`
+  - startup to placeholders: about `534.9ms`
+  - initial page high-quality ready: about `78.1ms`
+  - far-page jump to page `483` high-quality ready: about `268.7ms`
+
+This closes the implementation portion of the open/page-change slice and leaves one final `B4` step: rerun the full evidence set and decide whether the combined Slice 1 + Slice 2 wins are enough to mark `B4` done.
+
 ## Success Criteria
 
 - We ship at least one measured improvement for each target workflow:

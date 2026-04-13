@@ -56,6 +56,8 @@ from src.printing.messages import (
 from src.printing.print_dialog import UnifiedPrintDialog
 from src.printing.subprocess_runner import PrintSubprocessRunner
 
+OPEN_BACKGROUND_FALLBACK_MS = 250
+
 logger = logging.getLogger(__name__)
 
 PRINT_STATUS_MESSAGE = "列印中..."
@@ -227,6 +229,9 @@ class PDFController:
         self._stale_index_gen_by_session: dict[str, int] = {}
         self._session_ui_state: dict[str, SessionUIState] = {}
         self._desired_scroll_page: dict[str, int] = {}
+        self._open_priority_page_by_session: dict[str, int] = {}
+        self._background_loading_started_by_session: dict[str, bool] = {}
+        self._render_batch_pending_by_session: dict[str, bool] = {}
         self._page_sizes_by_session: dict[str, list[tuple[float, float]]] = {}
         self._page_render_quality_by_session: dict[str, dict[int, str]] = {}
         self._render_revision_by_session: dict[str, int] = {}
@@ -342,6 +347,37 @@ class PDFController:
         self._next_load_gen(session_id)
         self._next_render_gen(session_id)
         self._next_stale_index_gen(session_id)
+        self._render_batch_pending_by_session[session_id] = False
+
+    def _start_open_background_loading(self, session_id: str) -> None:
+        if not session_id or not self.model.doc:
+            return
+        if self.model.get_active_session_id() != session_id:
+            return
+        self._background_loading_started_by_session[session_id] = True
+        load_gen = self._load_gen_by_session.get(session_id)
+        if load_gen is not None:
+            QTimer.singleShot(0, lambda sid=session_id, gen=load_gen: self._schedule_thumbnail_batch(0, sid, gen))
+        self._schedule_deferred_sidebar_scans(session_id)
+
+    def _maybe_start_background_loading_after_render(self, session_id: str, page_idx: int, quality: str) -> None:
+        if quality != "high":
+            return
+        if self._background_loading_started_by_session.get(session_id):
+            return
+        if self._open_priority_page_by_session.get(session_id) != page_idx:
+            return
+        self._background_loading_started_by_session[session_id] = True
+        self._start_open_background_loading(session_id)
+
+    def _start_open_background_loading_if_current(self, session_id: str, load_gen: int) -> None:
+        if self.model.get_active_session_id() != session_id:
+            return
+        if self._load_gen_by_session.get(session_id) != load_gen:
+            return
+        if self._background_loading_started_by_session.get(session_id):
+            return
+        self._start_open_background_loading(session_id)
 
     def _capture_current_ui_state(self) -> None:
         sid = self.model.get_active_session_id()
@@ -538,6 +574,7 @@ class PDFController:
             self._store_cached_render(session_id, page_idx, rendered_scale, quality, cached)
         self.view.update_page_in_scene_scaled(page_idx, cached, rendered_scale, target_scale)
         self._page_render_quality_by_session.setdefault(session_id, {})[page_idx] = quality
+        self._maybe_start_background_loading_after_render(session_id, page_idx, quality)
         return True
 
     def _visible_render_targets(self) -> tuple[list[int], list[int]]:
@@ -552,11 +589,14 @@ class PDFController:
     def _schedule_visible_render(self, session_id: str, immediate_page_idx: int | None = None) -> None:
         if not session_id or not self.model.doc or not self.view.continuous_pages:
             return
-        gen = self._next_render_gen(session_id)
         if immediate_page_idx is not None:
             current_quality = self._page_render_quality_by_session.setdefault(session_id, {}).get(immediate_page_idx)
             if current_quality not in {"low", "high"}:
                 self._render_page_into_scene(session_id, immediate_page_idx, "low")
+        if self._render_batch_pending_by_session.get(session_id):
+            return
+        gen = self._next_render_gen(session_id)
+        self._render_batch_pending_by_session[session_id] = True
         QTimer.singleShot(0, lambda sid=session_id, g=gen: self._process_visible_render_batch(sid, g))
 
     def _process_visible_render_batch(self, session_id: str, gen: int) -> None:
@@ -566,9 +606,11 @@ class PDFController:
             or not self.model.doc
             or not self.view.continuous_pages
         ):
+            self._render_batch_pending_by_session[session_id] = False
             return
         visible_pages, prefetch_pages = self._visible_render_targets()
         if not prefetch_pages:
+            self._render_batch_pending_by_session[session_id] = False
             return
 
         page_quality = self._page_render_quality_by_session.setdefault(session_id, {})
@@ -587,6 +629,7 @@ class PDFController:
                 candidates.append((page_idx, "low"))
 
         if not candidates:
+            self._render_batch_pending_by_session[session_id] = False
             return
 
         rendered = 0
@@ -598,6 +641,8 @@ class PDFController:
 
         if rendered > 0:
             QTimer.singleShot(0, lambda sid=session_id, g=gen: self._process_visible_render_batch(sid, g))
+            return
+        self._render_batch_pending_by_session[session_id] = False
 
     def _schedule_deferred_sidebar_scans(self, session_id: str) -> None:
         if not session_id:
@@ -695,6 +740,9 @@ class PDFController:
             initial_page_idx = state.current_page
         initial_page_idx = max(0, min(initial_page_idx, len(self.model.doc) - 1))
         self._desired_scroll_page[sid] = initial_page_idx
+        self._open_priority_page_by_session[sid] = initial_page_idx
+        self._background_loading_started_by_session[sid] = False
+        self._render_batch_pending_by_session[sid] = False
 
         self.view.scale = state.scale
         self.view.total_pages = len(self.model.doc)
@@ -707,9 +755,11 @@ class PDFController:
         self._update_undo_redo_tooltips()
 
         gen = self._next_load_gen(sid)
-        QTimer.singleShot(0, lambda sid=sid, gen=gen: self._schedule_thumbnail_batch(0, sid, gen))
         self._schedule_visible_render(sid, immediate_page_idx=initial_page_idx)
-        self._schedule_deferred_sidebar_scans(sid)
+        QTimer.singleShot(
+            OPEN_BACKGROUND_FALLBACK_MS,
+            lambda sid=sid, load_gen=gen: self._start_open_background_loading_if_current(sid, load_gen),
+        )
         self._schedule_restore_viewport_anchor(sid, gen, state.viewport_anchor)
 
     def _switch_to_session_id(self, session_id: str) -> None:
@@ -1099,6 +1149,9 @@ class PDFController:
         self._fullscreen_session_snapshots.pop(sid, None)
         self._load_gen_by_session.pop(sid, None)
         self._desired_scroll_page.pop(sid, None)
+        self._open_priority_page_by_session.pop(sid, None)
+        self._background_loading_started_by_session.pop(sid, None)
+        self._render_batch_pending_by_session.pop(sid, None)
         self._refresh_document_tabs()
         active_sid = self.model.get_active_session_id()
         if active_sid:
