@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -256,7 +257,11 @@ def test_cli_open_defers_annotation_and_watermark_sidebar_scans(
     startup = main_module.run(argv=[str(pdf_path)], start_event_loop=False)
     try:
         assert observed == []
-        startup["app"].processEvents()
+        for _ in range(10):
+            startup["app"].processEvents()
+            if observed:
+                break
+            time.sleep(0.05)
         assert observed
     finally:
         _cleanup_startup(startup)
@@ -445,4 +450,123 @@ def test_rebuild_continuous_scene_schedules_visible_render_once(
         controller._rebuild_continuous_scene(0)
         assert len(observed) == 1
     finally:
+        _cleanup_startup(startup)
+
+
+def test_render_active_session_prioritizes_visible_render_before_background_loading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import controller.pdf_controller as controller_module
+
+    pdf_path = _make_pdf(tmp_path / "open-priority.pdf", page_count=4)
+    startup = main_module.run(argv=[str(pdf_path)], start_event_loop=False)
+    controller = startup["controller"]
+    sid = controller.model.get_active_session_id()
+    observed: list[str] = []
+
+    assert sid is not None
+    controller._pause_session_background_loading(sid)
+
+    monkeypatch.setattr(
+        controller,
+        "_schedule_visible_render",
+        lambda *args, **kwargs: observed.append("visible"),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_schedule_thumbnail_batch",
+        lambda *args, **kwargs: observed.append("thumbnail"),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_schedule_deferred_sidebar_scans",
+        lambda *args, **kwargs: observed.append("sidebar"),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_schedule_restore_viewport_anchor",
+        lambda *args, **kwargs: None,
+    )
+
+    original_single_shot = controller_module.QTimer.singleShot
+
+    def run_immediate_zero_delay(delay_ms, callback):
+        if delay_ms == 0:
+            callback()
+
+    monkeypatch.setattr(controller_module.QTimer, "singleShot", run_immediate_zero_delay)
+
+    try:
+        controller._render_active_session(initial_page_idx=0)
+        assert observed == ["visible"]
+    finally:
+        monkeypatch.setattr(controller_module.QTimer, "singleShot", original_single_shot)
+        _cleanup_startup(startup)
+
+
+def test_initial_high_quality_render_starts_background_loading_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pdf_path = _make_pdf(tmp_path / "background-on-high.pdf", page_count=4)
+    startup = main_module.run(argv=[str(pdf_path)], start_event_loop=False)
+    controller = startup["controller"]
+    sid = controller.model.get_active_session_id()
+    observed: list[str] = []
+
+    assert sid is not None
+    controller._pause_session_background_loading(sid)
+
+    monkeypatch.setattr(
+        controller,
+        "_start_open_background_loading",
+        lambda session_id: observed.append(session_id),
+    )
+
+    try:
+        controller._background_loading_started_by_session[sid] = False
+        controller._open_priority_page_by_session[sid] = 0
+        controller._maybe_start_background_loading_after_render(sid, 0, "low")
+        controller._maybe_start_background_loading_after_render(sid, 0, "high")
+        controller._maybe_start_background_loading_after_render(sid, 0, "high")
+        assert observed == [sid]
+    finally:
+        _cleanup_startup(startup)
+
+
+def test_schedule_visible_render_coalesces_pending_batches(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import controller.pdf_controller as controller_module
+
+    pdf_path = _make_pdf(tmp_path / "coalesce-render.pdf", page_count=4)
+    startup = main_module.run(argv=[str(pdf_path)], start_event_loop=False)
+    controller = startup["controller"]
+    sid = controller.model.get_active_session_id()
+    scheduled: list[int] = []
+
+    assert sid is not None
+    controller._pause_session_background_loading(sid)
+
+    monkeypatch.setattr(controller, "_render_page_into_scene", lambda *args, **kwargs: True)
+
+    original_single_shot = controller_module.QTimer.singleShot
+
+    def capture_zero_delay(delay_ms, callback):
+        if delay_ms == 0:
+            scheduled.append(delay_ms)
+
+    monkeypatch.setattr(controller_module.QTimer, "singleShot", capture_zero_delay)
+
+    try:
+        before_gen = controller._render_gen_by_session.get(sid, 0)
+        controller._render_batch_pending_by_session[sid] = False
+        controller._schedule_visible_render(sid, immediate_page_idx=0)
+        controller._schedule_visible_render(sid, immediate_page_idx=1)
+        assert len(scheduled) == 1
+        assert controller._render_gen_by_session[sid] == before_gen + 1
+    finally:
+        monkeypatch.setattr(controller_module.QTimer, "singleShot", original_single_shot)
         _cleanup_startup(startup)

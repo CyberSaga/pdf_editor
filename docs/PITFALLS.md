@@ -95,6 +95,16 @@
 
 ---
 
+## Open-time background work can steal responsiveness from the first visible page
+
+**Area:** `controller/pdf_controller.py`  
+**Symptom:** Large PDFs technically open quickly, but the UI still feels late to become usable because thumbnail rasterization and sidebar scans compete with the first visible page render. Repeated page jumps can also keep restarting visible-render generations and make navigation feel noisier than it needs to.  
+**Cause:** The placeholder-first pipeline already existed, but open-time scheduling still kicked off thumbnail batches and deferred sidebar scans immediately, and `_schedule_visible_render(...)` created a fresh render generation for every repeated request even when one batch was already pending.  
+**Fix:** Prioritize the initial visible page first. Start thumbnails/sidebar scans only after that page reaches high quality or a short fallback timer expires, and coalesce visible-render scheduling so repeated viewport/page-change requests reuse the queued batch instead of thrashing the render loop.  
+**File:** `controller/pdf_controller.py`
+
+---
+
 ## Save As default path can drift from the active tab
 
 **Area:** `controller/pdf_controller.py`, `view/pdf_view.py`  

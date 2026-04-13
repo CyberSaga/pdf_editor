@@ -1,5 +1,11 @@
 # TODOS
 
+## Done (2026-04-13) -- B4 Slice 2 open/page-change responsiveness
+
+- What: Changed the controller open path so full-page placeholders still appear immediately, but thumbnail raster batches and sidebar scans wait until the initial visible page reaches high quality or a short fallback timer expires. Also coalesced repeated visible-render scheduling so page changes and viewport updates stop restarting the render queue on every tick.
+- Why: After the optimize-copy slice, the next best B4 move was making the document feel ready sooner in the real UI path. The existing controller already had batched rendering and caching, but it still spent early open time on background work and allowed redundant render scheduling churn during navigation.
+- Outcome: `test_scripts/benchmark_ui_open_render.py` now measures `test_files/2024_ASHRAE_content.pdf` at startup-to-placeholders ~534.9ms, initial high-quality page ready ~78.1ms, and far-page jump to page 483 high-quality ready ~268.7ms. The startup controller regression suite now locks in “visible page first, background work later” plus visible-render coalescing.
+
 ## Done (2026-04-12) -- B4 Slice 1 preset-aware optimize-copy performance
 
 - What: Added explicit execution profiles for the three optimize-copy presets so `快速` skips content cleanup/font subsetting and avoids the slower extracted-image parallel fallback, `平衡` keeps the heavier pipeline for small jobs but downgrades cleanup on large jobs, and `極致壓縮` preserves the full compression-first path.
