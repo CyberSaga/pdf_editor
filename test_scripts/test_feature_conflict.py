@@ -551,3 +551,38 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ---------------------------------------------------------------------------
+# pytest-collected wrappers — expose conflict runners to CI
+# Skipped automatically when no sample PDFs are present (test_files not checked in).
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("runner_name", [
+    "run_conflict_annot_then_edit",
+    "run_conflict_structural_undo",
+    "run_conflict_rotate_then_edit",
+    "run_conflict_insert_then_edit",
+    "run_conflict_multi_undo_redo",
+])
+def test_feature_conflict_runner_passes(runner_name: str) -> None:
+    """Each conflict concept runner must finish with no failed cases."""
+    pdfs = _collect_pdfs(limit=3)
+    if not pdfs:
+        pytest.skip("No sample PDFs available (test_files/sample-files-main missing)")
+
+    runner = {
+        "run_conflict_annot_then_edit":    run_conflict_annot_then_edit,
+        "run_conflict_structural_undo":    run_conflict_structural_undo,
+        "run_conflict_rotate_then_edit":   run_conflict_rotate_then_edit,
+        "run_conflict_insert_then_edit":   run_conflict_insert_then_edit,
+        "run_conflict_multi_undo_redo":    run_conflict_multi_undo_redo,
+    }[runner_name]
+
+    result = runner(pdfs)
+    failed = result.total - result.passed
+    failure_details = [(c.name, c.error) for c in result.cases if not c.passed]
+    assert failed == 0, f"{runner_name}: {failed} case(s) failed — {failure_details}"

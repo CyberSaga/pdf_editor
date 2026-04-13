@@ -94,3 +94,30 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ---------------------------------------------------------------------------
+# pytest-collected test — CI-safe 100-page variant (no argparse, no disk output dir)
+# ---------------------------------------------------------------------------
+
+
+def test_open_pdf_100_pages_completes_under_ten_seconds(tmp_path: Path) -> None:
+    """Opening a 100-page programmatically-built PDF must succeed within 10 s."""
+    import fitz  # noqa: PLC0415
+
+    doc = fitz.open()
+    for i in range(100):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), f"Page {i + 1}", fontsize=12, fontname="helv")
+    pdf_path = tmp_path / "hundred_pages.pdf"
+    pdf_path.write_bytes(doc.tobytes(garbage=0))
+    doc.close()
+
+    model = PDFModel()
+    t0 = time.perf_counter()
+    model.open_pdf(str(pdf_path))
+    elapsed = time.perf_counter() - t0
+
+    assert len(model.doc) == 100, f"expected 100 pages, got {len(model.doc)}"
+    assert elapsed < 10.0, f"open_pdf took {elapsed:.2f}s — expected < 10s"
+    model.close()

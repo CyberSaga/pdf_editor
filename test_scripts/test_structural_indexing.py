@@ -127,3 +127,35 @@ def test_insert_blank_page_returns_actual_insert_position_after_validation(tmp_p
 
     assert inserted_pages == [4]
     assert len(model.doc) == 4
+
+
+def test_concurrent_ensure_page_index_built_no_python_level_crash(tmp_path) -> None:
+    """Four threads calling ensure_page_index_built simultaneously must not raise."""
+    import threading
+
+    model = PDFModel()
+    doc = fitz.open()
+    for i in range(4):
+        page = doc.new_page()
+        page.insert_text((72, 72), f"page{i}", fontsize=12, fontname="helv")
+    pdf_path = tmp_path / "four-pages.pdf"
+    pdf_path.write_bytes(doc.tobytes(garbage=0))
+    doc.close()
+    model.open_pdf(str(pdf_path))
+
+    errors: list[Exception] = []
+
+    def rebuild(page_num: int) -> None:
+        try:
+            model.ensure_page_index_built(page_num)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=rebuild, args=(p,)) for p in (1, 2, 3, 4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert not errors, f"concurrent rebuild raised: {errors}"
+    model.close()

@@ -169,3 +169,14 @@ if __name__ == '__main__':
     print("Phase 6 統一 undo 堆疊測試")
     print("=" * 60)
     sys.exit(run())
+
+
+# ---------------------------------------------------------------------------
+# pytest-collected wrapper — expose run() scenario to CI
+# ---------------------------------------------------------------------------
+
+
+def test_phase6_unified_undo_round_trip_passes() -> None:
+    """Phase-6 undo round-trip: delete page → edit text → undo×2 → redo×2."""
+    result = run()
+    assert result == 0, "Phase-6 unified undo round-trip had one or more failures"

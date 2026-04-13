@@ -98,3 +98,88 @@ def run() -> int:
 
 if __name__ == "__main__":
     sys.exit(run())
+
+
+# ---------------------------------------------------------------------------
+# pytest-collected wrappers — expose the run() assertions to CI
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_page_indices_odd_subset_with_range() -> None:
+    indices = resolve_page_indices(
+        total_pages=10,
+        page_ranges="1,3,5-8",
+        page_subset="odd",
+        reverse_order=False,
+    )
+    assert indices == [0, 2, 4, 6], f"unexpected odd subset result: {indices}"
+
+
+def test_resolve_page_indices_odd_subset_reversed() -> None:
+    indices = resolve_page_indices(
+        total_pages=10,
+        page_ranges="1,3,5-8",
+        page_subset="odd",
+        reverse_order=True,
+    )
+    assert indices == [6, 4, 2, 0], f"unexpected reverse result: {indices}"
+
+
+def test_compute_target_draw_rect_fit_mode() -> None:
+    rect = compute_target_draw_rect(
+        target_width=600,
+        target_height=800,
+        source_width=1200,
+        source_height=600,
+        scale_mode="fit",
+        scale_percent=100,
+    )
+    assert abs(rect[2] - 600) < 1e-6, f"fit width should be 600, got {rect[2]}"
+    assert abs(rect[3] - 300) < 1e-6, f"fit height should be 300, got {rect[3]}"
+
+
+def test_compute_target_draw_rect_actual_mode() -> None:
+    rect = compute_target_draw_rect(
+        target_width=600,
+        target_height=800,
+        source_width=300,
+        source_height=200,
+        scale_mode="actual",
+        scale_percent=100,
+    )
+    assert abs(rect[2] - 300) < 1e-6, f"actual width should be source width, got {rect[2]}"
+    assert abs(rect[3] - 200) < 1e-6, f"actual height should be source height, got {rect[3]}"
+
+
+def test_compute_target_draw_rect_custom_scale() -> None:
+    rect = compute_target_draw_rect(
+        target_width=600,
+        target_height=800,
+        source_width=300,
+        source_height=200,
+        scale_mode="custom",
+        scale_percent=150,
+    )
+    assert abs(rect[2] - 450) < 1e-6, f"custom width should be 150%, got {rect[2]}"
+    assert abs(rect[3] - 300) < 1e-6, f"custom height should be 150%, got {rect[3]}"
+
+
+def test_print_job_options_normalization_clamps_and_lowercases() -> None:
+    opts = PrintJobOptions(
+        scale_mode="custom",
+        scale_percent=15,  # below minimum — should clamp to 25
+        page_subset="ODD",
+        reverse_order=1,
+        paper_size="A4",
+        orientation="LANDSCAPE",
+        override_fields={"Orientation", "duplex", "unknown"},
+    ).normalized()
+    assert opts.scale_mode == "custom", f"scale_mode: {opts.scale_mode}"
+    assert opts.scale_percent == 25, f"scale_percent should clamp to 25, got {opts.scale_percent}"
+    assert opts.page_subset == "odd", f"page_subset should lowercase: {opts.page_subset}"
+    assert opts.reverse_order is True, "reverse_order int 1 should become True"
+    assert opts.paper_size == "a4", f"paper_size should lowercase: {opts.paper_size}"
+    assert opts.orientation == "landscape", f"orientation should lowercase: {opts.orientation}"
+    assert opts.override_fields == {"orientation", "duplex"}, (
+        f"override_fields should strip unknown: {opts.override_fields}"
+    )
