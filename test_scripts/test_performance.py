@@ -21,7 +21,10 @@ import time
 import fitz
 
 # 確保 import 路徑
-sys.path.insert(0, os.path.dirname(__file__))
+SCRIPT_DIR = os.path.dirname(__file__)
+REPO_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, SCRIPT_DIR)
+sys.path.insert(0, REPO_ROOT)
 from model.pdf_model import PDFModel
 
 
