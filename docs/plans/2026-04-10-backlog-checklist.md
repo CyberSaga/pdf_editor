@@ -9,8 +9,8 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 ## Current State
 
 - Current phase: Phase 6 (`F1`) object manipulation v1
-- Current batch status: F1 v1 object manipulation is now verified end-to-end for app-owned textboxes and app-created rectangle annotations
-- Resume from: execute the v2 follow-up plan (`docs/plans/2026-04-14-f1-objects-mode-v2.md`)
+- Current batch status: F1 objects-mode tranche is now verified end-to-end for app-owned textboxes, app-created rectangle annotations, and inserted images
+- Resume from: finish the remaining native-PDF image follow-up and any later F1 polish as separate child plans
 - Next likely phase after F1: review/approve one of the remaining child-plan items (`F2`, `F3`, `F4`, or `UX7`)
 
 ## Completed In This Campaign
@@ -31,6 +31,7 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 - [x] Fix Qt custom-page PDF output so landscape source pages stay landscape in generated PDF files
 - [x] `F6` Thumbnail right-click page operations reuse the existing page helpers/signals
 - [x] `F7` Browse-mode scene context menu now exposes richer page/file actions
+- [x] `F1` Objects mode, resize handles, multi-select, and app-inserted images
 - [x] `B4` Slice 1 adds preset-aware optimize-copy routing
 - [x] `B4` Slice 2 defers background thumbnail/sidebar work until the initial page is ready and coalesces visible-render scheduling during open/page changes
 - [x] Close `B4` with final before/after performance evidence
@@ -44,15 +45,15 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 
 - [x] Finish the wider F1 verification pass
 - [x] Run one successful mixed-sample GUI check that covers select, move, rotate, delete, undo, and redo for the supported object types
-- [ ] Plan and implement `objects mode` (`操作物件`) so rectangles/images can be moved/rotated/deleted/resized and multi-selected without fighting browse/text-selection behavior (`docs/plans/2026-04-14-f1-objects-mode-v2.md`)
-- [ ] Add resize handles and multi-select for textboxes inside text edit mode, alongside word editing
-- [ ] Add app-inserted image objects (typed identity + move/rotate/delete/resize); defer native-PDF image manipulation until app-owned images are stable
+- [x] `objects mode` (`操作物件`) now has a visible toolbar entry and supports rect/image manipulation without fighting browse/text-selection behavior
+- [x] Resize handles and same-page multi-select now work for the supported object types
+- [x] App-inserted image objects now have typed identity + move/rotate/delete/resize plumbing; native-PDF image manipulation remains for a later child plan
 - [ ] Review/approve child plans for `F2`, `F3`, `F4`, and `UX7`
 
 ## Remaining Backlog
 
 - [x] `F1` Complete verification and close object manipulation v1
-- [ ] `F1` Objects mode + resize + multi-select + images follow-ups (new child plan pending)
+- [ ] `F1` Native PDF image manipulation follow-up
 - [ ] `F2` Review/approve child plan for Surya OCR
 - [ ] `F3` Review/approve child plan for shell/file-explorer integration
 - [ ] `F4` Review/approve child plan for color profile switching
@@ -76,6 +77,6 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 ## Resume Notes
 
 - `B4` is closed. Keep the benchmark scripts intact so future regressions are comparable to the captured before/after numbers.
-- F1 v1 supports app-owned objects only: new textboxes plus rectangle annotations created by this app. No resize, no imported images, no legacy textbox migration.
-- New textbox identity is persisted by a hidden companion annotation marker. Rectangle annotations carry app-owned metadata directly on the annotation.
-- The broader GUI/manual path is now covered by a live `QTest` mixed-sample pass. The next F1 work is the v2 mode/resize/multi-select/image plan, not more v1 verification.
+- F1 now covers app-owned textboxes, rectangle annotations, objects mode, resize handles, same-page multi-select, and app-inserted images.
+- Native PDF image manipulation is still intentionally deferred until the app-owned image path is stable.
+- The broader GUI/manual path is covered by a live `QTest` mixed-sample pass, plus focused object-mode and image-entry-point regressions.
