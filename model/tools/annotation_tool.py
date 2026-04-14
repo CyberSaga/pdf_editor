@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
+import json
 import logging
+import uuid
 from typing import TYPE_CHECKING
 
 import fitz
@@ -47,6 +49,18 @@ class AnnotationTool(ToolExtension):
         annot.set_colors(stroke=color[:3], fill=color[:3] if fill else None)
         annot.set_border(width=5 if not fill else 0)
         annot.set_opacity(color[3])
+        payload = {
+            "version": 1,
+            "kind": "rect",
+            "object_id": str(uuid.uuid4()),
+            "page_num": int(page_num),
+            "rect": [float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)],
+            "fill": bool(fill),
+        }
+        annot.set_info(
+            content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            subject="pdf_editor_rect_object",
+        )
         annot.update()
         logger.debug("新增矩形: 頁面 %s, 矩形 %s, 顏色 %s, 填滿=%s", page_num, rect, color, fill)
 

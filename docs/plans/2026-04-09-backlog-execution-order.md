@@ -7,7 +7,7 @@
 - `done-implement`: item is implemented, tested, and reflected in docs/tracker.
 - `done-plan`: item is replaced by an approved child plan with successor items and acceptance criteria.
 - `open`: not started.
-- `in_progress`: active implementation or profiling work.
+- `in_progress`: active implementation work.
 
 ## Phase Overview
 
@@ -18,8 +18,8 @@
 | 3 | UX6 | done | Browse-mode text selection now snaps partial drags to whole visual lines in both copied text and highlight bounds. |
 | 4 | B1, UX4, UX5 | done | Print parity tranche landed: app-owned auto paper/orientation now follow source pages, fixed-layout overrides stay explicit, and direct-PDF Linux/mac routing preserves that contract. |
 | 5 | F6, F7 | done | Thumbnail and scene right-click menus now expose page/file actions through existing helpers and signals. |
-| 6 | F1 | open | Replace with child plan before implementation. |
-| 7 | B4 | in_progress | Slice 1 landed for optimize-copy and Slice 2 landed for open/page-change responsiveness. Next step is the final closure pass: rerun the full evidence set, compare against the captured baselines, and decide whether B4 can move to done. |
+| 6 | F1 | in_progress | V1 app-owned object manipulation is underway: new textboxes and app-created rectangles now have typed object identity plus select/move/delete/rotate plumbing. |
+| 7 | B4 | done | Optimize-copy and open/page-change slices shipped with measured wins across the backlog-critical workflows, so B4 is now closed. |
 | 8 | UX7 | open | Replace with child plan; macOS-only. |
 | 9 | F4, F2, F3 | open | Replace with child plans before implementation. |
 
@@ -30,7 +30,7 @@
 | B1 | Print must not modify printer preferences | 4 | done | done-implement | `pytest -q test_print_dialog_logic.py test_print_dialog_properties_button.py test_qt_bridge_layout.py test_linux_driver_overrides.py test_win_driver_properties.py test_print_controller_flow.py` | Preserve the app-owned `auto` paper/orientation contract while later print features land. |
 | B2 | Text box drifts position after edit, pushes others | 2 | done | done-implement | `pytest -q test_edit_geometry_stability.py -k "single_line_edit_preserves_anchor_and_does_not_push_neighbor"` plus full text-edit safety slice in `test_edit_geometry_stability.py` / `test_overlap_textbox_edit.py` / `test_text_editing_gui_regressions.py` | Keep the single-line anchor-preserving path in place while UX2 lands. |
 | B3 | Edit-mode outline selects blank areas | 2 | done | done-implement | `pytest -q test_text_editing_gui_regressions.py -k "block_outlines_only_drawn_for_visible_pages or block_outlines_follow_run_boxes_in_run_mode"` | Preserve run/paragraph outline alignment when UX2 changes editor presentation. |
-| B4 | All workflows are slow | 7 | in_progress | done-implement | Baselines captured on 2026-04-12 via `measure_startup_time.py`, `test_open_large_pdf.py --pages 300 --first-page`, `test_performance.py --rounds 10`, plus ad-hoc page-render / optimize-copy probes; Slice 1 landed preset-aware optimize-copy routing with large-file results on `2024_ASHRAE_content.pdf`: `快速` ~15.6s / 0% saved, `平衡` ~20.4s / 37.9% saved, `極致壓縮` ~23.2s / 57.8% saved; Slice 2 landed open/page-change responsiveness changes with a new UI-path benchmark in `test_scripts/benchmark_ui_open_render.py`, now measuring `2024_ASHRAE_content.pdf` at startup-to-placeholders ~534.9ms, initial high-quality page ready ~78.1ms, and far-page jump to page 483 high-quality ready ~268.7ms; child plan at `docs/plans/2026-04-10-performance-closure-plan.md` | Keep B4 open for one final closure pass: rerun the full evidence set, compare against the captured baselines, and then decide whether B4 can move to done. |
+| B4 | All workflows are slow | 7 | done | done-implement | Before/after evidence is now shipped and captured: `measure_startup_time.py` reports combined import+instantiate about `0.193s` versus the `0.444s` baseline; `test_open_large_pdf.py --pages 300 --first-page` remains around `17-20ms` open and `~6ms` first render; `test_performance.py --rounds 10` averages about `0.020s`; `benchmark_ui_open_render.py --path test_files/2024_ASHRAE_content.pdf` measures placeholders at about `547ms`, initial visible page high-quality ready at about `73ms`, and far-page jump high-quality ready at about `222ms`; optimize-copy on `2024_ASHRAE_content.pdf` now lands at about `15.6s` (`快速`), `20.4s / 37.9% saved` (`平衡`), and `23.2s / 57.8% saved` (`極致壓縮`). `measure_startup_time.py` still prints unrelated self-check noise, but that did not block timing capture. | Keep the benchmark scripts as the comparison set for future regressions; no further closure work is required for B4. |
 | UX1 | Thumbnails resize with sidebar / center when sidebar is too wide | 1 | done | done-implement | `pytest -q test_multi_tab_plan.py -k "test_06a or test_06b or test_06c or test_06d or test_06e or test_06f or test_10_save_as_path_collision_blocked or test_10a_active_session_updates_view_save_as_default_path"` | Keep watching Phase 1 regressions while later UI work lands. |
 | UX2 | Editing rotated text: editor box content should also rotate | 2 | done | done-implement | `pytest -q test_text_editing_gui_regressions.py -k "create_text_editor_rotates_proxy_for_vertical_text"` plus the full text-edit GUI slice | Preserve rotation-aware editor geometry while Phase 3 selection work lands. |
 | UX3 | Edit box should be transparent, show real text color | 2 | done | done-implement | `pytest -q test_text_editing_gui_regressions.py -k "build_text_editor_stylesheet_keeps_editor_background_transparent"` plus the broader GUI regression slice | Carry the transparent-editor contract forward when rotated-editor support lands. |
@@ -38,7 +38,7 @@
 | UX5 | Print auto-select paper size from source page | 4 | done | done-implement | `pytest -q test_qt_bridge_layout.py test_linux_driver_overrides.py` plus the dialog/property slice now cover source-following auto paper size and Linux/mac raster fallback for fixed-layout overrides | Keep direct-PDF routing only for source-following auto jobs; explicit paper-size overrides must stay on the raster path. |
 | UX6 | Text selection should use whole-line units | 3 | done | done-implement | `pytest -q test_text_extraction_line_joining.py -k "get_text_in_rect_expands_partial_clip_to_whole_visual_lines or get_text_bounds_expands_partial_clip_to_full_visual_line_bounds"` plus `pytest -q test_text_extraction_line_joining.py test_text_editing_gui_regressions.py` | Follow up later on the user-reported physical-mouse whole-line expansion; not on the current critical path. |
 | UX7 | macOS native menu bar | 8 | open | done-plan | Draft child plan at `docs/plans/2026-04-10-macos-native-menu-bar.md` | Review/approve the child plan before code. |
-| F1 | Add/manipulate objects (including rotate text box) | 6 | open | done-plan | Draft child plan at `docs/plans/2026-04-10-object-manipulation.md` | Review/approve the child plan before code. |
+| F1 | Add/manipulate objects (including rotate text box) | 6 | in_progress | done-implement | Active v1 plan at `docs/plans/2026-04-13-f1-object-manipulation-v1.md`; next plan at `docs/plans/2026-04-14-f1-objects-mode-v2.md`; focused object slices are green in `test_object_requests.py`, `test_object_manipulation_model.py`, `test_object_controller_flow.py`, `test_object_manipulation_gui.py`, and `test_add_textbox_atomic.py`; live mixed-sample GUI verification now passes via `tmp/manual_verify_f1_qtest.py` | Execute v2 (objects mode, resize, multi-select, images). |
 | F2 | OCR with Surya | 9 | open | done-plan | Draft child plan at `docs/plans/2026-04-10-surya-ocr.md` | Review/approve the child plan before code. |
 | F3 | File-explorer right-click / merge with PDF Editor | 9 | open | done-plan | Draft child plan at `docs/plans/2026-04-10-shell-integration.md` | Review/approve the child plan before code. |
 | F4 | Color profile switching | 9 | open | done-plan | Draft child plan at `docs/plans/2026-04-10-color-profile-switching.md` | Review/approve the child plan before code. |
@@ -48,9 +48,8 @@
 
 ## Child Plans Required Before Implementation
 
-- `docs/plans/2026-04-10-object-manipulation.md` for F1.
+- `docs/plans/2026-04-13-f1-object-manipulation-v1.md` for active F1 scope.
 - `docs/plans/2026-04-10-surya-ocr.md` for F2.
 - `docs/plans/2026-04-10-shell-integration.md` for F3.
 - `docs/plans/2026-04-10-color-profile-switching.md` for F4.
 - `docs/plans/2026-04-10-macos-native-menu-bar.md` for UX7.
-- `docs/plans/2026-04-10-performance-closure-plan.md` for B4 follow-through after baseline profiling.

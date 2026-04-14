@@ -23,6 +23,8 @@ import fitz
 # `PDFModel` keeps the public facade stable and delegates to the internal module.
 from model import pdf_optimizer
 from model.edit_commands import CommandManager, EditTextResult
+from model.object_requests import DeleteObjectRequest, MoveObjectRequest, ObjectHitInfo, RotateObjectRequest
+from model.object_requests import ResizeObjectRequest
 from model.text_block import (
     EditableParagraph,
     EditableSpan,
@@ -64,6 +66,12 @@ _CUSTOM_CJK_ALIASES = {
     "pmingliu": "PdfEditorPMingLiU",
     "dfkai-sb": "PdfEditorDFKaiSB",
 }
+
+_APP_OBJECT_SUBJECT_PREFIX = "pdf_editor_"
+_TEXTBOX_OBJECT_SUBJECT = "pdf_editor_textbox_object"
+_RECT_OBJECT_SUBJECT = "pdf_editor_rect_object"
+_IMAGE_OBJECT_SUBJECT = "pdf_editor_image_object"
+_APP_OBJECT_VERSION = 1
 
 # 設置日誌
 logger = logging.getLogger(__name__)
@@ -1648,25 +1656,193 @@ class PDFModel:
             rotate=int(page.rotation) % 360,
         )
 
-    def add_textbox(
+    def _dump_app_object_payload(self, payload: dict) -> str:
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+    def _load_app_object_payload(self, annot: fitz.Annot) -> dict | None:
+        try:
+            info = annot.info or {}
+            subject = info.get("subject") or ""
+            if not subject.startswith(_APP_OBJECT_SUBJECT_PREFIX):
+                return None
+            content = info.get("content") or ""
+            payload = json.loads(content)
+            if not isinstance(payload, dict):
+                return None
+            if payload.get("version") != _APP_OBJECT_VERSION:
+                return None
+            if payload.get("kind") not in {"textbox", "rect", "image"}:
+                return None
+            return payload
+        except Exception:
+            return None
+
+    def _iter_page_annots(self, page_num: int) -> Iterator[fitz.Annot]:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return iter(())
+        page = self.doc[page_num - 1]
+        try:
+            return iter(list(page.annots() or []))
+        except Exception:
+            return iter(())
+
+    def _find_app_object_annot(self, page_num: int, object_id: str, expected_kind: str | None = None) -> tuple[fitz.Page, fitz.Annot, dict] | None:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return None
+        page = self.doc[page_num - 1]
+        try:
+            annots = list(page.annots() or [])
+        except Exception:
+            return None
+        for annot in annots:
+            payload = self._load_app_object_payload(annot)
+            if payload is None:
+                continue
+            if payload.get("object_id") != object_id:
+                continue
+            if expected_kind is not None and payload.get("kind") != expected_kind:
+                continue
+            return page, annot, payload
+        return None
+
+    def _delete_app_object_annots(
+        self,
+        page_num: int,
+        object_id: str,
+        expected_kind: str | None = None,
+    ) -> int:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return 0
+        page = self.doc[page_num - 1]
+        deleted = 0
+        try:
+            annots = list(page.annots() or [])
+        except Exception:
+            return 0
+        for annot in annots:
+            payload = self._load_app_object_payload(annot)
+            if payload is None:
+                continue
+            if payload.get("object_id") != object_id:
+                continue
+            if expected_kind is not None and payload.get("kind") != expected_kind:
+                continue
+            try:
+                page.delete_annot(annot)
+                deleted += 1
+            except Exception:
+                continue
+        return deleted
+
+    def _create_textbox_object_marker(
+        self,
+        page_num: int,
+        visual_rect: fitz.Rect,
+        *,
+        text: str,
+        font: str,
+        size: float,
+        color: tuple[float, float, float],
+        rotation: int,
+        object_id: str | None = None,
+    ) -> str:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            raise ValueError(f"無效頁碼: {page_num}")
+        page = self.doc[page_num - 1]
+        marker = page.add_rect_annot(fitz.Rect(visual_rect))
+        payload = {
+            "version": _APP_OBJECT_VERSION,
+            "kind": "textbox",
+            "object_id": object_id or str(uuid.uuid4()),
+            "page_num": int(page_num),
+            "rect": [float(visual_rect.x0), float(visual_rect.y0), float(visual_rect.x1), float(visual_rect.y1)],
+            "text": text,
+            "font": font,
+            "size": float(size),
+            "color": [float(c) for c in color[:3]],
+            "rotation": int(rotation) % 360,
+        }
+        marker.set_border(width=0)
+        marker.set_colors(stroke=None, fill=None)
+        marker.set_opacity(0.0)
+        marker.set_flags(marker.flags | fitz.PDF_ANNOT_IS_HIDDEN)
+        marker.set_info(
+            content=self._dump_app_object_payload(payload),
+            subject=_TEXTBOX_OBJECT_SUBJECT,
+        )
+        marker.update()
+        return payload["object_id"]
+
+    def _create_image_object_marker(
+        self,
+        page_num: int,
+        visual_rect: fitz.Rect,
+        *,
+        xref: int,
+        rotation: int,
+        object_id: str | None = None,
+    ) -> str:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            raise ValueError(f"無效頁碼: {page_num}")
+        page = self.doc[page_num - 1]
+        marker = page.add_rect_annot(fitz.Rect(visual_rect))
+        payload = {
+            "version": _APP_OBJECT_VERSION,
+            "kind": "image",
+            "object_id": object_id or str(uuid.uuid4()),
+            "page_num": int(page_num),
+            "rect": [float(visual_rect.x0), float(visual_rect.y0), float(visual_rect.x1), float(visual_rect.y1)],
+            "rotation": int(rotation) % 360,
+            "xref": int(xref),
+        }
+        marker.set_border(width=0)
+        marker.set_colors(stroke=None, fill=None)
+        marker.set_opacity(0.0)
+        marker.set_flags(marker.flags | fitz.PDF_ANNOT_IS_HIDDEN)
+        marker.set_info(
+            content=self._dump_app_object_payload(payload),
+            subject=_IMAGE_OBJECT_SUBJECT,
+        )
+        marker.update()
+        return payload["object_id"]
+
+    def add_image_object(
+        self,
+        page_num: int,
+        visual_rect: fitz.Rect,
+        image_bytes: bytes,
+        *,
+        rotation: int = 0,
+    ) -> str:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            raise ValueError(f"無效頁碼: {page_num}")
+        page = self.doc[page_num - 1]
+        rect = fitz.Rect(visual_rect)
+        xref = int(page.insert_image(rect, stream=image_bytes, rotate=int(rotation) % 360, overlay=True))
+        object_id = self._create_image_object_marker(
+            page_num,
+            rect,
+            xref=xref,
+            rotation=int(rotation) % 360,
+        )
+        self.pending_edits.append({"page_idx": page_num - 1, "rect": fitz.Rect(rect)})
+        self.edit_count += 1
+        return object_id
+
+    def _insert_textbox_visual_content(
         self,
         page_num: int,
         visual_rect: fitz.Rect,
         text: str,
+        *,
         font: str = "cjk",
-        size: int = 12,
+        size: int | float = 12,
         color: tuple = (0.0, 0.0, 0.0),
-    ) -> None:
-        """
-        Add new page text anchored in visual page coordinates.
-
-        visual_rect uses current viewer orientation coordinates. The method maps
-        it to unrotated page space and inserts with rotate=page.rotation so text
-        appears at the clicked visual location for rotation 0/90/180/270.
-        """
+        rotation: int | None = None,
+    ) -> dict:
         if not text.strip():
             logger.warning("新增文字框內容為空，略過")
-            return
+            raise ValueError("新增文字框內容為空")
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             raise ValueError(f"無效頁碼: {page_num}")
 
@@ -1686,6 +1862,7 @@ class PDFModel:
         bounded_visual = fitz.Rect(visual_rect)
         insert_rect = fitz.Rect(visual_rect)
         repaired_once = False
+        effective_rotation = int(rotation) % 360 if rotation is not None else 0
 
         for _ in range(2):
             page = self.doc[page_idx]
@@ -1698,9 +1875,9 @@ class PDFModel:
                 bounded_visual.y1 = min(page_visual_rect.y1, bounded_visual.y0 + 4)
 
             unrot_rect = self._visual_rect_to_unrotated_rect(page, bounded_visual)
-            # Prefer page.rect bounds for insertion. Some malformed PDFs have
-            # mediabox/pagebox mismatch where mediabox clipping collapses usable area.
             insert_rect = self._clamp_rect_to_page(unrot_rect, self._unrotated_page_rect(page))
+            if rotation is None:
+                effective_rotation = int(page.rotation) % 360
 
             try:
                 tiny_canvas = (
@@ -1725,7 +1902,7 @@ class PDFModel:
                         insert_rect,
                         html_content,
                         css=css,
-                        rotate=int(page.rotation) % 360,
+                        rotate=effective_rotation,
                         scale_low=0,
                     )
                 last_err = None
@@ -1744,16 +1921,289 @@ class PDFModel:
         if last_err is not None:
             raise RuntimeError(f"新增文字框失敗: {self._safe_exc_message(last_err)}") from last_err
 
+        return {
+            "page_idx": page_idx,
+            "bounded_visual": fitz.Rect(bounded_visual),
+            "insert_rect": fitz.Rect(insert_rect),
+            "rotation": effective_rotation,
+            "font_name": font_name,
+            "font_size": font_size,
+            "color_rgb": color_rgb,
+        }
+
+    def add_textbox(
+        self,
+        page_num: int,
+        visual_rect: fitz.Rect,
+        text: str,
+        font: str = "cjk",
+        size: int = 12,
+        color: tuple = (0.0, 0.0, 0.0),
+    ) -> None:
+        """
+        Add new page text anchored in visual page coordinates.
+
+        visual_rect uses current viewer orientation coordinates. The method maps
+        it to unrotated page space and inserts with rotate=page.rotation so text
+        appears at the clicked visual location for rotation 0/90/180/270.
+        """
+        insert_state = self._insert_textbox_visual_content(
+            page_num,
+            visual_rect,
+            text,
+            font=font,
+            size=size,
+            color=color,
+        )
+        page_idx = insert_state["page_idx"]
+        self._create_textbox_object_marker(
+            page_num,
+            insert_state["bounded_visual"],
+            text=text,
+            font=insert_state["font_name"],
+            size=insert_state["font_size"],
+            color=insert_state["color_rgb"],
+            rotation=insert_state["rotation"],
+        )
         self.block_manager.rebuild_page(page_idx, self.doc)
-        self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(insert_rect)})
+        self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(insert_state["insert_rect"])})
         self.edit_count += 1
         logger.debug(
             "add_textbox page=%s visual_rect=%s insert_rect=%s rotate=%s font=%s",
             page_num,
-            bounded_visual,
-            insert_rect,
-            int(page.rotation) % 360,
-            font_name,
+            insert_state["bounded_visual"],
+            insert_state["insert_rect"],
+            insert_state["rotation"],
+            insert_state["font_name"],
+        )
+
+    def get_object_info_at_point(self, page_num: int, point: fitz.Point) -> ObjectHitInfo | None:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return None
+        page = self.doc[page_num - 1]
+        try:
+            annots = list(page.annots() or [])
+        except Exception:
+            annots = []
+        candidates: list[tuple[fitz.Annot, dict]] = []
+        for annot in annots:
+            payload = self._load_app_object_payload(annot)
+            if payload is None:
+                continue
+            rect = fitz.Rect(annot.rect)
+            if point in rect:
+                candidates.append((annot, payload))
+        if not candidates:
+            return None
+        annot, payload = candidates[-1]
+        kind = payload["kind"]
+        return ObjectHitInfo(
+            object_kind=kind,
+            object_id=str(payload["object_id"]),
+            page_num=page_num,
+            bbox=fitz.Rect(annot.rect),
+            rotation=int(payload.get("rotation", 0)) % 360,
+            supports_move=True,
+            supports_delete=True,
+            supports_rotate=kind in ("textbox", "image"),
+        )
+
+    def _redact_and_restore_textbox_region(self, page: fitz.Page, rect: fitz.Rect, object_id: str) -> None:
+        saved_annots = self.tools.annotation._save_overlapping_annots(page, rect)
+        filtered_annots: list[dict] = []
+        for saved in saved_annots:
+            info = dict(saved.get("info") or {})
+            subject = info.get("subject") or ""
+            if subject == _TEXTBOX_OBJECT_SUBJECT:
+                try:
+                    payload = json.loads(info.get("content") or "{}")
+                except Exception:
+                    payload = {}
+                if payload.get("object_id") == object_id:
+                    continue
+            filtered_annots.append(saved)
+        page.add_redact_annot(rect)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+        if filtered_annots:
+            self.tools.annotation._restore_annots(page, filtered_annots)
+
+    def move_object(self, request: MoveObjectRequest) -> bool:
+        if request.destination_page != request.source_page:
+            return False
+        found = self._find_app_object_annot(request.source_page, request.object_id, request.object_kind)
+        if found is None:
+            return False
+        page, annot, payload = found
+        if payload["kind"] == "rect":
+            annot.set_rect(fitz.Rect(request.destination_rect))
+            payload["rect"] = [
+                float(request.destination_rect.x0),
+                float(request.destination_rect.y0),
+                float(request.destination_rect.x1),
+                float(request.destination_rect.y1),
+            ]
+            annot.set_info(content=self._dump_app_object_payload(payload), subject=_RECT_OBJECT_SUBJECT)
+            annot.update()
+            return True
+        if payload["kind"] == "image":
+            old_rect = fitz.Rect(payload.get("rect") or annot.rect)
+            dest_rect = fitz.Rect(request.destination_rect)
+            xref = int(payload.get("xref", 0) or 0)
+            rotation = int(payload.get("rotation", 0)) % 360
+            image_bytes = None
+            if xref:
+                try:
+                    extracted = self.doc.extract_image(xref)
+                    image_bytes = extracted.get("image")
+                except Exception:
+                    image_bytes = None
+            try:
+                page.add_redact_annot(old_rect)
+                page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
+            except Exception:
+                pass
+            try:
+                if image_bytes:
+                    new_xref = int(page.insert_image(dest_rect, stream=image_bytes, rotate=rotation, overlay=True))
+                elif xref:
+                    new_xref = int(page.insert_image(dest_rect, xref=xref, rotate=rotation, overlay=True))
+                else:
+                    return False
+            except Exception:
+                return False
+            annot.set_rect(dest_rect)
+            payload["rect"] = [float(dest_rect.x0), float(dest_rect.y0), float(dest_rect.x1), float(dest_rect.y1)]
+            payload["xref"] = int(new_xref or xref)
+            annot.set_info(content=self._dump_app_object_payload(payload), subject=_IMAGE_OBJECT_SUBJECT)
+            annot.update()
+            return True
+        if payload["kind"] != "textbox":
+            return False
+        old_rect = fitz.Rect(payload["rect"])
+        self._redact_and_restore_textbox_region(page, old_rect, request.object_id)
+        self._delete_app_object_annots(request.source_page, request.object_id, expected_kind="textbox")
+        insert_state = self._insert_textbox_visual_content(
+            request.destination_page,
+            fitz.Rect(request.destination_rect),
+            payload["text"],
+            font=payload["font"],
+            size=payload["size"],
+            color=tuple(payload["color"]),
+            rotation=int(payload.get("rotation", 0)),
+        )
+        self._create_textbox_object_marker(
+            request.destination_page,
+            insert_state["bounded_visual"],
+            text=payload["text"],
+            font=payload["font"],
+            size=payload["size"],
+            color=tuple(payload["color"]),
+            rotation=int(payload.get("rotation", 0)),
+            object_id=request.object_id,
+        )
+        self.block_manager.rebuild_page(request.destination_page - 1, self.doc)
+        return True
+
+    def rotate_object(self, request: RotateObjectRequest) -> bool:
+        found = self._find_app_object_annot(request.page_num, request.object_id, request.object_kind)
+        if found is None:
+            return False
+        page, annot, payload = found
+        if payload["kind"] != "textbox":
+            if payload.get("kind") != "image":
+                return False
+            rect = fitz.Rect(payload.get("rect") or annot.rect)
+            xref = int(payload.get("xref", 0) or 0)
+            old_rotation = int(payload.get("rotation", 0)) % 360
+            new_rotation = (old_rotation + int(request.rotation_delta)) % 360
+            image_bytes = None
+            if xref:
+                try:
+                    extracted = self.doc.extract_image(xref)
+                    image_bytes = extracted.get("image")
+                except Exception:
+                    image_bytes = None
+            try:
+                page.add_redact_annot(rect)
+                page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
+            except Exception:
+                pass
+            try:
+                if image_bytes:
+                    new_xref = int(page.insert_image(rect, stream=image_bytes, rotate=new_rotation, overlay=True))
+                elif xref:
+                    new_xref = int(page.insert_image(rect, xref=xref, rotate=new_rotation, overlay=True))
+                else:
+                    return False
+            except Exception:
+                return False
+            payload["rotation"] = int(new_rotation) % 360
+            payload["xref"] = int(new_xref or xref)
+            annot.set_info(content=self._dump_app_object_payload(payload), subject=_IMAGE_OBJECT_SUBJECT)
+            annot.update()
+            return True
+        old_rect = fitz.Rect(payload["rect"])
+        new_rotation = (int(payload.get("rotation", 0)) + int(request.rotation_delta)) % 360
+        self._redact_and_restore_textbox_region(page, old_rect, request.object_id)
+        self._delete_app_object_annots(request.page_num, request.object_id, expected_kind="textbox")
+        insert_state = self._insert_textbox_visual_content(
+            request.page_num,
+            old_rect,
+            payload["text"],
+            font=payload["font"],
+            size=payload["size"],
+            color=tuple(payload["color"]),
+            rotation=new_rotation,
+        )
+        self._create_textbox_object_marker(
+            request.page_num,
+            insert_state["bounded_visual"],
+            text=payload["text"],
+            font=payload["font"],
+            size=payload["size"],
+            color=tuple(payload["color"]),
+            rotation=new_rotation,
+            object_id=request.object_id,
+        )
+        self.block_manager.rebuild_page(request.page_num - 1, self.doc)
+        return True
+
+    def delete_object(self, request: DeleteObjectRequest) -> bool:
+        found = self._find_app_object_annot(request.page_num, request.object_id, request.object_kind)
+        if found is None:
+            return False
+        page, annot, payload = found
+        if payload["kind"] == "rect":
+            page.delete_annot(annot)
+            return True
+        if payload["kind"] == "image":
+            xref = int(payload.get("xref", 0) or 0)
+            old_rect = fitz.Rect(payload.get("rect") or annot.rect)
+            try:
+                page.add_redact_annot(old_rect)
+                page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
+            except Exception:
+                pass
+            self._delete_app_object_annots(request.page_num, request.object_id, expected_kind="image")
+            return True
+        if payload["kind"] != "textbox":
+            return False
+        old_rect = fitz.Rect(payload["rect"])
+        self._redact_and_restore_textbox_region(page, old_rect, request.object_id)
+        self._delete_app_object_annots(request.page_num, request.object_id, expected_kind="textbox")
+        self.block_manager.rebuild_page(request.page_num - 1, self.doc)
+        return True
+
+    def resize_object(self, request: ResizeObjectRequest) -> bool:
+        # Resize is modeled as a move with a new destination rect on the same page.
+        return self.move_object(
+            MoveObjectRequest(
+                object_id=request.object_id,
+                object_kind=request.object_kind,
+                source_page=request.page_num,
+                destination_page=request.page_num,
+                destination_rect=fitz.Rect(request.destination_rect),
+            )
         )
 
     def _convert_text_to_html(
