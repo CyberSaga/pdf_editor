@@ -1,5 +1,37 @@
 # TODOS
 
+## In Progress (2026-04-13) -- F1 object manipulation v1
+
+- What: Added first-class object identity and manipulation plumbing for app-owned objects. New textboxes now stamp a hidden companion marker annotation, app-created rectangle annotations carry app-owned metadata, and the view/controller/model path now supports object selection, move, delete, and textbox rotation with snapshot-backed undo/redo.
+- Why: The next backlog phase after closing performance is `F1`, but we intentionally scoped v1 narrowly to avoid destabilizing text editing or native PDF content. App-owned objects are the safest place to start.
+- Outcome: Focused request/model/controller/view tests are green, and the broader mixed-sample GUI verification is now complete via a live `QTest`-driven window pass (`tmp/manual_verify_f1_qtest.py`). That pass exercised select, move, rotate, delete, undo, and redo for both textbox and rect objects. The old Windows low-level harness is still useful for diagnostics, but it is no longer the blocker for F1 v1 closeout.
+
+## Future F1 Follow-Ups
+
+- Imported/native PDF images:
+  - App-inserted images (first) with stable object identity.
+  - Later: selecting/manipulating existing (native) PDF image XObjects.
+- Resize handles for supported objects (textbox, rect, image).
+- Multi-select across supported objects (shift-click, drag-lasso).
+- A dedicated `objects mode` (`操作物件`) that isolates object manipulation from text selection/editing.
+
+## Notes on `objects mode`
+
+- Treat `objects mode` as a separate interaction mode from browse mode and text-edit mode.
+- Browse mode should keep its current text-selection behavior (copy/highlight) and should not “accidentally” start moving objects.
+- Objects mode (`操作物件`) should focus on selecting/manipulating objects:
+  - Supported: rectangles, images (move/rotate/delete/resize/multi-select).
+  - Textboxes: either disabled here or allowed only if it doesn't fight the text-edit UX (to be decided in the v2 plan).
+- Text edit mode should focus on textboxes:
+  - Supported: move/rotate/delete/resize/multi-select textboxes, plus editing words.
+- When the mode is designed, it must reuse the same object identity layer already introduced in F1 v1 (no parallel object model).
+
+## Done (2026-04-13) -- Close B4 performance campaign
+
+- What: Closed `B4` after the optimize-copy and open/page-change slices shipped and the final before/after evidence was captured in the tracker and performance plan.
+- Why: The backlog explicitly required measured wins, not just profiling, before `B4` could close.
+- Outcome: Startup/import+instantiate is down to about `0.193s` from the `0.444s` baseline, UI-path open on `2024_ASHRAE_content.pdf` now reaches initial high-quality visible page at about `73ms` and far-page jump at about `222ms`, and large optimize-copy now completes in the tens of seconds instead of timing out past the original probe window.
+
 ## Done (2026-04-13) -- B4 Slice 2 open/page-change responsiveness
 
 - What: Changed the controller open path so full-page placeholders still appear immediately, but thumbnail raster batches and sidebar scans wait until the initial visible page reaches high quality or a short fallback timer expires. Also coalesced repeated visible-render scheduling so page changes and viewport updates stop restarting the render queue on every tick.

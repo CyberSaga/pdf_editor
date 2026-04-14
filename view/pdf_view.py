@@ -1,10 +1,11 @@
 ﻿from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 
 import fitz
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QBuffer, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -72,6 +73,16 @@ from PySide6.QtWidgets import (
 )
 
 from model.pdf_model import PdfAuditReport, PDFModel, PdfOptimizeOptions
+from model.object_requests import (
+    BatchDeleteObjectsRequest,
+    BatchMoveObjectsRequest,
+    DeleteObjectRequest,
+    InsertImageObjectRequest,
+    MoveObjectRequest,
+    ObjectRef,
+    ResizeObjectRequest,
+    RotateObjectRequest,
+)
 from utils.helpers import parse_pages, show_error
 from view.text_editing import (
     _DEFAULT_EDITOR_MASK_COLOR,
@@ -858,7 +869,7 @@ class ExportPagesDialog(QDialog):
 
 
 class PDFView(QMainWindow):
-    _VALID_MODES = {"browse", "edit_text", "add_text", "rect", "highlight", "add_annotation"}
+    _VALID_MODES = {"browse", "edit_text", "text_edit", "objects", "add_text", "rect", "highlight", "add_annotation"}
     # --- Existing Signals ---
     sig_open_pdf = Signal(str)
     sig_print_requested = Signal()
@@ -874,6 +885,11 @@ class PDFView(QMainWindow):
     sig_edit_text = Signal(object)  # EditTextRequest
     sig_move_text_across_pages = Signal(object)  # MoveTextRequest
     sig_add_textbox = Signal(int, object, str, str, int, tuple)  # page_num, visual_rect, text, font, size, color
+    sig_add_image_object = Signal(object)  # InsertImageObjectRequest
+    sig_move_object = Signal(object)  # MoveObjectRequest
+    sig_delete_object = Signal(object)  # DeleteObjectRequest
+    sig_rotate_object = Signal(object)  # RotateObjectRequest
+    sig_resize_object = Signal(object)  # ResizeObjectRequest
     sig_jump_to_result = Signal(int, object)
     sig_search = Signal(str)
     sig_ocr = Signal(list)
@@ -1060,6 +1076,18 @@ class PDFView(QMainWindow):
         self._selected_text_page_idx = None
         self._selected_text_cached = ""
         self._selected_text_hit_info = None
+        self._selected_object_info = None
+        self._object_selection_rect_item = None
+        self._object_rotate_handle_item = None
+        self._object_drag_pending = False
+        self._object_drag_active = False
+        self._object_rotate_pending = False
+        self._object_drag_start_scene_pos = None
+        self._object_drag_start_doc_rect = None
+        self._object_drag_start_doc_rects = None
+        self._object_drag_preview_rect = None
+        self._object_drag_preview_rects = None
+        self._object_drag_page_idx = None
         # Inline-editor focus lifecycle guards.
         self._edit_focus_guard_connected = False
         self._edit_focus_check_pending = False
@@ -1594,6 +1622,8 @@ class PDFView(QMainWindow):
         tb_common.setStyleSheet(toolbar_style)
         self._action_browse = self._make_mode_action("瀏覽模式", "browse")
         tb_common.addAction(self._action_browse)
+        self._action_objects = self._make_mode_action("操作物件", "objects")
+        tb_common.addAction(self._action_objects)
         self._action_undo = tb_common.addAction("復原", self.sig_undo.emit)
         self._action_undo.setShortcut(QKeySequence("Ctrl+Z"))
         self._action_redo = tb_common.addAction("重做", self.sig_redo.emit)
@@ -1616,6 +1646,8 @@ class PDFView(QMainWindow):
         self._action_edit_text = self._make_mode_action("編輯文字", "edit_text")
         tb_edit.addAction(self._action_edit_text)
         self._action_edit_text.setShortcut(QKeySequence(Qt.Key_F2))
+        tb_edit.addAction(self._action_objects)
+        self._action_objects.setShortcut(QKeySequence(Qt.Key_F3))
         self._action_add_text = self._make_mode_action("新增文字框", "add_text")
         tb_edit.addAction(self._action_add_text)
         self._action_rect = self._make_mode_action("矩形", "rect")
@@ -1624,6 +1656,8 @@ class PDFView(QMainWindow):
         tb_edit.addAction(self._action_highlight)
         self._action_add_annotation = self._make_mode_action("新增註解", "add_annotation")
         tb_edit.addAction(self._action_add_annotation)
+        tb_edit.addAction("插入圖片", self._insert_image_object_from_file_at_current_page)
+        tb_edit.addAction("貼上圖片", self._insert_image_object_from_clipboard_at_current_page)
         tb_edit.addAction("註解列表", self._show_annotations_tab)
         tb_edit.addAction("添加浮水印", self._show_add_watermark_dialog)
         tb_edit.addAction("浮水印列表", self._show_watermarks_tab)
@@ -1719,6 +1753,7 @@ class PDFView(QMainWindow):
             self._action_undo,
             self._action_redo,
             self._action_edit_text,
+            self._action_objects,
             self._action_fullscreen,
         ):
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -2191,6 +2226,8 @@ class PDFView(QMainWindow):
 
     def set_mode(self, mode: str):
         mode = mode if mode in self._VALID_MODES else "browse"
+        if mode == "text_edit":
+            mode = "edit_text"
         if mode != "browse" and not self._heavy_panels_initialized:
             self.ensure_heavy_panels_initialized()
         if self.text_editor:
@@ -2200,6 +2237,7 @@ class PDFView(QMainWindow):
         if self.current_mode == 'browse' and mode != 'browse':
             self._reset_browse_hover_cursor()
             self._clear_text_selection()
+            self._clear_object_selection()
         # 切換模式時清除所有拖曳/待定狀態
         self._drag_pending = False
         self._drag_active = False
@@ -2256,6 +2294,10 @@ class PDFView(QMainWindow):
                     self.sig_scale_changed.connect(self._schedule_outline_redraw)
                 except Exception:
                     pass
+        elif mode == 'objects':
+            self.graphics_view.setDragMode(QGraphicsView.NoDrag)
+            self.graphics_view.viewport().setCursor(Qt.ArrowCursor)
+            self.right_stacked_widget.setCurrentWidget(self.page_info_card)
         else:
             self.graphics_view.setDragMode(QGraphicsView.ScrollHandDrag)
             self._reset_browse_hover_cursor()
@@ -2485,6 +2527,10 @@ class PDFView(QMainWindow):
                 return
         if self.current_mode == 'browse' and event.matches(QKeySequence.Copy):
             if self._copy_selected_text_to_clipboard():
+                event.accept()
+                return
+        if self.current_mode in ('browse', 'objects', 'edit_text', 'text_edit') and event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            if self._delete_selected_object():
                 event.accept()
                 return
         if event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_F:
@@ -3043,9 +3089,18 @@ class PDFView(QMainWindow):
         """wheel 縮放停止後觸發：重新以當前 self.scale 渲染所有頁面，確保清晰顯示。"""
         self.sig_request_rerender.emit()
 
+    def _event_scene_pos(self, event) -> QPointF:
+        raw_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        viewport = self.graphics_view.viewport() if getattr(self, "graphics_view", None) is not None else None
+        if viewport is not None:
+            try:
+                raw_pos = viewport.mapFrom(self.graphics_view, raw_pos)
+            except Exception:
+                pass
+        return self.graphics_view.mapToScene(raw_pos)
+
     def _mouse_press(self, event):
-        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
-        scene_pos = self.graphics_view.mapToScene(pos)
+        scene_pos = self._event_scene_pos(event)
         if event.button() == Qt.LeftButton:
             if self.current_mode == 'add_annotation':
                 text, ok = QInputDialog.getMultiLineText(self, "新增註解", "請輸入註解內容:")
@@ -3053,6 +3108,96 @@ class PDFView(QMainWindow):
                     page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
                     self.sig_add_annotation.emit(page_idx, doc_point, text)
                 return
+
+            # Objects/text editing modes own object manipulation. Browse owns text selection.
+            # Keep this early-return path lightweight so tests can exercise mode gating without
+            # constructing the full edit-text state machine.
+            if self.current_mode in ("objects", "text_edit", "edit_text"):
+                if (
+                    self._selected_object_info is not None
+                    and self._point_hits_object_resize_handle(scene_pos)
+                    and getattr(self._selected_object_info, "supports_move", False)
+                ):
+                    self._clear_text_selection()
+                    self._object_resize_pending = True
+                    self._object_resize_active = False
+                    self._object_resize_start_scene_pos = scene_pos
+                    self._object_resize_start_doc_rect = fitz.Rect(self._selected_object_info.bbox)
+                    self._object_resize_preview_rect = fitz.Rect(self._selected_object_info.bbox)
+                    event.accept()
+                    return
+                if (
+                    self._selected_object_info is not None
+                    and self._point_hits_object_rotate_handle(scene_pos)
+                    and getattr(self._selected_object_info, "supports_rotate", False)
+                ):
+                    self._clear_text_selection()
+                    self._object_drag_pending = False
+                    self._object_drag_active = False
+                    self._object_rotate_pending = True
+                    self._object_drag_start_scene_pos = scene_pos
+                    self._object_drag_start_doc_rect = fitz.Rect(self._selected_object_info.bbox)
+                    self._object_drag_preview_rect = fitz.Rect(self._selected_object_info.bbox)
+                    self._object_drag_page_idx = max(0, int(self._selected_object_info.page_num) - 1)
+                    event.accept()
+                    return
+                page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
+                try:
+                    object_info = self.controller.get_object_info_at_point(page_idx + 1, doc_point)
+                except Exception:
+                    object_info = None
+                if object_info is not None:
+                    allowed_kinds = ("rect", "image") if self.current_mode == "objects" else ("textbox",)
+                    if getattr(object_info, "object_kind", None) in allowed_kinds:
+                        if not hasattr(self, "_selected_object_infos") or self._selected_object_infos is None:
+                            self._selected_object_infos = {}
+                        if not hasattr(self, "_selected_object_page_idx"):
+                            self._selected_object_page_idx = None
+
+                        additive = False
+                        try:
+                            additive = bool(getattr(event, "modifiers")() & Qt.ShiftModifier)
+                        except Exception:
+                            additive = False
+
+                        if self._selected_object_page_idx is not None and int(self._selected_object_page_idx) != int(page_idx):
+                            # Same-page only: selecting on a different page resets the set.
+                            self._selected_object_infos = {}
+                        self._selected_object_page_idx = int(page_idx)
+
+                        object_id = str(getattr(object_info, "object_id", ""))
+                        if additive and object_id:
+                            if object_id in self._selected_object_infos:
+                                self._selected_object_infos.pop(object_id, None)
+                            else:
+                                self._selected_object_infos[object_id] = object_info
+                        else:
+                            self._selected_object_infos = {object_id: object_info} if object_id else {}
+
+                        # Selection visuals and handles are single-select only in this tranche.
+                        if len(self._selected_object_infos) == 1:
+                            self._clear_text_selection()
+                            self._select_object(object_info)
+                        else:
+                            self._clear_text_selection()
+                            self._selected_object_info = None
+                        self._clear_text_selection()
+                        try:
+                            self._object_drag_start_doc_rects = {
+                                str(info.object_id): fitz.Rect(info.bbox) for info in self._selected_object_infos.values()
+                            }
+                        except Exception:
+                            self._object_drag_start_doc_rects = None
+                        self._object_drag_preview_rects = None
+                        self._object_drag_pending = not self._point_hits_object_rotate_handle(scene_pos)
+                        self._object_drag_active = False
+                        self._object_rotate_pending = not self._object_drag_pending
+                        self._object_drag_start_scene_pos = scene_pos
+                        self._object_drag_start_doc_rect = fitz.Rect(object_info.bbox)
+                        self._object_drag_preview_rect = fitz.Rect(object_info.bbox)
+                        self._object_drag_page_idx = page_idx
+                        event.accept()
+                        return
 
             if self.current_mode == 'browse':
                 page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
@@ -3148,10 +3293,102 @@ class PDFView(QMainWindow):
         QGraphicsView.mousePressEvent(self.graphics_view, event)
 
     def _mouse_move(self, event):
-        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
-        scene_pos = self.graphics_view.mapToScene(pos)
+        scene_pos = self._event_scene_pos(event)
+
+        if self.current_mode in ("objects", "text_edit", "edit_text"):
+            if getattr(self, "_object_resize_pending", False) and getattr(self, "_object_resize_start_scene_pos", None) is not None:
+                dx = scene_pos.x() - self._object_resize_start_scene_pos.x()
+                dy = scene_pos.y() - self._object_resize_start_scene_pos.y()
+                if (
+                    not getattr(self, "_object_resize_active", False)
+                    and math.hypot(dx, dy) >= TextEditGeometryConstants.DRAG_START_DISTANCE_PX
+                ):
+                    self._object_resize_active = True
+                if self._object_resize_active and getattr(self, "_object_resize_start_doc_rect", None) is not None:
+                    rs = self._render_scale if self._render_scale > 0 else 1.0
+                    dx_doc = dx / rs
+                    dy_doc = dy / rs
+                    start_rect = fitz.Rect(self._object_resize_start_doc_rect)
+                    preview = fitz.Rect(
+                        start_rect.x0,
+                        start_rect.y0,
+                        start_rect.x1 + dx_doc,
+                        start_rect.y1 + dy_doc,
+                    )
+                    self._object_resize_preview_rect = preview
+                    self._update_object_selection_visuals(preview)
+                    event.accept()
+                    return
+            if getattr(self, "_object_drag_pending", False) and getattr(self, "_object_drag_start_scene_pos", None) is not None:
+                dx = scene_pos.x() - self._object_drag_start_scene_pos.x()
+                dy = scene_pos.y() - self._object_drag_start_scene_pos.y()
+                if math.hypot(dx, dy) >= TextEditGeometryConstants.DRAG_START_DISTANCE_PX:
+                    self._object_drag_pending = False
+                    self._object_drag_active = True
+            if getattr(self, "_object_drag_active", False) and getattr(self, "_object_drag_start_scene_pos", None) is not None:
+                rs = self._render_scale if self._render_scale > 0 else 1.0
+                dx_doc = (scene_pos.x() - self._object_drag_start_scene_pos.x()) / rs
+                dy_doc = (scene_pos.y() - self._object_drag_start_scene_pos.y()) / rs
+
+                start_rects = getattr(self, "_object_drag_start_doc_rects", None)
+                if start_rects:
+                    preview_rects: dict[str, fitz.Rect] = {}
+                    for object_id, rect in start_rects.items():
+                        start_rect = fitz.Rect(rect)
+                        preview_rects[object_id] = fitz.Rect(
+                            start_rect.x0 + dx_doc,
+                            start_rect.y0 + dy_doc,
+                            start_rect.x1 + dx_doc,
+                            start_rect.y1 + dy_doc,
+                        )
+                    self._object_drag_preview_rects = preview_rects
+                elif self._selected_object_info is not None and self._object_drag_start_doc_rect is not None:
+                    start_rect = fitz.Rect(self._object_drag_start_doc_rect)
+                    preview = fitz.Rect(
+                        start_rect.x0 + dx_doc,
+                        start_rect.y0 + dy_doc,
+                        start_rect.x1 + dx_doc,
+                        start_rect.y1 + dy_doc,
+                    )
+                    self._object_drag_preview_rect = preview
+                    self._update_object_selection_visuals(preview)
+                event.accept()
+                return
 
         if self.current_mode == 'browse':
+            if self._selected_object_info is not None and self._object_drag_pending and self._object_drag_start_scene_pos is not None:
+                dx = scene_pos.x() - self._object_drag_start_scene_pos.x()
+                dy = scene_pos.y() - self._object_drag_start_scene_pos.y()
+                if math.hypot(dx, dy) >= TextEditGeometryConstants.DRAG_START_DISTANCE_PX:
+                    self._object_drag_pending = False
+                    self._object_drag_active = True
+            if self._selected_object_info is not None and self._object_drag_active and self._object_drag_start_doc_rect is not None:
+                rs = self._render_scale if self._render_scale > 0 else 1.0
+                dx_doc = (scene_pos.x() - self._object_drag_start_scene_pos.x()) / rs
+                dy_doc = (scene_pos.y() - self._object_drag_start_scene_pos.y()) / rs
+                start_rect = fitz.Rect(self._object_drag_start_doc_rect)
+                preview = fitz.Rect(
+                    start_rect.x0 + dx_doc,
+                    start_rect.y0 + dy_doc,
+                    start_rect.x1 + dx_doc,
+                    start_rect.y1 + dy_doc,
+                )
+                try:
+                    page_rect = fitz.Rect(self.controller.model.doc[self._object_drag_page_idx].rect)
+                    if preview.x0 < page_rect.x0:
+                        preview = fitz.Rect(page_rect.x0, preview.y0, page_rect.x0 + start_rect.width, preview.y1)
+                    if preview.y0 < page_rect.y0:
+                        preview = fitz.Rect(preview.x0, page_rect.y0, preview.x1, page_rect.y0 + start_rect.height)
+                    if preview.x1 > page_rect.x1:
+                        preview = fitz.Rect(page_rect.x1 - start_rect.width, preview.y0, page_rect.x1, preview.y1)
+                    if preview.y1 > page_rect.y1:
+                        preview = fitz.Rect(preview.x0, page_rect.y1 - start_rect.height, preview.x1, page_rect.y1)
+                except Exception:
+                    pass
+                self._object_drag_preview_rect = preview
+                self._update_object_selection_visuals(preview)
+                event.accept()
+                return
             if self._text_selection_active:
                 self._update_text_selection(scene_pos)
                 event.accept()
@@ -3522,6 +3759,30 @@ class PDFView(QMainWindow):
             return None
         return page_idx, info
 
+    def _resolve_object_info_for_context_menu_pos(self, pos: QPoint):
+        if self.current_mode not in ("browse", "objects", "edit_text", "text_edit"):
+            return None
+        controller = getattr(self, "controller", None)
+        graphics_view = getattr(self, "graphics_view", None)
+        if controller is None or graphics_view is None:
+            return None
+        try:
+            scene_pos = graphics_view.mapToScene(pos)
+            page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
+            info = controller.get_object_info_at_point(page_idx + 1, doc_point)
+        except Exception:
+            return None
+        if info is None:
+            return None
+        allowed_kinds = None
+        if self.current_mode == "objects":
+            allowed_kinds = ("rect", "image")
+        elif self.current_mode in ("edit_text", "text_edit"):
+            allowed_kinds = ("textbox",)
+        if allowed_kinds is not None and getattr(info, "object_kind", None) not in allowed_kinds:
+            return None
+        return page_idx, info
+
     def _select_all_text_on_current_page(self) -> bool:
         if self.total_pages <= 0:
             return False
@@ -3624,6 +3885,193 @@ class PDFView(QMainWindow):
         self._selected_text_cached = text
         if getattr(self, "status_bar", None):
             self.status_bar.showMessage("Copied selected text", 1500)
+        return True
+
+    def _clear_object_selection(self) -> None:
+        self._selected_object_info = None
+        if hasattr(self, "_selected_object_infos"):
+            self._selected_object_infos = {}
+        if hasattr(self, "_selected_object_page_idx"):
+            self._selected_object_page_idx = None
+        self._object_drag_pending = False
+        self._object_drag_active = False
+        self._object_rotate_pending = False
+        self._object_drag_start_scene_pos = None
+        self._object_drag_start_doc_rect = None
+        self._object_drag_preview_rect = None
+        self._object_drag_page_idx = None
+        if self._object_selection_rect_item is not None:
+            try:
+                self.scene.removeItem(self._object_selection_rect_item)
+            except Exception:
+                pass
+            self._object_selection_rect_item = None
+        if self._object_rotate_handle_item is not None:
+            try:
+                self.scene.removeItem(self._object_rotate_handle_item)
+            except Exception:
+                pass
+            self._object_rotate_handle_item = None
+        for item in getattr(self, "_object_resize_handle_items", []) or []:
+            try:
+                self.scene.removeItem(item)
+            except Exception:
+                pass
+        self._object_resize_handle_items = []
+        self._object_resize_pending = False
+        self._object_resize_active = False
+        self._object_resize_start_scene_pos = None
+        self._object_resize_start_doc_rect = None
+        self._object_resize_preview_rect = None
+
+    def _select_object(self, info) -> None:
+        self._selected_object_info = info
+        self._update_object_selection_visuals()
+
+    def _update_object_selection_visuals(self, rect: fitz.Rect | None = None) -> None:
+        info = getattr(self, "_selected_object_info", None)
+        if info is None or getattr(self, "scene", None) is None:
+            return
+        bbox = fitz.Rect(rect if rect is not None else info.bbox)
+        rs = self._render_scale if self._render_scale > 0 else 1.0
+        page_idx = max(0, int(info.page_num) - 1)
+        y0 = self.page_y_positions[page_idx] if (
+            self.continuous_pages and page_idx < len(self.page_y_positions)
+        ) else 0.0
+        scene_rect = QRectF(
+            bbox.x0 * rs,
+            y0 + bbox.y0 * rs,
+            max(1.0, bbox.width * rs),
+            max(1.0, bbox.height * rs),
+        )
+        pen = QPen(QColor(14, 165, 233, 220), 2)
+        brush = QBrush(QColor(14, 165, 233, 30))
+        if self._object_selection_rect_item is None:
+            self._object_selection_rect_item = self.scene.addRect(scene_rect, pen, brush)
+            self._object_selection_rect_item.setZValue(21)
+        else:
+            self._object_selection_rect_item.setRect(scene_rect)
+            self._object_selection_rect_item.setPen(pen)
+            self._object_selection_rect_item.setBrush(brush)
+        if info.supports_rotate:
+            handle_rect = QRectF(scene_rect.right() - 12, scene_rect.top() - 18, 12, 12)
+            if self._object_rotate_handle_item is None:
+                self._object_rotate_handle_item = self.scene.addEllipse(
+                    handle_rect,
+                    QPen(QColor(2, 132, 199, 230), 1),
+                    QBrush(QColor(56, 189, 248, 220)),
+                )
+                self._object_rotate_handle_item.setZValue(22)
+            else:
+                self._object_rotate_handle_item.setRect(handle_rect)
+        elif self._object_rotate_handle_item is not None:
+            try:
+                self.scene.removeItem(self._object_rotate_handle_item)
+            except Exception:
+                pass
+            self._object_rotate_handle_item = None
+
+        # Resize handles: single-select only.
+        if getattr(self, "_object_resize_handle_items", None) is None:
+            self._object_resize_handle_items = []
+        for item in list(self._object_resize_handle_items):
+            try:
+                self.scene.removeItem(item)
+            except Exception:
+                pass
+        self._object_resize_handle_items = []
+
+        handle_size = 10.0
+        half = handle_size / 2.0
+        handle_pen = QPen(QColor(2, 132, 199, 230), 1)
+        handle_brush = QBrush(QColor(56, 189, 248, 220))
+        for hx, hy in (
+            (scene_rect.left() - half, scene_rect.top() - half),  # TL
+            (scene_rect.right() - half, scene_rect.top() - half),  # TR
+            (scene_rect.left() - half, scene_rect.bottom() - half),  # BL
+            (scene_rect.right() - half, scene_rect.bottom() - half),  # BR
+        ):
+            hrect = QRectF(hx, hy, handle_size, handle_size)
+            item = self.scene.addRect(hrect, handle_pen, handle_brush)
+            try:
+                item.setZValue(22)
+            except Exception:
+                pass
+            self._object_resize_handle_items.append(item)
+
+    def _point_hits_object_resize_handle(self, scene_pos: QPointF) -> bool:
+        items = getattr(self, "_object_resize_handle_items", None) or []
+        for item in items:
+            try:
+                if item.rect().contains(scene_pos):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _point_hits_object_rotate_handle(self, scene_pos: QPointF) -> bool:
+        if self._object_rotate_handle_item is None:
+            return False
+        try:
+            return self._object_rotate_handle_item.rect().contains(scene_pos)
+        except Exception:
+            return False
+
+    def _delete_selected_object(self) -> bool:
+        infos = getattr(self, "_selected_object_infos", None)
+        if infos and len(infos) > 1:
+            refs: list[ObjectRef] = []
+            for info in infos.values():
+                if not getattr(info, "supports_delete", False):
+                    continue
+                refs.append(
+                    ObjectRef(
+                        object_id=str(info.object_id),
+                        object_kind=str(info.object_kind),
+                        page_num=int(info.page_num),
+                    )
+                )
+            if not refs:
+                return False
+            self.sig_delete_object.emit(BatchDeleteObjectsRequest(objects=refs))
+            self._clear_object_selection()
+            return True
+        info = getattr(self, "_selected_object_info", None)
+        if info is None or not getattr(info, "supports_delete", False):
+            return False
+        self.sig_delete_object.emit(
+            DeleteObjectRequest(
+                object_id=info.object_id,
+                object_kind=info.object_kind,
+                page_num=info.page_num,
+            )
+        )
+        self._clear_object_selection()
+        return True
+
+    def _rotate_selected_object(self, rotation_delta: int) -> bool:
+        info = getattr(self, "_selected_object_info", None)
+        if info is None or not getattr(info, "supports_rotate", False):
+            return False
+        self.sig_rotate_object.emit(
+            RotateObjectRequest(
+                object_id=info.object_id,
+                object_kind=info.object_kind,
+                page_num=info.page_num,
+                rotation_delta=rotation_delta,
+            )
+        )
+        self._selected_object_info = type(info)(
+            object_kind=info.object_kind,
+            object_id=info.object_id,
+            page_num=info.page_num,
+            bbox=fitz.Rect(info.bbox),
+            rotation=(int(info.rotation) + int(rotation_delta)) % 360,
+            supports_move=info.supports_move,
+            supports_delete=info.supports_delete,
+            supports_rotate=info.supports_rotate,
+        )
+        self._update_object_selection_visuals()
         return True
 
     def _clamp_editor_pos_to_page(self, x: float, y: float, page_idx: int):
@@ -3791,16 +4239,136 @@ class PDFView(QMainWindow):
             self._hover_hidden_outline_key = None
 
     def _mouse_release(self, event):
-        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         # ── 拖曳移動文字框的放開處理 ──
+        if self.current_mode in ("objects", "text_edit", "edit_text") and event.button() == Qt.LeftButton:
+            if getattr(self, "_object_resize_pending", False):
+                preview = getattr(self, "_object_resize_preview_rect", None)
+                start_rect = getattr(self, "_object_resize_start_doc_rect", None)
+                self._object_resize_pending = False
+                active = bool(getattr(self, "_object_resize_active", False))
+                self._object_resize_active = False
+                if active and preview is not None and start_rect is not None and self._selected_object_info is not None:
+                    self.sig_resize_object.emit(
+                        ResizeObjectRequest(
+                            object_id=self._selected_object_info.object_id,
+                            object_kind=self._selected_object_info.object_kind,
+                            page_num=self._selected_object_info.page_num,
+                            destination_rect=fitz.Rect(preview),
+                        )
+                    )
+                    self._selected_object_info = type(self._selected_object_info)(
+                        object_kind=self._selected_object_info.object_kind,
+                        object_id=self._selected_object_info.object_id,
+                        page_num=self._selected_object_info.page_num,
+                        bbox=fitz.Rect(preview),
+                        rotation=self._selected_object_info.rotation,
+                        supports_move=self._selected_object_info.supports_move,
+                        supports_delete=self._selected_object_info.supports_delete,
+                        supports_rotate=self._selected_object_info.supports_rotate,
+                    )
+                    self._update_object_selection_visuals()
+                event.accept()
+                return
+            if getattr(self, "_object_rotate_pending", False):
+                self._object_rotate_pending = False
+                self._object_drag_pending = False
+                if self._selected_object_info is not None:
+                    self._rotate_selected_object(90)
+                event.accept()
+                return
+
+            preview_rects = getattr(self, "_object_drag_preview_rects", None)
+            if getattr(self, "_object_drag_active", False) and preview_rects:
+                self._object_drag_active = False
+                self._object_drag_pending = False
+                infos = getattr(self, "_selected_object_infos", None) or {}
+                moves: list[MoveObjectRequest] = []
+                for object_id, preview in preview_rects.items():
+                    info = infos.get(object_id)
+                    if info is None or not getattr(info, "supports_move", False):
+                        continue
+                    moves.append(
+                        MoveObjectRequest(
+                            object_id=info.object_id,
+                            object_kind=info.object_kind,
+                            source_page=info.page_num,
+                            destination_page=info.page_num,
+                            destination_rect=fitz.Rect(preview),
+                        )
+                    )
+                if moves:
+                    self.sig_move_object.emit(BatchMoveObjectsRequest(moves=moves))
+                event.accept()
+                return
+
+            if getattr(self, "_object_drag_active", False) and self._object_drag_preview_rect is not None and self._selected_object_info is not None:
+                preview = fitz.Rect(self._object_drag_preview_rect)
+                start_rect = fitz.Rect(self._object_drag_start_doc_rect)
+                self._object_drag_active = False
+                self._object_drag_pending = False
+                if any(abs(a - b) > 0.5 for a, b in zip(preview, start_rect)):
+                    request = MoveObjectRequest(
+                        object_id=self._selected_object_info.object_id,
+                        object_kind=self._selected_object_info.object_kind,
+                        source_page=self._selected_object_info.page_num,
+                        destination_page=self._selected_object_info.page_num,
+                        destination_rect=preview,
+                    )
+                    self.sig_move_object.emit(request)
+                event.accept()
+                return
+
+            if getattr(self, "_object_drag_pending", False):
+                self._object_drag_pending = False
+                event.accept()
+                return
+
+        if self.current_mode == 'browse' and event.button() == Qt.LeftButton and self._selected_object_info is not None:
+            if self._object_rotate_pending:
+                self._object_rotate_pending = False
+                self._object_drag_pending = False
+                self._rotate_selected_object(90)
+                event.accept()
+                return
+            if self._object_drag_active and self._object_drag_preview_rect is not None:
+                preview = fitz.Rect(self._object_drag_preview_rect)
+                start_rect = fitz.Rect(self._object_drag_start_doc_rect)
+                self._object_drag_active = False
+                self._object_drag_pending = False
+                if any(abs(a - b) > 0.5 for a, b in zip(preview, start_rect)):
+                    request = MoveObjectRequest(
+                        object_id=self._selected_object_info.object_id,
+                        object_kind=self._selected_object_info.object_kind,
+                        source_page=self._selected_object_info.page_num,
+                        destination_page=self._selected_object_info.page_num,
+                        destination_rect=preview,
+                    )
+                    self.sig_move_object.emit(request)
+                    self._selected_object_info = type(self._selected_object_info)(
+                        object_kind=self._selected_object_info.object_kind,
+                        object_id=self._selected_object_info.object_id,
+                        page_num=self._selected_object_info.page_num,
+                        bbox=fitz.Rect(preview),
+                        rotation=self._selected_object_info.rotation,
+                        supports_move=self._selected_object_info.supports_move,
+                        supports_delete=self._selected_object_info.supports_delete,
+                        supports_rotate=self._selected_object_info.supports_rotate,
+                    )
+                self._update_object_selection_visuals()
+                event.accept()
+                return
+            if self._object_drag_pending:
+                self._object_drag_pending = False
+                event.accept()
+                return
         if self.current_mode == 'browse' and event.button() == Qt.LeftButton and self._text_selection_active:
-            scene_pos = self.graphics_view.mapToScene(pos)
+            scene_pos = self._event_scene_pos(event)
             self._finalize_text_selection(scene_pos)
             event.accept()
             return
 
         if self.current_mode in ('edit_text', 'add_text') and event.button() == Qt.LeftButton:
-            scene_pos = self.graphics_view.mapToScene(pos)
+            scene_pos = self._event_scene_pos(event)
 
             if self._drag_pending:
                 self._drag_pending = False
@@ -3848,7 +4416,7 @@ class PDFView(QMainWindow):
             QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
             return
 
-        end_pos = self.graphics_view.mapToScene(pos)
+        end_pos = self._event_scene_pos(event)
         rect = QRectF(self.drawing_start, end_pos).normalized()
         cy = (rect.top() + rect.bottom()) / 2
         page_idx = self._scene_y_to_page_index(cy) if (self.continuous_pages and self.page_y_positions) else self.current_page
@@ -3996,12 +4564,23 @@ class PDFView(QMainWindow):
 
     def _show_context_menu(self, pos):
         menu = QMenu()
+        object_hit = self._resolve_object_info_for_context_menu_pos(pos)
         text_hit = self._resolve_text_info_for_context_menu_pos(pos)
 
         selected_text_cached = getattr(self, "_selected_text_cached", "")
         selected_text_rect_doc = getattr(self, "_selected_text_rect_doc", None)
         if self.current_mode == 'browse' and (selected_text_cached or selected_text_rect_doc is not None):
             menu.addAction("Copy Selected Text", self._copy_selected_text_to_clipboard)
+        if self.current_mode in ("browse", "objects", "edit_text", "text_edit"):
+            if object_hit is not None:
+                self._select_object(object_hit)
+            selected_object = getattr(self, "_selected_object_info", None)
+            if selected_object is not None:
+                if getattr(selected_object, "supports_delete", False):
+                    menu.addAction("Delete Object", self._delete_selected_object)
+                if getattr(selected_object, "supports_rotate", False):
+                    menu.addAction("Rotate Object 90°", lambda checked=False: self._rotate_selected_object(90))
+                menu.addSeparator()
         if self.current_mode == 'browse':
             menu.addAction("Select All", self._select_all_text_on_current_page)
             if text_hit is not None:
@@ -4026,6 +4605,19 @@ class PDFView(QMainWindow):
                 lambda checked=False, p=current_page_num: self._insert_pages_from_file_at(p + 1),
             )
             menu.addSeparator()
+        if self.current_mode == "objects":
+            target = self._resolve_default_image_insert_target(pos)
+            if target is not None:
+                page_num, visual_rect = target
+                menu.addAction(
+                    "插入圖片...",
+                    lambda checked=False, p=page_num, r=fitz.Rect(visual_rect): self._insert_image_object_from_file(page_num=p, visual_rect=r),
+                )
+                menu.addAction(
+                    "從剪貼簿貼上圖片",
+                    lambda checked=False, p=page_num, r=fitz.Rect(visual_rect): self._insert_image_object_from_clipboard(page_num=p, visual_rect=r),
+                )
+                menu.addSeparator()
         if self._fullscreen_active:
             menu.addAction("離開全螢幕", self.sig_toggle_fullscreen.emit)
             menu.addSeparator()
@@ -4472,6 +5064,100 @@ class PDFView(QMainWindow):
 
         bounded = max(1, min(int(position), self.total_pages + 1))
         self.sig_insert_pages_from_file.emit(source_file, source_pages, bounded)
+
+    def _clipboard_png_bytes(self) -> bytes | None:
+        clipboard = QApplication.clipboard()
+        try:
+            image = clipboard.image()
+        except Exception:
+            image = None
+        if image is None or getattr(image, "isNull", lambda: True)():
+            return None
+        buf = QBuffer()
+        buf.open(QBuffer.WriteOnly)
+        ok = image.save(buf, "PNG")
+        if not ok:
+            return None
+        return bytes(buf.data())
+
+    def _default_image_insert_rect_for_page(self, page_idx: int, center: fitz.Point | None = None) -> fitz.Rect:
+        page_rect = fitz.Rect(0.0, 0.0, 595.0, 842.0)
+        try:
+            model = getattr(getattr(self, "controller", None), "model", None)
+            if model is not None and getattr(model, "doc", None):
+                page_rect = fitz.Rect(model.doc[page_idx].rect)
+        except Exception:
+            pass
+        width = min(220.0, max(120.0, page_rect.width * 0.28))
+        height = width * 0.75
+        cx = float(center.x) if center is not None else float((page_rect.x0 + page_rect.x1) / 2.0)
+        cy = float(center.y) if center is not None else float((page_rect.y0 + page_rect.y1) / 2.0)
+        x0 = cx - (width / 2.0)
+        y0 = cy - (height / 2.0)
+        x0 = max(page_rect.x0, min(x0, page_rect.x1 - width))
+        y0 = max(page_rect.y0, min(y0, page_rect.y1 - height))
+        return fitz.Rect(x0, y0, x0 + width, y0 + height)
+
+    def _resolve_default_image_insert_target(self, pos: QPoint) -> tuple[int, fitz.Rect] | None:
+        graphics_view = getattr(self, "graphics_view", None)
+        if graphics_view is None:
+            return None
+        try:
+            scene_pos = graphics_view.mapToScene(pos)
+            page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
+            page_idx = max(0, int(page_idx))
+            return page_idx + 1, self._default_image_insert_rect_for_page(page_idx, doc_point)
+        except Exception:
+            page_idx = max(0, int(getattr(self, "current_page", 0)))
+            return page_idx + 1, self._default_image_insert_rect_for_page(page_idx)
+
+    def _insert_image_object_from_file_at_current_page(self) -> None:
+        page_idx = max(0, int(getattr(self, "current_page", 0)))
+        page_num = page_idx + 1
+        self._insert_image_object_from_file(
+            page_num=page_num,
+            visual_rect=self._default_image_insert_rect_for_page(page_idx),
+        )
+
+    def _insert_image_object_from_clipboard_at_current_page(self) -> None:
+        page_idx = max(0, int(getattr(self, "current_page", 0)))
+        page_num = page_idx + 1
+        self._insert_image_object_from_clipboard(
+            page_num=page_num,
+            visual_rect=self._default_image_insert_rect_for_page(page_idx),
+        )
+
+    def _insert_image_object_from_file(self, *, page_num: int, visual_rect: fitz.Rect) -> None:
+        filename, _ = QFileDialog.getOpenFileName(self, "選擇圖片", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        if not filename:
+            return
+        try:
+            image_bytes = Path(filename).read_bytes()
+        except Exception as exc:
+            show_error(self, f"無法讀取圖片: {exc}")
+            return
+        self.sig_add_image_object.emit(
+            InsertImageObjectRequest(
+                page_num=int(page_num),
+                visual_rect=fitz.Rect(visual_rect),
+                image_bytes=image_bytes,
+                rotation=0,
+            )
+        )
+
+    def _insert_image_object_from_clipboard(self, *, page_num: int, visual_rect: fitz.Rect) -> None:
+        image_bytes = self._clipboard_png_bytes()
+        if not image_bytes:
+            show_error(self, "剪貼簿沒有可用的圖片")
+            return
+        self.sig_add_image_object.emit(
+            InsertImageObjectRequest(
+                page_num=int(page_num),
+                visual_rect=fitz.Rect(visual_rect),
+                image_bytes=image_bytes,
+                rotation=0,
+            )
+        )
 
     def _apply_scale(self):
         transform = QTransform().scale(self.scale, self.scale)

@@ -185,6 +185,21 @@ Cross-page moves use a separate typed flow. When an inline edit changes page, th
 
 View computes visual insertion rect and opens add editor. On commit, view emits `sig_add_textbox(...)`. Controller captures strict page snapshot and executes `AddTextboxCommand`. Model maps visual-to-unrotated geometry, clamps bounds, inserts page text, and rebuilds page index. Controller refreshes page render so new text is immediately editable through existing edit flow.
 
+### 3.4 App-Owned Object Manipulation (F1 v1)
+
+Object manipulation is intentionally narrower than generic page-content editing. V1 only supports app-owned objects:
+
+- new textboxes created after the F1 work landed
+- rectangle annotations created by this app
+
+The boundary stays MVC-clean:
+
+- view owns selection visuals, drag gestures, and rotate-handle affordances
+- controller owns typed object requests and snapshot command recording
+- model owns object discovery and object mutation
+
+Textbox identity is persisted through a hidden companion annotation marker rather than unstable text span identity. Rectangle annotations carry app-owned metadata directly on the annotation. Undo/redo is snapshot-backed in v1 to keep the object path safe while the supported object set is still small.
+
 ### 3.4 Undo / Redo
 
 Controller invokes command manager undo/redo. Commands restore page/doc snapshots according to command type. Controller then refreshes the minimal required UI scope and tooltip descriptions.

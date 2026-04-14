@@ -16,6 +16,15 @@ from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QProgressDialog
 
 from model.edit_commands import AddTextboxCommand, EditTextCommand, EditTextResult, SnapshotCommand
+from model.object_requests import (
+    BatchDeleteObjectsRequest,
+    BatchMoveObjectsRequest,
+    DeleteObjectRequest,
+    InsertImageObjectRequest,
+    MoveObjectRequest,
+    ResizeObjectRequest,
+    RotateObjectRequest,
+)
 from model.pdf_model import PDFModel
 from utils.helpers import pixmap_to_qpixmap, show_error
 from view.pdf_view import EditTextRequest, MoveTextRequest, OptimizePdfDialog, PDFView, ViewportAnchor
@@ -283,6 +292,13 @@ class PDFController:
         self.view.sig_edit_text.connect(self.edit_text)
         self.view.sig_move_text_across_pages.connect(self.move_text_across_pages)
         self.view.sig_add_textbox.connect(self.add_textbox)
+        if hasattr(self.view, "sig_add_image_object"):
+            self.view.sig_add_image_object.connect(self.add_image_object)
+        self.view.sig_move_object.connect(self.move_object)
+        self.view.sig_delete_object.connect(self.delete_object)
+        self.view.sig_rotate_object.connect(self.rotate_object)
+        if hasattr(self.view, "sig_resize_object"):
+            self.view.sig_resize_object.connect(self.resize_object)
         self.view.sig_jump_to_result.connect(self.jump_to_result)
         self.view.sig_search.connect(self.search_text)
         self.view.sig_ocr.connect(self.ocr_pages)
@@ -1502,6 +1518,9 @@ class PDFController:
     def get_text_bounds(self, page: int, rough_rect: fitz.Rect) -> fitz.Rect:
         return self.model.tools.annotation.get_text_bounds(page, rough_rect)
 
+    def get_object_info_at_point(self, page: int, point: fitz.Point):
+        return self.model.get_object_info_at_point(page, point)
+
     def add_rect(self, page: int, rect: fitz.Rect, color: tuple[float, float, float, float], fill: bool):
         before = self.model._capture_doc_snapshot()
         self.model.tools.annotation.add_rect(page, rect, color, fill)
@@ -1517,6 +1536,155 @@ class PDFController:
         )
         self.model.command_manager.record(cmd)
         self.show_page(page - 1)
+        self._update_undo_redo_tooltips()
+
+    def move_object(self, request: MoveObjectRequest) -> None:
+        if isinstance(request, BatchMoveObjectsRequest):
+            before = self.model._capture_doc_snapshot()
+            affected_pages: list[int] = []
+            changed = False
+            for move in request.moves:
+                if self.model.move_object(move):
+                    changed = True
+                    affected_pages.append(int(move.destination_page))
+            if not changed:
+                return
+            self._invalidate_active_render_state()
+            after = self.model._capture_doc_snapshot()
+            pages = sorted(set(affected_pages))
+            cmd = SnapshotCommand(
+                model=self.model,
+                command_type="move_object_batch",
+                affected_pages=pages,
+                before_bytes=before,
+                after_bytes=after,
+                description=f"Move objects (pages {pages})",
+            )
+            self.model.command_manager.record(cmd)
+            self.show_page(pages[-1] - 1)
+            self._update_undo_redo_tooltips()
+            return
+        before = self.model._capture_doc_snapshot()
+        if not self.model.move_object(request):
+            return
+        self._invalidate_active_render_state()
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="move_object",
+            affected_pages=[request.destination_page],
+            before_bytes=before,
+            after_bytes=after,
+            description=f"移動物件（頁面 {request.destination_page}）",
+        )
+        self.model.command_manager.record(cmd)
+        self.show_page(request.destination_page - 1)
+        self._update_undo_redo_tooltips()
+
+    def rotate_object(self, request: RotateObjectRequest) -> None:
+        before = self.model._capture_doc_snapshot()
+        if not self.model.rotate_object(request):
+            return
+        self._invalidate_active_render_state()
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="rotate_object",
+            affected_pages=[request.page_num],
+            before_bytes=before,
+            after_bytes=after,
+            description=f"旋轉物件（頁面 {request.page_num}）",
+        )
+        self.model.command_manager.record(cmd)
+        self.show_page(request.page_num - 1)
+        self._update_undo_redo_tooltips()
+
+    def delete_object(self, request: DeleteObjectRequest) -> None:
+        if isinstance(request, BatchDeleteObjectsRequest):
+            before = self.model._capture_doc_snapshot()
+            affected_pages: list[int] = []
+            changed = False
+            for ref in request.objects:
+                single = DeleteObjectRequest(
+                    object_id=ref.object_id,
+                    object_kind=ref.object_kind,
+                    page_num=ref.page_num,
+                )
+                if self.model.delete_object(single):
+                    changed = True
+                    affected_pages.append(int(ref.page_num))
+            if not changed:
+                return
+            self._invalidate_active_render_state()
+            after = self.model._capture_doc_snapshot()
+            pages = sorted(set(affected_pages))
+            cmd = SnapshotCommand(
+                model=self.model,
+                command_type="delete_object_batch",
+                affected_pages=pages,
+                before_bytes=before,
+                after_bytes=after,
+                description=f"Delete objects (pages {pages})",
+            )
+            self.model.command_manager.record(cmd)
+            self.show_page(pages[-1] - 1)
+            self._update_undo_redo_tooltips()
+            return
+        before = self.model._capture_doc_snapshot()
+        if not self.model.delete_object(request):
+            return
+        self._invalidate_active_render_state()
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="delete_object",
+            affected_pages=[request.page_num],
+            before_bytes=before,
+            after_bytes=after,
+            description=f"刪除物件（頁面 {request.page_num}）",
+        )
+        self.model.command_manager.record(cmd)
+        self.show_page(request.page_num - 1)
+        self._update_undo_redo_tooltips()
+
+    def resize_object(self, request: ResizeObjectRequest) -> None:
+        before = self.model._capture_doc_snapshot()
+        if not self.model.resize_object(request):
+            return
+        self._invalidate_active_render_state()
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="resize_object",
+            affected_pages=[request.page_num],
+            before_bytes=before,
+            after_bytes=after,
+            description=f"Resize object (page {request.page_num})",
+        )
+        self.model.command_manager.record(cmd)
+        self.show_page(request.page_num - 1)
+        self._update_undo_redo_tooltips()
+
+    def add_image_object(self, request: InsertImageObjectRequest) -> None:
+        before = self.model._capture_doc_snapshot()
+        self.model.add_image_object(
+            int(request.page_num),
+            fitz.Rect(request.visual_rect),
+            bytes(request.image_bytes),
+            rotation=int(getattr(request, "rotation", 0) or 0),
+        )
+        self._invalidate_active_render_state()
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="add_image_object",
+            affected_pages=[int(request.page_num)],
+            before_bytes=before,
+            after_bytes=after,
+            description=f"Add image object (page {int(request.page_num)})",
+        )
+        self.model.command_manager.record(cmd)
+        self.show_page(int(request.page_num) - 1)
         self._update_undo_redo_tooltips()
 
     def _edit_result_to_message(self, result: EditTextResult) -> str | None:
