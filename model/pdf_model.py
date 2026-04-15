@@ -32,27 +32,15 @@ from model.text_block import (
     TextBlockManager,
     rotation_degrees_from_dir,
 )
+from model.geometry import clamp_rect_to_page, rect_from_points, rect_overlap_ratio, rect_union
+from model.text_normalization import normalize_text, normalized_similarity, token_coverage_ratio
 from model.tools import ToolManager
 
-# [優化 1] 模組級正則預編譯：避免每次呼叫 _convert_text_to_html / _normalize_text_for_compare 時重新編譯，提升效能
+# [優化 1] 模組級正則預編譯：避免每次呼叫 _convert_text_to_html 時重新編譯，提升效能
 _RE_HTML_TEXT_PARTS = re.compile(r'([\u4e00-\u9fff\u3040-\u30ff]+|[^\u4e00-\u9fff\u3040-\u30ff\n ]+| +|\n)')
-_RE_WS_STRIP = re.compile(r'\s+')
 _RE_CJK = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff]+')
 _BULLET_PREFIXES = ("- ", "* ", "\u2022 ", "\u25aa ", "\u25cf ")
 _RE_NUMBERED_BULLET = re.compile(r"^\d+[.)]\s+")
-
-# Unicode ligature → 分解字元對照表
-# PyMuPDF 的 insert_htmlbox 渲染會將字母組合替換為 Unicode 合字（如 fi→ﬁ），
-# 導致 get_text() 擷取結果與原始字串比對失敗。此表供 _normalize_text_for_compare 展開用。
-_LIGATURE_MAP = {
-    '\ufb00': 'ff',   # ﬀ
-    '\ufb01': 'fi',   # ﬁ
-    '\ufb02': 'fl',   # ﬂ
-    '\ufb03': 'ffi',  # ﬃ
-    '\ufb04': 'ffl',  # ﬄ
-    '\ufb05': 'st',   # ﬅ (long s + t)
-    '\ufb06': 'st',   # ﬆ
-}
 
 # Optional Windows CJK font files for visible family differences in insert_htmlbox.
 _WINDOWS_CJK_FONT_FILES = {
@@ -611,21 +599,6 @@ class PDFModel:
             y1 = y0 + max(1.0, base_rect.height)
         return fitz.Rect(new_x0, y0, new_x1, min(y1, page_rect.y1))
 
-    def _clamp_rect_to_page(self, rect: fitz.Rect, page_rect: fitz.Rect) -> fitz.Rect:
-        """將矩形夾在頁面邊界內，確保文字不會超出頁面。"""
-        x0 = max(rect.x0, page_rect.x0)
-        y0 = max(rect.y0, page_rect.y0)
-        x1 = min(rect.x1, page_rect.x1)
-        y1 = min(rect.y1, page_rect.y1)
-        if x0 >= x1 or y0 >= y1:
-            return fitz.Rect(page_rect.x0, page_rect.y0, page_rect.x0 + 1, page_rect.y0 + 1)
-        return fitz.Rect(x0, y0, x1, y1)
-
-    def _rect_from_points(self, points: list[fitz.Point]) -> fitz.Rect:
-        xs = [float(p.x) for p in points]
-        ys = [float(p.y) for p in points]
-        return fitz.Rect(min(xs), min(ys), max(xs), max(ys))
-
     def _visual_rect_to_unrotated_rect(self, page: fitz.Page, visual_rect: fitz.Rect) -> fitz.Rect:
         """Convert a visual-space page rect to unrotated page coordinates."""
         corners = [
@@ -635,7 +608,7 @@ class PDFModel:
             fitz.Point(visual_rect.x0, visual_rect.y1),
         ]
         mapped = [pt * page.derotation_matrix for pt in corners]
-        return self._rect_from_points(mapped)
+        return rect_from_points(mapped)
 
     def _unrotated_page_rect(self, page: fitz.Page) -> fitz.Rect:
         """
@@ -683,51 +656,6 @@ class PDFModel:
         if new_x0 < page_rect.x0 or new_x1 > page_rect.x1:
             return rect
         return fitz.Rect(new_x0, rect.y0, new_x1, rect.y1)
-
-    def _normalize_text_for_compare(self, text: str) -> str:
-        """
-        將空白移除、轉小寫、展開 Unicode ligature，供文字比對用。
-        PyMuPDF 的 insert_htmlbox 渲染時會將 fi→ﬁ (U+FB01) 等字母合字替換，
-        導致 get_text() 擷取結果與原始字串不一致；此處統一展開後再比對。
-        """
-        if not text:
-            return ""
-        # 展開常見 Unicode ligatures（PyMuPDF 渲染產生的合字）
-        result = text
-        for lig, expanded in _LIGATURE_MAP.items():
-            if lig in result:
-                result = result.replace(lig, expanded)
-        # Drop unstable extraction artifacts and normalize common punctuation variants.
-        result = (
-            result.replace("\ufffd", "")
-            .replace("\u200b", "")
-            .replace("\ufeff", "")
-            .replace("\u2019", "'")
-            .replace("\u2018", "'")
-            .replace("\u201c", '"')
-            .replace("\u201d", '"')
-        )
-        return _RE_WS_STRIP.sub('', result).lower()
-
-    def _token_coverage_ratio(self, source_text: str, haystack_norm: str) -> float:
-        """Return token hit ratio (0..1) using normalized token containment with 1-char tolerance."""
-        if not source_text:
-            return 1.0
-        if not haystack_norm:
-            return 0.0
-        raw_tokens = [tok for tok in re.split(r"\s+", source_text) if tok]
-        tokens = [self._normalize_text_for_compare(tok) for tok in raw_tokens]
-        tokens = [tok for tok in tokens if tok]
-        if not tokens:
-            return 1.0
-        hit = 0
-        for tok in tokens:
-            if tok in haystack_norm:
-                hit += 1
-                continue
-            if len(tok) >= 4 and (tok[1:] in haystack_norm or tok[:-1] in haystack_norm):
-                hit += 1
-        return hit / len(tokens)
 
     @staticmethod
     def _starts_bullet_item(text: str) -> bool:
@@ -790,30 +718,6 @@ class PDFModel:
             composed.append(line_text)
         return "".join(composed).strip()
 
-    def _normalized_similarity(self, left: str, right: str) -> float:
-        """Similarity score on normalized strings (0..1)."""
-        norm_left = self._normalize_text_for_compare(left)
-        norm_right = self._normalize_text_for_compare(right)
-        if not norm_left and not norm_right:
-            return 1.0
-        if not norm_left or not norm_right:
-            return 0.0
-        if norm_left in norm_right or norm_right in norm_left:
-            return 1.0
-        return difflib.SequenceMatcher(None, norm_left, norm_right).ratio()
-
-    def _rect_overlap_ratio(self, a: fitz.Rect, b: fitz.Rect) -> float:
-        """Area overlap ratio against the smaller rect (0..1)."""
-        if a.is_empty or b.is_empty:
-            return 0.0
-        inter = fitz.Rect(a)
-        inter.intersect(b)
-        if inter.is_empty:
-            return 0.0
-        inter_area = max(0.0, inter.width * inter.height)
-        min_area = max(1.0, min(a.width * a.height, b.width * b.height))
-        return inter_area / min_area
-
     def _resolve_paragraph_candidate(
         self,
         page_idx: int,
@@ -843,15 +747,15 @@ class PDFModel:
         if not candidates:
             candidates = paragraphs
 
-        has_probe_text = bool(self._normalize_text_for_compare(original_text or ""))
+        has_probe_text = bool(normalize_text(original_text or ""))
         best_para: EditableParagraph | None = None
         best_key = None
 
         for para in candidates:
             para_rect = fitz.Rect(para.bbox)
-            overlap_score = self._rect_overlap_ratio(para_rect, probe_rect)
+            overlap_score = rect_overlap_ratio(para_rect, probe_rect)
             text_score = (
-                self._normalized_similarity(original_text or "", para.text)
+                normalized_similarity(original_text or "", para.text)
                 if has_probe_text
                 else 0.0
             )
@@ -879,7 +783,7 @@ class PDFModel:
 
     def _text_fits_in_rect(self, page: fitz.Page, rect: fitz.Rect, expected_text: str) -> bool:
         extracted = page.get_text("text", clip=rect)
-        return self._normalize_text_for_compare(expected_text) in self._normalize_text_for_compare(extracted)
+        return normalize_text(expected_text) in normalize_text(extracted)
 
     def _binary_shrink_height(self, page: fitz.Page, rect: fitz.Rect, expected_text: str, iterations: int = 7, padding: float = 4.0, min_y1: float | None = None) -> fitz.Rect:
         """
@@ -1403,7 +1307,7 @@ class PDFModel:
 
         page_idx = page_num - 1
         page = self.doc[page_idx]
-        clipped = self._clamp_rect_to_page(fitz.Rect(rect), page.rect)
+        clipped = clamp_rect_to_page(fitz.Rect(rect), page.rect)
         self.ensure_page_index_built(page_num)
 
         spans = self.block_manager.get_runs(page_idx)
@@ -1867,7 +1771,7 @@ class PDFModel:
         for _ in range(2):
             page = self.doc[page_idx]
             page_visual_rect = fitz.Rect(page.rect)
-            bounded_visual = self._clamp_rect_to_page(fitz.Rect(visual_rect), page_visual_rect)
+            bounded_visual = clamp_rect_to_page(fitz.Rect(visual_rect), page_visual_rect)
 
             if bounded_visual.width < 4:
                 bounded_visual.x1 = min(page_visual_rect.x1, bounded_visual.x0 + 4)
@@ -1875,7 +1779,7 @@ class PDFModel:
                 bounded_visual.y1 = min(page_visual_rect.y1, bounded_visual.y0 + 4)
 
             unrot_rect = self._visual_rect_to_unrotated_rect(page, bounded_visual)
-            insert_rect = self._clamp_rect_to_page(unrot_rect, self._unrotated_page_rect(page))
+            insert_rect = clamp_rect_to_page(unrot_rect, self._unrotated_page_rect(page))
             if rotation is None:
                 effective_rotation = int(page.rotation) % 360
 
@@ -2901,14 +2805,6 @@ class PDFModel:
             f"插入 {inserted} 個 span"
         )
 
-    def _rect_union(self, rects: list[fitz.Rect]) -> fitz.Rect:
-        if not rects:
-            return fitz.Rect()
-        u = fitz.Rect(rects[0])
-        for r in rects[1:]:
-            u.include_rect(r)
-        return u
-
     def _replay_protected_spans(self, page: fitz.Page, spans: list[EditableSpan]) -> None:
         for span in spans:
             text = (span.text or "").rstrip("\n")
@@ -2935,7 +2831,7 @@ class PDFModel:
                     )
                     css = self._build_insert_css(fontsize, color, fontname)
                     page.insert_htmlbox(
-                        self._clamp_rect_to_page(bbox, page.rect),
+                        clamp_rect_to_page(bbox, page.rect),
                         html_content,
                         css=css,
                         rotate=rotate,
@@ -2994,7 +2890,7 @@ class PDFModel:
             )
             css = self._build_insert_css(fontsize, color, fontname)
             page.insert_htmlbox(
-                self._clamp_rect_to_page(bbox, page.rect),
+                clamp_rect_to_page(bbox, page.rect),
                 html_content,
                 css=css,
                 rotate=rotate,
@@ -3002,9 +2898,9 @@ class PDFModel:
             )
 
     def _validate_protected_spans(self, page: fitz.Page, protected_spans: list[EditableSpan]) -> bool:
-        full_page = self._normalize_text_for_compare(page.get_text("text"))
+        full_page = normalize_text(page.get_text("text"))
         for span in protected_spans:
-            probe = self._normalize_text_for_compare(span.text)
+            probe = normalize_text(span.text)
             if probe and probe not in full_page:
                 logger.warning("protected span missing after replay: %s", span.span_id)
                 return False
@@ -3041,8 +2937,8 @@ class PDFModel:
                 return EditTextResult.TARGET_BLOCK_NOT_FOUND, None
 
             clip_text = page.get_text("text", clip=target.rect).strip()
-            norm_clip = self._normalize_text_for_compare(clip_text)
-            norm_block = self._normalize_text_for_compare(target.text)
+            norm_clip = normalize_text(clip_text)
+            norm_block = normalize_text(target.text)
             if norm_block and norm_clip:
                 match_ratio = difflib.SequenceMatcher(None, norm_block, norm_clip).ratio()
                 if match_ratio < 0.5:
@@ -3057,12 +2953,12 @@ class PDFModel:
 
             candidate_spans = self.block_manager.find_overlapping_runs(page_idx, target.layout_rect, tol=0.5)
             if candidate_spans:
-                text_probe = self._normalize_text_for_compare(original_text or target.text or "")
+                text_probe = normalize_text(original_text or target.text or "")
                 if text_probe:
                     scored = sorted(
                         candidate_spans,
                         key=lambda sp: difflib.SequenceMatcher(
-                            None, text_probe, self._normalize_text_for_compare(sp.text)
+                            None, text_probe, normalize_text(sp.text)
                         ).ratio(),
                     )
                     target_span = scored[-1]
@@ -3116,7 +3012,7 @@ class PDFModel:
             overlap_cluster = [target_span]
 
         protected_spans = [s for s in overlap_cluster if s.span_id not in target_member_span_ids]
-        cluster_union = self._rect_union([fitz.Rect(s.bbox) for s in overlap_cluster])
+        cluster_union = rect_union([fitz.Rect(s.bbox) for s in overlap_cluster])
 
         target = self.block_manager.find_by_id(
             page_idx,
@@ -3132,8 +3028,8 @@ class PDFModel:
 
         resolved_font = self._resolve_add_text_font(font)
         current_font = self._resolve_add_text_font(target.font or "helv")
-        current_text_norm = self._normalize_text_for_compare(target.text or "")
-        requested_text_norm = self._normalize_text_for_compare(new_text)
+        current_text_norm = normalize_text(target.text or "")
+        requested_text_norm = normalize_text(new_text)
         size_unchanged = abs(float(size) - float(target.size)) <= 0.01
         target_color = tuple(float(c) for c in (target.color or (0.0, 0.0, 0.0)))
         request_color = tuple(float(c) for c in (color or (0.0, 0.0, 0.0)))
@@ -3271,7 +3167,7 @@ class PDFModel:
                     color=tuple(float(c) for c in color),
                     rotate=0,
                 )
-                original_bbox = self._rect_union([fitz.Rect(span.bbox) for span in member_spans])
+                original_bbox = rect_union([fitz.Rect(span.bbox) for span in member_spans])
                 return fitz.Rect(
                     original_bbox.x0,
                     original_bbox.y0,
@@ -3313,7 +3209,7 @@ class PDFModel:
             base_y1 = y0 + max(float(base_layout.height), est_height)
             insert_rect = fitz.Rect(x0, y0, x1, page_rect.y1)
 
-        insert_rect = self._clamp_rect_to_page(insert_rect, page_rect)
+        insert_rect = clamp_rect_to_page(insert_rect, page_rect)
 
         skip_prepush = resolve_result.effective_target_mode == "paragraph" and new_rect is not None
         if not resolve_result.is_vertical and not skip_prepush:
@@ -3374,7 +3270,7 @@ class PDFModel:
             except Exception as _shrink_err:
                 logger.debug("垂直 binary_shrink 失敗，回退 insert_rect: %s", _shrink_err)
                 shrunk_rect = fitz.Rect(insert_rect)
-            shrunk_rect = self._clamp_rect_to_page(shrunk_rect, page_rect)
+            shrunk_rect = clamp_rect_to_page(shrunk_rect, page_rect)
             spare_height, scale_used = page.insert_htmlbox(
                 shrunk_rect, html_content, css=css,
                 rotate=resolve_result.insert_rotate, scale_low=1
@@ -3422,7 +3318,7 @@ class PDFModel:
                         page_rect.x1 - 10),
                     insert_rect.y1
                 )
-                expanded_rect = self._clamp_rect_to_page(
+                expanded_rect = clamp_rect_to_page(
                     expanded_rect, page_rect
                 )
                 spare_height, scale_used = page.insert_htmlbox(
@@ -3464,7 +3360,7 @@ class PDFModel:
             new_layout_rect.x0, new_layout_rect.y0,
             new_layout_rect.x1, computed_y1
         )
-        shrunk_rect = self._clamp_rect_to_page(shrunk_rect, page_rect)
+        shrunk_rect = clamp_rect_to_page(shrunk_rect, page_rect)
         return fitz.Rect(shrunk_rect)
 
     def _verify_rebuild_edit(
@@ -3482,8 +3378,8 @@ class PDFModel:
         new_layout_rect: fitz.Rect,
     ) -> None:
         full_page_text = page.get_text("text")
-        norm_new = self._normalize_text_for_compare(new_text)
-        norm_page = self._normalize_text_for_compare(full_page_text)
+        norm_new = normalize_text(new_text)
+        norm_page = normalize_text(full_page_text)
 
         if norm_new and norm_new in norm_page:
             sim_ratio = 1.0
@@ -3507,18 +3403,18 @@ class PDFModel:
         clip_token_coverage = 0.0
         if not new_layout_rect.is_empty:
             try:
-                clipped = page.get_text("text", clip=self._clamp_rect_to_page(new_layout_rect, page_rect))
-                norm_clip = self._normalize_text_for_compare(clipped)
+                clipped = page.get_text("text", clip=clamp_rect_to_page(new_layout_rect, page_rect))
+                norm_clip = normalize_text(clipped)
                 if norm_new and norm_clip:
                     if norm_new in norm_clip:
                         clip_ratio = 1.0
                     else:
                         clip_ratio = difflib.SequenceMatcher(None, norm_new, norm_clip).ratio()
-                    clip_token_coverage = self._token_coverage_ratio(new_text, norm_clip)
+                    clip_token_coverage = token_coverage_ratio(new_text, norm_clip)
             except Exception as e_clip:
                 logger.debug("Step4 clip probe failed: %s", e_clip)
 
-        page_token_coverage = self._token_coverage_ratio(new_text, norm_page)
+        page_token_coverage = token_coverage_ratio(new_text, norm_page)
         exact_present = (norm_new in norm_page) or (bool(norm_clip) and norm_new in norm_clip)
         has_complex_script = self._has_complex_script(new_text)
         if not norm_new or exact_present:
@@ -3630,8 +3526,8 @@ class PDFModel:
                     page_idx, rect, original_text=original_text, doc=self.doc
                 )
                 if probe_block and probe_block.text:
-                    norm_orig = self._normalize_text_for_compare(original_text)
-                    norm_block = self._normalize_text_for_compare(probe_block.text)
+                    norm_orig = normalize_text(original_text)
+                    norm_block = normalize_text(probe_block.text)
                     if norm_block and len(norm_orig) < len(norm_block) * 0.6:
                         should_promote = False
                         logger.debug(
