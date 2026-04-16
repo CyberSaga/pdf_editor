@@ -1,23 +1,27 @@
 # TODOS
 
-## In Progress (2026-04-14) -- F1 object manipulation v2
+## Done (2026-04-16) -- Close F1 native PDF image manipulation
+
+- What: Extended `objects mode` so existing PDF image XObjects are selectable and can be moved, resized, rotated, and deleted through the same object workflow as app-owned objects.
+- Why: F1 was still open because object manipulation stopped at app-owned images. The backlog required native PDF images to become real manipulable objects before the phase could close.
+- Outcome: Native image hits now come from parsed page content/image invocations, edits rewrite the image invocation operators instead of redacting page regions, focused native-image regressions are green, and a real-file round-trip on `test_files/2.pdf` verifies move/rotate/delete plus save/reopen.
+
+## Done (2026-04-14) -- F1 object manipulation v2
 
 - What: Expanded the F1 object layer from v1 textboxes/rectangles into a first-class `objects mode` with visible entry points, same-page multi-select, resize handles, and app-inserted image objects.
 - Why: The backlog needs a clean separation between browse text selection, object manipulation, and text edit mode, and the app-owned image path is the safest place to grow next.
-- Outcome: Focused request/model/controller/view tests are green, the GUI slices are green, and the mixed-sample GUI verification still passes. The remaining F1 follow-up is native-PDF image manipulation, which stays intentionally separate from app-owned image support.
+- Outcome: Focused request/model/controller/view tests are green, the GUI slices are green, and the mixed-sample GUI verification still passes.
 
-## Future F1 Follow-Ups
+## Future Object Follow-Ups
 
-- Native PDF image manipulation:
-  - Later: selecting/manipulating existing (native) PDF image XObjects.
-- Any remaining F1 polish that needs its own child plan.
+- Any remaining object-manipulation polish that needs its own child plan.
 
 ## Notes on `objects mode`
 
 - Treat `objects mode` as a separate interaction mode from browse mode and text-edit mode.
 - Browse mode keeps its text-selection behavior and should not accidentally start moving objects.
 - Objects mode should focus on selecting/manipulating objects:
-  - Supported now: rectangles and app-inserted images.
+  - Supported now: rectangles, app-inserted images, and native PDF images.
   - Textboxes stay in text-edit mode.
 - Text edit mode focuses on textboxes:
   - Supported: move/rotate/delete/resize/multi-select textboxes, plus editing words.
@@ -46,4 +50,3 @@
 - What: Captured fresh baseline numbers for startup, synthetic large-file open, page render, repeated-edit latency, and a first optimize-copy sample, then wrote the dedicated `B4` child plan for closing performance with measured wins.
 - Why: The backlog requires `B4` to stay open until we have both baseline evidence and shipped before/after improvements. We had planning placeholders, but not a concrete performance handoff with real numbers and hotspots.
 - Outcome: `B4` is now `in_progress` instead of vague-open. The plan identifies large-file optimize-copy as the highest-risk hotspot on this machine, and the next step is shipping measured wins for open, page-change, and optimize-copy flows.
-

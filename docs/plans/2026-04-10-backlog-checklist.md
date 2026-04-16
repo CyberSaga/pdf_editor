@@ -2,15 +2,15 @@
 
 Purpose: keep a compact, current execution checklist alongside `TODOS.md` so backlog state survives conversation compaction and quick handoffs.
 
-Last updated: 2026-04-14
+Last updated: 2026-04-16
 Canonical tracker: `docs/plans/2026-04-09-backlog-execution-order.md`
 Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 
 ## Current State
 
-- Current phase: Phase 6 (`F1`) object manipulation v1
-- Current batch status: F1 objects-mode tranche is now verified end-to-end for app-owned textboxes, app-created rectangle annotations, and inserted images
-- Resume from: finish the remaining native-PDF image follow-up and any later F1 polish as separate child plans
+- Current phase: Post-Phase 6 handoff
+- Current batch status: `F1` is now closed end-to-end for textboxes, rectangles, app-inserted images, and native PDF images
+- Resume from: review/approve the next child-plan item (`F2`, `F3`, `F4`, or `UX7`)
 - Next likely phase after F1: review/approve one of the remaining child-plan items (`F2`, `F3`, `F4`, or `UX7`)
 
 ## Completed In This Campaign
@@ -32,6 +32,7 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 - [x] `F6` Thumbnail right-click page operations reuse the existing page helpers/signals
 - [x] `F7` Browse-mode scene context menu now exposes richer page/file actions
 - [x] `F1` Objects mode, resize handles, multi-select, and app-inserted images
+- [x] `F1` Native PDF image manipulation follow-up
 - [x] `B4` Slice 1 adds preset-aware optimize-copy routing
 - [x] `B4` Slice 2 defers background thumbnail/sidebar work until the initial page is ready and coalesces visible-render scheduling during open/page changes
 - [x] Close `B4` with final before/after performance evidence
@@ -47,13 +48,14 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 - [x] Run one successful mixed-sample GUI check that covers select, move, rotate, delete, undo, and redo for the supported object types
 - [x] `objects mode` (`操作物件`) now has a visible toolbar entry and supports rect/image manipulation without fighting browse/text-selection behavior
 - [x] Resize handles and same-page multi-select now work for the supported object types
-- [x] App-inserted image objects now have typed identity + move/rotate/delete/resize plumbing; native-PDF image manipulation remains for a later child plan
+- [x] App-inserted image objects now have typed identity + move/rotate/delete/resize plumbing
+- [x] Native PDF image XObjects now support select/move/rotate/delete in `objects mode` without redaction-based text loss
 - [ ] Review/approve child plans for `F2`, `F3`, `F4`, and `UX7`
 
 ## Remaining Backlog
 
 - [x] `F1` Complete verification and close object manipulation v1
-- [ ] `F1` Native PDF image manipulation follow-up
+- [x] `F1` Native PDF image manipulation follow-up
 - [ ] `F2` Review/approve child plan for Surya OCR
 - [ ] `F3` Review/approve child plan for shell/file-explorer integration
 - [ ] `F4` Review/approve child plan for color profile switching
@@ -63,7 +65,10 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 
 - [x] `python -m pytest -q test_scripts/test_object_requests.py test_scripts/test_object_manipulation_model.py test_scripts/test_object_controller_flow.py test_scripts/test_object_manipulation_gui.py test_scripts/test_add_textbox_atomic.py`
 - [x] `python -m pytest -q test_scripts/test_object_manipulation_model.py test_scripts/test_object_manipulation_gui.py`
+- [x] `python -m pytest -q test_scripts/test_native_pdf_images_model.py`
+- [x] `python -m pytest -q test_scripts/test_object_manipulation_gui.py -k native_image`
 - [x] `python tmp/manual_verify_f1_qtest.py`
+- [x] Real-file native-image round-trip on `test_files/2.pdf` (move/rotate/delete plus save/reopen via `PDFModel`)
 - [x] `python -m pytest -q test_scripts/test_main_startup_behavior.py`
 - [x] `python -m pytest -q test_scripts/test_pdf_optimize_workflow.py -k "optimize or parallel or clean_session"`
 - [x] `python -m pytest -q test_scripts/test_performance_script_runner.py`
@@ -77,6 +82,6 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 ## Resume Notes
 
 - `B4` is closed. Keep the benchmark scripts intact so future regressions are comparable to the captured before/after numbers.
-- F1 now covers app-owned textboxes, rectangle annotations, objects mode, resize handles, same-page multi-select, and app-inserted images.
-- Native PDF image manipulation is still intentionally deferred until the app-owned image path is stable.
-- The broader GUI/manual path is covered by a live `QTest` mixed-sample pass, plus focused object-mode and image-entry-point regressions.
+- F1 now covers app-owned textboxes, rectangle annotations, objects mode, resize handles, same-page multi-select, app-inserted images, and native PDF image manipulation.
+- Native PDF images are manipulated by rewriting image invocation operators in page content streams instead of redacting overlapping page regions.
+- The broader GUI/manual path is covered by a live `QTest` mixed-sample pass, plus focused object-mode, native-image model, and image-entry-point regressions.
