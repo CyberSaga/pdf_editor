@@ -84,7 +84,6 @@ def _make_native_image_no_cm_pdf(path: Path) -> None:
     page.insert_image(fitz.Rect(20, 20, 120, 90), stream=_png_bytes((0, 0, 200)))
     image_name = str(page.get_images(full=True)[0][7])
     stream_xref = int(page.get_contents()[0])
-    # Replace the stream with a minimal image invocation that relies on the default CTM (no local cm).
     doc.update_stream(stream_xref, f"q\n/{image_name} Do\nQ\n".encode("ascii"))
     doc.save(path)
     doc.close()

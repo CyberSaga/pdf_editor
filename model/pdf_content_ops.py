@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import fitz
 
+from model.geometry import rect_from_points
+
 
 _DELIM_BYTES = b"()<>[]{}/%"
 _WHITESPACE_BYTES = b" \t\r\n\x0c\x00"
@@ -188,16 +190,13 @@ def _bbox_from_stream_cm(
         (0.0, 1.0),
         (1.0, 1.0),
     )
-    fitz_points: list[tuple[float, float]] = []
-    for x, y in corners:
-        x_pdf = a * x + c * y + e
-        y_pdf = b * x + d * y + f
-        # PyMuPDF reports image bboxes in a coordinate space that is affected by CropBox by
-        # shifting results by (crop_x0, crop_y0) while still using the original MediaBox height.
-        fitz_points.append((x_pdf - crop_x0, (mediabox_height - y_pdf) - crop_y0))
-    xs = [point[0] for point in fitz_points]
-    ys = [point[1] for point in fitz_points]
-    return fitz.Rect(min(xs), min(ys), max(xs), max(ys))
+    # PyMuPDF reports image bboxes in a coordinate space that is affected by CropBox by
+    # shifting results by (crop_x0, crop_y0) while still using the original MediaBox height.
+    points = [
+        fitz.Point(a * x + c * y + e - crop_x0, mediabox_height - (b * x + d * y + f) - crop_y0)
+        for x, y in corners
+    ]
+    return rect_from_points(points)
 
 
 def _q_bounds_by_operator_index(operators: list[ParsedOperator]) -> tuple[dict[int, int | None], dict[int, int]]:
@@ -214,7 +213,7 @@ def _q_bounds_by_operator_index(operators: list[ParsedOperator]) -> tuple[dict[i
                 q_to_end[stack.pop()] = op_index
         elif operator.name == "Do" and stack:
             for q_index in stack:
-                q_invocation_counts[q_index] = q_invocation_counts.get(q_index, 0) + 1
+                q_invocation_counts[q_index] += 1
     return q_to_end, q_invocation_counts
 
 
