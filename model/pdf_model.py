@@ -1635,14 +1635,11 @@ class PDFModel:
 
     def _rewrite_native_image_matrix(
         self,
-        page_num: int,
         invocation: NativeImageInvocation,
         destination_rect: fitz.Rect,
         rotation: int,
     ) -> bool:
-        if not self.doc or page_num < 1 or page_num > len(self.doc):
-            return False
-        page = self.doc[page_num - 1]
+        page = self.doc[invocation.page_num - 1]
         if invocation.cm_operator_index is None:
             return False
         stream = self.doc.xref_stream(invocation.stream_xref)
@@ -1658,14 +1655,12 @@ class PDFModel:
             fitz_rect_to_stream_cm(fitz.Rect(destination_rect), page, rotation % 360),
         )
         self.doc.update_stream(invocation.stream_xref, new_stream)
-        self.pending_edits.append({"page_idx": page_num - 1, "rect": fitz.Rect(destination_rect)})
+        self.pending_edits.append({"page_idx": invocation.page_num - 1, "rect": fitz.Rect(destination_rect)})
         self.edit_count += 1
         return True
 
-    def _remove_native_image_invocation(self, page_num: int, invocation: NativeImageInvocation) -> bool:
-        if not self.doc or page_num < 1 or page_num > len(self.doc):
-            return False
-        page = self.doc[page_num - 1]
+    def _remove_native_image_invocation(self, invocation: NativeImageInvocation) -> bool:
+        page = self.doc[invocation.page_num - 1]
         stream = self.doc.xref_stream(invocation.stream_xref)
         tokens, operators = parse_operators(stream)
         if invocation.do_operator_index >= len(operators):
@@ -1685,13 +1680,17 @@ class PDFModel:
             start_token = operators[invocation.cm_operator_index].operand_start
         new_stream = remove_operator_range(tokens, start_token, end_token)
         self.doc.update_stream(invocation.stream_xref, new_stream)
-        active_names = {item.xobject_name for item in discover_native_image_invocations(self.doc, page_num)}
-        if invocation.xobject_name not in active_names:
+        name_bytes = f"/{invocation.xobject_name}".encode("latin-1")
+        still_referenced = any(
+            name_bytes in self.doc.xref_stream(int(xref))
+            for xref in page.get_contents() if int(xref) > 0
+        )
+        if not still_referenced:
             try:
                 self.doc.xref_set_key(page.xref, f"Resources/XObject/{invocation.xobject_name}", "null")
             except Exception:
                 pass
-        self.pending_edits.append({"page_idx": page_num - 1, "rect": fitz.Rect(invocation.bbox)})
+        self.pending_edits.append({"page_idx": invocation.page_num - 1, "rect": fitz.Rect(invocation.bbox)})
         self.edit_count += 1
         return True
 
@@ -2042,7 +2041,6 @@ class PDFModel:
             if invocation is None:
                 return False
             return self._rewrite_native_image_matrix(
-                request.source_page,
                 invocation,
                 fitz.Rect(request.destination_rect),
                 invocation.rotation,
@@ -2128,7 +2126,6 @@ class PDFModel:
                 return False
             new_rotation = (int(invocation.rotation) + int(request.rotation_delta)) % 360
             return self._rewrite_native_image_matrix(
-                request.page_num,
                 invocation,
                 fitz.Rect(invocation.bbox),
                 new_rotation,
@@ -2201,7 +2198,7 @@ class PDFModel:
             invocation = self._find_native_image_invocation(request.page_num, request.object_id)
             if invocation is None:
                 return False
-            return self._remove_native_image_invocation(request.page_num, invocation)
+            return self._remove_native_image_invocation(invocation)
         found = self._find_app_object_annot(request.page_num, request.object_id, request.object_kind)
         if found is None:
             return False
