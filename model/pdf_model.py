@@ -22,6 +22,14 @@ import fitz
 # Optimizer internals live in `model/pdf_optimizer.py`.
 # `PDFModel` keeps the public facade stable and delegates to the internal module.
 from model import pdf_optimizer
+from model.pdf_content_ops import (
+    NativeImageInvocation,
+    discover_native_image_invocations,
+    fitz_rect_to_stream_cm,
+    parse_operators,
+    remove_operator_range,
+    replace_operator_operands,
+)
 from model.edit_commands import CommandManager, EditTextResult
 from model.object_requests import DeleteObjectRequest, MoveObjectRequest, ObjectHitInfo, RotateObjectRequest
 from model.object_requests import ResizeObjectRequest
@@ -1609,6 +1617,84 @@ class PDFModel:
             return page, annot, payload
         return None
 
+    def _find_native_image_invocation(self, page_num: int, object_id: str) -> NativeImageInvocation | None:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return None
+        prefix = f"native_image:{page_num}:"
+        if not str(object_id).startswith(prefix):
+            return None
+        try:
+            occurrence_index = int(str(object_id).split(":")[-1])
+        except Exception:
+            return None
+        invocations = discover_native_image_invocations(self.doc, page_num)
+        for invocation in invocations:
+            if invocation.occurrence_index == occurrence_index:
+                return invocation
+        return None
+
+    def _rewrite_native_image_matrix(
+        self,
+        page_num: int,
+        invocation: NativeImageInvocation,
+        destination_rect: fitz.Rect,
+        rotation: int,
+    ) -> bool:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return False
+        page = self.doc[page_num - 1]
+        if invocation.cm_operator_index is None:
+            return False
+        stream = self.doc.xref_stream(invocation.stream_xref)
+        tokens, operators = parse_operators(stream)
+        if invocation.cm_operator_index >= len(operators):
+            return False
+        cm_operator = operators[invocation.cm_operator_index]
+        if cm_operator.name != "cm":
+            return False
+        new_stream = replace_operator_operands(
+            tokens,
+            cm_operator,
+            fitz_rect_to_stream_cm(fitz.Rect(destination_rect), page, rotation % 360),
+        )
+        self.doc.update_stream(invocation.stream_xref, new_stream)
+        self.pending_edits.append({"page_idx": page_num - 1, "rect": fitz.Rect(destination_rect)})
+        self.edit_count += 1
+        return True
+
+    def _remove_native_image_invocation(self, page_num: int, invocation: NativeImageInvocation) -> bool:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return False
+        page = self.doc[page_num - 1]
+        stream = self.doc.xref_stream(invocation.stream_xref)
+        tokens, operators = parse_operators(stream)
+        if invocation.do_operator_index >= len(operators):
+            return False
+        start_token = operators[invocation.do_operator_index].operand_start
+        end_token = operators[invocation.do_operator_index].operator_index
+        if (
+            invocation.q_operator_index is not None
+            and invocation.q_end_operator_index is not None
+            and invocation.q_operator_index < len(operators)
+            and invocation.q_end_operator_index < len(operators)
+            and invocation.q_image_invocation_count == 1
+        ):
+            start_token = operators[invocation.q_operator_index].operand_start
+            end_token = operators[invocation.q_end_operator_index].operator_index
+        elif invocation.cm_operator_index is not None and invocation.cm_operator_index < len(operators):
+            start_token = operators[invocation.cm_operator_index].operand_start
+        new_stream = remove_operator_range(tokens, start_token, end_token)
+        self.doc.update_stream(invocation.stream_xref, new_stream)
+        active_names = {item.xobject_name for item in discover_native_image_invocations(self.doc, page_num)}
+        if invocation.xobject_name not in active_names:
+            try:
+                self.doc.xref_set_key(page.xref, f"Resources/XObject/{invocation.xobject_name}", "null")
+            except Exception:
+                pass
+        self.pending_edits.append({"page_idx": page_num - 1, "rect": fitz.Rect(invocation.bbox)})
+        self.edit_count += 1
+        return True
+
     def _delete_app_object_annots(
         self,
         page_num: int,
@@ -1884,8 +1970,8 @@ class PDFModel:
     def get_object_info_at_point(self, page_num: int, point: fitz.Point) -> ObjectHitInfo | None:
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             return None
-        page = self.doc[page_num - 1]
         try:
+            page = self.doc[page_num - 1]
             annots = list(page.annots() or [])
         except Exception:
             annots = []
@@ -1897,19 +1983,36 @@ class PDFModel:
             rect = fitz.Rect(annot.rect)
             if point in rect:
                 candidates.append((annot, payload))
-        if not candidates:
+        if candidates:
+            annot, payload = candidates[-1]
+            kind = payload["kind"]
+            return ObjectHitInfo(
+                object_kind=kind,
+                object_id=str(payload["object_id"]),
+                page_num=page_num,
+                bbox=fitz.Rect(annot.rect),
+                rotation=int(payload.get("rotation", 0)) % 360,
+                supports_move=True,
+                supports_delete=True,
+                supports_rotate=kind in ("textbox", "image"),
+            )
+        native_hits = [
+            invocation
+            for invocation in discover_native_image_invocations(self.doc, page_num)
+            if point in fitz.Rect(invocation.bbox)
+        ]
+        if not native_hits:
             return None
-        annot, payload = candidates[-1]
-        kind = payload["kind"]
+        native_hit = native_hits[-1]
         return ObjectHitInfo(
-            object_kind=kind,
-            object_id=str(payload["object_id"]),
+            object_kind="native_image",
+            object_id=f"native_image:{page_num}:{native_hit.occurrence_index}",
             page_num=page_num,
-            bbox=fitz.Rect(annot.rect),
-            rotation=int(payload.get("rotation", 0)) % 360,
+            bbox=fitz.Rect(native_hit.bbox),
+            rotation=int(native_hit.rotation) % 360,
             supports_move=True,
             supports_delete=True,
-            supports_rotate=kind in ("textbox", "image"),
+            supports_rotate=True,
         )
 
     def _redact_and_restore_textbox_region(self, page: fitz.Page, rect: fitz.Rect, object_id: str) -> None:
@@ -1934,6 +2037,16 @@ class PDFModel:
     def move_object(self, request: MoveObjectRequest) -> bool:
         if request.destination_page != request.source_page:
             return False
+        if request.object_kind == "native_image":
+            invocation = self._find_native_image_invocation(request.source_page, request.object_id)
+            if invocation is None:
+                return False
+            return self._rewrite_native_image_matrix(
+                request.source_page,
+                invocation,
+                fitz.Rect(request.destination_rect),
+                invocation.rotation,
+            )
         found = self._find_app_object_annot(request.source_page, request.object_id, request.object_kind)
         if found is None:
             return False
@@ -2009,6 +2122,17 @@ class PDFModel:
         return True
 
     def rotate_object(self, request: RotateObjectRequest) -> bool:
+        if request.object_kind == "native_image":
+            invocation = self._find_native_image_invocation(request.page_num, request.object_id)
+            if invocation is None:
+                return False
+            new_rotation = (int(invocation.rotation) + int(request.rotation_delta)) % 360
+            return self._rewrite_native_image_matrix(
+                request.page_num,
+                invocation,
+                fitz.Rect(invocation.bbox),
+                new_rotation,
+            )
         found = self._find_app_object_annot(request.page_num, request.object_id, request.object_kind)
         if found is None:
             return False
@@ -2073,6 +2197,11 @@ class PDFModel:
         return True
 
     def delete_object(self, request: DeleteObjectRequest) -> bool:
+        if request.object_kind == "native_image":
+            invocation = self._find_native_image_invocation(request.page_num, request.object_id)
+            if invocation is None:
+                return False
+            return self._remove_native_image_invocation(request.page_num, invocation)
         found = self._find_app_object_annot(request.page_num, request.object_id, request.object_kind)
         if found is None:
             return False

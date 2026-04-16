@@ -2409,7 +2409,7 @@ class PDFView(QMainWindow):
                 except Exception:
                     object_info = None
                 if object_info is not None:
-                    allowed_kinds = ("rect", "image") if self.current_mode == "objects" else ("textbox",)
+                    allowed_kinds = ("rect", "image", "native_image") if self.current_mode == "objects" else ("textbox",)
                     if getattr(object_info, "object_kind", None) in allowed_kinds:
                         if not hasattr(self, "_selected_object_infos") or self._selected_object_infos is None:
                             self._selected_object_infos = {}

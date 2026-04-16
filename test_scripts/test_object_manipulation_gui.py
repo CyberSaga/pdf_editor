@@ -162,6 +162,21 @@ def test_objects_mouse_press_selects_object_and_blocks_text_selection(monkeypatc
     assert view._text_selection_started is False
 
 
+def test_objects_mouse_press_selects_native_image(monkeypatch) -> None:
+    view = _make_view()
+    view.current_mode = "objects"
+    hit = _make_object_hit(kind="native_image", supports_rotate=True)
+    view.controller.get_object_info_at_point = lambda page_num, point: hit
+
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *args, **kwargs: None)
+
+    event = _FakeEvent(40, 40)
+    pdf_view.PDFView._mouse_press(view, event)
+
+    assert view._selected_object_info == hit
+    assert event.accepted is True
+
+
 def test_event_scene_pos_normalizes_viewport_offset() -> None:
     view = _make_view(QPoint(97, 186))
     scene_pos = pdf_view.PDFView._event_scene_pos(view, _FakeEvent(166, 37))
