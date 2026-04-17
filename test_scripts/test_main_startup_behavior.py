@@ -214,6 +214,41 @@ def test_empty_launch_buffers_dropped_pdf_paths_until_controller_attaches(
         _cleanup_startup(startup)
 
 
+def test_empty_launch_buffers_multi_drop_pdf_paths_in_order_until_controller_attaches(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    opened: list[str] = []
+
+    from controller.pdf_controller import PDFController
+
+    def fake_open_pdf(self, path: str) -> None:
+        opened.append(path)
+
+    monkeypatch.setattr(PDFController, "open_pdf", fake_open_pdf)
+
+    startup = main_module.run(argv=[], start_event_loop=False)
+    first = tmp_path / "drop-first.pdf"
+    second = tmp_path / "drop-second.pdf"
+    first.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    second.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+
+    try:
+        assert startup["view"].controller is None
+        assert startup["controller"] is None
+
+        _send_drop(startup["view"], [first, second])
+
+        for _ in range(8):
+            startup["app"].processEvents()
+
+        assert startup["view"].controller is startup["controller"]
+        assert startup["controller"].is_active
+        assert opened == [str(first), str(second)]
+    finally:
+        _cleanup_startup(startup)
+
+
 def test_cli_open_builds_placeholder_geometry_before_background_rasterization(
     tmp_path: Path,
 ) -> None:

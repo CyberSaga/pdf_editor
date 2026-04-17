@@ -835,6 +835,20 @@ class PDFController:
                 show_error(self.view, f"打開 PDF 失敗: {e}")
                 break
 
+    def handle_forwarded_cli(self, files: list[str]) -> None:
+        forwarded_files = [str(path) for path in files if str(path).strip()]
+
+        def _apply() -> None:
+            self.activate()
+            if self.view.isMinimized():
+                self.view.showNormal()
+            self.view.raise_()
+            self.view.activateWindow()
+            for path in forwarded_files:
+                self.open_pdf(path)
+
+        QTimer.singleShot(0, _apply)
+
     def start_merge_pdfs(self) -> None:
         active_sid = self.model.get_active_session_id()
         if not active_sid:
