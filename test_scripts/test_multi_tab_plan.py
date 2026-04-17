@@ -283,6 +283,36 @@ def test_drag_drop_ignores_non_pdf_folder_and_remote_urls(mvc, tmp_path):
     assert Path(active_path).name == "valid.pdf"
 
 
+def test_drag_drop_multiple_pdfs_never_calls_merge_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    mvc,
+    tmp_path,
+) -> None:
+    model, view, controller = mvc
+    first = _make_pdf(tmp_path / "drop_a.pdf", ["A"])
+    second = _make_pdf(tmp_path / "drop_b.pdf", ["B"])
+
+    def _fail_merge(*_args, **_kwargs):
+        raise AssertionError("drag-drop must not call merge flows")
+
+    monkeypatch.setattr(PDFController, "merge_ordered_sources_into_current", _fail_merge)
+    monkeypatch.setattr(PDFController, "save_ordered_sources_as_new", _fail_merge)
+
+    controller.activate()
+    view.show()
+    _pump_events(100)
+
+    _send_drop(
+        view,
+        [QUrl.fromLocalFile(str(first)), QUrl.fromLocalFile(str(second))],
+    )
+    _pump_events(250)
+
+    assert len(model.session_ids) == 2
+    assert [Path(model.get_session_meta(sid)["path"]).name for sid in model.session_ids] == ["drop_a.pdf", "drop_b.pdf"]
+    assert model.get_active_session_id() == model.session_ids[-1]
+
+
 def test_03_edit_in_a_undo_in_b_isolated(mvc, tmp_path):
     model, _, controller = mvc
     a = _make_pdf(tmp_path / "A.pdf", ["original text A"])

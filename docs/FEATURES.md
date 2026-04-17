@@ -9,6 +9,7 @@ The editor uses a multi-tab session model. Each tab keeps independent page index
 Document intake now supports both explicit open and drag-and-drop:
 - `Ctrl+O` and file-picker open still work as before.
 - Users can drag one or more local PDF files onto the app window to open them as tabs in the same order they were dropped.
+- Drag-and-drop never merges documents implicitly. Merge is always an explicit action (Merge PDFs dialog or CLI `--merge`).
 - Non-PDF files, folders, and remote URLs are ignored silently.
 - On empty startup, an early drop is not lost: the shell can queue dropped PDF paths until the deferred controller attach finishes, then open them normally.
 

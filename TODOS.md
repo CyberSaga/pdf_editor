@@ -1,5 +1,11 @@
 # TODOS
 
+## Done (2026-04-17) -- F3 shell-integration API slice
+
+- What: Added an `argparse` CLI surface, a Qt-free headless merge path, and a per-user single-instance forwarding layer so later shell verbs can call into the running app without touching registry or file-association settings.
+- Why: The backlog F3 scope was reduced to "open the APIs, don't change my computer settings", so the missing work was the in-app command surface rather than OS registration.
+- Outcome: `python main.py a.pdf b.pdf` now routes through the CLI parser, `python main.py --merge out.pdf a.pdf b.pdf` merges headlessly without launching the UI, and later invocations can forward file-open requests into the already-running window. OS-level registration and shell-verbs remain explicitly deferred.
+
 ## Done (2026-04-16) -- Close F1 native PDF image manipulation
 
 - What: Extended `objects mode` so existing PDF image XObjects are selectable and can be moved, resized, rotated, and deleted through the same object workflow as app-owned objects.

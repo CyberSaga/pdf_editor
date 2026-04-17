@@ -2,16 +2,16 @@
 
 Purpose: keep a compact, current execution checklist alongside `TODOS.md` so backlog state survives conversation compaction and quick handoffs.
 
-Last updated: 2026-04-16
+Last updated: 2026-04-17
 Canonical tracker: `docs/plans/2026-04-09-backlog-execution-order.md`
 Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 
 ## Current State
 
-- Current phase: Post-Phase 6 handoff
-- Current batch status: `F1` is now closed end-to-end for textboxes, rectangles, app-inserted images, and native PDF images
-- Resume from: review/approve the next child-plan item (`F2`, `F3`, `F4`, or `UX7`)
-- Next likely phase after F1: review/approve one of the remaining child-plan items (`F2`, `F3`, `F4`, or `UX7`)
+- Current phase: Post-F3 API handoff
+- Current batch status: `F1`, `B4`, and the user-scoped `F3` API slice are now closed
+- Resume from: review/approve the next remaining child-plan item (`F2`, `F4`, or `UX7`)
+- Next likely phase after F3: review/approve one of the remaining child-plan items (`F2`, `F4`, or `UX7`)
 
 ## Completed In This Campaign
 
@@ -36,6 +36,7 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 - [x] `B4` Slice 1 adds preset-aware optimize-copy routing
 - [x] `B4` Slice 2 defers background thumbnail/sidebar work until the initial page is ready and coalesces visible-render scheduling during open/page changes
 - [x] Close `B4` with final before/after performance evidence
+- [x] `F3` Add shell-integration APIs without OS registration
 
 ## Deferred Follow-ups
 
@@ -50,14 +51,14 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 - [x] Resize handles and same-page multi-select now work for the supported object types
 - [x] App-inserted image objects now have typed identity + move/rotate/delete/resize plumbing
 - [x] Native PDF image XObjects now support select/move/rotate/delete in `objects mode` without redaction-based text loss
-- [ ] Review/approve child plans for `F2`, `F3`, `F4`, and `UX7`
+- [ ] Review/approve child plans for `F2`, `F4`, and `UX7`
 
 ## Remaining Backlog
 
 - [x] `F1` Complete verification and close object manipulation v1
 - [x] `F1` Native PDF image manipulation follow-up
+- [x] `F3` Shell-integration API slice
 - [ ] `F2` Review/approve child plan for Surya OCR
-- [ ] `F3` Review/approve child plan for shell/file-explorer integration
 - [ ] `F4` Review/approve child plan for color profile switching
 - [ ] `UX7` Review/approve child plan for macOS native menu bar
 
@@ -77,6 +78,7 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 - [x] `python test_scripts/test_performance.py --rounds 10`
 - [x] `python test_scripts/benchmark_ui_open_render.py --path test_files/2024_ASHRAE_content.pdf`
 - [x] `python test_scripts/test_all_pdfs.py`
+- [x] `python -m pytest -q test_scripts/test_cli_argparse.py test_scripts/test_headless_merge.py test_scripts/test_single_instance_forwarding.py`
 - [ ] Clear legacy `ruff` debt still reported in `view/pdf_view.py` and `controller/pdf_controller.py`
 
 ## Resume Notes
@@ -85,3 +87,4 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 - F1 now covers app-owned textboxes, rectangle annotations, objects mode, resize handles, same-page multi-select, app-inserted images, and native PDF image manipulation.
 - Native PDF images are manipulated by rewriting image invocation operators in page content streams instead of redacting overlapping page regions.
 - The broader GUI/manual path is covered by a live `QTest` mixed-sample pass, plus focused object-mode, native-image model, and image-entry-point regressions.
+- F3 now covers only the user-approved in-app APIs: positional CLI open, headless `--merge`, and single-instance file forwarding. Registry/file-association changes remain deferred.
