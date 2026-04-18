@@ -381,10 +381,10 @@ def test_objects_mode_move_release_rebases_selected_object_info_immediately(monk
 
 
 def test_objects_mode_move_release_rebases_when_preview_rects_populated(monkeypatch) -> None:
-    """Real production path: press populates _object_drag_start_doc_rects as a dict
-    (see pdf_view.py:2451), so drag-release takes the multi-branch at pdf_view.py:~3565.
+    """Real production path: press populates _object_drag_start_doc_rects as a dict,
+    so drag-release takes the multi-branch even for a single selection.
     That branch must still rebase _selected_object_info, _selected_object_infos,
-    _object_drag_start_doc_rects, and refresh visuals for a single selection."""
+    _object_drag_start_doc_rects, and refresh visuals."""
     view = _make_view()
     view.current_mode = "objects"
 

@@ -2,6 +2,7 @@
 
 import logging
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import fitz
@@ -2622,10 +2623,9 @@ class PDFView(QMainWindow):
                         )
                     self._object_drag_preview_rects = preview_rects
                     if self._selected_object_info is not None:
-                        sel_id = str(self._selected_object_info.object_id)
-                        sel_preview = preview_rects.get(sel_id)
+                        sel_preview = preview_rects.get(str(self._selected_object_info.object_id))
                         if sel_preview is not None:
-                            self._object_drag_preview_rect = fitz.Rect(sel_preview)
+                            self._object_drag_preview_rect = sel_preview
                             self._update_object_selection_visuals(sel_preview)
                 elif self._selected_object_info is not None and self._object_drag_start_doc_rect is not None:
                     start_rect = fitz.Rect(self._object_drag_start_doc_rect)
@@ -3214,6 +3214,38 @@ class PDFView(QMainWindow):
         self._selected_object_info = info
         self._update_object_selection_visuals()
 
+    def _rebase_object_selection_to_bboxes(self, new_bboxes: dict[str, fitz.Rect]) -> None:
+        """Replace selection state with new bboxes and refresh overlay visuals.
+
+        Used by drag/resize release paths so the selection overlay follows moved
+        objects without waiting for the next click. Safe to call whether the
+        selection is single (`_selected_object_info` only) or multi (`_selected_object_infos`).
+        """
+        infos = getattr(self, "_selected_object_infos", None)
+        selected = self._selected_object_info
+        selected_oid = str(selected.object_id) if selected is not None else None
+        for oid, new_bbox in new_bboxes.items():
+            target = None
+            if infos is not None and oid in infos:
+                target = infos[oid]
+            elif selected_oid == oid:
+                target = selected
+            if target is None:
+                continue
+            new_info = replace(target, bbox=fitz.Rect(new_bbox))
+            if infos is not None and oid in infos:
+                infos[oid] = new_info
+            if selected_oid == oid:
+                self._selected_object_info = new_info
+        if infos:
+            self._object_drag_start_doc_rects = {
+                k: fitz.Rect(v.bbox) for k, v in infos.items()
+            }
+        if self._selected_object_info is not None:
+            self._object_drag_start_doc_rect = fitz.Rect(self._selected_object_info.bbox)
+            self._object_drag_preview_rect = fitz.Rect(self._selected_object_info.bbox)
+        self._update_object_selection_visuals()
+
     def _update_object_selection_visuals(self, rect: fitz.Rect | None = None) -> None:
         info = getattr(self, "_selected_object_info", None)
         if info is None or getattr(self, "scene", None) is None:
@@ -3546,17 +3578,9 @@ class PDFView(QMainWindow):
                             destination_rect=fitz.Rect(preview),
                         )
                     )
-                    self._selected_object_info = type(self._selected_object_info)(
-                        object_kind=self._selected_object_info.object_kind,
-                        object_id=self._selected_object_info.object_id,
-                        page_num=self._selected_object_info.page_num,
-                        bbox=fitz.Rect(preview),
-                        rotation=self._selected_object_info.rotation,
-                        supports_move=self._selected_object_info.supports_move,
-                        supports_delete=self._selected_object_info.supports_delete,
-                        supports_rotate=self._selected_object_info.supports_rotate,
+                    self._rebase_object_selection_to_bboxes(
+                        {str(self._selected_object_info.object_id): fitz.Rect(preview)}
                     )
-                    self._update_object_selection_visuals()
                 event.accept()
                 return
             if getattr(self, "_object_rotate_pending", False):
@@ -3588,35 +3612,7 @@ class PDFView(QMainWindow):
                     )
                 if moves:
                     self.sig_move_object.emit(BatchMoveObjectsRequest(moves=moves))
-                    # Rebase selection state to new positions so the overlay
-                    # follows the moved object(s) without requiring another click.
-                    for object_id, preview in preview_rects.items():
-                        info = infos.get(object_id)
-                        if info is None:
-                            continue
-                        new_info = type(info)(
-                            object_kind=info.object_kind,
-                            object_id=info.object_id,
-                            page_num=info.page_num,
-                            bbox=fitz.Rect(preview),
-                            rotation=info.rotation,
-                            supports_move=info.supports_move,
-                            supports_delete=info.supports_delete,
-                            supports_rotate=info.supports_rotate,
-                        )
-                        self._selected_object_infos[object_id] = new_info
-                        if (
-                            self._selected_object_info is not None
-                            and str(self._selected_object_info.object_id) == object_id
-                        ):
-                            self._selected_object_info = new_info
-                    self._object_drag_start_doc_rects = {
-                        k: fitz.Rect(v.bbox) for k, v in self._selected_object_infos.items()
-                    }
-                    if self._selected_object_info is not None:
-                        self._object_drag_start_doc_rect = fitz.Rect(self._selected_object_info.bbox)
-                        self._object_drag_preview_rect = fitz.Rect(self._selected_object_info.bbox)
-                        self._update_object_selection_visuals()
+                    self._rebase_object_selection_to_bboxes(preview_rects)
                 self._object_drag_preview_rects = None
                 event.accept()
                 return
@@ -3635,23 +3631,9 @@ class PDFView(QMainWindow):
                         destination_rect=preview,
                     )
                     self.sig_move_object.emit(request)
-                    self._selected_object_info = type(self._selected_object_info)(
-                        object_kind=self._selected_object_info.object_kind,
-                        object_id=self._selected_object_info.object_id,
-                        page_num=self._selected_object_info.page_num,
-                        bbox=fitz.Rect(preview),
-                        rotation=self._selected_object_info.rotation,
-                        supports_move=self._selected_object_info.supports_move,
-                        supports_delete=self._selected_object_info.supports_delete,
-                        supports_rotate=self._selected_object_info.supports_rotate,
+                    self._rebase_object_selection_to_bboxes(
+                        {str(self._selected_object_info.object_id): preview}
                     )
-                    if hasattr(self, "_selected_object_infos") and self._selected_object_infos:
-                        oid = str(self._selected_object_info.object_id)
-                        self._selected_object_infos[oid] = self._selected_object_info
-                        self._object_drag_start_doc_rects = {
-                            k: fitz.Rect(v.bbox) for k, v in self._selected_object_infos.items()
-                        }
-                    self._update_object_selection_visuals()
                 event.accept()
                 return
 
@@ -3681,17 +3663,11 @@ class PDFView(QMainWindow):
                         destination_rect=preview,
                     )
                     self.sig_move_object.emit(request)
-                    self._selected_object_info = type(self._selected_object_info)(
-                        object_kind=self._selected_object_info.object_kind,
-                        object_id=self._selected_object_info.object_id,
-                        page_num=self._selected_object_info.page_num,
-                        bbox=fitz.Rect(preview),
-                        rotation=self._selected_object_info.rotation,
-                        supports_move=self._selected_object_info.supports_move,
-                        supports_delete=self._selected_object_info.supports_delete,
-                        supports_rotate=self._selected_object_info.supports_rotate,
+                    self._rebase_object_selection_to_bboxes(
+                        {str(self._selected_object_info.object_id): preview}
                     )
-                self._update_object_selection_visuals()
+                else:
+                    self._update_object_selection_visuals()
                 event.accept()
                 return
             if self._object_drag_pending:
