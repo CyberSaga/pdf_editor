@@ -21,6 +21,16 @@
 ## Future Object Follow-Ups
 
 - Any remaining object-manipulation polish that needs its own child plan.
+- [ ] **Delete app-image: drop `PDF_REDACT_IMAGE_REMOVE`** (`model/pdf_model.py:2204-2213`)
+  - Move/rotate were converted in commit `c099b28` to rewrite placements via
+    `_rewrite_native_image_matrix`, preserving overlapping neighbors.
+  - Delete still calls `page.add_redact_annot(old_rect); page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)`,
+    which can remove overlapping neighbor images and is inconsistent with the new behavior.
+  - Approach: reuse `_find_app_image_invocation` + a native-image "remove invocation" helper
+    (parallel to `_remove_native_image_invocation` at `model/pdf_model.py:2196`) so only the
+    targeted placement is stripped.
+  - Add regression: two overlapping app-images, delete one, assert the other survives
+    (mirror `test_move_overlapping_app_images_both_survive` in `test_scripts/test_image_objects_model.py:180`).
 
 ## Notes on `objects mode`
 
