@@ -199,3 +199,53 @@ def test_resize_drag_emits_resize_request(monkeypatch) -> None:
     assert len(view.sig_resize_object.emitted) == 1
     req = view.sig_resize_object.emitted[0][0]
     assert req.__class__.__name__ == "ResizeObjectRequest"
+
+
+def test_top_left_handle_drag_moves_x0_y0_preserves_x1_y1(monkeypatch) -> None:
+    """TL handle drag must move x0/y0; opposite corner (x1, y1) must stay anchored."""
+    view = _make_view()
+    # bbox is (20, 20, 120, 80); TL handle center is approximately (20, 20)
+    pdf_view.PDFView._update_object_selection_visuals(view)
+
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *a, **kw: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseMoveEvent", lambda *a, **kw: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *a, **kw: None)
+
+    # Press on TL handle center, drag 15px left and 10px up
+    pdf_view.PDFView._mouse_press(view, _FakeEvent(20, 20))
+    pdf_view.PDFView._mouse_move(view, _FakeEvent(5, 10))
+    pdf_view.PDFView._mouse_release(view, _FakeEvent(5, 10))
+
+    assert len(view.sig_resize_object.emitted) == 1
+    req = view.sig_resize_object.emitted[0][0]
+    dest = req.destination_rect
+    # x0 and y0 must move; x1 and y1 must stay at original values
+    assert dest.x0 < 20, f"expected x0 < 20 (TL drag), got {dest.x0}"
+    assert dest.y0 < 20, f"expected y0 < 20 (TL drag), got {dest.y0}"
+    assert abs(dest.x1 - 120) < 1.0, f"expected x1 ≈ 120 (anchored), got {dest.x1}"
+    assert abs(dest.y1 - 80) < 1.0, f"expected y1 ≈ 80 (anchored), got {dest.y1}"
+
+
+def test_bottom_left_handle_drag_moves_x0_y1_preserves_x1_y0(monkeypatch) -> None:
+    """BL handle drag must move x0/y1; opposite corner edge x1 and top y0 must be anchored."""
+    view = _make_view()
+    # bbox is (20, 20, 120, 80); BL handle center is approximately (20, 80)
+    pdf_view.PDFView._update_object_selection_visuals(view)
+
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *a, **kw: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseMoveEvent", lambda *a, **kw: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *a, **kw: None)
+
+    # Press on BL handle center, drag 15px left and 10px down
+    pdf_view.PDFView._mouse_press(view, _FakeEvent(20, 80))
+    pdf_view.PDFView._mouse_move(view, _FakeEvent(5, 90))
+    pdf_view.PDFView._mouse_release(view, _FakeEvent(5, 90))
+
+    assert len(view.sig_resize_object.emitted) == 1
+    req = view.sig_resize_object.emitted[0][0]
+    dest = req.destination_rect
+    # x0 and y1 must move; x1 and y0 must stay at original values
+    assert dest.x0 < 20, f"expected x0 < 20 (BL drag), got {dest.x0}"
+    assert dest.y1 > 80, f"expected y1 > 80 (BL drag), got {dest.y1}"
+    assert abs(dest.x1 - 120) < 1.0, f"expected x1 ≈ 120 (anchored), got {dest.x1}"
+    assert abs(dest.y0 - 20) < 1.0, f"expected y0 ≈ 20 (anchored), got {dest.y0}"

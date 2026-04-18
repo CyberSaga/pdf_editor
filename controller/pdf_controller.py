@@ -1688,6 +1688,14 @@ class PDFController:
             rotation=int(getattr(request, "rotation", 0) or 0),
         )
         self._invalidate_active_render_state()
+        # Drop any stale object selection so lingering resize handles in the scene
+        # don't intercept the user's first click on the freshly-inserted image.
+        try:
+            clear_selection = getattr(self.view, "_clear_object_selection", None)
+            if callable(clear_selection):
+                clear_selection()
+        except Exception:
+            pass
         after = self.model._capture_doc_snapshot()
         cmd = SnapshotCommand(
             model=self.model,

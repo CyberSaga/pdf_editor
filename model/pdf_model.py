@@ -1659,6 +1659,31 @@ class PDFModel:
         self.edit_count += 1
         return True
 
+    def _find_app_image_invocation(
+        self,
+        page_num: int,
+        xref: int,
+        expected_rect: fitz.Rect,
+    ) -> NativeImageInvocation | None:
+        """Find the content-stream placement for an app-inserted image by xref + expected rect.
+
+        When the same image xref has multiple placements (same image reused), we pick the
+        one whose bounding box is closest to expected_rect.
+        """
+        invocations = discover_native_image_invocations(self.doc, page_num)
+        candidates = [inv for inv in invocations if inv.xref == xref and inv.cm_operator_index is not None]
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        er = expected_rect
+
+        def _rect_dist(inv: NativeImageInvocation) -> float:
+            b = inv.bbox
+            return sum(abs(a - b_) for a, b_ in zip([b.x0, b.y0, b.x1, b.y1], [er.x0, er.y0, er.x1, er.y1]))
+
+        return min(candidates, key=_rect_dist)
+
     def _remove_native_image_invocation(self, invocation: NativeImageInvocation) -> bool:
         page = self.doc[invocation.page_num - 1]
         stream = self.doc.xref_stream(invocation.stream_xref)
@@ -2065,30 +2090,15 @@ class PDFModel:
             dest_rect = fitz.Rect(request.destination_rect)
             xref = int(payload.get("xref", 0) or 0)
             rotation = int(payload.get("rotation", 0)) % 360
-            image_bytes = None
-            if xref:
-                try:
-                    extracted = self.doc.extract_image(xref)
-                    image_bytes = extracted.get("image")
-                except Exception:
-                    image_bytes = None
-            try:
-                page.add_redact_annot(old_rect)
-                page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
-            except Exception:
-                pass
-            try:
-                if image_bytes:
-                    new_xref = int(page.insert_image(dest_rect, stream=image_bytes, rotate=rotation, overlay=True))
-                elif xref:
-                    new_xref = int(page.insert_image(dest_rect, xref=xref, rotate=rotation, overlay=True))
-                else:
-                    return False
-            except Exception:
+            if not xref:
+                return False
+            invocation = self._find_app_image_invocation(request.source_page, xref, old_rect)
+            if invocation is None:
+                return False
+            if not self._rewrite_native_image_matrix(invocation, dest_rect, rotation):
                 return False
             annot.set_rect(dest_rect)
             payload["rect"] = [float(dest_rect.x0), float(dest_rect.y0), float(dest_rect.x1), float(dest_rect.y1)]
-            payload["xref"] = int(new_xref or xref)
             annot.set_info(content=self._dump_app_object_payload(payload), subject=_IMAGE_OBJECT_SUBJECT)
             annot.update()
             return True
@@ -2141,29 +2151,14 @@ class PDFModel:
             xref = int(payload.get("xref", 0) or 0)
             old_rotation = int(payload.get("rotation", 0)) % 360
             new_rotation = (old_rotation + int(request.rotation_delta)) % 360
-            image_bytes = None
-            if xref:
-                try:
-                    extracted = self.doc.extract_image(xref)
-                    image_bytes = extracted.get("image")
-                except Exception:
-                    image_bytes = None
-            try:
-                page.add_redact_annot(rect)
-                page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
-            except Exception:
-                pass
-            try:
-                if image_bytes:
-                    new_xref = int(page.insert_image(rect, stream=image_bytes, rotate=new_rotation, overlay=True))
-                elif xref:
-                    new_xref = int(page.insert_image(rect, xref=xref, rotate=new_rotation, overlay=True))
-                else:
-                    return False
-            except Exception:
+            if not xref:
+                return False
+            invocation = self._find_app_image_invocation(request.page_num, xref, rect)
+            if invocation is None:
+                return False
+            if not self._rewrite_native_image_matrix(invocation, rect, new_rotation):
                 return False
             payload["rotation"] = int(new_rotation) % 360
-            payload["xref"] = int(new_xref or xref)
             annot.set_info(content=self._dump_app_object_payload(payload), subject=_IMAGE_OBJECT_SUBJECT)
             annot.update()
             return True
