@@ -2375,17 +2375,20 @@ class PDFView(QMainWindow):
             # Keep this early-return path lightweight so tests can exercise mode gating without
             # constructing the full edit-text state machine.
             if self.current_mode in ("objects", "text_edit", "edit_text"):
-                if (
-                    self._selected_object_info is not None
-                    and self._point_hits_object_resize_handle(scene_pos)
+                _resize_handle_idx = (
+                    self._hit_object_resize_handle_index(scene_pos)
+                    if self._selected_object_info is not None
                     and getattr(self._selected_object_info, "supports_move", False)
-                ):
+                    else -1
+                )
+                if _resize_handle_idx >= 0:
                     self._clear_text_selection()
                     self._object_resize_pending = True
                     self._object_resize_active = False
                     self._object_resize_start_scene_pos = scene_pos
                     self._object_resize_start_doc_rect = fitz.Rect(self._selected_object_info.bbox)
                     self._object_resize_preview_rect = fitz.Rect(self._selected_object_info.bbox)
+                    self._object_resize_handle_anchor = _resize_handle_idx  # 0=TL,1=TR,2=BL,3=BR
                     event.accept()
                     return
                 if (
@@ -2571,12 +2574,26 @@ class PDFView(QMainWindow):
                     dx_doc = dx / rs
                     dy_doc = dy / rs
                     start_rect = fitz.Rect(self._object_resize_start_doc_rect)
-                    preview = fitz.Rect(
-                        start_rect.x0,
-                        start_rect.y0,
-                        start_rect.x1 + dx_doc,
-                        start_rect.y1 + dy_doc,
-                    )
+                    anchor = getattr(self, "_object_resize_handle_anchor", 3)
+                    # anchor: 0=TL, 1=TR, 2=BL, 3=BR
+                    # Each handle moves its two owned edges; opposite edges stay anchored.
+                    _MIN = 8.0
+                    if anchor == 0:   # TL: move x0, y0
+                        x0 = min(start_rect.x0 + dx_doc, start_rect.x1 - _MIN)
+                        y0 = min(start_rect.y0 + dy_doc, start_rect.y1 - _MIN)
+                        preview = fitz.Rect(x0, y0, start_rect.x1, start_rect.y1)
+                    elif anchor == 1:  # TR: move x1, y0
+                        x1 = max(start_rect.x1 + dx_doc, start_rect.x0 + _MIN)
+                        y0 = min(start_rect.y0 + dy_doc, start_rect.y1 - _MIN)
+                        preview = fitz.Rect(start_rect.x0, y0, x1, start_rect.y1)
+                    elif anchor == 2:  # BL: move x0, y1
+                        x0 = min(start_rect.x0 + dx_doc, start_rect.x1 - _MIN)
+                        y1 = max(start_rect.y1 + dy_doc, start_rect.y0 + _MIN)
+                        preview = fitz.Rect(x0, start_rect.y0, start_rect.x1, y1)
+                    else:              # BR: move x1, y1
+                        x1 = max(start_rect.x1 + dx_doc, start_rect.x0 + _MIN)
+                        y1 = max(start_rect.y1 + dy_doc, start_rect.y0 + _MIN)
+                        preview = fitz.Rect(start_rect.x0, start_rect.y0, x1, y1)
                     self._object_resize_preview_rect = preview
                     self._update_object_selection_visuals(preview)
                     event.accept()
@@ -3185,6 +3202,7 @@ class PDFView(QMainWindow):
         self._object_resize_start_scene_pos = None
         self._object_resize_start_doc_rect = None
         self._object_resize_preview_rect = None
+        self._object_resize_handle_anchor = 3  # default BR
 
     def _select_object(self, info) -> None:
         self._selected_object_info = info
@@ -3262,14 +3280,18 @@ class PDFView(QMainWindow):
             self._object_resize_handle_items.append(item)
 
     def _point_hits_object_resize_handle(self, scene_pos: QPointF) -> bool:
+        return self._hit_object_resize_handle_index(scene_pos) >= 0
+
+    def _hit_object_resize_handle_index(self, scene_pos: QPointF) -> int:
+        """Return the index (0=TL,1=TR,2=BL,3=BR) of the hit handle, or -1 if none."""
         items = getattr(self, "_object_resize_handle_items", None) or []
-        for item in items:
+        for i, item in enumerate(items):
             try:
                 if item.rect().contains(scene_pos):
-                    return True
+                    return i
             except Exception:
                 continue
-        return False
+        return -1
 
     def _point_hits_object_rotate_handle(self, scene_pos: QPointF) -> bool:
         if self._object_rotate_handle_item is None:
@@ -3577,6 +3599,23 @@ class PDFView(QMainWindow):
                         destination_rect=preview,
                     )
                     self.sig_move_object.emit(request)
+                    self._selected_object_info = type(self._selected_object_info)(
+                        object_kind=self._selected_object_info.object_kind,
+                        object_id=self._selected_object_info.object_id,
+                        page_num=self._selected_object_info.page_num,
+                        bbox=fitz.Rect(preview),
+                        rotation=self._selected_object_info.rotation,
+                        supports_move=self._selected_object_info.supports_move,
+                        supports_delete=self._selected_object_info.supports_delete,
+                        supports_rotate=self._selected_object_info.supports_rotate,
+                    )
+                    if hasattr(self, "_selected_object_infos") and self._selected_object_infos:
+                        oid = str(self._selected_object_info.object_id)
+                        self._selected_object_infos[oid] = self._selected_object_info
+                        self._object_drag_start_doc_rects = {
+                            k: fitz.Rect(v.bbox) for k, v in self._selected_object_infos.items()
+                        }
+                    self._update_object_selection_visuals()
                 event.accept()
                 return
 

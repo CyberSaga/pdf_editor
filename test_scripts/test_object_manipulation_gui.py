@@ -330,3 +330,122 @@ def test_objects_context_menu_exposes_image_insert_actions(monkeypatch) -> None:
 
     assert any("插入圖片" in label for label in labels)
     assert any("剪貼簿" in label for label in labels)
+
+
+def test_objects_mode_move_release_rebases_selected_object_info_immediately(monkeypatch) -> None:
+    """After drag-release in objects mode, _selected_object_info.bbox must update to the
+    preview rect immediately — without requiring another click."""
+    view = _make_view()
+    view.current_mode = "objects"
+
+    original_bbox = fitz.Rect(20, 20, 120, 80)
+    new_bbox = fitz.Rect(50, 50, 150, 110)
+
+    hit = _make_object_hit(kind="rect", supports_rotate=False)
+    view._selected_object_info = hit
+    view._selected_object_infos = {hit.object_id: hit}
+    view._selected_object_page_idx = 0
+
+    # Simulate mid-drag state
+    view._object_drag_active = True
+    view._object_drag_pending = False
+    view._object_drag_preview_rect = fitz.Rect(new_bbox)
+    view._object_drag_start_doc_rect = fitz.Rect(original_bbox)
+    view._object_drag_preview_rects = None  # single-select path
+
+    # Wire up required signals and helpers
+    move_signal = _FakeSignal()
+    view.sig_move_object = move_signal
+    visuals_calls: list[object] = []
+    view._update_object_selection_visuals = lambda rect=None: visuals_calls.append(rect)
+
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *a, **kw: None)
+
+    pdf_view.PDFView._mouse_release(view, _FakeEvent(150, 110))
+
+    # Signal must have been emitted with the new rect
+    assert len(move_signal.emitted) == 1
+
+    # _selected_object_info.bbox must reflect the preview rect immediately
+    updated = view._selected_object_info
+    assert updated is not None, "_selected_object_info was cleared after move"
+    assert abs(updated.bbox.x0 - new_bbox.x0) < 0.5, (
+        f"bbox.x0 not updated: expected {new_bbox.x0}, got {updated.bbox.x0}"
+    )
+    assert abs(updated.bbox.y0 - new_bbox.y0) < 0.5, (
+        f"bbox.y0 not updated: expected {new_bbox.y0}, got {updated.bbox.y0}"
+    )
+
+    # Selection visuals must have been refreshed
+    assert len(visuals_calls) >= 1, "_update_object_selection_visuals was not called after move"
+
+
+def test_add_image_object_clears_stale_object_selection_in_view() -> None:
+    """Inserting an image must clear any stale object selection in the view, so the user's
+    next click on the freshly-inserted image is not consumed by lingering resize handles
+    from a previously-selected object.
+
+    Regression: after Image-Manipulation-Behavior-Fixes, users reported that newly-inserted
+    images "rarely react" to clicks in objects mode — caused by stale handle items in the
+    scene from a prior selection intercepting the press.
+    """
+    import importlib
+
+    pdf_controller = importlib.import_module("controller.pdf_controller")
+
+    # Build a minimal fake view exposing only what add_image_object touches.
+    cleared = {"called": False}
+
+    class _FakeView:
+        continuous_pages = True
+        page_items: list = []
+        scale = 1.0
+
+        def _clear_object_selection(self) -> None:
+            cleared["called"] = True
+
+        def scroll_to_page(self, idx, emit_viewport_changed=False):
+            pass
+
+    class _FakeModel:
+        def __init__(self) -> None:
+            self.doc = [object()]  # len(doc) == 1
+            self.command_manager = SimpleNamespace(
+                record=lambda cmd: None,
+                can_undo=lambda: False,
+                can_redo=lambda: False,
+                _undo_stack=[],
+                _redo_stack=[],
+            )
+
+        def _capture_doc_snapshot(self) -> bytes:
+            return b""
+
+        def add_image_object(self, page_num, rect, image_bytes, *, rotation=0):
+            return "obj-new"
+
+        def get_active_session_id(self):
+            return None
+
+    controller = pdf_controller.PDFController.__new__(pdf_controller.PDFController)
+    controller.model = _FakeModel()
+    controller.view = _FakeView()
+    controller._invalidate_active_render_state = lambda clear_page_sizes=False: None
+    controller._update_undo_redo_tooltips = lambda: None
+    controller.show_page = lambda idx: None
+
+    from model.object_requests import InsertImageObjectRequest
+
+    controller.add_image_object(
+        InsertImageObjectRequest(
+            page_num=1,
+            visual_rect=fitz.Rect(100, 100, 200, 200),
+            image_bytes=b"\x89PNG\r\n",
+            rotation=0,
+        )
+    )
+
+    assert cleared["called"], (
+        "controller.add_image_object must call view._clear_object_selection() to drop "
+        "stale resize handles before the user clicks the freshly-inserted image"
+    )
