@@ -380,6 +380,67 @@ def test_objects_mode_move_release_rebases_selected_object_info_immediately(monk
     assert len(visuals_calls) >= 1, "_update_object_selection_visuals was not called after move"
 
 
+def test_objects_mode_move_release_rebases_when_preview_rects_populated(monkeypatch) -> None:
+    """Real production path: press populates _object_drag_start_doc_rects as a dict
+    (see pdf_view.py:2451), so drag-release takes the multi-branch at pdf_view.py:~3565.
+    That branch must still rebase _selected_object_info, _selected_object_infos,
+    _object_drag_start_doc_rects, and refresh visuals for a single selection."""
+    view = _make_view()
+    view.current_mode = "objects"
+
+    original_bbox = fitz.Rect(20, 20, 120, 80)
+    new_bbox = fitz.Rect(50, 50, 150, 110)
+
+    hit = _make_object_hit(kind="image", supports_rotate=False)
+    view._selected_object_info = hit
+    view._selected_object_infos = {hit.object_id: hit}
+    view._selected_object_page_idx = 0
+
+    # Mid-drag state as produced by the real press + move code paths:
+    view._object_drag_active = True
+    view._object_drag_pending = False
+    view._object_drag_start_doc_rect = fitz.Rect(original_bbox)
+    view._object_drag_preview_rect = fitz.Rect(new_bbox)
+    view._object_drag_start_doc_rects = {hit.object_id: fitz.Rect(original_bbox)}
+    view._object_drag_preview_rects = {hit.object_id: fitz.Rect(new_bbox)}
+
+    move_signal = _FakeSignal()
+    view.sig_move_object = move_signal
+    visuals_calls: list[object] = []
+    view._update_object_selection_visuals = lambda rect=None: visuals_calls.append(rect)
+
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *a, **kw: None)
+
+    pdf_view.PDFView._mouse_release(view, _FakeEvent(150, 110))
+
+    # A BatchMoveObjectsRequest must have been emitted once.
+    assert len(move_signal.emitted) == 1
+
+    # _selected_object_info must reflect the new rect immediately.
+    updated = view._selected_object_info
+    assert updated is not None, "_selected_object_info was cleared after move"
+    assert abs(updated.bbox.x0 - new_bbox.x0) < 0.5
+    assert abs(updated.bbox.y0 - new_bbox.y0) < 0.5
+    assert abs(updated.bbox.x1 - new_bbox.x1) < 0.5
+    assert abs(updated.bbox.y1 - new_bbox.y1) < 0.5
+
+    # _selected_object_infos entry rebased too.
+    infos_entry = view._selected_object_infos[hit.object_id]
+    assert abs(infos_entry.bbox.x0 - new_bbox.x0) < 0.5
+    assert abs(infos_entry.bbox.y1 - new_bbox.y1) < 0.5
+
+    # Drag-start rects rebased so the next drag starts from the new position.
+    rebased = view._object_drag_start_doc_rects[hit.object_id]
+    assert abs(rebased.x0 - new_bbox.x0) < 0.5
+    assert abs(rebased.y1 - new_bbox.y1) < 0.5
+
+    # Visuals were refreshed on the new rect.
+    assert len(visuals_calls) >= 1, "_update_object_selection_visuals not called after multi-branch move"
+
+    # Preview-rects dict cleared so stale data doesn't leak into the next drag.
+    assert getattr(view, "_object_drag_preview_rects", None) is None
+
+
 def test_add_image_object_clears_stale_object_selection_in_view() -> None:
     """Inserting an image must clear any stale object selection in the view, so the user's
     next click on the freshly-inserted image is not consumed by lingering resize handles
