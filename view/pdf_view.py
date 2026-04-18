@@ -2621,6 +2621,12 @@ class PDFView(QMainWindow):
                             start_rect.y1 + dy_doc,
                         )
                     self._object_drag_preview_rects = preview_rects
+                    if self._selected_object_info is not None:
+                        sel_id = str(self._selected_object_info.object_id)
+                        sel_preview = preview_rects.get(sel_id)
+                        if sel_preview is not None:
+                            self._object_drag_preview_rect = fitz.Rect(sel_preview)
+                            self._update_object_selection_visuals(sel_preview)
                 elif self._selected_object_info is not None and self._object_drag_start_doc_rect is not None:
                     start_rect = fitz.Rect(self._object_drag_start_doc_rect)
                     preview = fitz.Rect(
@@ -3582,6 +3588,36 @@ class PDFView(QMainWindow):
                     )
                 if moves:
                     self.sig_move_object.emit(BatchMoveObjectsRequest(moves=moves))
+                    # Rebase selection state to new positions so the overlay
+                    # follows the moved object(s) without requiring another click.
+                    for object_id, preview in preview_rects.items():
+                        info = infos.get(object_id)
+                        if info is None:
+                            continue
+                        new_info = type(info)(
+                            object_kind=info.object_kind,
+                            object_id=info.object_id,
+                            page_num=info.page_num,
+                            bbox=fitz.Rect(preview),
+                            rotation=info.rotation,
+                            supports_move=info.supports_move,
+                            supports_delete=info.supports_delete,
+                            supports_rotate=info.supports_rotate,
+                        )
+                        self._selected_object_infos[object_id] = new_info
+                        if (
+                            self._selected_object_info is not None
+                            and str(self._selected_object_info.object_id) == object_id
+                        ):
+                            self._selected_object_info = new_info
+                    self._object_drag_start_doc_rects = {
+                        k: fitz.Rect(v.bbox) for k, v in self._selected_object_infos.items()
+                    }
+                    if self._selected_object_info is not None:
+                        self._object_drag_start_doc_rect = fitz.Rect(self._selected_object_info.bbox)
+                        self._object_drag_preview_rect = fitz.Rect(self._selected_object_info.bbox)
+                        self._update_object_selection_visuals()
+                self._object_drag_preview_rects = None
                 event.accept()
                 return
 

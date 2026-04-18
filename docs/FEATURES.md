@@ -17,6 +17,16 @@ Document intake now supports both explicit open and drag-and-drop:
 
 The supported modes are `browse`, `edit_text`, `add_text`, `rect`, `highlight`, and `add_annotation`. In `edit_text` mode, clicking existing text enters edit on that target while clicking blank area does not create a new textbox; all text block boundaries are shown as persistent outlines so editable zones are always visible, and the cursor shows IBeam over text blocks. Switching away from `edit_text` with an open editor auto-commits the pending edit (same as CLICK_AWAY) and briefly shows a toast notification — edits are never silently discarded on mode switch. In `add_text` mode, click behavior is dedicated to insertion: if an editor is already open, clicking blank space commits and closes it; if no editor is active, clicking creates a new textbox editor. `rect`, `highlight`, and `add_annotation` are sticky modes: after each operation they remain active for repeated actions. Empty add-new commit is a no-op and does not create history. Mode toolbar buttons are checkable and synchronized to the active mode. Key functions include `set_mode(...)`, `_mouse_press(...)`, `_mouse_release(...)`, `_create_add_text_editor_at_scene(...)`, `_draw_all_block_outlines(...)`, `_clear_all_block_outlines(...)`, and `_finalize_text_edit(...)`.
 
+## 2.1 Objects Mode (操作物件)
+
+Objects mode enables direct manipulation of non-text objects such as rectangles and images (including native images present in the original PDF and images inserted by the editor). Core behavior:
+- Selection: click an object to select it and show an edit box with rotate and resize handles.
+- Multi-select: `Shift+Click` toggles additional objects on the same page (same-page only).
+- Move: drag moves the selected object(s); the selection overlay follows the object positions immediately after release (no extra click needed).
+- Resize: corner handles resize by moving the corresponding edges (left-corner drags move the left edge; right-corner drags move the right edge), rather than always stretching from the bottom-right.
+- Overlap: objects are allowed to overlap; moving/resizing does not auto-reflow or push other objects aside.
+- Rotate/delete: rotate and delete are explicit actions through shortcut/context menu controls.
+
 ## 3. Text Target Granularity
 
 Text targeting supports `run` and `paragraph` granularity. The UI control `文字選取粒度` defaults to `paragraph`, and startup sync aligns model state to that UI default. For compatibility and overlap safety, when an explicit `target_span_id` is present and mode is not explicitly provided, execution resolves to `run` precision. Key functions include `_on_text_target_mode_changed(...)`, `set_text_target_mode(...)`, `get_text_info_at_point(...)`, and `edit_text(...)` mode resolution.
