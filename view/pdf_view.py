@@ -156,7 +156,6 @@ class PDFView(QMainWindow):
     sig_resize_object = Signal(object)  # ResizeObjectRequest
     sig_jump_to_result = Signal(int, object)
     sig_search = Signal(str)
-    sig_ocr = Signal(list)
     sig_start_ocr = Signal(object)  # OcrRequest
     sig_undo = Signal()
     sig_redo = Signal()

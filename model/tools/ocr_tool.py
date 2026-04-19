@@ -30,7 +30,8 @@ def _check_surya_import() -> tuple[bool, str]:
         return False, f"surya 未安裝 ({exc})"
 
 
-def _is_device_available(device: str) -> bool:
+def is_device_available(device: str) -> bool:
+    """Return True iff the requested torch device is usable right now."""
     normalized = OcrDevice.from_code(device).value
     if normalized in (OcrDevice.AUTO.value, OcrDevice.CPU.value):
         return True
@@ -46,6 +47,29 @@ def _is_device_available(device: str) -> bool:
         mps_mod = getattr(backends, "mps", None) if backends else None
         return bool(mps_mod and getattr(mps_mod, "is_available", lambda: False)())
     return False
+
+
+def _empty_torch_cache(device: str) -> None:
+    """Release torch's per-device allocator cache after an OCR run."""
+    if device not in (OcrDevice.CUDA.value, OcrDevice.MPS.value):
+        return
+    try:
+        torch = importlib.import_module("torch")
+    except ImportError:
+        return
+    submodule_name = "cuda" if device == OcrDevice.CUDA.value else "mps"
+    submodule = getattr(torch, submodule_name, None)
+    empty_cache = getattr(submodule, "empty_cache", None) if submodule else None
+    if not callable(empty_cache):
+        return
+    if device == OcrDevice.CUDA.value:
+        is_available = getattr(submodule, "is_available", None)
+        if callable(is_available) and not is_available():
+            return
+    try:
+        empty_cache()
+    except Exception:
+        logger.debug("Failed to empty %s cache", device, exc_info=True)
 
 
 def _resolve_torch_device(device: str) -> str:
@@ -68,7 +92,7 @@ def _resolve_torch_device(device: str) -> str:
             return OcrDevice.MPS.value
         return OcrDevice.CPU.value
 
-    if not _is_device_available(normalized):
+    if not is_device_available(normalized):
         label = "CUDA" if normalized == OcrDevice.CUDA.value else "MPS"
         raise RuntimeError(
             f"已選擇 {label} 但目前 torch 無法使用該裝置；請改選「自動」或「CPU」，"
@@ -120,7 +144,6 @@ class _SuryaAdapter:
 
     def ocr(self, image, languages: list[str]) -> list[tuple[tuple[float, float, float, float], str, float]]:
         self._ensure_loaded()
-        assert self._recognizer is not None
         # Surya ≥ 0.7 removed the language param; use TaskNames to select the OCR task.
         recognition_mod = importlib.import_module("surya.recognition")
         TaskNames = getattr(recognition_mod, "TaskNames", None)
@@ -159,11 +182,9 @@ def _create_surya_adapter(device: str) -> _SuryaAdapter:
 
 
 def _pixmap_to_image(pix):
-    """Convert a fitz.Pixmap to a PIL Image (RGB) for Surya consumption.
-
-    Falls back to a numpy ndarray if PIL is unavailable.
-    """
+    """Convert a fitz.Pixmap to a PIL Image (RGB) for Surya consumption."""
     import numpy as np
+    from PIL import Image
 
     buf = np.frombuffer(pix.samples, dtype=np.uint8)
     arr = buf.reshape(pix.height, pix.width, pix.n)
@@ -171,12 +192,7 @@ def _pixmap_to_image(pix):
         arr = arr[:, :, :3]
     elif pix.n == 1:
         arr = np.repeat(arr, 3, axis=2)
-    try:
-        from PIL import Image
-
-        return Image.fromarray(arr, mode="RGB")
-    except ImportError:
-        return arr
+    return Image.fromarray(arr, mode="RGB")
 
 
 class OcrTool(ToolExtension):
@@ -263,24 +279,4 @@ class OcrTool(ToolExtension):
         finally:
             cleanup_device = getattr(adapter, "device", device)
             adapter = None  # drop strong ref before empty_cache
-            try:
-                torch = importlib.import_module("torch")
-            except ImportError:
-                pass
-            if cleanup_device == OcrDevice.CUDA.value:
-                cuda_mod = getattr(torch, "cuda", None)
-                empty_cache = getattr(cuda_mod, "empty_cache", None) if cuda_mod else None
-                is_available = getattr(cuda_mod, "is_available", None) if cuda_mod else None
-                if callable(empty_cache) and (not callable(is_available) or is_available()):
-                    try:
-                        empty_cache()
-                    except Exception:
-                        logger.debug("Failed to empty CUDA cache", exc_info=True)
-            elif cleanup_device == OcrDevice.MPS.value:
-                mps_mod = getattr(torch, "mps", None)
-                empty_cache = getattr(mps_mod, "empty_cache", None) if mps_mod else None
-                if callable(empty_cache):
-                    try:
-                        empty_cache()
-                    except Exception:
-                        logger.debug("Failed to empty MPS cache", exc_info=True)
+            _empty_torch_cache(cleanup_device)

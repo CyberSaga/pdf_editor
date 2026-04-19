@@ -156,7 +156,7 @@ def test_dialog_pre_checks_languages_from_preferences(qapp):
 def test_dialog_disables_cuda_and_mps_when_unavailable(qapp, monkeypatch):
     import view.dialogs.ocr as ocr_mod
 
-    monkeypatch.setattr(ocr_mod, "_is_device_available", lambda d: d in ("auto", "cpu"))
+    monkeypatch.setattr(ocr_mod, "is_device_available", lambda d: d in ("auto", "cpu"))
 
     dialog = ocr_mod.OcrDialog(total_pages=3, current_page=1, preferences=_make_prefs(languages=["en"]))
     model = dialog.device_combo.model()
@@ -175,7 +175,7 @@ def test_dialog_default_falls_back_when_stored_pref_unavailable(qapp, monkeypatc
     """If saved preference is CUDA but CUDA is unavailable, dialog selects auto."""
     import view.dialogs.ocr as ocr_mod
 
-    monkeypatch.setattr(ocr_mod, "_is_device_available", lambda d: d in ("auto", "cpu"))
+    monkeypatch.setattr(ocr_mod, "is_device_available", lambda d: d in ("auto", "cpu"))
     prefs = _make_prefs(device="cuda", languages=["en"])
     dialog = ocr_mod.OcrDialog(total_pages=3, current_page=1, preferences=prefs)
     assert dialog.device_combo.currentData() == "auto"

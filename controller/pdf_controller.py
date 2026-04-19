@@ -307,7 +307,6 @@ class PDFController:
         self._ocr_thread: QThread | None = None
         self._ocr_worker: _OcrWorker | None = None
         self._ocr_worker_bridge: _OcrBridge | None = None
-        self._ocr_total_pages: int = 0
         self._load_gen_by_session: dict[str, int] = {}
         self._render_gen_by_session: dict[str, int] = {}
         self._stale_index_gen_by_session: dict[str, int] = {}
@@ -403,7 +402,6 @@ class PDFController:
             self.view.sig_resize_object.connect(self.resize_object)
         self.view.sig_jump_to_result.connect(self.jump_to_result)
         self.view.sig_search.connect(self.search_text)
-        self.view.sig_ocr.connect(self.ocr_pages)
         if hasattr(self.view, "sig_start_ocr"):
             self.view.sig_start_ocr.connect(self.start_ocr)
         self.view.sig_undo.connect(self.undo)
@@ -2253,25 +2251,6 @@ class PDFController:
             state = self._get_ui_state(sid)
             state.current_page = max(0, page_num - 1)
 
-    def ocr_pages(self, pages: list[int]):
-        """Legacy entry kept for view.sig_ocr compatibility — launches the dialog flow.
-
-        Prefer ``start_ocr(OcrRequest)`` for programmatic use.
-        """
-        from model.tools.ocr_types import OcrRequest
-        from utils.preferences import UserPreferences
-
-        if not self.model.doc:
-            show_error(self.view, "No PDF is open.")
-            return
-        prefs = UserPreferences()
-        request = OcrRequest(
-            page_indices=tuple(p - 1 for p in pages),
-            languages=tuple(prefs.get_ocr_languages()),
-            device=prefs.get_ocr_device(),
-        )
-        self.start_ocr(request)
-
     def start_ocr(self, request) -> None:
         """Run Surya OCR for the pages in ``request`` on a background thread."""
         if self._ocr_thread is not None:
@@ -2315,7 +2294,6 @@ class PDFController:
 
         self._ocr_thread = thread
         self._ocr_worker = worker
-        self._ocr_total_pages = len(page_nums)
         self._show_ocr_progress_dialog(len(page_nums))
         thread.start()
 
@@ -2373,7 +2351,6 @@ class PDFController:
         self._ocr_progress_dialog = None
         self._ocr_thread = None
         self._ocr_worker = None
-        self._ocr_total_pages = 0
 
     def undo(self):
         """
