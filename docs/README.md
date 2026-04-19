@@ -43,7 +43,8 @@ Third-party libraries used in this project:
 - PySide6
 - PyMuPDF (`fitz`)
 - Pillow
-- pytesseract (optional)
+- surya-ocr (optional)
+- torch (optional, strongly recommended for GPU acceleration)
 
 ## 4. Install
 
@@ -58,7 +59,7 @@ Optional dependencies:
 .venv\Scripts\python -m pip install -r optional-requirements.txt
 ```
 
-OCR note: install Tesseract OCR and ensure `tesseract` is available on PATH.
+OCR note: The OCR feature uses Surya and requires `surya-ocr` and (optionally) `torch`. Install via `pip install surya-ocr torch` or use `optional-requirements.txt`. GPU is automatically prioritized (CUDA → MPS → CPU) and is user-configurable in the OCR dialog.
 
 ## 5. Run
 

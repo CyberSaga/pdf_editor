@@ -1,5 +1,11 @@
 # TODOS
 
+## Done (2026-04-19) -- F2 Surya OCR implementation
+
+- What: Replaced the Tesseract-era OCR stub with Surya as the recognition backend, added a structured `OcrRequest` dialog (page scope + languages + device), a `QThread`-backed worker with per-page commit and cancel, and availability-gated UI entry points. GPU is user-configurable via `utils.preferences.UserPreferences` (`ocr/device`: `auto` prefers CUDA → MPS → CPU; also `cuda`/`cpu`/`mps`).
+- Why: The existing OCR slot never shipped real text insertion and left language, GPU, and cancel handling undefined. Surya delivers modern multilingual OCR (including zh-Hant/Hans, ja) and fits the existing `model/tools/*` + QThread worker patterns without breaking layer boundaries.
+- Outcome: `pip install surya-ocr torch` enables the OCR action under 轉換. Results are written into the PDF via `PDFModel.apply_ocr_spans(page_num, spans)` using `page.insert_text(..., render_mode=3, rotate=page_rotation)` with built-in CJK-aware font fallback ("japan"/"korea"/"china-t"/"helv"), so the text is invisible but searchable/selectable. Focused suites `test_scripts/test_ocr_*.py` (71 tests) cover types, preferences parsing, the Surya adapter behind mocks, model span insertion, the dialog, controller worker/bridge flow, and the view entry point; all green.
+
 ## Done (2026-04-17) -- F3 shell-integration API slice
 
 - What: Added an `argparse` CLI surface, a Qt-free headless merge path, and a per-user single-instance forwarding layer so later shell verbs can call into the running app without touching registry or file-association settings.

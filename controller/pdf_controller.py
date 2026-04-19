@@ -213,6 +213,76 @@ class _OptimizeWorkerBridge(QObject):
         self.thread_finished.emit()
 
 
+class _OcrWorker(QObject):
+    """Runs Surya OCR one page at a time on a background thread."""
+
+    progress = Signal(int, int, int)
+    page_done = Signal(int, object)
+    failed = Signal(object)
+    finished = Signal()
+
+    def __init__(
+        self,
+        tool,
+        page_nums: list[int],
+        languages: list[str],
+        device: str,
+    ) -> None:
+        super().__init__()
+        self._tool = tool
+        self._page_nums = list(page_nums)
+        self._languages = list(languages)
+        self._device = device
+        self._cancel_requested = False
+
+    def request_cancel(self) -> None:
+        self._cancel_requested = True
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            total = len(self._page_nums)
+            for index, page_num in enumerate(self._page_nums, start=1):
+                if self._cancel_requested:
+                    break
+                result = self._tool.ocr_pages(
+                    [page_num],
+                    languages=self._languages,
+                    device=self._device,
+                )
+                spans = list(result.get(page_num, []))
+                self.page_done.emit(page_num, spans)
+                self.progress.emit(page_num, index, total)
+        except Exception as exc:
+            logger.exception("OCR worker failed")
+            self.failed.emit(exc)
+        finally:
+            self.finished.emit()
+
+
+class _OcrBridge(QObject):
+    progress = Signal(int, int, int)
+    page_done = Signal(int, object)
+    failed = Signal(object)
+    thread_finished = Signal()
+
+    @Slot(int, int, int)
+    def forward_progress(self, page_num: int, done: int, total: int) -> None:
+        self.progress.emit(page_num, done, total)
+
+    @Slot(int, object)
+    def forward_page_done(self, page_num: int, spans) -> None:
+        self.page_done.emit(page_num, spans)
+
+    @Slot(object)
+    def forward_failed(self, exc) -> None:
+        self.failed.emit(exc)
+
+    @Slot()
+    def notify_thread_finished(self) -> None:
+        self.thread_finished.emit()
+
+
 class PDFController:
     _VALID_MODES = {"browse", "edit_text", "add_text", "rect", "highlight", "add_annotation"}
     def __init__(self, model: PDFModel, view: PDFView):
@@ -233,6 +303,11 @@ class PDFController:
         self._optimize_worker: _OptimizePdfCopyWorker | None = None
         self._optimize_worker_bridge: _OptimizeWorkerBridge | None = None
         self._optimize_paused_session_id: str | None = None
+        self._ocr_progress_dialog: QProgressDialog | None = None
+        self._ocr_thread: QThread | None = None
+        self._ocr_worker: _OcrWorker | None = None
+        self._ocr_worker_bridge: _OcrBridge | None = None
+        self._ocr_total_pages: int = 0
         self._load_gen_by_session: dict[str, int] = {}
         self._render_gen_by_session: dict[str, int] = {}
         self._stale_index_gen_by_session: dict[str, int] = {}
@@ -269,12 +344,39 @@ class PDFController:
             self._optimize_worker_bridge.succeeded.connect(self._on_optimize_copy_succeeded)
             self._optimize_worker_bridge.failed.connect(self._on_optimize_copy_failed)
             self._optimize_worker_bridge.thread_finished.connect(self._on_optimize_thread_finished)
+        if self._ocr_worker_bridge is None:
+            self._ocr_worker_bridge = _OcrBridge(self.view)
+            self._ocr_worker_bridge.progress.connect(self._on_ocr_progress)
+            self._ocr_worker_bridge.page_done.connect(self._on_ocr_page_done)
+            self._ocr_worker_bridge.failed.connect(self._on_ocr_failed)
+            self._ocr_worker_bridge.thread_finished.connect(self._on_ocr_thread_finished)
         if self.print_dispatcher is None:
             self.print_dispatcher = PrintDispatcher()
         if not self._signals_connected:
             self._connect_signals()
             self._signals_connected = True
         self._activated = True
+        self._refresh_ocr_availability()
+
+    def _refresh_ocr_availability(self) -> None:
+        updater = getattr(self.view, "update_ocr_availability", None)
+        if not callable(updater):
+            return
+        tool = getattr(getattr(self.model, "tools", None), "ocr", None)
+        if tool is None:
+            updater(False, "OCR 工具未啟用")
+            return
+        try:
+            info = tool.availability()
+        except (ImportError, RuntimeError, AttributeError) as exc:
+            logger.warning("OCR availability probe failed: %s", exc)
+            updater(False, str(exc))
+            return
+        if info.available:
+            updater(True, "")
+        else:
+            parts = [p for p in (info.reason, info.install_hint) if p]
+            updater(False, "\n".join(parts) or "OCR 工具不可用")
 
     def _connect_signals(self):
         # Existing connections
@@ -302,6 +404,8 @@ class PDFController:
         self.view.sig_jump_to_result.connect(self.jump_to_result)
         self.view.sig_search.connect(self.search_text)
         self.view.sig_ocr.connect(self.ocr_pages)
+        if hasattr(self.view, "sig_start_ocr"):
+            self.view.sig_start_ocr.connect(self.start_ocr)
         self.view.sig_undo.connect(self.undo)
         self.view.sig_redo.connect(self.redo)
         self.view.sig_mode_changed.connect(self._update_mode)
@@ -2150,25 +2254,126 @@ class PDFController:
             state.current_page = max(0, page_num - 1)
 
     def ocr_pages(self, pages: list[int]):
+        """Legacy entry kept for view.sig_ocr compatibility — launches the dialog flow.
+
+        Prefer ``start_ocr(OcrRequest)`` for programmatic use.
+        """
+        from model.tools.ocr_types import OcrRequest
+        from utils.preferences import UserPreferences
+
         if not self.model.doc:
             show_error(self.view, "No PDF is open.")
-            return {}
+            return
+        prefs = UserPreferences()
+        request = OcrRequest(
+            page_indices=tuple(p - 1 for p in pages),
+            languages=tuple(prefs.get_ocr_languages()),
+            device=prefs.get_ocr_device(),
+        )
+        self.start_ocr(request)
+
+    def start_ocr(self, request) -> None:
+        """Run Surya OCR for the pages in ``request`` on a background thread."""
+        if self._ocr_thread is not None:
+            show_error(self.view, "OCR 已在執行中")
+            return
+        if not self.model.doc:
+            show_error(self.view, "沒有開啟的 PDF 文件")
+            return
+
+        tool = self.model.tools.ocr
+        availability = tool.availability()
+        if not availability.available:
+            msg = availability.reason or "Surya OCR 未安裝"
+            if availability.install_hint:
+                msg = f"{msg}\n{availability.install_hint}"
+            show_error(self.view, msg)
+            return
+
+        page_nums = [idx + 1 for idx in request.page_indices]
+        if not page_nums:
+            show_error(self.view, "未選擇任何頁面")
+            return
+
+        thread = QThread()
+        worker = _OcrWorker(
+            tool,
+            page_nums=page_nums,
+            languages=list(request.languages),
+            device=request.device,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        if self._ocr_worker_bridge is not None:
+            worker.progress.connect(self._ocr_worker_bridge.forward_progress)
+            worker.page_done.connect(self._ocr_worker_bridge.forward_page_done)
+            worker.failed.connect(self._ocr_worker_bridge.forward_failed)
+            thread.finished.connect(self._ocr_worker_bridge.notify_thread_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+
+        self._ocr_thread = thread
+        self._ocr_worker = worker
+        self._ocr_total_pages = len(page_nums)
+        self._show_ocr_progress_dialog(len(page_nums))
+        thread.start()
+
+    def cancel_ocr(self) -> None:
+        if self._ocr_worker is not None:
+            self._ocr_worker.request_cancel()
+
+    def _show_ocr_progress_dialog(self, total_pages: int) -> None:
+        parent = self.view if isinstance(self.view, PDFView) else None
         try:
-            results = self.model.tools.ocr.ocr_pages(pages)
-            non_empty = sum(1 for text in results.values() if isinstance(text, str) and text.strip())
-            QMessageBox.information(
-                self.view,
-                "OCR Completed",
-                f"OCR finished for {len(results)} page(s); {non_empty} page(s) contain recognized text.",
+            dialog = QProgressDialog(
+                f"辨識第 0/{total_pages} 頁…",
+                "取消",
+                0,
+                total_pages,
+                parent,
             )
-            return results
-        except RuntimeError as e:
-            show_error(self.view, str(e))
-            return {}
-        except Exception as e:
-            logger.error(f"OCR failed: {e}")
-            show_error(self.view, f"OCR failed: {e}")
-            return {}
+        except Exception:
+            self._ocr_progress_dialog = None
+            return
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setMinimumDuration(0)
+        dialog.canceled.connect(self.cancel_ocr)
+        dialog.show()
+        self._ocr_progress_dialog = dialog
+
+    @Slot(int, int, int)
+    def _on_ocr_progress(self, page_num: int, done: int, total: int) -> None:
+        dialog = self._ocr_progress_dialog
+        if dialog is None:
+            return
+        dialog.setMaximum(total)
+        dialog.setValue(done)
+        dialog.setLabelText(f"辨識第 {done}/{total} 頁… (頁 {page_num})")
+
+    @Slot(int, object)
+    def _on_ocr_page_done(self, page_num: int, spans) -> None:
+        try:
+            self.model.apply_ocr_spans(page_num, list(spans))
+        except Exception:
+            logger.exception("apply_ocr_spans failed for page %s", page_num)
+
+    @Slot(object)
+    def _on_ocr_failed(self, exc) -> None:
+        logger.error("OCR failed: %s", exc)
+        show_error(self.view, f"OCR 失敗: {exc}")
+
+    @Slot()
+    def _on_ocr_thread_finished(self) -> None:
+        dialog = self._ocr_progress_dialog
+        if dialog is not None:
+            dialog.close()
+        self._ocr_progress_dialog = None
+        self._ocr_thread = None
+        self._ocr_worker = None
+        self._ocr_total_pages = 0
 
     def undo(self):
         """

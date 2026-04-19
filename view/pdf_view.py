@@ -125,6 +125,7 @@ from view.dialogs import (  # noqa: E402, F401
     AuditStackedBar,
     ExportPagesDialog,
     MergePdfDialog,
+    OcrDialog,
     OptimizePdfDialog,
     PDFPasswordDialog,
     PdfAuditReportDialog,
@@ -156,6 +157,7 @@ class PDFView(QMainWindow):
     sig_jump_to_result = Signal(int, object)
     sig_search = Signal(str)
     sig_ocr = Signal(list)
+    sig_start_ocr = Signal(object)  # OcrRequest
     sig_undo = Signal()
     sig_redo = Signal()
     sig_mode_changed = Signal(str)
@@ -199,6 +201,8 @@ class PDFView(QMainWindow):
         self.setAcceptDrops(True)
         self.total_pages = 0
         self.controller = None
+        self._ocr_available = True
+        self._ocr_unavailable_tooltip = ""
         self._defer_heavy_panels = defer_heavy_panels
         self._heavy_panels_initialized = False
         self._deferred_hydration_scheduled = False
@@ -953,7 +957,7 @@ class PDFView(QMainWindow):
         tb_convert = QToolBar()
         tb_convert.setToolButtonStyle(Qt.ToolButtonTextOnly)
         tb_convert.setStyleSheet(toolbar_style)
-        tb_convert.addAction("OCR（文字辨識）", self._ocr_pages)
+        self.ocr_action = tb_convert.addAction("OCR（文字辨識）", self._ocr_pages)
         layout_convert = QVBoxLayout(tab_convert)
         layout_convert.setContentsMargins(4, 0, 0, 0)
         layout_convert.addWidget(tb_convert)
@@ -4237,12 +4241,32 @@ class PDFView(QMainWindow):
         self.annotation_list.addItem(item)
 
     def _ocr_pages(self):
-        pages, ok = QInputDialog.getText(self, "OCR頁面", "輸入頁碼 (如 1,3-5):")
-        if ok and pages:
-            try:
-                parsed = parse_pages(pages, self.total_pages)
-                if parsed: self.sig_ocr.emit(parsed)
-            except ValueError: show_error(self, "頁碼格式錯誤")
+        if self.total_pages == 0:
+            show_error(self, "沒有開啟的 PDF 文件")
+            return
+        if not getattr(self, "_ocr_available", True):
+            tooltip = str(getattr(self, "_ocr_unavailable_tooltip", "") or "").strip()
+            show_error(self, tooltip or "Surya OCR 未安裝\npip install surya-ocr")
+            return
+        current = max(1, int(self.current_page) + 1)
+        dialog = OcrDialog(
+            parent=self,
+            total_pages=max(1, int(self.total_pages)),
+            current_page=current,
+        )
+        if dialog.exec():
+            request = dialog.get_request()
+            if request is not None:
+                self.sig_start_ocr.emit(request)
+
+    def update_ocr_availability(self, available: bool, tooltip: str = "") -> None:
+        action = getattr(self, "ocr_action", None)
+        if action is None:
+            return
+        self._ocr_available = bool(available)
+        self._ocr_unavailable_tooltip = str(tooltip or "")
+        action.setEnabled(True)
+        action.setToolTip("" if available else self._ocr_unavailable_tooltip)
 
     def _snapshot_page(self):
         """觸發當前頁面的快照功能"""

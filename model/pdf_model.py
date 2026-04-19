@@ -1945,6 +1945,87 @@ class PDFModel:
             "color_rgb": color_rgb,
         }
 
+    def _pick_ocr_font(self, text: str) -> str:
+        """Pick a PyMuPDF built-in font that covers the OCR text's scripts."""
+        if re.search(r"[\u3040-\u30ff]", text):
+            return "japan"
+        if re.search(r"[\uac00-\ud7af]", text):
+            return "korea"
+        if re.search(r"[\u4e00-\u9fff]", text):
+            return "china-t"
+        return "helv"
+
+    def apply_ocr_spans(
+        self,
+        page_num: int,
+        spans: list,
+    ) -> int:
+        """Insert OCR-detected strings as invisible text (render_mode=3).
+
+        ``spans`` is a sequence of ``OcrSpan``-like objects with ``bbox``,
+        ``text``, and ``confidence`` attributes. Bboxes are in visual page
+        coordinates. Returns the number of spans actually written.
+        """
+        if not self.doc:
+            return 0
+        if page_num < 1 or page_num > len(self.doc):
+            raise ValueError(f"無效 OCR 頁碼: {page_num}")
+        if not spans:
+            return 0
+
+        page_idx = page_num - 1
+        page = self.doc[page_idx]
+        unrot_bounds = self._unrotated_page_rect(page)
+        page_rotation = int(page.rotation) % 360
+
+        inserted = 0
+        for span in spans:
+            text = (getattr(span, "text", "") or "").strip()
+            if not text:
+                continue
+            bbox = getattr(span, "bbox", None)
+            if bbox is None or len(bbox) != 4:
+                continue
+
+            visual_rect = fitz.Rect(*bbox)
+            unrot_rect = self._visual_rect_to_unrotated_rect(page, visual_rect)
+            unrot_rect = clamp_rect_to_page(unrot_rect, unrot_bounds)
+            height = float(unrot_rect.height)
+            width = float(unrot_rect.width)
+            if height < 1.0 or width < 1.0:
+                continue
+
+            font_name = self._pick_ocr_font(text)
+            font_size = max(1.0, height * 0.9)
+            baseline_x = float(unrot_rect.x0)
+            baseline_y = float(unrot_rect.y1 - height * 0.12)
+
+            try:
+                page.insert_text(
+                    fitz.Point(baseline_x, baseline_y),
+                    text,
+                    fontname=font_name,
+                    fontsize=font_size,
+                    render_mode=3,
+                    rotate=page_rotation,
+                )
+                inserted += 1
+            except Exception:
+                logger.exception(
+                    "apply_ocr_spans: insert_text failed (page=%s font=%s text=%r)",
+                    page_num,
+                    font_name,
+                    text,
+                )
+                continue
+
+        if inserted:
+            self.block_manager.rebuild_page(page_idx, self.doc)
+            self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(page.rect)})
+            self.edit_count += 1
+            logger.info("apply_ocr_spans page=%s inserted=%s", page_num, inserted)
+        return inserted
+
     def add_textbox(
         self,
         page_num: int,
