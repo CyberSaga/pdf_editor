@@ -98,10 +98,15 @@ Close prompts for unsaved changes support:
 - `N`: Discard
 - `Esc`: Cancel
 
-## 8. Legal
+## 8. License and Credits
 
-No license is currently declared in this repository.
-Add a `LICENSE` file if licensing terms are required.
+This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
+
+### Third-Party Credits
+
+This project uses **Surya** (by Vik Paruchuri) for OCR functionality.
+- **Code:** Licensed under GPLv3.
+- **Model Weights:** Licensed under the **AI Pubs Open Rail-M** license. It is free for personal use, research, and startups with under \$5M USD in revenue and under \$5M in lifetime funding. Commercial use beyond these thresholds requires a separate license from the authors (Datalab).
 
 ## 9. Disclaimer
 
