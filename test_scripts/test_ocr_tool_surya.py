@@ -296,10 +296,10 @@ def test_resolve_torch_device_explicit_cpu_always_returns_cpu():
 
 
 def test_is_device_available_cpu_always_true():
-    from model.tools.ocr_tool import _is_device_available
+    from model.tools.ocr_tool import is_device_available
 
-    assert _is_device_available("cpu") is True
-    assert _is_device_available("auto") is True
+    assert is_device_available("cpu") is True
+    assert is_device_available("auto") is True
 
 
 def test_is_device_available_cuda_reflects_torch(monkeypatch):
@@ -314,9 +314,9 @@ def test_is_device_available_cuda_reflects_torch(monkeypatch):
         lambda name: fake_torch if name == "torch" else real_import_module(name),
     )
 
-    from model.tools.ocr_tool import _is_device_available
+    from model.tools.ocr_tool import is_device_available
 
-    assert _is_device_available("cuda") is True
+    assert is_device_available("cuda") is True
 
 
 def test_ocr_pages_calls_cuda_empty_cache(monkeypatch):
