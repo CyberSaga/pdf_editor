@@ -1,10 +1,9 @@
-# -*- coding: utf-8 -*-
 """Regression tests for Linux driver hardware override handling."""
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -125,3 +124,80 @@ def test_submit_via_lp_includes_hardware_options_when_overridden(monkeypatch, tm
     assert result.success is True
     assert "sides=two-sided-short-edge" in captured_cmd
     assert "ColorModel=Gray" in captured_cmd
+
+
+def test_print_pdf_keeps_direct_pdf_for_source_following_auto_layout(monkeypatch) -> None:
+    driver = LinuxPrinterDriver()
+    direct_calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        LinuxPrinterDriver,
+        "supports_direct_pdf",
+        property(lambda self: True),
+    )
+    monkeypatch.setattr(driver, "_cups_connection", lambda: object())
+    monkeypatch.setattr(
+        driver,
+        "_submit_via_cups",
+        lambda pdf_path, options: direct_calls.append((pdf_path, options.paper_size)) or type(
+            "Result", (), {"success": True, "route": "cups-direct-pdf", "message": "ok", "job_id": "1"}
+        )(),
+    )
+    monkeypatch.setattr(
+        "src.printing.platforms.linux_driver.raster_print_pdf",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("raster path should not run")),
+    )
+
+    result = driver.print_pdf(
+        "sample.pdf",
+        [0, 1],
+        PrintJobOptions(
+            printer_name="Printer A",
+            paper_size="auto",
+            orientation="auto",
+        ),
+    )
+
+    assert result.success is True
+    assert direct_calls == [("sample.pdf", "auto")]
+
+
+def test_print_pdf_forces_raster_when_user_overrides_layout(monkeypatch) -> None:
+    driver = LinuxPrinterDriver()
+    direct_calls: list[tuple[str, str]] = []
+    raster_calls: list[tuple[str, list[int], str, str]] = []
+
+    monkeypatch.setattr(
+        LinuxPrinterDriver,
+        "supports_direct_pdf",
+        property(lambda self: True),
+    )
+    monkeypatch.setattr(driver, "_cups_connection", lambda: object())
+    monkeypatch.setattr(
+        driver,
+        "_submit_via_cups",
+        lambda pdf_path, options: direct_calls.append((pdf_path, options.paper_size)) or type(
+            "Result", (), {"success": True, "route": "cups-direct-pdf", "message": "wrong-route", "job_id": "2"}
+        )(),
+    )
+
+    def _fake_raster(pdf_path, page_indices, options):
+        raster_calls.append((pdf_path, list(page_indices), options.paper_size, options.orientation))
+        return type("Result", (), {"success": True, "route": "qt-raster->spooler", "message": "ok", "job_id": None})()
+
+    monkeypatch.setattr("src.printing.platforms.linux_driver.raster_print_pdf", _fake_raster)
+
+    result = driver.print_pdf(
+        "sample.pdf",
+        [0, 1],
+        PrintJobOptions(
+            printer_name="Printer A",
+            paper_size="a4",
+            orientation="landscape",
+            override_fields={"paper_size", "orientation"},
+        ),
+    )
+
+    assert result.success is True
+    assert direct_calls == []
+    assert raster_calls == [("sample.pdf", [0, 1], "a4", "landscape")]

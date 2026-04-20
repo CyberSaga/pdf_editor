@@ -2,8 +2,10 @@
 # Install with: pip install -r optional-requirements.txt
 
 # OCR feature (model/tools/ocr_tool.py)
+# Surya delivers modern, multilingual OCR; prefers GPU via torch when available.
 Pillow>=9.0
-pytesseract>=0.3.10
+surya-ocr>=0.6
+torch>=2.1  # optional but strongly recommended for GPU acceleration
 
 # Native print backends for enhanced platform integration.
 # Core printing still works via the Qt raster bridge without these.

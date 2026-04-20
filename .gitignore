@@ -11,6 +11,7 @@ env/
 .env
 .pytest_cache/
 _tmp_vert_tests/
+tmp
 
 # PDF 測試檔
 *.pdf
@@ -31,3 +32,9 @@ test_scripts/TEST_SCRIPTS.md
 docs/prompts.md
 memory
 最佳化的PDF/
+Grok-PDF 文字編輯退出後位置跳動根本原因.md
+2026-03-22-225245-this-session-is-being-continued-from-a-previous-co.txt
+ 
+# Local Claude settings and generated vision outputs
+.claude/settings.local.json
+reflow/_vision_output/

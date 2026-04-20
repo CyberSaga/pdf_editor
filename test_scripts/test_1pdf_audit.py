@@ -1,9 +1,8 @@
-﻿# -*- coding: utf-8 -*-
-"""
+﻿"""
 稽核 1.pdf：檢查頁面尺寸、文字塊位置、編輯後輸出
 """
-import sys
 import io
+import sys
 from pathlib import Path
 
 if sys.platform == 'win32' and __name__ == '__main__':
@@ -14,7 +13,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import fitz
+
 from model.pdf_model import PDFModel
+
 
 def audit_1pdf():
     root = Path(__file__).resolve().parents[1]
@@ -47,7 +48,7 @@ def audit_1pdf():
                 text += s.get("text", "")
         print(f"  Block {i}: rect=({r.x0:.1f}, {r.y0:.1f}, {r.x1:.1f}, {r.y1:.1f})")
         print(f"    寬={r.width:.1f}, 超出右邊? {r.x1 > page_rect.x1}")
-        print(f"    文字: {repr(text[:50])}...")
+        print(f"    文字: {text[:50]!r}...")
     doc.close()
 
     print("\n=== 模擬編輯後 rect 計算 ===")
@@ -61,7 +62,7 @@ def audit_1pdf():
         text = block.text[:30]
         print(f"Block {i} (rotation={rotation}): rect x1={rect.x1:.1f}, page.x1={model.doc[0].rect.x1:.1f}")
         if rect.x1 > model.doc[0].rect.x1:
-            print(f"  *** 區塊超出頁面右緣! ***")
+            print("  *** 區塊超出頁面右緣! ***")
     model.close()
 
 if __name__ == "__main__":

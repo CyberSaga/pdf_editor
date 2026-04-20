@@ -1411,3 +1411,49 @@ logging 設定責任沒有集中在 app entrypoint，導致可匯入模組同時
 **驗證：**  
 - `pytest -q test_scripts/test_structural_indexing.py test_scripts/test_multi_tab_plan.py` -> pass  
 - `python test_scripts/test_unified_undo.py` -> PASS
+
+---
+
+## 2026-04 開發/測試：pytest 常見失敗與修正
+
+### 2026-04-08 test_iso27001_sop_update.py 在 repo root 找不到 .pptx 直接 StopIteration
+
+**問題：**  
+跑 `pytest test_scripts/ -x` 時，`test_scripts/test_iso27001_sop_update.py` 在 import-time 用 `next(ROOT.glob("*.pptx"))` 直接崩潰。  
+
+**原因：**  
+測試假設 repo root 一定存在某個 `.pptx` 來源投影片，這在乾淨 workspace 或 CI 環境不成立。  
+
+**有效解法（已實作）：**  
+找不到來源 `.pptx` 時改為 `pytest.skip(...)`，讓測試在缺少 fixture 時乾淨跳過，而不是阻斷整個 suite。  
+
+**檔案：** `test_scripts/test_iso27001_sop_update.py`  
+**驗證：** `pytest test_scripts/ -x` -> pass (該測試在缺少 `.pptx` 時會 skip)
+
+### 2026-04-08 move_text_across_pages() 只接受 MoveTextRequest 導致舊呼叫點 TypeError
+
+**問題：**  
+跨頁移動測試/整合呼叫 `controller.move_text_across_pages(source_page=..., ...)` 時出現 `TypeError`。  
+
+**原因：**  
+Controller entrypoint 一度只接受 typed request (`MoveTextRequest`)，但仍有舊呼叫點以 legacy kwargs 呼叫。  
+
+**有效解法（已實作）：**  
+`move_text_across_pages(...)` 同時接受 `MoveTextRequest` 與 legacy kwargs，並統一正規化成 typed request 後走同一條 pipeline。  
+
+**檔案：** `controller/pdf_controller.py`  
+**驗證：** `pytest test_scripts/test_cross_page_text_move.py -x -v` -> pass
+
+### 2026-04-09 optimize-copy 平行重寫在 Windows/pytest 下被過度保守關閉
+
+**問題：**  
+在 Windows 跑 `test_save_optimized_copy_prefers_parallel_image_rewrite_for_clean_source` 時，明明來源檔乾淨且圖像數量足夠，卻仍走序列路徑。  
+
+**原因：**  
+`can_use_parallel_image_rewrite()` 在 Windows 上用 `__main__.__file__` 當作 multiprocessing 安全 gate，但 pytest/嵌入式啟動器不一定提供可用的 `__file__`。  
+
+**有效解法（已實作）：**  
+Windows gate 允許 `sys.argv[0]` / `sys.executable` 作為有效啟動錨點，只要這些路徑存在就允許平行流程；失敗時仍回退序列模式。  
+
+**檔案：** `model/pdf_optimizer.py`  
+**驗證：** `pytest test_scripts/test_pdf_optimize_workflow.py -x -v -k clean_source` -> pass

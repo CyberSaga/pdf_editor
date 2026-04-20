@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from typing import Dict, List, Optional
 
 from PySide6.QtPrintSupport import QPrinterInfo
 
-from ..base_driver import PrintJobOptions, PrintJobResult, PrinterDevice, PrinterDriver
-from ..errors import PrintJobSubmissionError, PrinterUnavailableError
+from ..base_driver import PrinterDevice, PrinterDriver, PrintJobOptions, PrintJobResult
+from ..errors import PrinterUnavailableError, PrintJobSubmissionError
 from ..qt_bridge import raster_print_pdf
 
 try:
@@ -37,9 +36,9 @@ class LinuxPrinterDriver(PrinterDriver):
         except Exception:
             return None
 
-    def list_printers(self) -> List[PrinterDevice]:
+    def list_printers(self) -> list[PrinterDevice]:
         default_name = self.get_default_printer()
-        devices: List[PrinterDevice] = []
+        devices: list[PrinterDevice] = []
 
         conn = self._cups_connection()
         if conn is not None:
@@ -91,7 +90,7 @@ class LinuxPrinterDriver(PrinterDriver):
             )
         return devices
 
-    def get_default_printer(self) -> Optional[str]:
+    def get_default_printer(self) -> str | None:
         conn = self._cups_connection()
         if conn is not None:
             try:
@@ -136,8 +135,8 @@ class LinuxPrinterDriver(PrinterDriver):
         return "unknown"
 
     @staticmethod
-    def _to_cups_options(options: PrintJobOptions) -> Dict[str, str]:
-        cups_options: Dict[str, str] = {}
+    def _to_cups_options(options: PrintJobOptions) -> dict[str, str]:
+        cups_options: dict[str, str] = {}
         if options.page_ranges:
             cups_options["page-ranges"] = options.page_ranges
         cups_options["copies"] = str(options.copies)
@@ -212,7 +211,7 @@ class LinuxPrinterDriver(PrinterDriver):
     def print_pdf(
         self,
         pdf_path: str,
-        page_indices: List[int],
+        page_indices: list[int],
         options: PrintJobOptions,
     ) -> PrintJobResult:
         normalized = options.normalized()
@@ -220,11 +219,15 @@ class LinuxPrinterDriver(PrinterDriver):
             normalized.page_subset != "all" or normalized.reverse_order
         )
         requires_custom_scaling = normalized.scale_mode == "custom"
+        requires_fixed_layout = bool(
+            {"paper_size", "orientation"} & set(normalized.override_fields)
+        )
         direct_path_allowed = (
             normalized.transport in ("auto", "direct_pdf")
             and normalized.output_pdf_path is None
             and not requires_exact_page_order
             and not requires_custom_scaling
+            and not requires_fixed_layout
         )
 
         if direct_path_allowed and self.supports_direct_pdf:

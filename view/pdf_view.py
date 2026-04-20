@@ -1,31 +1,92 @@
-﻿from PySide6.QtWidgets import (
-    QApplication, QColorDialog, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QListWidget, QToolBar, QInputDialog, QMessageBox, QMenu, QFileDialog,
-    QListWidgetItem, QWidget, QVBoxLayout, QPushButton, QLabel,
-    QComboBox, QDoubleSpinBox, QTextEdit, QGraphicsProxyWidget, QLineEdit, QHBoxLayout, QRadioButton,
-    QStackedWidget, QDialog, QSpinBox, QDialogButtonBox, QFormLayout,
-    QScrollArea, QCheckBox, QTabWidget, QSplitter, QFrame, QSizePolicy, QSlider, QTabBar, QListView, QAbstractItemView,
-    QStatusBar, QGroupBox, QToolButton, QProgressDialog, QTableWidget, QTableWidgetItem, QHeaderView, QToolTip
-)
-from PySide6.QtGui import QPixmap, QIcon, QCursor, QKeySequence, QColor, QFont, QPen, QBrush, QTransform, QAction, QActionGroup, QCloseEvent, QTextOption, QShortcut, QFontMetrics, QGuiApplication
-from PySide6.QtCore import Qt, Signal, QPointF, QTimer, QRectF, QPoint, QEvent, QSize, QRect
-from typing import List, Tuple, Optional
-from pathlib import Path
-from dataclasses import dataclass
-from utils.helpers import pixmap_to_qpixmap, parse_pages, show_error
-from model.pdf_model import PdfAuditReport, PdfOptimizeOptions, PDFModel
+﻿from __future__ import annotations
+
 import logging
-import warnings
+import math
+from dataclasses import replace
+from pathlib import Path
+
 import fitz
+import shiboken6
+from PySide6.QtCore import QBuffer, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QBrush,
+    QCloseEvent,
+    QColor,
+    QGuiApplication,
+    QIcon,
+    QKeySequence,
+    QPen,
+    QPixmap,
+    QShortcut,
+    QTransform,
+)
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QCheckBox,
+    QColorDialog,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QGraphicsPixmapItem,
+    QGraphicsProxyWidget,
+    QGraphicsScene,
+    QGraphicsView,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListView,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSlider,
+    QSplitter,
+    QStackedWidget,
+    QStatusBar,
+    QTabBar,
+    QTabWidget,
+    QToolBar,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from model.object_requests import (
+    BatchDeleteObjectsRequest,
+    BatchMoveObjectsRequest,
+    DeleteObjectRequest,
+    InsertImageObjectRequest,
+    MoveObjectRequest,
+    ObjectRef,
+    ResizeObjectRequest,
+    RotateObjectRequest,
+)
+from utils.helpers import parse_pages, show_error
+from view.text_editing import (
+    _DEFAULT_EDITOR_MASK_COLOR,
+    _EditorShortcutForwarder,  # noqa: F401 — re-exported for tests and legacy imports
+    EditTextRequest,  # noqa: F401 — re-exported for controller
+    InlineTextEditor,  # noqa: F401 — re-exported for tests and legacy imports
+    MoveTextRequest,  # noqa: F401 — re-exported for controller
+    TextEditDragState,
+    TextEditFinalizeReason,
+    TextEditFinalizeResult,
+    TextEditGeometryConstants,
+    TextEditManager,
+    TextEditOutcome,
+    TextEditUIConstants,
+    ViewportAnchor,
+    _average_image_rect_color,
+)
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class ViewportAnchor:
-    page_idx: int
-    horizontal_value: int
-    vertical_value: int
 
 
 def _ctrl_tab_direction(key: int, modifiers: Qt.KeyboardModifiers) -> int:
@@ -59,741 +120,21 @@ class _NoCtrlTabTabBar(QTabBar):
         super().keyPressEvent(event)
 
 
-class PDFPasswordDialog(QDialog):
-    """開啟加密 PDF 時輸入密碼的對話框"""
-    def __init__(self, parent=None, file_path: str = ""):
-        super().__init__(parent)
-        self.setWindowTitle("PDF 需要密碼")
-        self._file_path = file_path
-        self._build_ui()
-
-    def _build_ui(self):
-        layout = QVBoxLayout(self)
-        if self._file_path:
-            layout.addWidget(QLabel(f"此檔案受密碼保護，請輸入密碼：\n{self._file_path}"))
-        else:
-            layout.addWidget(QLabel("此 PDF 受密碼保護，請輸入密碼："))
-        # 預設明碼顯示；旁邊勾選欄（眼睛符號）可切換為暗碼
-        row = QHBoxLayout()
-        self.password_edit = QLineEdit()
-        self.password_edit.setEchoMode(QLineEdit.EchoMode.Normal)  # 預設明碼
-        self.password_edit.setPlaceholderText("輸入 PDF 密碼")
-        row.addWidget(self.password_edit)
-        self.hide_password_cb = QCheckBox("👁")  # 眼睛符號，實為勾選欄
-        self.hide_password_cb.setToolTip("勾選後以密碼方式隱藏輸入")
-        self.hide_password_cb.toggled.connect(self._on_show_hide_toggled)
-        row.addWidget(self.hide_password_cb)
-        layout.addLayout(row)
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
-
-    def _on_show_hide_toggled(self, checked: bool):
-        """勾選時改為暗碼，取消勾選時改為明碼。"""
-        self.password_edit.setEchoMode(
-            QLineEdit.EchoMode.Password if checked else QLineEdit.EchoMode.Normal
-        )
-
-    def get_password(self) -> str:
-        return self.password_edit.text().strip()
-
-
-class MergePdfDialog(QDialog):
-    def __init__(self, session_model, parent=None, file_resolver=None, progress_factory=None):
-        super().__init__(parent)
-        self.session_model = session_model
-        self.file_resolver = file_resolver
-        self.progress_factory = progress_factory or self._create_progress_dialog
-        self.setWindowTitle("合併 PDF")
-        self._build_ui()
-        self._refresh_file_list()
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        mode_row = QHBoxLayout()
-        self.new_file_radio = QRadioButton("建立新檔")
-        self.merge_current_radio = QRadioButton("合併到目前檔案")
-        self.new_file_radio.setChecked(True)
-        mode_row.addWidget(self.new_file_radio)
-        mode_row.addWidget(self.merge_current_radio)
-        layout.addLayout(mode_row)
-
-        self.file_list = QListWidget()
-        self.file_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.file_list.setDragDropMode(QAbstractItemView.InternalMove)
-        self.file_list.setDefaultDropAction(Qt.MoveAction)
-        self.file_list.model().rowsMoved.connect(self._sync_session_model_from_file_list)
-        layout.addWidget(self.file_list)
-
-        button_row = QHBoxLayout()
-        self.select_button = QPushButton("選擇檔案")
-        self.select_button.clicked.connect(self._select_files)
-        self.delete_button = QPushButton("刪除檔案")
-        self.delete_button.clicked.connect(self._delete_selected)
-        button_row.addWidget(self.select_button)
-        button_row.addWidget(self.delete_button)
-        layout.addLayout(button_row)
-
-        self.confirm_button = QPushButton("確認合併")
-        self.confirm_button.clicked.connect(self.accept)
-        layout.addWidget(self.confirm_button)
-        self._update_buttons()
-
-    def _refresh_file_list(self) -> None:
-        self.file_list.clear()
-        for entry in self.session_model.entries:
-            item = QListWidgetItem(entry.display_name)
-            item.setData(Qt.UserRole, entry.entry_id)
-            item.setData(Qt.UserRole + 1, entry)
-            self.file_list.addItem(item)
-        self._update_buttons()
-
-    def _select_files(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self, "選擇要合併的 PDF", "", "PDF (*.pdf)")
-        if not paths:
-            return
-
-        self._sync_session_model_from_file_list()
-        resolved_entries: list[dict] = []
-        progress = self.progress_factory(len(paths))
-        progress.show()
-        progress.setValue(0)
-        try:
-            for index, path in enumerate(paths, start=1):
-                if progress.wasCanceled():
-                    break
-                if self.file_resolver is None:
-                    resolved_entries.append(
-                        {
-                            "source_kind": "file",
-                            "path": path,
-                            "display_name": Path(path).name,
-                        }
-                    )
-                else:
-                    resolved = self.file_resolver({"source_kind": "file", "path": path})
-                    if resolved is not None:
-                        resolved_entries.append(resolved)
-                progress.setValue(index)
-                QApplication.processEvents()
-        finally:
-            progress.close()
-
-        self.session_model.add_resolved_files(resolved_entries)
-        self._refresh_file_list()
-
-    def _delete_selected(self) -> None:
-        self._sync_session_model_from_file_list()
-        entry_ids: list[str] = []
-        for item in self.file_list.selectedItems():
-            entry_id = item.data(Qt.UserRole)
-            if entry_id:
-                entry_ids.append(entry_id)
-        if not entry_ids:
-            return
-        self.session_model.remove_entries(entry_ids)
-        self._refresh_file_list()
-
-    def _sync_session_model_from_file_list(self, *_args) -> None:
-        entry_ids: list[str] = []
-        for index in range(self.file_list.count()):
-            item = self.file_list.item(index)
-            entry_id = item.data(Qt.UserRole)
-            if entry_id:
-                entry_ids.append(entry_id)
-        self.session_model.set_order(entry_ids)
-
-    def _update_buttons(self) -> None:
-        self.confirm_button.setEnabled(self.session_model.can_confirm)
-
-    def selected_mode(self) -> str:
-        return "merge_current" if self.merge_current_radio.isChecked() else "new_file"
-
-    def ordered_entries(self) -> list:
-        entries: list = []
-        for index in range(self.file_list.count()):
-            item = self.file_list.item(index)
-            entry = item.data(Qt.UserRole + 1)
-            if entry is not None:
-                entries.append(entry)
-        return entries
-
-    def _create_progress_dialog(self, total: int) -> QProgressDialog:
-        progress = QProgressDialog("處理選取的 PDF...", "取消", 0, max(0, total), self)
-        progress.setWindowTitle("加入合併清單")
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
-        progress.setMinimumDuration(0)
-        return progress
-
-
-class AuditStackedBar(QWidget):
-    hovered_label_changed = Signal(str)
-    _COLORS = ["#0EA5E9", "#22C55E", "#F59E0B", "#EF4444", "#64748B", "#A855F7"]
-
-    def __init__(self, report: PdfAuditReport, parent=None):
-        super().__init__(parent)
-        self._segments: list[QFrame] = []
-        self._segment_labels: dict[QFrame, str] = {}
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-        meaningful = [item for item in report.items if item.bytes_used > 0]
-        for index, item in enumerate(meaningful):
-            segment = QFrame(self)
-            segment.setStyleSheet(
-                f"background: {self._COLORS[index % len(self._COLORS)]}; border-radius: 4px;"
-            )
-            stretch = max(1, int(round(item.percent)))
-            layout.addWidget(segment, stretch)
-            # Keep hover text minimal so users can quickly identify each object type.
-            segment.setToolTip(item.label)
-            segment.setMouseTracking(True)
-            segment.setAttribute(Qt.WA_Hover, True)
-            segment.installEventFilter(self)
-            self._segment_labels[segment] = item.label
-            self._segments.append(segment)
-        self.setMinimumHeight(18)
-
-    def segment_count(self) -> int:
-        return len(self._segments)
-
-    def segment_tooltips(self) -> list[str]:
-        return [segment.toolTip() for segment in self._segments if segment.toolTip()]
-
-    def _show_segment_name(self, segment: QFrame) -> None:
-        label = self._segment_labels.get(segment, "")
-        if not label:
-            return
-        self.hovered_label_changed.emit(label)
-        QToolTip.showText(QCursor.pos(), label, segment)
-
-    def eventFilter(self, watched, event):
-        if watched in self._segment_labels:
-            if event.type() in (QEvent.Enter, QEvent.MouseMove, QEvent.ToolTip):
-                self._show_segment_name(watched)
-                return event.type() == QEvent.ToolTip
-            if event.type() == QEvent.Leave:
-                self.hovered_label_changed.emit("")
-        return super().eventFilter(watched, event)
-
-
-class PdfAuditReportDialog(QDialog):
-    def __init__(self, report: PdfAuditReport, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("審計空間使用報告")
-        self.resize(620, 460)
-        layout = QVBoxLayout(self)
-
-        summary = QLabel(
-            f"現用 PDF 版本: {report.pdf_version}\n"
-            f"相容性: {report.compatibility}\n"
-            f"總大小: {report.total_bytes:,} bytes"
-        )
-        layout.addWidget(summary)
-
-        self.hover_name_label = QLabel("將游標移到色塊上以查看物件種類")
-        layout.addWidget(self.hover_name_label)
-        self.stacked_bar = AuditStackedBar(report, self)
-        self.stacked_bar.hovered_label_changed.connect(self._on_stacked_bar_hovered)
-        layout.addWidget(self.stacked_bar)
-
-        self.table = QTableWidget(len(report.items), 4, self)
-        self.table.setHorizontalHeaderLabels(["物件種類", "數量", "Bytes", "百分比"])
-        self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setSelectionMode(QTableWidget.NoSelection)
-        self.table.setFocusPolicy(Qt.NoFocus)
-        for row, item in enumerate(report.items):
-            bytes_text = f"{item.bytes_used:,}" if item.bytes_used else "--"
-            percent_text = f"{item.percent:.2f}%" if item.bytes_used else "--"
-            count_text = str(item.count) if item.count else "--"
-            self.table.setItem(row, 0, QTableWidgetItem(item.label))
-            self.table.setItem(row, 1, QTableWidgetItem(count_text))
-            self.table.setItem(row, 2, QTableWidgetItem(bytes_text))
-            self.table.setItem(row, 3, QTableWidgetItem(percent_text))
-        layout.addWidget(self.table)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
-        buttons.rejected.connect(self.reject)
-        buttons.accepted.connect(self.accept)
-        buttons.button(QDialogButtonBox.Close).setText("關閉")
-        layout.addWidget(buttons)
-
-    def _on_stacked_bar_hovered(self, label: str) -> None:
-        if label:
-            self.hover_name_label.setText(f"目前: {label}")
-            return
-        self.hover_name_label.setText("將游標移到色塊上以查看物件種類")
-
-
-class OptimizePdfDialog(QDialog):
-    def __init__(self, parent=None, audit_provider=None):
-        super().__init__(parent)
-        self.audit_provider = audit_provider
-        self._applying_preset = False
-        self.setWindowTitle("優化 PDF")
-        self.resize(560, 680)
-        self._build_ui()
-        self._apply_preset("平衡")
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-
-        header = QHBoxLayout()
-        header.addWidget(QLabel("設定:"))
-        self.preset_combo = QComboBox()
-        self.preset_combo.addItems(["快速", "平衡", "極致壓縮", "自訂"])
-        self.preset_combo.currentTextChanged.connect(self._on_preset_changed)
-        header.addWidget(self.preset_combo, 1)
-        self.audit_button = QPushButton("審計空間使用報告")
-        self.audit_button.setEnabled(self.audit_provider is not None)
-        self.audit_button.clicked.connect(self._show_audit_report)
-        header.addWidget(self.audit_button)
-        layout.addLayout(header)
-
-        self.info_label = QLabel("相容性: 保留現有")
-        layout.addWidget(self.info_label)
-
-        self.images_group = QGroupBox("圖像")
-        images_layout = QFormLayout(self.images_group)
-        self.images_checkbox = QCheckBox("啟用圖像最佳化")
-        self.images_checkbox.setChecked(True)
-        images_layout.addRow(self.images_checkbox)
-        self.image_target_dpi_combo = QComboBox()
-        self.image_target_dpi_combo.addItems(["72", "96", "110", "150", "220"])
-        target_row = QHBoxLayout()
-        target_row.setContentsMargins(0, 0, 0, 0)
-        target_row.addWidget(self.image_target_dpi_combo)
-        self.image_target_dpi_suffix = QLabel("dpi")
-        target_row.addWidget(self.image_target_dpi_suffix)
-        target_row.addStretch(1)
-        images_layout.addRow("降採樣到", target_row)
-        self.image_threshold_dpi_combo = QComboBox()
-        self.image_threshold_dpi_combo.addItems(["144", "165", "225", "300"])
-        threshold_row = QHBoxLayout()
-        threshold_row.setContentsMargins(0, 0, 0, 0)
-        threshold_row.addWidget(self.image_threshold_dpi_combo)
-        self.image_threshold_dpi_suffix = QLabel("dpi")
-        threshold_row.addWidget(self.image_threshold_dpi_suffix)
-        threshold_row.addStretch(1)
-        images_layout.addRow("當圖像超過", threshold_row)
-        quality_row = QVBoxLayout()
-        quality_row.setContentsMargins(0, 0, 0, 0)
-        self.image_quality_slider = QSlider(Qt.Horizontal)
-        self.image_quality_slider.setRange(0, 100)
-        self.image_quality_slider.setSingleStep(5)
-        self.image_quality_slider.setPageStep(10)
-        self.image_quality_label = QLabel()
-        quality_row.addWidget(self.image_quality_slider)
-        quality_row.addWidget(self.image_quality_label)
-        images_layout.addRow("JPEG 品質", quality_row)
-        self.color_images_checkbox = QCheckBox("彩色圖像")
-        self.gray_images_checkbox = QCheckBox("灰階圖像")
-        self.bitonal_images_checkbox = QCheckBox("黑白圖像")
-        for checkbox in (self.color_images_checkbox, self.gray_images_checkbox, self.bitonal_images_checkbox):
-            checkbox.setChecked(True)
-            images_layout.addRow(checkbox)
-        layout.addWidget(self.images_group)
-
-        self.fonts_group = QGroupBox("字體")
-        fonts_layout = QVBoxLayout(self.fonts_group)
-        self.fonts_checkbox = QCheckBox("啟用字體最佳化")
-        self.fonts_checkbox.setChecked(True)
-        self.font_subset_checkbox = QCheckBox("合併 / 子集化字體")
-        self.font_subset_checkbox.setChecked(True)
-        fonts_layout.addWidget(self.fonts_checkbox)
-        fonts_layout.addWidget(self.font_subset_checkbox)
-        layout.addWidget(self.fonts_group)
-
-        self.user_data_group = QGroupBox("忽略用戶資料")
-        user_data_layout = QVBoxLayout(self.user_data_group)
-        self.metadata_checkbox = QCheckBox("移除檔案資訊和詮釋資料")
-        self.xml_metadata_checkbox = QCheckBox("移除 XML 詮釋資料")
-        user_data_layout.addWidget(self.metadata_checkbox)
-        user_data_layout.addWidget(self.xml_metadata_checkbox)
-        layout.addWidget(self.user_data_group)
-
-        self.cleanup_group = QGroupBox("清除")
-        cleanup_layout = QVBoxLayout(self.cleanup_group)
-        self.cleanup_checkbox = QCheckBox("優化頁面內容")
-        self.cleanup_checkbox.setChecked(True)
-        self.deflate_streams_checkbox = QCheckBox("使用 Flate 模式對資料流進行編碼")
-        self.deflate_images_checkbox = QCheckBox("壓縮圖片資料流")
-        self.deflate_fonts_checkbox = QCheckBox("壓縮字體資料流")
-        self.object_streams_checkbox = QCheckBox("使用物件串流")
-        self.linearize_checkbox = QCheckBox("最佳化快速網頁檢視")
-        for checkbox in (
-            self.deflate_streams_checkbox,
-            self.deflate_images_checkbox,
-            self.deflate_fonts_checkbox,
-            self.object_streams_checkbox,
-        ):
-            checkbox.setChecked(True)
-        cleanup_layout.addWidget(self.cleanup_checkbox)
-        cleanup_layout.addWidget(self.deflate_streams_checkbox)
-        cleanup_layout.addWidget(self.deflate_images_checkbox)
-        cleanup_layout.addWidget(self.deflate_fonts_checkbox)
-        cleanup_layout.addWidget(self.object_streams_checkbox)
-        cleanup_layout.addWidget(self.linearize_checkbox)
-        layout.addWidget(self.cleanup_group)
-
-        self._custom_controls = [
-            self.images_checkbox,
-            self.image_target_dpi_combo,
-            self.image_threshold_dpi_combo,
-            self.image_quality_slider,
-            self.color_images_checkbox,
-            self.gray_images_checkbox,
-            self.bitonal_images_checkbox,
-            self.fonts_checkbox,
-            self.font_subset_checkbox,
-            self.metadata_checkbox,
-            self.xml_metadata_checkbox,
-            self.cleanup_checkbox,
-            self.deflate_streams_checkbox,
-            self.deflate_images_checkbox,
-            self.deflate_fonts_checkbox,
-            self.object_streams_checkbox,
-            self.linearize_checkbox,
-        ]
-        for control in self._custom_controls:
-            if isinstance(control, QComboBox):
-                control.currentTextChanged.connect(self._mark_custom)
-            elif isinstance(control, QSlider):
-                control.valueChanged.connect(self._mark_custom)
-            else:
-                control.toggled.connect(self._mark_custom)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("確定")
-        buttons.button(QDialogButtonBox.Cancel).setText("取消")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def _show_audit_report(self) -> None:
-        if self.audit_provider is None:
-            return
-        try:
-            report = self.audit_provider()
-        except Exception as exc:
-            show_error(self, f"審計空間使用報告失敗: {exc}")
-            return
-        PdfAuditReportDialog(report, self).exec()
-
-    def _quality_value(self) -> int:
-        return int(self.image_quality_slider.value())
-
-    def _quality_label_from_value(self, value: int) -> str:
-        if value <= 25:
-            return "最低"
-        if value <= 40:
-            return "低"
-        if value <= 60:
-            return "中等"
-        if value <= 78:
-            return "高"
-        return "最大"
-
-    def _refresh_quality_label(self) -> None:
-        value = self._quality_value()
-        self.image_quality_label.setText(f"{self._quality_label_from_value(value)} ({value})")
-
-    def _apply_preset(self, preset: str) -> None:
-        options = PDFModel.preset_optimize_options(preset)
-        self._applying_preset = True
-        try:
-            self.preset_combo.setCurrentText(options.preset)
-            self.images_checkbox.setChecked(options.optimize_images)
-            self.image_target_dpi_combo.setCurrentText(str(options.image_dpi_target))
-            self.image_threshold_dpi_combo.setCurrentText(str(options.image_dpi_threshold))
-            self.image_quality_slider.setValue(options.image_jpeg_quality)
-            self._refresh_quality_label()
-            self.color_images_checkbox.setChecked(options.optimize_color_images)
-            self.gray_images_checkbox.setChecked(options.optimize_gray_images)
-            self.bitonal_images_checkbox.setChecked(options.optimize_bitonal_images)
-            self.fonts_checkbox.setChecked(options.optimize_fonts)
-            self.font_subset_checkbox.setChecked(options.subset_fonts)
-            self.metadata_checkbox.setChecked(options.remove_metadata)
-            self.xml_metadata_checkbox.setChecked(options.remove_xml_metadata)
-            self.cleanup_checkbox.setChecked(options.content_cleanup)
-            self.deflate_streams_checkbox.setChecked(options.deflate_streams)
-            self.deflate_images_checkbox.setChecked(options.deflate_images)
-            self.deflate_fonts_checkbox.setChecked(options.deflate_fonts)
-            self.object_streams_checkbox.setChecked(options.use_object_streams)
-            self.linearize_checkbox.setChecked(options.linearize)
-        finally:
-            self._applying_preset = False
-
-    def _on_preset_changed(self, preset: str) -> None:
-        if self._applying_preset or preset == "自訂":
-            return
-        self._apply_preset(preset)
-
-    def _mark_custom(self, *_args) -> None:
-        if self._applying_preset:
-            return
-        self._refresh_quality_label()
-        self._applying_preset = True
-        try:
-            self.preset_combo.setCurrentText("自訂")
-        finally:
-            self._applying_preset = False
-
-    def get_options(self) -> PdfOptimizeOptions:
-        return PdfOptimizeOptions(
-            preset=self.preset_combo.currentText(),
-            optimize_images=self.images_checkbox.isChecked(),
-            image_dpi_target=int(self.image_target_dpi_combo.currentText()),
-            image_dpi_threshold=int(self.image_threshold_dpi_combo.currentText()),
-            image_jpeg_quality=self._quality_value(),
-            optimize_color_images=self.color_images_checkbox.isChecked(),
-            optimize_gray_images=self.gray_images_checkbox.isChecked(),
-            optimize_bitonal_images=self.bitonal_images_checkbox.isChecked(),
-            optimize_fonts=self.fonts_checkbox.isChecked(),
-            subset_fonts=self.font_subset_checkbox.isChecked(),
-            remove_metadata=self.metadata_checkbox.isChecked(),
-            remove_xml_metadata=self.xml_metadata_checkbox.isChecked(),
-            content_cleanup=self.cleanup_checkbox.isChecked(),
-            deflate_streams=self.deflate_streams_checkbox.isChecked(),
-            deflate_images=self.deflate_images_checkbox.isChecked(),
-            deflate_fonts=self.deflate_fonts_checkbox.isChecked(),
-            use_object_streams=self.object_streams_checkbox.isChecked(),
-            linearize=self.linearize_checkbox.isChecked(),
-            garbage_level=4 if self.preset_combo.currentText() == "極致壓縮" else 2 if self.preset_combo.currentText() == "快速" else 3,
-            compression_effort=9 if self.preset_combo.currentText() == "極致壓縮" else 3 if self.preset_combo.currentText() == "快速" else 6,
-        )
-
-
-class WatermarkDialog(QDialog):
-    """浮水印新增/編輯對話框"""
-    def __init__(self, parent=None, total_pages: int = 1, edit_data: dict = None):
-        super().__init__(parent)
-        self.setWindowTitle("編輯浮水印" if edit_data else "添加浮水印")
-        self.edit_data = edit_data
-        self.total_pages = max(1, total_pages)
-        self._build_ui()
-
-    def _build_ui(self):
-        layout = QVBoxLayout(self)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        form = QWidget()
-        form_layout = QFormLayout(form)
-
-        self.text_edit = QTextEdit()
-        self.text_edit.setPlaceholderText("輸入浮水印文字（可多行，每行換行）")
-        self.text_edit.setMaximumHeight(80)
-        form_layout.addRow("浮水印文字:", self.text_edit)
-
-        self.pages_edit = QLineEdit()
-        self.pages_edit.setPlaceholderText(f"如: 1,3-5 或留空套用全部 (1-{self.total_pages})")
-        self.pages_edit.setText("全部")
-        form_layout.addRow("套用頁面:", self.pages_edit)
-
-        self.angle_spin = QDoubleSpinBox()
-        self.angle_spin.setRange(-360, 360)
-        self.angle_spin.setValue(45)
-        self.angle_spin.setSuffix("°")
-        form_layout.addRow("旋轉角度:", self.angle_spin)
-
-        self.opacity_spin = QDoubleSpinBox()
-        self.opacity_spin.setRange(0.0, 1.0)
-        self.opacity_spin.setSingleStep(0.05)
-        self.opacity_spin.setValue(0.4)
-        form_layout.addRow("透明度:", self.opacity_spin)
-
-        self.font_size_spin = QSpinBox()
-        self.font_size_spin.setRange(8, 200)
-        self.font_size_spin.setValue(48)
-        form_layout.addRow("字型大小:", self.font_size_spin)
-
-        self.line_spacing_spin = QDoubleSpinBox()
-        self.line_spacing_spin.setRange(0.8, 3.0)
-        self.line_spacing_spin.setSingleStep(0.1)
-        self.line_spacing_spin.setValue(1.3)
-        self.line_spacing_spin.setToolTip("行距倍率，相對於字型大小（1.0=緊密，1.3=預設，2.0=寬鬆）")
-        form_layout.addRow("行距倍率:", self.line_spacing_spin)
-
-        self.color_btn = QPushButton()
-        self.watermark_color = QColor(180, 180, 180)
-        self.color_btn.setStyleSheet(f"background-color: rgb(180,180,180);")
-        self.color_btn.clicked.connect(self._choose_color)
-        form_layout.addRow("顏色:", self.color_btn)
-
-        self.font_combo = QComboBox()
-        self.font_combo.addItems(["china-ts", "china-ss", "helv", "cour", "Helvetica"])
-        self.font_combo.setCurrentText("china-ts")
-        self.font_combo.setToolTip("china-ts 適用繁體中文，china-ss 適用簡體中文")
-        form_layout.addRow("字型:", self.font_combo)
-
-        self.offset_x_spin = QDoubleSpinBox()
-        self.offset_x_spin.setRange(-500, 500)
-        self.offset_x_spin.setSuffix(" pt")
-        self.offset_x_spin.setToolTip("正數向右、負數向左")
-        form_layout.addRow("水平偏移:", self.offset_x_spin)
-
-        self.offset_y_spin = QDoubleSpinBox()
-        self.offset_y_spin.setRange(-500, 500)
-        self.offset_y_spin.setSuffix(" pt")
-        self.offset_y_spin.setToolTip("正數向下、負數向上")
-        form_layout.addRow("垂直偏移:", self.offset_y_spin)
-
-        scroll.setWidget(form)
-        layout.addWidget(scroll)
-
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
-
-        if self.edit_data:
-            self.text_edit.setPlainText(self.edit_data.get("text", ""))
-            pages = self.edit_data.get("pages", [])
-            self.pages_edit.setText(",".join(str(p) for p in sorted(pages)) if pages else f"1-{self.total_pages}")
-            self.angle_spin.setValue(self.edit_data.get("angle", 45))
-            self.opacity_spin.setValue(self.edit_data.get("opacity", 0.4))
-            self.font_size_spin.setValue(self.edit_data.get("font_size", 48))
-            c = self.edit_data.get("color", (0.7, 0.7, 0.7))
-            self.watermark_color = QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255))
-            self.color_btn.setStyleSheet(f"background-color: rgb({self.watermark_color.red()},{self.watermark_color.green()},{self.watermark_color.blue()});")
-            font_name = self.edit_data.get("font", "helv")
-            idx = self.font_combo.findText(font_name)
-            self.font_combo.setCurrentIndex(idx if idx >= 0 else 0)
-            self.offset_x_spin.setValue(self.edit_data.get("offset_x", 0))
-            self.offset_y_spin.setValue(self.edit_data.get("offset_y", 0))
-            self.line_spacing_spin.setValue(self.edit_data.get("line_spacing", 1.3))
-
-    def _choose_color(self):
-        c = QColorDialog.getColor(self.watermark_color, self, "選擇浮水印顏色")
-        if c.isValid():
-            self.watermark_color = c
-            self.color_btn.setStyleSheet(f"background-color: rgb({c.red()},{c.green()},{c.blue()});")
-
-    def get_values(self):
-        from utils.helpers import parse_pages
-        text = self.text_edit.toPlainText().strip()
-        pages_str = self.pages_edit.text().strip()
-        if not pages_str or pages_str.lower() in ("全部", "all"):
-            pages = list(range(1, self.total_pages + 1))
-        else:
-            try:
-                pages = parse_pages(pages_str, self.total_pages)
-            except ValueError:
-                pages = [1]
-        angle = self.angle_spin.value()
-        opacity = self.opacity_spin.value()
-        font_size = self.font_size_spin.value()
-        color = (self.watermark_color.red()/255.0, self.watermark_color.green()/255.0, self.watermark_color.blue()/255.0)
-        font = self.font_combo.currentText()
-        offset_x = self.offset_x_spin.value()
-        offset_y = self.offset_y_spin.value()
-        line_spacing = self.line_spacing_spin.value()
-        return pages, text, angle, opacity, font_size, color, font, offset_x, offset_y, line_spacing
-
-
-class ExportPagesDialog(QDialog):
-    _DPI_OPTIONS = [72, 96, 144, 300, 400, 600, 1200, 2400]
-
-    def __init__(self, parent=None, total_pages: int = 1, current_page: int = 1):
-        super().__init__(parent)
-        self.total_pages = max(1, total_pages)
-        self.current_page = min(max(1, current_page), self.total_pages)
-        self.setWindowTitle("匯出頁面")
-        self._build_ui()
-
-    def _build_ui(self):
-        layout = QVBoxLayout(self)
-        form_layout = QFormLayout()
-
-        self.current_page_radio = QRadioButton("當前頁")
-        self.selected_pages_radio = QRadioButton("指定頁面")
-        self.current_page_radio.setChecked(True)
-        self.current_page_radio.toggled.connect(self._on_scope_changed)
-
-        scope_row = QHBoxLayout()
-        scope_row.addWidget(self.current_page_radio)
-        scope_row.addWidget(self.selected_pages_radio)
-        scope_row.addStretch(1)
-        scope_widget = QWidget()
-        scope_widget.setLayout(scope_row)
-        form_layout.addRow("頁面範圍:", scope_widget)
-
-        self.pages_edit = QLineEdit()
-        self.pages_edit.setPlaceholderText("例如: 1,3-5")
-        self.pages_edit.setEnabled(False)
-
-        self.page_count_label = QLabel(f"/ {self.total_pages}")
-        self.page_count_label.setWordWrap(False)
-        self.page_count_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        fm = QFontMetrics(self.page_count_label.font())
-        # Reserve enough width so the inline counter text is not clipped on narrow layouts.
-        min_width = max(
-            fm.horizontalAdvance(self.page_count_label.text()),
-            fm.horizontalAdvance("總頁數: 99999"),
-        ) + 12
-        self.page_count_label.setMinimumWidth(min_width)
-
-        page_row = QHBoxLayout()
-        page_row.addWidget(self.pages_edit, 1)
-        page_row.addWidget(
-            self.page_count_label,
-            0,
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-        )
-        page_widget = QWidget()
-        page_widget.setLayout(page_row)
-        form_layout.addRow("指定頁面:", page_widget)
-
-        self.dpi_combo = QComboBox()
-        for dpi in self._DPI_OPTIONS:
-            self.dpi_combo.addItem(str(dpi), dpi)
-        dpi_idx = self.dpi_combo.findData(300)
-        self.dpi_combo.setCurrentIndex(dpi_idx if dpi_idx >= 0 else 0)
-        form_layout.addRow("DPI:", self.dpi_combo)
-
-        self.output_combo = QComboBox()
-        self.output_combo.addItem("PDF", False)
-        self.output_combo.addItem("影像", True)
-        form_layout.addRow("匯出格式:", self.output_combo)
-
-        layout.addLayout(form_layout)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def _on_scope_changed(self, checked: bool):
-        self.pages_edit.setEnabled(not checked)
-
-    def get_values(self) -> Tuple[List[int], int, bool]:
-        if self.current_page_radio.isChecked():
-            pages = [self.current_page]
-        else:
-            pages_text = self.pages_edit.text().strip()
-            if not pages_text:
-                raise ValueError("請輸入指定頁面頁碼")
-            try:
-                pages = parse_pages(pages_text, self.total_pages)
-            except ValueError as exc:
-                raise ValueError("頁碼格式錯誤，請使用例如 1,3-5") from exc
-            if not pages:
-                raise ValueError(f"頁碼必須在 1 到 {self.total_pages} 之間")
-
-        dpi = int(self.dpi_combo.currentData())
-        as_image = bool(self.output_combo.currentData())
-        return pages, dpi, as_image
-
+# Dialog classes have been extracted to view/dialogs/ for maintainability.
+# Re-exported here so all existing `from view.pdf_view import ...` call sites continue to work.
+from view.dialogs import (  # noqa: E402, F401
+    AuditStackedBar,
+    ExportPagesDialog,
+    MergePdfDialog,
+    OcrDialog,
+    OptimizePdfDialog,
+    PDFPasswordDialog,
+    PdfAuditReportDialog,
+    WatermarkDialog,
+)
 
 class PDFView(QMainWindow):
-    _VALID_MODES = {"browse", "edit_text", "add_text", "rect", "highlight", "add_annotation"}
+    _VALID_MODES = {"browse", "edit_text", "text_edit", "objects", "add_text", "rect", "highlight", "add_annotation"}
     # --- Existing Signals ---
     sig_open_pdf = Signal(str)
     sig_print_requested = Signal()
@@ -806,11 +147,17 @@ class PDFView(QMainWindow):
     sig_export_pages = Signal(list, str, bool, int, str)
     sig_add_highlight = Signal(int, object, object)
     sig_add_rect = Signal(int, object, object, bool)
-    sig_edit_text = Signal(int, object, str, str, int, tuple, str, bool, object, object, str)  # ..., new_rect(optional), target_span_id(optional), target_mode
+    sig_edit_text = Signal(object)  # EditTextRequest
+    sig_move_text_across_pages = Signal(object)  # MoveTextRequest
     sig_add_textbox = Signal(int, object, str, str, int, tuple)  # page_num, visual_rect, text, font, size, color
+    sig_add_image_object = Signal(object)  # InsertImageObjectRequest
+    sig_move_object = Signal(object)  # MoveObjectRequest
+    sig_delete_object = Signal(object)  # DeleteObjectRequest
+    sig_rotate_object = Signal(object)  # RotateObjectRequest
+    sig_resize_object = Signal(object)  # ResizeObjectRequest
     sig_jump_to_result = Signal(int, object)
     sig_search = Signal(str)
-    sig_ocr = Signal(list)
+    sig_start_ocr = Signal(object)  # OcrRequest
     sig_undo = Signal()
     sig_redo = Signal()
     sig_mode_changed = Signal(str)
@@ -825,13 +172,14 @@ class PDFView(QMainWindow):
     sig_load_annotations = Signal()
     sig_jump_to_annotation = Signal(int) # By xref
     sig_toggle_annotations_visibility = Signal(bool)
-    
+
     # --- Snapshot Signal ---
     sig_snapshot_page = Signal(int)
 
     # --- Zoom Re-render Signal ---
     sig_request_rerender = Signal()
-    
+    sig_color_profile_changed = Signal(str)
+
     # --- Insert Pages Signals ---
     sig_insert_blank_page = Signal(int)  # position (1-based)
     sig_insert_pages_from_file = Signal(str, list, int)  # source_file, source_pages, position
@@ -854,6 +202,8 @@ class PDFView(QMainWindow):
         self.setAcceptDrops(True)
         self.total_pages = 0
         self.controller = None
+        self._ocr_available = True
+        self._ocr_unavailable_tooltip = ""
         self._defer_heavy_panels = defer_heavy_panels
         self._heavy_panels_initialized = False
         self._deferred_hydration_scheduled = False
@@ -923,6 +273,25 @@ class PDFView(QMainWindow):
         right_title = QLabel("屬性")
         right_title.setStyleSheet("font-weight: bold; padding: 8px;")
         right_sidebar_layout.addWidget(right_title)
+
+        self.color_profile_card = QWidget()
+        self.color_profile_card.setObjectName("colorProfileCard")
+        self.color_profile_card.setStyleSheet(
+            "QWidget#colorProfileCard { border-top: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0; }"
+        )
+        color_profile_layout = QVBoxLayout(self.color_profile_card)
+        color_profile_layout.setContentsMargins(8, 8, 8, 8)
+        color_profile_layout.setSpacing(6)
+        color_profile_layout.addWidget(QLabel("色彩設定檔"))
+        self.color_profile_combo = QComboBox()
+        self.color_profile_combo.addItem("sRGB", "srgb")
+        self.color_profile_combo.addItem("灰階", "gray")
+        self.color_profile_combo.addItem("CMYK 預覽", "cmyk")
+        self.color_profile_combo.currentIndexChanged.connect(self._on_color_profile_combo_changed)
+        color_profile_layout.addWidget(self.color_profile_combo)
+        right_sidebar_layout.addWidget(self.color_profile_card)
+        self.set_color_profile("srgb")
+
         self.right_stacked_widget = QStackedWidget()
         if self._defer_heavy_panels:
             self._setup_property_inspector_placeholder()
@@ -940,7 +309,7 @@ class PDFView(QMainWindow):
         # --- Status Bar ---
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
-        self._status_bar_override_message: Optional[str] = None
+        self._status_bar_override_message: str | None = None
         self._build_fullscreen_exit_button()
 
         # --- State Variables ---
@@ -963,6 +332,9 @@ class PDFView(QMainWindow):
         self._zoom_debounce_timer = QTimer(self)
         self._zoom_debounce_timer.setSingleShot(True)
         self._zoom_debounce_timer.timeout.connect(self._on_zoom_debounce)
+        self._outline_redraw_timer = QTimer(self)
+        self._outline_redraw_timer.setSingleShot(True)
+        self._outline_redraw_timer.timeout.connect(self._draw_all_block_outlines)
         self.drawing_start = None
         self.text_editor: QGraphicsProxyWidget = None
         self.editing_intent = "edit_existing"
@@ -971,6 +343,7 @@ class PDFView(QMainWindow):
         # 拖曳移動文字框的狀態機
         self._drag_pending: bool = False        # 滑鼠已按下在文字塊，尚未判定點擊或拖曳
         self._drag_active: bool = False         # 正在拖曳中
+        self._text_edit_drag_state = TextEditDragState.IDLE
         self._drag_start_scene_pos = None       # 按下時的場景座標（QPointF）
         self._drag_editor_start_pos = None      # 按下時 proxy widget 的位置（QPointF）
         self._pending_text_info = None          # 待定狀態下存放的文字塊資訊（drag_pending 且無編輯框時）
@@ -982,31 +355,53 @@ class PDFView(QMainWindow):
         self._text_selection_start_scene_pos = None
         self._text_selection_rect_item = None
         self._text_selection_live_doc_rect = None
+        self._text_selection_live_text = ""
         self._text_selection_last_scene_pos = None
+        self._text_selection_start_span_id = None
+        self._text_selection_start_hit_info = None
         self._selected_text_rect_doc = None
         self._selected_text_page_idx = None
         self._selected_text_cached = ""
+        self._selected_text_hit_info = None
+        self._selected_object_info = None
+        self._object_selection_rect_item = None
+        self._object_rotate_handle_item = None
+        self._object_drag_pending = False
+        self._object_drag_active = False
+        self._object_rotate_pending = False
+        self._object_drag_start_scene_pos = None
+        self._object_drag_start_doc_rect = None
+        self._object_drag_start_doc_rects = None
+        self._object_drag_preview_rect = None
+        self._object_drag_preview_rects = None
+        self._object_drag_page_idx = None
         # Inline-editor focus lifecycle guards.
         self._edit_focus_guard_connected = False
         self._edit_focus_check_pending = False
         self._finalizing_text_edit = False
-        self._discard_text_edit_once = False
+        self._last_text_edit_finalize_result: TextEditFinalizeResult | None = None
+        self.text_edit_manager = TextEditManager(self)
         # Phase 5: edit_text 模式下的 hover 文字塊高亮
         self._hover_highlight_item = None       # QGraphicsRectItem | None
         self._last_hover_scene_pos = None       # QPointF | None（節流用）
-        
+        # Block outlines: persistent dim outlines visible while in edit_text mode
+        self._block_outline_items: dict = {}    # (page_idx, block_idx) → QGraphicsRectItem
+        self._hover_hidden_outline_key = None   # key of outline hidden during hover
+        self._active_outline_key = None         # key of outline hidden during active edit
+
         self.graphics_view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.graphics_view.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
 
         # 連續捲動模式：所有頁面由上到下連結，滑動 scrollbar 切換頁面
         self.continuous_pages = True
-        self.page_items: List[QGraphicsPixmapItem] = []
-        self.page_y_positions: List[float] = []
-        self.page_heights: List[float] = []
-        self._page_base_sizes: List[tuple[float, float]] = []
+        self.page_items: list[QGraphicsPixmapItem] = []
+        self.page_y_positions: list[float] = []
+        self.page_heights: list[float] = []
+        self._page_base_sizes: list[tuple[float, float]] = []
         self._placeholder_pixmap = QPixmap(1, 1)
         self._placeholder_pixmap.fill(QColor("#FFFFFF"))
         self._thumbnail_layout_updating = False
+        self._save_as_default_path = ""
         self._scroll_block = False
         self._scroll_handler_connected = False
         self.PAGE_GAP = 10
@@ -1028,7 +423,7 @@ class PDFView(QMainWindow):
         self.graphics_view.mouseReleaseEvent = self._mouse_release
         self.graphics_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.graphics_view.customContextMenuRequested.connect(self._show_context_menu)
-        
+
         self.resizeEvent = self._resize_event
         self.set_mode("browse")
         self._apply_scale()
@@ -1214,11 +609,9 @@ class PDFView(QMainWindow):
         if not self._fullscreen_active:
             self._set_fullscreen_exit_button_visible(False)
             return
-        # Reveal the exit affordance only in a shallow top band or near the button.
-        top_band_height = 24
-        button_rect = self._fullscreen_exit_button.geometry()
-        should_show = pos.y() <= top_band_height or button_rect.adjusted(-8, -8, 8, 8).contains(pos)
-        self._set_fullscreen_exit_button_visible(should_show)
+        # Keep the exit affordance visible throughout fullscreen; hover should
+        # only refresh its geometry/stacking, not control discoverability.
+        self._set_fullscreen_exit_button_visible(True)
 
     def is_fullscreen_active(self) -> bool:
         return self._fullscreen_active
@@ -1255,8 +648,13 @@ class PDFView(QMainWindow):
         self.right_sidebar.hide()
         self.statusBar().hide()
         self._fullscreen_active = True
-        self._set_fullscreen_exit_button_visible(False)
+        self._set_fullscreen_exit_button_visible(True)
         self.showFullScreen()
+        self.activateWindow()
+        self.raise_()
+        self.setFocus(Qt.ActiveWindowFocusReason)
+        self.graphics_view.setFocus(Qt.ActiveWindowFocusReason)
+        self.graphics_view.viewport().setFocus(Qt.ActiveWindowFocusReason)
         self._update_fullscreen_exit_button_geometry()
 
     def exit_fullscreen_ui(self) -> None:
@@ -1291,7 +689,7 @@ class PDFView(QMainWindow):
             vertical_value=self.graphics_view.verticalScrollBar().value(),
         )
 
-    def restore_viewport_anchor(self, anchor: Optional[ViewportAnchor]) -> None:
+    def restore_viewport_anchor(self, anchor: ViewportAnchor | None) -> None:
         if anchor is None:
             return
         self.scroll_to_page(max(0, anchor.page_idx))
@@ -1314,11 +712,11 @@ class PDFView(QMainWindow):
     def cancel_interaction_for_fullscreen(self) -> None:
         # Cancel any in-progress editor or partial gesture before switching to browse+fullscreen.
         if self.text_editor:
-            self._discard_text_edit_once = True
-            self._finalize_text_edit()
+            self._finalize_text_edit(TextEditFinalizeReason.MODE_SWITCH)
         self.drawing_start = None
         self._drag_pending = False
         self._drag_active = False
+        self._text_edit_drag_state = TextEditDragState.IDLE
         self._drag_start_scene_pos = None
         self._drag_editor_start_pos = None
         self._pending_text_info = None
@@ -1390,7 +788,7 @@ class PDFView(QMainWindow):
         self._shortcut_prev_doc_tab_back.activated.connect(lambda: self._cycle_document_tab(-1))
 
         self._shortcut_escape = QShortcut(QKeySequence(Qt.Key_Escape), self)
-        self._shortcut_escape.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._shortcut_escape.setContext(Qt.ShortcutContext.WindowShortcut)
         self._shortcut_escape.activated.connect(self._on_escape_shortcut)
 
         self._shortcut_toggle_left_sidebar = QShortcut(QKeySequence("Ctrl+Alt+L"), self)
@@ -1414,7 +812,7 @@ class PDFView(QMainWindow):
         self.document_tab_bar.setCurrentIndex((current + direction) % tab_count)
         return True
 
-    def set_document_tabs(self, tabs: List[dict], active_index: int) -> None:
+    def set_document_tabs(self, tabs: list[dict], active_index: int) -> None:
         self._doc_tab_signal_block = True
         self.document_tab_bar.blockSignals(True)
         try:
@@ -1435,6 +833,12 @@ class PDFView(QMainWindow):
         finally:
             self.document_tab_bar.blockSignals(False)
             self._doc_tab_signal_block = False
+
+    def set_save_as_default_path(self, path: str | None) -> None:
+        candidate = str(path or "").strip()
+        if candidate and not Path(candidate).suffix:
+            candidate = f"{candidate}.pdf"
+        self._save_as_default_path = candidate
 
     def clear_document_tabs(self) -> None:
         self.set_document_tabs([], -1)
@@ -1505,10 +909,14 @@ class PDFView(QMainWindow):
         tb_common.setStyleSheet(toolbar_style)
         self._action_browse = self._make_mode_action("瀏覽模式", "browse")
         tb_common.addAction(self._action_browse)
+        self._action_objects = self._make_mode_action("操作物件", "objects")
+        tb_common.addAction(self._action_objects)
         self._action_undo = tb_common.addAction("復原", self.sig_undo.emit)
         self._action_undo.setShortcut(QKeySequence("Ctrl+Z"))
         self._action_redo = tb_common.addAction("重做", self.sig_redo.emit)
         self._action_redo.setShortcut(QKeySequence("Ctrl+Y"))
+        self._redo_mac_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
+        self._redo_mac_shortcut.activated.connect(self.sig_redo.emit)
         self._action_fullscreen = tb_common.addAction("全螢幕", self.sig_toggle_fullscreen.emit)
         tb_common.addAction("縮圖", self._show_thumbnails_tab)
         tb_common.addAction("搜尋", self._show_search_tab)
@@ -1525,6 +933,8 @@ class PDFView(QMainWindow):
         self._action_edit_text = self._make_mode_action("編輯文字", "edit_text")
         tb_edit.addAction(self._action_edit_text)
         self._action_edit_text.setShortcut(QKeySequence(Qt.Key_F2))
+        tb_edit.addAction(self._action_objects)
+        self._action_objects.setShortcut(QKeySequence(Qt.Key_F3))
         self._action_add_text = self._make_mode_action("新增文字框", "add_text")
         tb_edit.addAction(self._action_add_text)
         self._action_rect = self._make_mode_action("矩形", "rect")
@@ -1533,6 +943,8 @@ class PDFView(QMainWindow):
         tb_edit.addAction(self._action_highlight)
         self._action_add_annotation = self._make_mode_action("新增註解", "add_annotation")
         tb_edit.addAction(self._action_add_annotation)
+        tb_edit.addAction("插入圖片", self._insert_image_object_from_file_at_current_page)
+        tb_edit.addAction("貼上圖片", self._insert_image_object_from_clipboard_at_current_page)
         tb_edit.addAction("註解列表", self._show_annotations_tab)
         tb_edit.addAction("添加浮水印", self._show_add_watermark_dialog)
         tb_edit.addAction("浮水印列表", self._show_watermarks_tab)
@@ -1565,7 +977,7 @@ class PDFView(QMainWindow):
         tb_convert = QToolBar()
         tb_convert.setToolButtonStyle(Qt.ToolButtonTextOnly)
         tb_convert.setStyleSheet(toolbar_style)
-        tb_convert.addAction("OCR（文字辨識）", self._ocr_pages)
+        self.ocr_action = tb_convert.addAction("OCR（文字辨識）", self._ocr_pages)
         layout_convert = QVBoxLayout(tab_convert)
         layout_convert.setContentsMargins(4, 0, 0, 0)
         layout_convert.addWidget(tb_convert)
@@ -1598,6 +1010,9 @@ class PDFView(QMainWindow):
         right_layout.addWidget(QLabel(" "))
         right_layout.addWidget(self.zoom_combo)
         right_layout.addWidget(self.fit_view_btn)
+        # right_layout already contributes 6px between adjacent items.
+        # Use another 6px spacer so the visible gap between these two buttons is 12px total.
+        right_layout.addSpacing(6)
         right_layout.addWidget(self.fullscreen_quick_btn)
         # 根因 2 排除：移除 stretch，避免佔滿剩餘空間、把 QToolBar 擠成只顯示溢出
         # right_layout.addWidget(QWidget(), 1) 已移除
@@ -1612,6 +1027,9 @@ class PDFView(QMainWindow):
 
         self._action_undo.setToolTip("復原（無可撤銷操作）")
         self._action_redo.setToolTip("重做（無可重做操作）")
+        self._global_undo_enabled = False
+        self._global_redo_enabled = False
+        self._set_undo_redo_action_state(False, False)
 
         # Ensure shortcuts remain active even when the source toolbar tab is hidden.
         for action in (
@@ -1622,10 +1040,13 @@ class PDFView(QMainWindow):
             self._action_undo,
             self._action_redo,
             self._action_edit_text,
+            self._action_objects,
             self._action_fullscreen,
         ):
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             self.addAction(action)
+        self._action_undo.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self._action_redo.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self._action_fullscreen.setShortcut(QKeySequence(Qt.Key_F5))
 
     def _make_mode_action(self, text: str, mode: str) -> QAction:
@@ -1641,6 +1062,22 @@ class PDFView(QMainWindow):
             previous = action.blockSignals(True)
             action.setChecked(mode_key == mode)
             action.blockSignals(previous)
+
+    def set_color_profile(self, profile: str) -> None:
+        """Sync the sidebar combobox to the given profile (unknown values fall back to sRGB)."""
+        combo = getattr(self, "color_profile_combo", None)
+        if combo is None:
+            return
+        normalized = (profile or "srgb").strip().lower()
+        index = combo.findData(normalized)
+        if index < 0:
+            index = 0
+        prev = combo.blockSignals(True)
+        combo.setCurrentIndex(index)
+        combo.blockSignals(prev)
+
+    def _on_color_profile_combo_changed(self, _index: int) -> None:
+        self.sig_color_profile_changed.emit(str(self.color_profile_combo.currentData()))
 
     def _on_zoom_combo_changed(self, text: str):
         try:
@@ -1770,8 +1207,10 @@ class PDFView(QMainWindow):
         self.thumbnail_list.setWrapping(False)
         self.thumbnail_list.setMovement(QListView.Static)
         self.thumbnail_list.setResizeMode(QListView.Adjust)
+        self.thumbnail_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.thumbnail_list.viewport().installEventFilter(self)
         self.thumbnail_list.itemClicked.connect(self._on_thumbnail_clicked)
+        self.thumbnail_list.customContextMenuRequested.connect(self._show_thumbnail_context_menu)
         self.left_sidebar.addTab(self.thumbnail_list, "縮圖")
         QTimer.singleShot(0, self._update_thumbnail_layout_metrics)
 
@@ -1847,7 +1286,7 @@ class PDFView(QMainWindow):
         rect_layout.addWidget(QLabel("矩形設定"))
         self.rect_color = QColor(0, 120, 212, 255)  # #0078D4
         self.rect_color_btn = QPushButton("矩形顏色")
-        self.rect_color_btn.setStyleSheet(f"background-color: #0078D4; color: white;")
+        self.rect_color_btn.setStyleSheet("background-color: #0078D4; color: white;")
         self.rect_color_btn.clicked.connect(self._choose_rect_color)
         rect_layout.addWidget(self.rect_color_btn)
         rect_layout.addWidget(QLabel("透明度"))
@@ -1910,12 +1349,15 @@ class PDFView(QMainWindow):
         text_layout.addWidget(self.text_target_mode_combo)
         self.text_apply_btn = QPushButton("套用")
         self.text_cancel_btn = QPushButton("取消")
+        self.text_apply_btn.setEnabled(False)
+        self.text_cancel_btn.setEnabled(False)
         self.text_apply_btn.clicked.connect(self._on_text_apply_clicked)
         self.text_cancel_btn.clicked.connect(self._on_text_cancel_clicked)
         text_layout.addWidget(self.text_apply_btn)
         text_layout.addWidget(self.text_cancel_btn)
         text_layout.addStretch()
         self.right_stacked_widget.addWidget(self.text_card)
+        self._sync_text_property_panel_state()
 
     def _choose_rect_color(self):
         color = QColorDialog.getColor(self.rect_color, self, "選擇矩形顏色")
@@ -1948,14 +1390,97 @@ class PDFView(QMainWindow):
     def _on_text_apply_clicked(self):
         # "Apply" commits current inline-editor content/style to the PDF.
         if self.text_editor and self.text_editor.widget():
-            self._finalize_text_edit()
+            self._finalize_text_edit(TextEditFinalizeReason.APPLY)
 
     def _on_text_cancel_clicked(self):
         if not self.text_editor or not self.text_editor.widget():
             return
-        # One-shot discard flag consumed by _finalize_text_edit_impl.
-        self._discard_text_edit_once = True
-        self._finalize_text_edit()
+        self._finalize_text_edit(TextEditFinalizeReason.CANCEL_BUTTON)
+
+    def _set_text_property_actions_enabled(self, enabled: bool) -> None:
+        for attr in ("text_apply_btn", "text_cancel_btn"):
+            button = getattr(self, attr, None)
+            if button is not None and hasattr(button, "setEnabled"):
+                button.setEnabled(bool(enabled))
+
+    def _set_text_property_font_and_size(
+        self,
+        font_name: str | None,
+        font_size: float | int | None,
+    ) -> None:
+        if getattr(self, "text_font", None) is None or getattr(self, "text_size", None) is None:
+            return
+
+        if font_name:
+            self._set_text_font_by_pdf(str(font_name))
+
+        if font_size is None:
+            return
+
+        try:
+            size_value = int(round(float(font_size)))
+        except (TypeError, ValueError):
+            return
+
+        size_str = str(size_value)
+        if self.text_size.findText(size_str) == -1:
+            self.text_size.addItem(size_str)
+        self.text_size.setCurrentText(size_str)
+
+    def _selected_text_has_context(self) -> bool:
+        return bool(
+            getattr(self, "current_mode", "browse") == "browse"
+            and (
+                getattr(self, "_selected_text_cached", "")
+                or getattr(self, "_selected_text_rect_doc", None) is not None
+            )
+        )
+
+    def _sync_text_property_panel_state(self) -> None:
+        text_card = getattr(self, "text_card", None)
+        stacked = getattr(self, "right_stacked_widget", None)
+        if text_card is None or stacked is None:
+            return
+
+        text_editor = getattr(self, "text_editor", None)
+        editor_widget = text_editor.widget() if (text_editor and text_editor.widget()) else None
+        has_live_editor = editor_widget is not None
+        self._set_text_property_actions_enabled(has_live_editor)
+
+        if has_live_editor:
+            font = editor_widget.font() if hasattr(editor_widget, "font") else None
+            if font is not None:
+                self._set_text_property_font_and_size(font.family(), font.pointSize())
+            stacked.setCurrentWidget(text_card)
+            return
+
+        current_mode = getattr(self, "current_mode", "browse")
+
+        if current_mode in ("add_text", "edit_text"):
+            stacked.setCurrentWidget(text_card)
+            return
+
+        if self._selected_text_has_context():
+            info = getattr(self, "_selected_text_hit_info", None)
+            if info is not None:
+                self._set_text_property_font_and_size(
+                    getattr(info, "font", None),
+                    getattr(info, "size", None),
+                )
+                target_mode = getattr(info, "target_mode", None)
+                combo = getattr(self, "text_target_mode_combo", None)
+                if combo is not None and target_mode in ("run", "paragraph"):
+                    idx = combo.findData(target_mode)
+                    if idx >= 0:
+                        combo.blockSignals(True)
+                        combo.setCurrentIndex(idx)
+                        combo.blockSignals(False)
+            stacked.setCurrentWidget(text_card)
+            return
+
+        page_info_card = getattr(self, "page_info_card", None)
+        if page_info_card is not None:
+            stacked.setCurrentWidget(page_info_card)
 
     def _update_status_bar(self):
         """更新狀態列：已修改、模式、快捷鍵、頁/縮放；搜尋模式時顯示找到 X 個結果 • 按 Esc 關閉搜尋."""
@@ -1978,32 +1503,69 @@ class PDFView(QMainWindow):
         if getattr(self, "status_bar", None):
             self.status_bar.showMessage(" • ".join(parts))
 
-    def set_status_bar_override_message(self, message: Optional[str]) -> None:
+    def set_status_bar_override_message(self, message: str | None) -> None:
         self._status_bar_override_message = message or None
         self._update_status_bar()
 
+    def _show_toast(self, message: str, duration_ms: int = 1500, tone: str = "success") -> None:
+        """Show a brief overlay toast message at the bottom-center of the viewport."""
+        toast = QLabel(message, self.graphics_view.viewport())
+        toast.setAlignment(Qt.AlignCenter)
+        if tone == "error":
+            background = "rgba(180,40,40,220)"
+        else:
+            background = "rgba(40,40,40,200)"
+        toast.setStyleSheet(
+            f"background-color: {background}; color: white; "
+            "border-radius: 6px; padding: 6px 14px; font-size: 13px;"
+        )
+        toast.adjustSize()
+        vp = self.graphics_view.viewport()
+        x = (vp.width() - toast.width()) // 2
+        y = vp.height() - toast.height() - 24
+        toast.move(x, y)
+        toast.show()
+        QTimer.singleShot(duration_ms, toast.deleteLater)
+
     def set_mode(self, mode: str):
         mode = mode if mode in self._VALID_MODES else "browse"
+        if mode == "text_edit":
+            mode = "edit_text"
         if mode != "browse" and not self._heavy_panels_initialized:
             self.ensure_heavy_panels_initialized()
         if self.text_editor:
-            self._finalize_text_edit()
+            result = self._finalize_text_edit(TextEditFinalizeReason.MODE_SWITCH)
+            if result is not None and result.outcome == TextEditOutcome.COMMITTED:
+                self._show_toast("文字已儲存")
         if self.current_mode == 'browse' and mode != 'browse':
             self._reset_browse_hover_cursor()
             self._clear_text_selection()
+            self._clear_object_selection()
         # 切換模式時清除所有拖曳/待定狀態
         self._drag_pending = False
         self._drag_active = False
+        self._text_edit_drag_state = TextEditDragState.IDLE
         self._drag_start_scene_pos = None
         self._drag_editor_start_pos = None
         self._pending_text_info = None
-        # Phase 5: 離開 edit_text 模式時清除 hover 高亮
+        _prev_mode = self.current_mode
         if mode != 'edit_text':
             self._clear_hover_highlight()
+            self._clear_all_block_outlines()
+            self._outline_redraw_timer.stop()
+            if _prev_mode == 'edit_text':
+                try:
+                    self.sig_viewport_changed.disconnect(self._schedule_outline_redraw)
+                except Exception:
+                    pass
+                try:
+                    self.sig_scale_changed.disconnect(self._schedule_outline_redraw)
+                except Exception:
+                    pass
         self.current_mode = mode
         self._sync_mode_checked_state(mode)
         self.sig_mode_changed.emit(mode)
-        
+
         if mode in ['rect', 'highlight', 'add_annotation']:
             self.graphics_view.setDragMode(QGraphicsView.NoDrag)
             self.graphics_view.viewport().setCursor(Qt.CrossCursor)
@@ -2025,14 +1587,60 @@ class PDFView(QMainWindow):
                 self._add_text_default_font_applied = True
         elif mode == 'edit_text':
             self.right_stacked_widget.setCurrentWidget(self.text_card)
+            self._draw_all_block_outlines()
+            if _prev_mode != 'edit_text':   # only connect on mode transition, not re-entry
+                try:
+                    self.sig_viewport_changed.connect(self._schedule_outline_redraw)
+                except Exception:
+                    pass
+                try:
+                    self.sig_scale_changed.connect(self._schedule_outline_redraw)
+                except Exception:
+                    pass
+        elif mode == 'objects':
+            self.graphics_view.setDragMode(QGraphicsView.NoDrag)
+            self.graphics_view.viewport().setCursor(Qt.ArrowCursor)
+            self.right_stacked_widget.setCurrentWidget(self.page_info_card)
         else:
             self.graphics_view.setDragMode(QGraphicsView.ScrollHandDrag)
             self._reset_browse_hover_cursor()
             self.right_stacked_widget.setCurrentWidget(self.page_info_card)
+        self._sync_text_property_panel_state()
         self._update_status_bar()
 
     def _on_escape_shortcut(self) -> None:
         self._handle_escape()
+
+    def _set_document_undo_redo_enabled(self, enabled: bool) -> None:
+        self._set_undo_redo_action_state(bool(enabled), bool(enabled))
+
+    def _set_undo_redo_action_state(self, undo_enabled: bool, redo_enabled: bool) -> None:
+        action_pairs = (
+            (getattr(self, "_action_undo", None), undo_enabled),
+            (getattr(self, "_action_undo_right", None), undo_enabled),
+            (getattr(self, "_action_redo", None), redo_enabled),
+            (getattr(self, "_action_redo_right", None), redo_enabled),
+        )
+        for action, enabled in action_pairs:
+            if action is not None and hasattr(action, "setEnabled"):
+                action.setEnabled(bool(enabled))
+
+    def _refresh_undo_redo_action_state(self) -> None:
+        undo_enabled = bool(getattr(self, "_global_undo_enabled", False))
+        redo_enabled = bool(getattr(self, "_global_redo_enabled", False))
+        editor_proxy = getattr(self, "text_editor", None)
+        editor_widget = editor_proxy.widget() if (editor_proxy and editor_proxy.widget()) else None
+        if editor_widget is not None and hasattr(editor_widget, "document"):
+            document = editor_widget.document()
+            if document is not None:
+                undo_enabled = bool(document.isUndoAvailable())
+                redo_enabled = bool(document.isRedoAvailable())
+        self._set_undo_redo_action_state(undo_enabled, redo_enabled)
+
+    def update_undo_redo_enabled(self, undo_enabled: bool, redo_enabled: bool) -> None:
+        self._global_undo_enabled = bool(undo_enabled)
+        self._global_redo_enabled = bool(redo_enabled)
+        self._refresh_undo_redo_action_state()
 
     def _is_widget_owned_by_main(self, widget: QWidget) -> bool:
         current = widget
@@ -2141,7 +1749,7 @@ class PDFView(QMainWindow):
                 return
         if self._is_scene_focus_within_editor():
             return
-        self._finalize_text_edit()
+        self._finalize_text_edit(TextEditFinalizeReason.FOCUS_OUTSIDE)
 
     def _on_app_focus_changed(self, _old: QWidget, new: QWidget) -> None:
         # App-level safety net for focus moves that bypass QTextEdit focusOut details.
@@ -2165,7 +1773,7 @@ class PDFView(QMainWindow):
             self.sig_toggle_fullscreen.emit()
             return True
         if self.text_editor:
-            self._finalize_text_edit()
+            self._finalize_text_edit(TextEditFinalizeReason.ESCAPE)
             self._focus_page_canvas()
             return True
 
@@ -2224,6 +1832,10 @@ class PDFView(QMainWindow):
             if self._copy_selected_text_to_clipboard():
                 event.accept()
                 return
+        if self.current_mode in ('browse', 'objects', 'edit_text', 'text_edit') and event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            if self._delete_selected_object():
+                event.accept()
+                return
         if event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_F:
             self._show_search_tab()
             event.accept()
@@ -2241,19 +1853,23 @@ class PDFView(QMainWindow):
             return self._handle_drag_drop_event(event)
         graphics_view = getattr(self, "graphics_view", None)
         if graphics_view is not None and obj is graphics_view.viewport():
+            if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+                if self._handle_escape():
+                    event.accept()
+                    return True
             if event.type() == QEvent.Leave:
                 if self.current_mode == 'browse':
                     self._reset_browse_hover_cursor()
-                if self._fullscreen_active:
-                    self._set_fullscreen_exit_button_visible(False)
             elif event.type() == QEvent.MouseMove and self._fullscreen_active:
                 pos = graphics_view.viewport().mapTo(self, event.position().toPoint())
                 self._update_fullscreen_exit_hover(pos)
         if obj is self or obj is self.centralWidget():
+            if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+                if self._handle_escape():
+                    event.accept()
+                    return True
             if event.type() == QEvent.MouseMove and self._fullscreen_active:
                 self._update_fullscreen_exit_hover(event.position().toPoint())
-            elif event.type() == QEvent.Leave and self._fullscreen_active:
-                self._set_fullscreen_exit_button_visible(False)
         thumb_list = getattr(self, "thumbnail_list", None)
         if thumb_list is not None and obj is thumb_list.viewport() and event.type() == QEvent.Resize:
             self._update_thumbnail_layout_metrics()
@@ -2267,14 +1883,17 @@ class PDFView(QMainWindow):
         viewport = self.thumbnail_list.viewport()
         if viewport is None:
             return
-        viewport_w = max(1, viewport.width())
-        if viewport_w <= 1:
+        total_w = max(1, self.thumbnail_list.width())
+        if total_w <= 1:
             return
         # Root cause note:
         # The visible "gap" between thumbnails was mostly oversized per-item cell height
         # (icon box too tall), not QListWidget spacing itself.
         spacing = 1
-        item_w = max(120, viewport_w - 12)
+        max_item_w = 280
+        available_w = max(120, total_w - 12)
+        item_w = min(available_w, max_item_w)
+        horizontal_margin = max(0, (available_w - item_w) // 2)
         icon_w = max(96, item_w - 18)
         # Match icon box height to actual thumbnail aspect ratio to avoid large blank
         # space inside each cell (especially for landscape pages).
@@ -2284,6 +1903,7 @@ class PDFView(QMainWindow):
         item_h = icon_h + 28
         self._thumbnail_layout_updating = True
         try:
+            self.thumbnail_list.setViewportMargins(horizontal_margin, 0, horizontal_margin, 0)
             self.thumbnail_list.setSpacing(spacing)
             self.thumbnail_list.setIconSize(QSize(icon_w, icon_h))
             self.thumbnail_list.setGridSize(QSize(item_w, item_h))
@@ -2320,7 +1940,7 @@ class PDFView(QMainWindow):
                 return min(1.6, max(0.5, ratio))
         return default_ratio
 
-    def update_thumbnails(self, thumbnails: List[QPixmap]):
+    def update_thumbnails(self, thumbnails: list[QPixmap]):
         """一次設定全部縮圖（相容舊流程）。"""
         self.thumbnail_list.clear()
         for i, pix in enumerate(thumbnails):
@@ -2340,7 +1960,7 @@ class PDFView(QMainWindow):
         self._update_page_counter()
         self._update_status_bar()
 
-    def update_thumbnail_batch(self, start_index: int, pixmaps: List[QPixmap]):
+    def update_thumbnail_batch(self, start_index: int, pixmaps: list[QPixmap]):
         """從 start_index 起更新一批縮圖的圖示。"""
         for i, pix in enumerate(pixmaps):
             row = start_index + i
@@ -2419,7 +2039,106 @@ class PDFView(QMainWindow):
                 return i
         return len(self.page_y_positions) - 1
 
-    def _scene_pos_to_page_and_doc_point(self, scene_pos: QPointF) -> Tuple[int, fitz.Point]:
+    def _build_text_editor_stylesheet(self, text_rgb: tuple[int, int, int], mask_color: QColor) -> str:
+        r, g, b = text_rgb
+        return (
+            f"QTextEdit {{ background: transparent; "
+            f"border: 1.5px dashed rgba(30,120,255,0.75); color: rgb({r},{g},{b}); "
+            f"selection-background-color: rgba(30,120,255,0.25); }}"
+            f"QTextEdit QScrollBar {{ background: transparent; }}"
+        )
+
+    def _iter_outline_targets(self, page_idx: int) -> list[tuple[tuple[int, int], fitz.Rect]]:
+        if not hasattr(self, "controller") or not getattr(self.controller.model, "doc", None):
+            return []
+        model = self.controller.model
+        manager = model.block_manager
+        mode = (getattr(model, "text_target_mode", "run") or "run").lower()
+
+        targets: list[tuple[tuple[int, int], fitz.Rect]] = []
+        if mode == "paragraph":
+            for target_idx, para in enumerate(manager.get_paragraphs(page_idx)):
+                rect = fitz.Rect(getattr(para, "bbox", fitz.Rect()))
+                if not rect.is_empty:
+                    targets.append(((page_idx, target_idx), rect))
+        else:
+            for target_idx, run in enumerate(manager.get_runs(page_idx)):
+                rect = fitz.Rect(getattr(run, "bbox", fitz.Rect()))
+                if not rect.is_empty:
+                    targets.append(((page_idx, target_idx), rect))
+
+        if targets:
+            return targets
+
+        for target_idx, block in enumerate(manager.get_blocks(page_idx)):
+            rect = fitz.Rect(getattr(block, "rect", fitz.Rect()))
+            if not rect.is_empty:
+                targets.append(((page_idx, target_idx), rect))
+        return targets
+
+    def _ensure_text_edit_manager(self) -> TextEditManager:
+        manager = getattr(self, "text_edit_manager", None)
+        if manager is None:
+            manager = TextEditManager(self)
+            self.text_edit_manager = manager
+        return manager
+
+    def _current_text_editor_scene_rect(self) -> QRectF | None:
+        return self._ensure_text_edit_manager().current_text_editor_scene_rect()
+
+    def _sample_page_mask_color(self, page_idx: int, scene_rect: QRectF) -> QColor:
+        if (
+            page_idx < 0
+            or page_idx >= len(getattr(self, "page_items", []))
+            or scene_rect.isEmpty()
+        ):
+            return QColor(_DEFAULT_EDITOR_MASK_COLOR)
+        page_item = self.page_items[page_idx]
+        if page_item is None or not hasattr(page_item, "pixmap"):
+            return QColor(_DEFAULT_EDITOR_MASK_COLOR)
+        pixmap = page_item.pixmap()
+        if pixmap is None or pixmap.isNull():
+            return QColor(_DEFAULT_EDITOR_MASK_COLOR)
+        image = pixmap.toImage()
+        item_rect = page_item.sceneBoundingRect()
+        if item_rect.isEmpty():
+            return QColor(_DEFAULT_EDITOR_MASK_COLOR)
+
+        local_rect = scene_rect.intersected(item_rect)
+        if local_rect.isEmpty():
+            return QColor(_DEFAULT_EDITOR_MASK_COLOR)
+
+        scale_x = image.width() / max(1.0, item_rect.width())
+        scale_y = image.height() / max(1.0, item_rect.height())
+        inset_x = min(local_rect.width() * TextEditUIConstants.MASK_SAMPLE_INSET_RATIO, TextEditUIConstants.MASK_SAMPLE_INSET_MAX_PX)
+        inset_y = min(local_rect.height() * TextEditUIConstants.MASK_SAMPLE_INSET_RATIO, TextEditUIConstants.MASK_SAMPLE_INSET_MAX_PX)
+        sample_rect = local_rect.adjusted(inset_x, inset_y, -inset_x, -inset_y)
+        if sample_rect.isEmpty():
+            sample_rect = local_rect
+
+        image_rect = QRect(
+            max(0, int((sample_rect.left() - item_rect.left()) * scale_x)),
+            max(0, int((sample_rect.top() - item_rect.top()) * scale_y)),
+            max(1, int(sample_rect.width() * scale_x)),
+            max(1, int(sample_rect.height() * scale_y)),
+        )
+        return _average_image_rect_color(image, image_rect)
+
+    def _refresh_text_editor_mask_color(self) -> None:
+        self._ensure_text_edit_manager().refresh_text_editor_mask_color()
+
+    def _should_start_editor_drag(self, dx: float, dy: float) -> bool:
+        threshold = TextEditGeometryConstants.DRAG_START_DISTANCE_PX
+        return (dx * dx + dy * dy) > (threshold * threshold)
+
+    def _resolve_editor_page_idx_for_drag(self, editor_top_y: float) -> int:
+        if not self.continuous_pages or not self.page_y_positions:
+            return getattr(self, "_editing_page_idx", self.current_page)
+        editor_widget = self.text_editor.widget() if (self.text_editor and self.text_editor.widget()) else None
+        editor_height = float(editor_widget.height()) if editor_widget else 0.0
+        return self._scene_y_to_page_index(editor_top_y + (editor_height / 2.0))
+
+    def _scene_pos_to_page_and_doc_point(self, scene_pos: QPointF) -> tuple[int, fitz.Point]:
         """將場景座標轉為 (頁索引, 文件座標)。連續模式會扣掉頁頂偏移。
         
         注意：scene 座標 = PDF_points × _render_scale（pixmap 實際渲染 scale），
@@ -2487,7 +2206,7 @@ class PDFView(QMainWindow):
 
     def initialize_continuous_placeholders(
         self,
-        page_sizes: List[tuple[float, float]],
+        page_sizes: list[tuple[float, float]],
         scale: float,
         initial_page_idx: int = 0,
     ) -> None:
@@ -2593,6 +2312,39 @@ class PDFView(QMainWindow):
         row = self.thumbnail_list.row(item)
         self.sig_page_changed.emit(row)
 
+    def _show_thumbnail_context_menu(self, pos) -> None:
+        thumbnail_list = getattr(self, "thumbnail_list", None)
+        if thumbnail_list is None:
+            return
+        item = thumbnail_list.itemAt(pos)
+        if item is None:
+            return
+        row = thumbnail_list.row(item)
+        if row < 0:
+            return
+        page_num = row + 1
+        thumbnail_list.setCurrentRow(row)
+
+        menu = QMenu()
+        menu.addAction("刪除此頁", lambda checked=False, p=page_num: self._delete_specific_pages([p]))
+        menu.addSeparator()
+        menu.addAction("向右旋轉 90°", lambda checked=False, p=page_num: self._rotate_specific_pages([p], 90))
+        menu.addAction("向左旋轉 90°", lambda checked=False, p=page_num: self._rotate_specific_pages([p], 270))
+        menu.addSeparator()
+        menu.addAction("匯出此頁...", lambda checked=False, p=page_num: self._export_specific_pages([p]))
+        menu.addSeparator()
+        menu.addAction("在此頁之前插入空白頁", lambda checked=False, p=page_num: self._insert_blank_page_at(p))
+        menu.addAction("在此頁之後插入空白頁", lambda checked=False, p=page_num: self._insert_blank_page_at(p + 1))
+        menu.addAction(
+            "在此頁之前插入其他 PDF 頁面...",
+            lambda checked=False, p=page_num: self._insert_pages_from_file_at(p),
+        )
+        menu.addAction(
+            "在此頁之後插入其他 PDF 頁面...",
+            lambda checked=False, p=page_num: self._insert_pages_from_file_at(p + 1),
+        )
+        menu.exec_(thumbnail_list.viewport().mapToGlobal(pos))
+
     def _on_search_result_clicked(self, item):
         data = item.data(Qt.UserRole)
         row = self.search_results_list.row(item)
@@ -2640,9 +2392,18 @@ class PDFView(QMainWindow):
         """wheel 縮放停止後觸發：重新以當前 self.scale 渲染所有頁面，確保清晰顯示。"""
         self.sig_request_rerender.emit()
 
+    def _event_scene_pos(self, event) -> QPointF:
+        raw_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        viewport = self.graphics_view.viewport() if getattr(self, "graphics_view", None) is not None else None
+        if viewport is not None:
+            try:
+                raw_pos = viewport.mapFrom(self.graphics_view, raw_pos)
+            except Exception:
+                pass
+        return self.graphics_view.mapToScene(raw_pos)
+
     def _mouse_press(self, event):
-        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
-        scene_pos = self.graphics_view.mapToScene(pos)
+        scene_pos = self._event_scene_pos(event)
         if event.button() == Qt.LeftButton:
             if self.current_mode == 'add_annotation':
                 text, ok = QInputDialog.getMultiLineText(self, "新增註解", "請輸入註解內容:")
@@ -2651,10 +2412,107 @@ class PDFView(QMainWindow):
                     self.sig_add_annotation.emit(page_idx, doc_point, text)
                 return
 
+            # Objects/text editing modes own object manipulation. Browse owns text selection.
+            # Keep this early-return path lightweight so tests can exercise mode gating without
+            # constructing the full edit-text state machine.
+            if self.current_mode in ("objects", "text_edit", "edit_text"):
+                _resize_handle_idx = (
+                    self._hit_object_resize_handle_index(scene_pos)
+                    if self._selected_object_info is not None
+                    and getattr(self._selected_object_info, "supports_move", False)
+                    else -1
+                )
+                if _resize_handle_idx >= 0:
+                    self._clear_text_selection()
+                    self._object_resize_pending = True
+                    self._object_resize_active = False
+                    self._object_resize_start_scene_pos = scene_pos
+                    self._object_resize_start_doc_rect = fitz.Rect(self._selected_object_info.bbox)
+                    self._object_resize_preview_rect = fitz.Rect(self._selected_object_info.bbox)
+                    self._object_resize_handle_anchor = _resize_handle_idx  # 0=TL,1=TR,2=BL,3=BR
+                    event.accept()
+                    return
+                if (
+                    self._selected_object_info is not None
+                    and self._point_hits_object_rotate_handle(scene_pos)
+                    and getattr(self._selected_object_info, "supports_rotate", False)
+                ):
+                    self._clear_text_selection()
+                    self._object_drag_pending = False
+                    self._object_drag_active = False
+                    self._object_rotate_pending = True
+                    self._object_drag_start_scene_pos = scene_pos
+                    self._object_drag_start_doc_rect = fitz.Rect(self._selected_object_info.bbox)
+                    self._object_drag_preview_rect = fitz.Rect(self._selected_object_info.bbox)
+                    self._object_drag_page_idx = max(0, int(self._selected_object_info.page_num) - 1)
+                    event.accept()
+                    return
+                page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
+                try:
+                    object_info = self.controller.get_object_info_at_point(page_idx + 1, doc_point)
+                except Exception:
+                    object_info = None
+                if object_info is not None:
+                    allowed_kinds = ("rect", "image", "native_image") if self.current_mode == "objects" else ("textbox",)
+                    if getattr(object_info, "object_kind", None) in allowed_kinds:
+                        if not hasattr(self, "_selected_object_infos") or self._selected_object_infos is None:
+                            self._selected_object_infos = {}
+                        if not hasattr(self, "_selected_object_page_idx"):
+                            self._selected_object_page_idx = None
+
+                        additive = False
+                        try:
+                            additive = bool(getattr(event, "modifiers")() & Qt.ShiftModifier)
+                        except Exception:
+                            additive = False
+
+                        if self._selected_object_page_idx is not None and int(self._selected_object_page_idx) != int(page_idx):
+                            # Same-page only: selecting on a different page resets the set.
+                            self._selected_object_infos = {}
+                        self._selected_object_page_idx = int(page_idx)
+
+                        object_id = str(getattr(object_info, "object_id", ""))
+                        if additive and object_id:
+                            if object_id in self._selected_object_infos:
+                                self._selected_object_infos.pop(object_id, None)
+                            else:
+                                self._selected_object_infos[object_id] = object_info
+                        else:
+                            self._selected_object_infos = {object_id: object_info} if object_id else {}
+
+                        # Selection visuals and handles are single-select only in this tranche.
+                        if len(self._selected_object_infos) == 1:
+                            self._clear_text_selection()
+                            self._select_object(object_info)
+                        else:
+                            self._clear_text_selection()
+                            self._selected_object_info = None
+                        self._clear_text_selection()
+                        try:
+                            self._object_drag_start_doc_rects = {
+                                str(info.object_id): fitz.Rect(info.bbox) for info in self._selected_object_infos.values()
+                            }
+                        except Exception:
+                            self._object_drag_start_doc_rects = None
+                        self._object_drag_preview_rects = None
+                        self._object_drag_pending = not self._point_hits_object_rotate_handle(scene_pos)
+                        self._object_drag_active = False
+                        self._object_rotate_pending = not self._object_drag_pending
+                        self._object_drag_start_scene_pos = scene_pos
+                        self._object_drag_start_doc_rect = fitz.Rect(object_info.bbox)
+                        self._object_drag_preview_rect = fitz.Rect(object_info.bbox)
+                        self._object_drag_page_idx = page_idx
+                        event.accept()
+                        return
+
             if self.current_mode == 'browse':
                 page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
                 try:
-                    info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
+                    info = self.controller.get_text_info_at_point(
+                        page_idx + 1,
+                        doc_point,
+                        allow_fallback=False,
+                    )
                 except Exception:
                     info = None
                 if info:
@@ -2670,12 +2528,14 @@ class PDFView(QMainWindow):
                     if editor_scene_rect.contains(scene_pos):
                         self._drag_pending = True
                         self._drag_active = False
+                        self._text_edit_drag_state = TextEditDragState.PENDING
                         self._pending_text_info = None
                         self._drag_start_scene_pos = scene_pos
                         self._drag_editor_start_pos = self.text_editor.pos()
                         return
                     self._drag_pending = False
                     self._drag_active = False
+                    self._text_edit_drag_state = TextEditDragState.IDLE
                     self._pending_text_info = None
                     self._finalize_text_edit()
                     return
@@ -2690,6 +2550,7 @@ class PDFView(QMainWindow):
                         # 點擊在編輯框內：進入待定狀態（等 release/move 決定是游標定位還是拖曳）
                         self._drag_pending = True
                         self._drag_active = False
+                        self._text_edit_drag_state = TextEditDragState.PENDING
                         self._pending_text_info = None  # 已有編輯框，不需 pending_text_info
                         self._drag_start_scene_pos = scene_pos
                         self._drag_editor_start_pos = self.text_editor.pos()
@@ -2698,6 +2559,7 @@ class PDFView(QMainWindow):
                         # 點擊在編輯框外：先結束編輯
                         self._drag_pending = False
                         self._drag_active = False
+                        self._text_edit_drag_state = TextEditDragState.IDLE
                         self._pending_text_info = None
                         self._finalize_text_edit()
                         # Fall through：繼續判斷是否點到了新文字塊
@@ -2725,6 +2587,7 @@ class PDFView(QMainWindow):
                         )
                         self._drag_pending = True
                         self._drag_active = False
+                        self._text_edit_drag_state = TextEditDragState.PENDING
                         self._drag_start_scene_pos = scene_pos
                         self._drag_editor_start_pos = None  # 尚無編輯框
                         return
@@ -2736,10 +2599,121 @@ class PDFView(QMainWindow):
         QGraphicsView.mousePressEvent(self.graphics_view, event)
 
     def _mouse_move(self, event):
-        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
-        scene_pos = self.graphics_view.mapToScene(pos)
+        scene_pos = self._event_scene_pos(event)
+
+        if self.current_mode in ("objects", "text_edit", "edit_text"):
+            if getattr(self, "_object_resize_pending", False) and getattr(self, "_object_resize_start_scene_pos", None) is not None:
+                dx = scene_pos.x() - self._object_resize_start_scene_pos.x()
+                dy = scene_pos.y() - self._object_resize_start_scene_pos.y()
+                if (
+                    not getattr(self, "_object_resize_active", False)
+                    and math.hypot(dx, dy) >= TextEditGeometryConstants.DRAG_START_DISTANCE_PX
+                ):
+                    self._object_resize_active = True
+                if self._object_resize_active and getattr(self, "_object_resize_start_doc_rect", None) is not None:
+                    rs = self._render_scale if self._render_scale > 0 else 1.0
+                    dx_doc = dx / rs
+                    dy_doc = dy / rs
+                    start_rect = fitz.Rect(self._object_resize_start_doc_rect)
+                    anchor = getattr(self, "_object_resize_handle_anchor", 3)
+                    # anchor: 0=TL, 1=TR, 2=BL, 3=BR
+                    # Each handle moves its two owned edges; opposite edges stay anchored.
+                    _MIN = 8.0
+                    if anchor == 0:   # TL: move x0, y0
+                        x0 = min(start_rect.x0 + dx_doc, start_rect.x1 - _MIN)
+                        y0 = min(start_rect.y0 + dy_doc, start_rect.y1 - _MIN)
+                        preview = fitz.Rect(x0, y0, start_rect.x1, start_rect.y1)
+                    elif anchor == 1:  # TR: move x1, y0
+                        x1 = max(start_rect.x1 + dx_doc, start_rect.x0 + _MIN)
+                        y0 = min(start_rect.y0 + dy_doc, start_rect.y1 - _MIN)
+                        preview = fitz.Rect(start_rect.x0, y0, x1, start_rect.y1)
+                    elif anchor == 2:  # BL: move x0, y1
+                        x0 = min(start_rect.x0 + dx_doc, start_rect.x1 - _MIN)
+                        y1 = max(start_rect.y1 + dy_doc, start_rect.y0 + _MIN)
+                        preview = fitz.Rect(x0, start_rect.y0, start_rect.x1, y1)
+                    else:              # BR: move x1, y1
+                        x1 = max(start_rect.x1 + dx_doc, start_rect.x0 + _MIN)
+                        y1 = max(start_rect.y1 + dy_doc, start_rect.y0 + _MIN)
+                        preview = fitz.Rect(start_rect.x0, start_rect.y0, x1, y1)
+                    self._object_resize_preview_rect = preview
+                    self._update_object_selection_visuals(preview)
+                    event.accept()
+                    return
+            if getattr(self, "_object_drag_pending", False) and getattr(self, "_object_drag_start_scene_pos", None) is not None:
+                dx = scene_pos.x() - self._object_drag_start_scene_pos.x()
+                dy = scene_pos.y() - self._object_drag_start_scene_pos.y()
+                if math.hypot(dx, dy) >= TextEditGeometryConstants.DRAG_START_DISTANCE_PX:
+                    self._object_drag_pending = False
+                    self._object_drag_active = True
+            if getattr(self, "_object_drag_active", False) and getattr(self, "_object_drag_start_scene_pos", None) is not None:
+                rs = self._render_scale if self._render_scale > 0 else 1.0
+                dx_doc = (scene_pos.x() - self._object_drag_start_scene_pos.x()) / rs
+                dy_doc = (scene_pos.y() - self._object_drag_start_scene_pos.y()) / rs
+
+                start_rects = getattr(self, "_object_drag_start_doc_rects", None)
+                if start_rects:
+                    preview_rects: dict[str, fitz.Rect] = {}
+                    for object_id, rect in start_rects.items():
+                        start_rect = fitz.Rect(rect)
+                        preview_rects[object_id] = fitz.Rect(
+                            start_rect.x0 + dx_doc,
+                            start_rect.y0 + dy_doc,
+                            start_rect.x1 + dx_doc,
+                            start_rect.y1 + dy_doc,
+                        )
+                    self._object_drag_preview_rects = preview_rects
+                    if self._selected_object_info is not None:
+                        sel_preview = preview_rects.get(str(self._selected_object_info.object_id))
+                        if sel_preview is not None:
+                            self._object_drag_preview_rect = sel_preview
+                            self._update_object_selection_visuals(sel_preview)
+                elif self._selected_object_info is not None and self._object_drag_start_doc_rect is not None:
+                    start_rect = fitz.Rect(self._object_drag_start_doc_rect)
+                    preview = fitz.Rect(
+                        start_rect.x0 + dx_doc,
+                        start_rect.y0 + dy_doc,
+                        start_rect.x1 + dx_doc,
+                        start_rect.y1 + dy_doc,
+                    )
+                    self._object_drag_preview_rect = preview
+                    self._update_object_selection_visuals(preview)
+                event.accept()
+                return
 
         if self.current_mode == 'browse':
+            if self._selected_object_info is not None and self._object_drag_pending and self._object_drag_start_scene_pos is not None:
+                dx = scene_pos.x() - self._object_drag_start_scene_pos.x()
+                dy = scene_pos.y() - self._object_drag_start_scene_pos.y()
+                if math.hypot(dx, dy) >= TextEditGeometryConstants.DRAG_START_DISTANCE_PX:
+                    self._object_drag_pending = False
+                    self._object_drag_active = True
+            if self._selected_object_info is not None and self._object_drag_active and self._object_drag_start_doc_rect is not None:
+                rs = self._render_scale if self._render_scale > 0 else 1.0
+                dx_doc = (scene_pos.x() - self._object_drag_start_scene_pos.x()) / rs
+                dy_doc = (scene_pos.y() - self._object_drag_start_scene_pos.y()) / rs
+                start_rect = fitz.Rect(self._object_drag_start_doc_rect)
+                preview = fitz.Rect(
+                    start_rect.x0 + dx_doc,
+                    start_rect.y0 + dy_doc,
+                    start_rect.x1 + dx_doc,
+                    start_rect.y1 + dy_doc,
+                )
+                try:
+                    page_rect = fitz.Rect(self.controller.model.doc[self._object_drag_page_idx].rect)
+                    if preview.x0 < page_rect.x0:
+                        preview = fitz.Rect(page_rect.x0, preview.y0, page_rect.x0 + start_rect.width, preview.y1)
+                    if preview.y0 < page_rect.y0:
+                        preview = fitz.Rect(preview.x0, page_rect.y0, preview.x1, page_rect.y0 + start_rect.height)
+                    if preview.x1 > page_rect.x1:
+                        preview = fitz.Rect(page_rect.x1 - start_rect.width, preview.y0, page_rect.x1, preview.y1)
+                    if preview.y1 > page_rect.y1:
+                        preview = fitz.Rect(preview.x0, page_rect.y1 - start_rect.height, preview.x1, page_rect.y1)
+                except Exception:
+                    pass
+                self._object_drag_preview_rect = preview
+                self._update_object_selection_visuals(preview)
+                event.accept()
+                return
             if self._text_selection_active:
                 self._update_text_selection(scene_pos)
                 event.accept()
@@ -2753,9 +2727,10 @@ class PDFView(QMainWindow):
             if self._drag_pending and self._drag_start_scene_pos is not None:
                 dx = scene_pos.x() - self._drag_start_scene_pos.x()
                 dy = scene_pos.y() - self._drag_start_scene_pos.y()
-                if dx * dx + dy * dy > 25:  # 超過 5px → 確認為拖曳
+                if self._should_start_editor_drag(dx, dy):
                     self._drag_pending = False
                     self._drag_active = True
+                    self._text_edit_drag_state = TextEditDragState.ACTIVE
                     self.graphics_view.viewport().setCursor(Qt.ClosedHandCursor)
 
                     # 若尚無編輯框（點的是新文字塊），此時才建立並進入拖曳
@@ -2764,10 +2739,12 @@ class PDFView(QMainWindow):
                         self._pending_text_info = None
                         # 記錄剛建立的編輯框初始位置，並立即套用當前偏移量
                         self._drag_editor_start_pos = self.text_editor.pos()
-                        page_idx = getattr(self, '_editing_page_idx', self.current_page)
+                        raw_y = self._drag_editor_start_pos.y() + dy
+                        page_idx = self._resolve_editor_page_idx_for_drag(raw_y)
+                        self._editing_page_idx = page_idx
                         clamped_x, clamped_y = self._clamp_editor_pos_to_page(
                             self._drag_editor_start_pos.x() + dx,
-                            self._drag_editor_start_pos.y() + dy,
+                            raw_y,
                             page_idx
                         )
                         self.text_editor.setPos(clamped_x, clamped_y)
@@ -2779,9 +2756,11 @@ class PDFView(QMainWindow):
                 dy = scene_pos.y() - self._drag_start_scene_pos.y()
                 raw_x = self._drag_editor_start_pos.x() + dx
                 raw_y = self._drag_editor_start_pos.y() + dy
-                page_idx = getattr(self, '_editing_page_idx', self.current_page)
+                page_idx = self._resolve_editor_page_idx_for_drag(raw_y)
+                self._editing_page_idx = page_idx
                 new_x, new_y = self._clamp_editor_pos_to_page(raw_x, raw_y, page_idx)
                 self.text_editor.setPos(new_x, new_y)
+                self._refresh_text_editor_mask_color()
                 return  # 拖曳中不觸發 ScrollHandDrag
 
             # ── hover 高亮（僅 edit_text）──
@@ -2808,7 +2787,11 @@ class PDFView(QMainWindow):
                 self._reset_browse_hover_cursor()
                 return
             page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
-            info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
+            info = self.controller.get_text_info_at_point(
+                page_idx + 1,
+                doc_point,
+                allow_fallback=False,
+            )
             if info:
                 if not self._browse_text_cursor_active:
                     self.graphics_view.viewport().setCursor(Qt.IBeamCursor)
@@ -2841,7 +2824,7 @@ class PDFView(QMainWindow):
         y = min(max(scene_pos.y(), page_rect.top()), page_rect.bottom())
         return QPointF(x, y)
 
-    def _scene_rect_to_doc_rect(self, scene_rect: QRectF, page_idx: int) -> Optional[fitz.Rect]:
+    def _scene_rect_to_doc_rect(self, scene_rect: QRectF, page_idx: int) -> fitz.Rect | None:
         rs = self._render_scale if self._render_scale > 0 else 1.0
         y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0.0
         x0 = min(scene_rect.left(), scene_rect.right()) / rs
@@ -2922,11 +2905,27 @@ class PDFView(QMainWindow):
         self._reset_browse_hover_cursor()
         self._clear_text_selection()
         start_pos = self._clamp_scene_point_to_page(scene_pos, page_idx)
+        try:
+            hit_page_idx, doc_point = self._scene_pos_to_page_and_doc_point(start_pos)
+            if hit_page_idx != page_idx:
+                return
+            start_hit = self.controller.get_text_info_at_point(
+                page_idx + 1,
+                doc_point,
+                allow_fallback=False,
+            )
+        except Exception:
+            start_hit = None
+        if start_hit is None or not getattr(start_hit, "target_span_id", None):
+            return
         self._text_selection_active = True
         self._text_selection_page_idx = page_idx
         self._text_selection_start_scene_pos = start_pos
         self._text_selection_live_doc_rect = None
+        self._text_selection_live_text = ""
         self._text_selection_last_scene_pos = None
+        self._text_selection_start_span_id = start_hit.target_span_id
+        self._text_selection_start_hit_info = start_hit
         pen = QPen(QColor(30, 120, 255, 220), 1)
         brush = QBrush(QColor(30, 120, 255, 35))
         rect = QRectF(start_pos, start_pos).normalized()
@@ -2949,31 +2948,38 @@ class PDFView(QMainWindow):
         self._text_selection_last_scene_pos = scene_pos
 
         end_pos = self._clamp_scene_point_to_page(scene_pos, self._text_selection_page_idx)
-        rough_scene_rect = QRectF(self._text_selection_start_scene_pos, end_pos).normalized()
-        rough_doc_rect = self._scene_rect_to_doc_rect(rough_scene_rect, self._text_selection_page_idx)
-        if rough_doc_rect is None:
+        try:
+            end_page_idx, end_doc_point = self._scene_pos_to_page_and_doc_point(end_pos)
+        except Exception:
+            end_page_idx, end_doc_point = self._text_selection_page_idx, None
+        if end_doc_point is None or end_page_idx != self._text_selection_page_idx:
             self._text_selection_live_doc_rect = None
+            self._text_selection_live_text = ""
             self._text_selection_rect_item.setVisible(False)
             return
 
         try:
-            selected_text = self.controller.get_text_in_rect(self._text_selection_page_idx + 1, rough_doc_rect)
+            selected_text, precise_doc_rect = self.controller.get_text_selection_snapshot_from_run(
+                self._text_selection_page_idx + 1,
+                self._text_selection_start_span_id,
+                end_doc_point,
+            )
         except Exception:
             selected_text = ""
+            precise_doc_rect = None
         if not selected_text.strip():
             self._text_selection_live_doc_rect = None
+            self._text_selection_live_text = ""
+            self._text_selection_rect_item.setVisible(False)
+            return
+        if precise_doc_rect is None or precise_doc_rect.width <= 0 or precise_doc_rect.height <= 0:
+            self._text_selection_live_doc_rect = None
+            self._text_selection_live_text = ""
             self._text_selection_rect_item.setVisible(False)
             return
 
-        precise_doc_rect = fitz.Rect(rough_doc_rect)
-        try:
-            precise = self.controller.get_text_bounds(self._text_selection_page_idx + 1, rough_doc_rect)
-            if precise is not None and precise.width > 0 and precise.height > 0:
-                precise_doc_rect = fitz.Rect(precise)
-        except Exception:
-            pass
-
         self._text_selection_live_doc_rect = precise_doc_rect
+        self._text_selection_live_text = selected_text
         rs = self._render_scale if self._render_scale > 0 else 1.0
         y0 = self.page_y_positions[self._text_selection_page_idx] if (
             self.continuous_pages and self._text_selection_page_idx < len(self.page_y_positions)
@@ -3009,16 +3015,14 @@ class PDFView(QMainWindow):
         if doc_rect is None:
             self._clear_text_selection()
             return
-        try:
-            selected_text = self.controller.get_text_in_rect(page_idx + 1, doc_rect)
-        except Exception:
-            selected_text = ""
+        selected_text = (getattr(self, "_text_selection_live_text", "") or "").strip()
         if not selected_text.strip():
             self._clear_text_selection()
             return
         self._selected_text_page_idx = page_idx
         self._selected_text_rect_doc = fitz.Rect(doc_rect)
         self._selected_text_cached = selected_text
+        self._selected_text_hit_info = getattr(self, "_text_selection_start_hit_info", None)
         rs = self._render_scale if self._render_scale > 0 else 1.0
         y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0.0
         precise_scene = QRectF(
@@ -3029,16 +3033,21 @@ class PDFView(QMainWindow):
         )
         self._text_selection_rect_item.setRect(precise_scene)
         self._text_selection_rect_item.setVisible(True)
+        self._sync_text_property_panel_state()
 
     def _clear_text_selection(self) -> None:
         self._text_selection_active = False
         self._text_selection_page_idx = None
         self._text_selection_start_scene_pos = None
         self._text_selection_live_doc_rect = None
+        self._text_selection_live_text = ""
         self._text_selection_last_scene_pos = None
+        self._text_selection_start_span_id = None
+        self._text_selection_start_hit_info = None
         self._selected_text_rect_doc = None
         self._selected_text_page_idx = None
         self._selected_text_cached = ""
+        self._selected_text_hit_info = None
         if self._text_selection_rect_item is not None:
             try:
                 if self._text_selection_rect_item.scene():
@@ -3046,6 +3055,147 @@ class PDFView(QMainWindow):
             except Exception:
                 pass
             self._text_selection_rect_item = None
+        self._sync_text_property_panel_state()
+
+    def _resolve_text_info_for_doc_rect(self, page_idx: int, doc_rect: fitz.Rect):
+        controller = getattr(self, "controller", None)
+        if controller is None or doc_rect is None:
+            return None
+        try:
+            center = fitz.Point((doc_rect.x0 + doc_rect.x1) / 2.0, (doc_rect.y0 + doc_rect.y1) / 2.0)
+            return controller.get_text_info_at_point(page_idx + 1, center)
+        except Exception:
+            return None
+
+    def _resolve_text_info_for_context_menu_pos(self, pos: QPoint):
+        if self.current_mode != "browse":
+            return None
+        controller = getattr(self, "controller", None)
+        graphics_view = getattr(self, "graphics_view", None)
+        if controller is None or graphics_view is None:
+            return None
+        try:
+            scene_pos = graphics_view.mapToScene(pos)
+            page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
+            info = controller.get_text_info_at_point(page_idx + 1, doc_point)
+        except Exception:
+            return None
+        if info is None:
+            return None
+        return page_idx, info
+
+    def _resolve_object_info_for_context_menu_pos(self, pos: QPoint):
+        if self.current_mode not in ("browse", "objects", "edit_text", "text_edit"):
+            return None
+        controller = getattr(self, "controller", None)
+        graphics_view = getattr(self, "graphics_view", None)
+        if controller is None or graphics_view is None:
+            return None
+        try:
+            scene_pos = graphics_view.mapToScene(pos)
+            page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
+            info = controller.get_object_info_at_point(page_idx + 1, doc_point)
+        except Exception:
+            return None
+        if info is None:
+            return None
+        allowed_kinds = None
+        if self.current_mode == "objects":
+            allowed_kinds = ("rect", "image")
+        elif self.current_mode in ("edit_text", "text_edit"):
+            allowed_kinds = ("textbox",)
+        if allowed_kinds is not None and getattr(info, "object_kind", None) not in allowed_kinds:
+            return None
+        return page_idx, info
+
+    def _select_all_text_on_current_page(self) -> bool:
+        if self.total_pages <= 0:
+            return False
+        controller = getattr(self, "controller", None)
+        model = getattr(controller, "model", None) if controller is not None else None
+        if model is None or not getattr(model, "doc", None):
+            return False
+
+        page_idx = min(max(self.current_page, 0), self.total_pages - 1)
+        try:
+            page_rect = fitz.Rect(model.doc[page_idx].rect)
+        except Exception:
+            return False
+
+        try:
+            selected_text = controller.get_text_in_rect(page_idx + 1, page_rect)
+        except Exception:
+            selected_text = ""
+        if not selected_text.strip():
+            return False
+
+        precise_doc_rect = fitz.Rect(page_rect)
+        try:
+            precise = controller.get_text_bounds(page_idx + 1, page_rect)
+            if precise is not None and precise.width > 0 and precise.height > 0:
+                precise_doc_rect = fitz.Rect(precise)
+        except Exception:
+            pass
+
+        self._selected_text_page_idx = page_idx
+        self._selected_text_rect_doc = precise_doc_rect
+        self._selected_text_cached = selected_text
+        self._selected_text_hit_info = self._resolve_text_info_for_doc_rect(page_idx, precise_doc_rect)
+
+        if self._text_selection_rect_item is None and getattr(self, "scene", None) is not None:
+            pen = QPen(QColor(30, 120, 255, 200), 2)
+            brush = QBrush(QColor(30, 120, 255, 35))
+            self._text_selection_rect_item = self.scene.addRect(QRectF(), pen, brush)
+            self._text_selection_rect_item.setZValue(11)
+
+        if self._text_selection_rect_item is not None:
+            rs = self._render_scale if self._render_scale > 0 else 1.0
+            y0 = self.page_y_positions[page_idx] if (
+                self.continuous_pages and page_idx < len(self.page_y_positions)
+            ) else 0.0
+            scene_rect = QRectF(
+                precise_doc_rect.x0 * rs,
+                y0 + precise_doc_rect.y0 * rs,
+                max(1.0, precise_doc_rect.width * rs),
+                max(1.0, precise_doc_rect.height * rs),
+            )
+            self._text_selection_rect_item.setRect(scene_rect)
+            self._text_selection_rect_item.setVisible(True)
+
+        self._sync_text_property_panel_state()
+        return True
+
+    def _zoom_relative(self, factor: float) -> None:
+        try:
+            new_scale = float(self.scale) * float(factor)
+        except (TypeError, ValueError):
+            return
+        new_scale = max(0.1, min(4.0, new_scale))
+        self.sig_scale_changed.emit(self.current_page, new_scale)
+
+    def _start_text_edit_from_hit(self, page_idx: int, info) -> bool:
+        if info is None:
+            return False
+        try:
+            self.set_mode("edit_text")
+            self.editing_font_name = info.font
+            self.editing_color = info.color
+            self.editing_original_text = info.target_text
+            self._editing_page_idx = page_idx
+            self._create_text_editor(
+                info.target_bbox,
+                info.target_text,
+                info.font,
+                info.size,
+                info.color,
+                info.rotation,
+                info.target_span_id,
+                getattr(info, "target_mode", "run"),
+            )
+            return True
+        except Exception as exc:
+            logger.error("open edit text from context menu failed: %s", exc)
+            return False
 
     def _copy_selected_text_to_clipboard(self) -> bool:
         text = (self._selected_text_cached or "").strip()
@@ -3060,6 +3210,241 @@ class PDFView(QMainWindow):
         self._selected_text_cached = text
         if getattr(self, "status_bar", None):
             self.status_bar.showMessage("Copied selected text", 1500)
+        return True
+
+    def _clear_object_selection(self) -> None:
+        self._selected_object_info = None
+        if hasattr(self, "_selected_object_infos"):
+            self._selected_object_infos = {}
+        if hasattr(self, "_selected_object_page_idx"):
+            self._selected_object_page_idx = None
+        self._object_drag_pending = False
+        self._object_drag_active = False
+        self._object_rotate_pending = False
+        self._object_drag_start_scene_pos = None
+        self._object_drag_start_doc_rect = None
+        self._object_drag_preview_rect = None
+        self._object_drag_page_idx = None
+        if self._object_selection_rect_item is not None:
+            try:
+                self.scene.removeItem(self._object_selection_rect_item)
+            except Exception:
+                pass
+            self._object_selection_rect_item = None
+        if self._object_rotate_handle_item is not None:
+            try:
+                self.scene.removeItem(self._object_rotate_handle_item)
+            except Exception:
+                pass
+            self._object_rotate_handle_item = None
+        for item in getattr(self, "_object_resize_handle_items", []) or []:
+            try:
+                self.scene.removeItem(item)
+            except Exception:
+                pass
+        self._object_resize_handle_items = []
+        self._object_resize_pending = False
+        self._object_resize_active = False
+        self._object_resize_start_scene_pos = None
+        self._object_resize_start_doc_rect = None
+        self._object_resize_preview_rect = None
+        self._object_resize_handle_anchor = 3  # default BR
+
+    def _select_object(self, info) -> None:
+        self._selected_object_info = info
+        self._update_object_selection_visuals()
+
+    def _rebase_object_selection_to_bboxes(self, new_bboxes: dict[str, fitz.Rect]) -> None:
+        """Replace selection state with new bboxes and refresh overlay visuals.
+
+        Used by drag/resize release paths so the selection overlay follows moved
+        objects without waiting for the next click. Safe to call whether the
+        selection is single (`_selected_object_info` only) or multi (`_selected_object_infos`).
+        """
+        infos = getattr(self, "_selected_object_infos", None)
+        selected = self._selected_object_info
+        selected_oid = str(selected.object_id) if selected is not None else None
+        for oid, new_bbox in new_bboxes.items():
+            target = None
+            if infos is not None and oid in infos:
+                target = infos[oid]
+            elif selected_oid == oid:
+                target = selected
+            if target is None:
+                continue
+            new_info = replace(target, bbox=fitz.Rect(new_bbox))
+            if infos is not None and oid in infos:
+                infos[oid] = new_info
+            if selected_oid == oid:
+                self._selected_object_info = new_info
+        if infos:
+            self._object_drag_start_doc_rects = {
+                k: fitz.Rect(v.bbox) for k, v in infos.items()
+            }
+        if self._selected_object_info is not None:
+            self._object_drag_start_doc_rect = fitz.Rect(self._selected_object_info.bbox)
+            self._object_drag_preview_rect = fitz.Rect(self._selected_object_info.bbox)
+        self._update_object_selection_visuals()
+
+    def _update_object_selection_visuals(self, rect: fitz.Rect | None = None) -> None:
+        info = getattr(self, "_selected_object_info", None)
+        if info is None or getattr(self, "scene", None) is None:
+            return
+        # scene.clear() deletes the underlying C++ items but leaves the Python
+        # wrappers dangling; drop them here so we re-create instead of poking
+        # a freed object.
+        if self._object_selection_rect_item is not None and not shiboken6.isValid(self._object_selection_rect_item):
+            self._object_selection_rect_item = None
+        if self._object_rotate_handle_item is not None and not shiboken6.isValid(self._object_rotate_handle_item):
+            self._object_rotate_handle_item = None
+        if getattr(self, "_object_resize_handle_items", None):
+            self._object_resize_handle_items = [
+                item for item in self._object_resize_handle_items if shiboken6.isValid(item)
+            ]
+        bbox = fitz.Rect(rect if rect is not None else info.bbox)
+        rs = self._render_scale if self._render_scale > 0 else 1.0
+        page_idx = max(0, int(info.page_num) - 1)
+        y0 = self.page_y_positions[page_idx] if (
+            self.continuous_pages and page_idx < len(self.page_y_positions)
+        ) else 0.0
+        scene_rect = QRectF(
+            bbox.x0 * rs,
+            y0 + bbox.y0 * rs,
+            max(1.0, bbox.width * rs),
+            max(1.0, bbox.height * rs),
+        )
+        pen = QPen(QColor(14, 165, 233, 220), 2)
+        brush = QBrush(QColor(14, 165, 233, 30))
+        if self._object_selection_rect_item is None:
+            self._object_selection_rect_item = self.scene.addRect(scene_rect, pen, brush)
+            self._object_selection_rect_item.setZValue(21)
+        else:
+            self._object_selection_rect_item.setRect(scene_rect)
+            self._object_selection_rect_item.setPen(pen)
+            self._object_selection_rect_item.setBrush(brush)
+        if info.supports_rotate:
+            handle_rect = QRectF(scene_rect.right() - 12, scene_rect.top() - 18, 12, 12)
+            if self._object_rotate_handle_item is None:
+                self._object_rotate_handle_item = self.scene.addEllipse(
+                    handle_rect,
+                    QPen(QColor(2, 132, 199, 230), 1),
+                    QBrush(QColor(56, 189, 248, 220)),
+                )
+                self._object_rotate_handle_item.setZValue(22)
+            else:
+                self._object_rotate_handle_item.setRect(handle_rect)
+        elif self._object_rotate_handle_item is not None:
+            try:
+                self.scene.removeItem(self._object_rotate_handle_item)
+            except Exception:
+                pass
+            self._object_rotate_handle_item = None
+
+        # Resize handles: single-select only.
+        if getattr(self, "_object_resize_handle_items", None) is None:
+            self._object_resize_handle_items = []
+        for item in list(self._object_resize_handle_items):
+            try:
+                self.scene.removeItem(item)
+            except Exception:
+                pass
+        self._object_resize_handle_items = []
+
+        handle_size = 10.0
+        half = handle_size / 2.0
+        handle_pen = QPen(QColor(2, 132, 199, 230), 1)
+        handle_brush = QBrush(QColor(56, 189, 248, 220))
+        for hx, hy in (
+            (scene_rect.left() - half, scene_rect.top() - half),  # TL
+            (scene_rect.right() - half, scene_rect.top() - half),  # TR
+            (scene_rect.left() - half, scene_rect.bottom() - half),  # BL
+            (scene_rect.right() - half, scene_rect.bottom() - half),  # BR
+        ):
+            hrect = QRectF(hx, hy, handle_size, handle_size)
+            item = self.scene.addRect(hrect, handle_pen, handle_brush)
+            try:
+                item.setZValue(22)
+            except Exception:
+                pass
+            self._object_resize_handle_items.append(item)
+
+    def _point_hits_object_resize_handle(self, scene_pos: QPointF) -> bool:
+        return self._hit_object_resize_handle_index(scene_pos) >= 0
+
+    def _hit_object_resize_handle_index(self, scene_pos: QPointF) -> int:
+        """Return the index (0=TL,1=TR,2=BL,3=BR) of the hit handle, or -1 if none."""
+        items = getattr(self, "_object_resize_handle_items", None) or []
+        for i, item in enumerate(items):
+            try:
+                if item.rect().contains(scene_pos):
+                    return i
+            except Exception:
+                continue
+        return -1
+
+    def _point_hits_object_rotate_handle(self, scene_pos: QPointF) -> bool:
+        if self._object_rotate_handle_item is None:
+            return False
+        try:
+            return self._object_rotate_handle_item.rect().contains(scene_pos)
+        except Exception:
+            return False
+
+    def _delete_selected_object(self) -> bool:
+        infos = getattr(self, "_selected_object_infos", None)
+        if infos and len(infos) > 1:
+            refs: list[ObjectRef] = []
+            for info in infos.values():
+                if not getattr(info, "supports_delete", False):
+                    continue
+                refs.append(
+                    ObjectRef(
+                        object_id=str(info.object_id),
+                        object_kind=str(info.object_kind),
+                        page_num=int(info.page_num),
+                    )
+                )
+            if not refs:
+                return False
+            self.sig_delete_object.emit(BatchDeleteObjectsRequest(objects=refs))
+            self._clear_object_selection()
+            return True
+        info = getattr(self, "_selected_object_info", None)
+        if info is None or not getattr(info, "supports_delete", False):
+            return False
+        self.sig_delete_object.emit(
+            DeleteObjectRequest(
+                object_id=info.object_id,
+                object_kind=info.object_kind,
+                page_num=info.page_num,
+            )
+        )
+        self._clear_object_selection()
+        return True
+
+    def _rotate_selected_object(self, rotation_delta: int) -> bool:
+        info = getattr(self, "_selected_object_info", None)
+        if info is None or not getattr(info, "supports_rotate", False):
+            return False
+        self.sig_rotate_object.emit(
+            RotateObjectRequest(
+                object_id=info.object_id,
+                object_kind=info.object_kind,
+                page_num=info.page_num,
+                rotation_delta=rotation_delta,
+            )
+        )
+        self._selected_object_info = type(info)(
+            object_kind=info.object_kind,
+            object_id=info.object_id,
+            page_num=info.page_num,
+            bbox=fitz.Rect(info.bbox),
+            rotation=(int(info.rotation) + int(rotation_delta)) % 360,
+            supports_move=info.supports_move,
+            supports_delete=info.supports_delete,
+            supports_rotate=info.supports_rotate,
+        )
+        self._update_object_selection_visuals()
         return True
 
     def _clamp_editor_pos_to_page(self, x: float, y: float, page_idx: int):
@@ -3091,6 +3476,57 @@ class PDFView(QMainWindow):
         clamped_y = max(page_y0, min(y, page_y1 - h))
         return clamped_x, clamped_y
 
+    def _draw_all_block_outlines(self, *args) -> None:
+        """Draw persistent dim outlines around text blocks on visible pages (edit_text mode only)."""
+        self._clear_all_block_outlines()
+        if not hasattr(self, 'controller') or not self.controller.model.doc:
+            return
+        rs = self._render_scale if self._render_scale > 0 else 1.0
+        try:
+            start_page, end_page = self.visible_page_range(prefetch=1)
+        except Exception:
+            return
+        pen = QPen(QColor(100, 149, 237, 120), 1.0, Qt.DashLine)
+        brush = QBrush(Qt.NoBrush)
+        for page_idx in range(start_page, end_page + 1):
+            page_num = page_idx + 1
+            try:
+                self.controller.model.ensure_page_index_built(page_num)
+                outline_targets = self._iter_outline_targets(page_idx)
+            except Exception:
+                continue
+            y0 = (self.page_y_positions[page_idx]
+                  if (self.continuous_pages and page_idx < len(self.page_y_positions))
+                  else 0.0)
+            for outline_key, doc_rect in outline_targets:
+                try:
+                    scene_rect = QRectF(doc_rect.x0 * rs, y0 + doc_rect.y0 * rs,
+                                        doc_rect.width * rs, doc_rect.height * rs)
+                    item = self.scene.addRect(scene_rect, pen, brush)
+                    item.setZValue(8)
+                    self._block_outline_items[outline_key] = item
+                except Exception:
+                    continue
+        # Re-hide outlines for active-editing block (survives redraw)
+        if self._active_outline_key is not None:
+            outline = self._block_outline_items.get(self._active_outline_key)
+            if outline is not None:
+                outline.setVisible(False)
+
+    def _clear_all_block_outlines(self) -> None:
+        """Remove all persistent block outline items from the scene."""
+        for item in self._block_outline_items.values():
+            try:
+                self.scene.removeItem(item)
+            except Exception:
+                pass
+        self._block_outline_items.clear()
+        self._hover_hidden_outline_key = None
+
+    def _schedule_outline_redraw(self, *args) -> None:
+        """Debounce outline redraws driven by scroll/zoom signals (80 ms collapse window)."""
+        self._outline_redraw_timer.start(80)
+
     def _update_hover_highlight(self, scene_pos: QPointF) -> None:
         """查詢滑鼠下方的文字塊，以半透明藍框標示可點擊範圍。"""
         try:
@@ -3120,8 +3556,37 @@ class PDFView(QMainWindow):
                     self._hover_highlight_item.setRect(scene_rect)
                     self._hover_highlight_item.setPen(pen)
                     self._hover_highlight_item.setBrush(brush)
+                # IBeam cursor signals the block is editable (guard: don't override drag cursor)
+                if self.current_mode == 'edit_text' and self._text_edit_drag_state == TextEditDragState.IDLE:
+                    self.graphics_view.viewport().setCursor(Qt.IBeamCursor)
+                # Hide dim outline for hovered block; restore previously hidden one
+                if self.current_mode == 'edit_text':
+                    try:
+                        hit_key = None
+                        for outline_key, outline_rect in self._iter_outline_targets(page_idx):
+                            if (outline_rect.x0 <= doc_rect.x0 + 1 and outline_rect.y0 <= doc_rect.y0 + 1
+                                    and outline_rect.x1 >= doc_rect.x1 - 1 and outline_rect.y1 >= doc_rect.y1 - 1):
+                                hit_key = outline_key
+                                break
+                        if hit_key != self._hover_hidden_outline_key:
+                            # Restore previously hidden outline
+                            if self._hover_hidden_outline_key is not None:
+                                prev = self._block_outline_items.get(self._hover_hidden_outline_key)
+                                if prev is not None:
+                                    prev.setVisible(True)
+                                self._hover_hidden_outline_key = None
+                            # Hide new hovered block's outline
+                            if hit_key is not None:
+                                outline = self._block_outline_items.get(hit_key)
+                                if outline is not None:
+                                    outline.setVisible(False)
+                                self._hover_hidden_outline_key = hit_key
+                    except Exception:
+                        pass
             else:
                 self._clear_hover_highlight()
+                if self.current_mode == 'edit_text' and self._text_edit_drag_state == TextEditDragState.IDLE:
+                    self.graphics_view.viewport().setCursor(Qt.ArrowCursor)
         except Exception as e:
             logger.debug(f"hover highlight update failed: {e}")
             self._clear_hover_highlight()
@@ -3136,21 +3601,142 @@ class PDFView(QMainWindow):
                 pass
             self._hover_highlight_item = None
         self._last_hover_scene_pos = None
+        # Restore any dim outline hidden by hover
+        if self._hover_hidden_outline_key is not None:
+            prev = self._block_outline_items.get(self._hover_hidden_outline_key)
+            if prev is not None:
+                try:
+                    prev.setVisible(True)
+                except Exception:
+                    pass
+            self._hover_hidden_outline_key = None
 
     def _mouse_release(self, event):
-        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         # ── 拖曳移動文字框的放開處理 ──
+        if self.current_mode in ("objects", "text_edit", "edit_text") and event.button() == Qt.LeftButton:
+            if getattr(self, "_object_resize_pending", False):
+                preview = getattr(self, "_object_resize_preview_rect", None)
+                start_rect = getattr(self, "_object_resize_start_doc_rect", None)
+                self._object_resize_pending = False
+                active = bool(getattr(self, "_object_resize_active", False))
+                self._object_resize_active = False
+                if active and preview is not None and start_rect is not None and self._selected_object_info is not None:
+                    self.sig_resize_object.emit(
+                        ResizeObjectRequest(
+                            object_id=self._selected_object_info.object_id,
+                            object_kind=self._selected_object_info.object_kind,
+                            page_num=self._selected_object_info.page_num,
+                            destination_rect=fitz.Rect(preview),
+                        )
+                    )
+                    self._rebase_object_selection_to_bboxes(
+                        {str(self._selected_object_info.object_id): fitz.Rect(preview)}
+                    )
+                event.accept()
+                return
+            if getattr(self, "_object_rotate_pending", False):
+                self._object_rotate_pending = False
+                self._object_drag_pending = False
+                if self._selected_object_info is not None:
+                    self._rotate_selected_object(90)
+                event.accept()
+                return
+
+            preview_rects = getattr(self, "_object_drag_preview_rects", None)
+            if getattr(self, "_object_drag_active", False) and preview_rects:
+                self._object_drag_active = False
+                self._object_drag_pending = False
+                infos = getattr(self, "_selected_object_infos", None) or {}
+                moves: list[MoveObjectRequest] = []
+                for object_id, preview in preview_rects.items():
+                    info = infos.get(object_id)
+                    if info is None or not getattr(info, "supports_move", False):
+                        continue
+                    moves.append(
+                        MoveObjectRequest(
+                            object_id=info.object_id,
+                            object_kind=info.object_kind,
+                            source_page=info.page_num,
+                            destination_page=info.page_num,
+                            destination_rect=fitz.Rect(preview),
+                        )
+                    )
+                if moves:
+                    self.sig_move_object.emit(BatchMoveObjectsRequest(moves=moves))
+                    self._rebase_object_selection_to_bboxes(preview_rects)
+                self._object_drag_preview_rects = None
+                event.accept()
+                return
+
+            if getattr(self, "_object_drag_active", False) and self._object_drag_preview_rect is not None and self._selected_object_info is not None:
+                preview = fitz.Rect(self._object_drag_preview_rect)
+                start_rect = fitz.Rect(self._object_drag_start_doc_rect)
+                self._object_drag_active = False
+                self._object_drag_pending = False
+                if any(abs(a - b) > 0.5 for a, b in zip(preview, start_rect)):
+                    request = MoveObjectRequest(
+                        object_id=self._selected_object_info.object_id,
+                        object_kind=self._selected_object_info.object_kind,
+                        source_page=self._selected_object_info.page_num,
+                        destination_page=self._selected_object_info.page_num,
+                        destination_rect=preview,
+                    )
+                    self.sig_move_object.emit(request)
+                    self._rebase_object_selection_to_bboxes(
+                        {str(self._selected_object_info.object_id): preview}
+                    )
+                event.accept()
+                return
+
+            if getattr(self, "_object_drag_pending", False):
+                self._object_drag_pending = False
+                event.accept()
+                return
+
+        if self.current_mode == 'browse' and event.button() == Qt.LeftButton and self._selected_object_info is not None:
+            if self._object_rotate_pending:
+                self._object_rotate_pending = False
+                self._object_drag_pending = False
+                self._rotate_selected_object(90)
+                event.accept()
+                return
+            if self._object_drag_active and self._object_drag_preview_rect is not None:
+                preview = fitz.Rect(self._object_drag_preview_rect)
+                start_rect = fitz.Rect(self._object_drag_start_doc_rect)
+                self._object_drag_active = False
+                self._object_drag_pending = False
+                if any(abs(a - b) > 0.5 for a, b in zip(preview, start_rect)):
+                    request = MoveObjectRequest(
+                        object_id=self._selected_object_info.object_id,
+                        object_kind=self._selected_object_info.object_kind,
+                        source_page=self._selected_object_info.page_num,
+                        destination_page=self._selected_object_info.page_num,
+                        destination_rect=preview,
+                    )
+                    self.sig_move_object.emit(request)
+                    self._rebase_object_selection_to_bboxes(
+                        {str(self._selected_object_info.object_id): preview}
+                    )
+                else:
+                    self._update_object_selection_visuals()
+                event.accept()
+                return
+            if self._object_drag_pending:
+                self._object_drag_pending = False
+                event.accept()
+                return
         if self.current_mode == 'browse' and event.button() == Qt.LeftButton and self._text_selection_active:
-            scene_pos = self.graphics_view.mapToScene(pos)
+            scene_pos = self._event_scene_pos(event)
             self._finalize_text_selection(scene_pos)
             event.accept()
             return
 
         if self.current_mode in ('edit_text', 'add_text') and event.button() == Qt.LeftButton:
-            scene_pos = self.graphics_view.mapToScene(pos)
+            scene_pos = self._event_scene_pos(event)
 
             if self._drag_pending:
                 self._drag_pending = False
+                self._text_edit_drag_state = TextEditDragState.IDLE
                 if self.text_editor:
                     # 已開啟編輯框（點的是框內）→ 定位游標
                     editor = self.text_editor.widget()
@@ -3170,6 +3756,7 @@ class PDFView(QMainWindow):
             if self._drag_active:
                 # 拖曳結束 → 更新 editing_rect 為新的 PDF 座標（已被 clamp 在頁內）
                 self._drag_active = False
+                self._text_edit_drag_state = TextEditDragState.IDLE
                 self._pending_text_info = None
                 if self.current_mode == 'add_text':
                     self.graphics_view.viewport().setCursor(Qt.IBeamCursor)
@@ -3193,7 +3780,7 @@ class PDFView(QMainWindow):
             QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
             return
 
-        end_pos = self.graphics_view.mapToScene(pos)
+        end_pos = self._event_scene_pos(event)
         rect = QRectF(self.drawing_start, end_pos).normalized()
         cy = (rect.top() + rect.bottom()) / 2
         page_idx = self._scene_y_to_page_index(cy) if (self.continuous_pages and self.page_y_positions) else self.current_page
@@ -3208,7 +3795,7 @@ class PDFView(QMainWindow):
             color = self.rect_color.getRgbF()
             fill = QMessageBox.question(self, "矩形", "是否填滿?") == QMessageBox.Yes
             self.sig_add_rect.emit(page_idx + 1, fitz_rect, color, fill)
-        
+
         self.drawing_start = None
         QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
 
@@ -3225,80 +3812,30 @@ class PDFView(QMainWindow):
         editor_intent: str = "edit_existing",
     ):
         """建立文字編輯框，設定寬度與換行以預覽渲染後的排版（與 PDF insert_htmlbox 一致）。"""
-        if self.text_editor:
-            self._finalize_text_edit()
-
-        page_idx = getattr(self, '_editing_page_idx', self.current_page)
-        render_width_pt = self.controller.model.get_render_width_for_edit(page_idx + 1, rect, rotation, font_size)
-        rs = self._render_scale if self._render_scale > 0 else 1.0
-        scaled_width = int(render_width_pt * rs)
-        scaled_rect = rect * rs
-
-        self.editing_rect = rect
-        self._editing_original_rect = fitz.Rect(rect)  # 保存原始位置，拖曳時不覆蓋
-        y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0
-        pos_x = scaled_rect.x0
-        pos_y = y0 + scaled_rect.y0
-
-        editor = QTextEdit(text)
-        editor.setProperty("original_text", text)
-        self._editing_rotation = rotation
-        self.editing_target_span_id = target_span_id
-        self.editing_target_mode = target_mode if target_mode in ("run", "paragraph") else "run"
-        self.editing_intent = editor_intent if editor_intent in ("edit_existing", "add_new") else "edit_existing"
-
-        qt_font = self._pdf_font_to_qt(font_name)
-        editor.setFont(QFont(qt_font, int(font_size)))
-
-        r, g, b = [int(c * 255) for c in color]
-        editor.setStyleSheet(f"background-color: rgba(255, 255, 150, 0.8); border: 1px solid blue; color: rgb({r},{g},{b});")
-
-        editor.setFixedWidth(max(scaled_width, 80))
-        editor.setMinimumHeight(max(scaled_rect.height, 40))
-        editor.setLineWrapMode(QTextEdit.WidgetWidth)
-        editor.setWordWrapMode(QTextOption.WrapAnywhere)
-
-        size_str = str(round(font_size))
-        if self.text_size.findText(size_str) == -1:
-            self.text_size.addItem(size_str)
-            items = sorted([self.text_size.itemText(i) for i in range(self.text_size.count())], key=int)
-            self.text_size.clear()
-            self.text_size.addItems(items)
-        self.text_size.setCurrentText(size_str)
-        normalized_font = self._qt_font_to_pdf(font_name)
-        self._set_text_font_by_pdf(normalized_font)
-        self._editing_initial_font_name = normalized_font
-        self._editing_initial_size = int(round(font_size))
-        if not hasattr(self, "editing_font_name"):
-            self.editing_font_name = normalized_font
-        if not getattr(self, '_edit_font_size_connected', False):
-            self.text_size.currentTextChanged.connect(self._on_edit_font_size_changed)
-            self._edit_font_size_connected = True
-        if not getattr(self, '_edit_font_family_connected', False):
-            self.text_font.currentIndexChanged.connect(self._on_edit_font_family_changed)
-            self._edit_font_family_connected = True
-
-        self.text_editor = self.scene.addWidget(editor)
-        self.text_editor.setPos(pos_x, pos_y)
-        # Ensure Esc works even when the embedded QTextEdit has focus inside QGraphicsProxyWidget.
-        editor_esc = QShortcut(QKeySequence(Qt.Key_Escape), editor)
-        editor_esc.setContext(Qt.ShortcutContext.WidgetShortcut)
-        editor_esc.activated.connect(self._on_escape_shortcut)
-        editor._escape_shortcut = editor_esc
-        original_key_press = editor.keyPressEvent
-        def _editor_key_press(event):
-            if event.key() == Qt.Key_Escape and self._handle_escape():
-                event.accept()
-                return
-            original_key_press(event)
-        editor.keyPressEvent = _editor_key_press
-        original_focus_out = editor.focusOutEvent
-        def _editor_focus_out(event):
-            self._on_editor_focus_out(event, original_focus_out)
-        editor.focusOutEvent = _editor_focus_out
-        # Activate app-level focus guard only for active inline edit sessions.
-        self._set_edit_focus_guard(True)
-        editor.setFocus()
+        self._ensure_text_edit_manager().create_text_editor(
+            rect=rect,
+            text=text,
+            font_name=font_name,
+            font_size=font_size,
+            color=color,
+            rotation=rotation,
+            target_span_id=target_span_id,
+            target_mode=target_mode,
+            editor_intent=editor_intent,
+        )
+        # Hide the dim block outline for the block being edited
+        try:
+            page_idx = getattr(self, '_editing_page_idx', self.current_page)
+            for outline_key, outline_rect in self._iter_outline_targets(page_idx):
+                if (abs(outline_rect.x0 - rect.x0) < 2 and abs(outline_rect.y0 - rect.y0) < 2
+                        and abs(outline_rect.x1 - rect.x1) < 2 and abs(outline_rect.y1 - rect.y1) < 2):
+                    self._active_outline_key = outline_key
+                    outline = self._block_outline_items.get(self._active_outline_key)
+                    if outline is not None:
+                        outline.setVisible(False)
+                    break
+        except Exception:
+            pass
 
     def _pdf_font_to_qt(self, font_name: str) -> str:
         """將 PDF 字型名稱映射為 Qt 可用字型，使預覽與渲染外觀相近。"""
@@ -3371,176 +3908,90 @@ class PDFView(QMainWindow):
         return "helv"
 
     def _on_edit_font_family_changed(self, *_):
-        if not self.text_editor or not self.text_editor.widget():
-            return
-        editor = self.text_editor.widget()
-        selected_pdf_font = self._qt_font_to_pdf(
-            str(self.text_font.currentData() or self.text_font.currentText())
-        )
-        f = editor.font()
-        f.setFamily(self._pdf_font_to_qt(selected_pdf_font))
-        editor.setFont(f)
-        self.editing_font_name = selected_pdf_font
-        QTimer.singleShot(
-            0,
-            lambda: editor.setFocus(Qt.OtherFocusReason)
-            if (self.text_editor and self.text_editor.widget() is editor)
-            else None,
-        )
+        self._ensure_text_edit_manager().on_edit_font_family_changed(*_)
 
     def _on_edit_font_size_changed(self, size_str: str):
         """編輯中變更字級時，更新編輯框字型以即時預覽。"""
-        if not self.text_editor or not self.text_editor.widget():
-            return
-        try:
-            sz = int(size_str)
-        except (ValueError, TypeError):
-            return
-        editor = self.text_editor.widget()
-        f = editor.font()
-        f.setPointSize(sz)
-        editor.setFont(f)
-        # Return caret focus back to editor so user can continue typing immediately.
-        QTimer.singleShot(
-            0,
-            lambda: editor.setFocus(Qt.OtherFocusReason)
-            if (self.text_editor and self.text_editor.widget() is editor)
-            else None,
-        )
+        self._ensure_text_edit_manager().on_edit_font_size_changed(size_str)
 
-    def _finalize_text_edit(self):
-        # Re-entrancy-safe wrapper: cleanup is done once even if multiple blur events fire.
-        if self._finalizing_text_edit:
-            return
-        if not self.text_editor or not self.text_editor.widget():
-            self._set_edit_focus_guard(False)
-            self._edit_focus_check_pending = False
-            return
-        self._finalizing_text_edit = True
-        try:
-            self._finalize_text_edit_impl()
-        finally:
-            self._set_edit_focus_guard(False)
-            self._edit_focus_check_pending = False
-            self._finalizing_text_edit = False
+    def _finalize_text_edit(
+        self,
+        reason: TextEditFinalizeReason = TextEditFinalizeReason.CLICK_AWAY,
+    ) -> TextEditFinalizeResult | None:
+        return self._ensure_text_edit_manager().finalize_text_edit(reason)
 
-    def _finalize_text_edit_impl(self):
-        if not self.text_editor or not self.text_editor.widget(): return
-
-        # Snapshot editor state before removing proxy widget from the scene.
-        # 1. Get all necessary data out of the editor
-        editor = self.text_editor.widget()
-        new_text = editor.toPlainText()
-        original_text_prop = editor.property("original_text")
-        text_changed = new_text != original_text_prop
-
-        # 取得原始 rect（用於在 PDF 中找到舊文字塊）與當前 rect（拖曳後的新位置）
-        original_rect = self._editing_original_rect  # 編輯開始時的原始位置
-        current_rect = self.editing_rect              # 可能已被拖曳更新
-        position_changed = (
-            original_rect is not None and current_rect is not None and
-            (abs(current_rect.x0 - original_rect.x0) > 0.5 or
-             abs(current_rect.y0 - original_rect.y0) > 0.5)
-        )
-
-        current_font = getattr(self, 'editing_font_name', 'helv')
-        initial_font = getattr(self, '_editing_initial_font_name', current_font)
-        original_color = getattr(self, 'editing_color', (0,0,0))
-        current_size = int(self.text_size.currentText())
-        initial_size = int(getattr(self, '_editing_initial_size', current_size))
-        font_changed = (str(current_font).lower() != str(initial_font).lower())
-        size_changed = current_size != initial_size
-        edit_page = getattr(self, '_editing_page_idx', self.current_page)
-        edit_intent = getattr(self, 'editing_intent', 'edit_existing')
-        discard_changes = bool(getattr(self, "_discard_text_edit_once", False))
-        self._discard_text_edit_once = False
-
-        # 重置拖曳狀態
-        self._drag_pending = False
-        self._drag_active = False
-        self._drag_start_scene_pos = None
-        self._drag_editor_start_pos = None
-        self._pending_text_info = None
-
-        proxy_to_remove = self.text_editor
-        self.text_editor = None  # 先清除，防止 focusOutEvent 遞迴呼叫
-        if proxy_to_remove.scene():
-            self.scene.removeItem(proxy_to_remove)
-        self.editing_rect = None
-        self._editing_original_rect = None
-        if getattr(self, '_edit_font_size_connected', False):
-            try:
-                self.text_size.currentTextChanged.disconnect(self._on_edit_font_size_changed)
-            except (TypeError, RuntimeError):
-                pass
-            self._edit_font_size_connected = False
-        if getattr(self, '_edit_font_family_connected', False):
-            try:
-                self.text_font.currentIndexChanged.disconnect(self._on_edit_font_family_changed)
-            except (TypeError, RuntimeError):
-                pass
-            self._edit_font_family_connected = False
-        if hasattr(self, 'editing_font_name'): del self.editing_font_name
-        if hasattr(self, '_editing_initial_font_name'): del self._editing_initial_font_name
-        if hasattr(self, '_editing_initial_size'): del self._editing_initial_size
-        if hasattr(self, 'editing_color'): del self.editing_color
-        if hasattr(self, '_editing_page_idx'): del self._editing_page_idx
-        if hasattr(self, '_editing_rotation'): del self._editing_rotation
-        target_span_id = getattr(self, 'editing_target_span_id', None)
-        if hasattr(self, 'editing_target_span_id'): del self.editing_target_span_id
-        target_mode = getattr(self, 'editing_target_mode', 'run')
-        if hasattr(self, 'editing_target_mode'): del self.editing_target_mode
-        if hasattr(self, 'editing_intent'): del self.editing_intent
-
-        # "Cancel" should close editor and keep document unchanged.
-        if discard_changes:
-            return
-
-        if edit_intent == 'add_new':
-            if new_text.strip() and current_rect is not None:
-                try:
-                    self.sig_add_textbox.emit(
-                        edit_page + 1,
-                        current_rect,
-                        new_text,
-                        current_font or self._add_text_default_pdf_font,
-                        current_size,
-                        original_color,
-                    )
-                except Exception as e:
-                    logger.error(f"發送新增文字框信號時出錯: {e}")
-            return
-
-        if (text_changed or position_changed or font_changed or size_changed) and original_rect:
-            try:
-                original_text = getattr(self, 'editing_original_text', None)
-                vertical_shift_left = getattr(self, 'vertical_shift_left_cb', None)
-                vsl = vertical_shift_left.isChecked() if vertical_shift_left else True
-                # 若位置有變動，傳入 new_rect；否則傳 None（維持原位）
-                new_rect_arg = current_rect if position_changed else None
-                self.sig_edit_text.emit(
-                    edit_page + 1,
-                    original_rect,      # 原始位置（供模型找到舊文字塊）
-                    new_text,
-                    current_font,
-                    current_size,
-                    original_color,
-                    original_text,
-                    vsl,
-                    new_rect_arg,       # 目標新位置（None = 不移動）
-                    target_span_id,
-                    target_mode,
-                )
-            except Exception as e:
-                logger.error(f"發送編輯信號時出錯: {e}")
+    def _finalize_text_edit_impl(
+        self,
+        reason: TextEditFinalizeReason = TextEditFinalizeReason.CLICK_AWAY,
+    ) -> TextEditFinalizeResult:
+        return self._ensure_text_edit_manager().finalize_text_edit_impl(reason)
 
     def _show_context_menu(self, pos):
-        menu = QMenu(self)
-        if self.current_mode == 'browse' and (self._selected_text_cached or self._selected_text_rect_doc is not None):
+        menu = QMenu()
+        object_hit = self._resolve_object_info_for_context_menu_pos(pos)
+        text_hit = self._resolve_text_info_for_context_menu_pos(pos)
+
+        selected_text_cached = getattr(self, "_selected_text_cached", "")
+        selected_text_rect_doc = getattr(self, "_selected_text_rect_doc", None)
+        if self.current_mode == 'browse' and (selected_text_cached or selected_text_rect_doc is not None):
             menu.addAction("Copy Selected Text", self._copy_selected_text_to_clipboard)
+        if self.current_mode in ("browse", "objects", "edit_text", "text_edit"):
+            if object_hit is not None:
+                self._select_object(object_hit)
+            selected_object = getattr(self, "_selected_object_info", None)
+            if selected_object is not None:
+                if getattr(selected_object, "supports_delete", False):
+                    menu.addAction("Delete Object", self._delete_selected_object)
+                if getattr(selected_object, "supports_rotate", False):
+                    menu.addAction("Rotate Object 90°", lambda checked=False: self._rotate_selected_object(90))
+                menu.addSeparator()
+        if self.current_mode == 'browse':
+            menu.addAction("Select All", self._select_all_text_on_current_page)
+            if text_hit is not None:
+                page_idx, info = text_hit
+                menu.addAction(
+                    "Edit Text",
+                    lambda checked=False, idx=page_idx, hit=info: self._start_text_edit_from_hit(idx, hit),
+                )
             menu.addSeparator()
+            menu.addAction("Zoom In", lambda: self._zoom_relative(1.1))
+            menu.addAction("Zoom Out", lambda: self._zoom_relative(1 / 1.1))
+            menu.addAction("Fit to View", self._fit_to_view)
+            menu.addSeparator()
+            current_page_num = self.current_page + 1
+            menu.addAction("匯出目前頁面...", lambda checked=False, p=current_page_num: self._export_specific_pages([p]))
+            menu.addAction("向右旋轉目前頁面 90°", lambda checked=False, p=current_page_num: self._rotate_specific_pages([p], 90))
+            menu.addAction("向左旋轉目前頁面 90°", lambda checked=False, p=current_page_num: self._rotate_specific_pages([p], 270))
+            menu.addAction("刪除目前頁面", lambda checked=False, p=current_page_num: self._delete_specific_pages([p]))
+            menu.addAction("在目前頁面後插入空白頁", lambda checked=False, p=current_page_num: self._insert_blank_page_at(p + 1))
+            menu.addAction(
+                "在目前頁面後插入其他 PDF 頁面...",
+                lambda checked=False, p=current_page_num: self._insert_pages_from_file_at(p + 1),
+            )
+            menu.addSeparator()
+        if self.current_mode == "objects":
+            target = self._resolve_default_image_insert_target(pos)
+            if target is not None:
+                page_num, visual_rect = target
+                menu.addAction(
+                    "插入圖片...",
+                    lambda checked=False, p=page_num, r=fitz.Rect(visual_rect): self._insert_image_object_from_file(page_num=p, visual_rect=r),
+                )
+                menu.addAction(
+                    "從剪貼簿貼上圖片",
+                    lambda checked=False, p=page_num, r=fitz.Rect(visual_rect): self._insert_image_object_from_clipboard(page_num=p, visual_rect=r),
+                )
+                menu.addSeparator()
+        if self._fullscreen_active:
+            menu.addAction("離開全螢幕", self.sig_toggle_fullscreen.emit)
+            menu.addSeparator()
+        menu.addAction("另存PDF", self._save_as)
+        menu.addAction("列印...", self._print_document)
+        menu.addAction("另存為最佳化的副本", self._optimize_pdf_copy)
+        menu.addSeparator()
         menu.addAction("旋轉頁面", self._rotate_pages)
-        menu.exec_(self.graphics_view.mapToGlobal(pos))
+        global_pos = self.graphics_view.mapToGlobal(pos) if getattr(self, "graphics_view", None) is not None else pos
+        menu.exec_(global_pos)
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "開啟PDF", "", "PDF (*.pdf)")
@@ -3553,7 +4004,7 @@ class PDFView(QMainWindow):
             return
         self.sig_print_requested.emit()
 
-    def ask_pdf_password(self, path: str) -> Optional[str]:
+    def ask_pdf_password(self, path: str) -> str | None:
         """開啟加密 PDF 時彈出密碼輸入框，回傳使用者輸入的密碼；若取消則回傳 None。"""
         dlg = PDFPasswordDialog(self, file_path=path)
         if dlg.exec() == QDialog.Accepted:
@@ -3562,11 +4013,17 @@ class PDFView(QMainWindow):
 
     def _save(self):
         """存回原檔（Ctrl+S），若適用則使用增量更新。"""
+        if self.text_editor and self.text_editor.widget():
+            self._finalize_text_edit(TextEditFinalizeReason.SAVE_SHORTCUT)
         self.sig_save.emit()
 
     def _save_as(self):
-        path, _ = QFileDialog.getSaveFileName(self, "另存PDF", "", "PDF (*.pdf)")
-        if path: self.sig_save_as.emit(path)
+        if self.text_editor and self.text_editor.widget():
+            self._finalize_text_edit(TextEditFinalizeReason.SAVE_SHORTCUT)
+        default_path = getattr(self, "_save_as_default_path", "")
+        path, _ = QFileDialog.getSaveFileName(self, "另存PDF", default_path, "PDF (*.pdf)")
+        if path:
+            self.sig_save_as.emit(path)
 
     def _optimize_pdf_copy(self):
         if self.total_pages == 0:
@@ -3582,6 +4039,13 @@ class PDFView(QMainWindow):
                 if parsed: self.sig_delete_pages.emit(parsed)
             except ValueError: show_error(self, "頁碼格式錯誤")
 
+    def _delete_specific_pages(self, pages: list[int]) -> None:
+        if self.total_pages == 0:
+            show_error(self, "沒有開啟的PDF文件")
+            return
+        if pages:
+            self.sig_delete_pages.emit(sorted(set(int(page) for page in pages)))
+
     def _rotate_pages(self):
         pages, ok = QInputDialog.getText(self, "旋轉頁面", "輸入頁碼 (如 1,3-5):")
         if ok and pages:
@@ -3591,6 +4055,13 @@ class PDFView(QMainWindow):
                     parsed = parse_pages(pages, self.total_pages)
                     if parsed: self.sig_rotate_pages.emit(parsed, degrees)
                 except ValueError: show_error(self, "頁碼格式錯誤")
+
+    def _rotate_specific_pages(self, pages: list[int], degrees: int) -> None:
+        if self.total_pages == 0:
+            show_error(self, "沒有開啟的PDF文件")
+            return
+        if pages:
+            self.sig_rotate_pages.emit(sorted(set(int(page) for page in pages)), degrees)
 
     @staticmethod
     def _normalize_image_extension(ext: str) -> str:
@@ -3646,6 +4117,31 @@ class PDFView(QMainWindow):
                 path = f"{path}.pdf"
 
         self.sig_export_pages.emit(pages, path, as_image, dpi, image_format)
+
+    def _export_specific_pages(self, pages: list[int]) -> None:
+        if self.total_pages == 0:
+            show_error(self, "沒有可匯出的 PDF")
+            return
+        if not pages:
+            return
+
+        filters = "PDF (*.pdf);;JPEG (*.jpg *.jpeg);;PNG (*.png);;TIFF (*.tif *.tiff)"
+        path, selected_filter = QFileDialog.getSaveFileName(self, "匯出頁面", "", filters)
+        if not path:
+            return
+
+        lowered = (selected_filter or "").lower()
+        as_image = "pdf" not in lowered
+        image_format = "png"
+        if as_image:
+            image_format = self._resolve_image_format(path, selected_filter)
+            if not Path(path).suffix:
+                path = f"{path}.{image_format}"
+        else:
+            if not Path(path).suffix:
+                path = f"{path}.pdf"
+
+        self.sig_export_pages.emit(sorted(set(int(page) for page in pages)), path, as_image, 300, image_format)
 
     def _show_search_panel(self):
         """Trigger search mode: switch left sidebar to Search tab, focus input (e.g. from Controller)."""
@@ -3733,7 +4229,7 @@ class PDFView(QMainWindow):
             "index": self.current_search_index,
         }
 
-    def apply_search_ui_state(self, state: Optional[dict]) -> None:
+    def apply_search_ui_state(self, state: dict | None) -> None:
         state = state or {}
         query = state.get("query", "")
         results = list(state.get("results", []))
@@ -3756,7 +4252,7 @@ class PDFView(QMainWindow):
     def clear_search_ui_state(self) -> None:
         self.apply_search_ui_state({"query": "", "results": [], "index": -1})
 
-    def display_search_results(self, results: List[Tuple[int, str, fitz.Rect]]):
+    def display_search_results(self, results: list[tuple[int, str, fitz.Rect]]):
         self.current_search_results = results
         self.current_search_index = -1
         if (
@@ -3777,7 +4273,7 @@ class PDFView(QMainWindow):
             item.setData(Qt.UserRole, (page_num, rect))
             self.search_results_list.addItem(item)
 
-    def populate_annotations_list(self, annotations: List[dict]):
+    def populate_annotations_list(self, annotations: list[dict]):
         if getattr(self, "annotation_list", None) is None:
             return
         self.annotation_list.clear()
@@ -3792,12 +4288,32 @@ class PDFView(QMainWindow):
         self.annotation_list.addItem(item)
 
     def _ocr_pages(self):
-        pages, ok = QInputDialog.getText(self, "OCR頁面", "輸入頁碼 (如 1,3-5):")
-        if ok and pages:
-            try:
-                parsed = parse_pages(pages, self.total_pages)
-                if parsed: self.sig_ocr.emit(parsed)
-            except ValueError: show_error(self, "頁碼格式錯誤")
+        if self.total_pages == 0:
+            show_error(self, "沒有開啟的 PDF 文件")
+            return
+        if not getattr(self, "_ocr_available", True):
+            tooltip = str(getattr(self, "_ocr_unavailable_tooltip", "") or "").strip()
+            show_error(self, tooltip or "Surya OCR 未安裝\npip install surya-ocr")
+            return
+        current = max(1, int(self.current_page) + 1)
+        dialog = OcrDialog(
+            parent=self,
+            total_pages=max(1, int(self.total_pages)),
+            current_page=current,
+        )
+        if dialog.exec():
+            request = dialog.get_request()
+            if request is not None:
+                self.sig_start_ocr.emit(request)
+
+    def update_ocr_availability(self, available: bool, tooltip: str = "") -> None:
+        action = getattr(self, "ocr_action", None)
+        if action is None:
+            return
+        self._ocr_available = bool(available)
+        self._ocr_unavailable_tooltip = str(tooltip or "")
+        action.setEnabled(True)
+        action.setToolTip("" if available else self._ocr_unavailable_tooltip)
 
     def _snapshot_page(self):
         """觸發當前頁面的快照功能"""
@@ -3811,7 +4327,7 @@ class PDFView(QMainWindow):
         if self.total_pages == 0:
             show_error(self, "沒有開啟的PDF文件")
             return
-        
+
         # 詢問插入位置，預設為當前頁面之後
         default_position = self.current_page + 2  # 轉換為 1-based，並插入到當前頁之後
         position, ok = QInputDialog.getInt(
@@ -3826,12 +4342,19 @@ class PDFView(QMainWindow):
         if ok:
             self.sig_insert_blank_page.emit(position)
 
+    def _insert_blank_page_at(self, position: int) -> None:
+        if self.total_pages == 0:
+            show_error(self, "沒有開啟的PDF文件")
+            return
+        bounded = max(1, min(int(position), self.total_pages + 1))
+        self.sig_insert_blank_page.emit(bounded)
+
     def _insert_pages_from_file(self):
         """從其他檔案插入頁面"""
         if self.total_pages == 0:
             show_error(self, "沒有開啟的PDF文件")
             return
-        
+
         # 選擇來源PDF檔案
         source_file, _ = QFileDialog.getOpenFileName(
             self,
@@ -3841,7 +4364,7 @@ class PDFView(QMainWindow):
         )
         if not source_file:
             return
-        
+
         # 開啟來源檔案以獲取總頁數
         try:
             source_doc = fitz.open(source_file)
@@ -3850,7 +4373,7 @@ class PDFView(QMainWindow):
         except Exception as e:
             show_error(self, f"無法讀取來源檔案: {e}")
             return
-        
+
         # 詢問要插入的頁碼
         pages_text, ok = QInputDialog.getText(
             self,
@@ -3859,7 +4382,7 @@ class PDFView(QMainWindow):
         )
         if not ok or not pages_text:
             return
-        
+
         # 解析頁碼
         try:
             source_pages = parse_pages(pages_text, source_total_pages)
@@ -3869,7 +4392,7 @@ class PDFView(QMainWindow):
         except ValueError as e:
             show_error(self, f"頁碼格式錯誤: {e}")
             return
-        
+
         # 詢問插入位置
         default_position = self.current_page + 2  # 轉換為 1-based，並插入到當前頁之後
         position, ok = QInputDialog.getInt(
@@ -3883,6 +4406,142 @@ class PDFView(QMainWindow):
         )
         if ok:
             self.sig_insert_pages_from_file.emit(source_file, source_pages, position)
+
+    def _insert_pages_from_file_at(self, position: int) -> None:
+        if self.total_pages == 0:
+            show_error(self, "沒有開啟的PDF文件")
+            return
+
+        source_file, _ = QFileDialog.getOpenFileName(
+            self,
+            "選擇來源PDF檔案",
+            "",
+            "PDF (*.pdf)"
+        )
+        if not source_file:
+            return
+
+        try:
+            source_doc = fitz.open(source_file)
+            source_total_pages = len(source_doc)
+            source_doc.close()
+        except Exception as e:
+            show_error(self, f"無法讀取來源檔案: {e}")
+            return
+
+        pages_text, ok = QInputDialog.getText(
+            self,
+            "選擇要插入的頁面",
+            f"輸入來源檔案中的頁碼 (如 1,3-5，總頁數: {source_total_pages}):"
+        )
+        if not ok or not pages_text:
+            return
+
+        try:
+            source_pages = parse_pages(pages_text, source_total_pages)
+            if not source_pages:
+                show_error(self, "沒有選擇有效的頁面")
+                return
+        except ValueError as e:
+            show_error(self, f"頁碼格式錯誤: {e}")
+            return
+
+        bounded = max(1, min(int(position), self.total_pages + 1))
+        self.sig_insert_pages_from_file.emit(source_file, source_pages, bounded)
+
+    def _clipboard_png_bytes(self) -> bytes | None:
+        clipboard = QApplication.clipboard()
+        try:
+            image = clipboard.image()
+        except Exception:
+            image = None
+        if image is None or getattr(image, "isNull", lambda: True)():
+            return None
+        buf = QBuffer()
+        buf.open(QBuffer.WriteOnly)
+        ok = image.save(buf, "PNG")
+        if not ok:
+            return None
+        return bytes(buf.data())
+
+    def _default_image_insert_rect_for_page(self, page_idx: int, center: fitz.Point | None = None) -> fitz.Rect:
+        page_rect = fitz.Rect(0.0, 0.0, 595.0, 842.0)
+        try:
+            model = getattr(getattr(self, "controller", None), "model", None)
+            if model is not None and getattr(model, "doc", None):
+                page_rect = fitz.Rect(model.doc[page_idx].rect)
+        except Exception:
+            pass
+        width = min(220.0, max(120.0, page_rect.width * 0.28))
+        height = width * 0.75
+        cx = float(center.x) if center is not None else float((page_rect.x0 + page_rect.x1) / 2.0)
+        cy = float(center.y) if center is not None else float((page_rect.y0 + page_rect.y1) / 2.0)
+        x0 = cx - (width / 2.0)
+        y0 = cy - (height / 2.0)
+        x0 = max(page_rect.x0, min(x0, page_rect.x1 - width))
+        y0 = max(page_rect.y0, min(y0, page_rect.y1 - height))
+        return fitz.Rect(x0, y0, x0 + width, y0 + height)
+
+    def _resolve_default_image_insert_target(self, pos: QPoint) -> tuple[int, fitz.Rect] | None:
+        graphics_view = getattr(self, "graphics_view", None)
+        if graphics_view is None:
+            return None
+        try:
+            scene_pos = graphics_view.mapToScene(pos)
+            page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
+            page_idx = max(0, int(page_idx))
+            return page_idx + 1, self._default_image_insert_rect_for_page(page_idx, doc_point)
+        except Exception:
+            page_idx = max(0, int(getattr(self, "current_page", 0)))
+            return page_idx + 1, self._default_image_insert_rect_for_page(page_idx)
+
+    def _insert_image_object_from_file_at_current_page(self) -> None:
+        page_idx = max(0, int(getattr(self, "current_page", 0)))
+        page_num = page_idx + 1
+        self._insert_image_object_from_file(
+            page_num=page_num,
+            visual_rect=self._default_image_insert_rect_for_page(page_idx),
+        )
+
+    def _insert_image_object_from_clipboard_at_current_page(self) -> None:
+        page_idx = max(0, int(getattr(self, "current_page", 0)))
+        page_num = page_idx + 1
+        self._insert_image_object_from_clipboard(
+            page_num=page_num,
+            visual_rect=self._default_image_insert_rect_for_page(page_idx),
+        )
+
+    def _insert_image_object_from_file(self, *, page_num: int, visual_rect: fitz.Rect) -> None:
+        filename, _ = QFileDialog.getOpenFileName(self, "選擇圖片", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        if not filename:
+            return
+        try:
+            image_bytes = Path(filename).read_bytes()
+        except Exception as exc:
+            show_error(self, f"無法讀取圖片: {exc}")
+            return
+        self.sig_add_image_object.emit(
+            InsertImageObjectRequest(
+                page_num=int(page_num),
+                visual_rect=fitz.Rect(visual_rect),
+                image_bytes=image_bytes,
+                rotation=0,
+            )
+        )
+
+    def _insert_image_object_from_clipboard(self, *, page_num: int, visual_rect: fitz.Rect) -> None:
+        image_bytes = self._clipboard_png_bytes()
+        if not image_bytes:
+            show_error(self, "剪貼簿沒有可用的圖片")
+            return
+        self.sig_add_image_object.emit(
+            InsertImageObjectRequest(
+                page_num=int(page_num),
+                visual_rect=fitz.Rect(visual_rect),
+                image_bytes=image_bytes,
+                rotation=0,
+            )
+        )
 
     def _apply_scale(self):
         transform = QTransform().scale(self.scale, self.scale)

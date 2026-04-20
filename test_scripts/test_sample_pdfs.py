@@ -1,10 +1,9 @@
-﻿# -*- coding: utf-8 -*-
-"""
+﻿"""
 使用 1.pdf、2.pdf、when I was young I.pdf 測試 PDF 編輯器
 驗證：開啟、建立索引、擷取文字、執行編輯
 """
-import sys
 import io
+import sys
 from pathlib import Path
 
 # Script-style smoke runner; keep out of pytest auto-collection.

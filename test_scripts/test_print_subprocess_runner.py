@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Subprocess runner lifecycle tests."""
 
 from __future__ import annotations
@@ -48,7 +47,7 @@ class _FakeProcess(QObject):
     finished = Signal(int, object)
     errorOccurred = Signal(object)
 
-    instances: list["_FakeProcess"] = []
+    instances: list[_FakeProcess] = []
 
     def __init__(self, *_args, **_kwargs) -> None:
         super().__init__()

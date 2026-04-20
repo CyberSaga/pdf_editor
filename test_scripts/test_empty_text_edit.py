@@ -1,11 +1,10 @@
-# -*- coding: utf-8 -*-
 """Regression tests for empty text edits deleting the target textbox."""
 
 from __future__ import annotations
 
+import sys
 import tempfile
 from pathlib import Path
-import sys
 
 import fitz
 

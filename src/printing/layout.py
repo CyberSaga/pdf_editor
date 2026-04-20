@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Tuple
-
 PAPER_SIZE_POINTS = {
     "a4": (595.0, 842.0),
     "letter": (612.0, 792.0),
@@ -40,7 +38,7 @@ def resolve_paper_size_points(
     paper_size: str | None,
     source_width_pt: float,
     source_height_pt: float,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     key = (paper_size or "auto").strip().lower()
     if key == "auto":
         return max(1.0, source_width_pt), max(1.0, source_height_pt)
@@ -69,7 +67,7 @@ def compute_target_draw_rect(
     scale_mode: str | None = "fit",
     scale_percent: int | float | None = 100,
     fit_to_page: bool = True,
-) -> Tuple[float, float, float, float]:
+) -> tuple[float, float, float, float]:
     """
     Return centered draw rect (x, y, width, height) in target-space pixels.
     """

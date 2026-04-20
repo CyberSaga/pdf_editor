@@ -1,0 +1,25 @@
+# Focused Live Acrobat-vs-Editor Parity Run
+
+## Evidence Pack
+- Output directory: `test_scripts/test_outputs/live_parity`
+- Screen recording: `test_scripts/test_outputs/live_parity/screen_recording.mp4`
+
+## Results
+| task_id | app | start_time | end_time | verdict | friction_notes | saved_output_path |
+|---|---|---|---|---|---|---|
+| `navigation.page_down` | `acrobat` | `2026-03-30T15:59:51+08:00` | `2026-03-30T15:59:55+08:00` | `FAIL` | Three PageDown presses; before/after diff ratio=0.0016. | `` |
+| `navigation.page_down` | `pdf_editor` | `2026-03-30T15:59:55+08:00` | `2026-03-30T16:00:00+08:00` | `FAIL` | Three PageDown presses; before/after diff ratio=0.0000. | `` |
+| `navigation.zoom_flow` | `acrobat` | `2026-03-30T16:00:01+08:00` | `2026-03-30T16:00:06+08:00` | `PASS` | Ctrl+plus, Ctrl+minus, Ctrl+0, then PageDown; diff ratio=0.0920. | `` |
+| `navigation.zoom_flow` | `pdf_editor` | `2026-03-30T16:00:06+08:00` | `2026-03-30T16:00:11+08:00` | `FAIL` | Ctrl+plus, Ctrl+minus, Ctrl+0, then PageDown; diff ratio=0.0009. | `` |
+| `navigation.reading_state_continuity` | `acrobat` | `2026-03-30T16:00:12+08:00` | `2026-03-30T16:00:18+08:00` | `PASS` | Focus switched away and back; viewport stability diff ratio=0.0016. | `` |
+| `navigation.reading_state_continuity` | `pdf_editor` | `2026-03-30T16:00:18+08:00` | `2026-03-30T16:00:23+08:00` | `PASS` | Focus switched away and back; viewport stability diff ratio=0.0009. | `` |
+| `selection.copy` | `acrobat` | `2026-03-30T16:00:24+08:00` | `2026-03-30T16:00:29+08:00` | `FAIL` | Horizontal drag selection then Ctrl+C. Clipboard length=0. | `` |
+| `selection.copy` | `pdf_editor` | `2026-03-30T16:00:29+08:00` | `2026-03-30T16:00:38+08:00` | `FAIL` | Horizontal drag selection then Ctrl+C. Clipboard length=0. | `` |
+| `edit.discard` | `acrobat` | `2026-03-30T16:00:39+08:00` | `2026-03-30T16:00:45+08:00` | `BLOCKED` | Blocked: existing-text edit entry is not exposed through a reliably comparable workflow in both apps for this scripted pass. | `` |
+| `edit.discard` | `pdf_editor` | `2026-03-30T16:00:45+08:00` | `2026-03-30T16:00:45+08:00` | `BLOCKED` | Blocked: existing-text edit entry is not exposed through a reliably comparable workflow in both apps for this scripted pass. | `` |
+| `edit.commit` | `acrobat` | `2026-03-30T16:00:46+08:00` | `2026-03-30T16:00:52+08:00` | `BLOCKED` | Blocked: existing-text commit interaction is not safely comparable in both apps for this scripted pass. | `` |
+| `edit.commit` | `pdf_editor` | `2026-03-30T16:00:52+08:00` | `2026-03-30T16:00:52+08:00` | `BLOCKED` | Blocked: existing-text commit interaction is not safely comparable in both apps for this scripted pass. | `` |
+| `edit.undo_redo` | `acrobat` | `2026-03-30T16:00:53+08:00` | `2026-03-30T16:00:54+08:00` | `BLOCKED` | Blocked: undo/redo parity depends on the blocked commit-edit scenario. | `` |
+| `edit.undo_redo` | `pdf_editor` | `2026-03-30T16:00:54+08:00` | `2026-03-30T16:00:55+08:00` | `BLOCKED` | Blocked: undo/redo parity depends on the blocked commit-edit scenario. | `` |
+| `persistence.save_as` | `acrobat` | `2026-03-30T16:00:56+08:00` | `2026-03-30T16:00:56+08:00` | `BLOCKED` | Blocked: Save As persistence parity depends on the blocked commit-edit scenario. | `` |
+| `persistence.save_as` | `pdf_editor` | `2026-03-30T16:00:56+08:00` | `2026-03-30T16:00:57+08:00` | `BLOCKED` | Blocked: Save As persistence parity depends on the blocked commit-edit scenario. | `` |

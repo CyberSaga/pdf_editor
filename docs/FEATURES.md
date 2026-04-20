@@ -9,22 +9,46 @@ The editor uses a multi-tab session model. Each tab keeps independent page index
 Document intake now supports both explicit open and drag-and-drop:
 - `Ctrl+O` and file-picker open still work as before.
 - Users can drag one or more local PDF files onto the app window to open them as tabs in the same order they were dropped.
+- Drag-and-drop never merges documents implicitly. Merge is always an explicit action (Merge PDFs dialog or CLI `--merge`).
 - Non-PDF files, folders, and remote URLs are ignored silently.
 - On empty startup, an early drop is not lost: the shell can queue dropped PDF paths until the deferred controller attach finishes, then open them normally.
 
 ## 2. Modes and Interaction Rules
 
-The supported modes are `browse`, `edit_text`, `add_text`, `rect`, `highlight`, and `add_annotation`. In `edit_text` mode, clicking existing text enters edit on that target while clicking blank area does not create a new textbox. In `add_text` mode, click behavior is dedicated to insertion: if an editor is already open, clicking blank space commits and closes it; if no editor is active, clicking creates a new textbox editor. `rect`, `highlight`, and `add_annotation` are sticky modes: after each operation they remain active for repeated actions. Empty add-new commit is a no-op and does not create history. Mode toolbar buttons are checkable and synchronized to the active mode. Key functions include `set_mode(...)`, `_mouse_press(...)`, `_mouse_release(...)`, `_create_add_text_editor_at_scene(...)`, and `_finalize_text_edit(...)`.
+The supported modes are `browse`, `edit_text`, `add_text`, `rect`, `highlight`, and `add_annotation`. In `edit_text` mode, clicking existing text enters edit on that target while clicking blank area does not create a new textbox; all text block boundaries are shown as persistent outlines so editable zones are always visible, and the cursor shows IBeam over text blocks. Switching away from `edit_text` with an open editor auto-commits the pending edit (same as CLICK_AWAY) and briefly shows a toast notification — edits are never silently discarded on mode switch. In `add_text` mode, click behavior is dedicated to insertion: if an editor is already open, clicking blank space commits and closes it; if no editor is active, clicking creates a new textbox editor. `rect`, `highlight`, and `add_annotation` are sticky modes: after each operation they remain active for repeated actions. Empty add-new commit is a no-op and does not create history. Mode toolbar buttons are checkable and synchronized to the active mode. Key functions include `set_mode(...)`, `_mouse_press(...)`, `_mouse_release(...)`, `_create_add_text_editor_at_scene(...)`, `_draw_all_block_outlines(...)`, `_clear_all_block_outlines(...)`, and `_finalize_text_edit(...)`.
+
+## 2.1 Objects Mode (操作物件)
+
+Objects mode enables direct manipulation of non-text objects such as rectangles and images (including native images present in the original PDF and images inserted by the editor). Core behavior:
+- Selection: click an object to select it and show an edit box with rotate and resize handles.
+- Multi-select: `Shift+Click` toggles additional objects on the same page (same-page only).
+- Move: drag moves the selected object(s); the selection overlay follows the object positions immediately after release (no extra click needed).
+- Resize: corner handles resize by moving the corresponding edges (left-corner drags move the left edge; right-corner drags move the right edge), rather than always stretching from the bottom-right.
+- Overlap: objects are allowed to overlap; moving/resizing does not auto-reflow or push other objects aside.
+- Rotate/delete: rotate and delete are explicit actions through shortcut/context menu controls.
 
 ## 3. Text Target Granularity
 
 Text targeting supports `run` and `paragraph` granularity. The UI control `文字選取粒度` defaults to `paragraph`, and startup sync aligns model state to that UI default. For compatibility and overlap safety, when an explicit `target_span_id` is present and mode is not explicitly provided, execution resolves to `run` precision. Key functions include `_on_text_target_mode_changed(...)`, `set_text_target_mode(...)`, `get_text_info_at_point(...)`, and `edit_text(...)` mode resolution.
+
+Effective target-mode resolution in `edit_text(...)`:
+- If `target_mode` is omitted and `target_span_id` is omitted, edits default to `paragraph` scope (legacy rect-based behavior).
+- If `target_mode` is omitted but `target_span_id` is present, edits default to `run` scope (span-precise).
+- If `target_mode="run"` is requested without an explicit `target_span_id`, the edit auto-promotes to `paragraph` to avoid partially clobbering multi-run blocks.
+  - Exception: when `original_text` is clearly a sub-section of the block (normalized length < 60% of the resolved block text), the edit stays in `run` mode.
 
 ## 4. Transactional Text Editing
 
 Existing-text editing is transactional: resolve target, build overlap cluster, redact once, replay protected content, insert replacement text, validate output, and rollback on failure. This protects non-target content and maintains deterministic undo/redo through command boundaries. Key functions include `edit_text(...)`, `_resolve_paragraph_candidate(...)`, `_restore_page_from_snapshot(...)`, and `EditTextCommand` execution paths.
 Style-only edits are first-class: if only font and/or size changes (without text change), commit still records a history entry and persists to page content.
 Clearing all text in an existing inline editor and committing is treated as an intentional delete operation for that target textbox content (not a revert/no-op), and remains fully undo/redo-compatible via `EditTextCommand`.
+Edit commits are now typed at the view boundary. Same-page commits emit `EditTextRequest`; cross-page moves emit `MoveTextRequest` instead of the older long positional signal signature.
+If the target block or target span can no longer be resolved at commit time, the controller shows targeted failure feedback and does not create an undo-history entry for that attempted edit.
+
+Cross-page move behavior:
+- Dragging an existing text edit to another page commits as a move, not as two separate user-visible history actions.
+- The source text is removed first, the destination textbox is inserted second, and the operation records one `SnapshotCommand` only if the whole move succeeds.
+- If any step fails, the document is restored from the pre-move snapshot so users do not end up with half-applied moves.
 
 ## 5. Add Textbox as True Page Text
 
@@ -81,6 +105,7 @@ Browse mode supports drag text selection with text-bounds snapping. Copy is avai
 ## 12. Performance and Progressive Loading
 
 Large PDF handling uses staged loading and batching to preserve interactivity while thumbnails and indices are built. Continuous mode is placeholder-first: the view builds full-document scroll geometry immediately from placeholders, then the controller progressively renders only the visible pages (plus a small prefetch margin) and upgrades visible pages to high quality in the background. Rendering and refresh scopes are coordinated to avoid blocking behavior and stale geometry.
+In `edit_text` mode, persistent text-block outlines on visible pages are also viewport-friendly: scroll/zoom-driven outline redraws are debounced through an 80 ms single-shot timer so rapid scrollbar ticks collapse to one redraw instead of repeatedly rebuilding all visible outline items.
 
 Key functions include controller visible render scheduling and view placeholder scene initialization.
 
@@ -106,7 +131,7 @@ Key functions include `_qt_font_to_pdf(...)`, `_pdf_font_to_qt(...)`, `_resolve_
 
 ## 14. Keyboard Shortcuts and Save Prompt Keys
 
-Core keyboard shortcuts include `Ctrl+Z` (undo), `Ctrl+Y` (redo), `Ctrl+S` (save), `Ctrl+Shift+S` (save as), and `F2` (enter edit-text mode).  
+Core keyboard shortcuts include `Ctrl+Z` (undo), `Ctrl+Y` (redo), `Ctrl+S` (save), `Ctrl+Shift+S` (save as), and `F2` (enter edit-text mode). On macOS, `Cmd+Shift+Z` is also registered as a redo alias (`_redo_mac_shortcut`) to match macOS convention alongside `Cmd+Y`.  
 `Esc` handling follows priority rules: close active editor/dialog first (and keep current mode), otherwise switch non-browse mode back to `browse`, otherwise run existing browse fallback (for example search sidebar close).  
 When closing with unsaved changes, confirmation dialogs provide explicit key hints and single-key actions: `Y` to save and `N` to discard (with `Esc` as cancel).
 

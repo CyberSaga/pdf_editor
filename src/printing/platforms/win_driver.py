@@ -8,12 +8,12 @@ import shutil
 import subprocess
 import zlib
 from ctypes import wintypes
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from PySide6.QtPrintSupport import QPrinterInfo
 
-from ..base_driver import PrintJobOptions, PrintJobResult, PrinterDevice, PrinterDriver
-from ..errors import PrintJobSubmissionError, PrinterUnavailableError
+from ..base_driver import PrinterDevice, PrinterDriver, PrintJobOptions, PrintJobResult
+from ..errors import PrinterUnavailableError, PrintJobSubmissionError
 from ..qt_bridge import raster_print_pdf
 
 try:
@@ -22,7 +22,7 @@ except Exception:  # pragma: no cover - optional dependency
     win32print = None
 
 
-_WIN32_STATUS_MAP: Dict[int, str] = {
+_WIN32_STATUS_MAP: dict[int, str] = {
     0x00000080: "offline",
     0x00000020: "out_of_paper",
     0x00000040: "paper_jam",
@@ -32,19 +32,19 @@ _WIN32_STATUS_MAP: Dict[int, str] = {
     0x00001000: "toner_low",
 }
 
-_DMPAPER_TO_APP: Dict[int, str] = {
+_DMPAPER_TO_APP: dict[int, str] = {
     9: "a4",
     1: "letter",
     5: "legal",
 }
 
-_DUPLEX_TO_APP: Dict[int, str] = {
+_DUPLEX_TO_APP: dict[int, str] = {
     1: "none",
     2: "long",
     3: "short",
 }
 
-_DMBIN_LABELS: Dict[int, str] = {
+_DMBIN_LABELS: dict[int, str] = {
     1: "Auto",
     2: "Tray 2",
     3: "Tray 3",
@@ -176,8 +176,8 @@ def _map_devmode_values_to_preferences(
     color_mode: int,
     print_quality: int,
     copies: int,
-) -> Dict[str, Any]:
-    prefs: Dict[str, Any] = {}
+) -> dict[str, Any]:
+    prefs: dict[str, Any] = {}
     if paper_code in _DMPAPER_TO_APP:
         prefs["paper_size"] = _DMPAPER_TO_APP[paper_code]
     if orientation == 1:
@@ -203,7 +203,7 @@ def _buffer_to_public_devmode(buffer: ctypes.Array[ctypes.c_char]) -> _PUBLIC_DE
     return _PUBLIC_DEVMODEW.from_buffer_copy(buffer)
 
 
-def _buffer_to_preferences(buffer: ctypes.Array[ctypes.c_char]) -> Dict[str, Any]:
+def _buffer_to_preferences(buffer: ctypes.Array[ctypes.c_char]) -> dict[str, Any]:
     devmode = _buffer_to_public_devmode(buffer)
     return _map_devmode_values_to_preferences(
         paper_code=int(devmode.u1.s.dmPaperSize),
@@ -236,9 +236,9 @@ class WindowsPrinterDriver(PrinterDriver):
     def supports_printer_properties_dialog(self) -> bool:
         return win32print is not None or shutil.which("rundll32.exe") is not None
 
-    def list_printers(self) -> List[PrinterDevice]:
+    def list_printers(self) -> list[PrinterDevice]:
         default_name = self.get_default_printer()
-        devices: List[PrinterDevice] = []
+        devices: list[PrinterDevice] = []
 
         if win32print is not None:
             flags = win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
@@ -263,7 +263,7 @@ class WindowsPrinterDriver(PrinterDriver):
             )
         return devices
 
-    def get_default_printer(self) -> Optional[str]:
+    def get_default_printer(self) -> str | None:
         if win32print is not None:
             try:
                 return str(win32print.GetDefaultPrinter())
@@ -300,12 +300,12 @@ class WindowsPrinterDriver(PrinterDriver):
     def print_pdf(
         self,
         pdf_path: str,
-        page_indices: List[int],
+        page_indices: list[int],
         options: PrintJobOptions,
     ) -> PrintJobResult:
         return raster_print_pdf(pdf_path, page_indices, options)
 
-    def _devmode_to_preferences(self, devmode: Any) -> Dict[str, Any]:
+    def _devmode_to_preferences(self, devmode: Any) -> dict[str, Any]:
         if devmode is None:
             return {}
         return _map_devmode_values_to_preferences(
@@ -318,15 +318,15 @@ class WindowsPrinterDriver(PrinterDriver):
             copies=int(getattr(devmode, "Copies", 0) or 0),
         )
 
-    def _list_paper_trays(self, printer_name: str, port_name: str) -> List[Dict[str, str]]:
+    def _list_paper_trays(self, printer_name: str, port_name: str) -> list[dict[str, str]]:
         if win32print is None:
             return []
-        ports_to_try: List[Optional[str]] = []
+        ports_to_try: list[str | None] = []
         if port_name:
             ports_to_try.append(port_name)
         ports_to_try.extend(["", None])
 
-        best_options: List[Dict[str, str]] = []
+        best_options: list[dict[str, str]] = []
         best_named_count = -1
         best_total_count = -1
         for port in ports_to_try:
@@ -352,7 +352,7 @@ class WindowsPrinterDriver(PrinterDriver):
                 names = []
 
             local_seen: set[str] = set()
-            local_options: List[Dict[str, str]] = []
+            local_options: list[dict[str, str]] = []
             named_count = 0
             for idx, code in enumerate(bins):
                 code_int = int(code)
@@ -380,7 +380,7 @@ class WindowsPrinterDriver(PrinterDriver):
                 best_named_count = named_count
         return best_options
 
-    def _safe_get_printer_info(self, handle: Any, level: int) -> Dict[str, Any]:
+    def _safe_get_printer_info(self, handle: Any, level: int) -> dict[str, Any]:
         if win32print is None:
             return {}
         try:
@@ -389,12 +389,12 @@ class WindowsPrinterDriver(PrinterDriver):
             return {}
         return info if isinstance(info, dict) else {}
 
-    def _collect_printer_preferences(self, handle: Any, printer_name: str) -> Dict[str, Any]:
+    def _collect_printer_preferences(self, handle: Any, printer_name: str) -> dict[str, Any]:
         info2 = self._safe_get_printer_info(handle, 2)
         info8 = self._safe_get_printer_info(handle, 8)
         info9 = self._safe_get_printer_info(handle, 9)
 
-        prefs: Dict[str, Any] = {}
+        prefs: dict[str, Any] = {}
         for info in (info2, info8, info9):
             prefs.update(self._devmode_to_preferences(info.get("pDevMode")))
 
@@ -432,7 +432,7 @@ class WindowsPrinterDriver(PrinterDriver):
         self,
         handle: Any,
         printer_name: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         if _DOCUMENT_PROPERTIES_W is None:
             raise PrintJobSubmissionError("DocumentPropertiesW is unavailable.")
 
@@ -491,7 +491,7 @@ class WindowsPrinterDriver(PrinterDriver):
             returned_prefs["opaque_fields"] = ["color_mode", "paper_tray"]
         return returned_prefs
 
-    def get_printer_preferences(self, printer_name: str) -> Dict[str, Any]:
+    def get_printer_preferences(self, printer_name: str) -> dict[str, Any]:
         if win32print is None:
             return {}
         handle = None
@@ -507,7 +507,7 @@ class WindowsPrinterDriver(PrinterDriver):
                 except Exception:
                     pass
 
-    def open_printer_properties(self, printer_name: str) -> Optional[Dict[str, Any]]:
+    def open_printer_properties(self, printer_name: str) -> dict[str, Any] | None:
         normalized_name = (printer_name or "").strip()
         if not normalized_name:
             raise PrinterUnavailableError("No printer selected.")

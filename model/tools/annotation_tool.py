@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
+import json
 import logging
+import uuid
 from typing import TYPE_CHECKING
 
 import fitz
@@ -22,7 +24,7 @@ class AnnotationTool(ToolExtension):
     _ANNOT_STRIKEOUT = 10
     _ANNOT_REDACT = 12
 
-    def __init__(self, model: "PDFModel") -> None:
+    def __init__(self, model: PDFModel) -> None:
         self._model = model
 
     def add_highlight(self, page_num: int, rect: fitz.Rect, color: tuple[float, float, float, float]) -> None:
@@ -34,16 +36,10 @@ class AnnotationTool(ToolExtension):
         logger.debug("新增螢光筆: 頁面 %s, 矩形 %s, 顏色 %s", page_num, rect, color)
 
     def get_text_bounds(self, page_num: int, rough_rect: fitz.Rect) -> fitz.Rect:
-        page = self._model.doc[page_num - 1]
-        words = page.get_text("words", clip=rough_rect)
-        if not words:
+        precise_rect = self._model.get_text_selection_bounds(page_num, rough_rect)
+        if precise_rect is None:
             logger.debug("頁面 %s 在 %s 無文字，返回原矩形", page_num, rough_rect)
             return rough_rect
-        x0 = min(word[0] for word in words)
-        y0 = min(word[1] for word in words)
-        x1 = max(word[2] for word in words)
-        y1 = max(word[3] for word in words)
-        precise_rect = fitz.Rect(x0, y0, x1, y1)
         logger.debug("頁面 %s 在 %s 精準矩形 %s", page_num, rough_rect, precise_rect)
         return precise_rect
 
@@ -53,6 +49,18 @@ class AnnotationTool(ToolExtension):
         annot.set_colors(stroke=color[:3], fill=color[:3] if fill else None)
         annot.set_border(width=5 if not fill else 0)
         annot.set_opacity(color[3])
+        payload = {
+            "version": 1,
+            "kind": "rect",
+            "object_id": str(uuid.uuid4()),
+            "page_num": int(page_num),
+            "rect": [float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)],
+            "fill": bool(fill),
+        }
+        annot.set_info(
+            content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            subject="pdf_editor_rect_object",
+        )
         annot.update()
         logger.debug("新增矩形: 頁面 %s, 矩形 %s, 顏色 %s, 填滿=%s", page_num, rect, color, fill)
 

@@ -4,16 +4,21 @@
 - Vertical:   synthetic PDFs with rotate=90 insert_htmlbox columns
 Loss criterion: any non-target block text missing after edit -> LOSS
 """
-import os, sys, time, random, logging, re, shutil
+import logging
+import os
+import random
+import re
+import shutil
+import sys
+import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 logging.disable(logging.CRITICAL)
 sys.path.insert(0, os.path.dirname(__file__))
 
 import fitz
+
 from model.pdf_model import PDFModel
-from model.text_block import TextBlock
 
 # ?? constants ??????????????????????????????????????????????????????????????????
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -100,7 +105,7 @@ def _all_pdfs() -> list:
                 paths.append(os.path.join(root, f))
     return sorted(paths)
 
-def _open(path: str) -> Optional[PDFModel]:
+def _open(path: str) -> PDFModel | None:
     m = PDFModel()
     try:
         m.open_pdf(path, password=KNOWN_PW.get(os.path.basename(path)))

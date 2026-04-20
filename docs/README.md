@@ -5,8 +5,9 @@ Desktop PDF editor written in Python with a Qt UI.
 ## 1. Core Capabilities
 
 - Open and save PDFs
-- Drag one or more local PDF files onto the app window to open them as tabs
+- Drag one or more local PDF files onto the app window to open them as tabs (drag-and-drop never merges)
 - Page operations: delete, rotate, insert, export, merge
+- Objects mode: move/resize/rotate/delete rectangles and images; objects may overlap
 - File-tab optimizer: save an optimized copy with presets (`快速` / `平衡` / `極致壓縮`), on-demand space audit report, and size-reduction summary
 - Unified export dialog: current/selected pages, DPI (`72` to `2400`), output as PDF or images (`JPG/PNG/TIFF`)
 - Text editing with overlap-safe behavior
@@ -30,6 +31,7 @@ Desktop PDF editor written in Python with a Qt UI.
 - Feature behavior: `docs/FEATURES.md`
 - Architecture and boundaries: `docs/ARCHITECTURE.md`
 - Issue history and fixes: `docs/solutions.md`
+- Doc update methodology (contributors): `docs/Methodology_for_Writing_Docs.md`
 - Test script index: `test_scripts/TEST_SCRIPTS.md`
 
 ## 3. Requirements
@@ -41,7 +43,8 @@ Third-party libraries used in this project:
 - PySide6
 - PyMuPDF (`fitz`)
 - Pillow
-- pytesseract (optional)
+- surya-ocr (optional)
+- torch (optional, strongly recommended for GPU acceleration)
 
 ## 4. Install
 
@@ -56,7 +59,7 @@ Optional dependencies:
 .venv\Scripts\python -m pip install -r optional-requirements.txt
 ```
 
-OCR note: install Tesseract OCR and ensure `tesseract` is available on PATH.
+OCR note: The OCR feature uses Surya and requires `surya-ocr` and (optionally) `torch`. Install via `pip install surya-ocr torch` or use `optional-requirements.txt`. GPU is automatically prioritized (CUDA → MPS → CPU) and is user-configurable in the OCR dialog.
 
 ## 5. Run
 
@@ -95,10 +98,15 @@ Close prompts for unsaved changes support:
 - `N`: Discard
 - `Esc`: Cancel
 
-## 8. Legal
+## 8. License and Credits
 
-No license is currently declared in this repository.
-Add a `LICENSE` file if licensing terms are required.
+This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
+
+### Third-Party Credits
+
+This project uses **Surya** (by Vik Paruchuri) for OCR functionality.
+- **Code:** Licensed under GPLv3.
+- **Model Weights:** Licensed under the **AI Pubs Open Rail-M** license. It is free for personal use, research, and startups with under \$5M USD in revenue and under \$5M in lifetime funding. Commercial use beyond these thresholds requires a separate license from the authors (Datalab).
 
 ## 9. Disclaimer
 
