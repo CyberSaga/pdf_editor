@@ -1,5 +1,19 @@
 # TODOS
 
+## Done (2026-04-20) -- F4 view-only color profile switching (simplify + bug fix pass)
+
+- What: Completed F4 with a three-agent code review pass (reuse, quality, efficiency) plus a P0 object-selection-overlay bug fix.
+- Simplify fixes applied:
+  - Centralized duplicate `pixmap_to_qimage` bridge logic (pdf_renderer.py → utils/helpers.py).
+  - Added `safe_to_fitz_colorspace()` helper for reusable fallible colorspace conversion.
+  - Replaced itemData loop with `combo.findData()` in view's color profile setter.
+  - Extracted `_on_color_profile_combo_changed()` method from inline lambda.
+  - Used `dataclasses.replace()` for immutable mutation in print options pipeline.
+  - Extracted `_resolve_session_profile()` helper to consolidate 3× normalize-and-warn boilerplate.
+  - Dropped tautological "Defensive" comment in color_profile.py.
+- Bug fix: Dead C++ object references in selection overlay. When `scene.clear()` runs (profile switch, render rebuild), Python refs to deleted C++ items cause `RuntimeError` on next click. Added `shiboken6.isValid()` guards in `_update_object_selection_visuals()` to drop dangling wrappers and re-create.
+- Outcome: 543 tests pass (no regressions). Code is cleaner, more maintainable, object selection works reliably. See `docs/plans/archive/2026-04-20-simplify-and-fix-report.md` for detailed breakdown.
+
 ## Done (2026-04-19) -- F2 Surya OCR implementation
 
 - What: Replaced the Tesseract-era OCR stub with Surya as the recognition backend, added a structured `OcrRequest` dialog (page scope + languages + device), a `QThread`-backed worker with per-page commit and cancel, and availability-gated UI entry points. GPU is user-configurable via `utils.preferences.UserPreferences` (`ocr/device`: `auto` prefers CUDA → MPS → CPU; also `cuda`/`cpu`/`mps`).

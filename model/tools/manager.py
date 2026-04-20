@@ -54,7 +54,14 @@ class ToolManager:
             raise RuntimeError("沒有作用中的 session")
         return sid
 
-    def render_page_pixmap(self, page_num: int, scale: float = 1.0, annots: bool = False, purpose: str = "view") -> fitz.Pixmap:
+    def render_page_pixmap(
+        self,
+        page_num: int,
+        scale: float = 1.0,
+        annots: bool = False,
+        purpose: str = "view",
+        colorspace: fitz.Colorspace | None = None,
+    ) -> fitz.Pixmap:
         if not self._model.doc:
             raise RuntimeError("沒有開啟的 PDF 文件")
 
@@ -64,7 +71,9 @@ class ToolManager:
         matrix = fitz.Matrix(scale, scale)
 
         if not needs_overlay:
-            return page.get_pixmap(matrix=matrix, annots=annots)
+            if colorspace is None:
+                return page.get_pixmap(matrix=matrix, annots=annots)
+            return page.get_pixmap(matrix=matrix, annots=annots, colorspace=colorspace)
 
         tmp_doc = fitz.open()
         try:
@@ -73,7 +82,9 @@ class ToolManager:
             for ext in self._extensions:
                 if ext.needs_page_overlay(session_id, page_num, purpose):
                     ext.apply_page_overlay(session_id, page_num, tmp_page, purpose)
-            return tmp_page.get_pixmap(matrix=matrix, annots=annots)
+            if colorspace is None:
+                return tmp_page.get_pixmap(matrix=matrix, annots=annots)
+            return tmp_page.get_pixmap(matrix=matrix, annots=annots, colorspace=colorspace)
         finally:
             tmp_doc.close()
 
