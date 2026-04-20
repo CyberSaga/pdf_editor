@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import fitz
+import shiboken6
 from PySide6.QtCore import QBuffer, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
@@ -177,6 +178,7 @@ class PDFView(QMainWindow):
 
     # --- Zoom Re-render Signal ---
     sig_request_rerender = Signal()
+    sig_color_profile_changed = Signal(str)
 
     # --- Insert Pages Signals ---
     sig_insert_blank_page = Signal(int)  # position (1-based)
@@ -271,6 +273,25 @@ class PDFView(QMainWindow):
         right_title = QLabel("屬性")
         right_title.setStyleSheet("font-weight: bold; padding: 8px;")
         right_sidebar_layout.addWidget(right_title)
+
+        self.color_profile_card = QWidget()
+        self.color_profile_card.setObjectName("colorProfileCard")
+        self.color_profile_card.setStyleSheet(
+            "QWidget#colorProfileCard { border-top: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0; }"
+        )
+        color_profile_layout = QVBoxLayout(self.color_profile_card)
+        color_profile_layout.setContentsMargins(8, 8, 8, 8)
+        color_profile_layout.setSpacing(6)
+        color_profile_layout.addWidget(QLabel("色彩設定檔"))
+        self.color_profile_combo = QComboBox()
+        self.color_profile_combo.addItem("sRGB", "srgb")
+        self.color_profile_combo.addItem("灰階", "gray")
+        self.color_profile_combo.addItem("CMYK 預覽", "cmyk")
+        self.color_profile_combo.currentIndexChanged.connect(self._on_color_profile_combo_changed)
+        color_profile_layout.addWidget(self.color_profile_combo)
+        right_sidebar_layout.addWidget(self.color_profile_card)
+        self.set_color_profile("srgb")
+
         self.right_stacked_widget = QStackedWidget()
         if self._defer_heavy_panels:
             self._setup_property_inspector_placeholder()
@@ -1041,6 +1062,22 @@ class PDFView(QMainWindow):
             previous = action.blockSignals(True)
             action.setChecked(mode_key == mode)
             action.blockSignals(previous)
+
+    def set_color_profile(self, profile: str) -> None:
+        """Sync the sidebar combobox to the given profile (unknown values fall back to sRGB)."""
+        combo = getattr(self, "color_profile_combo", None)
+        if combo is None:
+            return
+        normalized = (profile or "srgb").strip().lower()
+        index = combo.findData(normalized)
+        if index < 0:
+            index = 0
+        prev = combo.blockSignals(True)
+        combo.setCurrentIndex(index)
+        combo.blockSignals(prev)
+
+    def _on_color_profile_combo_changed(self, _index: int) -> None:
+        self.sig_color_profile_changed.emit(str(self.color_profile_combo.currentData()))
 
     def _on_zoom_combo_changed(self, text: str):
         try:
@@ -3253,6 +3290,17 @@ class PDFView(QMainWindow):
         info = getattr(self, "_selected_object_info", None)
         if info is None or getattr(self, "scene", None) is None:
             return
+        # scene.clear() deletes the underlying C++ items but leaves the Python
+        # wrappers dangling; drop them here so we re-create instead of poking
+        # a freed object.
+        if self._object_selection_rect_item is not None and not shiboken6.isValid(self._object_selection_rect_item):
+            self._object_selection_rect_item = None
+        if self._object_rotate_handle_item is not None and not shiboken6.isValid(self._object_rotate_handle_item):
+            self._object_rotate_handle_item = None
+        if getattr(self, "_object_resize_handle_items", None):
+            self._object_resize_handle_items = [
+                item for item in self._object_resize_handle_items if shiboken6.isValid(item)
+            ]
         bbox = fitz.Rect(rect if rect is not None else info.bbox)
         rs = self._render_scale if self._render_scale > 0 else 1.0
         page_idx = max(0, int(info.page_num) - 1)

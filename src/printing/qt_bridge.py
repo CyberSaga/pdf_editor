@@ -188,7 +188,11 @@ def raster_print_pdf(
         printer.setPrinterName(normalized.printer_name)
 
     _apply_printer_options(printer, normalized)
-    renderer = renderer or PDFRenderer()
+    if renderer is None:
+        from model.color_profile import safe_to_fitz_colorspace
+
+        requested = (normalized.extra_options or {}).get("render_colorspace") if hasattr(normalized, "extra_options") else None
+        renderer = PDFRenderer(colorspace=safe_to_fitz_colorspace(requested))
     pages_iter = renderer.iter_page_images(pdf_path, page_indices, normalized.dpi)
 
     try:

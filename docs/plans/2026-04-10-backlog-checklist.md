@@ -51,7 +51,7 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 - [x] Resize handles and same-page multi-select now work for the supported object types
 - [x] App-inserted image objects now have typed identity + move/rotate/delete/resize plumbing
 - [x] Native PDF image XObjects now support select/move/rotate/delete in `objects mode` without redaction-based text loss
-- [ ] Review/approve child plans for `F2`, `F4`, and `UX7`
+- [ ] Review/approve child plans for `F2` and `UX7`
 
 ## Remaining Backlog
 
@@ -59,7 +59,7 @@ Worktree: `C:/Users/jiang/Documents/python programs/pdf_editor`
 - [x] `F1` Native PDF image manipulation follow-up
 - [x] `F3` Shell-integration API slice
 - [ ] `F2` Review/approve child plan for Surya OCR
-- [ ] `F4` Review/approve child plan for color profile switching
+- [x] `F4` Color profile switching (view-only) implemented (no PDF mutation; export remains unchanged)
 - [ ] `UX7` Review/approve child plan for macOS native menu bar
 
 ## Verification Snapshot
