@@ -30,8 +30,9 @@ class PDFRenderer:
     - cache DisplayList objects (faster repeated render on same pages)
     """
 
-    def __init__(self, displaylist_cache_size: int = 24):
+    def __init__(self, displaylist_cache_size: int = 24, colorspace: fitz.Colorspace = fitz.csRGB):
         self.displaylist_cache_size = max(1, int(displaylist_cache_size))
+        self._colorspace = colorspace
 
     @staticmethod
     def get_page_count(pdf_path: str) -> int:
@@ -43,6 +44,10 @@ class PDFRenderer:
 
     @staticmethod
     def _pixmap_to_qimage(pix: fitz.Pixmap) -> QImage:
+        # Qt expects RGB(A) byte layouts for QImage construction. Some colorspaces
+        # (e.g. GRAY/CMYK) need a bridge conversion for preview/printing.
+        if not pix.alpha and pix.colorspace is not None and pix.colorspace.n in {1, 4}:
+            pix = fitz.Pixmap(fitz.csRGB, pix)
         fmt = QImage.Format_RGBA8888 if pix.alpha else QImage.Format_RGB888
         # .copy() detaches from fitz memory to keep QImage valid after pixmap is freed.
         return QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
@@ -84,7 +89,7 @@ class PDFRenderer:
                     )
                 page = doc[page_index]
                 dlist = self._get_display_list(page_index, page, cache)
-                pix = dlist.get_pixmap(matrix=matrix, colorspace=fitz.csRGB, alpha=False)
+                pix = dlist.get_pixmap(matrix=matrix, colorspace=self._colorspace, alpha=False)
                 yield RenderedPage(
                     page_index=page_index,
                     page_rect=fitz.Rect(page.rect),
