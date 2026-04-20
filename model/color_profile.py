@@ -34,6 +34,18 @@ def to_fitz_colorspace(profile: ColorProfile | str) -> FitZColorspace:
     if profile is ColorProfile.CMYK:
         return fitz.csCMYK
 
-    # Defensive; Enum values above should be exhaustive.
     raise ValueError(f"Unknown color profile: {profile!r}")
+
+
+def safe_to_fitz_colorspace(
+    profile: ColorProfile | str | None,
+    default: FitZColorspace = fitz.csRGB,
+) -> FitZColorspace:
+    """Like to_fitz_colorspace, but returns ``default`` for unknown/empty values."""
+    if not profile:
+        return default
+    try:
+        return to_fitz_colorspace(profile)
+    except ValueError:
+        return default
 
