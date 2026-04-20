@@ -5,12 +5,12 @@ from __future__ import annotations
 import platform
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from .base_driver import PrintJobOptions, PrintJobResult, PrinterDevice, PrinterDriver
-from .errors import PrintJobSubmissionError, PrinterUnavailableError
-from .pdf_renderer import PDFRenderer
+from .base_driver import PrinterDevice, PrinterDriver, PrintJobOptions, PrintJobResult
+from .errors import PrinterUnavailableError, PrintJobSubmissionError
 from .page_selection import resolve_page_indices
+from .pdf_renderer import PDFRenderer
 from .platforms.linux_driver import LinuxPrinterDriver
 from .platforms.mac_driver import MacPrinterDriver
 from .platforms.win_driver import WindowsPrinterDriver
@@ -31,16 +31,16 @@ class PrintDispatcher:
 
     def __init__(
         self,
-        driver: Optional[PrinterDriver] = None,
-        renderer: Optional[PDFRenderer] = None,
+        driver: PrinterDriver | None = None,
+        renderer: PDFRenderer | None = None,
     ):
         self.driver = driver or get_printer_driver()
         self.renderer = renderer or PDFRenderer()
 
-    def list_printers(self) -> List[PrinterDevice]:
+    def list_printers(self) -> list[PrinterDevice]:
         return self.driver.list_printers()
 
-    def get_default_printer(self) -> Optional[str]:
+    def get_default_printer(self) -> str | None:
         return self.driver.get_default_printer()
 
     def get_printer_status(self, printer_name: str) -> str:
@@ -49,19 +49,19 @@ class PrintDispatcher:
     def supports_printer_properties_dialog(self) -> bool:
         return bool(self.driver.supports_printer_properties_dialog)
 
-    def open_printer_properties(self, printer_name: str) -> Optional[Dict[str, Any]]:
+    def open_printer_properties(self, printer_name: str) -> dict[str, Any] | None:
         normalized_name = (printer_name or "").strip()
         if not normalized_name:
             raise PrinterUnavailableError("No printer selected.")
         return self.driver.open_printer_properties(normalized_name)
 
-    def get_printer_preferences(self, printer_name: str) -> Dict[str, Any]:
+    def get_printer_preferences(self, printer_name: str) -> dict[str, Any]:
         normalized_name = (printer_name or "").strip()
         if not normalized_name:
             raise PrinterUnavailableError("No printer selected.")
         return self.driver.get_printer_preferences(normalized_name)
 
-    def resolve_page_indices_for_count(self, total_pages: int, options: PrintJobOptions) -> List[int]:
+    def resolve_page_indices_for_count(self, total_pages: int, options: PrintJobOptions) -> list[int]:
         normalized = options.normalized()
         try:
             page_indices = resolve_page_indices(
@@ -78,7 +78,7 @@ class PrintDispatcher:
             raise PrintJobSubmissionError("Page range resolved to empty set.")
         return page_indices
 
-    def resolve_page_indices_for_file(self, pdf_path: str, options: PrintJobOptions) -> List[int]:
+    def resolve_page_indices_for_file(self, pdf_path: str, options: PrintJobOptions) -> list[int]:
         page_count = self.renderer.get_page_count(pdf_path)
         return self.resolve_page_indices_for_count(page_count, options)
 

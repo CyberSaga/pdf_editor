@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(update-config)",
+      "Bash(ls -la /c/Users/jiang/Documents/'python programs'/pdf_editor/test_scripts/*.py)",
+      "Bash(python -c \":*)",
+      "Bash(python -m pytest reflow/test_suite.py -v --tb=short)",
+      "Bash(python -m pytest reflow/test_suite.py::TestReflowMisdelete::test_no_original_page_passes reflow/test_suite.py::TestTrackBIntegration::test_track_b_empty_page -v --tb=long)",
+      "Bash(python -c \"import fitz; print\\(fitz.version\\)\")",
+      "Bash(python reflow/stage2_smoke_test.py)",
+      "Bash(python reflow/stage3_runner.py)",
+      "Bash(python reflow/explore_test_pdfs.py)",
+      "Bash(python reflow/diagnose_position.py)",
+      "Bash(python reflow/run_diagnose.py)",
+      "Bash(python -c \"import sys; data=sys.stdin.buffer.read\\(\\); print\\(data.decode\\(''''utf-8'''', errors=''''replace''''\\)\\)\")",
+      "Bash(xargs grep:*)",
+      "Bash(python reflow/iter4_overlap_audit.py)",
+      "Bash(python reflow/iter5_stress_test.py)",
+      "Bash(python reflow/iter5b_delta_debug.py)",
+      "Bash(python reflow/iter5c_trackB_spans.py)",
+      "Bash(python reflow/iter6_rawdict_debug.py)",
+      "Bash(python reflow/iter6b_rawdict_keys.py)",
+      "Bash(python reflow/iter7_perf_and_vision.py)",
+      "Bash(python reflow/iter8_space_fix_verify.py)",
+      "Bash(python reflow/iter9_edge_cases.py)",
+      "Bash(python -m pytest test_scripts/test_track_c.py -v -s)",
+      "Bash(python -m pytest test_scripts/test_track_c.py::test_real_pdfs -v -s)"
+    ]
+  }
+}

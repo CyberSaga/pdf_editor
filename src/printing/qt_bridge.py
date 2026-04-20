@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from typing import List
-
 from PySide6.QtCore import QRectF, QSizeF
-from PySide6.QtGui import QPainter
+from PySide6.QtGui import QPageLayout, QPageSize, QPainter
 from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QPageLayout, QPageSize
 
 from .base_driver import PrintJobOptions, PrintJobResult
 from .errors import PrintJobSubmissionError
@@ -102,6 +99,11 @@ def _to_q_page_size(
         source_rect.width(),
         source_rect.height(),
     )
+    # Qt expects the custom base size in portrait order and applies the
+    # requested orientation separately; passing already-landscape dimensions
+    # here causes custom PDF output pages to flip back to portrait.
+    if width_pt > height_pt:
+        width_pt, height_pt = height_pt, width_pt
     return QPageSize(QSizeF(width_pt, height_pt), QPageSize.Point, "pdf-source-page")
 
 
@@ -167,7 +169,7 @@ def _draw_page_image(
 
 def raster_print_pdf(
     pdf_path: str,
-    page_indices: List[int],
+    page_indices: list[int],
     options: PrintJobOptions,
     renderer: PDFRenderer | None = None,
 ) -> PrintJobResult:
@@ -186,7 +188,11 @@ def raster_print_pdf(
         printer.setPrinterName(normalized.printer_name)
 
     _apply_printer_options(printer, normalized)
-    renderer = renderer or PDFRenderer()
+    if renderer is None:
+        from model.color_profile import safe_to_fitz_colorspace
+
+        requested = (normalized.extra_options or {}).get("render_colorspace") if hasattr(normalized, "extra_options") else None
+        renderer = PDFRenderer(colorspace=safe_to_fitz_colorspace(requested))
     pages_iter = renderer.iter_page_images(pdf_path, page_indices, normalized.dpi)
 
     try:
@@ -194,8 +200,7 @@ def raster_print_pdf(
     except StopIteration as exc:
         raise PrintJobSubmissionError("No rendered pages available.") from exc
 
-    if {"paper_size", "orientation"} & set(normalized.override_fields):
-        _set_page_layout(printer, _fitz_rect_to_qrectf(first.page_rect), normalized)
+    _set_page_layout(printer, _fitz_rect_to_qrectf(first.page_rect), normalized)
 
     painter = QPainter()
     if not painter.begin(printer):
@@ -206,8 +211,7 @@ def raster_print_pdf(
     try:
         _draw_page_image(painter, printer, first, normalized)
         for rendered in pages_iter:
-            # QPrinter blocks page-layout changes while active; changing here
-            # only emits warnings and does not take effect on most backends.
+            _set_page_layout(printer, _fitz_rect_to_qrectf(rendered.page_rect), normalized)
             printer.newPage()
             _draw_page_image(painter, printer, rendered, normalized)
     except Exception as exc:

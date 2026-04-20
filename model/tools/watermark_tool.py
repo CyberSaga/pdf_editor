@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class WatermarkTool(ToolExtension):
     WATERMARK_EMBED_NAME = "__pdf_editor_watermarks"
 
-    def __init__(self, model: "PDFModel") -> None:
+    def __init__(self, model: PDFModel) -> None:
         self._model = model
         self._watermarks_by_session: dict[str, list[dict]] = {}
         self._modified_sessions: set[str] = set()

@@ -1,18 +1,20 @@
-# -*- coding: utf-8 -*-
 """Regression tests for Qt bridge page-layout and override behavior."""
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
-import sys
+
+from PySide6.QtCore import QRectF
+from PySide6.QtGui import QPageLayout
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.printing.base_driver import PrintJobOptions
 from src.printing import qt_bridge as qtb
+from src.printing.base_driver import PrintJobOptions
 
 
 class _FakePrinter:
@@ -22,6 +24,7 @@ class _FakePrinter:
     def __init__(self, mode) -> None:
         _ = mode
         self.new_page_calls = 0
+        self._layout = object()
 
     def setOutputFormat(self, fmt) -> None:
         _ = fmt
@@ -32,8 +35,25 @@ class _FakePrinter:
     def setPrinterName(self, name) -> None:
         _ = name
 
+    def pageLayout(self):
+        return self._layout
+
+    def setPageLayout(self, layout) -> None:
+        self._layout = layout
+
     def newPage(self) -> None:
         self.new_page_calls += 1
+
+
+class _LayoutPrinter:
+    def __init__(self) -> None:
+        self._layout = QPageLayout()
+
+    def pageLayout(self):
+        return self._layout
+
+    def setPageLayout(self, layout) -> None:
+        self._layout = layout
 
 
 class _FakePainter:
@@ -55,7 +75,7 @@ class _FakeRenderer:
             )
 
 
-def test_raster_print_sets_layout_once_before_print_loop(monkeypatch) -> None:
+def test_raster_print_updates_layout_per_page_when_source_pages_differ(monkeypatch) -> None:
     layout_calls: list[tuple[object, object, object]] = []
 
     monkeypatch.setattr(qtb, "_ensure_qapplication", lambda: None)
@@ -72,20 +92,29 @@ def test_raster_print_sets_layout_once_before_print_loop(monkeypatch) -> None:
     options = PrintJobOptions(
         printer_name="Printer A",
         dpi=300,
-        override_fields={"paper_size", "orientation"},
+        paper_size="auto",
+        orientation="auto",
     )
     result = qtb.raster_print_pdf(
         pdf_path="dummy.pdf",
         page_indices=[0, 1, 2],
         options=options,
-        renderer=_FakeRenderer(),
+        renderer=SimpleNamespace(
+            iter_page_images=lambda _pdf_path, _page_indices, _dpi: iter(
+                [
+                    SimpleNamespace(page_rect=SimpleNamespace(width=200.0, height=300.0), image=None),
+                    SimpleNamespace(page_rect=SimpleNamespace(width=300.0, height=200.0), image=None),
+                    SimpleNamespace(page_rect=SimpleNamespace(width=420.0, height=300.0), image=None),
+                ]
+            )
+        ),
     )
 
     assert result.success is True
-    assert len(layout_calls) == 1
+    assert len(layout_calls) == 3
 
 
-def test_raster_print_skips_layout_when_not_overridden(monkeypatch) -> None:
+def test_raster_print_applies_layout_for_single_auto_page(monkeypatch) -> None:
     layout_calls: list[tuple[object, object, object]] = []
 
     monkeypatch.setattr(qtb, "_ensure_qapplication", lambda: None)
@@ -103,7 +132,20 @@ def test_raster_print_skips_layout_when_not_overridden(monkeypatch) -> None:
     )
 
     assert result.success is True
-    assert layout_calls == []
+    assert len(layout_calls) == 1
+
+
+def test_set_page_layout_keeps_landscape_custom_pages_landscape() -> None:
+    printer = _LayoutPrinter()
+
+    qtb._set_page_layout(
+        printer,
+        QRectF(0.0, 0.0, 1190.5, 841.9),
+        PrintJobOptions(paper_size="auto", orientation="auto"),
+    )
+
+    rect = printer.pageLayout().fullRectPoints()
+    assert rect.width() > rect.height()
 
 
 def test_apply_printer_options_keeps_system_tray_when_auto(monkeypatch) -> None:

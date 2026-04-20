@@ -1,5 +1,4 @@
-﻿# -*- coding: utf-8 -*-
-"""
+﻿"""
 test_feature_conflict.py — 功能與衝突驗證
 ==========================================
 - 單一功能：逐項呼叫 Model/Command 流程，驗證每項功能可獨立成功。
@@ -8,20 +7,19 @@ test_feature_conflict.py — 功能與衝突驗證
 - 使用 test_files 內 PDF（優先 sample-files-main，必要時 veraPDF 代表檔）。
 - 輸出：每個概念的通過率、耗時、失敗案例與根本成因分析；穩定性結論與建議。
 """
-import sys
 import io
 import os
-import time
+import sys
 import tempfile
-import traceback
-from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Any
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 import logging
+
 logging.disable(logging.CRITICAL)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -36,8 +34,9 @@ SAMPLE_DIR = TEST_FILES_ROOT / "sample-files-main"
 REPORT_PATH = OUTPUT_DIR / "feature_conflict_test_report.txt"
 
 import fitz
-from model.pdf_model import PDFModel
+
 from model.edit_commands import EditTextCommand, SnapshotCommand
+from model.pdf_model import PDFModel
 
 KNOWN_PASSWORDS = {"encrypted.pdf": "kanbanery", "libreoffice-writer-password.pdf": "permissionpassword"}
 
@@ -55,7 +54,7 @@ class CaseResult:
 class ConceptResult:
     id: str
     title: str
-    cases: List[CaseResult] = field(default_factory=list)
+    cases: list[CaseResult] = field(default_factory=list)
     total_ms: float = 0.0
 
     @property
@@ -70,11 +69,11 @@ def _ms() -> float:
     return time.perf_counter() * 1000
 
 
-def _get_password(p: Path) -> Optional[str]:
+def _get_password(p: Path) -> str | None:
     return KNOWN_PASSWORDS.get(p.name.lower())
 
 
-def _collect_pdfs(limit: int = 12) -> List[Path]:
+def _collect_pdfs(limit: int = 12) -> list[Path]:
     out = []
     if not SAMPLE_DIR.exists():
         return out
@@ -106,7 +105,7 @@ def _first_block(model: PDFModel):
 
 # ---------- 單一功能測試 ----------
 
-def run_open_save(pdfs: List[Path]) -> ConceptResult:
+def run_open_save(pdfs: list[Path]) -> ConceptResult:
     r = ConceptResult("F1", "開啟 / 儲存 / 另存")
     for p in pdfs:
         t0 = _ms()
@@ -130,7 +129,7 @@ def run_open_save(pdfs: List[Path]) -> ConceptResult:
     return r
 
 
-def run_page_ops(pdfs: List[Path]) -> ConceptResult:
+def run_page_ops(pdfs: list[Path]) -> ConceptResult:
     r = ConceptResult("F2", "刪除頁 / 旋轉頁 / 匯出頁 / 插入空白頁")
     multi = [p for p in pdfs if _page_count(p) >= 3][:4]
     for p in multi:
@@ -171,7 +170,7 @@ def _page_count(p: Path) -> int:
         return 0
 
 
-def run_edit_undo_redo(pdfs: List[Path]) -> ConceptResult:
+def run_edit_undo_redo(pdfs: list[Path]) -> ConceptResult:
     r = ConceptResult("F3", "編輯文字 + 復原 + 重做")
     for p in pdfs[:8]:
         t0 = _ms()
@@ -207,7 +206,7 @@ def run_edit_undo_redo(pdfs: List[Path]) -> ConceptResult:
     return r
 
 
-def run_annot_rect_highlight(pdfs: List[Path]) -> ConceptResult:
+def run_annot_rect_highlight(pdfs: list[Path]) -> ConceptResult:
     r = ConceptResult("F4", "註解 / 矩形 / 螢光筆")
     for p in pdfs[:6]:
         t0 = _ms()
@@ -229,7 +228,7 @@ def run_annot_rect_highlight(pdfs: List[Path]) -> ConceptResult:
     return r
 
 
-def run_search_pixmap(pdfs: List[Path]) -> ConceptResult:
+def run_search_pixmap(pdfs: list[Path]) -> ConceptResult:
     r = ConceptResult("F5", "搜尋 / 取得 Pixmap")
     for p in pdfs[:6]:
         t0 = _ms()
@@ -248,7 +247,7 @@ def run_search_pixmap(pdfs: List[Path]) -> ConceptResult:
     return r
 
 
-def run_watermark(pdfs: List[Path]) -> ConceptResult:
+def run_watermark(pdfs: list[Path]) -> ConceptResult:
     r = ConceptResult("F6", "浮水印 新增/列表/更新/移除")
     for p in pdfs[:4]:
         t0 = _ms()
@@ -277,7 +276,7 @@ def run_watermark(pdfs: List[Path]) -> ConceptResult:
 
 # ---------- 衝突情境 ----------
 
-def run_conflict_annot_then_edit(pdfs: List[Path]) -> ConceptResult:
+def run_conflict_annot_then_edit(pdfs: list[Path]) -> ConceptResult:
     r = ConceptResult("C1", "衝突：先新增註解再編輯文字（註解應保留）")
     for p in pdfs[:6]:
         t0 = _ms()
@@ -304,7 +303,7 @@ def run_conflict_annot_then_edit(pdfs: List[Path]) -> ConceptResult:
     return r
 
 
-def run_conflict_structural_undo(pdfs: List[Path]) -> ConceptResult:
+def run_conflict_structural_undo(pdfs: list[Path]) -> ConceptResult:
     r = ConceptResult("C2", "衝突：刪除頁 → 復原（頁數應還原）")
     multi = [p for p in pdfs if _page_count(p) >= 3][:4]
     for p in multi:
@@ -334,7 +333,7 @@ def run_conflict_structural_undo(pdfs: List[Path]) -> ConceptResult:
     return r
 
 
-def run_conflict_rotate_then_edit(pdfs: List[Path]) -> ConceptResult:
+def run_conflict_rotate_then_edit(pdfs: list[Path]) -> ConceptResult:
     r = ConceptResult("C3", "衝突：旋轉頁後再編輯該頁文字")
     for p in pdfs[:6]:
         t0 = _ms()
@@ -356,7 +355,7 @@ def run_conflict_rotate_then_edit(pdfs: List[Path]) -> ConceptResult:
     return r
 
 
-def run_conflict_insert_then_edit(pdfs: List[Path]) -> ConceptResult:
+def run_conflict_insert_then_edit(pdfs: list[Path]) -> ConceptResult:
     r = ConceptResult("C4", "衝突：插入空白頁後編輯原第一頁（現第二頁）")
     for p in pdfs[:6]:
         t0 = _ms()
@@ -383,7 +382,7 @@ def run_conflict_insert_then_edit(pdfs: List[Path]) -> ConceptResult:
     return r
 
 
-def run_conflict_multi_undo_redo(pdfs: List[Path]) -> ConceptResult:
+def run_conflict_multi_undo_redo(pdfs: list[Path]) -> ConceptResult:
     r = ConceptResult("C5", "衝突：多輪 編輯→復原→重做 循環")
     for p in pdfs[:4]:
         t0 = _ms()
@@ -424,7 +423,7 @@ def run_conflict_multi_undo_redo(pdfs: List[Path]) -> ConceptResult:
     return r
 
 
-def run_save_with_watermark(pdfs: List[Path]) -> ConceptResult:
+def run_save_with_watermark(pdfs: list[Path]) -> ConceptResult:
     r = ConceptResult("C6", "浮水印後 save_as 再開檔驗證（元數據還原，可編輯）")
     # 方案 B：浮水印元數據寫入 PDF 內嵌檔案，開檔時還原；驗證重新開檔後 get_watermarks() 有值。
     for p in pdfs[:4]:
@@ -451,7 +450,7 @@ def run_save_with_watermark(pdfs: List[Path]) -> ConceptResult:
     return r
 
 
-def generate_report(concepts: List[ConceptResult], total_ms: float) -> str:
+def generate_report(concepts: list[ConceptResult], total_ms: float) -> str:
     lines = []
     W = 72
     lines.append("=" * W)

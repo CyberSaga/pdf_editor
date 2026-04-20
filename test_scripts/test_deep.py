@@ -1,5 +1,4 @@
-﻿# -*- coding: utf-8 -*-
-"""
+﻿"""
 test_deep.py — PDF 編輯器深度壓力測試
 ======================================
 測試 10 大場景：
@@ -19,20 +18,16 @@ test_deep.py — PDF 編輯器深度壓力測試
   python test_deep.py --quick          # 快速模式（每個測試減少次數）
   python test_deep.py --output report.txt   # 指定報告輸出路徑
 """
-import sys
+import argparse
 import io
 import os
-import time
-import random
-import argparse
-import traceback
+import sys
 import tempfile
+import time
 import tracemalloc
-import math
-from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Any
-from dataclasses import dataclass, field
 from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
 
 # Script-style stress runner; keep out of pytest auto-collection.
 __test__ = False
@@ -41,6 +36,7 @@ if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 import logging
+
 logging.disable(logging.CRITICAL)
 
 import fitz
@@ -49,8 +45,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _OUTPUT_DIR = _SCRIPT_DIR / "test_outputs"
 sys.path.insert(0, str(_ROOT))
-from model.pdf_model import PDFModel
 from model.edit_commands import EditTextCommand, SnapshotCommand
+from model.pdf_model import PDFModel
 
 # ──────────────────────────────────────────────────────────────
 # 設定
@@ -115,7 +111,7 @@ class TestCase:
 class TestSuite:
     id: str
     name: str
-    cases: List[TestCase] = field(default_factory=list)
+    cases: list[TestCase] = field(default_factory=list)
     start_ms: float = 0.0
     end_ms: float = 0.0
 
@@ -141,10 +137,10 @@ class TestSuite:
 def _ms() -> float:
     return time.perf_counter() * 1000
 
-def _get_password(path: Path) -> Optional[str]:
+def _get_password(path: Path) -> str | None:
     return KNOWN_PASSWORDS.get(path.name.lower())
 
-def _open_model(pdf_path: Path) -> Optional[PDFModel]:
+def _open_model(pdf_path: Path) -> PDFModel | None:
     """開啟 PDF，回傳 PDFModel 或 None（若失敗）。"""
     model = PDFModel()
     try:
@@ -201,7 +197,7 @@ def _do_edit(model: PDFModel, page_idx: int, blk, new_text: str,
     except Exception:
         return False
 
-def _collect_sample_pdfs(max_count: int = 32) -> List[Path]:
+def _collect_sample_pdfs(max_count: int = 32) -> list[Path]:
     """收集 sample-files-main 的 PDF，跳過已知加密且無密碼的。"""
     pdfs = []
     for p in sorted(SAMPLE_DIR.rglob("*.pdf")):
@@ -221,7 +217,7 @@ def _collect_sample_pdfs(max_count: int = 32) -> List[Path]:
             break
     return pdfs
 
-def _collect_vera_pdfs(max_count: int = 8) -> List[Path]:
+def _collect_vera_pdfs(max_count: int = 8) -> list[Path]:
     """從 veraPDF 目錄收集代表性 PDF。"""
     pdfs = []
     if not VERA_DIR.exists():
@@ -250,7 +246,7 @@ def _collect_vera_pdfs(max_count: int = 8) -> List[Path]:
 # ──────────────────────────────────────────────────────────────
 # T1：連續 / 重複編輯同一文字塊
 # ──────────────────────────────────────────────────────────────
-def run_t1_repeated_edits(pdfs: List[Path], quick: bool) -> TestSuite:
+def run_t1_repeated_edits(pdfs: list[Path], quick: bool) -> TestSuite:
     suite = TestSuite(id="T1", name="連續/重複編輯同一文字塊（20–50次）")
     suite.start_ms = _ms()
     repeat_count = 20 if quick else 50
@@ -305,7 +301,7 @@ def run_t1_repeated_edits(pdfs: List[Path], quick: bool) -> TestSuite:
 # ──────────────────────────────────────────────────────────────
 # T2：Undo / Redo 完整循環驗證
 # ──────────────────────────────────────────────────────────────
-def run_t2_undo_redo(pdfs: List[Path], quick: bool) -> TestSuite:
+def run_t2_undo_redo(pdfs: list[Path], quick: bool) -> TestSuite:
     suite = TestSuite(id="T2", name="Undo/Redo 完整循環驗證（多輪）")
     suite.start_ms = _ms()
     rounds = 3 if quick else 5
@@ -392,7 +388,7 @@ def run_t2_undo_redo(pdfs: List[Path], quick: bool) -> TestSuite:
 # ──────────────────────────────────────────────────────────────
 # T3：極端輸入內容
 # ──────────────────────────────────────────────────────────────
-def run_t3_extreme_inputs(pdfs: List[Path], quick: bool) -> TestSuite:
+def run_t3_extreme_inputs(pdfs: list[Path], quick: bool) -> TestSuite:
     suite = TestSuite(id="T3", name="極端輸入內容（超長、特殊符號、CJK/RTL）")
     suite.start_ms = _ms()
 
@@ -469,7 +465,7 @@ def run_t3_extreme_inputs(pdfs: List[Path], quick: bool) -> TestSuite:
 # ──────────────────────────────────────────────────────────────
 # T4：多頁 / 跨頁操作組合
 # ──────────────────────────────────────────────────────────────
-def run_t4_multipage_ops(pdfs: List[Path], quick: bool) -> TestSuite:
+def run_t4_multipage_ops(pdfs: list[Path], quick: bool) -> TestSuite:
     suite = TestSuite(id="T4", name="多頁/跨頁操作組合（編輯+刪頁+旋轉+undo）")
     suite.start_ms = _ms()
 
@@ -580,7 +576,7 @@ def run_t4_multipage_ops(pdfs: List[Path], quick: bool) -> TestSuite:
 # ──────────────────────────────────────────────────────────────
 # T5：註解 / 表單共存測試
 # ──────────────────────────────────────────────────────────────
-def run_t5_annotation_coexist(pdfs: List[Path], quick: bool) -> TestSuite:
+def run_t5_annotation_coexist(pdfs: list[Path], quick: bool) -> TestSuite:
     suite = TestSuite(id="T5", name="註解/表單共存測試")
     suite.start_ms = _ms()
 
@@ -650,7 +646,7 @@ def run_t5_annotation_coexist(pdfs: List[Path], quick: bool) -> TestSuite:
 # ──────────────────────────────────────────────────────────────
 # T6：頁面結構改變後的編輯
 # ──────────────────────────────────────────────────────────────
-def run_t6_structural_then_edit(pdfs: List[Path], quick: bool) -> TestSuite:
+def run_t6_structural_then_edit(pdfs: list[Path], quick: bool) -> TestSuite:
     suite = TestSuite(id="T6", name="頁面結構改變後的編輯（旋轉、插入頁）")
     suite.start_ms = _ms()
 
@@ -721,7 +717,7 @@ def run_t6_structural_then_edit(pdfs: List[Path], quick: bool) -> TestSuite:
 # ──────────────────────────────────────────────────────────────
 # T7：記憶體與資源壓力測試
 # ──────────────────────────────────────────────────────────────
-def run_t7_memory_pressure(pdfs: List[Path], quick: bool) -> TestSuite:
+def run_t7_memory_pressure(pdfs: list[Path], quick: bool) -> TestSuite:
     suite = TestSuite(id="T7", name="記憶體與資源壓力測試")
     suite.start_ms = _ms()
 
@@ -792,7 +788,7 @@ def run_t7_memory_pressure(pdfs: List[Path], quick: bool) -> TestSuite:
 # ──────────────────────────────────────────────────────────────
 # T8：異常與邊界情境
 # ──────────────────────────────────────────────────────────────
-def run_t8_edge_cases(pdfs: List[Path], quick: bool) -> TestSuite:
+def run_t8_edge_cases(pdfs: list[Path], quick: bool) -> TestSuite:
     suite = TestSuite(id="T8", name="異常與邊界情境")
     suite.start_ms = _ms()
 
@@ -956,13 +952,13 @@ def run_t8_edge_cases(pdfs: List[Path], quick: bool) -> TestSuite:
 # ──────────────────────────────────────────────────────────────
 # T9：效能分佈分析
 # ──────────────────────────────────────────────────────────────
-def run_t9_performance(pdfs: List[Path], quick: bool) -> TestSuite:
+def run_t9_performance(pdfs: list[Path], quick: bool) -> TestSuite:
     suite = TestSuite(id="T9", name="效能分佈分析（耗時統計、瓶頸標記）")
     suite.start_ms = _ms()
 
     sample_count = 5 if quick else 15
 
-    all_timings: Dict[str, List[float]] = defaultdict(list)
+    all_timings: dict[str, list[float]] = defaultdict(list)
 
     for pdf_path in pdfs:
         model = _open_model(pdf_path)
@@ -1038,7 +1034,7 @@ def run_t9_performance(pdfs: List[Path], quick: bool) -> TestSuite:
 # ──────────────────────────────────────────────────────────────
 # T10：視覺輸出驗證
 # ──────────────────────────────────────────────────────────────
-def run_t10_visual_output(pdfs: List[Path], quick: bool) -> TestSuite:
+def run_t10_visual_output(pdfs: list[Path], quick: bool) -> TestSuite:
     suite = TestSuite(id="T10", name="視覺輸出驗證（save_as + pixmap 差異比對）")
     suite.start_ms = _ms()
 
@@ -1131,7 +1127,7 @@ def run_t10_visual_output(pdfs: List[Path], quick: bool) -> TestSuite:
 # ──────────────────────────────────────────────────────────────
 # 報告生成
 # ──────────────────────────────────────────────────────────────
-def generate_report(suites: List[TestSuite], total_ms: float) -> str:
+def generate_report(suites: list[TestSuite], total_ms: float) -> str:
     lines = []
     W = 70
 
@@ -1146,7 +1142,7 @@ def generate_report(suites: List[TestSuite], total_ms: float) -> str:
     total_failed = sum(s.failed for s in suites)
     overall_rate = total_passed / total_cases * 100 if total_cases else 0
 
-    lines.append(f"\n【總覽】")
+    lines.append("\n【總覽】")
     lines.append(f"  測試套件: {len(suites)} 個")
     lines.append(f"  測試案例: {total_cases} 個")
     lines.append(f"  通過: {total_passed}  失敗: {total_failed}")
@@ -1224,7 +1220,7 @@ def generate_report(suites: List[TestSuite], total_ms: float) -> str:
     lines.append(f"  {advice}")
 
     # 剩餘建議
-    lines.append(f"\n【剩餘建議】")
+    lines.append("\n【剩餘建議】")
     recommendations = [
         "1. 定期對 veraPDF 語料庫全量跑 T1+T2，確保新功能不破壞回歸穩定性",
         "2. T7 記憶體壓力測試建議加入 psutil 監控系統記憶體（tracemalloc 僅追蹤 Python heap）",
@@ -1283,7 +1279,7 @@ def main():
         ("T10", "T10: 視覺輸出驗證",   lambda: run_t10_visual_output(all_pdfs, args.quick)),
     ]
 
-    suites: List[TestSuite] = []
+    suites: list[TestSuite] = []
     t_global_start = _ms()
 
     for tid, desc, runner in runners:

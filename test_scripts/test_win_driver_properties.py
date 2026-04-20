@@ -1,10 +1,9 @@
-# -*- coding: utf-8 -*-
 """Regression tests for Windows printer properties sync behavior."""
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pytest
 

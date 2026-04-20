@@ -1,14 +1,24 @@
-import fitz
-import io
+from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional, Any, TYPE_CHECKING
+from enum import Enum
+from typing import TYPE_CHECKING, Any
+
+import fitz
 
 if TYPE_CHECKING:
     # 避免循環 import：只在型別檢查期間引入 PDFModel
-    from model.pdf_model import PDFModel
+    pass
 
 logger = logging.getLogger(__name__)
+
+
+class EditTextResult(str, Enum):
+    SUCCESS = "success"
+    NO_CHANGE = "no_change"
+    TARGET_BLOCK_NOT_FOUND = "target_block_not_found"
+    TARGET_SPAN_NOT_FOUND = "target_span_not_found"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -103,24 +113,26 @@ class EditTextCommand(EditCommand):
         rect: fitz.Rect,
         new_text: str,
         font: str,
-        size: int,
+        size: float,
         color: tuple,
-        original_text: Optional[str],
+        original_text: str | None,
         vertical_shift_left: bool,
         page_snapshot_bytes: bytes,         # execute() 前擷取的頁面 bytes 快照
-        old_block_id: Optional[str],        # 目標 block 的 ID（供 undo 後索引驗證用）
-        old_block_text: Optional[str],      # 目標 block 修改前的文字（Log / debug 用）
-        new_rect: Optional[Any] = None,     # 拖曳移動後的目標位置（None = 不移動）
-        target_span_id: Optional[str] = None,
-        target_mode: Optional[str] = None,
+        old_block_id: str | None,        # 目標 block 的 ID（供 undo 後索引驗證用）
+        old_block_text: str | None,      # 目標 block 修改前的文字（Log / debug 用）
+        new_rect: Any | None = None,     # 拖曳移動後的目標位置（None = 不移動）
+        target_span_id: str | None = None,
+        target_mode: str | None = None,
+        reflow_fn: Any | None = None,    # callable()，在 model.edit_text() 後呼叫做 displacement reflow
     ):
         self._model = model
         self._page_num = page_num
         self._rect = fitz.Rect(rect)        # 存副本，避免被外部改動
         self._new_text = new_text
         self._font = font
-        self._size = size
+        self._size = float(size)
         self._color = color
+        self.result: EditTextResult = EditTextResult.SUCCESS
         self._original_text = original_text
         self._vertical_shift_left = vertical_shift_left
         self._page_snapshot_bytes = page_snapshot_bytes
@@ -129,6 +141,7 @@ class EditTextCommand(EditCommand):
         self._new_rect = fitz.Rect(new_rect) if new_rect is not None else None
         self._target_span_id = target_span_id
         self._target_mode = target_mode
+        self._reflow_fn = reflow_fn         # displacement reflow callback（Track A/B）
         self._executed = False              # 防止在未 execute 前呼叫 undo
 
     @property
@@ -140,12 +153,12 @@ class EditTextCommand(EditCommand):
         )
         return f"編輯文字「{preview}」（頁面 {self._page_num}）"
 
-    def execute(self) -> None:
+    def execute(self) -> bool:
         """
         執行文字編輯：直接委派給 model.edit_text()。
         快照已在 CommandManager.execute() 建構本物件時事先擷取，此處不重複。
         """
-        self._model.edit_text(
+        self.result = self._model.edit_text(
             self._page_num,
             self._rect,
             self._new_text,
@@ -158,8 +171,22 @@ class EditTextCommand(EditCommand):
             target_span_id=self._target_span_id,
             target_mode=self._target_mode,
         )
+        if self.result is not EditTextResult.SUCCESS:
+            self._executed = False
+            logger.debug(
+                "EditTextCommand.execute(): skipped record for result=%s",
+                self.result.value,
+            )
+            return False
+        # Displacement reflow：將後續塊向上/下推移（Track A/B 引擎）
+        if self._reflow_fn is not None:
+            try:
+                self._reflow_fn()
+            except Exception as _rf_e:
+                logger.warning(f"EditTextCommand reflow_fn 失敗（不影響主編輯）: {_rf_e}")
         self._executed = True
         logger.debug(f"EditTextCommand.execute(): {self.description}")
+        return True
 
     def undo(self) -> None:
         """
@@ -170,7 +197,7 @@ class EditTextCommand(EditCommand):
         依賴 Phase 3 加入 pdf_model.py 的兩個 helper 方法。
         """
         if not self._executed:
-            logger.warning(f"EditTextCommand.undo(): 尚未執行過，跳過還原")
+            logger.warning("EditTextCommand.undo(): 尚未執行過，跳過還原")
             return
 
         page_num_0based = self._page_num - 1
@@ -215,7 +242,7 @@ class AddTextboxCommand(EditCommand):
         self._size = int(size)
         self._color = color
         self._before_page_snapshot_bytes = before_page_snapshot_bytes
-        self._after_page_snapshot_bytes: Optional[bytes] = None
+        self._after_page_snapshot_bytes: bytes | None = None
         self._executed = False
 
     @property
@@ -289,7 +316,11 @@ class SnapshotCommand(EditCommand):
     """
 
     _STRUCTURAL_TYPES = frozenset({
-        "delete_pages", "insert_blank_page", "insert_pages_from_file", "merge_pdfs"
+        "delete_pages",
+        "insert_blank_page",
+        "insert_pages_from_file",
+        "merge_pdfs",
+        "move_text_across_pages",
     })
 
     def __init__(
@@ -362,6 +393,8 @@ class CommandManager:
         command_manager.mark_saved()
     """
 
+    MAX_UNDO_STACK_SIZE = 100
+
     def __init__(self):
         self._undo_stack: list[EditCommand] = []
         self._redo_stack: list[EditCommand] = []
@@ -381,8 +414,15 @@ class CommandManager:
             cmd: 已建構（含快照）且尚未 execute() 的 EditCommand 物件。
         注意：若指令已在外部執行完（如 SnapshotCommand），請改用 record()。
         """
-        cmd.execute()
+        executed = cmd.execute()
+        if executed is False:
+            logger.debug(
+                "CommandManager.execute(): command skipped undo record: %s",
+                cmd.description,
+            )
+            return
         self._undo_stack.append(cmd)
+        self._trim_undo_stack_if_needed()
 
         # 新操作使原 redo 歷史失效
         if self._redo_stack:
@@ -411,6 +451,7 @@ class CommandManager:
             cmd: 已執行完的 EditCommand 物件（SnapshotCommand 等）。
         """
         self._undo_stack.append(cmd)
+        self._trim_undo_stack_if_needed()
         if self._redo_stack:
             logger.debug(
                 f"CommandManager.record(): 清空 redo 堆疊（{len(self._redo_stack)} 筆）"
@@ -432,8 +473,9 @@ class CommandManager:
             logger.debug("CommandManager.undo(): undo 堆疊為空，無可撤銷")
             return False
 
-        cmd = self._undo_stack.pop()
+        cmd = self._undo_stack[-1]
         cmd.undo()
+        self._undo_stack.pop()
         self._redo_stack.append(cmd)
 
         logger.debug(
@@ -454,9 +496,17 @@ class CommandManager:
             logger.debug("CommandManager.redo(): redo 堆疊為空，無可重做")
             return False
 
-        cmd = self._redo_stack.pop()
-        cmd.execute()
+        cmd = self._redo_stack[-1]
+        executed = cmd.execute()
+        if executed is False:
+            logger.debug(
+                "CommandManager.redo(): command redo skipped: %s",
+                cmd.description,
+            )
+            return False
+        self._redo_stack.pop()
         self._undo_stack.append(cmd)
+        self._trim_undo_stack_if_needed()
 
         logger.debug(
             f"CommandManager.redo(): {cmd.description}，"
@@ -497,6 +547,18 @@ class CommandManager:
     # ──────────────────────────────────────────────────────────────────────────
     # 狀態查詢
     # ──────────────────────────────────────────────────────────────────────────
+
+    def _trim_undo_stack_if_needed(self) -> None:
+        overflow = len(self._undo_stack) - self.MAX_UNDO_STACK_SIZE
+        if overflow <= 0:
+            return
+        del self._undo_stack[:overflow]
+        self._saved_stack_size = max(0, self._saved_stack_size - overflow)
+        logger.debug(
+            "CommandManager: evicted %s oldest undo commands to enforce max=%s",
+            overflow,
+            self.MAX_UNDO_STACK_SIZE,
+        )
 
     def can_undo(self) -> bool:
         """是否有可撤銷的操作（供 UI 啟用/停用 Undo 按鈕）。"""

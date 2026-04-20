@@ -1,19 +1,34 @@
-from PySide6.QtWidgets import QMessageBox, QApplication, QFileDialog, QDialog, QProgressDialog
-from PySide6.QtGui import QImage, QPixmap, QShortcut, QKeySequence
-from PySide6.QtCore import QTimer, QObject, QThread, Qt, Signal, Slot
-from model.pdf_model import PDFModel
-from model.edit_commands import EditTextCommand, SnapshotCommand, AddTextboxCommand
-from view.pdf_view import PDFView, ViewportAnchor, OptimizePdfDialog
-from typing import Callable, List, Tuple, Optional
-from utils.helpers import pixmap_to_qpixmap, show_error
-from pathlib import Path
-from collections import OrderedDict
-from dataclasses import dataclass, field
+from __future__ import annotations
+
+import difflib
 import io
 import logging
 import tempfile
 import uuid
+from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace as dataclass_replace
+from pathlib import Path
+
 import fitz
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QProgressDialog
+
+from model.color_profile import ColorProfile, to_fitz_colorspace
+from model.edit_commands import AddTextboxCommand, EditTextCommand, EditTextResult, SnapshotCommand
+from model.object_requests import (
+    BatchDeleteObjectsRequest,
+    BatchMoveObjectsRequest,
+    DeleteObjectRequest,
+    InsertImageObjectRequest,
+    MoveObjectRequest,
+    ResizeObjectRequest,
+    RotateObjectRequest,
+)
+from model.pdf_model import PDFModel
+from utils.helpers import pixmap_to_qimage, pixmap_to_qpixmap, show_error
+from view.pdf_view import EditTextRequest, MoveTextRequest, OptimizePdfDialog, PDFView, ViewportAnchor
 
 THUMB_BATCH_SIZE = 10
 THUMB_BATCH_INTERVAL_MS = 30
@@ -25,19 +40,33 @@ VISIBLE_RENDER_BATCH_SIZE = 2
 LOW_RES_RENDER_SCALE = 0.5
 RENDER_CACHE_BUDGET_BYTES = 96 * 1024 * 1024
 
-from src.printing import PrintDispatcher, PrintingError, PrintHelperTerminatedError
+from src.printing import PrintDispatcher, PrintHelperTerminatedError, PrintingError
 from src.printing.helper_protocol import PrintHelperJob
 from src.printing.messages import (
     PRINT_CLOSING_MESSAGE as CLEAN_PRINT_CLOSING_MESSAGE,
+)
+from src.printing.messages import (
     PRINT_PREPARING_MESSAGE as CLEAN_PRINT_PREPARING_MESSAGE,
+)
+from src.printing.messages import (
     PRINT_STALLED_MESSAGE as CLEAN_PRINT_STALLED_MESSAGE,
+)
+from src.printing.messages import (
     PRINT_STATUS_MESSAGE as CLEAN_PRINT_STATUS_MESSAGE,
+)
+from src.printing.messages import (
     PRINT_SUBMITTING_MESSAGE as CLEAN_PRINT_SUBMITTING_MESSAGE,
+)
+from src.printing.messages import (
     PRINT_TERMINATE_BUTTON_TEXT as CLEAN_PRINT_TERMINATE_BUTTON_TEXT,
+)
+from src.printing.messages import (
     PRINT_TERMINATING_MESSAGE as CLEAN_PRINT_TERMINATING_MESSAGE,
 )
 from src.printing.print_dialog import UnifiedPrintDialog
 from src.printing.subprocess_runner import PrintSubprocessRunner
+
+OPEN_BACKGROUND_FALLBACK_MS = 250
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +93,8 @@ class SessionUIState:
     scale: float = 1.0
     search_state: dict = field(default_factory=lambda: {"query": "", "results": [], "index": -1})
     mode: str = "browse"
-    viewport_anchor: Optional[ViewportAnchor] = None
+    viewport_anchor: ViewportAnchor | None = None
+    color_profile: str = ColorProfile.SRGB.value
 
 
 @dataclass
@@ -185,35 +215,112 @@ class _OptimizeWorkerBridge(QObject):
         self.thread_finished.emit()
 
 
+class _OcrWorker(QObject):
+    """Runs Surya OCR one page at a time on a background thread."""
+
+    progress = Signal(int, int, int)
+    page_done = Signal(int, object)
+    failed = Signal(object)
+    finished = Signal()
+
+    def __init__(
+        self,
+        tool,
+        page_nums: list[int],
+        languages: list[str],
+        device: str,
+    ) -> None:
+        super().__init__()
+        self._tool = tool
+        self._page_nums = list(page_nums)
+        self._languages = list(languages)
+        self._device = device
+        self._cancel_requested = False
+
+    def request_cancel(self) -> None:
+        self._cancel_requested = True
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            total = len(self._page_nums)
+            for index, page_num in enumerate(self._page_nums, start=1):
+                if self._cancel_requested:
+                    break
+                result = self._tool.ocr_pages(
+                    [page_num],
+                    languages=self._languages,
+                    device=self._device,
+                )
+                spans = list(result.get(page_num, []))
+                self.page_done.emit(page_num, spans)
+                self.progress.emit(page_num, index, total)
+        except Exception as exc:
+            logger.exception("OCR worker failed")
+            self.failed.emit(exc)
+        finally:
+            self.finished.emit()
+
+
+class _OcrBridge(QObject):
+    progress = Signal(int, int, int)
+    page_done = Signal(int, object)
+    failed = Signal(object)
+    thread_finished = Signal()
+
+    @Slot(int, int, int)
+    def forward_progress(self, page_num: int, done: int, total: int) -> None:
+        self.progress.emit(page_num, done, total)
+
+    @Slot(int, object)
+    def forward_page_done(self, page_num: int, spans) -> None:
+        self.page_done.emit(page_num, spans)
+
+    @Slot(object)
+    def forward_failed(self, exc) -> None:
+        self.failed.emit(exc)
+
+    @Slot()
+    def notify_thread_finished(self) -> None:
+        self.thread_finished.emit()
+
+
 class PDFController:
     _VALID_MODES = {"browse", "edit_text", "add_text", "rect", "highlight", "add_annotation"}
     def __init__(self, model: PDFModel, view: PDFView):
         self.model = model
         self.view = view
         self.annotations = []
-        self.print_dispatcher: Optional[PrintDispatcher] = None
+        self.print_dispatcher: PrintDispatcher | None = None
         self._print_dialog = None
-        self._print_progress_dialog: Optional[QProgressDialog] = None
-        self._print_thread: Optional[QThread] = None
-        self._print_worker: Optional[_PrintSubmissionWorker] = None
-        self._print_runner: Optional[PrintSubprocessRunner] = None
-        self._print_worker_bridge: Optional[_PrintWorkerBridge] = None
+        self._print_progress_dialog: QProgressDialog | None = None
+        self._print_thread: QThread | None = None
+        self._print_worker: _PrintSubmissionWorker | None = None
+        self._print_runner: PrintSubprocessRunner | None = None
+        self._print_worker_bridge: _PrintWorkerBridge | None = None
         self._print_close_pending = False
         self._print_stalled = False
-        self._optimize_progress_dialog: Optional[QProgressDialog] = None
-        self._optimize_thread: Optional[QThread] = None
-        self._optimize_worker: Optional[_OptimizePdfCopyWorker] = None
-        self._optimize_worker_bridge: Optional[_OptimizeWorkerBridge] = None
-        self._optimize_paused_session_id: Optional[str] = None
+        self._optimize_progress_dialog: QProgressDialog | None = None
+        self._optimize_thread: QThread | None = None
+        self._optimize_worker: _OptimizePdfCopyWorker | None = None
+        self._optimize_worker_bridge: _OptimizeWorkerBridge | None = None
+        self._optimize_paused_session_id: str | None = None
+        self._ocr_progress_dialog: QProgressDialog | None = None
+        self._ocr_thread: QThread | None = None
+        self._ocr_worker: _OcrWorker | None = None
+        self._ocr_worker_bridge: _OcrBridge | None = None
         self._load_gen_by_session: dict[str, int] = {}
         self._render_gen_by_session: dict[str, int] = {}
         self._stale_index_gen_by_session: dict[str, int] = {}
         self._session_ui_state: dict[str, SessionUIState] = {}
         self._desired_scroll_page: dict[str, int] = {}
+        self._open_priority_page_by_session: dict[str, int] = {}
+        self._background_loading_started_by_session: dict[str, bool] = {}
+        self._render_batch_pending_by_session: dict[str, bool] = {}
         self._page_sizes_by_session: dict[str, list[tuple[float, float]]] = {}
-        self._page_render_quality_by_session: dict[str, dict[int, str]] = {}
+        self._page_render_quality_by_session: dict[str, dict[str, dict[int, str]]] = {}
         self._render_revision_by_session: dict[str, int] = {}
-        self._render_cache: OrderedDict[tuple[str, int, int, str, int], tuple[QPixmap, int]] = OrderedDict()
+        self._render_cache: OrderedDict[tuple[str, str, int, int, str, int], tuple[QPixmap, int]] = OrderedDict()
         self._render_cache_total_bytes = 0
         self._fullscreen_session_snapshots: dict[str, FullscreenSessionSnapshot] = {}
         self._global_mode = self._normalize_mode(getattr(self.view, "current_mode", "browse"))
@@ -238,12 +345,39 @@ class PDFController:
             self._optimize_worker_bridge.succeeded.connect(self._on_optimize_copy_succeeded)
             self._optimize_worker_bridge.failed.connect(self._on_optimize_copy_failed)
             self._optimize_worker_bridge.thread_finished.connect(self._on_optimize_thread_finished)
+        if self._ocr_worker_bridge is None:
+            self._ocr_worker_bridge = _OcrBridge(self.view)
+            self._ocr_worker_bridge.progress.connect(self._on_ocr_progress)
+            self._ocr_worker_bridge.page_done.connect(self._on_ocr_page_done)
+            self._ocr_worker_bridge.failed.connect(self._on_ocr_failed)
+            self._ocr_worker_bridge.thread_finished.connect(self._on_ocr_thread_finished)
         if self.print_dispatcher is None:
             self.print_dispatcher = PrintDispatcher()
         if not self._signals_connected:
             self._connect_signals()
             self._signals_connected = True
         self._activated = True
+        self._refresh_ocr_availability()
+
+    def _refresh_ocr_availability(self) -> None:
+        updater = getattr(self.view, "update_ocr_availability", None)
+        if not callable(updater):
+            return
+        tool = getattr(getattr(self.model, "tools", None), "ocr", None)
+        if tool is None:
+            updater(False, "OCR 工具未啟用")
+            return
+        try:
+            info = tool.availability()
+        except (ImportError, RuntimeError, AttributeError) as exc:
+            logger.warning("OCR availability probe failed: %s", exc)
+            updater(False, str(exc))
+            return
+        if info.available:
+            updater(True, "")
+        else:
+            parts = [p for p in (info.reason, info.install_hint) if p]
+            updater(False, "\n".join(parts) or "OCR 工具不可用")
 
     def _connect_signals(self):
         # Existing connections
@@ -259,10 +393,19 @@ class PDFController:
         self.view.sig_add_highlight.connect(self.add_highlight)
         self.view.sig_add_rect.connect(self.add_rect)
         self.view.sig_edit_text.connect(self.edit_text)
+        self.view.sig_move_text_across_pages.connect(self.move_text_across_pages)
         self.view.sig_add_textbox.connect(self.add_textbox)
+        if hasattr(self.view, "sig_add_image_object"):
+            self.view.sig_add_image_object.connect(self.add_image_object)
+        self.view.sig_move_object.connect(self.move_object)
+        self.view.sig_delete_object.connect(self.delete_object)
+        self.view.sig_rotate_object.connect(self.rotate_object)
+        if hasattr(self.view, "sig_resize_object"):
+            self.view.sig_resize_object.connect(self.resize_object)
         self.view.sig_jump_to_result.connect(self.jump_to_result)
         self.view.sig_search.connect(self.search_text)
-        self.view.sig_ocr.connect(self.ocr_pages)
+        if hasattr(self.view, "sig_start_ocr"):
+            self.view.sig_start_ocr.connect(self.start_ocr)
         self.view.sig_undo.connect(self.undo)
         self.view.sig_redo.connect(self.redo)
         self.view.sig_mode_changed.connect(self._update_mode)
@@ -277,10 +420,10 @@ class PDFController:
         self.view.sig_load_annotations.connect(self.load_annotations)
         self.view.sig_jump_to_annotation.connect(self.jump_to_annotation)
         self.view.sig_toggle_annotations_visibility.connect(self.toggle_annotations_visibility)
-        
+
         # Snapshot connection
         self.view.sig_snapshot_page.connect(self.snapshot_page)
-        
+
         # Insert pages connections
         self.view.sig_insert_blank_page.connect(self.insert_blank_page)
         self.view.sig_insert_pages_from_file.connect(self.insert_pages_from_file)
@@ -295,6 +438,8 @@ class PDFController:
 
         # Zoom re-render connection
         self.view.sig_request_rerender.connect(self._on_request_rerender)
+        if hasattr(self.view, "sig_color_profile_changed"):
+            self.view.sig_color_profile_changed.connect(self._on_color_profile_changed)
 
         # Align model granularity with UI default at startup.
         combo = getattr(self.view, "text_target_mode_combo", None)
@@ -318,23 +463,56 @@ class PDFController:
         self._stale_index_gen_by_session[session_id] = gen
         return gen
 
-    def _pause_session_background_loading(self, session_id: Optional[str]) -> None:
+    def _pause_session_background_loading(self, session_id: str | None) -> None:
         if not session_id:
             return
         self._next_load_gen(session_id)
         self._next_render_gen(session_id)
         self._next_stale_index_gen(session_id)
+        self._render_batch_pending_by_session[session_id] = False
+
+    def _start_open_background_loading(self, session_id: str) -> None:
+        if not session_id or not self.model.doc:
+            return
+        if self.model.get_active_session_id() != session_id:
+            return
+        self._background_loading_started_by_session[session_id] = True
+        load_gen = self._load_gen_by_session.get(session_id)
+        if load_gen is not None:
+            QTimer.singleShot(0, lambda sid=session_id, gen=load_gen: self._schedule_thumbnail_batch(0, sid, gen))
+        self._schedule_deferred_sidebar_scans(session_id)
+
+    def _maybe_start_background_loading_after_render(self, session_id: str, page_idx: int, quality: str) -> None:
+        if quality != "high":
+            return
+        if self._background_loading_started_by_session.get(session_id):
+            return
+        if self._open_priority_page_by_session.get(session_id) != page_idx:
+            return
+        self._background_loading_started_by_session[session_id] = True
+        self._start_open_background_loading(session_id)
+
+    def _start_open_background_loading_if_current(self, session_id: str, load_gen: int) -> None:
+        if self.model.get_active_session_id() != session_id:
+            return
+        if self._load_gen_by_session.get(session_id) != load_gen:
+            return
+        if self._background_loading_started_by_session.get(session_id):
+            return
+        self._start_open_background_loading(session_id)
 
     def _capture_current_ui_state(self) -> None:
         sid = self.model.get_active_session_id()
         if not sid:
             return
+        normalized_profile = self._resolve_session_profile(sid)
         self._session_ui_state[sid] = SessionUIState(
             current_page=max(0, self.view.current_page),
             scale=max(0.1, min(float(self.view.scale), 4.0)),
             search_state=self.view.get_search_ui_state(),
             mode=self._normalize_mode(getattr(self.view, "current_mode", "browse")),
             viewport_anchor=self.view.capture_viewport_anchor(),
+            color_profile=normalized_profile,
         )
 
     def _get_ui_state(self, session_id: str) -> SessionUIState:
@@ -344,10 +522,89 @@ class PDFController:
             self._session_ui_state[session_id] = state
         return state
 
+    def _normalize_color_profile(self, value: str | None) -> str:
+        if not value:
+            return ColorProfile.SRGB.value
+        try:
+            return ColorProfile.from_string(value).value
+        except ValueError:
+            return ColorProfile.SRGB.value
+
+    def _fitz_colorspace_for_profile(self, profile: str) -> fitz.Colorspace:
+        try:
+            return to_fitz_colorspace(profile)
+        except ValueError:
+            return fitz.csRGB
+
+    def _fitz_colorspace_for_session(self, session_id: str) -> fitz.Colorspace:
+        return self._fitz_colorspace_for_profile(self._color_profile_for_session(session_id))
+
+    def _color_profile_for_session(self, session_id: str) -> str:
+        state = self._get_ui_state(session_id)
+        return self._normalize_color_profile(state.color_profile)
+
+    def _resolve_session_profile(self, session_id: str, *, sync_view: bool = False) -> str:
+        """Return the session's normalized profile, healing unknown values back to sRGB."""
+        state = self._get_ui_state(session_id)
+        normalized = self._normalize_color_profile(state.color_profile)
+        if state.color_profile != normalized:
+            logger.warning(
+                "Unknown session color profile %r; falling back to %s",
+                state.color_profile,
+                normalized,
+            )
+            state.color_profile = normalized
+            if sync_view and hasattr(self.view, "set_color_profile"):
+                self.view.set_color_profile(normalized)
+        return normalized
+
+    def _page_quality_map(self, session_id: str, profile: str | None = None) -> dict[int, str]:
+        profile = profile or self._color_profile_for_session(session_id)
+        return self._page_render_quality_by_session.setdefault(session_id, {}).setdefault(profile, {})
+
+    def set_session_color_profile(self, session_id: str, profile: str) -> None:
+        """Set a session-scoped view/print-preview color profile (view-only; no PDF mutation)."""
+        if not session_id:
+            raise ValueError("session_id is required")
+        normalized = ColorProfile.from_string(profile).value
+        state = self._get_ui_state(session_id)
+        if state.color_profile == normalized:
+            if self.model.get_active_session_id() == session_id and hasattr(self.view, "set_color_profile"):
+                self.view.set_color_profile(normalized)
+            return
+        state.color_profile = normalized
+        self._page_quality_map(session_id, normalized).clear()
+        if self.model.get_active_session_id() == session_id:
+            if hasattr(self.view, "set_color_profile"):
+                self.view.set_color_profile(normalized)
+            gen = self._next_load_gen(session_id)
+            self._schedule_thumbnail_batch(0, session_id, gen)
+            if self.view.continuous_pages:
+                self._schedule_visible_render(session_id, immediate_page_idx=self.view.current_page)
+            else:
+                self.show_page(self.view.current_page)
+
+    def _on_color_profile_changed(self, profile: str) -> None:
+        session_id = self.model.get_active_session_id()
+        if not session_id:
+            return
+        self.set_session_color_profile(session_id, profile)
+
     def _refresh_document_tabs(self) -> None:
         tabs = self.model.list_sessions()
         active_idx = self.model.get_active_session_index()
         self.view.set_document_tabs(tabs, active_idx)
+        active_sid = self.model.get_active_session_id()
+        default_save_as_path = None
+        if active_sid:
+            meta = self.model.get_session_meta(active_sid) or {}
+            default_save_as_path = (
+                meta.get("saved_path")
+                or meta.get("path")
+                or meta.get("display_name")
+                or "未命名.pdf"
+            )
+        self.view.set_save_as_default_path(default_save_as_path)
 
     def _normalize_mode(self, mode: str) -> str:
         return mode if mode in self._VALID_MODES else "browse"
@@ -361,7 +618,7 @@ class PDFController:
     def _empty_search_state(self) -> dict:
         return {"query": "", "results": [], "index": -1}
 
-    def _capture_fullscreen_snapshot(self, session_id: Optional[str] = None, use_current_view: bool = True) -> None:
+    def _capture_fullscreen_snapshot(self, session_id: str | None = None, use_current_view: bool = True) -> None:
         sid = session_id or self.model.get_active_session_id()
         if not sid or sid in self._fullscreen_session_snapshots:
             return
@@ -414,7 +671,7 @@ class PDFController:
     def _restore_active_fullscreen_anchor(self, snapshot: FullscreenSessionSnapshot) -> None:
         self.view.restore_viewport_anchor(snapshot.anchor)
 
-    def _restore_viewport_anchor_if_current(self, session_id: str, gen: int, anchor: Optional[ViewportAnchor]) -> None:
+    def _restore_viewport_anchor_if_current(self, session_id: str, gen: int, anchor: ViewportAnchor | None) -> None:
         if anchor is None:
             return
         if self.model.get_active_session_id() != session_id:
@@ -423,7 +680,7 @@ class PDFController:
             return
         self.view.restore_viewport_anchor(anchor)
 
-    def _schedule_restore_viewport_anchor(self, session_id: str, gen: int, anchor: Optional[ViewportAnchor]) -> None:
+    def _schedule_restore_viewport_anchor(self, session_id: str, gen: int, anchor: ViewportAnchor | None) -> None:
         if anchor is None:
             return
         QTimer.singleShot(0, lambda sid=session_id, g=gen, a=anchor: self._restore_viewport_anchor_if_current(sid, g, a))
@@ -442,7 +699,7 @@ class PDFController:
     def _render_revision(self, session_id: str) -> int:
         return self._render_revision_by_session.get(session_id, 0)
 
-    def _bump_render_revision(self, session_id: Optional[str] = None) -> None:
+    def _bump_render_revision(self, session_id: str | None = None) -> None:
         sid = session_id or self.model.get_active_session_id()
         if not sid:
             return
@@ -456,17 +713,25 @@ class PDFController:
             _, cost = self._render_cache.pop(key)
             self._render_cache_total_bytes = max(0, self._render_cache_total_bytes - cost)
 
-    def _render_cache_key(self, session_id: str, page_idx: int, rendered_scale: float, quality: str) -> tuple[str, int, int, str, int]:
+    def _render_cache_key(
+        self,
+        session_id: str,
+        profile: str,
+        page_idx: int,
+        rendered_scale: float,
+        quality: str,
+    ) -> tuple[str, str, int, int, str, int]:
         return (
             session_id,
+            profile,
             page_idx,
             int(round(rendered_scale * 1000)),
             quality,
             self._render_revision(session_id),
         )
 
-    def _get_cached_render(self, session_id: str, page_idx: int, rendered_scale: float, quality: str) -> Optional[QPixmap]:
-        key = self._render_cache_key(session_id, page_idx, rendered_scale, quality)
+    def _get_cached_render(self, session_id: str, profile: str, page_idx: int, rendered_scale: float, quality: str) -> QPixmap | None:
+        key = self._render_cache_key(session_id, profile, page_idx, rendered_scale, quality)
         cached = self._render_cache.pop(key, None)
         if cached is None:
             return None
@@ -474,8 +739,8 @@ class PDFController:
         self._render_cache[key] = (pixmap, cost)
         return pixmap
 
-    def _store_cached_render(self, session_id: str, page_idx: int, rendered_scale: float, quality: str, pixmap: QPixmap) -> None:
-        key = self._render_cache_key(session_id, page_idx, rendered_scale, quality)
+    def _store_cached_render(self, session_id: str, profile: str, page_idx: int, rendered_scale: float, quality: str, pixmap: QPixmap) -> None:
+        key = self._render_cache_key(session_id, profile, page_idx, rendered_scale, quality)
         cost = max(1, pixmap.width()) * max(1, pixmap.height()) * 4
         previous = self._render_cache.pop(key, None)
         if previous is not None:
@@ -502,13 +767,19 @@ class PDFController:
             return False
         target_scale = max(0.1, float(self.view.scale))
         rendered_scale = self._render_scale_for_quality(target_scale, quality)
-        cached = self._get_cached_render(session_id, page_idx, rendered_scale, quality)
+        profile = self._color_profile_for_session(session_id)
+        cached = self._get_cached_render(session_id, profile, page_idx, rendered_scale, quality)
         if cached is None:
-            pix = self.model.get_page_pixmap(page_idx + 1, rendered_scale)
+            pix = self.model.get_page_pixmap(
+                page_idx + 1,
+                rendered_scale,
+                colorspace=self._fitz_colorspace_for_profile(profile),
+            )
             cached = pixmap_to_qpixmap(pix)
-            self._store_cached_render(session_id, page_idx, rendered_scale, quality, cached)
+            self._store_cached_render(session_id, profile, page_idx, rendered_scale, quality, cached)
         self.view.update_page_in_scene_scaled(page_idx, cached, rendered_scale, target_scale)
-        self._page_render_quality_by_session.setdefault(session_id, {})[page_idx] = quality
+        self._page_quality_map(session_id, profile)[page_idx] = quality
+        self._maybe_start_background_loading_after_render(session_id, page_idx, quality)
         return True
 
     def _visible_render_targets(self) -> tuple[list[int], list[int]]:
@@ -520,14 +791,18 @@ class PDFController:
         prefetch_pages = list(range(prefetch_start, prefetch_end + 1)) if prefetch_end >= prefetch_start else []
         return (visible_pages, prefetch_pages)
 
-    def _schedule_visible_render(self, session_id: str, immediate_page_idx: Optional[int] = None) -> None:
+    def _schedule_visible_render(self, session_id: str, immediate_page_idx: int | None = None) -> None:
         if not session_id or not self.model.doc or not self.view.continuous_pages:
             return
-        gen = self._next_render_gen(session_id)
+        profile = self._color_profile_for_session(session_id)
         if immediate_page_idx is not None:
-            current_quality = self._page_render_quality_by_session.setdefault(session_id, {}).get(immediate_page_idx)
+            current_quality = self._page_quality_map(session_id, profile).get(immediate_page_idx)
             if current_quality not in {"low", "high"}:
                 self._render_page_into_scene(session_id, immediate_page_idx, "low")
+        if self._render_batch_pending_by_session.get(session_id):
+            return
+        gen = self._next_render_gen(session_id)
+        self._render_batch_pending_by_session[session_id] = True
         QTimer.singleShot(0, lambda sid=session_id, g=gen: self._process_visible_render_batch(sid, g))
 
     def _process_visible_render_batch(self, session_id: str, gen: int) -> None:
@@ -537,12 +812,15 @@ class PDFController:
             or not self.model.doc
             or not self.view.continuous_pages
         ):
+            self._render_batch_pending_by_session[session_id] = False
             return
         visible_pages, prefetch_pages = self._visible_render_targets()
         if not prefetch_pages:
+            self._render_batch_pending_by_session[session_id] = False
             return
 
-        page_quality = self._page_render_quality_by_session.setdefault(session_id, {})
+        profile = self._color_profile_for_session(session_id)
+        page_quality = self._page_quality_map(session_id, profile)
         candidates: list[tuple[int, str]] = []
         for page_idx in visible_pages:
             quality = page_quality.get(page_idx)
@@ -558,6 +836,7 @@ class PDFController:
                 candidates.append((page_idx, "low"))
 
         if not candidates:
+            self._render_batch_pending_by_session[session_id] = False
             return
 
         rendered = 0
@@ -569,6 +848,8 @@ class PDFController:
 
         if rendered > 0:
             QTimer.singleShot(0, lambda sid=session_id, g=gen: self._process_visible_render_batch(sid, g))
+            return
+        self._render_batch_pending_by_session[session_id] = False
 
     def _schedule_deferred_sidebar_scans(self, session_id: str) -> None:
         if not session_id:
@@ -654,7 +935,7 @@ class PDFController:
         self.view.populate_watermarks_list([])
         self.view.update_undo_redo_tooltips("復原（無可撤銷操作）", "重做（無可重做操作）")
 
-    def _render_active_session(self, initial_page_idx: Optional[int] = None) -> None:
+    def _render_active_session(self, initial_page_idx: int | None = None) -> None:
         sid = self.model.get_active_session_id()
         if not sid or not self.model.doc:
             self._reset_empty_ui()
@@ -662,14 +943,20 @@ class PDFController:
         self.view.ensure_heavy_panels_initialized()
 
         state = self._get_ui_state(sid)
+        profile = self._resolve_session_profile(sid)
+        if hasattr(self.view, "set_color_profile"):
+            self.view.set_color_profile(profile)
         if initial_page_idx is None:
             initial_page_idx = state.current_page
         initial_page_idx = max(0, min(initial_page_idx, len(self.model.doc) - 1))
         self._desired_scroll_page[sid] = initial_page_idx
+        self._open_priority_page_by_session[sid] = initial_page_idx
+        self._background_loading_started_by_session[sid] = False
+        self._render_batch_pending_by_session[sid] = False
 
         self.view.scale = state.scale
         self.view.total_pages = len(self.model.doc)
-        self._page_render_quality_by_session[sid] = {}
+        self._page_quality_map(sid, profile).clear()
         self._session_page_sizes(sid)
         self.view.initialize_continuous_placeholders(self._page_sizes_by_session[sid], state.scale, initial_page_idx)
         self.view.set_thumbnail_placeholders(len(self.model.doc))
@@ -678,9 +965,11 @@ class PDFController:
         self._update_undo_redo_tooltips()
 
         gen = self._next_load_gen(sid)
-        QTimer.singleShot(0, lambda sid=sid, gen=gen: self._schedule_thumbnail_batch(0, sid, gen))
         self._schedule_visible_render(sid, immediate_page_idx=initial_page_idx)
-        self._schedule_deferred_sidebar_scans(sid)
+        QTimer.singleShot(
+            OPEN_BACKGROUND_FALLBACK_MS,
+            lambda sid=sid, load_gen=gen: self._start_open_background_loading_if_current(sid, load_gen),
+        )
         self._schedule_restore_viewport_anchor(sid, gen, state.viewport_anchor)
 
     def _switch_to_session_id(self, session_id: str) -> None:
@@ -740,6 +1029,20 @@ class PDFController:
                 show_error(self.view, f"打開 PDF 失敗: {e}")
                 break
 
+    def handle_forwarded_cli(self, files: list[str]) -> None:
+        forwarded_files = [str(path) for path in files if str(path).strip()]
+
+        def _apply() -> None:
+            self.activate()
+            if self.view.isMinimized():
+                self.view.showNormal()
+            self.view.raise_()
+            self.view.activateWindow()
+            for path in forwarded_files:
+                self.open_pdf(path)
+
+        QTimer.singleShot(0, _apply)
+
     def start_merge_pdfs(self) -> None:
         active_sid = self.model.get_active_session_id()
         if not active_sid:
@@ -790,7 +1093,7 @@ class PDFController:
             return
         self.save_ordered_sources_as_new(ordered_sources, path)
 
-    def merge_ordered_sources_into_current(self, ordered_sources: List[dict]) -> None:
+    def merge_ordered_sources_into_current(self, ordered_sources: list[dict]) -> None:
         if not self.model.doc:
             raise ValueError("沒有開啟的PDF文件")
 
@@ -818,7 +1121,7 @@ class PDFController:
         self._schedule_stale_index_drain()
         self._update_undo_redo_tooltips()
 
-    def save_ordered_sources_as_new(self, ordered_sources: List[dict], output_path: str) -> None:
+    def save_ordered_sources_as_new(self, ordered_sources: list[dict], output_path: str) -> None:
         merged_doc = self.model.compose_merged_document(ordered_sources)
         try:
             merged_doc.save(output_path, garbage=0)
@@ -826,7 +1129,7 @@ class PDFController:
             merged_doc.close()
         self.open_pdf(output_path)
 
-    def _resolve_merge_file(self, entry: dict) -> Optional[dict]:
+    def _resolve_merge_file(self, entry: dict) -> dict | None:
         path = (entry or {}).get("path")
         if not path:
             return None
@@ -1070,6 +1373,9 @@ class PDFController:
         self._fullscreen_session_snapshots.pop(sid, None)
         self._load_gen_by_session.pop(sid, None)
         self._desired_scroll_page.pop(sid, None)
+        self._open_priority_page_by_session.pop(sid, None)
+        self._background_loading_started_by_session.pop(sid, None)
+        self._render_batch_pending_by_session.pop(sid, None)
         self._refresh_document_tabs()
         active_sid = self.model.get_active_session_id()
         if active_sid:
@@ -1105,9 +1411,13 @@ class PDFController:
 
     def _render_print_preview_image(self, page_index: int, dpi: int) -> QImage:
         scale = max(1.0, float(dpi) / 72.0)
-        pix = self.model.get_page_snapshot(page_index + 1, scale=scale)
-        fmt = QImage.Format_RGBA8888 if pix.alpha else QImage.Format_RGB888
-        return QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
+        session_id = self.model.get_active_session_id()
+        pix = self.model.get_page_snapshot(
+            page_index + 1,
+            scale=scale,
+            colorspace=(self._fitz_colorspace_for_session(session_id) if session_id else fitz.csRGB),
+        )
+        return pixmap_to_qimage(pix)
 
     def _has_active_print_submission(self) -> bool:
         return self._print_thread is not None or self._print_runner is not None
@@ -1142,7 +1452,7 @@ class PDFController:
         self._print_progress_dialog.deleteLater()
         self._print_progress_dialog = None
 
-    def _set_print_status_message(self, message: Optional[str]) -> None:
+    def _set_print_status_message(self, message: str | None) -> None:
         if hasattr(self.view, "set_status_bar_override_message"):
             self.view.set_status_bar_override_message(message)
             return
@@ -1184,11 +1494,18 @@ class PDFController:
         bridge = self._print_worker_bridge
         if bridge is None:
             raise RuntimeError("Print worker bridge is not initialized")
+        session_id = self.model.get_active_session_id()
         work_dir = tempfile.mkdtemp(prefix="pdf_editor_print_")
+        normalized_options = options.normalized() if hasattr(options, "normalized") else options
+        if session_id and hasattr(normalized_options, "extra_options"):
+            profile = self._resolve_session_profile(session_id, sync_view=True)
+            extra = {**(getattr(normalized_options, "extra_options", {}) or {}), "render_colorspace": profile}
+            normalized_options = dataclass_replace(normalized_options, extra_options=extra)
+
         request = PrintJobRequest(
             capture_pdf_bytes=self.model.capture_print_input_pdf_bytes,
             watermarks=self.model.get_print_watermarks(),
-            options=options.normalized() if hasattr(options, "normalized") else options,
+            options=normalized_options,
             job_id=str(uuid.uuid4()),
             work_dir=work_dir,
         )
@@ -1353,7 +1670,7 @@ class PDFController:
         finally:
             self._print_dialog = None
 
-    def delete_pages(self, pages: List[int]):
+    def delete_pages(self, pages: list[int]):
         before = self.model._capture_doc_snapshot()
         # Model is the source of truth: it sanitizes dirty input and returns the actual deleted pages.
         actual_deleted_pages = self.model.delete_pages(pages)
@@ -1376,7 +1693,7 @@ class PDFController:
         self._schedule_stale_index_drain()
         self._update_undo_redo_tooltips()
 
-    def rotate_pages(self, pages: List[int], degrees: int):
+    def rotate_pages(self, pages: list[int], degrees: int):
         before = self.model._capture_doc_snapshot()
         # Model sanitizes and returns the actual rotated pages for metadata correctness.
         actual_rotated_pages = self.model.rotate_pages(pages, degrees)
@@ -1397,10 +1714,10 @@ class PDFController:
         self._rebuild_continuous_scene(self.view.current_page)
         self._update_undo_redo_tooltips()
 
-    def export_pages(self, pages: List[int], path: str, as_image: bool, dpi: int, image_format: str):
+    def export_pages(self, pages: list[int], path: str, as_image: bool, dpi: int, image_format: str):
         self.model.export_pages(pages, path, as_image=as_image, dpi=dpi, image_format=image_format)
 
-    def add_highlight(self, page: int, rect: fitz.Rect, color: Tuple[float, float, float, float]):
+    def add_highlight(self, page: int, rect: fitz.Rect, color: tuple[float, float, float, float]):
         before = self.model._capture_doc_snapshot()
         self.model.tools.annotation.add_highlight(page, rect, color)
         self._invalidate_active_render_state()
@@ -1420,7 +1737,10 @@ class PDFController:
     def get_text_bounds(self, page: int, rough_rect: fitz.Rect) -> fitz.Rect:
         return self.model.tools.annotation.get_text_bounds(page, rough_rect)
 
-    def add_rect(self, page: int, rect: fitz.Rect, color: Tuple[float, float, float, float], fill: bool):
+    def get_object_info_at_point(self, page: int, point: fitz.Point):
+        return self.model.get_object_info_at_point(page, point)
+
+    def add_rect(self, page: int, rect: fitz.Rect, color: tuple[float, float, float, float], fill: bool):
         before = self.model._capture_doc_snapshot()
         self.model.tools.annotation.add_rect(page, rect, color, fill)
         self._invalidate_active_render_state()
@@ -1437,29 +1757,292 @@ class PDFController:
         self.show_page(page - 1)
         self._update_undo_redo_tooltips()
 
+    def move_object(self, request: MoveObjectRequest) -> None:
+        if isinstance(request, BatchMoveObjectsRequest):
+            before = self.model._capture_doc_snapshot()
+            affected_pages: list[int] = []
+            changed = False
+            for move in request.moves:
+                if self.model.move_object(move):
+                    changed = True
+                    affected_pages.append(int(move.destination_page))
+            if not changed:
+                return
+            self._invalidate_active_render_state()
+            after = self.model._capture_doc_snapshot()
+            pages = sorted(set(affected_pages))
+            cmd = SnapshotCommand(
+                model=self.model,
+                command_type="move_object_batch",
+                affected_pages=pages,
+                before_bytes=before,
+                after_bytes=after,
+                description=f"Move objects (pages {pages})",
+            )
+            self.model.command_manager.record(cmd)
+            self.show_page(pages[-1] - 1)
+            self._update_undo_redo_tooltips()
+            return
+        before = self.model._capture_doc_snapshot()
+        if not self.model.move_object(request):
+            return
+        self._invalidate_active_render_state()
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="move_object",
+            affected_pages=[request.destination_page],
+            before_bytes=before,
+            after_bytes=after,
+            description=f"移動物件（頁面 {request.destination_page}）",
+        )
+        self.model.command_manager.record(cmd)
+        self.show_page(request.destination_page - 1)
+        self._update_undo_redo_tooltips()
+
+    def rotate_object(self, request: RotateObjectRequest) -> None:
+        before = self.model._capture_doc_snapshot()
+        if not self.model.rotate_object(request):
+            return
+        self._invalidate_active_render_state()
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="rotate_object",
+            affected_pages=[request.page_num],
+            before_bytes=before,
+            after_bytes=after,
+            description=f"旋轉物件（頁面 {request.page_num}）",
+        )
+        self.model.command_manager.record(cmd)
+        self.show_page(request.page_num - 1)
+        self._update_undo_redo_tooltips()
+
+    def delete_object(self, request: DeleteObjectRequest) -> None:
+        if isinstance(request, BatchDeleteObjectsRequest):
+            before = self.model._capture_doc_snapshot()
+            affected_pages: list[int] = []
+            changed = False
+            for ref in request.objects:
+                single = DeleteObjectRequest(
+                    object_id=ref.object_id,
+                    object_kind=ref.object_kind,
+                    page_num=ref.page_num,
+                )
+                if self.model.delete_object(single):
+                    changed = True
+                    affected_pages.append(int(ref.page_num))
+            if not changed:
+                return
+            self._invalidate_active_render_state()
+            after = self.model._capture_doc_snapshot()
+            pages = sorted(set(affected_pages))
+            cmd = SnapshotCommand(
+                model=self.model,
+                command_type="delete_object_batch",
+                affected_pages=pages,
+                before_bytes=before,
+                after_bytes=after,
+                description=f"Delete objects (pages {pages})",
+            )
+            self.model.command_manager.record(cmd)
+            self.show_page(pages[-1] - 1)
+            self._update_undo_redo_tooltips()
+            return
+        before = self.model._capture_doc_snapshot()
+        if not self.model.delete_object(request):
+            return
+        self._invalidate_active_render_state()
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="delete_object",
+            affected_pages=[request.page_num],
+            before_bytes=before,
+            after_bytes=after,
+            description=f"刪除物件（頁面 {request.page_num}）",
+        )
+        self.model.command_manager.record(cmd)
+        self.show_page(request.page_num - 1)
+        self._update_undo_redo_tooltips()
+
+    def resize_object(self, request: ResizeObjectRequest) -> None:
+        before = self.model._capture_doc_snapshot()
+        if not self.model.resize_object(request):
+            return
+        self._invalidate_active_render_state()
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="resize_object",
+            affected_pages=[request.page_num],
+            before_bytes=before,
+            after_bytes=after,
+            description=f"Resize object (page {request.page_num})",
+        )
+        self.model.command_manager.record(cmd)
+        self.show_page(request.page_num - 1)
+        self._update_undo_redo_tooltips()
+
+    def add_image_object(self, request: InsertImageObjectRequest) -> None:
+        before = self.model._capture_doc_snapshot()
+        self.model.add_image_object(
+            int(request.page_num),
+            fitz.Rect(request.visual_rect),
+            bytes(request.image_bytes),
+            rotation=int(getattr(request, "rotation", 0) or 0),
+        )
+        self._invalidate_active_render_state()
+        # Drop any stale object selection so lingering resize handles in the scene
+        # don't intercept the user's first click on the freshly-inserted image.
+        try:
+            clear_selection = getattr(self.view, "_clear_object_selection", None)
+            if callable(clear_selection):
+                clear_selection()
+        except Exception:
+            pass
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="add_image_object",
+            affected_pages=[int(request.page_num)],
+            before_bytes=before,
+            after_bytes=after,
+            description=f"Add image object (page {int(request.page_num)})",
+        )
+        self.model.command_manager.record(cmd)
+        self.show_page(int(request.page_num) - 1)
+        self._update_undo_redo_tooltips()
+
+    def _edit_result_to_message(self, result: EditTextResult) -> str | None:
+        if result is EditTextResult.TARGET_BLOCK_NOT_FOUND:
+            return "找不到可編輯的文字區塊"
+        if result is EditTextResult.TARGET_SPAN_NOT_FOUND:
+            return "找不到要編輯的文字內容"
+        return None
+
+    def _show_edit_result_feedback(self, result: EditTextResult) -> None:
+        message = self._edit_result_to_message(result)
+        if not message:
+            return
+        if hasattr(self.view, "_show_toast"):
+            self.view._show_toast(message, duration_ms=2500, tone="error")
+            return
+        show_error(self.view, message)
+
     def edit_text(
         self,
-        page: int,
-        rect: fitz.Rect,
-        new_text: str,
-        font: str,
-        size: int,
-        color: tuple,
+        page: int | EditTextRequest,
+        rect: fitz.Rect | None = None,
+        new_text: str | None = None,
+        font: str | None = None,
+        size: float | None = None,
+        color: tuple | None = None,
         original_text: str = None,
         vertical_shift_left: bool = True,
         new_rect=None,
         target_span_id: str = None,
         target_mode: str = None,
     ):
+        if isinstance(page, EditTextRequest):
+            request = page
+        else:
+            request = EditTextRequest(
+                page=page,
+                rect=rect,
+                new_text=new_text or "",
+                font=font or "helv",
+                size=float(size or 12.0),
+                color=color or (0.0, 0.0, 0.0),
+                original_text=original_text,
+                vertical_shift_left=vertical_shift_left,
+                new_rect=new_rect,
+                target_span_id=target_span_id,
+                target_mode=target_mode,
+            )
+        page = request.page
+        rect = request.rect
+        new_text = request.new_text
+        font = request.font
+        size = request.size
+        color = request.color
+        original_text = request.original_text
+        vertical_shift_left = request.vertical_shift_left
+        new_rect = request.new_rect
+        target_span_id = request.target_span_id
+        target_mode = request.target_mode
         # Empty string is a valid "delete textbox content" intent from inline edit.
         if new_text is None:
             new_text = ""
         if not self.model.doc or page < 1 or page > len(self.model.doc): return
         try:
             page_idx = page - 1
+            view = getattr(self, "view", None)
+
+            # 擷取 viewport anchor（在任何頁面變動前），供編輯後還原捲軸位置
+            anchor = (
+                view.capture_viewport_anchor()
+                if (view is not None and hasattr(view, "capture_viewport_anchor"))
+                else None
+            )
 
             # Phase 4: 透過 CommandManager 執行，支援頁面快照 undo/redo
             snapshot = self.model._capture_page_snapshot(page_idx)
+
+            # Displacement reflow callback（Track B → Track A fallback）
+            # 在 model.edit_text() 完成後，只移動後續受影響塊，不重新處理 edited block。
+            #
+            # Bug fixes:
+            # 1. 用 _model 而非 _doc 閉包，redo 時透過 _model.doc 取到目前有效的 doc 物件，
+            #    避免 full-GC / save-reopen 後對已關閉的舊 doc 執行 reflow。
+            # 2. drag-move 場景：以 new_rect 作為定位 edited block 的 rect（block 已在新位置），
+            #    否則用原始 rect 在 move 後找不到 block，displacement 靜默失敗。
+            # 3. Track B fallback 條件：plan is None（span not found）也要 fallback，
+            #    不能只看 success flag（Track B 找不到 span 時仍回傳 success=True）。
+            _model = self.model
+            _edit_rect = fitz.Rect(new_rect if new_rect is not None else rect)
+            _orig_rect = fitz.Rect(rect)
+            _new_text = new_text
+            _original_text = original_text or ""
+            _font = font
+            _size = float(size)
+            _color = color
+            _page_idx = page_idx
+            # mutable container：_reflow_fn 在 cmd.execute() 期間寫入，
+            # show_page() 完成後再讀取，確保警告不被 _update_status_bar() 覆蓋
+            _reflow_warning: list = [None]
+
+            def _reflow_fn():
+                try:
+                    _doc = _model.doc   # 每次執行時取當前有效 doc（非閉包時的舊 doc）
+                    if _doc is None:
+                        return
+                    from reflow.track_A_core import TrackAEngine
+                    from reflow.track_B_core import TrackBEngine
+                    result_b = TrackBEngine().apply_displacement_only(
+                        doc=_doc, page_idx=_page_idx,
+                        edited_rect=_edit_rect, new_text=_new_text,
+                        original_text=_original_text,
+                        font=_font, size=_size, color=_color,
+                    )
+                    # fallback 條件：明確失敗 OR Track B 未找到 span（plan is None）
+                    b_ok = result_b.get("success", False) and result_b.get("plan") is not None
+                    if not b_ok:
+                        result_a = TrackAEngine().apply_displacement_only(
+                            doc=_doc, page_idx=_page_idx,
+                            edited_rect=_edit_rect, new_text=_new_text,
+                            original_text=_original_text,
+                            font=_font, size=_size, color=_color,
+                        )
+                        a_ok = result_a.get("success", False) and result_a.get("plan") is not None
+                        if not a_ok:
+                            logger.warning(
+                                "edit_text reflow: Track A/B 均無法定位段落（displacement 跳過）"
+                            )
+                            _reflow_warning[0] = "⚠ 段落位移未執行（版面結構未識別），請手動調整"
+                except Exception as _e:
+                    logger.warning(f"edit_text reflow_fn 失敗（不影響主編輯）: {_e}")
+                    _reflow_warning[0] = f"⚠ Reflow 例外（主編輯不受影響）: {_e}"
 
             cmd = EditTextCommand(
                 model=self.model,
@@ -1477,22 +2060,250 @@ class PDFController:
                 new_rect=new_rect,
                 target_span_id=target_span_id,
                 target_mode=target_mode,
+                reflow_fn=_reflow_fn,
             )
             self.model.command_manager.execute(cmd)
-            self._invalidate_active_render_state()
+            if cmd.result is not EditTextResult.SUCCESS:
+                self._show_edit_result_feedback(cmd.result)
+                self._update_undo_redo_tooltips()
+                return
+            if hasattr(self, "_invalidate_active_render_state") and hasattr(self.model, "get_active_session_id"):
+                self._invalidate_active_render_state()
             self.show_page(page_idx)
             self._update_undo_redo_tooltips()
+            # 還原 viewport anchor（避免頁面重繪後捲軸跳位）
+            if anchor is not None and view is not None and hasattr(view, "restore_viewport_anchor"):
+                QTimer.singleShot(0, lambda a=anchor, v=view: v.restore_viewport_anchor(a))
+                QTimer.singleShot(180, lambda a=anchor, v=view: v.restore_viewport_anchor(a))
+            # 顯示 reflow 警告：使用 override 機制確保不被 _update_status_bar 覆蓋
+            if _reflow_warning[0]:
+                _msg = _reflow_warning[0]
+                _view_ref = view
+                if hasattr(_view_ref, "set_status_bar_override_message"):
+                    _view_ref.set_status_bar_override_message(_msg)
+                    # 5 秒後自動清除 override
+                    QTimer.singleShot(5000, lambda v=_view_ref:
+                        v.set_status_bar_override_message(None))
+                else:
+                    _sb = getattr(_view_ref, "status_bar", None)
+                    if _sb is not None:
+                        QTimer.singleShot(200, lambda m=_msg, sb=_sb:
+                            sb.showMessage(m, 5000))
         except Exception as e:
             logger.error(f"編輯文字失敗: {e}")
             show_error(self.view, f"編輯失敗: {e}")
-        
+
+    def move_text_across_pages(
+        self,
+        request: MoveTextRequest | int | None = None,
+        source_rect: fitz.Rect | None = None,
+        destination_page: int | None = None,
+        destination_rect: fitz.Rect | None = None,
+        new_text: str | None = None,
+        font: str | None = None,
+        size: float | None = None,
+        color: tuple | None = None,
+        original_text: str | None = None,
+        target_span_id: str | None = None,
+        target_mode: str | None = None,
+        **legacy_kwargs,
+    ) -> None:
+        if isinstance(request, MoveTextRequest):
+            move_request = request
+        else:
+            move_request = MoveTextRequest(
+                source_page=int(legacy_kwargs.pop("source_page", request or 0)),
+                source_rect=legacy_kwargs.pop("source_rect", source_rect),
+                destination_page=int(legacy_kwargs.pop("destination_page", destination_page)),
+                destination_rect=legacy_kwargs.pop("destination_rect", destination_rect),
+                new_text=legacy_kwargs.pop("new_text", new_text) or "",
+                font=legacy_kwargs.pop("font", font) or "helv",
+                size=float(legacy_kwargs.pop("size", size) or 12.0),
+                color=legacy_kwargs.pop("color", color) or (0.0, 0.0, 0.0),
+                original_text=legacy_kwargs.pop("original_text", original_text),
+                target_span_id=legacy_kwargs.pop("target_span_id", target_span_id),
+                target_mode=legacy_kwargs.pop("target_mode", target_mode),
+            )
+
+        source_page = move_request.source_page
+        source_rect = move_request.source_rect
+        destination_page = move_request.destination_page
+        destination_rect = move_request.destination_rect
+        new_text = move_request.new_text or ""
+        font = move_request.font
+        size = move_request.size
+        color = move_request.color
+        original_text = move_request.original_text
+        target_span_id = move_request.target_span_id
+        target_mode = move_request.target_mode
+        if not new_text.strip():
+            show_error(self.view, "跨頁移動失敗：文字內容不可為空。")
+            return
+        if not self.model.doc:
+            return
+        if source_page == destination_page:
+            self.edit_text(
+                source_page,
+                source_rect,
+                new_text,
+                font,
+                size,
+                color,
+                original_text=original_text,
+                vertical_shift_left=True,
+                new_rect=destination_rect,
+                target_span_id=target_span_id,
+                target_mode=target_mode,
+            )
+            return
+
+        page_count = len(self.model.doc)
+        if (
+            source_page < 1
+            or destination_page < 1
+            or source_page > page_count
+            or destination_page > page_count
+        ):
+            show_error(self.view, "跨頁移動失敗：頁碼超出範圍。")
+            return
+
+        try:
+            self.model.ensure_page_index_built(source_page)
+            self.model.ensure_page_index_built(destination_page)
+
+            resolved_target_span_id = self._resolve_cross_page_move_source_span_id(
+                source_page=source_page,
+                source_rect=source_rect,
+                original_text=original_text,
+                target_span_id=target_span_id,
+            )
+            if not resolved_target_span_id:
+                raise RuntimeError("找不到要移動的原始文字。")
+
+            before_snapshot = self.model._capture_doc_snapshot()
+
+            # cross-page move
+            #   preflight source
+            #     -> fail: no mutation + clear error
+            #     -> pass:
+            #          capture before
+            #          delete source
+            #          add destination
+            #            -> fail: restore before + refresh UI + error
+            #            -> pass: capture after + record one undo entry
+            source_edit_result = self.model.edit_text(
+                source_page,
+                source_rect,
+                "",
+                font,
+                size,
+                color,
+                original_text=original_text,
+                vertical_shift_left=True,
+                new_rect=None,
+                target_span_id=resolved_target_span_id,
+                target_mode=target_mode,
+            )
+            if source_edit_result is not EditTextResult.SUCCESS:
+                raise RuntimeError(self._edit_result_to_message(source_edit_result) or "跨頁移動前無法移除來源文字")
+
+            self.model.ensure_page_index_built(source_page)
+            if self.model.block_manager.find_run_by_id(source_page - 1, resolved_target_span_id) is not None:
+                raise RuntimeError("原始文字刪除未完成，已取消跨頁移動。")
+
+            self.model.add_textbox(
+                destination_page,
+                destination_rect,
+                new_text,
+                font=font,
+                size=size,
+                color=color,
+            )
+
+            after_snapshot = self.model._capture_doc_snapshot()
+            cmd = SnapshotCommand(
+                model=self.model,
+                command_type="move_text_across_pages",
+                affected_pages=sorted({source_page, destination_page}),
+                before_bytes=before_snapshot,
+                after_bytes=after_snapshot,
+                description="跨頁移動文字",
+            )
+            self.model.command_manager.record(cmd)
+            self._invalidate_active_render_state()
+            self._update_thumbnails()
+            self.show_page(destination_page - 1)
+            self._update_undo_redo_tooltips()
+        except Exception as e:
+            before_snapshot = locals().get("before_snapshot")
+            if before_snapshot:
+                try:
+                    self.model.replace_active_document_from_snapshot(
+                        before_snapshot,
+                        affected_pages=sorted({source_page, destination_page}),
+                    )
+                    self._invalidate_active_render_state()
+                    self._update_thumbnails()
+                    self.show_page(source_page - 1)
+                    self._update_undo_redo_tooltips()
+                except Exception as restore_error:
+                    logger.error("move_text_across_pages restore failed: %s", restore_error)
+            logger.error("跨頁移動文字失敗: %s", e)
+            show_error(self.view, f"跨頁移動文字失敗: {e}")
+
+    def _resolve_cross_page_move_source_span_id(
+        self,
+        source_page: int,
+        source_rect: fitz.Rect,
+        original_text: str = None,
+        target_span_id: str = None,
+    ) -> str | None:
+        page_idx = source_page - 1
+        if target_span_id:
+            source_run = self.model.block_manager.find_run_by_id(page_idx, target_span_id)
+            if source_run is not None:
+                return target_span_id
+
+        target = self.model.block_manager.find_by_rect(
+            page_idx,
+            source_rect,
+            original_text=original_text,
+            doc=self.model.doc,
+        )
+        if not target:
+            return None
+
+        candidate_spans = self.model.block_manager.find_overlapping_runs(
+            page_idx,
+            target.layout_rect,
+            tol=0.5,
+        )
+        if not candidate_spans:
+            return None
+        if len(candidate_spans) == 1:
+            return candidate_spans[0].span_id
+
+        text_probe = self.model._normalize_text_for_compare(original_text or target.text or "")
+        if not text_probe:
+            return candidate_spans[-1].span_id
+
+        ranked = sorted(
+            candidate_spans,
+            key=lambda span: difflib.SequenceMatcher(
+                None,
+                text_probe,
+                self.model._normalize_text_for_compare(span.text),
+            ).ratio(),
+        )
+        return ranked[-1].span_id
+
     def add_textbox(
         self,
         page: int,
         visual_rect: fitz.Rect,
         text: str,
         font: str,
-        size: int,
+        size: float,
         color: tuple,
     ) -> None:
         if not text.strip():
@@ -1535,7 +2346,12 @@ class PDFController:
         scale = self.view.scale
         matrix = fitz.Matrix(scale, scale)
         scaled_rect = rect * matrix
-        pix = self.model.get_page_pixmap(page_num, scale)
+        sid = self.model.get_active_session_id()
+        pix = self.model.get_page_pixmap(
+            page_num,
+            scale,
+            colorspace=(self._fitz_colorspace_for_session(sid) if sid else fitz.csRGB),
+        )
         qpix = pixmap_to_qpixmap(pix)
         self.view.display_page(page_num - 1, qpix, highlight_rect=scaled_rect)
         sid = self.model.get_active_session_id()
@@ -1543,26 +2359,106 @@ class PDFController:
             state = self._get_ui_state(sid)
             state.current_page = max(0, page_num - 1)
 
-    def ocr_pages(self, pages: List[int]):
+    def start_ocr(self, request) -> None:
+        """Run Surya OCR for the pages in ``request`` on a background thread."""
+        if self._ocr_thread is not None:
+            show_error(self.view, "OCR 已在執行中")
+            return
         if not self.model.doc:
-            show_error(self.view, "No PDF is open.")
-            return {}
+            show_error(self.view, "沒有開啟的 PDF 文件")
+            return
+
+        tool = self.model.tools.ocr
+        availability = tool.availability()
+        if not availability.available:
+            msg = availability.reason or "Surya OCR 未安裝"
+            if availability.install_hint:
+                msg = f"{msg}\n{availability.install_hint}"
+            show_error(self.view, msg)
+            return
+
+        page_nums = [idx + 1 for idx in request.page_indices]
+        if not page_nums:
+            show_error(self.view, "未選擇任何頁面")
+            return
+
+        thread = QThread()
+        worker = _OcrWorker(
+            tool,
+            page_nums=page_nums,
+            languages=list(request.languages),
+            device=request.device,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        if self._ocr_worker_bridge is not None:
+            worker.progress.connect(self._ocr_worker_bridge.forward_progress)
+            worker.page_done.connect(self._ocr_worker_bridge.forward_page_done)
+            worker.failed.connect(self._ocr_worker_bridge.forward_failed)
+            thread.finished.connect(self._ocr_worker_bridge.notify_thread_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+
+        self._ocr_thread = thread
+        self._ocr_worker = worker
+        self._show_ocr_progress_dialog(len(page_nums))
+        thread.start()
+
+    def cancel_ocr(self) -> None:
+        if self._ocr_worker is not None:
+            self._ocr_worker.request_cancel()
+
+    def _show_ocr_progress_dialog(self, total_pages: int) -> None:
+        parent = self.view if isinstance(self.view, PDFView) else None
         try:
-            results = self.model.tools.ocr.ocr_pages(pages)
-            non_empty = sum(1 for text in results.values() if isinstance(text, str) and text.strip())
-            QMessageBox.information(
-                self.view,
-                "OCR Completed",
-                f"OCR finished for {len(results)} page(s); {non_empty} page(s) contain recognized text.",
+            dialog = QProgressDialog(
+                f"辨識第 0/{total_pages} 頁…",
+                "取消",
+                0,
+                total_pages,
+                parent,
             )
-            return results
-        except RuntimeError as e:
-            show_error(self.view, str(e))
-            return {}
-        except Exception as e:
-            logger.error(f"OCR failed: {e}")
-            show_error(self.view, f"OCR failed: {e}")
-            return {}
+        except Exception:
+            self._ocr_progress_dialog = None
+            return
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setMinimumDuration(0)
+        dialog.canceled.connect(self.cancel_ocr)
+        dialog.show()
+        self._ocr_progress_dialog = dialog
+
+    @Slot(int, int, int)
+    def _on_ocr_progress(self, page_num: int, done: int, total: int) -> None:
+        dialog = self._ocr_progress_dialog
+        if dialog is None:
+            return
+        dialog.setMaximum(total)
+        dialog.setValue(done)
+        dialog.setLabelText(f"辨識第 {done}/{total} 頁… (頁 {page_num})")
+
+    @Slot(int, object)
+    def _on_ocr_page_done(self, page_num: int, spans) -> None:
+        try:
+            self.model.apply_ocr_spans(page_num, list(spans))
+        except Exception:
+            logger.exception("apply_ocr_spans failed for page %s", page_num)
+
+    @Slot(object)
+    def _on_ocr_failed(self, exc) -> None:
+        logger.error("OCR failed: %s", exc)
+        show_error(self.view, f"OCR 失敗: {exc}")
+
+    @Slot()
+    def _on_ocr_thread_finished(self) -> None:
+        dialog = self._ocr_progress_dialog
+        if dialog is not None:
+            dialog.close()
+        self._ocr_progress_dialog = None
+        self._ocr_thread = None
+        self._ocr_worker = None
 
     def undo(self):
         """
@@ -1590,6 +2486,9 @@ class PDFController:
 
     def _refresh_after_command(self, cmd) -> None:
         """undo/redo 後，依指令類型決定重新整理範圍。"""
+        # 擷取 anchor（undo/redo 前的捲軸位置，避免頁面跳動）
+        anchor = self.view.capture_viewport_anchor()
+
         is_structural = getattr(cmd, 'is_structural', False)
         if is_structural:
             page_idx = min(self.view.current_page, len(self.model.doc) - 1)
@@ -1611,6 +2510,10 @@ class PDFController:
             if getattr(cmd, '_command_type', '') == 'add_annotation':
                 self.load_annotations()
 
+        # 還原 viewport anchor，避免 undo/redo 後捲軸跳位
+        QTimer.singleShot(0, lambda a=anchor: self.view.restore_viewport_anchor(a))
+        QTimer.singleShot(180, lambda a=anchor: self.view.restore_viewport_anchor(a))
+
     def change_page(self, page_idx: int):
         if not self.model.doc or page_idx < 0 or page_idx >= len(self.model.doc):
             logger.warning(f"無效頁碼: {page_idx}")
@@ -1619,7 +2522,7 @@ class PDFController:
         sid = self.model.get_active_session_id()
         if sid:
             self._get_ui_state(sid).current_page = page_idx
-        
+
     def change_scale(self, page_idx: int, scale: float):
         """設定縮放比例：連續模式先重建 placeholder 幾何，再只重繪可見頁。"""
         if not self.model.doc or page_idx < 0 or page_idx >= len(self.model.doc):
@@ -1631,14 +2534,21 @@ class PDFController:
         if self.view.continuous_pages:
             self._rebuild_continuous_scene(page_idx)
         else:
-            pix = self.model.get_page_pixmap(page_idx + 1, scale)
+            sid = self.model.get_active_session_id()
+            pix = self.model.get_page_pixmap(
+                page_idx + 1,
+                scale,
+                colorspace=(self._fitz_colorspace_for_session(sid) if sid else fitz.csRGB),
+            )
             qpix = pixmap_to_qpixmap(pix)
             self.view.display_page(page_idx, qpix)
             self.view._update_page_counter()
             self.view._update_status_bar()
 
     def _update_thumbnails(self):
-        thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i+1)) for i in range(len(self.model.doc))]
+        sid = self.model.get_active_session_id()
+        colorspace = self._fitz_colorspace_for_session(sid) if sid else fitz.csRGB
+        thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i + 1, colorspace=colorspace)) for i in range(len(self.model.doc))]
         self.view.update_thumbnails(thumbs)
 
     def _schedule_thumbnail_batch(self, start: int, session_id: str, gen: int):
@@ -1650,7 +2560,8 @@ class PDFController:
             return
         n = len(self.model.doc)
         end = min(start + THUMB_BATCH_SIZE, n)
-        thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i + 1)) for i in range(start, end)]
+        colorspace = self._fitz_colorspace_for_session(session_id)
+        thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i + 1, colorspace=colorspace)) for i in range(start, end)]
         self.view.update_thumbnail_batch(start, thumbs)
         if end < n:
             QTimer.singleShot(
@@ -1732,7 +2643,7 @@ class PDFController:
         session_id = self.model.get_active_session_id()
         if not session_id:
             return
-        self._page_render_quality_by_session[session_id] = {}
+        self._page_quality_map(session_id).clear()
         self.view.initialize_continuous_placeholders(
             self._session_page_sizes(session_id),
             self.view.scale,
@@ -1752,22 +2663,42 @@ class PDFController:
             if sid:
                 self._schedule_visible_render(sid, immediate_page_idx=page_idx)
         else:
-            pix = self.model.get_page_pixmap(page_idx + 1, self.view.scale)
+            sid = self.model.get_active_session_id()
+            pix = self.model.get_page_pixmap(
+                page_idx + 1,
+                self.view.scale,
+                colorspace=(self._fitz_colorspace_for_session(sid) if sid else fitz.csRGB),
+            )
             qpix = pixmap_to_qpixmap(pix)
             self.view.display_page(page_idx, qpix)
         sid = self.model.get_active_session_id()
         if sid:
             self._get_ui_state(sid).current_page = page_idx
 
-    def get_text_info_at_point(self, page_num: int, point: fitz.Point):
-        return self.model.get_text_info_at_point(page_num, point)
+    def get_text_info_at_point(
+        self,
+        page_num: int,
+        point: fitz.Point,
+        allow_fallback: bool = True,
+    ):
+        return self.model.get_text_info_at_point(page_num, point, allow_fallback=allow_fallback)
 
     def get_text_in_rect(self, page_num: int, rect: fitz.Rect) -> str:
         return self.model.get_text_in_rect(page_num, rect)
 
+    def get_text_selection_snapshot_from_run(
+        self,
+        page_num: int,
+        start_span_id: str,
+        end_point: fitz.Point,
+    ) -> tuple[str, fitz.Rect | None]:
+        return self.model.get_text_selection_snapshot_from_run(page_num, start_span_id, end_point)
+
     def _update_undo_redo_tooltips(self) -> None:
         """更新 View 的 undo/redo 按鈕 tooltip，顯示下一步操作描述。"""
         cm = self.model.command_manager
+        undo_enabled = cm.can_undo()
+        redo_enabled = cm.can_redo()
         if cm.can_undo():
             last = cm._undo_stack[-1]
             undo_tip = f"復原：{last.description}"
@@ -1779,6 +2710,8 @@ class PDFController:
         else:
             redo_tip = "重做（無可重做操作）"
         self.view.update_undo_redo_tooltips(undo_tip, redo_tip)
+        if hasattr(self.view, "update_undo_redo_enabled"):
+            self.view.update_undo_redo_enabled(undo_enabled, redo_enabled)
         self._refresh_document_tabs()
 
     def _update_mode(self, mode: str):
@@ -1799,7 +2732,7 @@ class PDFController:
     def add_annotation(self, page_idx: int, doc_point: fitz.Point, text: str):
         """Handle request to add a new annotation. doc_point 已由 view 轉為文件座標。"""
         if not self.model.doc: return
-        
+
         try:
             before = self.model._capture_doc_snapshot()
             # Model expects 1-based page number
@@ -1850,22 +2783,27 @@ class PDFController:
             logger.warning(f"無效頁碼: {page_idx}")
             show_error(self.view, "無效的頁碼")
             return
-        
+
         try:
             # 獲取包含所有註解的扁平化頁面影像
             # 使用較高的縮放比例以獲得更好的品質
-            pix = self.model.get_page_snapshot(page_idx + 1, scale=2.0)
-            
+            sid = self.model.get_active_session_id()
+            pix = self.model.get_page_snapshot(
+                page_idx + 1,
+                scale=2.0,
+                colorspace=(self._fitz_colorspace_for_session(sid) if sid else fitz.csRGB),
+            )
+
             # 轉換為 QPixmap
             qpix = pixmap_to_qpixmap(pix)
-            
+
             # 複製到剪貼簿
             clipboard = QApplication.clipboard()
             clipboard.setPixmap(qpix)
-            
+
             logger.debug(f"頁面 {page_idx + 1} 的快照已複製到剪貼簿，尺寸: {qpix.width()}x{qpix.height()}")
             QMessageBox.information(self.view, "快照成功", f"頁面 {page_idx + 1} 的快照已複製到剪貼簿")
-            
+
         except Exception as e:
             logger.error(f"快照失敗: {e}")
             show_error(self.view, f"快照失敗: {e}")
@@ -1875,7 +2813,7 @@ class PDFController:
         if not self.model.doc:
             show_error(self.view, "沒有開啟的PDF文件")
             return
-        
+
         try:
             before = self.model._capture_doc_snapshot()
             # Model clamps/sanitizes position and returns the actual inserted page number.
@@ -1904,12 +2842,12 @@ class PDFController:
             logger.error(f"插入空白頁面失敗: {e}")
             show_error(self.view, f"插入空白頁面失敗: {e}")
 
-    def insert_pages_from_file(self, source_file: str, source_pages: List[int], position: int):
+    def insert_pages_from_file(self, source_file: str, source_pages: list[int], position: int):
         """從其他檔案插入頁面"""
         if not self.model.doc:
             show_error(self.view, "沒有開啟的PDF文件")
             return
-        
+
         try:
             before = self.model._capture_doc_snapshot()
             # Model validates source pages and returns the actual inserted target positions.

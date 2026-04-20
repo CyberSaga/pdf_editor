@@ -1,51 +1,54 @@
-﻿import fitz
-import tempfile
-import os
-import shutil
-import logging
-import math
-import time
-from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Iterator
-from contextlib import contextmanager
-from pathlib import Path
-import uuid
+﻿from __future__ import annotations
+
 import difflib  # 相似度比對
+import html as _html_mod
 import io  # 用於 BytesIO 記憶體 stream（文件推薦 in-memory PDF）
 import json
+import logging
+import math
+import os
 import re
-import html as _html_mod
+import shutil
+import tempfile
+import time
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
 
-from model.text_block import (
-    TextBlock,
-    TextBlockManager,
-    EditableSpan,
-    EditableParagraph,
-    rotation_degrees_from_dir,
-)
-from model.edit_commands import CommandManager, EditTextCommand
+import fitz
+
 # Optimizer internals live in `model/pdf_optimizer.py`.
 # `PDFModel` keeps the public facade stable and delegates to the internal module.
 from model import pdf_optimizer
+from model.pdf_content_ops import (
+    NativeImageInvocation,
+    discover_native_image_invocations,
+    fitz_rect_to_stream_cm,
+    parse_operators,
+    remove_operator_range,
+    replace_operator_operands,
+)
+from model.edit_commands import CommandManager, EditTextResult
+from model.object_requests import DeleteObjectRequest, MoveObjectRequest, ObjectHitInfo, RotateObjectRequest
+from model.object_requests import ResizeObjectRequest
+from model.text_block import (
+    EditableParagraph,
+    EditableSpan,
+    TextBlock,
+    TextBlockManager,
+    rotation_degrees_from_dir,
+)
+from model.geometry import clamp_rect_to_page, rect_from_points, rect_overlap_ratio, rect_union
+from model.text_normalization import normalize_text, normalized_similarity, token_coverage_ratio
 from model.tools import ToolManager
 
-# [優化 1] 模組級正則預編譯：避免每次呼叫 _convert_text_to_html / _normalize_text_for_compare 時重新編譯，提升效能
+# [優化 1] 模組級正則預編譯：避免每次呼叫 _convert_text_to_html 時重新編譯，提升效能
 _RE_HTML_TEXT_PARTS = re.compile(r'([\u4e00-\u9fff\u3040-\u30ff]+|[^\u4e00-\u9fff\u3040-\u30ff\n ]+| +|\n)')
-_RE_WS_STRIP = re.compile(r'\s+')
 _RE_CJK = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff]+')
-
-# Unicode ligature → 分解字元對照表
-# PyMuPDF 的 insert_htmlbox 渲染會將字母組合替換為 Unicode 合字（如 fi→ﬁ），
-# 導致 get_text() 擷取結果與原始字串比對失敗。此表供 _normalize_text_for_compare 展開用。
-_LIGATURE_MAP = {
-    '\ufb00': 'ff',   # ﬀ
-    '\ufb01': 'fi',   # ﬁ
-    '\ufb02': 'fl',   # ﬂ
-    '\ufb03': 'ffi',  # ﬃ
-    '\ufb04': 'ffl',  # ﬄ
-    '\ufb05': 'st',   # ﬅ (long s + t)
-    '\ufb06': 'st',   # ﬆ
-}
+_BULLET_PREFIXES = ("- ", "* ", "\u2022 ", "\u25aa ", "\u25cf ")
+_RE_NUMBERED_BULLET = re.compile(r"^\d+[.)]\s+")
 
 # Optional Windows CJK font files for visible family differences in insert_htmlbox.
 _WINDOWS_CJK_FONT_FILES = {
@@ -59,6 +62,12 @@ _CUSTOM_CJK_ALIASES = {
     "pmingliu": "PdfEditorPMingLiU",
     "dfkai-sb": "PdfEditorDFKaiSB",
 }
+
+_APP_OBJECT_SUBJECT_PREFIX = "pdf_editor_"
+_TEXTBOX_OBJECT_SUBJECT = "pdf_editor_textbox_object"
+_RECT_OBJECT_SUBJECT = "pdf_editor_rect_object"
+_IMAGE_OBJECT_SUBJECT = "pdf_editor_image_object"
+_APP_OBJECT_VERSION = 1
 
 # 設置日誌
 logger = logging.getLogger(__name__)
@@ -80,7 +89,7 @@ class TextHit:
     rotation: int
     cluster_span_ids: list[str]
     target_mode: str = "run"
-    target_paragraph_id: Optional[str] = None
+    target_paragraph_id: str | None = None
 
     # Keep tuple compatibility for existing callers/tests.
     def _legacy(self) -> tuple:
@@ -103,6 +112,22 @@ class TextHit:
         return len(self._legacy())
 
 
+@dataclass(frozen=True)
+class _EditTextResolveResult:
+    target_span: EditableSpan
+    resolved_target_span_id: str
+    effective_target_mode: str
+    target_member_span_ids: set[str]
+    overlap_cluster: list[EditableSpan]
+    protected_spans: list[EditableSpan]
+    target: TextBlock
+    resolved_font: str
+    rotation: int
+    is_vertical: bool
+    insert_rotate: int
+    redact_rect: fitz.Rect
+
+
 @dataclass
 class DocumentSession:
     session_id: str
@@ -110,7 +135,7 @@ class DocumentSession:
     display_name: str
     original_path: str
     doc: fitz.Document
-    saved_path: Optional[str] = None
+    saved_path: str | None = None
     block_manager: TextBlockManager = field(default_factory=TextBlockManager)
     command_manager: CommandManager = field(default_factory=CommandManager)
     pending_edits: list = field(default_factory=list)
@@ -120,11 +145,11 @@ class PDFModel:
     def __init__(self):
         self._sessions_by_id: dict[str, DocumentSession] = {}
         self._session_ids: list[str] = []
-        self._active_session_id: Optional[str] = None
+        self._active_session_id: str | None = None
         self._path_to_session_id: dict[str, str] = {}
-        self._legacy_doc: Optional[fitz.Document] = None
-        self._legacy_original_path: Optional[str] = None
-        self._legacy_saved_path: Optional[str] = None
+        self._legacy_doc: fitz.Document | None = None
+        self._legacy_original_path: str | None = None
+        self._legacy_saved_path: str | None = None
         self._legacy_block_manager: TextBlockManager = TextBlockManager()
         self._legacy_command_manager: CommandManager = CommandManager()
         self._legacy_edit_count: int = 0
@@ -135,8 +160,8 @@ class PDFModel:
         # Text target granularity: "run" or "paragraph" (UI can override on startup).
         self.text_target_mode: str = "run"
         self.tools = ToolManager(self)
-        self._audit_report_cache_key: Optional[tuple] = None
-        self._audit_report_cache_value: Optional[PdfAuditReport] = None
+        self._audit_report_cache_key: tuple | None = None
+        self._audit_report_cache_value: PdfAuditReport | None = None
         self._initialize_temp_dir()
         # 全局 glyph 高度調整（文件推薦，import 後設定一次）
         try:
@@ -156,7 +181,7 @@ class PDFModel:
         except Exception:
             return repr(exc)
 
-    def _active_session(self) -> Optional[DocumentSession]:
+    def _active_session(self) -> DocumentSession | None:
         if not self._active_session_id:
             return None
         return self._sessions_by_id.get(self._active_session_id)
@@ -191,12 +216,12 @@ class PDFModel:
             })
         return out
 
-    def get_session_id_by_index(self, index: int) -> Optional[str]:
+    def get_session_id_by_index(self, index: int) -> str | None:
         if index < 0 or index >= len(self._session_ids):
             return None
         return self._session_ids[index]
 
-    def get_active_session_id(self) -> Optional[str]:
+    def get_active_session_id(self) -> str | None:
         return self._active_session_id
 
     def get_active_session_index(self) -> int:
@@ -207,7 +232,7 @@ class PDFModel:
         except ValueError:
             return -1
 
-    def find_session_by_path(self, path: str) -> Optional[str]:
+    def find_session_by_path(self, path: str) -> str | None:
         canonical = self._canonicalize_path(path)
         return self._path_to_session_id.get(canonical)
 
@@ -235,7 +260,7 @@ class PDFModel:
     def get_dirty_session_ids(self) -> list[str]:
         return [sid for sid in self._session_ids if self.session_has_unsaved_changes(sid)]
 
-    def get_session_meta(self, session_id: str) -> Optional[dict]:
+    def get_session_meta(self, session_id: str) -> dict | None:
         session = self._sessions_by_id.get(session_id)
         if not session:
             return None
@@ -285,12 +310,12 @@ class PDFModel:
             self.save_as(new_path)
 
     @property
-    def doc(self) -> Optional[fitz.Document]:
+    def doc(self) -> fitz.Document | None:
         session = self._active_session()
         return session.doc if session else self._legacy_doc
 
     @doc.setter
-    def doc(self, value: Optional[fitz.Document]) -> None:
+    def doc(self, value: fitz.Document | None) -> None:
         session = self._active_session()
         if session:
             session.doc = value
@@ -298,12 +323,12 @@ class PDFModel:
             self._legacy_doc = value
 
     @property
-    def original_path(self) -> Optional[str]:
+    def original_path(self) -> str | None:
         session = self._active_session()
         return session.original_path if session else self._legacy_original_path
 
     @original_path.setter
-    def original_path(self, value: Optional[str]) -> None:
+    def original_path(self, value: str | None) -> None:
         session = self._active_session()
         if session:
             session.original_path = value
@@ -311,12 +336,12 @@ class PDFModel:
             self._legacy_original_path = value
 
     @property
-    def saved_path(self) -> Optional[str]:
+    def saved_path(self) -> str | None:
         session = self._active_session()
         return session.saved_path if session else self._legacy_saved_path
 
     @saved_path.setter
-    def saved_path(self, value: Optional[str]) -> None:
+    def saved_path(self, value: str | None) -> None:
         session = self._active_session()
         if session:
             session.saved_path = value
@@ -393,7 +418,7 @@ class PDFModel:
             test_file.touch()
             test_file.unlink()
         except (PermissionError, OSError) as e:
-            logger.error(f"無法創建臨時目錄: {str(e)}")
+            logger.error(f"無法創建臨時目錄: {e!s}")
             # 後備：使用當前工作目錄下的自訂臨時目錄
             fallback_dir = Path.cwd() / "pdf_temp"
             try:
@@ -401,12 +426,12 @@ class PDFModel:
                 self.temp_dir = tempfile.TemporaryDirectory(dir=str(fallback_dir))
                 logger.debug(f"使用後備臨時目錄: {self.temp_dir.name}")
             except Exception as e:
-                raise RuntimeError(f"無法創建後備臨時目錄: {str(e)}")
+                raise RuntimeError(f"無法創建後備臨時目錄: {e!s}")
 
     def __del__(self):
         self.close()
 
-    def open_pdf(self, path: str, password: Optional[str] = None, append: bool = False) -> str:
+    def open_pdf(self, path: str, password: str | None = None, append: bool = False) -> str:
         """
         開啟 PDF 檔案並建立文字塊索引。
 
@@ -485,11 +510,11 @@ class PDFModel:
             # self.block_manager.build_index(self.doc)
             return session_id
         except PermissionError as e:
-            logger.error(f"無權限存取檔案: {str(e)}")
-            raise PermissionError(f"無權限存取檔案: {str(e)}")
+            logger.error(f"無權限存取檔案: {e!s}")
+            raise PermissionError(f"無權限存取檔案: {e!s}")
         except Exception as e:
-            logger.error(f"開啟PDF失敗: {str(e)}")
-            raise RuntimeError(f"開啟PDF失敗: {str(e)}")
+            logger.error(f"開啟PDF失敗: {e!s}")
+            raise RuntimeError(f"開啟PDF失敗: {e!s}")
 
     def ensure_page_index_built(self, page_num: int) -> None:
         """
@@ -509,7 +534,7 @@ class PDFModel:
         if self.block_manager.page_state(page_idx) in {"missing", "stale"}:
             self.block_manager.rebuild_page(page_idx, self.doc)
 
-    def refresh_structural_indexes(self, affected_pages: List[int]) -> None:
+    def refresh_structural_indexes(self, affected_pages: list[int]) -> None:
         """
         Refresh page text indices after a document snapshot restore (undo/redo) that may have changed content.
 
@@ -582,21 +607,6 @@ class PDFModel:
             y1 = y0 + max(1.0, base_rect.height)
         return fitz.Rect(new_x0, y0, new_x1, min(y1, page_rect.y1))
 
-    def _clamp_rect_to_page(self, rect: fitz.Rect, page_rect: fitz.Rect) -> fitz.Rect:
-        """將矩形夾在頁面邊界內，確保文字不會超出頁面。"""
-        x0 = max(rect.x0, page_rect.x0)
-        y0 = max(rect.y0, page_rect.y0)
-        x1 = min(rect.x1, page_rect.x1)
-        y1 = min(rect.y1, page_rect.y1)
-        if x0 >= x1 or y0 >= y1:
-            return fitz.Rect(page_rect.x0, page_rect.y0, page_rect.x0 + 1, page_rect.y0 + 1)
-        return fitz.Rect(x0, y0, x1, y1)
-
-    def _rect_from_points(self, points: list[fitz.Point]) -> fitz.Rect:
-        xs = [float(p.x) for p in points]
-        ys = [float(p.y) for p in points]
-        return fitz.Rect(min(xs), min(ys), max(xs), max(ys))
-
     def _visual_rect_to_unrotated_rect(self, page: fitz.Page, visual_rect: fitz.Rect) -> fitz.Rect:
         """Convert a visual-space page rect to unrotated page coordinates."""
         corners = [
@@ -606,7 +616,7 @@ class PDFModel:
             fitz.Point(visual_rect.x0, visual_rect.y1),
         ]
         mapped = [pt * page.derotation_matrix for pt in corners]
-        return self._rect_from_points(mapped)
+        return rect_from_points(mapped)
 
     def _unrotated_page_rect(self, page: fitz.Page) -> fitz.Rect:
         """
@@ -655,82 +665,74 @@ class PDFModel:
             return rect
         return fitz.Rect(new_x0, rect.y0, new_x1, rect.y1)
 
-    def _normalize_text_for_compare(self, text: str) -> str:
+    @staticmethod
+    def _starts_bullet_item(text: str) -> bool:
+        stripped = (text or "").strip()
+        if not stripped:
+            return False
+        if stripped.startswith(_BULLET_PREFIXES):
+            return True
+        return bool(_RE_NUMBERED_BULLET.match(stripped))
+
+    def _compose_block_text_for_hit(self, block: dict) -> str:
         """
-        將空白移除、轉小寫、展開 Unicode ligature，供文字比對用。
-        PyMuPDF 的 insert_htmlbox 渲染時會將 fi→ﬁ (U+FB01) 等字母合字替換，
-        導致 get_text() 擷取結果與原始字串不一致；此處統一展開後再比對。
+        Build editable text for fallback point-hit extraction.
+        Wrapped lines are joined with spaces, while bullets / large visual gaps keep line breaks.
         """
-        if not text:
+        lines = block.get("lines", []) or []
+        if not lines:
             return ""
-        # 展開常見 Unicode ligatures（PyMuPDF 渲染產生的合字）
-        result = text
-        for lig, expanded in _LIGATURE_MAP.items():
-            if lig in result:
-                result = result.replace(lig, expanded)
-        # Drop unstable extraction artifacts and normalize common punctuation variants.
-        result = (
-            result.replace("\ufffd", "")
-            .replace("\u200b", "")
-            .replace("\ufeff", "")
-            .replace("\u2019", "'")
-            .replace("\u2018", "'")
-            .replace("\u201c", '"')
-            .replace("\u201d", '"')
-        )
-        return _RE_WS_STRIP.sub('', result).lower()
 
-    def _token_coverage_ratio(self, source_text: str, haystack_norm: str) -> float:
-        """Return token hit ratio (0..1) using normalized token containment with 1-char tolerance."""
-        if not source_text:
-            return 1.0
-        if not haystack_norm:
-            return 0.0
-        raw_tokens = [tok for tok in re.split(r"\s+", source_text) if tok]
-        tokens = [self._normalize_text_for_compare(tok) for tok in raw_tokens]
-        tokens = [tok for tok in tokens if tok]
-        if not tokens:
-            return 1.0
-        hit = 0
-        for tok in tokens:
-            if tok in haystack_norm:
-                hit += 1
+        line_texts: list[str] = []
+        line_boxes: list[fitz.Rect] = []
+        for line in lines:
+            parts = [
+                (span.get("text", "") or "").strip()
+                for span in (line.get("spans", []) or [])
+                if (span.get("text", "") or "").strip()
+            ]
+            if not parts:
                 continue
-            if len(tok) >= 4 and (tok[1:] in haystack_norm or tok[:-1] in haystack_norm):
-                hit += 1
-        return hit / len(tokens)
+            line_texts.append(" ".join(parts))
+            bbox = line.get("bbox")
+            if bbox is not None:
+                line_boxes.append(fitz.Rect(bbox))
+                continue
+            spans = line.get("spans", []) or []
+            if spans:
+                line_box = fitz.Rect(spans[0].get("bbox", (0, 0, 0, 0)))
+                for span in spans[1:]:
+                    line_box.include_rect(fitz.Rect(span.get("bbox", (0, 0, 0, 0))))
+                line_boxes.append(line_box)
+            else:
+                line_boxes.append(fitz.Rect(0, 0, 0, 0))
 
-    def _normalized_similarity(self, left: str, right: str) -> float:
-        """Similarity score on normalized strings (0..1)."""
-        norm_left = self._normalize_text_for_compare(left)
-        norm_right = self._normalize_text_for_compare(right)
-        if not norm_left and not norm_right:
-            return 1.0
-        if not norm_left or not norm_right:
-            return 0.0
-        if norm_left in norm_right or norm_right in norm_left:
-            return 1.0
-        return difflib.SequenceMatcher(None, norm_left, norm_right).ratio()
+        if not line_texts:
+            return ""
 
-    def _rect_overlap_ratio(self, a: fitz.Rect, b: fitz.Rect) -> float:
-        """Area overlap ratio against the smaller rect (0..1)."""
-        if a.is_empty or b.is_empty:
-            return 0.0
-        inter = fitz.Rect(a)
-        inter.intersect(b)
-        if inter.is_empty:
-            return 0.0
-        inter_area = max(0.0, inter.width * inter.height)
-        min_area = max(1.0, min(a.width * a.height, b.width * b.height))
-        return inter_area / min_area
+        composed: list[str] = []
+        for idx, line_text in enumerate(line_texts):
+            if idx == 0:
+                composed.append(line_text)
+                continue
+            prev_box = line_boxes[idx - 1]
+            curr_box = line_boxes[idx]
+            prev_height = max(prev_box.height, 0.0)
+            gap = curr_box.y0 - prev_box.y1
+            if self._starts_bullet_item(line_text) or (prev_height > 0 and gap > prev_height * 0.5):
+                composed.append("\n")
+            elif composed and not composed[-1].endswith((" ", "\n", "-")):
+                composed.append(" ")
+            composed.append(line_text)
+        return "".join(composed).strip()
 
     def _resolve_paragraph_candidate(
         self,
         page_idx: int,
         probe_rect: fitz.Rect,
-        original_text: Optional[str],
-        preferred_run_id: Optional[str] = None,
-    ) -> Optional[EditableParagraph]:
+        original_text: str | None,
+        preferred_run_id: str | None = None,
+    ) -> EditableParagraph | None:
         """Resolve the best paragraph target by geometry + text similarity.
 
         This is used to recover from stale run IDs after page rebuilds.
@@ -753,15 +755,15 @@ class PDFModel:
         if not candidates:
             candidates = paragraphs
 
-        has_probe_text = bool(self._normalize_text_for_compare(original_text or ""))
-        best_para: Optional[EditableParagraph] = None
+        has_probe_text = bool(normalize_text(original_text or ""))
+        best_para: EditableParagraph | None = None
         best_key = None
 
         for para in candidates:
             para_rect = fitz.Rect(para.bbox)
-            overlap_score = self._rect_overlap_ratio(para_rect, probe_rect)
+            overlap_score = rect_overlap_ratio(para_rect, probe_rect)
             text_score = (
-                self._normalized_similarity(original_text or "", para.text)
+                normalized_similarity(original_text or "", para.text)
                 if has_probe_text
                 else 0.0
             )
@@ -789,7 +791,7 @@ class PDFModel:
 
     def _text_fits_in_rect(self, page: fitz.Page, rect: fitz.Rect, expected_text: str) -> bool:
         extracted = page.get_text("text", clip=rect)
-        return self._normalize_text_for_compare(expected_text) in self._normalize_text_for_compare(extracted)
+        return normalize_text(expected_text) in normalize_text(extracted)
 
     def _binary_shrink_height(self, page: fitz.Page, rect: fitz.Rect, expected_text: str, iterations: int = 7, padding: float = 4.0, min_y1: float | None = None) -> fitz.Rect:
         """
@@ -836,7 +838,7 @@ class PDFModel:
             logger.debug("臨時目錄已清理")
             self.temp_dir = None
 
-    def delete_pages(self, pages: List[int]) -> List[int]:
+    def delete_pages(self, pages: list[int]) -> list[int]:
         """
         Delete pages (1-based) and return the actual deleted pages (1-based, sorted).
 
@@ -876,7 +878,7 @@ class PDFModel:
                 self.block_manager.rebuild_page(anchor_idx, self.doc)
         return actual_deleted_pages
 
-    def rotate_pages(self, pages: List[int], degrees: int) -> List[int]:
+    def rotate_pages(self, pages: list[int], degrees: int) -> list[int]:
         """
         Rotate pages and return the actual rotated pages (1-based, sorted).
 
@@ -918,7 +920,7 @@ class PDFModel:
 
     def export_pages(
         self,
-        pages: List[int],
+        pages: list[int],
         output_path: str,
         as_image: bool = False,
         dpi: int = 300,
@@ -979,7 +981,7 @@ class PDFModel:
         finally:
             new_doc.close()
 
-    def insert_blank_page(self, position: int) -> List[int]:
+    def insert_blank_page(self, position: int) -> list[int]:
         """
         Insert one blank page and return the actual inserted page number (1-based).
 
@@ -1001,7 +1003,7 @@ class PDFModel:
             pos_value = int(position)
         except (TypeError, ValueError):
             pos_value = 1
-        
+
         # 獲取當前第一頁的尺寸作為新頁面的尺寸
         if len(self.doc) > 0:
             first_page = self.doc[0]
@@ -1012,12 +1014,12 @@ class PDFModel:
             # 如果文件為空，使用標準 A4 尺寸
             width = 595  # A4 width in points
             height = 842  # A4 height in points
-        
+
         # 轉換為 0-based 索引，並確保不超出範圍
         insert_at = min(pos_value - 1, len(self.doc))
         if insert_at < 0:
             insert_at = 0
-        
+
         # 插入空白頁面
         self.doc.new_page(insert_at, width=width, height=height)
         logger.debug(f"在位置 {insert_at + 1} 插入空白頁面，尺寸: {width}x{height}")
@@ -1026,7 +1028,7 @@ class PDFModel:
         self.block_manager.rebuild_page(insert_at, self.doc)
         return [insert_at + 1]
 
-    def insert_pages_from_file(self, source_file: str, source_pages: List[int], position: int) -> List[int]:
+    def insert_pages_from_file(self, source_file: str, source_pages: list[int], position: int) -> list[int]:
         """
         Insert pages from another PDF and return the actual inserted page numbers (1-based, ascending).
 
@@ -1045,11 +1047,11 @@ class PDFModel:
         """
         if not self.doc:
             raise ValueError("沒有開啟的PDF文件")
-        
+
         source_path = Path(source_file)
         if not source_path.exists():
             raise FileNotFoundError(f"來源檔案不存在: {source_file}")
-        
+
         try:
             try:
                 pos_value = int(position)
@@ -1058,12 +1060,12 @@ class PDFModel:
 
             # 開啟來源PDF
             source_doc = fitz.open(str(source_path))
-            
+
             # 轉換為 0-based 索引
             insert_at = min(pos_value - 1, len(self.doc))
             if insert_at < 0:
                 insert_at = 0
-            
+
             max_source = len(source_doc)
             normalized_source: list[int] = []
             for value in source_pages or []:
@@ -1108,7 +1110,7 @@ class PDFModel:
             logger.error(f"從檔案插入頁面失敗: {e}")
             raise RuntimeError(f"從檔案插入頁面失敗: {e}")
 
-    def compose_merged_document(self, ordered_sources: List[dict]) -> fitz.Document:
+    def compose_merged_document(self, ordered_sources: list[dict]) -> fitz.Document:
         if not self.doc:
             raise ValueError("沒有開啟的PDF文件")
 
@@ -1146,7 +1148,7 @@ class PDFModel:
 
         return merged
 
-    def open_merge_source(self, path: str, password: Optional[str] = None) -> dict:
+    def open_merge_source(self, path: str, password: str | None = None) -> dict:
         src_path = Path(path).resolve()
         if not src_path.exists():
             raise FileNotFoundError(f"來源檔案不存在: {path}")
@@ -1172,16 +1174,38 @@ class PDFModel:
         finally:
             doc.close()
 
-    def get_page_pixmap(self, page_num: int, scale: float = 1.0) -> fitz.Pixmap:
-        return self.tools.render_page_pixmap(page_num, scale=scale, annots=True, purpose="view")
+    def get_page_pixmap(
+        self,
+        page_num: int,
+        scale: float = 1.0,
+        colorspace: fitz.Colorspace | None = None,
+    ) -> fitz.Pixmap:
+        return self.tools.render_page_pixmap(
+            page_num,
+            scale=scale,
+            annots=True,
+            purpose="view",
+            colorspace=colorspace,
+        )
 
-    def get_page_snapshot(self, page_num: int, scale: float = 1.0) -> fitz.Pixmap:
+    def get_page_snapshot(
+        self,
+        page_num: int,
+        scale: float = 1.0,
+        colorspace: fitz.Colorspace | None = None,
+    ) -> fitz.Pixmap:
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             raise ValueError(f"無效頁碼: {page_num}")
-        return self.tools.render_page_pixmap(page_num, scale=scale, annots=True, purpose="snapshot")
+        return self.tools.render_page_pixmap(
+            page_num,
+            scale=scale,
+            annots=True,
+            purpose="snapshot",
+            colorspace=colorspace,
+        )
 
-    def get_thumbnail(self, page_num: int) -> fitz.Pixmap:
-        return self.get_page_pixmap(page_num, scale=0.2)
+    def get_thumbnail(self, page_num: int, colorspace: fitz.Colorspace | None = None) -> fitz.Pixmap:
+        return self.get_page_pixmap(page_num, scale=0.2, colorspace=colorspace)
 
     def build_print_snapshot(self) -> bytes:
         return self.tools.build_print_snapshot()
@@ -1192,7 +1216,12 @@ class PDFModel:
     def get_print_watermarks(self) -> list[dict]:
         return json.loads(json.dumps(self.tools.watermark.get_watermarks(), ensure_ascii=False))
 
-    def get_text_info_at_point(self, page_num: int, point: fitz.Point) -> Optional[TextHit]:
+    def get_text_info_at_point(
+        self,
+        page_num: int,
+        point: fitz.Point,
+        allow_fallback: bool = True,
+    ) -> TextHit | None:
         """Return topmost editable run info at point using stable run/span identity."""
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             return None
@@ -1234,6 +1263,9 @@ class PDFModel:
                 target_mode="run",
             )
 
+        if not allow_fallback:
+            return None
+
         # Backward-compatible fallback if span extraction misses the point.
         page = self.doc[page_idx]
         blocks = page.get_text("dict", flags=0)["blocks"]
@@ -1244,7 +1276,6 @@ class PDFModel:
             if point not in rect:
                 continue
 
-            full_text = []
             font_name = "helv"
             font_size = 12.0
             color_int = 0
@@ -1260,12 +1291,7 @@ class PDFModel:
 
             rgb_int = fitz.sRGB_to_rgb(color_int) if color_int else (0, 0, 0)
             color = tuple(c / 255.0 for c in rgb_int)
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    full_text.append(span.get("text", ""))
-                full_text.append("\n")
-
-            text_content = "".join(full_text).rstrip("\n")
+            text_content = self._compose_block_text_for_hit(block)
             fallback_span_id = f"p{page_idx}_b{block_idx}_l0_s0"
             return TextHit(
                 target_span_id=fallback_span_id,
@@ -1284,10 +1310,208 @@ class PDFModel:
         """Extract plain text in a rectangle for browse-mode copy."""
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             return ""
-        page = self.doc[page_num - 1]
-        clipped = self._clamp_rect_to_page(fitz.Rect(rect), page.rect)
-        text = page.get_text("text", clip=clipped, sort=True)
-        return (text or "").strip()
+        text, _ = self.get_text_selection_snapshot(page_num, rect)
+        return text
+
+    def get_text_selection_bounds(self, page_num: int, rect: fitz.Rect) -> fitz.Rect | None:
+        """Return browse-mode selection bounds snapped to whole visual lines."""
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return None
+        _, bounds = self.get_text_selection_snapshot(page_num, rect)
+        return fitz.Rect(bounds) if bounds is not None else None
+
+    def get_text_selection_snapshot(self, page_num: int, rect: fitz.Rect) -> tuple[str, fitz.Rect | None]:
+        """Resolve browse-mode text selection by snapping intersected clips to full line units."""
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return "", None
+
+        def _extract_line_text(line_dict: dict) -> str:
+            spans_data = line_dict.get("spans") or []
+            chunks: list[str] = []
+            for span_dict in spans_data:
+                span_text = span_dict.get("text")
+                if span_text is None:
+                    span_text = "".join((char.get("c") or "") for char in (span_dict.get("chars") or []))
+                chunks.append(span_text)
+            return "".join(chunks).strip()
+
+        page_idx = page_num - 1
+        page = self.doc[page_idx]
+        clipped = clamp_rect_to_page(fitz.Rect(rect), page.rect)
+        self.ensure_page_index_built(page_num)
+
+        spans = self.block_manager.get_runs(page_idx)
+        if not spans:
+            text = (page.get_text("text", clip=clipped, sort=True) or "").strip()
+            return text, (fitz.Rect(clipped) if text else None)
+
+        selected_keys: set[tuple[int, int]] = set()
+        grouped_spans: dict[tuple[int, int], list] = {}
+        for span in spans:
+            key = (int(span.block_idx), int(span.line_idx))
+            grouped_spans.setdefault(key, []).append(span)
+            if fitz.Rect(span.bbox).intersects(clipped):
+                selected_keys.add(key)
+
+        if not selected_keys:
+            return "", None
+
+        raw_blocks = page.get_text("dict", flags=0).get("blocks", [])
+        line_texts: list[str] = []
+        line_rects: list[fitz.Rect] = []
+        for key in sorted(selected_keys):
+            line_spans = sorted(
+                grouped_spans.get(key, []),
+                key=lambda item: (int(item.span_idx), float(item.bbox.x0), float(item.bbox.y0)),
+            )
+            block_idx, line_idx = key
+            raw_line = None
+            if 0 <= block_idx < len(raw_blocks):
+                block_lines = raw_blocks[block_idx].get("lines") or []
+                if 0 <= line_idx < len(block_lines):
+                    raw_line = block_lines[line_idx]
+
+            if raw_line is not None:
+                line_text = _extract_line_text(raw_line)
+                line_bbox = fitz.Rect(raw_line.get("bbox") or line_spans[0].bbox)
+            else:
+                line_text = " ".join((span.text or "").strip() for span in line_spans if (span.text or "").strip()).strip()
+                x0 = min(float(span.bbox.x0) for span in line_spans)
+                y0 = min(float(span.bbox.y0) for span in line_spans)
+                x1 = max(float(span.bbox.x1) for span in line_spans)
+                y1 = max(float(span.bbox.y1) for span in line_spans)
+                line_bbox = fitz.Rect(x0, y0, x1, y1)
+
+            if not line_text:
+                continue
+            line_texts.append(line_text)
+            line_rects.append(line_bbox)
+
+        if not line_texts or not line_rects:
+            return "", None
+
+        bounds = fitz.Rect(line_rects[0])
+        for line_rect in line_rects[1:]:
+            bounds.include_rect(line_rect)
+        return "\n".join(line_texts).strip(), bounds
+
+    def get_text_selection_snapshot_from_run(
+        self,
+        page_num: int,
+        start_span_id: str,
+        end_point: fitz.Point,
+    ) -> tuple[str, fitz.Rect | None]:
+        """Resolve browse-mode selection from a start run to an end point on the same page."""
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return "", None
+
+        page_idx = page_num - 1
+        self.ensure_page_index_built(page_num)
+        runs = self.block_manager.get_runs(page_idx)
+        if not runs:
+            return "", None
+
+        start_run = self.block_manager.find_run_by_id(page_idx, start_span_id)
+        if start_run is None:
+            return "", None
+
+        def _distance_sq_to_rect(point: fitz.Point, rect: fitz.Rect) -> float:
+            dx = 0.0
+            if point.x < rect.x0:
+                dx = rect.x0 - point.x
+            elif point.x > rect.x1:
+                dx = point.x - rect.x1
+            dy = 0.0
+            if point.y < rect.y0:
+                dy = rect.y0 - point.y
+            elif point.y > rect.y1:
+                dy = point.y - rect.y1
+            return dx * dx + dy * dy
+
+        end_run = self.get_text_info_at_point(page_num, end_point, allow_fallback=False)
+        resolved_end_run = None
+        if end_run is not None and getattr(end_run, "target_span_id", None):
+            resolved_end_run = self.block_manager.find_run_by_id(page_idx, end_run.target_span_id)
+        if resolved_end_run is None:
+            resolved_end_run = min(
+                runs,
+                key=lambda run: _distance_sq_to_rect(end_point, fitz.Rect(run.bbox)),
+            )
+
+        run_ids = [run.span_id for run in runs]
+        try:
+            start_idx = run_ids.index(start_run.span_id)
+            end_idx = run_ids.index(resolved_end_run.span_id)
+        except ValueError:
+            return "", None
+
+        range_start = min(start_idx, end_idx)
+        range_end = max(start_idx, end_idx)
+        selected_runs = runs[range_start:range_end + 1]
+        if not selected_runs:
+            return "", None
+
+        def _same_visual_line(left, right) -> bool:
+            left_rect = fitz.Rect(left.bbox)
+            right_rect = fitz.Rect(right.bbox)
+            left_rotation = int(getattr(left, "rotation", 0)) % 360
+            right_rotation = int(getattr(right, "rotation", 0)) % 360
+            if left_rotation != right_rotation:
+                return False
+            tol = 2.0
+            if left_rotation in (90, 270):
+                return not (left_rect.x1 < right_rect.x0 - tol or right_rect.x1 < left_rect.x0 - tol)
+            return not (left_rect.y1 < right_rect.y0 - tol or right_rect.y1 < left_rect.y0 - tol)
+
+        line_groups: list[list] = []
+        run_to_line_idx: dict[str, int] = {}
+        for run in runs:
+            if line_groups and _same_visual_line(line_groups[-1][-1], run):
+                line_groups[-1].append(run)
+            else:
+                line_groups.append([run])
+            run_to_line_idx[run.span_id] = len(line_groups) - 1
+
+        start_line_idx = run_to_line_idx.get(start_run.span_id)
+        end_line_idx = run_to_line_idx.get(resolved_end_run.span_id)
+        if start_line_idx is None or end_line_idx is None:
+            return "", None
+
+        def _slice_for_group(group_idx: int) -> list:
+            group_runs = line_groups[group_idx]
+            group_ids = [run.span_id for run in group_runs]
+            if start_line_idx == end_line_idx == group_idx:
+                left = min(group_ids.index(start_run.span_id), group_ids.index(resolved_end_run.span_id))
+                right = max(group_ids.index(start_run.span_id), group_ids.index(resolved_end_run.span_id))
+                return group_runs[left:right + 1]
+            if group_idx == start_line_idx:
+                start_pos = group_ids.index(start_run.span_id)
+                return group_runs[start_pos:]
+            if group_idx == end_line_idx:
+                end_pos = group_ids.index(resolved_end_run.span_id)
+                return group_runs[:end_pos + 1]
+            return group_runs
+
+        line_texts: list[str] = []
+        line_rects: list[fitz.Rect] = []
+        for group_idx in range(min(start_line_idx, end_line_idx), max(start_line_idx, end_line_idx) + 1):
+            line_runs = _slice_for_group(group_idx)
+            line_text = " ".join((run.text or "").strip() for run in line_runs if (run.text or "").strip()).strip()
+            if not line_text:
+                continue
+            line_texts.append(line_text)
+            line_rect = fitz.Rect(line_runs[0].bbox)
+            for run in line_runs[1:]:
+                line_rect.include_rect(fitz.Rect(run.bbox))
+            line_rects.append(line_rect)
+
+        if not line_texts or not line_rects:
+            return "", None
+
+        bounds = fitz.Rect(line_rects[0])
+        for line_rect in line_rects[1:]:
+            bounds.include_rect(line_rect)
+        return "\n".join(line_texts).strip(), bounds
 
     def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect, rotation: int = 0, font_size: float = 12) -> float:
         """取得編輯時會使用的換行寬度（points），供編輯框預覽與 PDF 渲染一致。"""
@@ -1366,25 +1590,295 @@ class PDFModel:
             rotate=int(page.rotation) % 360,
         )
 
-    def add_textbox(
+    def _dump_app_object_payload(self, payload: dict) -> str:
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+    def _load_app_object_payload(self, annot: fitz.Annot) -> dict | None:
+        try:
+            info = annot.info or {}
+            subject = info.get("subject") or ""
+            if not subject.startswith(_APP_OBJECT_SUBJECT_PREFIX):
+                return None
+            content = info.get("content") or ""
+            payload = json.loads(content)
+            if not isinstance(payload, dict):
+                return None
+            if payload.get("version") != _APP_OBJECT_VERSION:
+                return None
+            if payload.get("kind") not in {"textbox", "rect", "image"}:
+                return None
+            return payload
+        except Exception:
+            return None
+
+    def _iter_page_annots(self, page_num: int) -> Iterator[fitz.Annot]:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return iter(())
+        page = self.doc[page_num - 1]
+        try:
+            return iter(list(page.annots() or []))
+        except Exception:
+            return iter(())
+
+    def _find_app_object_annot(self, page_num: int, object_id: str, expected_kind: str | None = None) -> tuple[fitz.Page, fitz.Annot, dict] | None:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return None
+        page = self.doc[page_num - 1]
+        try:
+            annots = list(page.annots() or [])
+        except Exception:
+            return None
+        for annot in annots:
+            payload = self._load_app_object_payload(annot)
+            if payload is None:
+                continue
+            if payload.get("object_id") != object_id:
+                continue
+            if expected_kind is not None and payload.get("kind") != expected_kind:
+                continue
+            return page, annot, payload
+        return None
+
+    def _find_native_image_invocation(self, page_num: int, object_id: str) -> NativeImageInvocation | None:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return None
+        prefix = f"native_image:{page_num}:"
+        if not str(object_id).startswith(prefix):
+            return None
+        try:
+            occurrence_index = int(str(object_id).split(":")[-1])
+        except Exception:
+            return None
+        invocations = discover_native_image_invocations(self.doc, page_num)
+        for invocation in invocations:
+            if invocation.occurrence_index == occurrence_index:
+                return invocation
+        return None
+
+    def _rewrite_native_image_matrix(
+        self,
+        invocation: NativeImageInvocation,
+        destination_rect: fitz.Rect,
+        rotation: int,
+    ) -> bool:
+        page = self.doc[invocation.page_num - 1]
+        if invocation.cm_operator_index is None:
+            return False
+        stream = self.doc.xref_stream(invocation.stream_xref)
+        tokens, operators = parse_operators(stream)
+        if invocation.cm_operator_index >= len(operators):
+            return False
+        cm_operator = operators[invocation.cm_operator_index]
+        if cm_operator.name != "cm":
+            return False
+        new_stream = replace_operator_operands(
+            tokens,
+            cm_operator,
+            fitz_rect_to_stream_cm(fitz.Rect(destination_rect), page, rotation % 360),
+        )
+        self.doc.update_stream(invocation.stream_xref, new_stream)
+        self.pending_edits.append({"page_idx": invocation.page_num - 1, "rect": fitz.Rect(destination_rect)})
+        self.edit_count += 1
+        return True
+
+    def _find_app_image_invocation(
+        self,
+        page_num: int,
+        xref: int,
+        expected_rect: fitz.Rect,
+    ) -> NativeImageInvocation | None:
+        """Find the content-stream placement for an app-inserted image by xref + expected rect.
+
+        When the same image xref has multiple placements (same image reused), we pick the
+        one whose bounding box is closest to expected_rect.
+        """
+        invocations = discover_native_image_invocations(self.doc, page_num)
+        candidates = [inv for inv in invocations if inv.xref == xref and inv.cm_operator_index is not None]
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        er = expected_rect
+
+        def _rect_dist(inv: NativeImageInvocation) -> float:
+            b = inv.bbox
+            return sum(abs(a - b_) for a, b_ in zip([b.x0, b.y0, b.x1, b.y1], [er.x0, er.y0, er.x1, er.y1]))
+
+        return min(candidates, key=_rect_dist)
+
+    def _remove_native_image_invocation(self, invocation: NativeImageInvocation) -> bool:
+        page = self.doc[invocation.page_num - 1]
+        stream = self.doc.xref_stream(invocation.stream_xref)
+        tokens, operators = parse_operators(stream)
+        if invocation.do_operator_index >= len(operators):
+            return False
+        start_token = operators[invocation.do_operator_index].operand_start
+        end_token = operators[invocation.do_operator_index].operator_index
+        if (
+            invocation.q_operator_index is not None
+            and invocation.q_end_operator_index is not None
+            and invocation.q_operator_index < len(operators)
+            and invocation.q_end_operator_index < len(operators)
+            and invocation.q_image_invocation_count == 1
+        ):
+            start_token = operators[invocation.q_operator_index].operand_start
+            end_token = operators[invocation.q_end_operator_index].operator_index
+        elif invocation.cm_operator_index is not None and invocation.cm_operator_index < len(operators):
+            start_token = operators[invocation.cm_operator_index].operand_start
+        new_stream = remove_operator_range(tokens, start_token, end_token)
+        self.doc.update_stream(invocation.stream_xref, new_stream)
+        name_bytes = f"/{invocation.xobject_name}".encode("latin-1")
+        still_referenced = any(
+            name_bytes in self.doc.xref_stream(int(xref))
+            for xref in page.get_contents() if int(xref) > 0
+        )
+        if not still_referenced:
+            try:
+                self.doc.xref_set_key(page.xref, f"Resources/XObject/{invocation.xobject_name}", "null")
+            except Exception:
+                pass
+        self.pending_edits.append({"page_idx": invocation.page_num - 1, "rect": fitz.Rect(invocation.bbox)})
+        self.edit_count += 1
+        return True
+
+    def _delete_app_object_annots(
+        self,
+        page_num: int,
+        object_id: str,
+        expected_kind: str | None = None,
+    ) -> int:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return 0
+        page = self.doc[page_num - 1]
+        deleted = 0
+        try:
+            annots = list(page.annots() or [])
+        except Exception:
+            return 0
+        for annot in annots:
+            payload = self._load_app_object_payload(annot)
+            if payload is None:
+                continue
+            if payload.get("object_id") != object_id:
+                continue
+            if expected_kind is not None and payload.get("kind") != expected_kind:
+                continue
+            try:
+                page.delete_annot(annot)
+                deleted += 1
+            except Exception:
+                continue
+        return deleted
+
+    def _create_textbox_object_marker(
+        self,
+        page_num: int,
+        visual_rect: fitz.Rect,
+        *,
+        text: str,
+        font: str,
+        size: float,
+        color: tuple[float, float, float],
+        rotation: int,
+        object_id: str | None = None,
+    ) -> str:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            raise ValueError(f"無效頁碼: {page_num}")
+        page = self.doc[page_num - 1]
+        marker = page.add_rect_annot(fitz.Rect(visual_rect))
+        payload = {
+            "version": _APP_OBJECT_VERSION,
+            "kind": "textbox",
+            "object_id": object_id or str(uuid.uuid4()),
+            "page_num": int(page_num),
+            "rect": [float(visual_rect.x0), float(visual_rect.y0), float(visual_rect.x1), float(visual_rect.y1)],
+            "text": text,
+            "font": font,
+            "size": float(size),
+            "color": [float(c) for c in color[:3]],
+            "rotation": int(rotation) % 360,
+        }
+        marker.set_border(width=0)
+        marker.set_colors(stroke=None, fill=None)
+        marker.set_opacity(0.0)
+        marker.set_flags(marker.flags | fitz.PDF_ANNOT_IS_HIDDEN)
+        marker.set_info(
+            content=self._dump_app_object_payload(payload),
+            subject=_TEXTBOX_OBJECT_SUBJECT,
+        )
+        marker.update()
+        return payload["object_id"]
+
+    def _create_image_object_marker(
+        self,
+        page_num: int,
+        visual_rect: fitz.Rect,
+        *,
+        xref: int,
+        rotation: int,
+        object_id: str | None = None,
+    ) -> str:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            raise ValueError(f"無效頁碼: {page_num}")
+        page = self.doc[page_num - 1]
+        marker = page.add_rect_annot(fitz.Rect(visual_rect))
+        payload = {
+            "version": _APP_OBJECT_VERSION,
+            "kind": "image",
+            "object_id": object_id or str(uuid.uuid4()),
+            "page_num": int(page_num),
+            "rect": [float(visual_rect.x0), float(visual_rect.y0), float(visual_rect.x1), float(visual_rect.y1)],
+            "rotation": int(rotation) % 360,
+            "xref": int(xref),
+        }
+        marker.set_border(width=0)
+        marker.set_colors(stroke=None, fill=None)
+        marker.set_opacity(0.0)
+        marker.set_flags(marker.flags | fitz.PDF_ANNOT_IS_HIDDEN)
+        marker.set_info(
+            content=self._dump_app_object_payload(payload),
+            subject=_IMAGE_OBJECT_SUBJECT,
+        )
+        marker.update()
+        return payload["object_id"]
+
+    def add_image_object(
+        self,
+        page_num: int,
+        visual_rect: fitz.Rect,
+        image_bytes: bytes,
+        *,
+        rotation: int = 0,
+    ) -> str:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            raise ValueError(f"無效頁碼: {page_num}")
+        page = self.doc[page_num - 1]
+        rect = fitz.Rect(visual_rect)
+        xref = int(page.insert_image(rect, stream=image_bytes, rotate=int(rotation) % 360, overlay=True))
+        object_id = self._create_image_object_marker(
+            page_num,
+            rect,
+            xref=xref,
+            rotation=int(rotation) % 360,
+        )
+        self.pending_edits.append({"page_idx": page_num - 1, "rect": fitz.Rect(rect)})
+        self.edit_count += 1
+        return object_id
+
+    def _insert_textbox_visual_content(
         self,
         page_num: int,
         visual_rect: fitz.Rect,
         text: str,
+        *,
         font: str = "cjk",
-        size: int = 12,
+        size: int | float = 12,
         color: tuple = (0.0, 0.0, 0.0),
-    ) -> None:
-        """
-        Add new page text anchored in visual page coordinates.
-
-        visual_rect uses current viewer orientation coordinates. The method maps
-        it to unrotated page space and inserts with rotate=page.rotation so text
-        appears at the clicked visual location for rotation 0/90/180/270.
-        """
+        rotation: int | None = None,
+    ) -> dict:
         if not text.strip():
             logger.warning("新增文字框內容為空，略過")
-            return
+            raise ValueError("新增文字框內容為空")
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             raise ValueError(f"無效頁碼: {page_num}")
 
@@ -1400,15 +1894,16 @@ class PDFModel:
         else:
             color_rgb = (0.0, 0.0, 0.0)
 
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
         bounded_visual = fitz.Rect(visual_rect)
         insert_rect = fitz.Rect(visual_rect)
         repaired_once = False
+        effective_rotation = int(rotation) % 360 if rotation is not None else 0
 
         for _ in range(2):
             page = self.doc[page_idx]
             page_visual_rect = fitz.Rect(page.rect)
-            bounded_visual = self._clamp_rect_to_page(fitz.Rect(visual_rect), page_visual_rect)
+            bounded_visual = clamp_rect_to_page(fitz.Rect(visual_rect), page_visual_rect)
 
             if bounded_visual.width < 4:
                 bounded_visual.x1 = min(page_visual_rect.x1, bounded_visual.x0 + 4)
@@ -1416,9 +1911,9 @@ class PDFModel:
                 bounded_visual.y1 = min(page_visual_rect.y1, bounded_visual.y0 + 4)
 
             unrot_rect = self._visual_rect_to_unrotated_rect(page, bounded_visual)
-            # Prefer page.rect bounds for insertion. Some malformed PDFs have
-            # mediabox/pagebox mismatch where mediabox clipping collapses usable area.
-            insert_rect = self._clamp_rect_to_page(unrot_rect, self._unrotated_page_rect(page))
+            insert_rect = clamp_rect_to_page(unrot_rect, self._unrotated_page_rect(page))
+            if rotation is None:
+                effective_rotation = int(page.rotation) % 360
 
             try:
                 tiny_canvas = (
@@ -1443,7 +1938,7 @@ class PDFModel:
                         insert_rect,
                         html_content,
                         css=css,
-                        rotate=int(page.rotation) % 360,
+                        rotate=effective_rotation,
                         scale_low=0,
                     )
                 last_err = None
@@ -1462,16 +1957,381 @@ class PDFModel:
         if last_err is not None:
             raise RuntimeError(f"新增文字框失敗: {self._safe_exc_message(last_err)}") from last_err
 
+        return {
+            "page_idx": page_idx,
+            "bounded_visual": fitz.Rect(bounded_visual),
+            "insert_rect": fitz.Rect(insert_rect),
+            "rotation": effective_rotation,
+            "font_name": font_name,
+            "font_size": font_size,
+            "color_rgb": color_rgb,
+        }
+
+    def _pick_ocr_font(self, text: str) -> str:
+        """Pick a PyMuPDF built-in font that covers the OCR text's scripts."""
+        if re.search(r"[\u3040-\u30ff]", text):
+            return "japan"
+        if re.search(r"[\uac00-\ud7af]", text):
+            return "korea"
+        if re.search(r"[\u4e00-\u9fff]", text):
+            return "china-t"
+        return "helv"
+
+    def apply_ocr_spans(
+        self,
+        page_num: int,
+        spans: list,
+    ) -> int:
+        """Insert OCR-detected strings as invisible text (render_mode=3).
+
+        ``spans`` is a sequence of ``OcrSpan``-like objects with ``bbox``,
+        ``text``, and ``confidence`` attributes. Bboxes are in visual page
+        coordinates. Returns the number of spans actually written.
+        """
+        if not self.doc:
+            return 0
+        if page_num < 1 or page_num > len(self.doc):
+            raise ValueError(f"無效 OCR 頁碼: {page_num}")
+        if not spans:
+            return 0
+
+        page_idx = page_num - 1
+        page = self.doc[page_idx]
+        unrot_bounds = self._unrotated_page_rect(page)
+        page_rotation = int(page.rotation) % 360
+
+        inserted = 0
+        for span in spans:
+            text = (getattr(span, "text", "") or "").strip()
+            if not text:
+                continue
+            bbox = getattr(span, "bbox", None)
+            if bbox is None or len(bbox) != 4:
+                continue
+
+            visual_rect = fitz.Rect(*bbox)
+            unrot_rect = self._visual_rect_to_unrotated_rect(page, visual_rect)
+            unrot_rect = clamp_rect_to_page(unrot_rect, unrot_bounds)
+            height = float(unrot_rect.height)
+            width = float(unrot_rect.width)
+            if height < 1.0 or width < 1.0:
+                continue
+
+            font_name = self._pick_ocr_font(text)
+            font_size = max(1.0, height * 0.9)
+            baseline_x = float(unrot_rect.x0)
+            baseline_y = float(unrot_rect.y1 - height * 0.12)
+
+            try:
+                page.insert_text(
+                    fitz.Point(baseline_x, baseline_y),
+                    text,
+                    fontname=font_name,
+                    fontsize=font_size,
+                    render_mode=3,
+                    rotate=page_rotation,
+                )
+                inserted += 1
+            except Exception:
+                logger.exception(
+                    "apply_ocr_spans: insert_text failed (page=%s font=%s text=%r)",
+                    page_num,
+                    font_name,
+                    text,
+                )
+                continue
+
+        if inserted:
+            self.block_manager.rebuild_page(page_idx, self.doc)
+            self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(page.rect)})
+            self.edit_count += 1
+            logger.info("apply_ocr_spans page=%s inserted=%s", page_num, inserted)
+        return inserted
+
+    def add_textbox(
+        self,
+        page_num: int,
+        visual_rect: fitz.Rect,
+        text: str,
+        font: str = "cjk",
+        size: int = 12,
+        color: tuple = (0.0, 0.0, 0.0),
+    ) -> None:
+        """
+        Add new page text anchored in visual page coordinates.
+
+        visual_rect uses current viewer orientation coordinates. The method maps
+        it to unrotated page space and inserts with rotate=page.rotation so text
+        appears at the clicked visual location for rotation 0/90/180/270.
+        """
+        insert_state = self._insert_textbox_visual_content(
+            page_num,
+            visual_rect,
+            text,
+            font=font,
+            size=size,
+            color=color,
+        )
+        page_idx = insert_state["page_idx"]
+        self._create_textbox_object_marker(
+            page_num,
+            insert_state["bounded_visual"],
+            text=text,
+            font=insert_state["font_name"],
+            size=insert_state["font_size"],
+            color=insert_state["color_rgb"],
+            rotation=insert_state["rotation"],
+        )
         self.block_manager.rebuild_page(page_idx, self.doc)
-        self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(insert_rect)})
+        self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(insert_state["insert_rect"])})
         self.edit_count += 1
         logger.debug(
             "add_textbox page=%s visual_rect=%s insert_rect=%s rotate=%s font=%s",
             page_num,
-            bounded_visual,
-            insert_rect,
-            int(page.rotation) % 360,
-            font_name,
+            insert_state["bounded_visual"],
+            insert_state["insert_rect"],
+            insert_state["rotation"],
+            insert_state["font_name"],
+        )
+
+    def get_object_info_at_point(self, page_num: int, point: fitz.Point) -> ObjectHitInfo | None:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return None
+        try:
+            page = self.doc[page_num - 1]
+            annots = list(page.annots() or [])
+        except Exception:
+            annots = []
+        candidates: list[tuple[fitz.Annot, dict]] = []
+        for annot in annots:
+            payload = self._load_app_object_payload(annot)
+            if payload is None:
+                continue
+            rect = fitz.Rect(annot.rect)
+            if point in rect:
+                candidates.append((annot, payload))
+        if candidates:
+            annot, payload = candidates[-1]
+            kind = payload["kind"]
+            return ObjectHitInfo(
+                object_kind=kind,
+                object_id=str(payload["object_id"]),
+                page_num=page_num,
+                bbox=fitz.Rect(annot.rect),
+                rotation=int(payload.get("rotation", 0)) % 360,
+                supports_move=True,
+                supports_delete=True,
+                supports_rotate=kind in ("textbox", "image"),
+            )
+        native_hits = [
+            invocation
+            for invocation in discover_native_image_invocations(self.doc, page_num)
+            if point in fitz.Rect(invocation.bbox)
+        ]
+        if not native_hits:
+            return None
+        native_hit = native_hits[-1]
+        return ObjectHitInfo(
+            object_kind="native_image",
+            object_id=f"native_image:{page_num}:{native_hit.occurrence_index}",
+            page_num=page_num,
+            bbox=fitz.Rect(native_hit.bbox),
+            rotation=int(native_hit.rotation) % 360,
+            supports_move=True,
+            supports_delete=True,
+            supports_rotate=True,
+        )
+
+    def _redact_and_restore_textbox_region(self, page: fitz.Page, rect: fitz.Rect, object_id: str) -> None:
+        saved_annots = self.tools.annotation._save_overlapping_annots(page, rect)
+        filtered_annots: list[dict] = []
+        for saved in saved_annots:
+            info = dict(saved.get("info") or {})
+            subject = info.get("subject") or ""
+            if subject == _TEXTBOX_OBJECT_SUBJECT:
+                try:
+                    payload = json.loads(info.get("content") or "{}")
+                except Exception:
+                    payload = {}
+                if payload.get("object_id") == object_id:
+                    continue
+            filtered_annots.append(saved)
+        page.add_redact_annot(rect)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+        if filtered_annots:
+            self.tools.annotation._restore_annots(page, filtered_annots)
+
+    def move_object(self, request: MoveObjectRequest) -> bool:
+        if request.destination_page != request.source_page:
+            return False
+        if request.object_kind == "native_image":
+            invocation = self._find_native_image_invocation(request.source_page, request.object_id)
+            if invocation is None:
+                return False
+            return self._rewrite_native_image_matrix(
+                invocation,
+                fitz.Rect(request.destination_rect),
+                invocation.rotation,
+            )
+        found = self._find_app_object_annot(request.source_page, request.object_id, request.object_kind)
+        if found is None:
+            return False
+        page, annot, payload = found
+        if payload["kind"] == "rect":
+            annot.set_rect(fitz.Rect(request.destination_rect))
+            payload["rect"] = [
+                float(request.destination_rect.x0),
+                float(request.destination_rect.y0),
+                float(request.destination_rect.x1),
+                float(request.destination_rect.y1),
+            ]
+            annot.set_info(content=self._dump_app_object_payload(payload), subject=_RECT_OBJECT_SUBJECT)
+            annot.update()
+            return True
+        if payload["kind"] == "image":
+            old_rect = fitz.Rect(payload.get("rect") or annot.rect)
+            dest_rect = fitz.Rect(request.destination_rect)
+            xref = int(payload.get("xref", 0) or 0)
+            rotation = int(payload.get("rotation", 0)) % 360
+            if not xref:
+                return False
+            invocation = self._find_app_image_invocation(request.source_page, xref, old_rect)
+            if invocation is None:
+                return False
+            if not self._rewrite_native_image_matrix(invocation, dest_rect, rotation):
+                return False
+            annot.set_rect(dest_rect)
+            payload["rect"] = [float(dest_rect.x0), float(dest_rect.y0), float(dest_rect.x1), float(dest_rect.y1)]
+            annot.set_info(content=self._dump_app_object_payload(payload), subject=_IMAGE_OBJECT_SUBJECT)
+            annot.update()
+            return True
+        if payload["kind"] != "textbox":
+            return False
+        old_rect = fitz.Rect(payload["rect"])
+        self._redact_and_restore_textbox_region(page, old_rect, request.object_id)
+        self._delete_app_object_annots(request.source_page, request.object_id, expected_kind="textbox")
+        insert_state = self._insert_textbox_visual_content(
+            request.destination_page,
+            fitz.Rect(request.destination_rect),
+            payload["text"],
+            font=payload["font"],
+            size=payload["size"],
+            color=tuple(payload["color"]),
+            rotation=int(payload.get("rotation", 0)),
+        )
+        self._create_textbox_object_marker(
+            request.destination_page,
+            insert_state["bounded_visual"],
+            text=payload["text"],
+            font=payload["font"],
+            size=payload["size"],
+            color=tuple(payload["color"]),
+            rotation=int(payload.get("rotation", 0)),
+            object_id=request.object_id,
+        )
+        self.block_manager.rebuild_page(request.destination_page - 1, self.doc)
+        return True
+
+    def rotate_object(self, request: RotateObjectRequest) -> bool:
+        if request.object_kind == "native_image":
+            invocation = self._find_native_image_invocation(request.page_num, request.object_id)
+            if invocation is None:
+                return False
+            new_rotation = (int(invocation.rotation) + int(request.rotation_delta)) % 360
+            return self._rewrite_native_image_matrix(
+                invocation,
+                fitz.Rect(invocation.bbox),
+                new_rotation,
+            )
+        found = self._find_app_object_annot(request.page_num, request.object_id, request.object_kind)
+        if found is None:
+            return False
+        page, annot, payload = found
+        if payload["kind"] != "textbox":
+            if payload.get("kind") != "image":
+                return False
+            rect = fitz.Rect(payload.get("rect") or annot.rect)
+            xref = int(payload.get("xref", 0) or 0)
+            old_rotation = int(payload.get("rotation", 0)) % 360
+            new_rotation = (old_rotation + int(request.rotation_delta)) % 360
+            if not xref:
+                return False
+            invocation = self._find_app_image_invocation(request.page_num, xref, rect)
+            if invocation is None:
+                return False
+            if not self._rewrite_native_image_matrix(invocation, rect, new_rotation):
+                return False
+            payload["rotation"] = int(new_rotation) % 360
+            annot.set_info(content=self._dump_app_object_payload(payload), subject=_IMAGE_OBJECT_SUBJECT)
+            annot.update()
+            return True
+        old_rect = fitz.Rect(payload["rect"])
+        new_rotation = (int(payload.get("rotation", 0)) + int(request.rotation_delta)) % 360
+        self._redact_and_restore_textbox_region(page, old_rect, request.object_id)
+        self._delete_app_object_annots(request.page_num, request.object_id, expected_kind="textbox")
+        insert_state = self._insert_textbox_visual_content(
+            request.page_num,
+            old_rect,
+            payload["text"],
+            font=payload["font"],
+            size=payload["size"],
+            color=tuple(payload["color"]),
+            rotation=new_rotation,
+        )
+        self._create_textbox_object_marker(
+            request.page_num,
+            insert_state["bounded_visual"],
+            text=payload["text"],
+            font=payload["font"],
+            size=payload["size"],
+            color=tuple(payload["color"]),
+            rotation=new_rotation,
+            object_id=request.object_id,
+        )
+        self.block_manager.rebuild_page(request.page_num - 1, self.doc)
+        return True
+
+    def delete_object(self, request: DeleteObjectRequest) -> bool:
+        if request.object_kind == "native_image":
+            invocation = self._find_native_image_invocation(request.page_num, request.object_id)
+            if invocation is None:
+                return False
+            return self._remove_native_image_invocation(invocation)
+        found = self._find_app_object_annot(request.page_num, request.object_id, request.object_kind)
+        if found is None:
+            return False
+        page, annot, payload = found
+        if payload["kind"] == "rect":
+            page.delete_annot(annot)
+            return True
+        if payload["kind"] == "image":
+            xref = int(payload.get("xref", 0) or 0)
+            old_rect = fitz.Rect(payload.get("rect") or annot.rect)
+            try:
+                page.add_redact_annot(old_rect)
+                page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
+            except Exception:
+                pass
+            self._delete_app_object_annots(request.page_num, request.object_id, expected_kind="image")
+            return True
+        if payload["kind"] != "textbox":
+            return False
+        old_rect = fitz.Rect(payload["rect"])
+        self._redact_and_restore_textbox_region(page, old_rect, request.object_id)
+        self._delete_app_object_annots(request.page_num, request.object_id, expected_kind="textbox")
+        self.block_manager.rebuild_page(request.page_num - 1, self.doc)
+        return True
+
+    def resize_object(self, request: ResizeObjectRequest) -> bool:
+        # Resize is modeled as a move with a new destination rect on the same page.
+        return self.move_object(
+            MoveObjectRequest(
+                object_id=request.object_id,
+                object_kind=request.object_kind,
+                source_page=request.page_num,
+                destination_page=request.page_num,
+                destination_rect=fitz.Rect(request.destination_rect),
+            )
         )
 
     def _convert_text_to_html(
@@ -1526,16 +2386,16 @@ class PDFModel:
     def _normalize_optimize_options(options: PdfOptimizeOptions) -> PdfOptimizeOptions:
         return pdf_optimizer.normalize_optimize_options(options)
 
-    def _resolve_file_backed_optimize_source(self, session_id: Optional[str]) -> Optional[Path]:
+    def _resolve_file_backed_optimize_source(self, session_id: str | None) -> Path | None:
         return pdf_optimizer.resolve_file_backed_optimize_source(self, session_id)
 
-    def _current_document_size_bytes(self, session_id: Optional[str]) -> int:
+    def _current_document_size_bytes(self, session_id: str | None) -> int:
         return pdf_optimizer.current_document_size_bytes(self, session_id)
 
-    def _build_working_doc_for_optimized_copy(self, session_id: Optional[str]) -> fitz.Document:
+    def _build_working_doc_for_optimized_copy(self, session_id: str | None) -> fitz.Document:
         return pdf_optimizer.build_working_doc_for_optimized_copy(self, session_id)
 
-    def _make_active_audit_cache_key(self) -> Optional[tuple]:
+    def _make_active_audit_cache_key(self) -> tuple | None:
         return pdf_optimizer.make_active_audit_cache_key(self)
 
     @staticmethod
@@ -1553,9 +2413,19 @@ class PDFModel:
         self,
         working_doc: fitz.Document,
         options: PdfOptimizeOptions,
-        source_path: Optional[Path] = None,
+        source_path: Path | None = None,
+        *,
+        original_bytes: int | None = None,
+        image_usage: dict[int, dict[str, float | int]] | None = None,
     ) -> None:
-        pdf_optimizer.apply_optimize_options(self, working_doc, options, source_path=source_path)
+        pdf_optimizer.apply_optimize_options(
+            self,
+            working_doc,
+            options,
+            source_path=source_path,
+            original_bytes=original_bytes,
+            image_usage=image_usage,
+        )
 
     @staticmethod
     def _image_rewrite_settings(options: PdfOptimizeOptions) -> dict[str, int | bool]:
@@ -1605,9 +2475,19 @@ class PDFModel:
         self,
         working_doc: fitz.Document,
         options: PdfOptimizeOptions,
-        source_path: Optional[Path] = None,
+        source_path: Path | None = None,
+        *,
+        image_usage: dict[int, dict[str, float | int]] | None = None,
+        allow_extracted_parallel_fallback: bool = True,
     ) -> None:
-        pdf_optimizer.rewrite_images_with_pillow(self, working_doc, options, source_path=source_path)
+        pdf_optimizer.rewrite_images_with_pillow(
+            self,
+            working_doc,
+            options,
+            source_path=source_path,
+            image_usage=image_usage,
+            allow_extracted_parallel_fallback=allow_extracted_parallel_fallback,
+        )
 
     @staticmethod
     def _requires_post_save_packaging(options: PdfOptimizeOptions) -> bool:
@@ -1634,7 +2514,7 @@ class PDFModel:
         self.doc = fitz.open("pdf", snapshot_bytes)
         logger.debug(f"_restore_doc_from_snapshot: 已還原文件（{len(snapshot_bytes)} bytes）")
 
-    def replace_active_document_from_snapshot(self, snapshot_bytes: bytes, affected_pages: Optional[List[int]] = None) -> None:
+    def replace_active_document_from_snapshot(self, snapshot_bytes: bytes, affected_pages: list[int] | None = None) -> None:
         if not snapshot_bytes:
             raise ValueError("缺少文件快照")
         self._restore_doc_from_snapshot(snapshot_bytes)
@@ -1688,7 +2568,7 @@ class PDFModel:
         """Capture one-page snapshot without any whole-document fallback."""
         if not self.doc or page_num_0based < 0 or page_num_0based >= len(self.doc):
             raise ValueError(f"無效頁碼: {page_num_0based + 1}")
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
 
         # 1) direct page copy with annotations
         try:
@@ -1761,12 +2641,49 @@ class PDFModel:
     def _restore_page_from_snapshot(self, page_num_0based: int, snapshot_bytes: bytes) -> None:
         """用 bytes 快照替換 doc 中指定頁面（undo / rollback 時呼叫）"""
         snapshot_doc = fitz.open("pdf", snapshot_bytes)
-        self.doc.delete_page(page_num_0based)
-        self.doc.insert_pdf(snapshot_doc, from_page=0, to_page=0, start_at=page_num_0based)
-        snapshot_doc.close()
+        try:
+            if snapshot_doc.page_count < 1:
+                raise ValueError("snapshot restore requires at least one page")
 
-    def _build_insert_css(self, size: float, color: tuple, font_hint: str = "helv") -> str:
-        """建構 insert_htmlbox 所需的 CSS 樣式字串"""
+            insert_at = page_num_0based
+            self.doc.insert_pdf(snapshot_doc, from_page=0, to_page=0, start_at=insert_at)
+            try:
+                self.doc.delete_page(insert_at + 1)
+            except Exception as delete_err:
+                cleanup_err: Exception | None = None
+                try:
+                    self.doc.delete_page(insert_at)
+                except Exception as err:
+                    cleanup_err = err
+                if cleanup_err is not None:
+                    logger.error(
+                        "snapshot restore cleanup failed: page=%s delete_error=%s cleanup_error=%s",
+                        page_num_0based + 1,
+                        delete_err,
+                        cleanup_err,
+                    )
+                    raise RuntimeError(
+                        f"snapshot restore inserted replacement page but could not restore original state: "
+                        f"delete_error={delete_err}; cleanup_error={cleanup_err}"
+                    ) from cleanup_err
+                raise RuntimeError(
+                    f"snapshot restore inserted replacement page but could not remove original page: {delete_err}"
+                ) from delete_err
+        finally:
+            snapshot_doc.close()
+
+    def _build_insert_css(
+        self,
+        size: float,
+        color: tuple,
+        font_hint: str = "helv",
+        line_height: float = 0.0,
+    ) -> str:
+        """建構 insert_htmlbox 所需的 CSS 樣式字串。
+
+        line_height: 實際行高（pt）。0 表示自動計算（size × 1.2，或從字體 metrics 取得）。
+        正確的行高能讓 re-insert 後的文字行距與原 PDF 一致。
+        """
         resolved_font = self._resolve_add_text_font(font_hint)
         cjk_companion = self._resolve_cjk_companion_font(resolved_font)
         font_face_rules = []
@@ -1775,10 +2692,21 @@ class PDFModel:
             if css_rule:
                 font_face_rules.append(css_rule)
         font_face_block = "\n".join(font_face_rules)
+
+        # 行高：優先使用傳入值，否則從字體 metrics 計算
+        if line_height <= 0:
+            try:
+                font_obj = fitz.Font(resolved_font)
+                line_height = max(size * 1.1, (font_obj.ascender - font_obj.descender) * size)
+            except Exception:
+                line_height = size * 1.2
+        line_height = round(max(size, line_height), 2)
+
         return f"""
             {font_face_block}
             span {{
                 font-size: {size}pt;
+                line-height: {line_height}pt;
                 white-space: pre-wrap;
                 word-break: break-all;
                 overflow-wrap: anywhere;
@@ -1864,19 +2792,28 @@ class PDFModel:
         is_serif  = "times" in low or "roman" in low or "georgia" in low
 
         if is_mono:
-            if is_bold and is_italic: return "cour-bi"
-            if is_bold:               return "cour-b"
-            if is_italic:             return "cour-i"
+            if is_bold and is_italic:
+                return "cour-bi"
+            if is_bold:
+                return "cour-b"
+            if is_italic:
+                return "cour-i"
             return "cour"
         if is_serif:
-            if is_bold and is_italic: return "tibo"
-            if is_bold:               return "tib"
-            if is_italic:             return "tiit"
+            if is_bold and is_italic:
+                return "tibo"
+            if is_bold:
+                return "tib"
+            if is_italic:
+                return "tiit"
             return "tiro"
         # sans-serif (Helvetica / Arial / 其他)
-        if is_bold and is_italic: return "heit"
-        if is_bold:               return "hebo"
-        if is_italic:             return "heit"
+        if is_bold and is_italic:
+            return "heit"
+        if is_bold:
+            return "hebo"
+        if is_italic:
+            return "heit"
         return "helv"
 
     def _needs_cjk_font(self, text: str) -> bool:
@@ -2092,14 +3029,6 @@ class PDFModel:
             f"插入 {inserted} 個 span"
         )
 
-    def _rect_union(self, rects: list[fitz.Rect]) -> fitz.Rect:
-        if not rects:
-            return fitz.Rect()
-        u = fitz.Rect(rects[0])
-        for r in rects[1:]:
-            u.include_rect(r)
-        return u
-
     def _replay_protected_spans(self, page: fitz.Page, spans: list[EditableSpan]) -> None:
         for span in spans:
             text = (span.text or "").rstrip("\n")
@@ -2126,7 +3055,7 @@ class PDFModel:
                     )
                     css = self._build_insert_css(fontsize, color, fontname)
                     page.insert_htmlbox(
-                        self._clamp_rect_to_page(bbox, page.rect),
+                        clamp_rect_to_page(bbox, page.rect),
                         html_content,
                         css=css,
                         rotate=rotate,
@@ -2185,7 +3114,7 @@ class PDFModel:
             )
             css = self._build_insert_css(fontsize, color, fontname)
             page.insert_htmlbox(
-                self._clamp_rect_to_page(bbox, page.rect),
+                clamp_rect_to_page(bbox, page.rect),
                 html_content,
                 css=css,
                 rotate=rotate,
@@ -2193,26 +3122,655 @@ class PDFModel:
             )
 
     def _validate_protected_spans(self, page: fitz.Page, protected_spans: list[EditableSpan]) -> bool:
-        full_page = self._normalize_text_for_compare(page.get_text("text"))
+        full_page = normalize_text(page.get_text("text"))
         for span in protected_spans:
-            probe = self._normalize_text_for_compare(span.text)
+            probe = normalize_text(span.text)
             if probe and probe not in full_page:
                 logger.warning("protected span missing after replay: %s", span.span_id)
                 return False
         return True
 
+    def _resolve_edit_target(
+        self,
+        *,
+        page_num: int,
+        page_idx: int,
+        page: fitz.Page,
+        rect: fitz.Rect,
+        new_text: str,
+        font: str,
+        size: float,
+        color: tuple,
+        original_text: str | None,
+        new_rect: fitz.Rect | None,
+        resolved_target_span_id: str | None,
+        effective_target_mode: str,
+    ) -> tuple[EditTextResult, _EditTextResolveResult | None]:
+        target_span = None
+        if resolved_target_span_id:
+            target_span = self.block_manager.find_run_by_id(page_idx, resolved_target_span_id)
+            if target_span is None:
+                logger.debug("target_span_id not found in current index: %s", resolved_target_span_id)
+
+        if target_span is None:
+            target = self.block_manager.find_by_rect(
+                page_idx, rect, original_text=original_text, doc=self.doc
+            )
+            if not target:
+                logger.warning("無法找到目標文字方塊，頁面 %s 矩形 %s", page_num, rect)
+                return EditTextResult.TARGET_BLOCK_NOT_FOUND, None
+
+            clip_text = page.get_text("text", clip=target.rect).strip()
+            norm_clip = normalize_text(clip_text)
+            norm_block = normalize_text(target.text)
+            if norm_block and norm_clip:
+                match_ratio = difflib.SequenceMatcher(None, norm_block, norm_clip).ratio()
+                if match_ratio < 0.5:
+                    logger.debug("索引文字與頁面文字不匹配 (ratio=%.2f)，重建該頁索引", match_ratio)
+                    self.block_manager.rebuild_page(page_idx, self.doc)
+                    target = self.block_manager.find_by_rect(
+                        page_idx, rect, original_text=original_text, doc=self.doc
+                    )
+                    if not target:
+                        logger.warning("重建索引後仍找不到目標文字方塊")
+                        return EditTextResult.TARGET_BLOCK_NOT_FOUND, None
+
+            candidate_spans = self.block_manager.find_overlapping_runs(page_idx, target.layout_rect, tol=0.5)
+            if candidate_spans:
+                text_probe = normalize_text(original_text or target.text or "")
+                if text_probe:
+                    scored = sorted(
+                        candidate_spans,
+                        key=lambda sp: difflib.SequenceMatcher(
+                            None, text_probe, normalize_text(sp.text)
+                        ).ratio(),
+                    )
+                    target_span = scored[-1]
+                else:
+                    target_span = candidate_spans[-1]
+                resolved_target_span_id = target_span.span_id
+
+        if target_span is None:
+            logger.warning("unable to resolve target span for edit on page %s", page_num)
+            return EditTextResult.TARGET_SPAN_NOT_FOUND, None
+
+        if not resolved_target_span_id:
+            resolved_target_span_id = target_span.span_id
+
+        target_member_span_ids: set[str] = {resolved_target_span_id}
+        target_bbox_for_cluster = fitz.Rect(target_span.bbox)
+        target_block_idx = target_span.block_idx
+        target_rotation = int(target_span.rotation)
+        if effective_target_mode == "paragraph":
+            para = self._resolve_paragraph_candidate(
+                page_idx=page_idx,
+                probe_rect=fitz.Rect(rect),
+                original_text=original_text,
+                preferred_run_id=target_span.span_id,
+            )
+            if para is not None:
+                target_member_span_ids = set(para.run_ids)
+                target_bbox_for_cluster = fitz.Rect(para.bbox)
+                target_block_idx = para.block_idx
+                target_rotation = int(para.rotation)
+                if para.run_ids and resolved_target_span_id not in target_member_span_ids:
+                    resolved_target_span_id = para.run_ids[0]
+            else:
+                logger.debug(
+                    "paragraph mode requested but paragraph not resolved for run=%s; fallback to run mode",
+                    target_span.span_id,
+                )
+                effective_target_mode = "run"
+
+        overlap_cluster = self.block_manager.find_overlapping_runs(
+            page_idx,
+            target_bbox_for_cluster,
+            tol=0.5,
+        )
+        if not overlap_cluster:
+            overlap_cluster = [
+                s for s in self.block_manager.get_runs(page_idx)
+                if s.span_id in target_member_span_ids
+            ]
+        if not overlap_cluster:
+            overlap_cluster = [target_span]
+
+        protected_spans = [s for s in overlap_cluster if s.span_id not in target_member_span_ids]
+        cluster_union = rect_union([fitz.Rect(s.bbox) for s in overlap_cluster])
+
+        target = self.block_manager.find_by_id(
+            page_idx,
+            f"page_{page_idx}_block_{target_block_idx}",
+        )
+        if not target:
+            target = self.block_manager.find_by_rect(
+                page_idx, fitz.Rect(target_bbox_for_cluster), original_text=original_text, doc=self.doc
+            )
+        if not target:
+            logger.warning("unable to resolve target block for span %s", resolved_target_span_id)
+            return EditTextResult.TARGET_BLOCK_NOT_FOUND, None
+
+        resolved_font = self._resolve_add_text_font(font)
+        current_font = self._resolve_add_text_font(target.font or "helv")
+        current_text_norm = normalize_text(target.text or "")
+        requested_text_norm = normalize_text(new_text)
+        size_unchanged = abs(float(size) - float(target.size)) <= 0.01
+        target_color = tuple(float(c) for c in (target.color or (0.0, 0.0, 0.0)))
+        request_color = tuple(float(c) for c in (color or (0.0, 0.0, 0.0)))
+        color_unchanged = len(target_color) == len(request_color) and all(
+            abs(a - b) <= 0.001 for a, b in zip(target_color, request_color)
+        )
+        if (
+            new_rect is None
+            and requested_text_norm == current_text_norm
+            and resolved_font == current_font
+            and size_unchanged
+            and color_unchanged
+        ):
+            logger.debug(
+                "edit_text no-op: page=%s span=%s text/style unchanged; skip geometry re-estimation",
+                page_num,
+                resolved_target_span_id,
+            )
+            return EditTextResult.NO_CHANGE, None
+
+        rotation = int(target_rotation)
+        is_vertical = rotation in (90, 270)
+        insert_rotate = self._insert_rotate_for_htmlbox(rotation)
+        redact_rect = fitz.Rect(cluster_union if not cluster_union.is_empty else target.layout_rect)
+
+        return EditTextResult.SUCCESS, _EditTextResolveResult(
+            target_span=target_span,
+            resolved_target_span_id=resolved_target_span_id,
+            effective_target_mode=effective_target_mode,
+            target_member_span_ids=target_member_span_ids,
+            overlap_cluster=overlap_cluster,
+            protected_spans=protected_spans,
+            target=target,
+            resolved_font=resolved_font,
+            rotation=rotation,
+            is_vertical=is_vertical,
+            insert_rotate=insert_rotate,
+            redact_rect=redact_rect,
+        )
+
+    def _apply_redact_insert(
+        self,
+        *,
+        page: fitz.Page,
+        page_num: int,
+        page_idx: int,
+        page_rect: fitz.Rect,
+        new_text: str,
+        size: float,
+        color: tuple,
+        vertical_shift_left: bool,
+        new_rect: fitz.Rect | None,
+        snapshot_bytes: bytes,
+        resolve_result: _EditTextResolveResult,
+    ) -> fitz.Rect:
+        _saved_annots = self.tools.annotation._save_overlapping_annots(page, resolve_result.redact_rect)
+        page.add_redact_annot(resolve_result.redact_rect)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+        if _saved_annots:
+            self.tools.annotation._restore_annots(page, _saved_annots)
+        if resolve_result.protected_spans:
+            self._replay_protected_spans(page, resolve_result.protected_spans)
+        self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(resolve_result.redact_rect)})
+        logger.debug(
+            "overlap_redaction page=%s target_span_id=%s target_mode=%s cluster_size=%s protected_count=%s redact_rect=%s",
+            page_num,
+            resolve_result.resolved_target_span_id,
+            resolve_result.effective_target_mode,
+            len(resolve_result.overlap_cluster),
+            len(resolve_result.protected_spans),
+            resolve_result.redact_rect,
+        )
+
+        html_content = self._convert_text_to_html(
+            new_text, int(size), color, latin_font=resolve_result.resolved_font
+        )
+        css = self._build_insert_css(size, color, resolve_result.resolved_font)
+
+        if new_rect is not None:
+            clamped_new = fitz.Rect(
+                max(float(new_rect.x0), page_rect.x0),
+                max(float(new_rect.y0), page_rect.y0),
+                min(float(new_rect.x1), page_rect.x1 - 5),
+                min(float(new_rect.y1), page_rect.y1 - 5),
+            )
+            if clamped_new.is_empty or clamped_new.is_infinite or clamped_new.width < 5:
+                logger.warning("new_rect %s clamped 後為空，退回原位插入", new_rect)
+                clamped_new = fitz.Rect(resolve_result.target.layout_rect)
+            base_layout = clamped_new
+        else:
+            base_layout = fitz.Rect(resolve_result.target.layout_rect)
+
+        member_spans = [
+            span for span in resolve_result.overlap_cluster
+            if span.span_id in resolve_result.target_member_span_ids
+        ]
+        single_line_members = (
+            bool(member_spans)
+            and max(float(span.bbox.y1) for span in member_spans) - min(float(span.bbox.y0) for span in member_spans)
+            <= max(2.0, float(size) * 1.5)
+        )
+
+        if (
+            not resolve_result.is_vertical
+            and new_rect is None
+            and "\n" not in new_text
+            and single_line_members
+            and not self._needs_cjk_font(new_text)
+        ):
+            margin = 15
+            right_margin_pt = max(60.0, min(120.0, float(size) * 2.0))
+            right_safe = page_rect.x1 - right_margin_pt
+            available_w = max(0.0, right_safe - max(float(base_layout.x0), page_rect.x0) - margin)
+            insert_font = self._resolve_font_for_push(resolve_result.resolved_font)
+            try:
+                font_obj = fitz.Font(insert_font)
+                text_width = font_obj.text_length(new_text, fontsize=size)
+            except Exception:
+                insert_font = "helv"
+                text_width = fitz.Font(insert_font).text_length(new_text, fontsize=size)
+            if 0 < text_width <= available_w:
+                origin_span = min(
+                    member_spans,
+                    key=lambda span: (float(span.origin.x), float(span.origin.y)),
+                )
+                origin = fitz.Point(
+                    float(origin_span.origin.x),
+                    float(origin_span.origin.y),
+                )
+                page.insert_text(
+                    origin,
+                    new_text,
+                    fontname=insert_font,
+                    fontsize=float(size),
+                    color=tuple(float(c) for c in color),
+                    rotate=0,
+                )
+                original_bbox = rect_union([fitz.Rect(span.bbox) for span in member_spans])
+                return fitz.Rect(
+                    original_bbox.x0,
+                    original_bbox.y0,
+                    min(original_bbox.x0 + text_width, page_rect.x1 - 10),
+                    original_bbox.y1,
+                )
+
+        if resolve_result.is_vertical:
+            if new_rect is not None:
+                base_y1 = float(base_layout.y1)
+                insert_rect = fitz.Rect(
+                    base_layout.x0, base_layout.y0, base_layout.x1, page_rect.y1
+                )
+            else:
+                base_rect = self._vertical_html_rect(
+                    resolve_result.target.layout_rect, new_text, size, resolve_result.resolved_font,
+                    page_rect, anchor_right=vertical_shift_left
+                )
+                base_y1 = base_rect.y1
+                insert_rect = fitz.Rect(
+                    base_rect.x0, base_rect.y0, base_rect.x1, page_rect.y1
+                )
+        else:
+            margin = 15
+            right_margin_pt = max(60.0, min(120.0, float(size) * 2.0))
+            right_safe = page_rect.x1 - right_margin_pt
+            x0 = max(float(base_layout.x0), page_rect.x0)
+            if new_rect is not None:
+                x1 = min(float(base_layout.x1), page_rect.x1 - 10)
+            else:
+                max_w = max(0, min(
+                    page_rect.width - margin,
+                    right_safe - x0 - margin
+                ))
+                x1 = min(x0 + max(resolve_result.target.layout_rect.width, max_w), right_safe)
+            y0 = max(float(base_layout.y0), page_rect.y0)
+            line_count = max(1, len(new_text.split('\n')))
+            est_height = line_count * size * 2 + size * 2
+            base_y1 = y0 + max(float(base_layout.height), est_height)
+            insert_rect = fitz.Rect(x0, y0, x1, page_rect.y1)
+
+        insert_rect = clamp_rect_to_page(insert_rect, page_rect)
+
+        skip_prepush = resolve_result.effective_target_mode == "paragraph" and new_rect is not None
+        if not resolve_result.is_vertical and not skip_prepush:
+            try:
+                _probe_doc = fitz.open()
+                _probe_page = _probe_doc.new_page(
+                    width=page_rect.width, height=page_rect.height
+                )
+                _probe_spare, _ = _probe_page.insert_htmlbox(
+                    insert_rect, html_content, css=css,
+                    rotate=0, scale_low=1,
+                )
+                _probe_doc.close()
+                _probe_used_h = insert_rect.height - _probe_spare
+                _probe_y1 = insert_rect.y0 + _probe_used_h
+                _probe_y1 = float(min(max(_probe_y1, base_y1), page_rect.y1))
+                height_growth = _probe_y1 - resolve_result.redact_rect.y1
+                meaningful_growth = max(0.5, float(size) * 0.2)
+                if height_growth > meaningful_growth:
+                    logger.debug(
+                        "換行預估溢出 %.1fpt，預先推移下方文字塊（pre-push）",
+                        height_growth,
+                    )
+                    self._push_down_overlapping_text(
+                        page, page_rect,
+                        above_y=resolve_result.redact_rect.y1,
+                        new_bottom=_probe_y1,
+                        edit_x0=x0,
+                        edit_x1=x1,
+                    )
+                else:
+                    logger.debug(
+                        "Pre-push probe skipped: growth %.2fpt <= threshold %.2fpt",
+                        height_growth,
+                        meaningful_growth,
+                    )
+            except Exception as _probe_err:
+                logger.debug("Pre-push probe 失敗（忽略）: %s", _probe_err)
+        elif skip_prepush:
+            logger.debug("Pre-push probe skipped (paragraph mode with dragged new_rect)")
+
+        if resolve_result.is_vertical:
+            try:
+                _shrink_doc = fitz.open()
+                _shrink_page = _shrink_doc.new_page(
+                    width=page_rect.width, height=page_rect.height
+                )
+                _shrink_page.insert_htmlbox(
+                    insert_rect, html_content, css=css,
+                    rotate=resolve_result.insert_rotate, scale_low=1
+                )
+                padding = self._calc_vertical_padding(size)
+                shrunk_rect = self._binary_shrink_height(
+                    _shrink_page, insert_rect, new_text,
+                    iterations=7, padding=padding, min_y1=base_y1
+                )
+                _shrink_doc.close()
+            except Exception as _shrink_err:
+                logger.debug("垂直 binary_shrink 失敗，回退 insert_rect: %s", _shrink_err)
+                shrunk_rect = fitz.Rect(insert_rect)
+            shrunk_rect = clamp_rect_to_page(shrunk_rect, page_rect)
+            spare_height, scale_used = page.insert_htmlbox(
+                shrunk_rect, html_content, css=css,
+                rotate=resolve_result.insert_rotate, scale_low=1
+            )
+            if spare_height < 0:
+                page.insert_htmlbox(
+                    shrunk_rect, html_content, css=css,
+                    rotate=resolve_result.insert_rotate, scale_low=0
+                )
+            new_layout_rect = fitz.Rect(shrunk_rect)
+            logger.debug(
+                "垂直策略（臨時頁量測）: spare_height=%s, shrunk_rect=%s",
+                spare_height,
+                shrunk_rect,
+            )
+            return new_layout_rect
+
+        spare_height, scale_used = page.insert_htmlbox(
+            insert_rect, html_content, css=css,
+            rotate=resolve_result.insert_rotate, scale_low=1
+        )
+        new_layout_rect = fitz.Rect(insert_rect)
+        logger.debug("策略 A: spare_height=%s, scale=%s", spare_height, scale_used)
+
+        if spare_height < 0:
+            logger.debug("策略 A 失敗，嘗試策略 B（自動擴寬）")
+            try:
+                font_for_measure = (
+                    "china-ts" if self._needs_cjk_font(new_text) else resolve_result.resolved_font
+                )
+                try:
+                    font_obj = fitz.Font(font_for_measure)
+                except Exception:
+                    font_for_measure = "helv"
+                    font_obj = fitz.Font(font_for_measure)
+                text_width = font_obj.text_length(
+                    new_text.replace('\n', ''), fontsize=size
+                )
+                expanded_width = max(
+                    insert_rect.width, text_width * 1.15 + size
+                )
+                expanded_rect = fitz.Rect(
+                    insert_rect.x0, insert_rect.y0,
+                    min(insert_rect.x0 + expanded_width,
+                        page_rect.x1 - 10),
+                    insert_rect.y1
+                )
+                expanded_rect = clamp_rect_to_page(
+                    expanded_rect, page_rect
+                )
+                spare_height, scale_used = page.insert_htmlbox(
+                    expanded_rect, html_content, css=css,
+                    rotate=resolve_result.insert_rotate, scale_low=1
+                )
+                new_layout_rect = fitz.Rect(expanded_rect)
+                logger.debug(
+                    "策略 B: spare_height=%s, scale=%s",
+                    spare_height,
+                    scale_used,
+                )
+            except Exception as ex_b:
+                logger.debug("策略 B 失敗: %s", ex_b)
+
+        if spare_height < 0:
+            spare_height, scale_used = page.insert_htmlbox(
+                new_layout_rect, html_content, css=css,
+                rotate=resolve_result.insert_rotate, scale_low=0.5
+            )
+            if spare_height < 0:
+                self._restore_page_from_snapshot(page_idx, snapshot_bytes)
+                self.block_manager.rebuild_page(page_idx, self.doc)
+                raise RuntimeError(
+                    f"文字框內容在字級 {size}pt 下無法完整塞入 "
+                    f"(spare_height={spare_height})，"
+                    "策略 A/B/C 均失敗，已回滾。"
+                )
+            logger.debug(
+                "策略 C（水平, scale_low=0.5）: spare_height=%s, scale=%s",
+                spare_height,
+                scale_used,
+            )
+
+        text_used_height = new_layout_rect.height - spare_height
+        computed_y1 = new_layout_rect.y0 + text_used_height
+        computed_y1 = max(computed_y1, base_y1)
+        shrunk_rect = fitz.Rect(
+            new_layout_rect.x0, new_layout_rect.y0,
+            new_layout_rect.x1, computed_y1
+        )
+        shrunk_rect = clamp_rect_to_page(shrunk_rect, page_rect)
+        return fitz.Rect(shrunk_rect)
+
+    def _verify_rebuild_edit(
+        self,
+        *,
+        page: fitz.Page,
+        page_num: int,
+        page_idx: int,
+        page_rect: fitz.Rect,
+        new_text: str,
+        size: float,
+        color: tuple,
+        snapshot_bytes: bytes,
+        resolve_result: _EditTextResolveResult,
+        new_layout_rect: fitz.Rect,
+    ) -> None:
+        full_page_text = page.get_text("text")
+        norm_new = normalize_text(new_text)
+        norm_page = normalize_text(full_page_text)
+
+        if norm_new and norm_new in norm_page:
+            sim_ratio = 1.0
+        elif norm_new and norm_page:
+            sim_ratio = difflib.SequenceMatcher(
+                None, norm_new, norm_page
+            ).ratio()
+        else:
+            sim_ratio = 1.0 if not norm_new else 0.0
+
+        logger.debug(
+            "Step4 驗證: ratio=%.2f, layout_rect=%s, norm_new[:%s]=%r",
+            sim_ratio,
+            new_layout_rect,
+            min(40, len(norm_new)),
+            norm_new[:40],
+        )
+
+        norm_clip = ""
+        clip_ratio = 0.0
+        clip_token_coverage = 0.0
+        if not new_layout_rect.is_empty:
+            try:
+                clipped = page.get_text("text", clip=clamp_rect_to_page(new_layout_rect, page_rect))
+                norm_clip = normalize_text(clipped)
+                if norm_new and norm_clip:
+                    if norm_new in norm_clip:
+                        clip_ratio = 1.0
+                    else:
+                        clip_ratio = difflib.SequenceMatcher(None, norm_new, norm_clip).ratio()
+                    clip_token_coverage = token_coverage_ratio(new_text, norm_clip)
+            except Exception as e_clip:
+                logger.debug("Step4 clip probe failed: %s", e_clip)
+
+        page_token_coverage = token_coverage_ratio(new_text, norm_page)
+        exact_present = (norm_new in norm_page) or (bool(norm_clip) and norm_new in norm_clip)
+        has_complex_script = self._has_complex_script(new_text)
+        if not norm_new or exact_present:
+            target_present = True
+        elif resolve_result.effective_target_mode == "paragraph":
+            if has_complex_script:
+                target_present = (
+                    sim_ratio >= 0.40
+                    or clip_ratio >= 0.38
+                    or page_token_coverage >= 0.35
+                    or clip_token_coverage >= 0.35
+                )
+            else:
+                target_present = (
+                    sim_ratio >= 0.88
+                    or clip_ratio >= 0.84
+                    or page_token_coverage >= 0.78
+                    or clip_token_coverage >= 0.72
+                )
+        elif len(norm_new) >= 48:
+            target_present = (
+                sim_ratio >= 0.90
+                or clip_ratio >= 0.86
+                or page_token_coverage >= 0.85
+            )
+        else:
+            target_present = False
+
+        logger.debug(
+            "target_presence page=%s mode=%s exact=%s sim_ratio=%.2f clip_ratio=%.2f token_page=%.2f token_clip=%.2f",
+            page_num,
+            resolve_result.effective_target_mode,
+            exact_present,
+            sim_ratio,
+            clip_ratio,
+            page_token_coverage,
+            clip_token_coverage,
+        )
+        protected_ok = self._validate_protected_spans(page, resolve_result.protected_spans)
+        if not target_present or not protected_ok:
+            self._restore_page_from_snapshot(page_idx, snapshot_bytes)
+            self.block_manager.rebuild_page(page_idx, self.doc)
+            raise RuntimeError(
+                "overlap edit verification failed: "
+                f"target_present={target_present}, protected_ok={protected_ok}"
+            )
+
+        strict_ratio = max(sim_ratio, clip_ratio)
+        if resolve_result.effective_target_mode != "paragraph" and strict_ratio < 0.80 and not resolve_result.is_vertical:
+            logger.warning(
+                "插入後驗證失敗 (ratio=%.2f)，正在回滾頁面 %s",
+                strict_ratio,
+                page_num,
+            )
+            self._restore_page_from_snapshot(page_idx, snapshot_bytes)
+            self.block_manager.rebuild_page(page_idx, self.doc)
+            raise RuntimeError(
+                f"文字編輯驗證失敗：difflib.ratio="
+                f"{strict_ratio:.2f} < 0.80，已回滾。"
+            )
+
+        update_kwargs = dict(
+            text=new_text,
+            font=resolve_result.resolved_font,
+            size=float(size),
+            color=color,
+        )
+        if not resolve_result.is_vertical:
+            update_kwargs["layout_rect"] = new_layout_rect
+        self.block_manager.update_block(resolve_result.target, **update_kwargs)
+        self.block_manager.rebuild_page(page_idx, self.doc)
+        logger.debug(
+            "編輯文字成功: 頁面 %s, block_id=%s, text='%s...'",
+            page_num,
+            resolve_result.target.block_id,
+            new_text[:30],
+        )
+
     # ──────────────────────────────────────────────────────────────────────────
     # Phase 3: 五步流程 + 三策略 edit_text
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _resolve_effective_target_mode(
+        self,
+        *,
+        target_mode: str | None,
+        target_span_id: str | None,
+        new_rect: fitz.Rect | None,
+        page_idx: int,
+        rect: fitz.Rect,
+        original_text: str | None,
+    ) -> str:
+        """Determine effective target mode from caller hints and heuristics."""
+        if target_mode is None:
+            if new_rect is not None and not target_span_id:
+                effective = "paragraph"
+            elif target_span_id:
+                effective = "run"
+            else:
+                effective = "paragraph"
+        else:
+            effective = (target_mode or self.text_target_mode or "run").strip().lower()
+        if effective not in {"run", "paragraph"}:
+            effective = "run"
+        if effective == "run" and not target_span_id:
+            should_promote = True
+            if original_text:
+                probe_block = self.block_manager.find_by_rect(
+                    page_idx, rect, original_text=original_text, doc=self.doc
+                )
+                if probe_block and probe_block.text:
+                    norm_orig = normalize_text(original_text)
+                    norm_block = normalize_text(probe_block.text)
+                    if norm_block and len(norm_orig) < len(norm_block) * 0.6:
+                        should_promote = False
+                        logger.debug(
+                            "keeping run mode: original_text (%d chars) < 60%% of block text (%d chars)",
+                            len(norm_orig), len(norm_block),
+                        )
+            if should_promote:
+                effective = "paragraph"
+                logger.debug("auto-promoted target_mode run->paragraph (no explicit span_id)")
+        return effective
+
     def edit_text(self, page_num: int, rect: fitz.Rect, new_text: str,
-                  font: str = "helv", size: int = 12,
+                  font: str = "helv", size: float = 12.0,
                   color: tuple = (0.0, 0.0, 0.0),
                   original_text: str = None,
                   vertical_shift_left: bool = True,
                   new_rect: fitz.Rect = None,
-                  target_span_id: Optional[str] = None,
-                  target_mode: Optional[str] = None):
+                  target_span_id: str | None = None,
+                  target_mode: str | None = None) -> EditTextResult:
         """
         編輯文字：五步流程 + 三策略智能插入。
 
@@ -2244,518 +3802,65 @@ class PDFModel:
         page_rect = page.rect
         rollback_flag = False
         resolved_target_span_id = target_span_id
-        if target_mode is None:
-            if new_rect is not None and not target_span_id:
-                # Legacy drag-move callers (without explicit span/mode) historically
-                # expect block-level relocation semantics.
-                effective_target_mode = "paragraph"
-            elif target_span_id:
-                # Explicit span-id without explicit mode should stay span-precise.
-                effective_target_mode = "run"
-            else:
-                # Legacy rect-based edit callers (no explicit id/mode) historically
-                # operate on a full paragraph/block scope.
-                effective_target_mode = "paragraph"
-        else:
-            effective_target_mode = (target_mode or self.text_target_mode or "run").strip().lower()
-        if effective_target_mode not in {"run", "paragraph"}:
-            effective_target_mode = "run"
-        overlap_cluster: list[EditableSpan] = []
-        protected_spans: list[EditableSpan] = []
+        effective_target_mode = self._resolve_effective_target_mode(
+            target_mode=target_mode,
+            target_span_id=target_span_id,
+            new_rect=new_rect,
+            page_idx=page_idx,
+            rect=rect,
+            original_text=original_text,
+        )
+        resolve_result: _EditTextResolveResult | None = None
 
         # ── Step 0: 擷取 page-level 快照，供回滾使用 ──
         snapshot_bytes = self._capture_page_snapshot(page_idx)
 
         try:
-            # ═══════════ Step 1: 驗證 / 以 span_id 鎖定目標 ═══════════
-            target_span = None
-            if resolved_target_span_id:
-                target_span = self.block_manager.find_run_by_id(page_idx, resolved_target_span_id)
-                if target_span is None:
-                    logger.debug("target_span_id not found in current index: %s", resolved_target_span_id)
-
-            if target_span is None:
-                # Fallback: legacy rect/text block resolution then map to nearest overlapping span.
-                target = self.block_manager.find_by_rect(
-                    page_idx, rect, original_text=original_text, doc=self.doc
-                )
-                if not target:
-                    logger.warning(f"無法找到目標文字方塊，頁面 {page_num} 矩形 {rect}")
-                    return
-
-                clip_text = page.get_text("text", clip=target.rect).strip()
-                norm_clip = self._normalize_text_for_compare(clip_text)
-                norm_block = self._normalize_text_for_compare(target.text)
-                if norm_block and norm_clip:
-                    match_ratio = difflib.SequenceMatcher(None, norm_block, norm_clip).ratio()
-                    if match_ratio < 0.5:
-                        logger.debug(
-                            f"索引文字與頁面文字不匹配 (ratio={match_ratio:.2f})，重建該頁索引"
-                        )
-                        self.block_manager.rebuild_page(page_idx, self.doc)
-                        target = self.block_manager.find_by_rect(
-                            page_idx, rect, original_text=original_text, doc=self.doc
-                        )
-                        if not target:
-                            logger.warning("重建索引後仍找不到目標文字方塊")
-                            return
-
-                candidate_spans = self.block_manager.find_overlapping_runs(page_idx, target.layout_rect, tol=0.5)
-                if candidate_spans:
-                    text_probe = self._normalize_text_for_compare(original_text or target.text or "")
-                    if text_probe:
-                        scored = sorted(
-                            candidate_spans,
-                            key=lambda sp: difflib.SequenceMatcher(
-                                None, text_probe, self._normalize_text_for_compare(sp.text)
-                            ).ratio(),
-                        )
-                        target_span = scored[-1]
-                    else:
-                        target_span = candidate_spans[-1]
-                    resolved_target_span_id = target_span.span_id
-
-            if target_span is None:
-                logger.warning("unable to resolve target span for edit on page %s", page_num)
-                return
-
-            if not resolved_target_span_id:
-                resolved_target_span_id = target_span.span_id
-
-            target_member_span_ids: set[str] = {resolved_target_span_id}
-            target_bbox_for_cluster = fitz.Rect(target_span.bbox)
-            target_block_idx = target_span.block_idx
-            target_rotation = int(target_span.rotation)
-            if effective_target_mode == "paragraph":
-                para = self._resolve_paragraph_candidate(
-                    page_idx=page_idx,
-                    probe_rect=fitz.Rect(rect),
-                    original_text=original_text,
-                    preferred_run_id=target_span.span_id,
-                )
-                if para is not None:
-                    target_member_span_ids = set(para.run_ids)
-                    target_bbox_for_cluster = fitz.Rect(para.bbox)
-                    target_block_idx = para.block_idx
-                    target_rotation = int(para.rotation)
-                    # Keep logging / downstream selection deterministic even when the
-                    # caller passes a stale run id from a previous page state.
-                    if para.run_ids:
-                        if resolved_target_span_id not in target_member_span_ids:
-                            resolved_target_span_id = para.run_ids[0]
-                else:
-                    logger.debug(
-                        "paragraph mode requested but paragraph not resolved for run=%s; fallback to run mode",
-                        target_span.span_id,
-                    )
-                    effective_target_mode = "run"
-
-            overlap_cluster = self.block_manager.find_overlapping_runs(
-                page_idx,
-                target_bbox_for_cluster,
-                tol=0.5,
-            )
-            if not overlap_cluster:
-                overlap_cluster = [
-                    s for s in self.block_manager.get_runs(page_idx)
-                    if s.span_id in target_member_span_ids
-                ]
-            if not overlap_cluster:
-                overlap_cluster = [target_span]
-
-            # Keep extraction order deterministic; target is removed from protected set.
-            protected_spans = [s for s in overlap_cluster if s.span_id not in target_member_span_ids]
-            cluster_union = self._rect_union([fitz.Rect(s.bbox) for s in overlap_cluster])
-
-            target = self.block_manager.find_by_id(
-                page_idx,
-                f"page_{page_idx}_block_{target_block_idx}",
-            )
-            if not target:
-                target = self.block_manager.find_by_rect(
-                    page_idx, fitz.Rect(target_bbox_for_cluster), original_text=original_text, doc=self.doc
-                )
-            if not target:
-                logger.warning("unable to resolve target block for span %s", resolved_target_span_id)
-                return
-
-            rotation = int(target_rotation)
-            is_vertical = rotation in (90, 270)
-            insert_rotate = self._insert_rotate_for_htmlbox(rotation)
-            redact_rect = fitz.Rect(cluster_union if not cluster_union.is_empty else target.layout_rect)
-
-            # ═══════════ Step 2: 安全 Redaction ═══════════
-            # apply_redactions 必須在 insert_htmlbox 之前立即執行（確保舊文字已清除），
-            # pending_edits 僅追蹤已修改的頁面，供 apply_pending_redactions() 批次 clean_contents。
-            # [Bug fix] 在 redaction 前先儲存重疊的非文字 annot，redaction 後還原，
-            # 避免 PyMuPDF apply_redactions 誤刪 FreeText 等 annotation。
-            _saved_annots = self.tools.annotation._save_overlapping_annots(page, redact_rect)
-            page.add_redact_annot(redact_rect)
-            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-            if _saved_annots:
-                self.tools.annotation._restore_annots(page, _saved_annots)
-            if protected_spans:
-                self._replay_protected_spans(page, protected_spans)
-            self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(redact_rect)})
-            logger.debug(
-                "overlap_redaction page=%s target_span_id=%s target_mode=%s cluster_size=%s protected_count=%s redact_rect=%s",
-                page_num,
-                resolved_target_span_id,
-                effective_target_mode,
-                len(overlap_cluster),
-                len(protected_spans),
-                redact_rect,
-            )
-
-            # ═══════════ Step 3: 智能插入（三策略）═══════════
-            resolved_font = self._resolve_add_text_font(font)
-            html_content = self._convert_text_to_html(
-                new_text, int(size), color, latin_font=resolved_font
-            )
-            css = self._build_insert_css(size, color, resolved_font)
-
-            # --- 計算初始插入矩形 ---
-            # 若有指定 new_rect（拖曳移動），以 new_rect 為插入基準；否則沿用原本位置計算。
-            # 若 new_rect 完全在頁面外，需 clamp 以防反轉矩形
-            if new_rect is not None:
-                clamped_new = fitz.Rect(
-                    max(float(new_rect.x0), page_rect.x0),
-                    max(float(new_rect.y0), page_rect.y0),
-                    min(float(new_rect.x1), page_rect.x1 - 5),
-                    min(float(new_rect.y1), page_rect.y1 - 5),
-                )
-                if clamped_new.is_empty or clamped_new.is_infinite or clamped_new.width < 5:
-                    logger.warning(f"new_rect {new_rect} clamped 後為空，退回原位插入")
-                    clamped_new = fitz.Rect(target.layout_rect)
-                base_layout = clamped_new
-            else:
-                base_layout = fitz.Rect(target.layout_rect)
-
-            if is_vertical:
-                if new_rect is not None:
-                    # 拖曳移動：直接以 new_rect 為垂直插入區
-                    base_y1 = float(base_layout.y1)
-                    insert_rect = fitz.Rect(
-                        base_layout.x0, base_layout.y0, base_layout.x1, page_rect.y1
-                    )
-                else:
-                    base_rect = self._vertical_html_rect(
-                        target.layout_rect, new_text, size, resolved_font,
-                        page_rect, anchor_right=vertical_shift_left
-                    )
-                    base_y1 = base_rect.y1
-                    insert_rect = fitz.Rect(
-                        base_rect.x0, base_rect.y0, base_rect.x1, page_rect.y1
-                    )
-            else:
-                margin = 15
-                right_margin_pt = max(60.0, min(120.0, float(size) * 2.0))
-                right_safe = page_rect.x1 - right_margin_pt
-                x0 = max(float(base_layout.x0), page_rect.x0)
-                if new_rect is not None:
-                    # 拖曳移動：以 new_rect 的寬度為準，避免被原文字框寬度覆蓋
-                    x1 = min(float(base_layout.x1), page_rect.x1 - 10)
-                else:
-                    max_w = max(0, min(
-                        page_rect.width - margin,
-                        right_safe - x0 - margin
-                    ))
-                    x1 = min(x0 + max(target.layout_rect.width, max_w), right_safe)
-                y0 = max(float(base_layout.y0), page_rect.y0)
-                line_count = max(1, len(new_text.split('\n')))
-                est_height = line_count * size * 2 + size * 2
-                base_y1 = y0 + max(float(base_layout.height), est_height)
-                insert_rect = fitz.Rect(x0, y0, x1, page_rect.y1)
-
-            insert_rect = self._clamp_rect_to_page(insert_rect, page_rect)
-
-            # ── Pre-push Probe（水平文字）：預估換行高度，預先推移下方文字塊 ──────
-            # 重要：Push-Down 必須在 insert_htmlbox「之前」執行。
-            # 原因：apply_redactions() 清除舊 block 時，若 Form XObject 已存在，
-            #       會同時抹去 Form XObject 內落在同一矩形的新文字（PyMuPDF 預設行為），
-            #       導致新插入的文字在驗證時消失（ratio 暴跌）。
-            #
-            # 做法：先用臨時頁面 probe 估算換行高度，若預測會溢出則先推移，
-            #       再對乾淨的頁面執行正式 insert_htmlbox。
-            skip_prepush = effective_target_mode == "paragraph" and new_rect is not None
-            if not is_vertical and not skip_prepush:
-                try:
-                    _probe_doc = fitz.open()
-                    _probe_page = _probe_doc.new_page(
-                        width=page_rect.width, height=page_rect.height
-                    )
-                    _probe_spare, _ = _probe_page.insert_htmlbox(
-                        insert_rect, html_content, css=css,
-                        rotate=0, scale_low=1,
-                    )
-                    _probe_doc.close()
-                    _probe_used_h = insert_rect.height - _probe_spare
-                    _probe_y1 = insert_rect.y0 + _probe_used_h + 4.0
-                    _probe_y1 = float(min(max(_probe_y1, base_y1), page_rect.y1))
-                    if _probe_y1 > redact_rect.y1 + 2.0:
-                        logger.debug(
-                            f"換行預估溢出 {_probe_y1 - redact_rect.y1:.1f}pt，"
-                            "預先推移下方文字塊（pre-push）"
-                        )
-                        self._push_down_overlapping_text(
-                            page, page_rect,
-                            above_y=redact_rect.y1,
-                            new_bottom=_probe_y1,
-                            edit_x0=x0,
-                            edit_x1=x1,
-                        )
-                except Exception as _probe_err:
-                    logger.debug(f"Pre-push probe 失敗（忽略）: {_probe_err}")
-            elif skip_prepush:
-                logger.debug("Pre-push probe skipped (paragraph mode with dragged new_rect)")
-            # ── End of pre-push probe ──────────────────────────────────────────
-
-            if is_vertical:
-                # ── 垂直文字：臨時頁面量測最小 rect，再單次插入主頁面 ──────────────
-                # 關鍵：不在主頁面執行 Strategy A + 清除再插入的模式，
-                # 因為 apply_redactions(insert_rect) 的 X 範圍可能延伸至
-                # 周圍其他文字（如水平參考文字），誤刪其字元。
-                # 改用臨時頁面做 binary_shrink_height 量測，主頁面只執行一次正式插入。
-                try:
-                    _shrink_doc = fitz.open()
-                    _shrink_page = _shrink_doc.new_page(
-                        width=page_rect.width, height=page_rect.height
-                    )
-                    _shrink_page.insert_htmlbox(
-                        insert_rect, html_content, css=css,
-                        rotate=insert_rotate, scale_low=1
-                    )
-                    padding = self._calc_vertical_padding(size)
-                    shrunk_rect = self._binary_shrink_height(
-                        _shrink_page, insert_rect, new_text,
-                        iterations=7, padding=padding, min_y1=base_y1
-                    )
-                    _shrink_doc.close()
-                except Exception as _shrink_err:
-                    logger.debug(f"垂直 binary_shrink 失敗，回退 insert_rect: {_shrink_err}")
-                    shrunk_rect = fitz.Rect(insert_rect)
-                shrunk_rect = self._clamp_rect_to_page(shrunk_rect, page_rect)
-                spare_height, scale_used = page.insert_htmlbox(
-                    shrunk_rect, html_content, css=css,
-                    rotate=insert_rotate, scale_low=1
-                )
-                if spare_height < 0:
-                    page.insert_htmlbox(
-                        shrunk_rect, html_content, css=css,
-                        rotate=insert_rotate, scale_low=0
-                    )
-                new_layout_rect = fitz.Rect(shrunk_rect)
-                logger.debug(
-                    f"垂直策略（臨時頁量測）: spare_height={spare_height}, "
-                    f"shrunk_rect={shrunk_rect}"
-                )
-            else:
-                # ── 策略 A: insert_htmlbox (scale_low=1) ──
-                spare_height, scale_used = page.insert_htmlbox(
-                    insert_rect, html_content, css=css,
-                    rotate=insert_rotate, scale_low=1
-                )
-                new_layout_rect = fitz.Rect(insert_rect)
-                logger.debug(f"策略 A: spare_height={spare_height}, scale={scale_used}")
-
-                if spare_height < 0:
-                    # ── 策略 B: 自動擴寬 + 再試 ──
-                    logger.debug("策略 A 失敗，嘗試策略 B（自動擴寬）")
-                    try:
-                        font_for_measure = (
-                            "china-ts" if self._needs_cjk_font(new_text) else resolved_font
-                        )
-                        try:
-                            font_obj = fitz.Font(font_for_measure)
-                        except Exception:
-                            font_for_measure = "helv"
-                            font_obj = fitz.Font(font_for_measure)
-                        text_width = font_obj.text_length(
-                            new_text.replace('\n', ''), fontsize=size
-                        )
-                        expanded_width = max(
-                            insert_rect.width, text_width * 1.15 + size
-                        )
-                        expanded_rect = fitz.Rect(
-                            insert_rect.x0, insert_rect.y0,
-                            min(insert_rect.x0 + expanded_width,
-                                page_rect.x1 - 10),
-                            insert_rect.y1
-                        )
-                        expanded_rect = self._clamp_rect_to_page(
-                            expanded_rect, page_rect
-                        )
-                        spare_height, scale_used = page.insert_htmlbox(
-                            expanded_rect, html_content, css=css,
-                            rotate=insert_rotate, scale_low=1
-                        )
-                        new_layout_rect = fitz.Rect(expanded_rect)
-                        logger.debug(
-                            f"策略 B: spare_height={spare_height}, scale={scale_used}"
-                        )
-                    except Exception as ex_b:
-                        logger.debug(f"策略 B 失敗: {ex_b}")
-
-                if spare_height < 0:
-                    # ── 策略 C: 水平 fallback ──
-                    spare_height, scale_used = page.insert_htmlbox(
-                        new_layout_rect, html_content, css=css,
-                        rotate=insert_rotate, scale_low=0.5
-                    )
-                    if spare_height < 0:
-                        self._restore_page_from_snapshot(page_idx, snapshot_bytes)
-                        self.block_manager.rebuild_page(page_idx, self.doc)
-                        raise RuntimeError(
-                            f"文字框內容在字級 {size}pt 下無法完整塞入 "
-                            f"(spare_height={spare_height})，"
-                            "策略 A/B/C 均失敗，已回滾。"
-                        )
-                    logger.debug(
-                        f"策略 C（水平, scale_low=0.5）: "
-                        f"spare_height={spare_height}, scale={scale_used}"
-                    )
-
-                # spare_height 直接告訴我們文字實際佔用高度（比 binary search + get_text probe 更可靠），
-                # 避免 _text_fits_in_rect 因 HTML escape / 字型差異導致全部 probe 失敗，
-                # 進而使 new_layout_rect 退化成整頁高度、抓到其他 block 的文字。
-                text_used_height = new_layout_rect.height - spare_height
-                computed_y1 = new_layout_rect.y0 + text_used_height + 4.0
-                # 至少覆蓋原始 block 高度，避免 layout_rect 過小
-                computed_y1 = max(computed_y1, base_y1)
-                shrunk_rect = fitz.Rect(
-                    new_layout_rect.x0, new_layout_rect.y0,
-                    new_layout_rect.x1, computed_y1
-                )
-                shrunk_rect = self._clamp_rect_to_page(shrunk_rect, page_rect)
-                new_layout_rect = fitz.Rect(shrunk_rect)
-
-
-            # ═══════════ Step 4: 驗證與回滾 ═══════════
-            # 使用全頁文字做 substring check，避免 clip 邊界截斷或抓到鄰近 block：
-            #   - 若 norm_new 是全頁文字的子字串 → ratio=1.0
-            #   - 否則 fallback 到 SequenceMatcher（仍用全頁文字，容許輕微差異）
-            full_page_text = page.get_text("text")
-            norm_new = self._normalize_text_for_compare(new_text)
-            norm_page = self._normalize_text_for_compare(full_page_text)
-
-            if norm_new and norm_new in norm_page:
-                sim_ratio = 1.0
-            elif norm_new and norm_page:
-                sim_ratio = difflib.SequenceMatcher(
-                    None, norm_new, norm_page
-                ).ratio()
-            else:
-                sim_ratio = 1.0 if not norm_new else 0.0
-
-            logger.debug(
-                f"Step4 驗證: ratio={sim_ratio:.2f}, "
-                f"layout_rect={new_layout_rect}, "
-                f"norm_new[:{min(40, len(norm_new))}]={norm_new[:40]!r}"
-            )
-
-            norm_clip = ""
-            clip_ratio = 0.0
-            clip_token_coverage = 0.0
-            if not new_layout_rect.is_empty:
-                try:
-                    clipped = page.get_text("text", clip=self._clamp_rect_to_page(new_layout_rect, page_rect))
-                    norm_clip = self._normalize_text_for_compare(clipped)
-                    if norm_new and norm_clip:
-                        if norm_new in norm_clip:
-                            clip_ratio = 1.0
-                        else:
-                            clip_ratio = difflib.SequenceMatcher(None, norm_new, norm_clip).ratio()
-                        clip_token_coverage = self._token_coverage_ratio(new_text, norm_clip)
-                except Exception as e_clip:
-                    logger.debug("Step4 clip probe failed: %s", e_clip)
-
-            page_token_coverage = self._token_coverage_ratio(new_text, norm_page)
-            exact_present = (norm_new in norm_page) or (bool(norm_clip) and norm_new in norm_clip)
-            has_complex_script = self._has_complex_script(new_text)
-            if not norm_new:
-                target_present = True
-            elif exact_present:
-                target_present = True
-            elif effective_target_mode == "paragraph":
-                # Paragraph edits may interleave with protected replay text, so allow robust fuzzy checks.
-                # RTL/CJK extraction can lose diacritics / shaping information: apply a bounded relaxed threshold.
-                if has_complex_script:
-                    target_present = (
-                        sim_ratio >= 0.40
-                        or clip_ratio >= 0.38
-                        or page_token_coverage >= 0.35
-                        or clip_token_coverage >= 0.35
-                    )
-                else:
-                    target_present = (
-                        sim_ratio >= 0.88
-                        or clip_ratio >= 0.84
-                        or page_token_coverage >= 0.78
-                        or clip_token_coverage >= 0.72
-                    )
-            elif len(norm_new) >= 48:
-                # Long run text can include extraction artifacts; use tighter fuzzy fallback.
-                target_present = (
-                    sim_ratio >= 0.90
-                    or clip_ratio >= 0.86
-                    or page_token_coverage >= 0.85
-                )
-            else:
-                target_present = False
-
-            logger.debug(
-                "target_presence page=%s mode=%s exact=%s sim_ratio=%.2f clip_ratio=%.2f token_page=%.2f token_clip=%.2f",
-                page_num,
-                effective_target_mode,
-                exact_present,
-                sim_ratio,
-                clip_ratio,
-                page_token_coverage,
-                clip_token_coverage,
-            )
-            protected_ok = self._validate_protected_spans(page, protected_spans)
-            if not target_present or not protected_ok:
-                rollback_flag = True
-                self._restore_page_from_snapshot(page_idx, snapshot_bytes)
-                self.block_manager.rebuild_page(page_idx, self.doc)
-                raise RuntimeError(
-                    "overlap edit verification failed: "
-                    f"target_present={target_present}, protected_ok={protected_ok}"
-                )
-
-            # 垂直文字 get_text(clip=) 對旋轉內容擷取不準確，跳過嚴格驗證
-            # 閾值 0.80：容許 get_text clip 邊界截斷、字型差異等正常偏差（<20%）
-            strict_ratio = max(sim_ratio, clip_ratio)
-            if effective_target_mode != "paragraph" and strict_ratio < 0.80 and not is_vertical:
-                logger.warning(
-                    f"插入後驗證失敗 (ratio={strict_ratio:.2f})，"
-                    f"正在回滾頁面 {page_num}"
-                )
-                rollback_flag = True
-                self._restore_page_from_snapshot(page_idx, snapshot_bytes)
-                self.block_manager.rebuild_page(page_idx, self.doc)
-                raise RuntimeError(
-                    f"文字編輯驗證失敗：difflib.ratio="
-                    f"{strict_ratio:.2f} < 0.80，已回滾。"
-                )
-
-            # ═══════════ Step 5: 更新索引 ═══════════
-            update_kwargs = dict(
-                text=new_text,
-                font=resolved_font,
-                size=float(size),
+            resolve_status, resolve_result = self._resolve_edit_target(
+                page_num=page_num,
+                page_idx=page_idx,
+                page=page,
+                rect=rect,
+                new_text=new_text,
+                font=font,
+                size=size,
                 color=color,
+                original_text=original_text,
+                new_rect=new_rect,
+                resolved_target_span_id=resolved_target_span_id,
+                effective_target_mode=effective_target_mode,
             )
-            # 垂直文字保持原始 rect/layout_rect，避免逐次編輯造成 bbox 漂移
-            if not is_vertical:
-                update_kwargs['layout_rect'] = new_layout_rect
-            self.block_manager.update_block(target, **update_kwargs)
-            # Transactional overlap flow always rebuilds the edited page once.
-            self.block_manager.rebuild_page(page_idx, self.doc)
-            logger.debug(
-                f"編輯文字成功: 頁面 {page_num}, "
-                f"block_id={target.block_id}, "
-                f"text='{new_text[:30]}...'"
+            if resolve_status is not EditTextResult.SUCCESS:
+                return resolve_status
+
+            resolved_target_span_id = resolve_result.resolved_target_span_id
+            effective_target_mode = resolve_result.effective_target_mode
+
+            new_layout_rect = self._apply_redact_insert(
+                page=page,
+                page_num=page_num,
+                page_idx=page_idx,
+                page_rect=page_rect,
+                new_text=new_text,
+                size=size,
+                color=color,
+                vertical_shift_left=vertical_shift_left,
+                new_rect=new_rect,
+                snapshot_bytes=snapshot_bytes,
+                resolve_result=resolve_result,
+            )
+
+            self._verify_rebuild_edit(
+                page=page,
+                page_num=page_num,
+                page_idx=page_idx,
+                page_rect=page_rect,
+                new_text=new_text,
+                size=size,
+                color=color,
+                snapshot_bytes=snapshot_bytes,
+                resolve_result=resolve_result,
+                new_layout_rect=new_layout_rect,
             )
 
             # ── Phase 6: GC + 效能計時 ──
@@ -2768,13 +3873,14 @@ class PDFModel:
                 page_num,
                 resolved_target_span_id,
                 effective_target_mode,
-                len(overlap_cluster),
-                len(protected_spans),
+                len(resolve_result.overlap_cluster),
+                len(resolve_result.protected_spans),
                 rollback_flag,
                 round(_duration * 1000, 2),
             )
             if _duration > 0.3:
                 logger.warning("單次編輯過慢：%.3fs，頁面 %s", _duration, page_num)
+            return EditTextResult.SUCCESS
 
         except RuntimeError:
             rollback_flag = True
@@ -2784,38 +3890,49 @@ class PDFModel:
                 page_num,
                 resolved_target_span_id,
                 effective_target_mode,
-                len(overlap_cluster),
-                len(protected_spans),
+                len(resolve_result.overlap_cluster) if resolve_result else 0,
+                len(resolve_result.protected_spans) if resolve_result else 0,
                 rollback_flag,
                 round(_duration * 1000, 2),
             )
             raise
         except Exception as e:
             logger.error(f"編輯文字時發生非預期錯誤: {e}")
+            rollback_error: Exception | None = None
             try:
                 rollback_flag = True
                 self._restore_page_from_snapshot(page_idx, snapshot_bytes)
                 self.block_manager.rebuild_page(page_idx, self.doc)
-            except Exception:
-                pass
+            except Exception as rollback_err:
+                rollback_error = rollback_err
+                logger.error(
+                    "編輯文字回滾失敗: page=%s original_error=%s rollback_error=%s",
+                    page_num,
+                    e,
+                    rollback_err,
+                )
             _duration = time.perf_counter() - _t0
             logger.debug(
                 "edit_transaction page=%s target_span_id=%s target_mode=%s cluster_size=%s protected_count=%s rollback_flag=%s duration_ms=%s",
                 page_num,
                 resolved_target_span_id,
                 effective_target_mode,
-                len(overlap_cluster),
-                len(protected_spans),
+                len(resolve_result.overlap_cluster) if resolve_result else 0,
+                len(resolve_result.protected_spans) if resolve_result else 0,
                 rollback_flag,
                 round(_duration * 1000, 2),
             )
+            if rollback_error is not None:
+                raise RuntimeError(
+                    f"編輯文字失敗且回滾失敗: {e}; rollback: {rollback_error}"
+                ) from rollback_error
             raise RuntimeError(f"編輯文字失敗: {e}") from e
 
         # Phase 4: undo/redo 已由 CommandManager (EditTextCommand) 全權負責，
         #          此處不再呼叫 _save_state()，避免雙重儲存浪費 I/O。
 
     # _save_state() 已於 Phase 6 移除，所有 undo/redo 由 CommandManager 統一管理。
-    
+
     def _full_save_to_path(self, path: str):
         """
         完整儲存到指定路徑。若目標路徑與目前開啟的檔案相同（doc.name），
@@ -2917,7 +4034,7 @@ class PDFModel:
         self.edit_count = 0
         if active_sid:
             self.tools.on_session_saved(active_sid)
-    
+
     def has_unsaved_changes(self) -> bool:
         """檢查是否有未儲存的變更（Phase 6：統一由 command_manager 管理）。"""
         sid = self.get_active_session_id()

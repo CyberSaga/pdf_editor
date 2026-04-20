@@ -1,12 +1,17 @@
+import sys
 import time
 from pathlib import Path
 
 import fitz
 import pytest
-from PySide6.QtCore import Qt, QPoint, QMimeData, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeyEvent
+from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QListView, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QListView, QMenu
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from controller.pdf_controller import PDFController
 from model.pdf_model import PDFModel
@@ -110,6 +115,61 @@ def _edit_first_run(controller: PDFController, new_text: str) -> None:
         run.span_id,
         "run",
     )
+
+
+def _open_inline_editor_for_first_run(model: PDFModel, view: PDFView) -> tuple:
+    model.ensure_page_index_built(1)
+    runs = [r for r in model.block_manager.get_runs(0) if (r.text or "").strip()]
+    assert runs, "no editable run on page 1"
+    run = runs[0]
+
+    rs = view._render_scale if view._render_scale > 0 else 1.0
+    y0 = view.page_y_positions[0] if view.page_y_positions else 0.0
+    sx = ((run.bbox.x0 + run.bbox.x1) * 0.5) * rs
+    sy = y0 + ((run.bbox.y0 + run.bbox.y1) * 0.5) * rs
+    click_pos = view.graphics_view.mapFromScene(sx, sy)
+
+    viewport = view.graphics_view.viewport()
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, click_pos)
+    _pump_events(260)
+    assert view.text_editor is not None
+    return run, viewport
+
+
+def _load_pdf_and_open_inline_editor(
+    controller: PDFController,
+    model: PDFModel,
+    view: PDFView,
+    path: Path,
+    *,
+    mode: str = "edit_text",
+) -> tuple:
+    view.show()
+    view.activateWindow()
+    _pump_events(120)
+    controller.open_pdf(str(path))
+    _pump_events(350)
+    view.set_mode(mode)
+    _pump_events(60)
+    return _open_inline_editor_for_first_run(model, view)
+
+
+def _click_outside_active_editor(view: PDFView, viewport) -> None:
+    editor_scene_rect = view.text_editor.mapRectToScene(view.text_editor.boundingRect())
+    outside_pos = view.graphics_view.mapFromScene(editor_scene_rect.bottomRight() + QPoint(40, 40))
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, outside_pos)
+    _pump_events(220)
+
+
+def _active_shortcut_target(view: PDFView):
+    app = QApplication.instance()
+    assert app is not None
+    view.show()
+    view.activateWindow()
+    if app.focusWidget() is None:
+        view._focus_page_canvas()
+    _pump_events(120)
+    return app.focusWidget() or view.graphics_view
 
 
 class _FakeEvent:
@@ -221,6 +281,36 @@ def test_drag_drop_ignores_non_pdf_folder_and_remote_urls(mvc, tmp_path):
     assert len(model.session_ids) == 1
     active_path = model.get_session_meta(model.get_active_session_id())["path"]
     assert Path(active_path).name == "valid.pdf"
+
+
+def test_drag_drop_multiple_pdfs_never_calls_merge_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    mvc,
+    tmp_path,
+) -> None:
+    model, view, controller = mvc
+    first = _make_pdf(tmp_path / "drop_a.pdf", ["A"])
+    second = _make_pdf(tmp_path / "drop_b.pdf", ["B"])
+
+    def _fail_merge(*_args, **_kwargs):
+        raise AssertionError("drag-drop must not call merge flows")
+
+    monkeypatch.setattr(PDFController, "merge_ordered_sources_into_current", _fail_merge)
+    monkeypatch.setattr(PDFController, "save_ordered_sources_as_new", _fail_merge)
+
+    controller.activate()
+    view.show()
+    _pump_events(100)
+
+    _send_drop(
+        view,
+        [QUrl.fromLocalFile(str(first)), QUrl.fromLocalFile(str(second))],
+    )
+    _pump_events(250)
+
+    assert len(model.session_ids) == 2
+    assert [Path(model.get_session_meta(sid)["path"]).name for sid in model.session_ids] == ["drop_a.pdf", "drop_b.pdf"]
+    assert model.get_active_session_id() == model.session_ids[-1]
 
 
 def test_03_edit_in_a_undo_in_b_isolated(mvc, tmp_path):
@@ -408,6 +498,24 @@ def test_06e_landscape_thumbnail_does_not_create_tall_blank_cell(mvc, tmp_path):
     assert grid_size.height() <= icon_size.height() + 36
 
 
+def test_06f_thumbnail_layout_caps_width_and_centers_in_wide_sidebar(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "thumb_wide_sidebar.pdf", ["p1", "p2", "p3"])
+    view.resize(1600, 900)
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(500)
+    view._apply_sidebar_sizes(left_width=380, right_width=280)
+    _pump_events(120)
+    view._update_thumbnail_layout_metrics()
+    _pump_events(120)
+
+    margins = view.thumbnail_list.viewportMargins()
+    assert margins.left() > 0
+    assert margins.left() == margins.right()
+    assert view.thumbnail_list.gridSize().width() <= 280
+
+
 def test_07_close_modified_tab_cancel_keeps_tab(mvc, tmp_path, monkeypatch):
     model, _, controller = mvc
     a = _make_pdf(tmp_path / "A.pdf", ["A"])
@@ -517,6 +625,25 @@ def test_10_save_as_path_collision_blocked(mvc, tmp_path, monkeypatch):
     assert sid_a != sid_b
     assert errors
     assert any("已在其他分頁開啟" in e for e in errors)
+
+
+def test_10a_active_session_updates_view_save_as_default_path(mvc, tmp_path):
+    _, view, controller = mvc
+    a = _make_pdf(tmp_path / "A.pdf", ["A"])
+    b = _make_pdf(tmp_path / "B.pdf", ["B"])
+
+    controller.open_pdf(str(a))
+    _pump_events(250)
+    assert view._save_as_default_path == str(a)
+
+    controller.open_pdf(str(b))
+    _pump_events(250)
+    assert view._save_as_default_path == str(b)
+
+    out = tmp_path / "B-copy.pdf"
+    controller.save_as(str(out))
+    _pump_events(120)
+    assert view._save_as_default_path == str(out)
 
 
 def test_11_close_last_tab_resets_ui(mvc, tmp_path, monkeypatch):
@@ -696,6 +823,164 @@ def test_19_escape_with_editor_closes_editor_but_keeps_mode(mvc, tmp_path):
     assert view.text_editor is None
     assert view.current_mode == "add_text"
     _assert_mode_checked(view, "add_text")
+
+
+def test_19a_inline_existing_text_escape_discards_changes(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf(tmp_path / "esc_inline_edit.pdf", ["inline edit seed"])
+    run, _ = _load_pdf_and_open_inline_editor(controller, model, view, path)
+    before_undo = model.command_manager.undo_count
+
+    QTest.keyClicks(view.text_editor.widget(), " TEST")
+    _pump_events(80)
+    assert "TEST" in view.text_editor.widget().toPlainText()
+
+    QTest.keyClick(view.text_editor.widget(), Qt.Key_Escape)
+    _pump_events(180)
+
+    assert view.text_editor is None
+    assert model.command_manager.undo_count == before_undo
+    assert _norm(run.text) in _norm(model.doc[0].get_text("text"))
+
+
+def test_19aa_inline_existing_text_ctrl_z_undoes_locally(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf(tmp_path / "ctrlz_inline_local.pdf", ["local undo seed"])
+    _, _ = _load_pdf_and_open_inline_editor(controller, model, view, path)
+    original_editor_text = view.text_editor.widget().toPlainText()
+    before_undo = model.command_manager.undo_count
+    before_redo = model.command_manager.redo_count
+
+    QTest.keyClick(view.text_editor.widget(), Qt.Key_End)
+    _pump_events(40)
+    QTest.keyClicks(view.text_editor.widget(), "X")
+    _pump_events(80)
+    assert view.text_editor.widget().toPlainText().endswith("X")
+
+    QTest.keyClick(view.text_editor.widget(), Qt.Key_Z, Qt.ControlModifier)
+    _pump_events(180)
+
+    assert view.text_editor is not None
+    assert _norm(view.text_editor.widget().toPlainText()) == _norm(original_editor_text)
+    assert model.command_manager.undo_count == before_undo
+    assert model.command_manager.redo_count == before_redo
+
+
+def test_19aaa_inline_existing_text_ctrl_z_on_real_multicolor_pdf_keeps_document_undo_idle(mvc):
+    model, view, controller = mvc
+    path = Path(__file__).resolve().parents[1] / "test_files" / "2.pdf"
+    if not path.exists():
+        pytest.skip("test_files/2.pdf is not available")
+
+    _, _ = _load_pdf_and_open_inline_editor(controller, model, view, path)
+    original_editor_text = view.text_editor.widget().toPlainText()
+    before_undo = model.command_manager.undo_count
+    before_redo = model.command_manager.redo_count
+
+    QTest.keyClick(view.text_editor.widget(), Qt.Key_End)
+    _pump_events(40)
+    QTest.keyClicks(view.text_editor.widget(), "X")
+    _pump_events(80)
+    assert view.text_editor.widget().toPlainText().endswith("X")
+
+    QTest.keyClick(view.text_editor.widget(), Qt.Key_Z, Qt.ControlModifier)
+    _pump_events(180)
+
+    assert view.text_editor is not None
+    assert _norm(view.text_editor.widget().toPlainText()) == _norm(original_editor_text)
+    assert model.command_manager.undo_count == before_undo
+    assert model.command_manager.redo_count == before_redo
+
+
+def test_19ab_inline_existing_text_ctrl_z_after_commit_undoes_document(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf(tmp_path / "ctrlz_inline_commit.pdf", ["commit undo seed"])
+    run, viewport = _load_pdf_and_open_inline_editor(controller, model, view, path)
+    before_undo = model.command_manager.undo_count
+    before_redo = model.command_manager.redo_count
+
+    QTest.keyClick(view.text_editor.widget(), Qt.Key_End)
+    _pump_events(40)
+    QTest.keyClicks(view.text_editor.widget(), "X")
+    _pump_events(80)
+
+    _click_outside_active_editor(view, viewport)
+
+    assert view.text_editor is None
+    assert model.command_manager.undo_count == before_undo + 1
+    assert model.command_manager.redo_count == before_redo
+    assert _norm("commit undo seedx") in _norm(model.doc[0].get_text("text"))
+
+    shortcut_target = _active_shortcut_target(view)
+    QTest.keyClick(shortcut_target, Qt.Key_Z, Qt.ControlModifier)
+    _pump_events(220)
+
+    assert model.command_manager.redo_count == before_redo + 1
+    assert _norm(run.text) in _norm(model.doc[0].get_text("text"))
+
+    shortcut_target = _active_shortcut_target(view)
+    QTest.keyClick(shortcut_target, Qt.Key_Y, Qt.ControlModifier)
+    _pump_events(220)
+
+    assert model.command_manager.undo_count == before_undo + 1
+    assert model.command_manager.redo_count == before_redo
+    assert _norm("commit undo seedx") in _norm(model.doc[0].get_text("text"))
+
+
+def test_19ac_inline_existing_text_cross_page_move_roundtrips_via_document_undo_redo(mvc, tmp_path):
+    model, view, controller = mvc
+    path = _make_pdf(tmp_path / "cross_page_gui_move.pdf", ["MOVE_ME", "KEEP_PAGE_TWO"])
+    run, viewport = _load_pdf_and_open_inline_editor(controller, model, view, path)
+    before_undo = model.command_manager.undo_count
+    before_redo = model.command_manager.redo_count
+
+    editor_scene_rect = view.text_editor.mapRectToScene(view.text_editor.boundingRect())
+    start = view.graphics_view.mapFromScene(editor_scene_rect.center())
+    rs = view._render_scale if view._render_scale > 0 else 1.0
+    dest_scene = QPoint(
+        int(editor_scene_rect.center().x()),
+        int(view.page_y_positions[1] + (72 * rs)),
+    )
+    end = view.graphics_view.mapFromScene(dest_scene)
+
+    QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, start)
+    _pump_events(40)
+    QTest.mouseMove(viewport, end, 20)
+    _pump_events(120)
+    QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, end)
+    _pump_events(180)
+
+    assert view.text_editor is not None
+    assert getattr(view, "_editing_page_idx", 0) == 1
+
+    QTest.mouseClick(view.text_apply_btn, Qt.LeftButton, Qt.NoModifier, view.text_apply_btn.rect().center())
+    _pump_events(250)
+
+    assert view.text_editor is None
+    assert model.command_manager.undo_count == before_undo + 1
+    assert model.command_manager.redo_count == before_redo
+    assert "move_me" not in _norm(model.doc[0].get_text("text"))
+    assert "move_me" in _norm(model.doc[1].get_text("text"))
+    assert "keep_page_two" in _norm(model.doc[1].get_text("text"))
+
+    shortcut_target = _active_shortcut_target(view)
+    QTest.keyClick(shortcut_target, Qt.Key_Z, Qt.ControlModifier)
+    _pump_events(220)
+
+    assert model.command_manager.redo_count == before_redo + 1
+    assert "move_me" in _norm(model.doc[0].get_text("text"))
+    assert "move_me" not in _norm(model.doc[1].get_text("text"))
+    assert "keep_page_two" in _norm(model.doc[1].get_text("text"))
+
+    shortcut_target = _active_shortcut_target(view)
+    QTest.keyClick(shortcut_target, Qt.Key_Y, Qt.ControlModifier)
+    _pump_events(220)
+
+    assert model.command_manager.undo_count == before_undo + 1
+    assert model.command_manager.redo_count == before_redo
+    assert "move_me" not in _norm(model.doc[0].get_text("text"))
+    assert "move_me" in _norm(model.doc[1].get_text("text"))
+    assert "keep_page_two" in _norm(model.doc[1].get_text("text"))
 
 
 def test_19b_font_size_menu_keeps_editor_and_outside_focus_finalizes_editor(mvc, tmp_path):
@@ -1304,7 +1589,7 @@ def test_30_fullscreen_blocked_while_print_busy_or_modal(mvc, tmp_path, monkeypa
         _pump_events(80)
 
 
-def test_31_fullscreen_top_edge_hover_reveals_exit_button(mvc, tmp_path):
+def test_31_fullscreen_exit_button_stays_visible(mvc, tmp_path):
     _, view, controller = mvc
     path = _make_pdf(tmp_path / "fullscreen_hover_exit.pdf", ["hover exit"])
     view.show()
@@ -1316,7 +1601,7 @@ def test_31_fullscreen_top_edge_hover_reveals_exit_button(mvc, tmp_path):
 
     exit_button = getattr(view, "_fullscreen_exit_button", None)
     assert exit_button is not None, "fullscreen exit button missing"
-    assert not exit_button.isVisible()
+    assert exit_button.isVisible()
 
     center_widget = view.centralWidget()
     view._update_fullscreen_exit_hover(QPoint(center_widget.width() // 2, 2))
@@ -1325,7 +1610,7 @@ def test_31_fullscreen_top_edge_hover_reveals_exit_button(mvc, tmp_path):
 
     view._update_fullscreen_exit_hover(QPoint(center_widget.width() // 2, max(30, center_widget.height() // 2)))
     _pump_events(80)
-    assert not exit_button.isVisible()
+    assert exit_button.isVisible()
 
 
 def test_32_fullscreen_tab_switch_restores_each_visited_tab_state(mvc, tmp_path):
@@ -1420,6 +1705,48 @@ def test_34_fullscreen_quick_button_sits_between_fit_and_undo_and_f5_toggles(mvc
 
     QTest.keyClick(view.graphics_view.viewport(), Qt.Key_F5)
     _pump_events(220)
+    assert not view.isFullScreen()
+
+
+def test_34a_fullscreen_quick_button_has_12px_gap_from_fit_button(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "fullscreen_quick_spacing.pdf", ["quick spacing"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(320)
+
+    fit_right = view.fit_view_btn.geometry().right()
+    fullscreen_left = view.fullscreen_quick_btn.geometry().left()
+
+    assert fullscreen_left - fit_right - 1 == 12
+
+
+def test_34b_fullscreen_context_menu_offers_exit_action_and_triggers_toggle(mvc, tmp_path, monkeypatch):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "fullscreen_context_menu.pdf", ["context menu"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(320)
+    _trigger_fullscreen(view)
+    assert view.isFullScreen()
+
+    observed: list[str] = []
+
+    def _fake_exec(menu: QMenu, *args, **kwargs):
+        labels = [action.text() for action in menu.actions() if action.text()]
+        observed.extend(labels)
+        for action in menu.actions():
+            if action.text() == "離開全螢幕":
+                action.trigger()
+                break
+        return None
+
+    monkeypatch.setattr(QMenu, "exec_", _fake_exec)
+
+    view._show_context_menu(view.graphics_view.viewport().rect().center())
+    _pump_events(120)
+
+    assert "離開全螢幕" in observed
     assert not view.isFullScreen()
 
 

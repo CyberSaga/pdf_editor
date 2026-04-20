@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 測量啟動時間：
 1) 匯入 PDFModel
@@ -14,7 +13,6 @@ import sys
 import time
 from pathlib import Path
 
-
 if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
@@ -29,7 +27,7 @@ def main() -> int:
     print("-" * 60)
 
     import_start = time.time()
-    from model.pdf_model import PDFModel  # noqa: WPS433
+    from model.pdf_model import PDFModel
     import_end = time.time()
     import_time = import_end - import_start
 

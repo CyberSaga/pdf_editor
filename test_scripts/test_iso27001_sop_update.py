@@ -1,13 +1,13 @@
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
+import pytest
 from pptx import Presentation
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "build" / "iso27001_sop_update" / "update_iso27001_sop.py"
-SOURCE_DECK = next(ROOT.glob("*.pptx"))
+SOURCE_DECK = next(ROOT.glob("*.pptx"), None)
 OUTPUT_DECK = ROOT / "ISO27001審查項目SOP_附件加密與隨身碟加密.pptx"
 
 
@@ -30,6 +30,9 @@ def iter_runs(text_frame):
 
 
 def test_updated_iso27001_sop_deck_contains_new_encryption_section(tmp_path):
+    if SOURCE_DECK is None:
+        pytest.skip("requires a source .pptx deck in the repository root")
+
     generated_deck = tmp_path / OUTPUT_DECK.name
 
     subprocess.run(
@@ -50,7 +53,7 @@ def test_updated_iso27001_sop_deck_contains_new_encryption_section(tmp_path):
 
     assert len(presentation.slides) == 80
     assert any("電子郵件附件加密／隨身碟加密" in " ".join(texts) for texts in slides)
-    assert any("電子郵件附件加密" == texts[0] for texts in slides if texts)
+    assert any(texts[0] == "電子郵件附件加密" for texts in slides if texts)
     assert any("for 系統 Windows 10 / Windows 11" in texts[0] for texts in slides if texts)
     assert any("BitLocker" in " ".join(texts) for texts in slides)
     assert any("Keka" in " ".join(texts) for texts in slides)

@@ -10,7 +10,7 @@ from typing import Any
 from .base_driver import PrintJobOptions
 
 
-@dataclass(slots=True)
+@dataclass
 class PrintHelperJob:
     """Immutable job payload handed to the helper subprocess."""
 
@@ -38,7 +38,7 @@ class PrintHelperJob:
         }
 
     @classmethod
-    def from_json_dict(cls, payload: dict[str, Any]) -> "PrintHelperJob":
+    def from_json_dict(cls, payload: dict[str, Any]) -> PrintHelperJob:
         options_payload = dict(payload.get("options") or {})
         override_fields = set(options_payload.get("override_fields") or set())
         options_payload["override_fields"] = override_fields
@@ -52,7 +52,7 @@ class PrintHelperJob:
         )
 
     @classmethod
-    def read(cls, path: str | Path) -> "PrintHelperJob":
+    def read(cls, path: str | Path) -> PrintHelperJob:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls.from_json_dict(payload)
 

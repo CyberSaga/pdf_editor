@@ -1,5 +1,4 @@
-﻿# -*- coding: utf-8 -*-
-"""
+﻿"""
 test_large_scale.py — Phase 7 大規模測試
 =========================================
 目標：
@@ -14,16 +13,15 @@ test_large_scale.py — Phase 7 大規模測試
   python test_large_scale.py --rounds 50 --pages 100  # 預設值
   python test_large_scale.py --rounds 10 --pages 20   # 快速冒煙測試
 """
-import sys
+import argparse
 import io
 import os
-import time
 import random
-import argparse
-import traceback
+import sys
 import tempfile
+import time
+import traceback
 from pathlib import Path
-from typing import Optional
 
 if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -31,8 +29,8 @@ if sys.platform == "win32" and __name__ == "__main__":
 import fitz
 
 sys.path.insert(0, os.path.dirname(__file__))
-from model.pdf_model import PDFModel
 from model.edit_commands import EditTextCommand
+from model.pdf_model import PDFModel
 
 # ──────────────────────────────────────────────────────────────────
 # 常數
@@ -189,7 +187,7 @@ class Metrics:
                 f"  Redo 成功率：{self.redo_ok}/{total_rr} ({self.redo_ok/total_rr*100:.0f}%)"
             )
         if self.errors:
-            lines.append(f"  錯誤清單（前 5）：")
+            lines.append("  錯誤清單（前 5）：")
             for e in self.errors[:5]:
                 lines.append(f"    · {e[:90]}")
         lines.append(f"{'═'*60}")
@@ -332,7 +330,7 @@ def _test_one_undo_redo(
         else:
             metrics.undo_fail += 1
             if verbose:
-                print(f"      undo FAIL: returned False")
+                print("      undo FAIL: returned False")
     except Exception as e:
         metrics.undo_fail += 1
         if verbose:
@@ -345,11 +343,11 @@ def _test_one_undo_redo(
         if ok2:
             metrics.redo_ok += 1
             if verbose:
-                print(f"      redo OK")
+                print("      redo OK")
         else:
             metrics.redo_fail += 1
             if verbose:
-                print(f"      redo FAIL: returned False")
+                print("      redo FAIL: returned False")
     except Exception as e:
         metrics.redo_fail += 1
         if verbose:
@@ -532,7 +530,7 @@ def run_clean_contents_bench(pdf_bytes: bytes, rounds: int) -> tuple[int, int]:
 # ──────────────────────────────────────────────────────────────────
 def main(rounds: int = 50, n_pages: int = 100, seed: int = 2026) -> int:
     print(f"\n{'#'*65}")
-    print(f"  Phase 7 大規模測試")
+    print("  Phase 7 大規模測試")
     print(f"  頁數={n_pages}，隨機編輯={rounds} 次，seed={seed}")
     print(f"{'#'*65}\n")
 
@@ -583,7 +581,7 @@ def main(rounds: int = 50, n_pages: int = 100, seed: int = 2026) -> int:
             pass
 
     # ── 3. 垂直文字場景 ──────────────────────────────────────────
-    print(f"\n[3/6] 垂直文字場景...")
+    print("\n[3/6] 垂直文字場景...")
     metrics_vert = Metrics("垂直文字場景")
     try:
         run_vertical_text_test(metrics_vert, n_pages=n_pages)
@@ -593,13 +591,13 @@ def main(rounds: int = 50, n_pages: int = 100, seed: int = 2026) -> int:
         all_pass = False
 
     # ── 4. 掃描頁 graceful skip ───────────────────────────────────
-    print(f"\n[4/6] 掃描頁 graceful skip 測試...")
+    print("\n[4/6] 掃描頁 graceful skip 測試...")
     scan_ok = run_scan_page_test()
     if not scan_ok:
         all_pass = False
 
     # ── 5. apply_pending_redactions 壓縮效益 ─────────────────────
-    print(f"\n[5/6] apply_pending_redactions 壓縮效益測試...")
+    print("\n[5/6] apply_pending_redactions 壓縮效益測試...")
     sb, sa = run_clean_contents_bench(pdf_bytes, rounds=min(rounds, 20))
     if sb > 0:
         delta = sb - sa
@@ -610,7 +608,7 @@ def main(rounds: int = 50, n_pages: int = 100, seed: int = 2026) -> int:
         print("  [SKIP] 無足夠文字塊")
 
     # ── 6. 1.pdf 真實 PDF 測試 ────────────────────────────────────
-    print(f"\n[6/6] 真實 PDF 測試 (1.pdf)...")
+    print("\n[6/6] 真實 PDF 測試 (1.pdf)...")
     metrics_real = Metrics("1.pdf 真實 PDF")
     run_real_pdf_test(metrics_real)
 
@@ -668,7 +666,7 @@ def main(rounds: int = 50, n_pages: int = 100, seed: int = 2026) -> int:
     else:
         print("\n  ✗ 部分指標未達標，請查閱上方錯誤清單後修正。")
 
-    print(f"\n  [Phase 7 完成]\n")
+    print("\n  [Phase 7 完成]\n")
     return 0 if stable else 1
 
 

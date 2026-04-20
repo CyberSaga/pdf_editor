@@ -1,12 +1,11 @@
-﻿# -*- coding: utf-8 -*-
-"""
+﻿"""
 測試 1.pdf 水平文字編輯：驗證輸出在頁面內、文字可見
 支援兩種測試路徑：
 1. 索引路徑：直接用 index 的 block rect（與 model 內部一致）
 2. GUI 路徑：用 get_text_info_at_point 取得 rect（模擬使用者點擊）
 """
-import sys
 import io
+import sys
 from pathlib import Path
 
 if sys.platform == 'win32' and __name__ == '__main__':
@@ -17,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from model.pdf_model import PDFModel
+
 
 def run_horizontal_edit_and_verify(use_gui_flow: bool = False, save_output: str = None) -> int:
     root = Path(__file__).resolve().parents[1]
@@ -57,7 +57,7 @@ def run_horizontal_edit_and_verify(use_gui_flow: bool = False, save_output: str 
             return 1
         rect, orig_text = info[0], info[1]
         font, size, color = info[2], int(info[3]), info[4]
-        print(f"GUI 路徑: rect={rect}, orig_text[:30]={repr(orig_text[:30])}")
+        print(f"GUI 路徑: rect={rect}, orig_text[:30]={orig_text[:30]!r}")
     else:
         # 索引路徑：直接用 block_manager 的 TextBlock dataclass
         blocks = model.block_manager.get_blocks(0)

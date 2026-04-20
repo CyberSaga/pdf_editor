@@ -1,17 +1,15 @@
-# -*- coding: utf-8 -*-
 """Recursive overlap-safe edit validation across all PDFs under test_files."""
 
 from __future__ import annotations
 
 import csv
 import logging
+import sys
 import time
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
-import sys
 
 import fitz
 
@@ -64,7 +62,7 @@ def _norm(text: str) -> str:
 
 
 
-def _get_password(pdf_path: Path) -> Optional[str]:
+def _get_password(pdf_path: Path) -> str | None:
     return KNOWN_PASSWORDS.get(pdf_path.name.lower())
 
 
@@ -86,7 +84,7 @@ def _collect_spans(model: PDFModel):
 
 
 
-def _find_overlap_candidate(model: PDFModel) -> Optional[Candidate]:
+def _find_overlap_candidate(model: PDFModel) -> Candidate | None:
     all_spans = _collect_spans(model)
     for page_idx, spans in enumerate(all_spans):
         if len(spans) < 2:
@@ -101,7 +99,7 @@ def _find_overlap_candidate(model: PDFModel) -> Optional[Candidate]:
 
 
 
-def _find_baseline_candidate(model: PDFModel) -> Optional[Candidate]:
+def _find_baseline_candidate(model: PDFModel) -> Candidate | None:
     all_spans = _collect_spans(model)
     for page_idx, spans in enumerate(all_spans):
         if not spans:

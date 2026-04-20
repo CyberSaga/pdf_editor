@@ -2,8 +2,6 @@
 
 from typing import TYPE_CHECKING
 
-import fitz
-
 from .base import ToolExtension
 
 if TYPE_CHECKING:
@@ -11,7 +9,7 @@ if TYPE_CHECKING:
 
 
 class SearchTool(ToolExtension):
-    def __init__(self, model: "PDFModel") -> None:
+    def __init__(self, model: PDFModel) -> None:
         self._model = model
 
     def search_text(self, query: str):

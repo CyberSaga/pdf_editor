@@ -2,8 +2,8 @@
 測試腳本：驗證中英文混合文字的字體分配是否正確
 """
 # -*- coding: utf-8 -*-
-import sys
 import io
+import sys
 from pathlib import Path
 
 # 設置標準輸出編碼為 UTF-8（Windows 兼容）
@@ -15,10 +15,11 @@ sys.path.insert(0, str(ROOT))
 
 from model.pdf_model import PDFModel
 
+
 def test_html_conversion():
     """測試 _convert_text_to_html 函數的字體分配"""
     model = PDFModel()
-    
+
     # 測試案例
     test_cases = [
         ("Hello 世界", "應包含 helv 和 cjk 字體"),
@@ -28,33 +29,33 @@ def test_html_conversion():
         ("Only English 123", "應只有 helv 字體"),
         ("第一行\n第二行 Second Line", "應正確處理換行"),
     ]
-    
+
     print("=" * 60)
     print("測試 HTML 轉換功能")
     print("=" * 60)
-    
+
     for i, (text, description) in enumerate(test_cases, 1):
         print(f"\n測試案例 {i}: {text}")
         print(f"說明: {description}")
         print("-" * 60)
-        
+
         html = model._convert_text_to_html(text, font_size=12, color=(0.0, 0.0, 0.0))
         print(f"生成的 HTML:\n{html}")
-        
+
         # 檢查字體分配
         has_cjk = 'font-family: cjk' in html
         has_helv = 'font-family: helv' in html
-        
+
         # 檢查文字是否包含中文和英文
         has_chinese = any(0x4E00 <= ord(c) <= 0x9FFF for c in text)
         has_english = any(c.isascii() and c.isalnum() for c in text)
-        
-        print(f"\n分析:")
+
+        print("\n分析:")
         print(f"  文字包含中文: {has_chinese}")
         print(f"  文字包含英文/數字: {has_english}")
         print(f"  HTML 包含 cjk 字體: {has_cjk}")
         print(f"  HTML 包含 helv 字體: {has_helv}")
-        
+
         # 驗證
         if has_chinese and has_english:
             if has_cjk and has_helv:
@@ -71,7 +72,7 @@ def test_html_conversion():
                 print("  [通過] 純英文正確使用 helv 字體")
             else:
                 print("  [失敗] 純英文應只使用 helv 字體")
-    
+
     print("\n" + "=" * 60)
     print("測試完成！")
     print("=" * 60)

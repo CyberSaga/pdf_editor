@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .layout import (
     normalize_orientation,
@@ -13,28 +13,27 @@ from .layout import (
 )
 from .page_selection import normalize_page_subset
 
-
 OVERRIDABLE_PRINT_FIELDS = frozenset(
     {"paper_size", "orientation", "duplex", "color_mode"}
 )
 
 
-@dataclass(slots=True)
+@dataclass
 class PrinterDevice:
     """System printer metadata."""
 
     name: str
     is_default: bool = False
     status: str = "unknown"
-    raw: Optional[Dict[str, object]] = None
+    raw: dict[str, object] | None = None
 
 
-@dataclass(slots=True)
+@dataclass
 class PrintJobOptions:
     """User-selected print options."""
 
-    printer_name: Optional[str] = None
-    page_ranges: Optional[str] = None
+    printer_name: str | None = None
+    page_ranges: str | None = None
     copies: int = 1
     collate: bool = True
     dpi: int = 300
@@ -42,7 +41,7 @@ class PrintJobOptions:
     color_mode: str = "color"  # color | grayscale
     duplex: str = "none"  # none | long | short
     job_name: str = "pdf_editor_job"
-    output_pdf_path: Optional[str] = None  # virtual printer target
+    output_pdf_path: str | None = None  # virtual printer target
     transport: str = "auto"  # auto | direct_pdf | raster
     paper_size: str = "auto"  # auto | a4 | letter | legal
     paper_tray: str = "auto"  # auto | printer bin code/name
@@ -52,9 +51,9 @@ class PrintJobOptions:
     page_subset: str = "all"  # all | odd | even
     reverse_order: bool = False
     override_fields: set[str] = field(default_factory=set)
-    extra_options: Dict[str, str] = field(default_factory=dict)
+    extra_options: dict[str, str] = field(default_factory=dict)
 
-    def normalized(self) -> "PrintJobOptions":
+    def normalized(self) -> PrintJobOptions:
         """Return a normalized copy used by drivers."""
         copies = max(1, int(self.copies))
         dpi = max(72, int(self.dpi))
@@ -93,14 +92,14 @@ class PrintJobOptions:
         )
 
 
-@dataclass(slots=True)
+@dataclass
 class PrintJobResult:
     """Submission result for a print job."""
 
     success: bool
     route: str
     message: str
-    job_id: Optional[str] = None
+    job_id: str | None = None
 
 
 class PrinterDriver(ABC):
@@ -122,11 +121,11 @@ class PrinterDriver(ABC):
         return False
 
     @abstractmethod
-    def list_printers(self) -> List[PrinterDevice]:
+    def list_printers(self) -> list[PrinterDevice]:
         """Enumerate available system printers."""
 
     @abstractmethod
-    def get_default_printer(self) -> Optional[str]:
+    def get_default_printer(self) -> str | None:
         """Return default printer name if available."""
 
     @abstractmethod
@@ -137,15 +136,15 @@ class PrinterDriver(ABC):
     def print_pdf(
         self,
         pdf_path: str,
-        page_indices: List[int],
+        page_indices: list[int],
         options: PrintJobOptions,
     ) -> PrintJobResult:
         """Submit print job for the given PDF."""
 
-    def open_printer_properties(self, printer_name: str) -> Optional[Dict[str, Any]]:
+    def open_printer_properties(self, printer_name: str) -> dict[str, Any] | None:
         """Open native printer properties dialog for the selected printer."""
         raise NotImplementedError("Printer properties dialog is not supported by this driver.")
 
-    def get_printer_preferences(self, printer_name: str) -> Dict[str, Any]:
+    def get_printer_preferences(self, printer_name: str) -> dict[str, Any]:
         """Return driver-level printer defaults mapped to app option keys."""
         return {}

@@ -23,7 +23,7 @@ import uuid
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING
 
 import fitz
 
@@ -44,9 +44,11 @@ logger = logging.getLogger(__name__)
 logging.getLogger("PIL").setLevel(logging.INFO)
 logging.getLogger("PIL.PngImagePlugin").setLevel(logging.INFO)
 
-_IMAGE_REWRITE_WORKER_DOC: Optional[fitz.Document] = None
+_IMAGE_REWRITE_WORKER_DOC: fitz.Document | None = None
 _MIN_PARALLEL_IMAGE_REWRITES = 4
 _MAX_PARALLEL_IMAGE_WORKERS = 4
+_LARGE_OPTIMIZE_BYTES = 20 * 1024 * 1024
+_LARGE_OPTIMIZE_IMAGE_COUNT = 40
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,13 @@ class PdfOptimizationResult:
     percent_saved: float
     applied_preset: str
     applied_summary: list[str]
+
+
+@dataclass(frozen=True)
+class PdfOptimizeExecutionProfile:
+    run_content_cleanup: bool
+    run_subset_fonts: bool
+    allow_extracted_parallel_fallback: bool
 
 
 def _init_image_rewrite_worker(source_path: str) -> None:
@@ -224,7 +233,42 @@ def normalize_optimize_options(options: PdfOptimizeOptions) -> PdfOptimizeOption
     return options
 
 
-def resolve_file_backed_optimize_source(model: "PDFModel", session_id: Optional[str]) -> Optional[Path]:
+def is_large_optimize_job(original_bytes: int, image_usage: dict[int, dict[str, float | int]]) -> bool:
+    return int(original_bytes) >= _LARGE_OPTIMIZE_BYTES or len(image_usage) >= _LARGE_OPTIMIZE_IMAGE_COUNT
+
+
+def resolve_optimize_execution_profile(
+    options: PdfOptimizeOptions,
+    *,
+    is_large_job: bool,
+) -> PdfOptimizeExecutionProfile:
+    preset = (options.preset or "").strip()
+    if preset == "快速":
+        return PdfOptimizeExecutionProfile(
+            run_content_cleanup=False,
+            run_subset_fonts=False,
+            allow_extracted_parallel_fallback=False,
+        )
+    if preset == "極致壓縮":
+        return PdfOptimizeExecutionProfile(
+            run_content_cleanup=True,
+            run_subset_fonts=True,
+            allow_extracted_parallel_fallback=True,
+        )
+    if is_large_job:
+        return PdfOptimizeExecutionProfile(
+            run_content_cleanup=False,
+            run_subset_fonts=True,
+            allow_extracted_parallel_fallback=True,
+        )
+    return PdfOptimizeExecutionProfile(
+        run_content_cleanup=True,
+        run_subset_fonts=True,
+        allow_extracted_parallel_fallback=True,
+    )
+
+
+def resolve_file_backed_optimize_source(model: PDFModel, session_id: str | None) -> Path | None:
     if not session_id or not model.doc:
         return None
     session = model._sessions_by_id.get(session_id)
@@ -246,7 +290,7 @@ def resolve_file_backed_optimize_source(model: "PDFModel", session_id: Optional[
     return source_path
 
 
-def current_document_size_bytes(model: "PDFModel", session_id: Optional[str]) -> int:
+def current_document_size_bytes(model: PDFModel, session_id: str | None) -> int:
     if not model.doc:
         raise RuntimeError("沒有可最佳化的 PDF")
     source_path = model._resolve_file_backed_optimize_source(session_id)
@@ -255,7 +299,7 @@ def current_document_size_bytes(model: "PDFModel", session_id: Optional[str]) ->
     return len(model.doc.tobytes(garbage=0, no_new_id=1))
 
 
-def build_working_doc_for_optimized_copy(model: "PDFModel", session_id: Optional[str]) -> fitz.Document:
+def build_working_doc_for_optimized_copy(model: PDFModel, session_id: str | None) -> fitz.Document:
     """
     Optimize-copy pipeline:
       live doc -> disposable working doc -> tool save prep
@@ -276,7 +320,7 @@ def build_working_doc_for_optimized_copy(model: "PDFModel", session_id: Optional
     return prepared_doc
 
 
-def make_active_audit_cache_key(model: "PDFModel") -> Optional[tuple]:
+def make_active_audit_cache_key(model: PDFModel) -> tuple | None:
     session_id = model.get_active_session_id()
     if not session_id or not model.doc:
         return None
@@ -323,7 +367,7 @@ def xref_size_bytes(doc: fitz.Document, xref: int) -> int:
     return size
 
 
-def build_pdf_audit_report(model: "PDFModel", doc: fitz.Document | None = None) -> PdfAuditReport:
+def build_pdf_audit_report(model: PDFModel, doc: fitz.Document | None = None) -> PdfAuditReport:
     target_doc = doc if doc is not None else model.doc
     if target_doc is None:
         raise RuntimeError("沒有可審計的 PDF")
@@ -395,12 +439,27 @@ def build_pdf_audit_report(model: "PDFModel", doc: fitz.Document | None = None) 
 
 
 def apply_optimize_options(
-    model: "PDFModel",
+    model: PDFModel,
     working_doc: fitz.Document,
     options: PdfOptimizeOptions,
-    source_path: Optional[Path] = None,
+    source_path: Path | None = None,
+    *,
+    original_bytes: int | None = None,
+    image_usage: dict[int, dict[str, float | int]] | None = None,
 ) -> None:
-    if options.content_cleanup:
+    resolved_image_usage = image_usage if image_usage is not None else (
+        collect_image_usage(working_doc) if options.optimize_images else {}
+    )
+    resolved_original_bytes = int(original_bytes or 0)
+    if resolved_original_bytes <= 0:
+        resolved_original_bytes = len(working_doc.tobytes(garbage=0))
+
+    execution_profile = resolve_optimize_execution_profile(
+        options,
+        is_large_job=is_large_optimize_job(resolved_original_bytes, resolved_image_usage),
+    )
+
+    if options.content_cleanup and execution_profile.run_content_cleanup:
         for page_index in range(len(working_doc)):
             try:
                 working_doc[page_index].clean_contents()
@@ -415,14 +474,20 @@ def apply_optimize_options(
         except Exception as exc:
             logger.warning("移除 XML metadata 失敗: %s", model._safe_exc_message(exc))
 
-    if options.optimize_fonts and options.subset_fonts:
+    if options.optimize_fonts and options.subset_fonts and execution_profile.run_subset_fonts:
         try:
             working_doc.subset_fonts()
         except Exception as exc:
             logger.warning("subset_fonts 失敗: %s", model._safe_exc_message(exc))
 
     if options.optimize_images:
-        model._rewrite_images_with_pillow(working_doc, options, source_path=source_path)
+        model._rewrite_images_with_pillow(
+            working_doc,
+            options,
+            source_path=source_path,
+            image_usage=resolved_image_usage,
+            allow_extracted_parallel_fallback=execution_profile.allow_extracted_parallel_fallback,
+        )
 
 
 def image_rewrite_settings(options: PdfOptimizeOptions) -> dict[str, int | bool]:
@@ -446,16 +511,20 @@ def can_use_parallel_image_rewrite() -> bool:
         return True
     main_module = sys.modules.get("__main__")
     main_file = getattr(main_module, "__file__", None)
-    if not main_file:
-        return False
-    try:
-        return Path(main_file).exists()
-    except OSError:
-        return False
+    candidate_paths = [main_file, sys.argv[0] if sys.argv else None, sys.executable]
+    for candidate in candidate_paths:
+        if not candidate:
+            continue
+        try:
+            if Path(candidate).exists():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def rewrite_images_serially(
-    model: "PDFModel",
+    model: PDFModel,
     working_doc: fitz.Document,
     image_usage: dict[int, dict[str, float | int]],
     options: PdfOptimizeOptions,
@@ -474,7 +543,7 @@ def rewrite_images_serially(
 
 
 def collect_extracted_images(
-    model: "PDFModel",
+    model: PDFModel,
     working_doc: fitz.Document,
     image_usage: dict[int, dict[str, float | int]],
 ) -> list[tuple[int, int, float, bytes]]:
@@ -498,8 +567,34 @@ def collect_extracted_images(
     return extracted_images
 
 
+def collect_image_usage(working_doc: fitz.Document) -> dict[int, dict[str, float | int]]:
+    image_usage: dict[int, dict[str, float | int]] = {}
+    for page_index in range(len(working_doc)):
+        page = working_doc[page_index]
+        for item in page.get_images(full=True):
+            xref = int(item[0])
+            width = int(item[2])
+            height = int(item[3])
+            try:
+                bbox = page.get_image_bbox(item)
+            except Exception:
+                continue
+            rect_width = max(float(bbox.width), 1.0)
+            rect_height = max(float(bbox.height), 1.0)
+            max_dpi = max(
+                width / (rect_width / 72.0),
+                height / (rect_height / 72.0),
+            )
+            existing = image_usage.get(xref)
+            if existing is None:
+                image_usage[xref] = {"page_index": page_index, "max_dpi": max_dpi}
+            else:
+                existing["max_dpi"] = max(float(existing["max_dpi"]), max_dpi)
+    return image_usage
+
+
 def rewrite_images_from_source_in_parallel(
-    model: "PDFModel",
+    model: PDFModel,
     working_doc: fitz.Document,
     image_usage: dict[int, dict[str, float | int]],
     options: PdfOptimizeOptions,
@@ -532,7 +627,7 @@ def rewrite_images_from_source_in_parallel(
 
 
 def rewrite_extracted_images_in_parallel(
-    model: "PDFModel",
+    model: PDFModel,
     working_doc: fitz.Document,
     extracted_images: list[tuple[int, int, float, bytes]],
     options: PdfOptimizeOptions,
@@ -570,55 +665,40 @@ def rewrite_extracted_images_in_parallel(
 
 
 def rewrite_images_with_pillow(
-    model: "PDFModel",
+    model: PDFModel,
     working_doc: fitz.Document,
     options: PdfOptimizeOptions,
-    source_path: Optional[Path] = None,
+    source_path: Path | None = None,
+    *,
+    image_usage: dict[int, dict[str, float | int]] | None = None,
+    allow_extracted_parallel_fallback: bool = True,
 ) -> None:
     if Image is None:
         raise RuntimeError("圖像最佳化需要 Pillow，請先安裝 optional-requirements.txt。")
 
-    dpi_target = max(int(options.image_dpi_target), 1)
-    image_usage: dict[int, dict[str, float | int]] = {}
-    for page_index in range(len(working_doc)):
-        page = working_doc[page_index]
-        for item in page.get_images(full=True):
-            xref = int(item[0])
-            width = int(item[2])
-            height = int(item[3])
-            try:
-                bbox = page.get_image_bbox(item)
-            except Exception:
-                continue
-            rect_width = max(float(bbox.width), 1.0)
-            rect_height = max(float(bbox.height), 1.0)
-            max_dpi = max(
-                width / (rect_width / 72.0),
-                height / (rect_height / 72.0),
-            )
-            existing = image_usage.get(xref)
-            if existing is None:
-                image_usage[xref] = {"page_index": page_index, "max_dpi": max_dpi}
-            else:
-                existing["max_dpi"] = max(float(existing["max_dpi"]), max_dpi)
+    resolved_image_usage = image_usage if image_usage is not None else collect_image_usage(working_doc)
 
-    if not image_usage:
+    if not resolved_image_usage:
         return
     # Parallel rewrite is only enabled when we have enough images to amortize overhead,
     # and when the current runtime can safely spawn worker processes (Windows is strict here).
     if (
         source_path is not None
-        and len(image_usage) >= _MIN_PARALLEL_IMAGE_REWRITES
+        and len(resolved_image_usage) >= _MIN_PARALLEL_IMAGE_REWRITES
         and model._can_use_parallel_image_rewrite()
     ):
-        model._rewrite_images_from_source_in_parallel(working_doc, image_usage, options, source_path)
+        model._rewrite_images_from_source_in_parallel(working_doc, resolved_image_usage, options, source_path)
         return
-    if len(image_usage) >= _MIN_PARALLEL_IMAGE_REWRITES and model._can_use_parallel_image_rewrite():
-        extracted_images = model._collect_extracted_images(working_doc, image_usage)
+    if (
+        allow_extracted_parallel_fallback
+        and len(resolved_image_usage) >= _MIN_PARALLEL_IMAGE_REWRITES
+        and model._can_use_parallel_image_rewrite()
+    ):
+        extracted_images = model._collect_extracted_images(working_doc, resolved_image_usage)
         if extracted_images:
             model._rewrite_extracted_images_in_parallel(working_doc, extracted_images, options)
             return
-    model._rewrite_images_serially(working_doc, image_usage, options)
+    model._rewrite_images_serially(working_doc, resolved_image_usage, options)
 
 
 def requires_post_save_packaging(options: PdfOptimizeOptions) -> bool:
@@ -639,7 +719,7 @@ def fast_save_kwargs(options: PdfOptimizeOptions) -> dict[str, int]:
 
 
 def postprocess_optimized_pdf_with_pikepdf(
-    model: "PDFModel",
+    model: PDFModel,
     source_path: Path,
     options: PdfOptimizeOptions,
 ) -> None:
@@ -669,7 +749,7 @@ def postprocess_optimized_pdf_with_pikepdf(
 
 
 def save_optimized_working_doc(
-    model: "PDFModel",
+    model: PDFModel,
     working_doc: fitz.Document,
     temp_save: Path,
     options: PdfOptimizeOptions,
@@ -693,7 +773,7 @@ def save_optimized_working_doc(
 
 
 def save_optimized_copy(
-    model: "PDFModel",
+    model: PDFModel,
     new_path: str,
     options: PdfOptimizeOptions | None = None,
 ) -> PdfOptimizationResult:
@@ -712,9 +792,16 @@ def save_optimized_copy(
     optimize_source_path = model._resolve_file_backed_optimize_source(active_sid)
     original_bytes = model._current_document_size_bytes(active_sid)
     working_doc = model._build_working_doc_for_optimized_copy(active_sid)
+    image_usage = collect_image_usage(working_doc) if resolved_options.optimize_images else {}
     temp_save = Path(model.temp_dir.name) / f"optimized_{uuid.uuid4()}.pdf"
     try:
-        model._apply_optimize_options(working_doc, resolved_options, source_path=optimize_source_path)
+        model._apply_optimize_options(
+            working_doc,
+            resolved_options,
+            source_path=optimize_source_path,
+            original_bytes=original_bytes,
+            image_usage=image_usage,
+        )
         model._save_optimized_working_doc(working_doc, temp_save, resolved_options)
         Path(new_path).parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(temp_save), new_path)
