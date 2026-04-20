@@ -177,6 +177,7 @@ class PDFView(QMainWindow):
 
     # --- Zoom Re-render Signal ---
     sig_request_rerender = Signal()
+    sig_color_profile_changed = Signal(str)
 
     # --- Insert Pages Signals ---
     sig_insert_blank_page = Signal(int)  # position (1-based)
@@ -271,6 +272,28 @@ class PDFView(QMainWindow):
         right_title = QLabel("屬性")
         right_title.setStyleSheet("font-weight: bold; padding: 8px;")
         right_sidebar_layout.addWidget(right_title)
+
+        self.color_profile_card = QWidget()
+        self.color_profile_card.setObjectName("colorProfileCard")
+        self.color_profile_card.setStyleSheet(
+            "QWidget#colorProfileCard { border-top: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0; }"
+        )
+        color_profile_layout = QVBoxLayout(self.color_profile_card)
+        color_profile_layout.setContentsMargins(8, 8, 8, 8)
+        color_profile_layout.setSpacing(6)
+        color_profile_layout.addWidget(QLabel("色彩設定檔"))
+        self.color_profile_combo = QComboBox()
+        self.color_profile_combo.addItem("sRGB", "srgb")
+        self.color_profile_combo.addItem("灰階", "gray")
+        self.color_profile_combo.addItem("CMYK 預覽", "cmyk")
+        # Connect after items exist to avoid emitting during construction.
+        self.color_profile_combo.currentIndexChanged.connect(
+            lambda _idx=0: self.sig_color_profile_changed.emit(str(self.color_profile_combo.currentData()))
+        )
+        color_profile_layout.addWidget(self.color_profile_combo)
+        right_sidebar_layout.addWidget(self.color_profile_card)
+        self.set_color_profile("srgb")
+
         self.right_stacked_widget = QStackedWidget()
         if self._defer_heavy_panels:
             self._setup_property_inspector_placeholder()
@@ -1041,6 +1064,23 @@ class PDFView(QMainWindow):
             previous = action.blockSignals(True)
             action.setChecked(mode_key == mode)
             action.blockSignals(previous)
+
+    def set_color_profile(self, profile: str) -> None:
+        """Sync the sidebar combobox to the given profile (unknown values fall back to sRGB)."""
+        normalized = (profile or "srgb").strip().lower()
+        combo = getattr(self, "color_profile_combo", None)
+        if combo is None:
+            return
+        index = -1
+        for i in range(combo.count()):
+            if str(combo.itemData(i)).strip().lower() == normalized:
+                index = i
+                break
+        if index < 0:
+            index = 0
+        prev = combo.blockSignals(True)
+        combo.setCurrentIndex(index)
+        combo.blockSignals(prev)
 
     def _on_zoom_combo_changed(self, text: str):
         try:

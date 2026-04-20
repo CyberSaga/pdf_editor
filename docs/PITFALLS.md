@@ -95,6 +95,16 @@
 
 ---
 
+## CMYK pixmaps must be converted before constructing `QImage`
+
+**Area:** `src/printing/pdf_renderer.py`  
+**Symptom:** Selecting a CMYK preview render path can crash or display corrupted output during printing because Qt `QImage` constructors assume RGB(A) channel layouts.  
+**Cause:** PyMuPDF can render pixmaps in CMYK (4-channel) when `colorspace=fitz.csCMYK` is requested. Passing CMYK `pix.samples` into `QImage(..., Format_RGB888)` misinterprets the stride/pixel layout.  
+**Fix:** When rendering in CMYK for preview/print, bridge-convert the pixmap to RGB before creating a `QImage` (e.g. `fitz.Pixmap(fitz.csRGB, cmyk_pix)`), while keeping the CMYK sampling intent as the upstream selection.  
+**File:** `src/printing/pdf_renderer.py`
+
+---
+
 ## Open-time background work can steal responsiveness from the first visible page
 
 **Area:** `controller/pdf_controller.py`  

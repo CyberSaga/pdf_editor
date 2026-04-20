@@ -1,5 +1,11 @@
 # TODOS
 
+## Done (2026-04-20) -- F4 view-only color profile switching
+
+- What: Added a session-scoped view/print-preview color profile toggle (sRGB / 灰階 / CMYK 預覽) that re-renders page pixmaps, thumbnails, and snapshots without mutating the saved PDF.
+- Why: Users need a reversible way to inspect grayscale and CMYK-ish sampling in the UI and print preview without doing document-level conversion or loading ICC profiles.
+- Outcome: `SessionUIState.color_profile` is threaded through controller render dispatch to PyMuPDF `colorspace` arguments, and the Windows helper raster print path honors the same intent via `PrintJobOptions.extra_options["render_colorspace"]`. Export/save-as PDF output remains unchanged. Focused coverage lives in `test_color_profile_*` plus `test_print_colorspace.py`.
+
 ## Done (2026-04-19) -- F2 Surya OCR implementation
 
 - What: Replaced the Tesseract-era OCR stub with Surya as the recognition backend, added a structured `OcrRequest` dialog (page scope + languages + device), a `QThread`-backed worker with per-page commit and cancel, and availability-gated UI entry points. GPU is user-configurable via `utils.preferences.UserPreferences` (`ocr/device`: `auto` prefers CUDA → MPS → CPU; also `cuda`/`cpu`/`mps`).

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fitz
 from PySide6.QtCore import QRectF, QSizeF
 from PySide6.QtGui import QPageLayout, QPageSize, QPainter
 from PySide6.QtPrintSupport import QPrinter
@@ -188,7 +189,16 @@ def raster_print_pdf(
         printer.setPrinterName(normalized.printer_name)
 
     _apply_printer_options(printer, normalized)
-    renderer = renderer or PDFRenderer()
+    if renderer is None:
+        from model.color_profile import to_fitz_colorspace
+
+        requested = (normalized.extra_options or {}).get("render_colorspace", "") if hasattr(normalized, "extra_options") else ""
+        raw = str(requested or "srgb").strip().lower()
+        try:
+            colorspace = to_fitz_colorspace(raw)
+        except ValueError:
+            colorspace = fitz.csRGB
+        renderer = PDFRenderer(colorspace=colorspace)
     pages_iter = renderer.iter_page_images(pdf_path, page_indices, normalized.dpi)
 
     try:

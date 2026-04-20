@@ -1174,16 +1174,38 @@ class PDFModel:
         finally:
             doc.close()
 
-    def get_page_pixmap(self, page_num: int, scale: float = 1.0) -> fitz.Pixmap:
-        return self.tools.render_page_pixmap(page_num, scale=scale, annots=True, purpose="view")
+    def get_page_pixmap(
+        self,
+        page_num: int,
+        scale: float = 1.0,
+        colorspace: fitz.Colorspace | None = None,
+    ) -> fitz.Pixmap:
+        return self.tools.render_page_pixmap(
+            page_num,
+            scale=scale,
+            annots=True,
+            purpose="view",
+            colorspace=colorspace,
+        )
 
-    def get_page_snapshot(self, page_num: int, scale: float = 1.0) -> fitz.Pixmap:
+    def get_page_snapshot(
+        self,
+        page_num: int,
+        scale: float = 1.0,
+        colorspace: fitz.Colorspace | None = None,
+    ) -> fitz.Pixmap:
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             raise ValueError(f"無效頁碼: {page_num}")
-        return self.tools.render_page_pixmap(page_num, scale=scale, annots=True, purpose="snapshot")
+        return self.tools.render_page_pixmap(
+            page_num,
+            scale=scale,
+            annots=True,
+            purpose="snapshot",
+            colorspace=colorspace,
+        )
 
-    def get_thumbnail(self, page_num: int) -> fitz.Pixmap:
-        return self.get_page_pixmap(page_num, scale=0.2)
+    def get_thumbnail(self, page_num: int, colorspace: fitz.Colorspace | None = None) -> fitz.Pixmap:
+        return self.get_page_pixmap(page_num, scale=0.2, colorspace=colorspace)
 
     def build_print_snapshot(self) -> bytes:
         return self.tools.build_print_snapshot()

@@ -15,6 +15,7 @@ from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QProgressDialog
 
+from model.color_profile import ColorProfile, to_fitz_colorspace
 from model.edit_commands import AddTextboxCommand, EditTextCommand, EditTextResult, SnapshotCommand
 from model.object_requests import (
     BatchDeleteObjectsRequest,
@@ -26,7 +27,7 @@ from model.object_requests import (
     RotateObjectRequest,
 )
 from model.pdf_model import PDFModel
-from utils.helpers import pixmap_to_qpixmap, show_error
+from utils.helpers import pixmap_to_qimage, pixmap_to_qpixmap, show_error
 from view.pdf_view import EditTextRequest, MoveTextRequest, OptimizePdfDialog, PDFView, ViewportAnchor
 
 THUMB_BATCH_SIZE = 10
@@ -93,6 +94,7 @@ class SessionUIState:
     search_state: dict = field(default_factory=lambda: {"query": "", "results": [], "index": -1})
     mode: str = "browse"
     viewport_anchor: ViewportAnchor | None = None
+    color_profile: str = ColorProfile.SRGB.value
 
 
 @dataclass
@@ -316,9 +318,9 @@ class PDFController:
         self._background_loading_started_by_session: dict[str, bool] = {}
         self._render_batch_pending_by_session: dict[str, bool] = {}
         self._page_sizes_by_session: dict[str, list[tuple[float, float]]] = {}
-        self._page_render_quality_by_session: dict[str, dict[int, str]] = {}
+        self._page_render_quality_by_session: dict[str, dict[str, dict[int, str]]] = {}
         self._render_revision_by_session: dict[str, int] = {}
-        self._render_cache: OrderedDict[tuple[str, int, int, str, int], tuple[QPixmap, int]] = OrderedDict()
+        self._render_cache: OrderedDict[tuple[str, str, int, int, str, int], tuple[QPixmap, int]] = OrderedDict()
         self._render_cache_total_bytes = 0
         self._fullscreen_session_snapshots: dict[str, FullscreenSessionSnapshot] = {}
         self._global_mode = self._normalize_mode(getattr(self.view, "current_mode", "browse"))
@@ -436,6 +438,8 @@ class PDFController:
 
         # Zoom re-render connection
         self.view.sig_request_rerender.connect(self._on_request_rerender)
+        if hasattr(self.view, "sig_color_profile_changed"):
+            self.view.sig_color_profile_changed.connect(self._on_color_profile_changed)
 
         # Align model granularity with UI default at startup.
         combo = getattr(self.view, "text_target_mode_combo", None)
@@ -501,12 +505,22 @@ class PDFController:
         sid = self.model.get_active_session_id()
         if not sid:
             return
+        existing = self._session_ui_state.get(sid)
+        existing_profile = existing.color_profile if existing is not None else ColorProfile.SRGB.value
+        normalized_profile = self._normalize_color_profile(existing_profile)
+        if existing is not None and existing_profile != normalized_profile:
+            logger.warning(
+                "Unknown session color profile %r; falling back to %s",
+                existing_profile,
+                normalized_profile,
+            )
         self._session_ui_state[sid] = SessionUIState(
             current_page=max(0, self.view.current_page),
             scale=max(0.1, min(float(self.view.scale), 4.0)),
             search_state=self.view.get_search_ui_state(),
             mode=self._normalize_mode(getattr(self.view, "current_mode", "browse")),
             viewport_anchor=self.view.capture_viewport_anchor(),
+            color_profile=normalized_profile,
         )
 
     def _get_ui_state(self, session_id: str) -> SessionUIState:
@@ -515,6 +529,59 @@ class PDFController:
             state = SessionUIState()
             self._session_ui_state[session_id] = state
         return state
+
+    def _normalize_color_profile(self, value: str | None) -> str:
+        if not value:
+            return ColorProfile.SRGB.value
+        try:
+            return ColorProfile.from_string(value).value
+        except ValueError:
+            return ColorProfile.SRGB.value
+
+    def _fitz_colorspace_for_profile(self, profile: str) -> fitz.Colorspace:
+        try:
+            return to_fitz_colorspace(profile)
+        except ValueError:
+            return fitz.csRGB
+
+    def _fitz_colorspace_for_session(self, session_id: str) -> fitz.Colorspace:
+        return self._fitz_colorspace_for_profile(self._color_profile_for_session(session_id))
+
+    def _color_profile_for_session(self, session_id: str) -> str:
+        state = self._get_ui_state(session_id)
+        return self._normalize_color_profile(state.color_profile)
+
+    def _page_quality_map(self, session_id: str, profile: str | None = None) -> dict[int, str]:
+        profile = profile or self._color_profile_for_session(session_id)
+        return self._page_render_quality_by_session.setdefault(session_id, {}).setdefault(profile, {})
+
+    def set_session_color_profile(self, session_id: str, profile: str) -> None:
+        """Set a session-scoped view/print-preview color profile (view-only; no PDF mutation)."""
+        if not session_id:
+            raise ValueError("session_id is required")
+        normalized = ColorProfile.from_string(profile).value
+        state = self._get_ui_state(session_id)
+        if state.color_profile == normalized:
+            if self.model.get_active_session_id() == session_id and hasattr(self.view, "set_color_profile"):
+                self.view.set_color_profile(normalized)
+            return
+        state.color_profile = normalized
+        self._page_quality_map(session_id, normalized).clear()
+        if self.model.get_active_session_id() == session_id:
+            if hasattr(self.view, "set_color_profile"):
+                self.view.set_color_profile(normalized)
+            gen = self._next_load_gen(session_id)
+            self._schedule_thumbnail_batch(0, session_id, gen)
+            if self.view.continuous_pages:
+                self._schedule_visible_render(session_id, immediate_page_idx=self.view.current_page)
+            else:
+                self.show_page(self.view.current_page)
+
+    def _on_color_profile_changed(self, profile: str) -> None:
+        session_id = self.model.get_active_session_id()
+        if not session_id:
+            return
+        self.set_session_color_profile(session_id, profile)
 
     def _refresh_document_tabs(self) -> None:
         tabs = self.model.list_sessions()
@@ -639,17 +706,25 @@ class PDFController:
             _, cost = self._render_cache.pop(key)
             self._render_cache_total_bytes = max(0, self._render_cache_total_bytes - cost)
 
-    def _render_cache_key(self, session_id: str, page_idx: int, rendered_scale: float, quality: str) -> tuple[str, int, int, str, int]:
+    def _render_cache_key(
+        self,
+        session_id: str,
+        profile: str,
+        page_idx: int,
+        rendered_scale: float,
+        quality: str,
+    ) -> tuple[str, str, int, int, str, int]:
         return (
             session_id,
+            profile,
             page_idx,
             int(round(rendered_scale * 1000)),
             quality,
             self._render_revision(session_id),
         )
 
-    def _get_cached_render(self, session_id: str, page_idx: int, rendered_scale: float, quality: str) -> QPixmap | None:
-        key = self._render_cache_key(session_id, page_idx, rendered_scale, quality)
+    def _get_cached_render(self, session_id: str, profile: str, page_idx: int, rendered_scale: float, quality: str) -> QPixmap | None:
+        key = self._render_cache_key(session_id, profile, page_idx, rendered_scale, quality)
         cached = self._render_cache.pop(key, None)
         if cached is None:
             return None
@@ -657,8 +732,8 @@ class PDFController:
         self._render_cache[key] = (pixmap, cost)
         return pixmap
 
-    def _store_cached_render(self, session_id: str, page_idx: int, rendered_scale: float, quality: str, pixmap: QPixmap) -> None:
-        key = self._render_cache_key(session_id, page_idx, rendered_scale, quality)
+    def _store_cached_render(self, session_id: str, profile: str, page_idx: int, rendered_scale: float, quality: str, pixmap: QPixmap) -> None:
+        key = self._render_cache_key(session_id, profile, page_idx, rendered_scale, quality)
         cost = max(1, pixmap.width()) * max(1, pixmap.height()) * 4
         previous = self._render_cache.pop(key, None)
         if previous is not None:
@@ -685,13 +760,18 @@ class PDFController:
             return False
         target_scale = max(0.1, float(self.view.scale))
         rendered_scale = self._render_scale_for_quality(target_scale, quality)
-        cached = self._get_cached_render(session_id, page_idx, rendered_scale, quality)
+        profile = self._color_profile_for_session(session_id)
+        cached = self._get_cached_render(session_id, profile, page_idx, rendered_scale, quality)
         if cached is None:
-            pix = self.model.get_page_pixmap(page_idx + 1, rendered_scale)
+            pix = self.model.get_page_pixmap(
+                page_idx + 1,
+                rendered_scale,
+                colorspace=self._fitz_colorspace_for_profile(profile),
+            )
             cached = pixmap_to_qpixmap(pix)
-            self._store_cached_render(session_id, page_idx, rendered_scale, quality, cached)
+            self._store_cached_render(session_id, profile, page_idx, rendered_scale, quality, cached)
         self.view.update_page_in_scene_scaled(page_idx, cached, rendered_scale, target_scale)
-        self._page_render_quality_by_session.setdefault(session_id, {})[page_idx] = quality
+        self._page_quality_map(session_id, profile)[page_idx] = quality
         self._maybe_start_background_loading_after_render(session_id, page_idx, quality)
         return True
 
@@ -707,8 +787,9 @@ class PDFController:
     def _schedule_visible_render(self, session_id: str, immediate_page_idx: int | None = None) -> None:
         if not session_id or not self.model.doc or not self.view.continuous_pages:
             return
+        profile = self._color_profile_for_session(session_id)
         if immediate_page_idx is not None:
-            current_quality = self._page_render_quality_by_session.setdefault(session_id, {}).get(immediate_page_idx)
+            current_quality = self._page_quality_map(session_id, profile).get(immediate_page_idx)
             if current_quality not in {"low", "high"}:
                 self._render_page_into_scene(session_id, immediate_page_idx, "low")
         if self._render_batch_pending_by_session.get(session_id):
@@ -731,7 +812,8 @@ class PDFController:
             self._render_batch_pending_by_session[session_id] = False
             return
 
-        page_quality = self._page_render_quality_by_session.setdefault(session_id, {})
+        profile = self._color_profile_for_session(session_id)
+        page_quality = self._page_quality_map(session_id, profile)
         candidates: list[tuple[int, str]] = []
         for page_idx in visible_pages:
             quality = page_quality.get(page_idx)
@@ -854,6 +936,12 @@ class PDFController:
         self.view.ensure_heavy_panels_initialized()
 
         state = self._get_ui_state(sid)
+        profile = self._normalize_color_profile(state.color_profile)
+        if state.color_profile != profile:
+            logger.warning("Unknown session color profile %r; falling back to %s", state.color_profile, profile)
+            state.color_profile = profile
+        if hasattr(self.view, "set_color_profile"):
+            self.view.set_color_profile(profile)
         if initial_page_idx is None:
             initial_page_idx = state.current_page
         initial_page_idx = max(0, min(initial_page_idx, len(self.model.doc) - 1))
@@ -864,7 +952,7 @@ class PDFController:
 
         self.view.scale = state.scale
         self.view.total_pages = len(self.model.doc)
-        self._page_render_quality_by_session[sid] = {}
+        self._page_quality_map(sid, profile).clear()
         self._session_page_sizes(sid)
         self.view.initialize_continuous_placeholders(self._page_sizes_by_session[sid], state.scale, initial_page_idx)
         self.view.set_thumbnail_placeholders(len(self.model.doc))
@@ -1319,9 +1407,13 @@ class PDFController:
 
     def _render_print_preview_image(self, page_index: int, dpi: int) -> QImage:
         scale = max(1.0, float(dpi) / 72.0)
-        pix = self.model.get_page_snapshot(page_index + 1, scale=scale)
-        fmt = QImage.Format_RGBA8888 if pix.alpha else QImage.Format_RGB888
-        return QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
+        session_id = self.model.get_active_session_id()
+        pix = self.model.get_page_snapshot(
+            page_index + 1,
+            scale=scale,
+            colorspace=(self._fitz_colorspace_for_session(session_id) if session_id else fitz.csRGB),
+        )
+        return pixmap_to_qimage(pix)
 
     def _has_active_print_submission(self) -> bool:
         return self._print_thread is not None or self._print_runner is not None
@@ -1398,11 +1490,25 @@ class PDFController:
         bridge = self._print_worker_bridge
         if bridge is None:
             raise RuntimeError("Print worker bridge is not initialized")
+        session_id = self.model.get_active_session_id()
         work_dir = tempfile.mkdtemp(prefix="pdf_editor_print_")
+        normalized_options = options.normalized() if hasattr(options, "normalized") else options
+        if session_id and hasattr(normalized_options, "extra_options"):
+            extra = dict(getattr(normalized_options, "extra_options", {}) or {})
+            state = self._get_ui_state(session_id)
+            profile = self._normalize_color_profile(state.color_profile)
+            if state.color_profile != profile:
+                logger.warning("Unknown session color profile %r; falling back to %s", state.color_profile, profile)
+                state.color_profile = profile
+                if hasattr(self.view, "set_color_profile"):
+                    self.view.set_color_profile(profile)
+            extra["render_colorspace"] = profile
+            normalized_options.extra_options = extra
+
         request = PrintJobRequest(
             capture_pdf_bytes=self.model.capture_print_input_pdf_bytes,
             watermarks=self.model.get_print_watermarks(),
-            options=options.normalized() if hasattr(options, "normalized") else options,
+            options=normalized_options,
             job_id=str(uuid.uuid4()),
             work_dir=work_dir,
         )
@@ -2243,7 +2349,12 @@ class PDFController:
         scale = self.view.scale
         matrix = fitz.Matrix(scale, scale)
         scaled_rect = rect * matrix
-        pix = self.model.get_page_pixmap(page_num, scale)
+        sid = self.model.get_active_session_id()
+        pix = self.model.get_page_pixmap(
+            page_num,
+            scale,
+            colorspace=(self._fitz_colorspace_for_session(sid) if sid else fitz.csRGB),
+        )
         qpix = pixmap_to_qpixmap(pix)
         self.view.display_page(page_num - 1, qpix, highlight_rect=scaled_rect)
         sid = self.model.get_active_session_id()
@@ -2426,14 +2537,21 @@ class PDFController:
         if self.view.continuous_pages:
             self._rebuild_continuous_scene(page_idx)
         else:
-            pix = self.model.get_page_pixmap(page_idx + 1, scale)
+            sid = self.model.get_active_session_id()
+            pix = self.model.get_page_pixmap(
+                page_idx + 1,
+                scale,
+                colorspace=(self._fitz_colorspace_for_session(sid) if sid else fitz.csRGB),
+            )
             qpix = pixmap_to_qpixmap(pix)
             self.view.display_page(page_idx, qpix)
             self.view._update_page_counter()
             self.view._update_status_bar()
 
     def _update_thumbnails(self):
-        thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i+1)) for i in range(len(self.model.doc))]
+        sid = self.model.get_active_session_id()
+        colorspace = self._fitz_colorspace_for_session(sid) if sid else fitz.csRGB
+        thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i + 1, colorspace=colorspace)) for i in range(len(self.model.doc))]
         self.view.update_thumbnails(thumbs)
 
     def _schedule_thumbnail_batch(self, start: int, session_id: str, gen: int):
@@ -2445,7 +2563,8 @@ class PDFController:
             return
         n = len(self.model.doc)
         end = min(start + THUMB_BATCH_SIZE, n)
-        thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i + 1)) for i in range(start, end)]
+        colorspace = self._fitz_colorspace_for_session(session_id)
+        thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i + 1, colorspace=colorspace)) for i in range(start, end)]
         self.view.update_thumbnail_batch(start, thumbs)
         if end < n:
             QTimer.singleShot(
@@ -2527,7 +2646,7 @@ class PDFController:
         session_id = self.model.get_active_session_id()
         if not session_id:
             return
-        self._page_render_quality_by_session[session_id] = {}
+        self._page_quality_map(session_id).clear()
         self.view.initialize_continuous_placeholders(
             self._session_page_sizes(session_id),
             self.view.scale,
@@ -2547,7 +2666,12 @@ class PDFController:
             if sid:
                 self._schedule_visible_render(sid, immediate_page_idx=page_idx)
         else:
-            pix = self.model.get_page_pixmap(page_idx + 1, self.view.scale)
+            sid = self.model.get_active_session_id()
+            pix = self.model.get_page_pixmap(
+                page_idx + 1,
+                self.view.scale,
+                colorspace=(self._fitz_colorspace_for_session(sid) if sid else fitz.csRGB),
+            )
             qpix = pixmap_to_qpixmap(pix)
             self.view.display_page(page_idx, qpix)
         sid = self.model.get_active_session_id()
@@ -2666,7 +2790,12 @@ class PDFController:
         try:
             # 獲取包含所有註解的扁平化頁面影像
             # 使用較高的縮放比例以獲得更好的品質
-            pix = self.model.get_page_snapshot(page_idx + 1, scale=2.0)
+            sid = self.model.get_active_session_id()
+            pix = self.model.get_page_snapshot(
+                page_idx + 1,
+                scale=2.0,
+                colorspace=(self._fitz_colorspace_for_session(sid) if sid else fitz.csRGB),
+            )
 
             # 轉換為 QPixmap
             qpix = pixmap_to_qpixmap(pix)
