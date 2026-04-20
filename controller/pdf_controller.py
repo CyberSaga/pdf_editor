@@ -7,7 +7,7 @@ import tempfile
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from pathlib import Path
 
 import fitz
@@ -505,15 +505,7 @@ class PDFController:
         sid = self.model.get_active_session_id()
         if not sid:
             return
-        existing = self._session_ui_state.get(sid)
-        existing_profile = existing.color_profile if existing is not None else ColorProfile.SRGB.value
-        normalized_profile = self._normalize_color_profile(existing_profile)
-        if existing is not None and existing_profile != normalized_profile:
-            logger.warning(
-                "Unknown session color profile %r; falling back to %s",
-                existing_profile,
-                normalized_profile,
-            )
+        normalized_profile = self._resolve_session_profile(sid)
         self._session_ui_state[sid] = SessionUIState(
             current_page=max(0, self.view.current_page),
             scale=max(0.1, min(float(self.view.scale), 4.0)),
@@ -550,6 +542,21 @@ class PDFController:
     def _color_profile_for_session(self, session_id: str) -> str:
         state = self._get_ui_state(session_id)
         return self._normalize_color_profile(state.color_profile)
+
+    def _resolve_session_profile(self, session_id: str, *, sync_view: bool = False) -> str:
+        """Return the session's normalized profile, healing unknown values back to sRGB."""
+        state = self._get_ui_state(session_id)
+        normalized = self._normalize_color_profile(state.color_profile)
+        if state.color_profile != normalized:
+            logger.warning(
+                "Unknown session color profile %r; falling back to %s",
+                state.color_profile,
+                normalized,
+            )
+            state.color_profile = normalized
+            if sync_view and hasattr(self.view, "set_color_profile"):
+                self.view.set_color_profile(normalized)
+        return normalized
 
     def _page_quality_map(self, session_id: str, profile: str | None = None) -> dict[int, str]:
         profile = profile or self._color_profile_for_session(session_id)
@@ -936,10 +943,7 @@ class PDFController:
         self.view.ensure_heavy_panels_initialized()
 
         state = self._get_ui_state(sid)
-        profile = self._normalize_color_profile(state.color_profile)
-        if state.color_profile != profile:
-            logger.warning("Unknown session color profile %r; falling back to %s", state.color_profile, profile)
-            state.color_profile = profile
+        profile = self._resolve_session_profile(sid)
         if hasattr(self.view, "set_color_profile"):
             self.view.set_color_profile(profile)
         if initial_page_idx is None:
@@ -1494,16 +1498,9 @@ class PDFController:
         work_dir = tempfile.mkdtemp(prefix="pdf_editor_print_")
         normalized_options = options.normalized() if hasattr(options, "normalized") else options
         if session_id and hasattr(normalized_options, "extra_options"):
-            extra = dict(getattr(normalized_options, "extra_options", {}) or {})
-            state = self._get_ui_state(session_id)
-            profile = self._normalize_color_profile(state.color_profile)
-            if state.color_profile != profile:
-                logger.warning("Unknown session color profile %r; falling back to %s", state.color_profile, profile)
-                state.color_profile = profile
-                if hasattr(self.view, "set_color_profile"):
-                    self.view.set_color_profile(profile)
-            extra["render_colorspace"] = profile
-            normalized_options.extra_options = extra
+            profile = self._resolve_session_profile(session_id, sync_view=True)
+            extra = {**(getattr(normalized_options, "extra_options", {}) or {}), "render_colorspace": profile}
+            normalized_options = dataclass_replace(normalized_options, extra_options=extra)
 
         request = PrintJobRequest(
             capture_pdf_bytes=self.model.capture_print_input_pdf_bytes,

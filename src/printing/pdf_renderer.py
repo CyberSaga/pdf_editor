@@ -9,6 +9,8 @@ from dataclasses import dataclass
 import fitz
 from PySide6.QtGui import QImage
 
+from utils.helpers import pixmap_to_qimage
+
 from .errors import RenderingError
 
 
@@ -41,16 +43,6 @@ class PDFRenderer:
             return len(doc)
         finally:
             doc.close()
-
-    @staticmethod
-    def _pixmap_to_qimage(pix: fitz.Pixmap) -> QImage:
-        # Qt expects RGB(A) byte layouts for QImage construction. Some colorspaces
-        # (e.g. GRAY/CMYK) need a bridge conversion for preview/printing.
-        if not pix.alpha and pix.colorspace is not None and pix.colorspace.n in {1, 4}:
-            pix = fitz.Pixmap(fitz.csRGB, pix)
-        fmt = QImage.Format_RGBA8888 if pix.alpha else QImage.Format_RGB888
-        # .copy() detaches from fitz memory to keep QImage valid after pixmap is freed.
-        return QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
 
     def _get_display_list(
         self,
@@ -93,7 +85,7 @@ class PDFRenderer:
                 yield RenderedPage(
                     page_index=page_index,
                     page_rect=fitz.Rect(page.rect),
-                    image=self._pixmap_to_qimage(pix),
+                    image=pixmap_to_qimage(pix),
                 )
         except Exception as exc:
             if isinstance(exc, RenderingError):
