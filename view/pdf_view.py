@@ -336,7 +336,6 @@ class PDFView(QMainWindow):
         self._zoom_debounce_timer = QTimer(self)
         self._zoom_debounce_timer.setSingleShot(True)
         self._zoom_debounce_timer.timeout.connect(self._on_zoom_debounce)
-        # --- Auto-pan (middle-click auto-scroll) overlay state ---
         self._autopan_active: bool = False
         self._autopan_origin_viewport: QPoint | None = None
         self._autopan_cursor_viewport: QPoint | None = None
@@ -2408,7 +2407,7 @@ class PDFView(QMainWindow):
         """wheel 縮放停止後觸發：重新以當前 self.scale 渲染所有頁面，確保清晰顯示。"""
         self.sig_request_rerender.emit()
 
-    def _event_scene_pos(self, event) -> QPointF:
+    def _event_viewport_pos(self, event) -> QPoint:
         raw_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         viewport = self.graphics_view.viewport() if getattr(self, "graphics_view", None) is not None else None
         if viewport is not None:
@@ -2416,19 +2415,10 @@ class PDFView(QMainWindow):
                 raw_pos = viewport.mapFrom(self.graphics_view, raw_pos)
             except Exception:
                 pass
-        return self.graphics_view.mapToScene(raw_pos)
-
-    def _event_viewport_pos(self, event) -> QPoint:
-        raw_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
-        graphics_view = getattr(self, "graphics_view", None)
-        viewport_getter = getattr(graphics_view, "viewport", None)
-        viewport = viewport_getter() if callable(viewport_getter) else None
-        if viewport is not None:
-            try:
-                raw_pos = viewport.mapFrom(self.graphics_view, raw_pos)
-            except Exception:
-                pass
         return QPoint(raw_pos)
+
+    def _event_scene_pos(self, event) -> QPointF:
+        return self.graphics_view.mapToScene(self._event_viewport_pos(event))
 
     def _enter_autopan(self, origin_viewport: QPoint) -> None:
         if self._autopan_active:
@@ -2490,7 +2480,7 @@ class PDFView(QMainWindow):
 
     def _mouse_press(self, event):
         viewport_pos = self._event_viewport_pos(event)
-        if getattr(self, "_autopan_active", False):
+        if self._autopan_active:
             button = event.button()
             self._exit_autopan()
             if button == Qt.RightButton:
@@ -2698,8 +2688,8 @@ class PDFView(QMainWindow):
         QGraphicsView.mousePressEvent(self.graphics_view, event)
 
     def _mouse_move(self, event):
-        if getattr(self, "_autopan_active", False):
-            self._autopan_cursor_viewport = QPoint(self._event_viewport_pos(event))
+        if self._autopan_active:
+            self._autopan_cursor_viewport = self._event_viewport_pos(event)
             event.accept()
             return
         scene_pos = self._event_scene_pos(event)
@@ -3715,10 +3705,7 @@ class PDFView(QMainWindow):
             self._hover_hidden_outline_key = None
 
     def _mouse_release(self, event):
-        # Defensive: auto-pan exits on the *press* that toggles it off, so releases typically
-        # arrive after `_exit_autopan()` has already run. Keep this guard to swallow any
-        # out-of-order/edge-case releases without leaking into tool handlers.
-        if getattr(self, "_autopan_active", False):
+        if self._autopan_active:
             event.accept()
             return
         # ── 拖曳移動文字框的放開處理 ──
@@ -4043,7 +4030,7 @@ class PDFView(QMainWindow):
             self._autopan_manual_menu = False
 
     def _show_context_menu(self, pos):
-        if getattr(self, "_autopan_suppress_next_context_menu", False) and not getattr(self, "_autopan_manual_menu", False):
+        if self._autopan_suppress_next_context_menu and not self._autopan_manual_menu:
             self._autopan_suppress_next_context_menu = False
             return
         menu = QMenu()
