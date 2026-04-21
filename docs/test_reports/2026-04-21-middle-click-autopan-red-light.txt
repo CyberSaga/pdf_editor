@@ -1,0 +1,38 @@
+Red-light evidence captured during implementation (auto-pan).
+
+Note: This output was produced before the auto-pan overlay scaffolding existed in `view/pdf_view.py`.
+
+Command:
+  pytest test_scripts/test_autopan.py -q
+
+Output:
+  FFFF                                                                     [100%]
+  =================================== FAILURES ===================================
+  ______________________ test_middle_click_enters_autopan _______________________
+
+      assert event.accepted is True
+  E   assert False is True
+
+  test_scripts\\test_autopan.py:136: AssertionError
+  ___________________ test_second_middle_click_exits_autopan ____________________
+
+  E   AttributeError: 'PDFView' object has no attribute '_autopan_active'. Did you mean: '_autopan_timer'?
+
+  test_scripts\\test_autopan.py:151: AttributeError
+  __________________ test_right_click_exit_shows_context_menu ___________________
+
+      assert event.accepted is True
+  E   assert False is True
+
+  test_scripts\\test_autopan.py:166: AssertionError
+  ___________ test_autopan_tick_scrolls_with_fractional_accumulation ____________
+
+  E   AttributeError: type object 'PDFView' has no attribute '_autopan_tick'
+
+  test_scripts\\test_autopan.py:179: AttributeError
+  =========================== short test summary info ============================
+  FAILED test_scripts/test_autopan.py::test_middle_click_enters_autopan
+  FAILED test_scripts/test_autopan.py::test_second_middle_click_exits_autopan
+  FAILED test_scripts/test_autopan.py::test_right_click_exit_shows_context_menu
+  FAILED test_scripts/test_autopan.py::test_autopan_tick_scrolls_with_fractional_accumulation
+  4 failed in 0.47s
