@@ -52,6 +52,12 @@
   - Add regression: two overlapping app-images, delete one, assert the other survives
     (mirror `test_move_overlapping_app_images_both_survive` in `test_scripts/test_image_objects_model.py:180`).
 
+## Future View Follow-Ups
+
+- [ ] Tune middle-click auto-pan speed/feel after manual validation on long multi-page PDFs.
+- [ ] Consider drawing an origin marker for auto-pan so users can see the deadzone anchor more clearly.
+- [ ] Flaky: `test_scripts/test_print_subprocess_runner.py::test_runner_heartbeat_events_prevent_false_stall` can fail during long `pytest -x` runs in the worktree but passes when run alone (timing-sensitive).
+
 ## Notes on `objects mode`
 
 - Treat `objects mode` as a separate interaction mode from browse mode and text-edit mode.

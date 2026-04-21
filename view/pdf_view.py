@@ -14,6 +14,7 @@ from PySide6.QtGui import (
     QBrush,
     QCloseEvent,
     QColor,
+    QCursor,
     QGuiApplication,
     QIcon,
     QKeySequence,
@@ -135,6 +136,9 @@ from view.dialogs import (  # noqa: E402, F401
 
 class PDFView(QMainWindow):
     _VALID_MODES = {"browse", "edit_text", "text_edit", "objects", "add_text", "rect", "highlight", "add_annotation"}
+    _AUTOPAN_DEADZONE_PX: float = 12.0
+    _AUTOPAN_DIVISOR: float = 8.0
+    _AUTOPAN_MAX_STEP_PX: float = 40.0
     # --- Existing Signals ---
     sig_open_pdf = Signal(str)
     sig_print_requested = Signal()
@@ -332,6 +336,17 @@ class PDFView(QMainWindow):
         self._zoom_debounce_timer = QTimer(self)
         self._zoom_debounce_timer.setSingleShot(True)
         self._zoom_debounce_timer.timeout.connect(self._on_zoom_debounce)
+        self._autopan_active: bool = False
+        self._autopan_origin_viewport: QPoint | None = None
+        self._autopan_cursor_viewport: QPoint | None = None
+        self._autopan_accum_x: float = 0.0
+        self._autopan_accum_y: float = 0.0
+        self._autopan_prev_cursor: QCursor | None = None
+        self._autopan_suppress_next_context_menu: bool = False
+        self._autopan_manual_menu: bool = False
+        self._autopan_timer = QTimer(self)
+        self._autopan_timer.setInterval(16)
+        self._autopan_timer.timeout.connect(self._autopan_tick)
         self._outline_redraw_timer = QTimer(self)
         self._outline_redraw_timer.setSingleShot(True)
         self._outline_redraw_timer.timeout.connect(self._draw_all_block_outlines)
@@ -2392,7 +2407,7 @@ class PDFView(QMainWindow):
         """wheel 縮放停止後觸發：重新以當前 self.scale 渲染所有頁面，確保清晰顯示。"""
         self.sig_request_rerender.emit()
 
-    def _event_scene_pos(self, event) -> QPointF:
+    def _event_viewport_pos(self, event) -> QPoint:
         raw_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         viewport = self.graphics_view.viewport() if getattr(self, "graphics_view", None) is not None else None
         if viewport is not None:
@@ -2400,9 +2415,83 @@ class PDFView(QMainWindow):
                 raw_pos = viewport.mapFrom(self.graphics_view, raw_pos)
             except Exception:
                 pass
-        return self.graphics_view.mapToScene(raw_pos)
+        return QPoint(raw_pos)
+
+    def _event_scene_pos(self, event) -> QPointF:
+        return self.graphics_view.mapToScene(self._event_viewport_pos(event))
+
+    def _enter_autopan(self, origin_viewport: QPoint) -> None:
+        if self._autopan_active:
+            return
+        if self.text_editor:
+            self._finalize_text_edit()
+        viewport = self.graphics_view.viewport()
+        self._autopan_prev_cursor = viewport.cursor()
+        viewport.setCursor(Qt.SizeAllCursor)
+        self._autopan_active = True
+        self._autopan_origin_viewport = QPoint(origin_viewport)
+        self._autopan_cursor_viewport = QPoint(origin_viewport)
+        self._autopan_accum_x = 0.0
+        self._autopan_accum_y = 0.0
+        self._autopan_timer.start()
+
+    def _exit_autopan(self) -> None:
+        if not self._autopan_active:
+            return
+        self._autopan_timer.stop()
+        self._autopan_active = False
+        self._autopan_origin_viewport = None
+        self._autopan_cursor_viewport = None
+        self._autopan_accum_x = 0.0
+        self._autopan_accum_y = 0.0
+        viewport = self.graphics_view.viewport()
+        if self._autopan_prev_cursor is not None:
+            viewport.setCursor(self._autopan_prev_cursor)
+        else:
+            viewport.unsetCursor()
+        self._autopan_prev_cursor = None
+
+    def _autopan_tick(self) -> None:
+        if not self._autopan_active:
+            return
+        origin = self._autopan_origin_viewport
+        cursor = self._autopan_cursor_viewport
+        if origin is None or cursor is None:
+            return
+
+        def _step(delta: float) -> float:
+            sign = 1.0 if delta > 0 else (-1.0 if delta < 0 else 0.0)
+            magnitude = max(0.0, abs(delta) - self._AUTOPAN_DEADZONE_PX) / self._AUTOPAN_DIVISOR
+            return sign * min(magnitude, self._AUTOPAN_MAX_STEP_PX)
+
+        self._autopan_accum_x += _step(float(cursor.x() - origin.x()))
+        self._autopan_accum_y += _step(float(cursor.y() - origin.y()))
+        dx = int(math.copysign(math.floor(abs(self._autopan_accum_x)), self._autopan_accum_x))
+        dy = int(math.copysign(math.floor(abs(self._autopan_accum_y)), self._autopan_accum_y))
+        self._autopan_accum_x -= dx
+        self._autopan_accum_y -= dy
+
+        if dx:
+            hbar = self.graphics_view.horizontalScrollBar()
+            hbar.setValue(hbar.value() + dx)
+        if dy:
+            vbar = self.graphics_view.verticalScrollBar()
+            vbar.setValue(vbar.value() + dy)
 
     def _mouse_press(self, event):
+        viewport_pos = self._event_viewport_pos(event)
+        if self._autopan_active:
+            button = event.button()
+            self._exit_autopan()
+            if button == Qt.RightButton:
+                self._autopan_suppress_next_context_menu = True
+                self._show_context_menu_manual(viewport_pos)
+            event.accept()
+            return
+        if event.button() == Qt.MiddleButton:
+            self._enter_autopan(viewport_pos)
+            event.accept()
+            return
         scene_pos = self._event_scene_pos(event)
         if event.button() == Qt.LeftButton:
             if self.current_mode == 'add_annotation':
@@ -2599,6 +2688,10 @@ class PDFView(QMainWindow):
         QGraphicsView.mousePressEvent(self.graphics_view, event)
 
     def _mouse_move(self, event):
+        if self._autopan_active:
+            self._autopan_cursor_viewport = self._event_viewport_pos(event)
+            event.accept()
+            return
         scene_pos = self._event_scene_pos(event)
 
         if self.current_mode in ("objects", "text_edit", "edit_text"):
@@ -3612,6 +3705,9 @@ class PDFView(QMainWindow):
             self._hover_hidden_outline_key = None
 
     def _mouse_release(self, event):
+        if self._autopan_active:
+            event.accept()
+            return
         # ── 拖曳移動文字框的放開處理 ──
         if self.current_mode in ("objects", "text_edit", "edit_text") and event.button() == Qt.LeftButton:
             if getattr(self, "_object_resize_pending", False):
@@ -3926,7 +4022,17 @@ class PDFView(QMainWindow):
     ) -> TextEditFinalizeResult:
         return self._ensure_text_edit_manager().finalize_text_edit_impl(reason)
 
+    def _show_context_menu_manual(self, pos: QPoint) -> None:
+        self._autopan_manual_menu = True
+        try:
+            self._show_context_menu(pos)
+        finally:
+            self._autopan_manual_menu = False
+
     def _show_context_menu(self, pos):
+        if self._autopan_suppress_next_context_menu and not self._autopan_manual_menu:
+            self._autopan_suppress_next_context_menu = False
+            return
         menu = QMenu()
         object_hit = self._resolve_object_info_for_context_menu_pos(pos)
         text_hit = self._resolve_text_info_for_context_menu_pos(pos)
