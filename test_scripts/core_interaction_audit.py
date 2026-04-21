@@ -53,11 +53,14 @@ class AuditReport:
 
 
 def _relative_path(path: Path) -> str:
+    repo_root = Path(__file__).resolve().parents[1]
     try:
-        repo_root = Path(__file__).resolve().parents[1]
-        return path.resolve().relative_to(repo_root.resolve()).as_posix()
+        return path.relative_to(repo_root).as_posix()
     except ValueError:
-        return path.as_posix()
+        try:
+            return path.resolve().relative_to(repo_root.resolve()).as_posix()
+        except ValueError:
+            return path.as_posix()
 
 
 def default_core_interaction_plan(repo_root: Path) -> AuditPlan:
