@@ -195,6 +195,26 @@
 
 ---
 
+## Multi-style paragraph edit collapses all runs to one color
+
+**Area:** `model/pdf_model.py` — `_apply_redact_insert`
+**Symptom:** Editing a paragraph that contains runs with different colors (e.g. one red word, rest black) makes the entire replacement text appear in a single color.
+**Cause:** `_convert_text_to_html(new_text, color=color)` uses the dominant color for the whole string. Additionally, the single-line fast path (`page.insert_text(...)`) bypassed multi-style detection entirely.
+**Fix:** Detect `preserve_multi_style` when in paragraph mode with ≥2 distinct span colors and the request color matches one of them. When active, use `_build_multi_style_html(...)` (difflib char-level mapping) to rebuild per-run colored HTML, and skip the single-line fast path.
+**File:** `model/pdf_model.py`
+
+---
+
+## Test fixture skips `__init__` — manually inject `_autopan_active`
+
+**Area:** `test_scripts/test_text_editing_gui_regressions.py`
+**Symptom:** Three drag tests fail with `AttributeError: 'PDFView' object has no attribute '_autopan_active'` after the middle-click autopan merge.
+**Cause:** The `_make_view()` fixture uses `PDFView.__new__(PDFView)` to skip `__init__`, so any attribute set in `__init__` is absent. The autopan merge added `self._autopan_active = False` in `__init__`.
+**Fix:** Add `view._autopan_active = False` to the fixture's manual attribute injection block.
+**File:** `test_scripts/test_text_editing_gui_regressions.py`
+
+---
+
 ## Continuous mode `change_scale` only redraws one page
 
 **Area:** `controller/pdf_controller.py` — `change_scale`  

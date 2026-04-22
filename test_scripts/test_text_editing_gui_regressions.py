@@ -362,6 +362,7 @@ def _make_view() -> pdf_view.PDFView:
     view._selected_text_page_idx = None
     view._selected_text_cached = ""
     view._selected_text_hit_info = None
+    view._autopan_active = False
     return view
 
 
@@ -1266,3 +1267,129 @@ def test_cmd_shift_z_fires_redo(qapp) -> None:
     shortcut.activated.emit()
 
     assert redo_fired[0] == 1, "Ctrl+Shift+Z shortcut must fire exactly once when activated"
+
+
+# ── Phase-2 red-light regressions ───────────────────────────────────────────
+
+
+class _FractionalCombo:
+    def currentText(self) -> str:
+        return "9.5"
+
+
+def test_phase2_finalize_preserves_fractional_font_size_in_edit_request() -> None:
+    """Phase-2 symptoms 2/5 root cause: finalize must forward the fractional session
+    size into ``EditTextRequest.size`` without int-truncation or round-trip loss.
+    """
+    view = _make_view()
+    view.text_size = _FractionalCombo()
+    view.text_editor = _FakeProxy(_FakeEditorWidget("edited text", "original text"))
+    view._editing_original_rect = fitz.Rect(10, 20, 120, 50)
+    view.editing_rect = fitz.Rect(10, 20, 120, 50)
+    view.editing_font_name = "helv"
+    view._editing_initial_font_name = "helv"
+    view.editing_color = (0, 0, 0)
+    view._editing_initial_size = 9.5
+    view.editing_original_text = "original text"
+    view.editing_intent = "edit_existing"
+
+    view._finalize_text_edit_impl(pdf_view.TextEditFinalizeReason.CLICK_AWAY)
+
+    assert len(view.sig_edit_text.calls) == 1, (
+        "finalize must emit exactly one EditTextRequest for a fractional-size edit"
+    )
+    payload = view.sig_edit_text.calls[0][0]
+    assert isinstance(payload, pdf_view.EditTextRequest)
+    assert abs(float(payload.size) - 9.5) < 1e-6, (
+        f"Fractional font size collapsed to {payload.size} in EditTextRequest"
+    )
+
+
+def test_phase2_create_text_editor_records_fractional_initial_size(
+    monkeypatch: pytest.MonkeyPatch, qapp
+) -> None:
+    """Phase-2 symptom 5: rotated/fractional editors must preserve float size at creation.
+
+    Current root cause: ``view._editing_initial_size = int(round(font_size))`` silently
+    collapses 9.5 to 10, which cascades into oversized/clipped rotated proxies and
+    broken no-op detection on finalize.
+    """
+    class _FakeSceneWithAddWidget(_FakeScene):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_proxy: _FakeProxy | None = None
+
+        def addWidget(self, widget):
+            self.last_proxy = _FakeProxy(widget)
+            return self.last_proxy
+
+    view = _make_view()
+    _attach_text_property_panel(view)
+    view.scene = _FakeSceneWithAddWidget()
+    view._render_scale = 1.0
+    view.controller = SimpleNamespace(
+        model=SimpleNamespace(get_render_width_for_edit=lambda *args, **kwargs: 40.0)
+    )
+    view._refresh_undo_redo_action_state = lambda: None
+    view._set_document_undo_redo_enabled = lambda enabled: None
+    view._set_edit_focus_guard = lambda enabled: None
+    view._sync_text_property_panel_state = lambda: None
+
+    manager = pdf_view.TextEditManager(view)
+    manager.refresh_text_editor_mask_color = lambda: None
+
+    monkeypatch.setattr(text_editing, "InlineTextEditor", _FakeInlineTextEditor)
+    monkeypatch.setattr(text_editing, "_EditorShortcutForwarder", lambda view: object())
+
+    manager.create_text_editor(
+        rect=fitz.Rect(10, 20, 50, 120),
+        text="fractional text",
+        font_name="helv",
+        font_size=9.5,
+        color=(0.0, 0.0, 0.0),
+        rotation=90,
+        target_span_id="span-frac",
+        target_mode="run",
+    )
+
+    recorded = getattr(view, "_editing_initial_size", None)
+    assert recorded is not None
+    assert abs(float(recorded) - 9.5) < 1e-6, (
+        f"Editor initial size truncated to {recorded}; fractional sizes lost at editor creation"
+    )
+
+
+def test_phase2_refresh_mask_keeps_editor_stylesheet_transparent() -> None:
+    """Phase-2 symptom 4: refreshing the mask color must not paint a solid fill on the
+    editor widget — transparency is split between widget stylesheet and scene mask.
+    """
+    view = _make_view()
+    editor_widget = _FakeEditorWidget("mask text", "mask text")
+    editor_widget.setProperty("text_rgb", (12, 34, 56))
+    view.text_editor = _FakeProxy(editor_widget, pos=QPointF(10, 20))
+    view._editing_page_idx = 0
+    view._sample_page_mask_color = lambda page_idx, scene_rect: QColor(210, 220, 230)
+
+    class _SceneWithAddRect(_FakeScene):
+        def addRect(self, rect, pen=None, brush=None):
+            item = _FakeRectItem(rect)
+            item.pen = pen
+            item.brush = brush
+            return item
+
+    view.scene = _SceneWithAddRect()
+
+    manager = pdf_view.TextEditManager(view)
+    manager.refresh_text_editor_mask_color()
+
+    assert "background: transparent" in editor_widget.stylesheet, (
+        f"editor stylesheet lost transparency after mask refresh: {editor_widget.stylesheet!r}"
+    )
+    assert "background: rgb(" not in editor_widget.stylesheet, (
+        f"Mask refresh introduced a solid background on the editor: {editor_widget.stylesheet!r}"
+    )
+    mask_item = getattr(view, "_text_editor_mask_item", None)
+    assert mask_item is not None, "mask refresh must create the scene mask item"
+    assert mask_item.brush is not None, (
+        "mask refresh must assign the sampled brush so the scene mask actually hides PDF text"
+    )

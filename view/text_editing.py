@@ -10,7 +10,25 @@ from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer, 
 from PySide6.QtGui import QBrush, QColor, QFont, QPen, QTextCursor, QTextOption
 from PySide6.QtWidgets import QTextEdit
 
+from model.edit_requests import EditTextRequest, MoveTextRequest  # re-exported for view/controller
+
 logger = logging.getLogger(__name__)
+
+
+def _parse_font_size_str(text: str) -> float | None:
+    """Parse combo-box font-size text as float; return None on malformed input."""
+    try:
+        return float(str(text).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_font_size(size: float) -> str:
+    """Render a font size for the combo box: ``9`` / ``9.5`` — no trailing ``.0``."""
+    value = float(size)
+    if abs(value - round(value)) < 1e-6:
+        return str(int(round(value)))
+    return f"{value:g}"
 
 _LIGATURE_EXPAND = {
     "\ufb00": "ff",
@@ -84,59 +102,14 @@ class TextEditFinalizeResult:
 
 
 @dataclass(frozen=True)
-class EditTextRequest:
-    page: int
-    rect: fitz.Rect
-    new_text: str
-    font: str
-    size: float
-    color: tuple
-    original_text: str | None = None
-    vertical_shift_left: bool = True
-    new_rect: fitz.Rect | None = None
-    target_span_id: str | None = None
-    target_mode: str | None = None
-
-    def to_legacy_args(self) -> tuple:
-        return (
-            self.page,
-            self.rect,
-            self.new_text,
-            self.font,
-            self.size,
-            self.color,
-            self.original_text,
-            self.vertical_shift_left,
-            self.new_rect,
-            self.target_span_id,
-            self.target_mode,
-        )
-
-
-@dataclass(frozen=True)
-class MoveTextRequest:
-    source_page: int
-    source_rect: fitz.Rect
-    destination_page: int
-    destination_rect: fitz.Rect
-    new_text: str
-    font: str
-    size: float
-    color: tuple
-    original_text: str | None = None
-    target_span_id: str | None = None
-    target_mode: str | None = None
-
-
-@dataclass(frozen=True)
 class TextEditSession:
     original_rect: fitz.Rect | None
     current_rect: fitz.Rect | None
     current_font: str
     initial_font: str
     original_color: tuple
-    current_size: int
-    initial_size: int
+    current_size: float
+    initial_size: float
     edit_page: int
     origin_page: int
     intent: str
@@ -403,7 +376,9 @@ class TextEditManager:
         view.editing_intent = editor_intent if editor_intent in ("edit_existing", "add_new") else "edit_existing"
 
         qt_font = view._pdf_font_to_qt(font_name)
-        editor.setFont(QFont(qt_font, int(font_size)))
+        qt_font_obj = QFont(qt_font)
+        qt_font_obj.setPointSizeF(float(font_size))
+        editor.setFont(qt_font_obj)
 
         r, g, b = [int(c * 255) for c in color]
         text_rgb = (r, g, b)
@@ -420,17 +395,20 @@ class TextEditManager:
         editor.setLineWrapMode(QTextEdit.WidgetWidth)
         editor.setWordWrapMode(QTextOption.WrapAnywhere)
 
-        size_str = str(round(font_size))
+        size_str = _format_font_size(font_size)
         if view.text_size.findText(size_str) == -1:
             view.text_size.addItem(size_str)
-            items = sorted([view.text_size.itemText(i) for i in range(view.text_size.count())], key=int)
+            items = sorted(
+                (view.text_size.itemText(i) for i in range(view.text_size.count())),
+                key=lambda item: _parse_font_size_str(item) or 0.0,
+            )
             view.text_size.clear()
             view.text_size.addItems(items)
         view.text_size.setCurrentText(size_str)
         normalized_font = view._qt_font_to_pdf(font_name)
         view._set_text_font_by_pdf(normalized_font)
         view._editing_initial_font_name = normalized_font
-        view._editing_initial_size = int(round(font_size))
+        view._editing_initial_size = float(font_size)
         if not hasattr(view, "editing_font_name"):
             view.editing_font_name = normalized_font
         if not getattr(view, "_edit_font_size_connected", False):
@@ -491,13 +469,12 @@ class TextEditManager:
         view = self._view
         if not view.text_editor or not view.text_editor.widget():
             return
-        try:
-            size = int(size_str)
-        except (ValueError, TypeError):
+        size = _parse_font_size_str(size_str)
+        if size is None or size <= 0:
             return
         editor = view.text_editor.widget()
         font = editor.font()
-        font.setPointSize(size)
+        font.setPointSizeF(float(size))
         editor.setFont(font)
         QTimer.singleShot(
             TextEditUIConstants.FOCUS_RESTORE_DELAY_MS,
@@ -560,14 +537,20 @@ class TextEditManager:
             )
         )
 
+        combo_size = _parse_font_size_str(view.text_size.currentText())
+        initial_size_attr = getattr(view, "_editing_initial_size", combo_size)
+        try:
+            initial_size = float(initial_size_attr) if initial_size_attr is not None else (combo_size or 0.0)
+        except (TypeError, ValueError):
+            initial_size = combo_size or 0.0
         session = TextEditSession(
             original_rect=fitz.Rect(original_rect) if original_rect else None,
             current_rect=fitz.Rect(current_rect) if current_rect else None,
             current_font=getattr(view, "editing_font_name", "helv"),
             initial_font=getattr(view, "_editing_initial_font_name", getattr(view, "editing_font_name", "helv")),
             original_color=getattr(view, "editing_color", (0, 0, 0)),
-            current_size=int(view.text_size.currentText()),
-            initial_size=int(getattr(view, "_editing_initial_size", int(view.text_size.currentText()))),
+            current_size=float(combo_size) if combo_size is not None else float(initial_size),
+            initial_size=float(initial_size),
             edit_page=getattr(view, "_editing_page_idx", view.current_page),
             origin_page=getattr(view, "_editing_origin_page_idx", getattr(view, "_editing_page_idx", view.current_page)),
             intent=getattr(view, "editing_intent", "edit_existing"),
@@ -576,7 +559,7 @@ class TextEditManager:
             original_text=getattr(view, "editing_original_text", None),
         )
         font_changed = str(session.current_font).lower() != str(session.initial_font).lower()
-        size_changed = session.current_size != session.initial_size
+        size_changed = abs(float(session.current_size) - float(session.initial_size)) > 1e-3
         delta = TextEditDelta(
             text_changed=text_changed,
             style_changed=(font_changed or size_changed),

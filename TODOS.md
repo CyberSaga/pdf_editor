@@ -1,5 +1,16 @@
 # TODOS
 
+## Done (2026-04-22) -- Phase 2 text-editing fidelity
+
+- What: Closed the Phase 2 gap between current text-edit behavior and Acrobat-level stability across five tasks.
+- Changes shipped:
+  - Red-light matrix: 6 regression tests across float font-size round-trip, multi-style paragraph collapse, inline editor geometry/transparency, and stale-fixture autopan attribute.
+  - Float font-size: `TextEditSession`, `EditTextRequest`, and all call sites now use `float` throughout. `_parse_font_size_str` / `_format_font_size` helpers normalize the font-size combo widget.
+  - Multi-style preservation: `_build_multi_style_html` uses difflib char-level mapping to rebuild per-run color fidelity. `preserve_multi_style` flag gates the path and skips the single-line fast path.
+  - Request deduplication: `EditTextRequest` and `MoveTextRequest` moved to `model/edit_requests.py` as single source of truth; re-exported via `view/text_editing.py`.
+  - Fixture fix: `_make_view()` in `test_text_editing_gui_regressions.py` now injects `_autopan_active = False` to match post-autopan-merge `__init__`.
+- Outcome: 91 tests pass (2 pre-existing context-menu failures unrelated to Phase 2). All 6 red-light tests green.
+
 ## Done (2026-04-20) -- F4 view-only color profile switching (simplify + bug fix pass)
 
 - What: Completed F4 with a three-agent code review pass (reuse, quality, efficiency) plus a P0 object-selection-overlay bug fix.

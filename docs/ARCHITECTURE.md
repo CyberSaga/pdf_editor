@@ -52,6 +52,7 @@ Snapshot APIs include `_capture_doc_snapshot()`, `_restore_doc_from_snapshot(...
 - Phase 2 (mutate): `_apply_redact_insert(...)`
 - Phase 3 (verify + index): `_verify_rebuild_edit(...)`
 - Horizontal single-line edits that still fit on one line use an origin-preserving `insert_text(...)` fast path inside `_apply_redact_insert(...)`; wrapped / dragged / vertical cases still use the existing htmlbox flow.
+- Paragraph-mode edits that span ≥2 distinct span colors use `_build_multi_style_html(...)` (difflib char-level mapping) to rebuild per-run color fidelity. This path is gated on `preserve_multi_style` and takes priority over the single-line fast path.
 
 This structure is enforced by per-phase unit tests using real PyMuPDF documents (no mocks) in `test_scripts/test_edit_text_helpers.py`.
 
@@ -110,9 +111,10 @@ The text editor state is split by intent:
 - `add_new` for inserting new page text.
 - Browse-mode drag selection still starts in the view, but the actual copied text and highlight bounds are resolved through the model's run-anchored selection helpers so the MVC boundary stays intact. Start requires a direct run hit via strict hit-testing (`allow_fallback=False`); the end point may snap to the nearest run on the same page only after exact-run hit detection misses.
 
-Typed edit payloads are part of the view/controller boundary:
+Typed edit payloads are part of the view/controller boundary and are defined in `model/edit_requests.py` (single source of truth):
 - `EditTextRequest` packages same-page edit commits.
 - `MoveTextRequest` packages cross-page text moves and replaces the previous positional `sig_move_text_across_pages(...)` signature.
+Both are re-exported via `view/text_editing.py` for backward-compatible view/controller imports.
 
 Inline editor finalization is guarded by focus context:
 - Focus transitions inside text-edit context (editor widget, text property panel, combo popups) keep the session alive.

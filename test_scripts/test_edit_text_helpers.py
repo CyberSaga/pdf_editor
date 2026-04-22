@@ -343,3 +343,64 @@ def test_verify_rebuild_rollback(model_with_pdf: PDFModel) -> None:
             resolve_result=resolve_result,
             new_layout_rect=fitz.Rect(block.layout_rect),
         )
+
+
+# ── Phase-2 red-light regressions ───────────────────────────────────────────
+
+
+def test_phase2_single_line_run_edit_preserves_anchor_without_drag(
+    model_with_pdf: PDFModel,
+) -> None:
+    """Phase-2 symptom 1: run-mode non-drag edits must not drift the anchor."""
+    target = _find_block(model_with_pdf, 0, "Hello World")
+    assert target is not None
+    baseline_x0 = float(target.layout_rect.x0)
+    baseline_y0 = float(target.layout_rect.y0)
+
+    result = model_with_pdf.edit_text(
+        page_num=1,
+        rect=fitz.Rect(target.layout_rect),
+        new_text="Hello world!",
+        font=target.font,
+        size=float(target.size),
+        color=tuple(float(c) for c in target.color),
+        original_text=target.text,
+        target_mode="run",
+    )
+    assert result is EditTextResult.SUCCESS
+    model_with_pdf.block_manager.rebuild_page(0, model_with_pdf.doc)
+
+    edited = _find_block(model_with_pdf, 0, "Hello world!")
+    assert edited is not None
+    drift_x0 = float(edited.layout_rect.x0) - baseline_x0
+    drift_y0 = float(edited.layout_rect.y0) - baseline_y0
+    assert abs(drift_x0) < 0.5, f"Anchor drifted x0 by {drift_x0:.3f}pt"
+    assert abs(drift_y0) < 0.5, f"Anchor drifted y0 by {drift_y0:.3f}pt"
+
+
+def test_phase2_edit_text_preserves_fractional_font_size(
+    model_with_pdf: PDFModel,
+) -> None:
+    """Phase-2 symptom 2: fractional font sizes must round-trip through edit_text."""
+    target = _find_block(model_with_pdf, 0, "Original text to edit")
+    assert target is not None
+
+    result = model_with_pdf.edit_text(
+        page_num=1,
+        rect=fitz.Rect(target.layout_rect),
+        new_text="Fractional edit content",
+        font=target.font,
+        size=9.5,
+        color=tuple(float(c) for c in target.color),
+        original_text=target.text,
+        target_mode="run",
+    )
+    assert result is EditTextResult.SUCCESS
+    model_with_pdf.block_manager.rebuild_page(0, model_with_pdf.doc)
+
+    edited = _find_block(model_with_pdf, 0, "Fractional edit content")
+    assert edited is not None
+    observed_size = float(edited.size)
+    assert abs(observed_size - 9.5) < 0.1, (
+        f"Fractional size collapsed to {observed_size:.3f} (expected ≈9.5)"
+    )
