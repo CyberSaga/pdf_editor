@@ -73,6 +73,8 @@ from utils.helpers import parse_pages, show_error
 from view.text_editing import (
     _DEFAULT_EDITOR_MASK_COLOR,
     _EditorShortcutForwarder,  # noqa: F401 — re-exported for tests and legacy imports
+    _format_font_size,
+    _parse_font_size_str,
     EditTextRequest,  # noqa: F401 — re-exported for controller
     InlineTextEditor,  # noqa: F401 — re-exported for tests and legacy imports
     MoveTextRequest,  # noqa: F401 — re-exported for controller
@@ -1433,11 +1435,11 @@ class PDFView(QMainWindow):
             return
 
         try:
-            size_value = int(round(float(font_size)))
+            size_value = float(font_size)
         except (TypeError, ValueError):
             return
 
-        size_str = str(size_value)
+        size_str = _format_font_size(size_value)
         if self.text_size.findText(size_str) == -1:
             self.text_size.addItem(size_str)
         self.text_size.setCurrentText(size_str)
@@ -2968,11 +2970,10 @@ class PDFView(QMainWindow):
             return
         page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
         visual_rect = self._build_add_text_visual_rect(page_idx, doc_point)
-        font_size = self._add_text_default_size
-        try:
-            font_size = int(self.text_size.currentText())
-        except Exception:
-            pass
+        font_size: float = float(self._add_text_default_size)
+        parsed_size = _parse_font_size_str(self.text_size.currentText())
+        if parsed_size is not None and parsed_size > 0:
+            font_size = parsed_size
         selected_pdf_font = self._qt_font_to_pdf(
             str(self.text_font.currentData() or self.text_font.currentText())
         )

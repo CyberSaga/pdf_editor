@@ -2367,6 +2367,90 @@ class PDFModel:
 
         return "".join(html_parts)
 
+    def _build_multi_style_html(
+        self,
+        new_text: str,
+        member_spans: list,
+        default_color: tuple,
+        latin_font: str = "helv",
+    ) -> str:
+        """Build HTML that preserves per-run colors from ``member_spans``.
+
+        Used when a paragraph-mode edit should not collapse multi-style runs
+        onto the dominant color: characters in ``new_text`` that diff-match a
+        source span inherit that span's color; inserted/replaced chunks inherit
+        the nearest preceding span's color (or the first span's color at the
+        start).
+        """
+        if not new_text:
+            return ""
+        ordered = sorted(
+            member_spans,
+            key=lambda s: (float(s.bbox.y0), float(s.bbox.x0)),
+        )
+        source_chars: list[str] = []
+        source_colors: list[tuple[float, float, float]] = []
+        for span in ordered:
+            span_text = span.text or ""
+            span_color = tuple(float(c) for c in (span.color or default_color))
+            for ch in span_text:
+                source_chars.append(ch)
+                source_colors.append(span_color)
+        source_text = "".join(source_chars)
+        if not source_text or not source_colors:
+            return self._convert_text_to_html(
+                new_text, 12, default_color, latin_font=latin_font
+            )
+
+        new_colors: list[tuple | None] = [None] * len(new_text)
+        matcher = difflib.SequenceMatcher(a=source_text, b=new_text, autojunk=False)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                for k in range(j2 - j1):
+                    new_colors[j1 + k] = source_colors[i1 + k]
+            else:
+                inherit = source_colors[i1 - 1] if i1 > 0 else source_colors[0]
+                for k in range(j2 - j1):
+                    new_colors[j1 + k] = inherit
+        for idx in range(len(new_colors)):
+            if new_colors[idx] is None:
+                new_colors[idx] = tuple(float(c) for c in default_color)
+
+        latin_font_name = self._resolve_add_text_font(latin_font)
+        cjk_font_name = self._resolve_cjk_companion_font(latin_font_name)
+        latin_css_family = self._font_token_to_css_family(latin_font_name)
+        cjk_css_family = self._font_token_to_css_family(cjk_font_name)
+
+        html_parts: list[str] = []
+        idx = 0
+        while idx < len(new_text):
+            run_color = new_colors[idx]
+            start = idx
+            idx += 1
+            while idx < len(new_text) and new_colors[idx] == run_color:
+                idx += 1
+            chunk = new_text[start:idx]
+            r = int(round(run_color[0] * 255))
+            g = int(round(run_color[1] * 255))
+            b = int(round(run_color[2] * 255))
+            color_css = f"color: rgb({r}, {g}, {b});"
+            for part in _RE_HTML_TEXT_PARTS.findall(chunk):
+                if part == "\n":
+                    html_parts.append("<br>")
+                elif part.isspace():
+                    html_parts.append(
+                        f'<span style="font-family: {latin_css_family}; {color_css}">{part}</span>'
+                    )
+                elif _RE_CJK.match(part):
+                    html_parts.append(
+                        f'<span style="font-family: {cjk_css_family}; {color_css}">{_html_mod.escape(part)}</span>'
+                    )
+                else:
+                    html_parts.append(
+                        f'<span style="font-family: {latin_css_family}; {color_css}">{_html_mod.escape(part)}</span>'
+                    )
+        return "".join(html_parts)
+
 
     # ──────────────────────────────────────────────────────────────────────────
     # Phase 6: 文件整體快照（供 SnapshotCommand undo/redo 使用）
@@ -3327,9 +3411,40 @@ class PDFModel:
             resolve_result.redact_rect,
         )
 
-        html_content = self._convert_text_to_html(
-            new_text, int(size), color, latin_font=resolve_result.resolved_font
+        member_spans = [
+            span for span in resolve_result.overlap_cluster
+            if span.span_id in resolve_result.target_member_span_ids
+        ]
+        member_colors_distinct = {
+            tuple(round(float(c), 3) for c in (s.color or (0.0, 0.0, 0.0)))
+            for s in member_spans
+        }
+        request_color_rounded = tuple(
+            round(float(c), 3) for c in (color or (0.0, 0.0, 0.0))
         )
+        preserve_multi_style = (
+            resolve_result.effective_target_mode == "paragraph"
+            and len(member_colors_distinct) > 1
+            and request_color_rounded in member_colors_distinct
+        )
+
+        if preserve_multi_style:
+            html_content = self._build_multi_style_html(
+                new_text,
+                member_spans,
+                default_color=color,
+                latin_font=resolve_result.resolved_font,
+            )
+            logger.debug(
+                "multi-style paragraph preserve: page=%s members=%s distinct_colors=%s",
+                page_num,
+                len(member_spans),
+                len(member_colors_distinct),
+            )
+        else:
+            html_content = self._convert_text_to_html(
+                new_text, int(size), color, latin_font=resolve_result.resolved_font
+            )
         css = self._build_insert_css(size, color, resolve_result.resolved_font)
 
         if new_rect is not None:
@@ -3346,10 +3461,6 @@ class PDFModel:
         else:
             base_layout = fitz.Rect(resolve_result.target.layout_rect)
 
-        member_spans = [
-            span for span in resolve_result.overlap_cluster
-            if span.span_id in resolve_result.target_member_span_ids
-        ]
         single_line_members = (
             bool(member_spans)
             and max(float(span.bbox.y1) for span in member_spans) - min(float(span.bbox.y0) for span in member_spans)
@@ -3362,6 +3473,7 @@ class PDFModel:
             and "\n" not in new_text
             and single_line_members
             and not self._needs_cjk_font(new_text)
+            and not preserve_multi_style
         ):
             margin = 15
             right_margin_pt = max(60.0, min(120.0, float(size) * 2.0))
