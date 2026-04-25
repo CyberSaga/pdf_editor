@@ -492,3 +492,33 @@
 **Cause:** The auto-pan exit path intentionally shows the regular context menu immediately, but `QGraphicsView.customContextMenuRequested` can still fire afterward for the same gesture and trigger a second menu.  
 **Fix:** Gate `_show_context_menu(...)` with a one-shot `_autopan_suppress_next_context_menu` flag, and route the intentional exit-path menu through `_show_context_menu_manual(...)` so the manual call bypasses suppression while the next signal-driven call is swallowed.  
 **File:** `view/pdf_view.py`
+
+---
+
+## Single-line edits dramatically push surrounding text away
+
+**Area:** `model/pdf_model.py` — `_apply_redact_insert` pre-push probe  
+**Symptom:** Editing a single character on one line can shift every line below by 20pt+, making the page look like the edited text "got much larger" or "much smaller".  
+**Cause:** Two compounding bugs: (a) `_probe_y1` was clamped to `max(probe_actual, base_y1)` where `base_y1 = y0 + max(layout_h, line_count × size × 2 + size × 2)` — the heuristic floor was ~4× the realistic single-line height, forcing the probe artificially high; (b) MuPDF's `insert_htmlbox` adds a fixed 2.0pt of leading to every render regardless of CSS line-height, which alone exceeds the `size × 0.2` push-down threshold for small fonts.  
+**Fix:** Trust the probe's raw `_probe_used_h` measurement (drop the `max(probe, base_y1)` clamping) and subtract the constant 2.0pt MuPDF overhead from `raw_growth` before comparing to the threshold.  
+**File:** `model/pdf_model.py`
+
+---
+
+## Committed text line height diverges from original PDF
+
+**Area:** `model/pdf_model.py` — `_apply_redact_insert` (call to `_build_insert_css`)  
+**Symptom:** After editing text, the committed text block can take more or less vertical space than the original because line spacing changed.  
+**Cause:** `_build_insert_css` defaults to `line_height = max(size × 1.1, font_metrics × size)` when no explicit value is given. This auto-calculated value differs from the original PDF's actual per-line height.  
+**Fix:** Compute original line height from `member_spans` — median baseline-to-baseline advance for multi-line targets, max `bbox.height` for single-line — and pass it as `line_height` to `_build_insert_css`.  
+**File:** `model/pdf_model.py`
+
+---
+
+## Editor wrap width wider than source rect causes wrapping divergence
+
+**Area:** `model/pdf_model.py` — `get_render_width_for_edit`  
+**Symptom:** Inline editor shows text wrapping on different lines than the rendered PDF beneath it (the "break lines once edit box opened" symptom).  
+**Cause:** `get_render_width_for_edit` returned `max(rect.width, page-margin-safe-width)`, potentially wider than the source rect. Qt's font renderer (with slightly different horizontal glyph metrics than PyMuPDF) then re-laid the text at different break points.  
+**Fix:** Return `float(rect.width)` directly so the editor wraps at exactly the same character positions as the source PDF.  
+**File:** `model/pdf_model.py`
