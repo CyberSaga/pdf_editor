@@ -1517,18 +1517,16 @@ class PDFModel:
         return "\n".join(line_texts).strip(), bounds
 
     def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect, rotation: int = 0, font_size: float = 12) -> float:
-        """取得編輯時會使用的換行寬度（points），供編輯框預覽與 PDF 渲染一致。"""
-        if not self.doc or page_num < 1 or page_num > len(self.doc):
-            return rect.width
-        page = self.doc[page_num - 1]
-        page_rect = page.rect
-        margin = 15
-        right_margin_pt = max(60.0, min(120.0, float(font_size) * 2.0))
-        right_safe = page_rect.x1 - right_margin_pt
-        if rotation in (90, 270):
-            return rect.width
-        max_w = right_safe - max(rect.x0, page_rect.x0) - margin
-        return max(rect.width, min(max_w, page_rect.width * 0.98))
+        """Return the wrap width (points) for the inline editor.
+
+        For visual fidelity, the editor's wrap width must match the original
+        text block's width exactly. A wider editor would let Qt re-layout the
+        text at different break points than the rendered PDF (because Qt and
+        PyMuPDF have slightly different horizontal glyph metrics), producing
+        the "break lines once edit box opened" symptom. ``font_size`` is kept
+        in the signature for API stability with existing callers.
+        """
+        return float(rect.width)
 
     def _resolve_add_text_font(self, font_hint: str) -> str:
         """Resolve add-text font name with CJK-safe default."""

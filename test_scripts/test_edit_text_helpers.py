@@ -528,6 +528,35 @@ def test_edit_preserves_span_bbox_height_after_content_change(
         model.close()
 
 
+def test_render_width_for_edit_does_not_exceed_rect_width(tmp_path: Path):
+    """Inline editor wrap width must match the original text-block width.
+
+    If the editor is wider than the source rect, Qt's font renderer (which has
+    slightly different glyph metrics than PyMuPDF) lays text at different visual
+    widths and breaks lines at different points than the rendered PDF — this is
+    the "break lines once edit box opened" symptom.
+    """
+    pdf_path = tmp_path / "render_width.pdf"
+    doc = fitz.open()
+    doc.new_page(width=400, height=300)
+    doc.save(str(pdf_path), garbage=0)
+    doc.close()
+
+    model = PDFModel()
+    model.open_pdf(str(pdf_path))
+    try:
+        test_rect = fitz.Rect(50, 80, 200, 100)  # width = 150pt
+        returned_width = model.get_render_width_for_edit(
+            page_num=1, rect=test_rect, rotation=0, font_size=12.0
+        )
+        assert returned_width <= test_rect.width + 0.5, (
+            f"Editor width {returned_width:.1f}pt exceeds source rect width "
+            f"{test_rect.width:.1f}pt — wrapping will diverge from PDF render"
+        )
+    finally:
+        model.close()
+
+
 def test_repeated_edits_do_not_accumulate_size_drift(tmp_path: Path):
     """Five consecutive edits on the same span must not amplify any per-edit drift.
 
