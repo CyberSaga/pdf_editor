@@ -528,6 +528,63 @@ def test_edit_preserves_span_bbox_height_after_content_change(
         model.close()
 
 
+def test_single_line_edit_does_not_push_unedited_text(tmp_path: Path):
+    """A single-character edit on one line must not shift unedited text below it.
+
+    Reproduces the user's "push unedited lines away" symptom: editing a heading
+    used to inflate the redacted region by ~22pt due to (a) MuPDF's 2pt htmlbox
+    rendering overhead and (b) an over-conservative est_height heuristic
+    forcing _probe_y1 to base_y1 = y0 + line_count × size × 2 + size × 2.
+    With both fixes, the probe trusts its actual measurement and subtracts
+    MuPDF's known overhead, so a single-line edit does not trigger push-down.
+    """
+    pdf_path = tmp_path / "layout.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=400, height=400)
+    page.insert_text((50, 100), "Heading line", fontname="helv", fontsize=12.0)
+    # Anchor text below — should NOT shift after the heading edit.
+    page.insert_text((50, 200), "Anchor text below", fontname="helv", fontsize=12.0)
+    doc.save(str(pdf_path), garbage=0)
+    doc.close()
+
+    model = PDFModel()
+    model.open_pdf(str(pdf_path))
+    try:
+        model.ensure_page_index_built(1)
+        anchor_before = model.get_text_info_at_point(1, fitz.Point(60, 200))
+        assert anchor_before is not None
+        anchor_y_before = float(anchor_before.target_bbox.y0)
+
+        # Edit the heading
+        hit = model.get_text_info_at_point(1, fitz.Point(60, 100))
+        assert hit is not None
+        model.edit_text(
+            page_num=1,
+            rect=hit.target_bbox,
+            new_text=hit.target_text + "X",
+            font=hit.font,
+            size=hit.size,
+            color=hit.color,
+            original_text=hit.target_text,
+            target_span_id=hit.target_span_id,
+            target_mode="run",
+        )
+
+        model.ensure_page_index_built(1)
+        anchor_after = model.get_text_info_at_point(1, fitz.Point(60, 200))
+        assert anchor_after is not None, "Anchor text disappeared after edit"
+        anchor_y_after = float(anchor_after.target_bbox.y0)
+
+        # The anchor must not have moved (small floating-point tolerance only)
+        assert abs(anchor_y_after - anchor_y_before) < 1.0, (
+            f"Unedited anchor text shifted {anchor_y_before:.3f} → "
+            f"{anchor_y_after:.3f} ({anchor_y_after - anchor_y_before:+.3f}pt) "
+            f"after a single-line content edit — push-down triggered erroneously"
+        )
+    finally:
+        model.close()
+
+
 def test_render_width_for_edit_does_not_exceed_rect_width(tmp_path: Path):
     """Inline editor wrap width must match the original text-block width.
 
