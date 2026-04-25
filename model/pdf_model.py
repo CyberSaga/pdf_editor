@@ -2337,7 +2337,7 @@ class PDFModel:
     def _convert_text_to_html(
         self,
         text: str,
-        font_size: int,
+        font_size: float,
         color: tuple,
         latin_font: str = "helv",
     ) -> str:
@@ -3443,7 +3443,7 @@ class PDFModel:
             )
         else:
             html_content = self._convert_text_to_html(
-                new_text, int(size), color, latin_font=resolve_result.resolved_font
+                new_text, size, color, latin_font=resolve_result.resolved_font
             )
 
         # Preserve the original visual line height to keep committed text
