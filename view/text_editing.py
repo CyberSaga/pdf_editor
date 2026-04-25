@@ -7,7 +7,7 @@ from enum import Enum
 
 import fitz
 from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPen, QTextCursor, QTextOption
+from PySide6.QtGui import QBrush, QColor, QFont, QGuiApplication, QPen, QTextCursor, QTextDocument, QTextOption
 from PySide6.QtWidgets import QTextEdit
 
 from model.edit_requests import EditTextRequest, MoveTextRequest  # re-exported for view/controller
@@ -41,6 +41,17 @@ _LIGATURE_EXPAND = {
 }
 
 _DEFAULT_EDITOR_MASK_COLOR = QColor("#FFFFFF")
+_DARK_EDITOR_MASK_COLOR = QColor("#18181B")
+_LIGHT_TEXT_LUMA_THRESHOLD = 180.0
+
+
+def _readable_editor_mask_color(text_rgb: tuple[int, int, int] | None = None) -> QColor:
+    if text_rgb is not None:
+        r, g, b = [max(0, min(255, int(value))) for value in text_rgb]
+        luma = (0.2126 * r) + (0.7152 * g) + (0.0722 * b)
+        if luma >= _LIGHT_TEXT_LUMA_THRESHOLD:
+            return QColor(_DARK_EDITOR_MASK_COLOR)
+    return QColor(_DEFAULT_EDITOR_MASK_COLOR)
 
 
 class TextEditUIConstants:
@@ -49,6 +60,10 @@ class TextEditUIConstants:
     FOCUS_RESTORE_DELAY_MS = 0
     MASK_SAMPLE_INSET_RATIO = 0.15
     MASK_SAMPLE_INSET_MAX_PX = 6.0
+    # QTextEdit has a few px of internal frame/viewport margin; pad so measured
+    # natural content height doesn't clip the last line visually.
+    EDITOR_CONTENT_PADDING_PX = 8
+    MAX_EDITOR_VIEWPORT_HEIGHT_RATIO = 0.6
 
 
 class TextEditGeometryConstants:
@@ -241,16 +256,68 @@ def _average_image_rect_color(image, rect: QRect) -> QColor:
     return QColor(total_r // count, total_g // count, total_b // count)
 
 
+def _widget_logical_dpi() -> float:
+    """Logical DPI reported by Qt for font rendering; 96 on typical Windows."""
+    app = QGuiApplication.instance()
+    screen = app.primaryScreen() if app is not None else None
+    if screen is not None:
+        dpi = float(screen.logicalDotsPerInch())
+        if dpi > 0:
+            return dpi
+    return 96.0
+
+
+def _display_font_pt(pdf_font_size: float, render_scale: float) -> float:
+    """Qt point size that makes the inline editor's glyphs match the rendered
+    PDF's glyphs in physical pixels.
+
+    PyMuPDF rasterizes at ``72 × render_scale`` DPI — so a 10pt glyph becomes
+    ``10 × render_scale`` physical pixels tall. Qt renders ``setPointSizeF(P)``
+    at ``P × logicalDotsPerInch/72`` widget pixels (≈ physical pixels at
+    devicePixelRatio=1). Equating the two gives
+    ``widget_pt = pdf_pt × render_scale × 72/logical_dpi`` — which is what the
+    widget must use so "what you see while editing" matches "what you get
+    after commit".
+    """
+    return float(pdf_font_size) * float(render_scale) * (72.0 / _widget_logical_dpi())
+
+
+def _measure_text_content_height_px(
+    *,
+    text: str,
+    qt_font_family: str,
+    display_font_pt: float,
+    wrap_width_px: int,
+) -> int:
+    """Natural content height for ``text`` laid out with the given font at ``wrap_width_px``.
+
+    ``display_font_pt`` must be the already-scaled widget point size (see
+    ``_display_font_pt``) — measuring with the pdf-pt value would under-report
+    the height and desync from the actual editor layout.
+    """
+    import math
+
+    measure_font = QFont(qt_font_family)
+    measure_font.setPointSizeF(float(display_font_pt))
+    doc = QTextDocument()
+    doc.setDefaultFont(measure_font)
+    doc.setTextWidth(float(max(wrap_width_px, 1)))
+    doc.setPlainText(text or "")
+    return int(math.ceil(doc.size().height()))
+
+
 def _compute_editor_proxy_layout(
     *,
     scaled_rect: fitz.Rect,
     scaled_width: int,
     page_y_offset: float,
     rotation: int,
+    content_height_px: int | None = None,
 ) -> tuple[int, int, float, float, int]:
     normalized_rotation = int(rotation) % 360
     width_px = max(int(round(scaled_width)), TextEditUIConstants.MIN_EDITOR_WIDTH_PX)
-    height_px = max(int(round(scaled_rect.height)), TextEditUIConstants.MIN_EDITOR_HEIGHT_PX)
+    raw_height = content_height_px if content_height_px is not None else int(round(scaled_rect.height))
+    height_px = max(raw_height, TextEditUIConstants.MIN_EDITOR_HEIGHT_PX)
     pos_x = float(scaled_rect.x0)
     pos_y = float(page_y_offset + scaled_rect.y0)
 
@@ -266,6 +333,25 @@ def _compute_editor_proxy_layout(
         pos_y += height_px
 
     return width_px, height_px, pos_x, pos_y, normalized_rotation
+
+
+def _viewport_editor_height_cap_px(view) -> int | None:
+    graphics_view = getattr(view, "graphics_view", None)
+    if graphics_view is None or not hasattr(graphics_view, "viewport"):
+        return None
+    viewport = graphics_view.viewport()
+    if viewport is None or not hasattr(viewport, "height"):
+        return None
+    try:
+        viewport_height = int(viewport.height())
+    except (TypeError, ValueError):
+        return None
+    if viewport_height <= 0:
+        return None
+    return max(
+        TextEditUIConstants.MIN_EDITOR_HEIGHT_PX,
+        int(viewport_height * TextEditUIConstants.MAX_EDITOR_VIEWPORT_HEIGHT_RATIO),
+    )
 
 
 class TextEditManager:
@@ -323,14 +409,13 @@ class TextEditManager:
         if not editor_proxy or not editor_proxy.widget():
             self._clear_text_editor_mask_item()
             return
-        page_idx = getattr(self._view, "_editing_page_idx", self._view.current_page)
         scene_rect = self.current_text_editor_scene_rect()
         if scene_rect is None:
             self._clear_text_editor_mask_item()
             return
         editor = editor_proxy.widget()
         text_rgb = editor.property("text_rgb") or (0, 0, 0)
-        mask_color = self._view._sample_page_mask_color(page_idx, scene_rect)
+        mask_color = _readable_editor_mask_color(text_rgb)
         self._sync_text_editor_mask_item(scene_rect, mask_color)
         editor.setStyleSheet(self._view._build_text_editor_stylesheet(text_rgb, mask_color))
         editor.setProperty("mask_rgb", (mask_color.red(), mask_color.green(), mask_color.blue()))
@@ -361,11 +446,29 @@ class TextEditManager:
         view._editing_original_rect = fitz.Rect(rect)
         view._editing_origin_page_idx = page_idx
         y0 = view.page_y_positions[page_idx] if (view.continuous_pages and page_idx < len(view.page_y_positions)) else 0
+        wrap_width_px = max(int(round(scaled_width)), TextEditUIConstants.MIN_EDITOR_WIDTH_PX)
+        display_font_pt = _display_font_pt(font_size, rs)
+        qt_font_family = view._pdf_font_to_qt(font_name)
+        measured_content_height_px = _measure_text_content_height_px(
+            text=text,
+            qt_font_family=qt_font_family,
+            display_font_pt=display_font_pt,
+            wrap_width_px=wrap_width_px,
+        )
+        content_height_px = max(
+            measured_content_height_px + TextEditUIConstants.EDITOR_CONTENT_PADDING_PX,
+            TextEditUIConstants.MIN_EDITOR_HEIGHT_PX,
+        )
+        if rotation not in (90, 270):
+            height_cap_px = _viewport_editor_height_cap_px(view)
+            if height_cap_px is not None:
+                content_height_px = min(content_height_px, height_cap_px)
         editor_width_px, editor_height_px, pos_x, pos_y, normalized_rotation = _compute_editor_proxy_layout(
             scaled_rect=scaled_rect,
             scaled_width=scaled_width,
             page_y_offset=y0,
             rotation=rotation,
+            content_height_px=content_height_px,
         )
 
         editor = InlineTextEditor(text)
@@ -375,23 +478,23 @@ class TextEditManager:
         view.editing_target_mode = target_mode if target_mode in ("run", "paragraph") else "run"
         view.editing_intent = editor_intent if editor_intent in ("edit_existing", "add_new") else "edit_existing"
 
-        qt_font = view._pdf_font_to_qt(font_name)
-        qt_font_obj = QFont(qt_font)
-        qt_font_obj.setPointSizeF(float(font_size))
+        qt_font_obj = QFont(qt_font_family)
+        qt_font_obj.setPointSizeF(display_font_pt)
         editor.setFont(qt_font_obj)
 
         r, g, b = [int(c * 255) for c in color]
         text_rgb = (r, g, b)
+        mask_color = _readable_editor_mask_color(text_rgb)
         editor.setProperty("text_rgb", text_rgb)
         editor.setAutoFillBackground(False)
         editor.viewport().setAutoFillBackground(False)
-        editor.setStyleSheet(view._build_text_editor_stylesheet(text_rgb, QColor(_DEFAULT_EDITOR_MASK_COLOR)))
+        editor.setStyleSheet(view._build_text_editor_stylesheet(text_rgb, mask_color))
 
         editor.setFixedWidth(editor_width_px)
         if normalized_rotation in (90, 270):
             editor.setFixedHeight(editor_height_px)
         else:
-            editor.setMinimumHeight(editor_height_px)
+            editor.setFixedHeight(editor_height_px)
         editor.setLineWrapMode(QTextEdit.WidgetWidth)
         editor.setWordWrapMode(QTextOption.WrapAnywhere)
 
@@ -474,7 +577,8 @@ class TextEditManager:
             return
         editor = view.text_editor.widget()
         font = editor.font()
-        font.setPointSizeF(float(size))
+        rs = view._render_scale if view._render_scale > 0 else 1.0
+        font.setPointSizeF(_display_font_pt(size, rs))
         editor.setFont(font)
         QTimer.singleShot(
             TextEditUIConstants.FOCUS_RESTORE_DELAY_MS,

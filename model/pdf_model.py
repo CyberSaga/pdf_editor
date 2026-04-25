@@ -1237,7 +1237,10 @@ class PDFModel:
             if mode == "paragraph":
                 para = self.block_manager.find_paragraph_for_run(page_idx, target.span_id)
                 if para is not None:
-                    cluster = self.block_manager.find_overlapping_runs(page_idx, para.bbox, tol=0.5)
+                    para_run_ids = set(para.run_ids)
+                    cluster = [span for span in spans if span.span_id in para_run_ids]
+                    if not cluster:
+                        cluster = self.block_manager.find_overlapping_runs(page_idx, para.bbox, tol=0.5)
                     return TextHit(
                         target_span_id=target.span_id,
                         target_bbox=fitz.Rect(para.bbox),
@@ -2305,7 +2308,6 @@ class PDFModel:
             page.delete_annot(annot)
             return True
         if payload["kind"] == "image":
-            xref = int(payload.get("xref", 0) or 0)
             old_rect = fitz.Rect(payload.get("rect") or annot.rect)
             try:
                 page.add_redact_annot(old_rect)

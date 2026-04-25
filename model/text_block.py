@@ -161,6 +161,7 @@ class TextBlockManager:
         self._span_index: dict[int, list[EditableSpan]] = {}
         self._paragraph_index: dict[int, list[EditableParagraph]] = {}
         self._run_to_paragraph: dict[int, dict[str, str]] = {}
+        self._page_plain_lines: dict[int, list[str]] = {}
         # Page-level cache state for the current document snapshot.
         #
         # Why it exists:
@@ -181,6 +182,7 @@ class TextBlockManager:
         self._span_index.clear()
         self._paragraph_index.clear()
         self._run_to_paragraph.clear()
+        self._page_plain_lines.clear()
         self._page_state.clear()
         for page_num in range(len(doc)):
             self._build_page_index(page_num, doc[page_num])
@@ -206,7 +208,7 @@ class TextBlockManager:
             return
         # Keep cached entries, but shift their keys to match the new page numbering.
         # Any moved page becomes stale because the underlying page content at that new index is different.
-        for store_name in ("_index", "_span_index", "_paragraph_index", "_run_to_paragraph"):
+        for store_name in ("_index", "_span_index", "_paragraph_index", "_run_to_paragraph", "_page_plain_lines"):
             store = getattr(self, store_name)
             moved = {}
             for page_idx in sorted(store.keys(), reverse=True):
@@ -226,7 +228,7 @@ class TextBlockManager:
         deleted = sorted(set(deleted_pages))
         deleted_set = set(deleted)
         # After deletion, later cached pages slide left; any page that moved becomes stale until rebuilt.
-        for store_name in ("_index", "_span_index", "_paragraph_index", "_run_to_paragraph"):
+        for store_name in ("_index", "_span_index", "_paragraph_index", "_run_to_paragraph", "_page_plain_lines"):
             store = getattr(self, store_name)
             remapped = {}
             for page_idx in sorted(store.keys()):
@@ -250,6 +252,7 @@ class TextBlockManager:
     def _build_page_index(self, page_num: int, page: fitz.Page) -> None:
         blocks_raw = page.get_text("dict", flags=0).get("blocks", [])
         raw_blocks = page.get_text("rawdict", flags=0).get("blocks", [])
+        plain_lines = self._extract_plain_text_lines(page)
         page_blocks: list[TextBlock] = []
         page_spans: list[EditableSpan] = []
 
@@ -259,7 +262,7 @@ class TextBlockManager:
                 page_blocks.append(tb)
             raw_block = raw_blocks[block_idx] if block_idx < len(raw_blocks) else None
             if raw_block and raw_block.get("type") == 0:
-                runs = self._parse_runs_from_raw_block(page_num, block_idx, raw_block)
+                runs = self._parse_runs_from_raw_block(page_num, block_idx, raw_block, plain_lines=plain_lines)
                 if runs:
                     page_spans.extend(runs)
                     continue
@@ -274,6 +277,7 @@ class TextBlockManager:
             for run_id in para.run_ids:
                 run_map[run_id] = para.paragraph_id
         self._run_to_paragraph[page_num] = run_map
+        self._page_plain_lines[page_num] = plain_lines
         self._page_state[page_num] = "clean"
         logger.debug(
             f"page {page_num + 1}: {len(page_blocks)} blocks, {len(page_spans)} spans(runs), "
@@ -389,6 +393,7 @@ class TextBlockManager:
         self._span_index.clear()
         self._paragraph_index.clear()
         self._run_to_paragraph.clear()
+        self._page_plain_lines.clear()
         self._page_state.clear()
         logger.debug("TextBlockManager index cleared")
 
@@ -487,6 +492,7 @@ class TextBlockManager:
         page_num: int,
         block_idx: int,
         raw_block: dict,
+        plain_lines: list[str] | None = None,
     ) -> list[EditableSpan]:
         lines = raw_block.get("lines", []) or []
         if not lines:
@@ -494,7 +500,7 @@ class TextBlockManager:
 
         out: list[EditableSpan] = []
         for line_idx, line in enumerate(lines):
-            out.extend(self._parse_runs_from_raw_line(page_num, block_idx, line_idx, line))
+            out.extend(self._parse_runs_from_raw_line(page_num, block_idx, line_idx, line, plain_lines=plain_lines))
         return out
 
     def _parse_runs_from_raw_line(
@@ -503,6 +509,7 @@ class TextBlockManager:
         block_idx: int,
         line_idx: int,
         line: dict,
+        plain_lines: list[str] | None = None,
     ) -> list[EditableSpan]:
         dir_vec = _norm_dir_vec(line.get("dir") or (1.0, 0.0))
         ux, uy = dir_vec
@@ -586,6 +593,7 @@ class TextBlockManager:
             text_value = "".join(run["text_parts"]).strip()
             if not text_value:
                 return None
+            text_value = self._repair_replacement_chars(text_value, plain_lines)
             bbox = fitz.Rect(run["bbox"])
             dominant_font = run["font_counter"].most_common(1)[0][0] if run["font_counter"] else "helv"
             dominant_color = (
@@ -697,6 +705,54 @@ class TextBlockManager:
 
         return runs
 
+    @staticmethod
+    def _extract_plain_text_lines(page: fitz.Page) -> list[str]:
+        lines: list[str] = []
+        for line in page.get_text("text").splitlines():
+            value = line.rstrip("\r\n")
+            if value.strip():
+                lines.append(value)
+        return lines
+
+    @staticmethod
+    def _repair_replacement_chars(text: str, plain_lines: list[str] | None) -> str:
+        if "\ufffd" not in text or not plain_lines:
+            return text
+        pattern = "".join("(.)" if ch == "\ufffd" else re.escape(ch) for ch in text)
+        try:
+            regex = re.compile(pattern)
+        except re.error:
+            return text
+
+        candidates: set[str] = set()
+        for line in plain_lines:
+            if not line:
+                continue
+            for match in regex.finditer(line):
+                rebuilt = list(text)
+                group_idx = 1
+                valid = True
+                for idx, ch in enumerate(rebuilt):
+                    if ch != "\ufffd":
+                        continue
+                    replacement = match.group(group_idx)
+                    group_idx += 1
+                    if replacement == "\ufffd":
+                        valid = False
+                        break
+                    rebuilt[idx] = replacement
+                if not valid:
+                    continue
+                repaired = "".join(rebuilt)
+                if "\ufffd" in repaired:
+                    continue
+                candidates.add(repaired)
+                if len(candidates) > 1:
+                    return text
+        if len(candidates) == 1:
+            return next(iter(candidates))
+        return text
+
     def _build_paragraphs(
         self,
         page_num: int,
@@ -788,7 +844,119 @@ class TextBlockManager:
                 )
             )
 
-        return paragraphs
+        return self._merge_vertical_paragraphs(page_num, paragraphs)
+
+    def _merge_vertical_paragraphs(
+        self,
+        page_num: int,
+        paragraphs: list[EditableParagraph],
+    ) -> list[EditableParagraph]:
+        vertical = [p for p in paragraphs if p.rotation in (90, 270)]
+        if len(vertical) <= 1:
+            return paragraphs
+
+        non_vertical = [p for p in paragraphs if p.rotation not in (90, 270)]
+        ordered = sorted(
+            vertical,
+            key=lambda p: ((-p.bbox.x0) if p.rotation == 90 else p.bbox.x0, p.bbox.y0),
+        )
+
+        merged: list[EditableParagraph] = []
+        i = 0
+        merge_idx = 0
+        while i < len(ordered):
+            group = [ordered[i]]
+            i += 1
+            while i < len(ordered) and self._can_merge_vertical_paragraph(group[-1], ordered[i]):
+                group.append(ordered[i])
+                i += 1
+            if len(group) == 1:
+                merged.append(group[0])
+                continue
+            merged.append(self._compose_merged_vertical_paragraph(page_num, group, merge_idx))
+            merge_idx += 1
+
+        return non_vertical + merged
+
+    @staticmethod
+    def _can_merge_vertical_paragraph(left: EditableParagraph, right: EditableParagraph) -> bool:
+        if left.rotation not in (90, 270) or right.rotation != left.rotation:
+            return False
+
+        dot = float(left.dir_vec[0]) * float(right.dir_vec[0]) + float(left.dir_vec[1]) * float(right.dir_vec[1])
+        if dot < 0.95:
+            return False
+        if abs(float(left.size) - float(right.size)) > 1.5:
+            return False
+        if any(abs(float(a) - float(b)) > 0.08 for a, b in zip(left.color, right.color)):
+            return False
+
+        y0 = max(float(left.bbox.y0), float(right.bbox.y0))
+        y1 = min(float(left.bbox.y1), float(right.bbox.y1))
+        overlap = max(0.0, y1 - y0)
+        min_h = max(1.0, min(float(left.bbox.height), float(right.bbox.height)))
+        if overlap / min_h < 0.70:
+            return False
+
+        width_ref = max(1.0, min(float(left.bbox.width), float(right.bbox.width)))
+        x_gap = abs(float(right.bbox.x0) - float(left.bbox.x0))
+        if x_gap > width_ref * 2.8:
+            return False
+        return True
+
+    @staticmethod
+    def _compose_merged_vertical_paragraph(
+        page_num: int,
+        group: list[EditableParagraph],
+        merge_idx: int,
+    ) -> EditableParagraph:
+        ordered = sorted(
+            group,
+            key=lambda p: ((-p.bbox.x0) if p.rotation == 90 else p.bbox.x0, p.bbox.y0),
+        )
+        text_parts = [p.text.strip() for p in ordered if p.text.strip()]
+        para_text = " ".join(text_parts).strip()
+
+        bbox = fitz.Rect(ordered[0].bbox)
+        run_ids: list[str] = []
+        font_counter = Counter()
+        color_counter = Counter()
+        size_weighted = 0.0
+        weight_total = 0
+        line_start = ordered[0].line_start
+        line_end = ordered[0].line_end
+
+        for para in ordered:
+            bbox.include_rect(para.bbox)
+            run_ids.extend(para.run_ids)
+            weight = max(1, len((para.text or "").strip()))
+            font_counter[para.font] += weight
+            color_counter[tuple(para.color)] += weight
+            size_weighted += float(para.size) * weight
+            weight_total += weight
+            line_start = min(line_start, para.line_start)
+            line_end = max(line_end, para.line_end)
+
+        dominant_font = font_counter.most_common(1)[0][0] if font_counter else ordered[0].font
+        dominant_color = color_counter.most_common(1)[0][0] if color_counter else tuple(ordered[0].color)
+        avg_size = size_weighted / max(1, weight_total)
+        first = ordered[0]
+
+        return EditableParagraph(
+            paragraph_id=f"pg{page_num}_vmerge_{merge_idx}",
+            page_idx=page_num,
+            block_idx=first.block_idx,
+            bbox=bbox,
+            text=para_text,
+            font=dominant_font,
+            size=float(avg_size),
+            color=tuple(dominant_color),
+            dir_vec=(float(first.dir_vec[0]), float(first.dir_vec[1])),
+            rotation=int(first.rotation),
+            run_ids=run_ids,
+            line_start=line_start,
+            line_end=line_end,
+        )
 
     @staticmethod
     def _expand_ligatures(text: str) -> str:
