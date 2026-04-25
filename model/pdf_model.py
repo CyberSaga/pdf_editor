@@ -3582,14 +3582,26 @@ class PDFModel:
                 )
                 _probe_doc.close()
                 _probe_used_h = insert_rect.height - _probe_spare
-                _probe_y1 = insert_rect.y0 + _probe_used_h
-                _probe_y1 = float(min(max(_probe_y1, base_y1), page_rect.y1))
-                height_growth = _probe_y1 - resolve_result.redact_rect.y1
+                _probe_actual_y1 = insert_rect.y0 + _probe_used_h
+                # Trust the probe's actual measurement of needed height.
+                # The previous max(_probe_y1, base_y1) clamping injected a
+                # heuristic floor (line_count × size × 2 + size × 2) that
+                # over-estimated single-line edits by ~4× and forced
+                # spurious push-downs.
+                _probe_y1 = float(min(_probe_actual_y1, page_rect.y1))
+                # MuPDF's insert_htmlbox adds a small fixed leading (~2pt) on
+                # every rendering on top of CSS line-height. Subtract it so a
+                # single-line non-wrapping edit doesn't look like genuine
+                # height growth and erroneously push unedited content away.
+                MUPDF_HTMLBOX_OVERHEAD_PT = 2.0
+                raw_growth = _probe_y1 - resolve_result.redact_rect.y1
+                height_growth = max(0.0, raw_growth - MUPDF_HTMLBOX_OVERHEAD_PT)
                 meaningful_growth = max(0.5, float(size) * 0.2)
                 if height_growth > meaningful_growth:
                     logger.debug(
-                        "換行預估溢出 %.1fpt，預先推移下方文字塊（pre-push）",
+                        "換行預估溢出 %.1fpt（raw=%.1fpt），預先推移下方文字塊（pre-push）",
                         height_growth,
+                        raw_growth,
                     )
                     self._push_down_overlapping_text(
                         page, page_rect,
