@@ -3447,7 +3447,29 @@ class PDFModel:
             html_content = self._convert_text_to_html(
                 new_text, int(size), color, latin_font=resolve_result.resolved_font
             )
-        css = self._build_insert_css(size, color, resolve_result.resolved_font)
+
+        # Preserve the original visual line height to keep committed text
+        # the same vertical size as the original. Without this, _build_insert_css
+        # auto-calculates line_height ≈ size × 1.1, which differs from the
+        # original PDF's actual leading and pushes surrounding text.
+        _line_ht = 0.0
+        if member_spans:
+            sorted_spans = sorted(member_spans, key=lambda s: float(s.origin.y))
+            if len(sorted_spans) >= 2:
+                _advances = [
+                    abs(float(sorted_spans[i + 1].origin.y) - float(sorted_spans[i].origin.y))
+                    for i in range(len(sorted_spans) - 1)
+                    if abs(float(sorted_spans[i + 1].origin.y) - float(sorted_spans[i].origin.y)) > 0.5
+                ]
+                if _advances:
+                    _line_ht = sorted(_advances)[len(_advances) // 2]
+            if _line_ht <= 0:
+                _heights = [float(s.bbox.height) for s in member_spans if s.bbox.height > 0]
+                if _heights:
+                    _line_ht = max(_heights)
+        css = self._build_insert_css(
+            size, color, resolve_result.resolved_font, line_height=_line_ht
+        )
 
         if new_rect is not None:
             clamped_new = fitz.Rect(
