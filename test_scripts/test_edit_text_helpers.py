@@ -404,3 +404,170 @@ def test_phase2_edit_text_preserves_fractional_font_size(
     assert abs(observed_size - 9.5) < 0.1, (
         f"Fractional size collapsed to {observed_size:.3f} (expected ≈9.5)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Text size fidelity — the committed text must not visually grow or shrink
+# without an explicit user font-size action.
+#
+# Two distinct properties are checked:
+#   1. font pt size (`hit.size`) — guards against int-truncation regressions
+#      (PITFALLS: "PyMuPDF font sizes are floats, not ints")
+#   2. visual span height (`hit.target_bbox.height`) — guards against
+#      `_build_insert_css` producing a different line_height than the
+#      original PDF, which makes the committed block taller/shorter and
+#      pushes surrounding text.
+# ---------------------------------------------------------------------------
+
+
+def _make_pdf_at_size(tmp_path: Path, fontsize: float, text: str = "Hello World") -> Path:
+    """Create a single-page PDF with one ``insert_text`` block at the given size."""
+    pdf_path = tmp_path / f"size_{fontsize}.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=400, height=300)
+    page.insert_text((50, 100), text, fontname="helv", fontsize=fontsize)
+    doc.save(str(pdf_path), garbage=0)
+    doc.close()
+    return pdf_path
+
+
+def _measure_span_at(model: PDFModel, page_num: int, point: fitz.Point):
+    """Return (font_pt_size, bbox_height) for the span under ``point``, or None."""
+    model.ensure_page_index_built(page_num)
+    hit = model.get_text_info_at_point(page_num, point)
+    if hit is None:
+        return None
+    return float(hit.size), float(hit.target_bbox.height)
+
+
+@pytest.mark.parametrize("original_size", [12.0, 9.5, 24.0])
+def test_edit_preserves_font_size_pt_after_content_change(tmp_path: Path, original_size: float):
+    """Font pt size must not change when the user only edits text content.
+
+    Catches integer truncation (9.5pt → 9pt) and any CSS-side rounding the
+    re-insert path might introduce.
+    """
+    pdf_path = _make_pdf_at_size(tmp_path, original_size)
+    model = PDFModel()
+    model.open_pdf(str(pdf_path))
+    try:
+        probe = fitz.Point(60, 100)
+        before = _measure_span_at(model, 1, probe)
+        assert before is not None, f"Cannot find span at {probe} for size {original_size}"
+        size_before, _ = before
+
+        hit = model.get_text_info_at_point(1, probe)
+        assert hit is not None
+        model.edit_text(
+            page_num=1,
+            rect=hit.target_bbox,
+            new_text="Hi World",
+            font=hit.font,
+            size=hit.size,
+            color=hit.color,
+            original_text=hit.target_text,
+            target_span_id=hit.target_span_id,
+            target_mode="run",
+        )
+
+        after = _measure_span_at(model, 1, probe)
+        assert after is not None, "Span not found after edit"
+        size_after, _ = after
+
+        assert abs(size_after - size_before) < 0.5, (
+            f"Font pt drifted {size_before:.3f}pt → {size_after:.3f}pt "
+            f"(original_size={original_size}) — size must survive a content edit"
+        )
+    finally:
+        model.close()
+
+
+@pytest.mark.parametrize("original_size", [12.0, 24.0])
+def test_edit_preserves_span_bbox_height_after_content_change(
+    tmp_path: Path, original_size: float
+):
+    """Visual span height (bbox height) must not change after a content edit.
+
+    The auto-calculated CSS line_height in ``_build_insert_css`` (when no
+    explicit value is passed) inflates committed spans relative to the
+    original ``insert_text`` layout — this test asserts that does NOT happen.
+    """
+    pdf_path = _make_pdf_at_size(tmp_path, original_size)
+    model = PDFModel()
+    model.open_pdf(str(pdf_path))
+    try:
+        probe = fitz.Point(60, 100)
+        before = _measure_span_at(model, 1, probe)
+        assert before is not None
+        _, height_before = before
+
+        hit = model.get_text_info_at_point(1, probe)
+        assert hit is not None
+        model.edit_text(
+            page_num=1,
+            rect=hit.target_bbox,
+            new_text="Hi World",
+            font=hit.font,
+            size=hit.size,
+            color=hit.color,
+            original_text=hit.target_text,
+            target_span_id=hit.target_span_id,
+            target_mode="run",
+        )
+
+        after = _measure_span_at(model, 1, probe)
+        assert after is not None
+        _, height_after = after
+
+        tolerance = 1.5  # pt
+        assert abs(height_after - height_before) <= tolerance, (
+            f"Span height drifted {height_before:.2f}pt → {height_after:.2f}pt "
+            f"(size={original_size}) — line height must survive a content edit"
+        )
+    finally:
+        model.close()
+
+
+def test_repeated_edits_do_not_accumulate_size_drift(tmp_path: Path):
+    """Five consecutive edits on the same span must not amplify any per-edit drift.
+
+    Each commit can introduce a small font-pt or height delta. After five
+    rounds, any cumulative drift would exceed tolerance and fail this test.
+    """
+    pdf_path = _make_pdf_at_size(tmp_path, 12.0)
+    model = PDFModel()
+    model.open_pdf(str(pdf_path))
+    try:
+        probe = fitz.Point(60, 100)
+        before = _measure_span_at(model, 1, probe)
+        assert before is not None
+        size_before, height_before = before
+
+        for i in range(5):
+            model.ensure_page_index_built(1)
+            hit = model.get_text_info_at_point(1, probe)
+            assert hit is not None, f"Span lost on iteration {i}"
+            model.edit_text(
+                page_num=1,
+                rect=hit.target_bbox,
+                new_text=f"Edit {i}",
+                font=hit.font,
+                size=hit.size,
+                color=hit.color,
+                original_text=hit.target_text,
+                target_span_id=hit.target_span_id,
+                target_mode="run",
+            )
+
+        after = _measure_span_at(model, 1, probe)
+        assert after is not None, "Span lost after 5 edits"
+        size_after, height_after = after
+
+        assert abs(size_after - size_before) < 0.5, (
+            f"Font pt drifted {size_before:.3f}pt → {size_after:.3f}pt over 5 edits"
+        )
+        assert abs(height_after - height_before) <= 2.0, (
+            f"Span height drifted {height_before:.2f}pt → {height_after:.2f}pt over 5 edits"
+        )
+    finally:
+        model.close()
