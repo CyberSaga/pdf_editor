@@ -657,3 +657,203 @@ def test_repeated_edits_do_not_accumulate_size_drift(tmp_path: Path):
         )
     finally:
         model.close()
+
+
+# ── Real-PDF regression tests — "larger" and "smaller" symptoms ─────────────
+
+REAL_PDFS_DIR = ROOT / "test_files"
+
+
+def _find_largest_font_span(model: PDFModel, page_num: int):
+    """Return the span with the largest font size on the page (heading proxy)."""
+    model.ensure_page_index_built(page_num)
+    page_rect = model.doc[page_num - 1].rect
+    best = None
+    seen: set = set()
+    for y in range(30, int(page_rect.height) - 10, 15):
+        for x in range(20, int(page_rect.width) - 20, 20):
+            hit = model.get_text_info_at_point(page_num, fitz.Point(x, y))
+            if hit is None or not hit.target_text.strip():
+                continue
+            if hit.target_span_id in seen:
+                continue
+            seen.add(hit.target_span_id)
+            if best is None or float(hit.size) > float(best.size):
+                best = hit
+    return best
+
+
+def _find_any_editable_span(model: PDFModel, page_num: int):
+    """Return a span that can be meaningfully edited (non-trivial text)."""
+    model.ensure_page_index_built(page_num)
+    page_rect = model.doc[page_num - 1].rect
+    seen: set = set()
+    for y in range(30, int(page_rect.height) - 10, 15):
+        for x in range(20, int(page_rect.width) - 20, 20):
+            hit = model.get_text_info_at_point(page_num, fitz.Point(x, y))
+            if hit is None or not hit.target_text.strip():
+                continue
+            if hit.target_span_id in seen:
+                continue
+            seen.add(hit.target_span_id)
+            # Skip trivially short strings that would look identical with a prefix
+            if len(hit.target_text.strip()) >= 2:
+                return hit
+    return None
+
+
+def test_build_insert_css_explicit_tight_line_height_not_clamped():
+    """_build_insert_css must honor explicit line_height values below font size.
+
+    Scenario: original PDF has tight leading (e.g. baseline advance 8pt for a 10pt
+    font). _apply_redact_insert computes _line_ht=8.0 and passes it explicitly.
+    With the bug, line_height = round(max(10, 8), 2) = 10.0 — wrong: committed text
+    will be taller than original and surrounding text gets pushed.
+    With the fix, explicit positive values bypass the max(size, ...) clamp.
+    """
+    model = PDFModel.__new__(PDFModel)
+    model._resolve_add_text_font = lambda hint: "helv"
+    model._resolve_cjk_companion_font = lambda font: "helv"
+    model._font_face_css_for_token = lambda token: ""
+
+    # Tight leading: line_height (8pt) < size (10pt)
+    css = model._build_insert_css(size=10.0, color=(0.0, 0.0, 0.0), font_hint="helv", line_height=8.0)
+
+    assert "line-height: 8.0pt" in css, (
+        f"_build_insert_css clamped explicit tight line_height=8.0 up to size=10.0 — "
+        f"clamp must only apply to auto-calculated values (line_height<=0). "
+        f"CSS produced:\n{css.strip()}"
+    )
+
+
+def test_real_pdf_complexed_layout_edit_does_not_enlarge_span(tmp_path: Path):
+    """Editing the largest-font heading in test-complexed-layout.pdf must not grow
+    the span's vertical extent.
+
+    'Larger' symptom reproducer: _build_insert_css clamped line_height to >= size
+    even for explicit tight-leading values, making committed boxes taller than original.
+    The screenshots (manual-larger-222213/217/220) show the heading oversized after edit.
+    """
+    import shutil
+    from model.edit_commands import EditTextResult
+
+    pdf_src = REAL_PDFS_DIR / "test-complexed-layout.pdf"
+    if not pdf_src.exists():
+        pytest.skip(f"Reproducer PDF not found: {pdf_src}")
+
+    pdf_copy = tmp_path / "complexed.pdf"
+    shutil.copy2(pdf_src, pdf_copy)
+
+    model = PDFModel()
+    model.open_pdf(str(pdf_copy))
+    try:
+        # Target the heading (largest font) — that's what the screenshots show breaking
+        hit = _find_largest_font_span(model, 1)
+        assert hit is not None, "Could not find any editable text on page 1"
+        height_before = float(hit.target_bbox.height)
+        probe_pt = fitz.Point(float(hit.target_bbox.x0) + 2, float(hit.target_bbox.y0) + 2)
+
+        # Prepend "X" so the edit is a real content change (trailing space gets stripped)
+        new_text = "X" + hit.target_text
+        result = model.edit_text(
+            page_num=1,
+            rect=hit.target_bbox,
+            new_text=new_text,
+            font=hit.font,
+            size=hit.size,
+            color=hit.color,
+            original_text=hit.target_text,
+            target_span_id=hit.target_span_id,
+            target_mode="run",
+        )
+        assert result is EditTextResult.SUCCESS, (
+            f"edit_text returned {result!r} instead of SUCCESS — edit was not applied"
+        )
+
+        model.ensure_page_index_built(1)
+        hit_after = model.get_text_info_at_point(1, probe_pt)
+        assert hit_after is not None, (
+            f"Span not found at {probe_pt} after edit — did the text move unexpectedly? "
+            f"height_before={height_before:.2f}pt"
+        )
+        height_after = float(hit_after.target_bbox.height)
+
+        assert height_after <= height_before + 1.5, (
+            f"Span height grew {height_before:.2f}pt → {height_after:.2f}pt "
+            f"(font={hit.size:.2f}pt, text={hit.target_text[:30]!r}) "
+            f"in complexed-layout.pdf — 'larger' symptom: _build_insert_css clamp active"
+        )
+    finally:
+        model.close()
+
+
+def test_real_pdf_colored_background_edit_does_not_shrink_span(tmp_path: Path):
+    """Editing text in test-colored-background.pdf must not shrink the span's vertical extent.
+
+    'Smaller' symptom reproducer (manual-smaller-222143/147/151): white text on dark
+    background appears more compact after editing. The inline editor already shows
+    glyphs smaller than original during editing. After commit text is noticeably smaller.
+    """
+    import shutil
+    from model.edit_commands import EditTextResult
+
+    pdf_src = REAL_PDFS_DIR / "test-colored-background.pdf"
+    if not pdf_src.exists():
+        pytest.skip(f"Reproducer PDF not found: {pdf_src}")
+
+    pdf_copy = tmp_path / "colored.pdf"
+    shutil.copy2(pdf_src, pdf_copy)
+
+    model = PDFModel()
+    model.open_pdf(str(pdf_copy))
+    try:
+        hit = _find_any_editable_span(model, 1)
+        assert hit is not None, "Could not find any editable text on page 1"
+        height_before = float(hit.target_bbox.height)
+        probe_pt = fitz.Point(float(hit.target_bbox.x0) + 2, float(hit.target_bbox.y0) + 2)
+
+        new_text = "X" + hit.target_text
+        result = model.edit_text(
+            page_num=1,
+            rect=hit.target_bbox,
+            new_text=new_text,
+            font=hit.font,
+            size=hit.size,
+            color=hit.color,
+            original_text=hit.target_text,
+            target_span_id=hit.target_span_id,
+            target_mode="run",
+        )
+        assert result is EditTextResult.SUCCESS, (
+            f"edit_text returned {result!r} instead of SUCCESS — edit was not applied"
+        )
+
+        model.ensure_page_index_built(1)
+        # Scan a broad area: editing large text can shift position by more than 2pt.
+        # Check up to 40pt around the original anchor point.
+        hit_after = None
+        bx0, by0 = float(hit.target_bbox.x0), float(hit.target_bbox.y0)
+        for dy in range(-15, 40, 8):
+            for dx in range(-15, 40, 8):
+                candidate = model.get_text_info_at_point(
+                    1, fitz.Point(bx0 + dx, by0 + dy)
+                )
+                if candidate is not None and candidate.target_text.strip():
+                    hit_after = candidate
+                    break
+            if hit_after is not None:
+                break
+
+        assert hit_after is not None, (
+            f"Span not found near ({bx0:.0f},{by0:.0f}) ±40pt after edit — "
+            f"height_before={height_before:.2f}pt, text={hit.target_text[:30]!r}"
+        )
+        height_after = float(hit_after.target_bbox.height)
+
+        assert height_after >= height_before - 1.5, (
+            f"Span height shrank {height_before:.2f}pt → {height_after:.2f}pt "
+            f"(font={hit.size:.2f}pt, text={hit.target_text[:30]!r}) "
+            f"in colored-background.pdf — 'smaller' symptom: _line_ht under-estimated"
+        )
+    finally:
+        model.close()
