@@ -458,7 +458,7 @@ def test_edit_preserves_font_size_pt_after_content_change(tmp_path: Path, origin
 
         hit = model.get_text_info_at_point(1, probe)
         assert hit is not None
-        model.edit_text(
+        result = model.edit_text(
             page_num=1,
             rect=hit.target_bbox,
             new_text="Hi World",
@@ -468,6 +468,10 @@ def test_edit_preserves_font_size_pt_after_content_change(tmp_path: Path, origin
             original_text=hit.target_text,
             target_span_id=hit.target_span_id,
             target_mode="run",
+        )
+        assert result is EditTextResult.SUCCESS
+        assert _page_contains_text(model, 1, "Hi World"), (
+            "Edited content not found after edit_text — test must fail on no-op edits"
         )
 
         after = _measure_span_at(model, 1, probe)
@@ -484,7 +488,7 @@ def test_edit_preserves_font_size_pt_after_content_change(tmp_path: Path, origin
 
 @pytest.mark.parametrize("original_size", [12.0, 24.0])
 def test_edit_preserves_span_bbox_height_after_content_change(
-    tmp_path: Path, original_size: float
+    tmp_path: Path, original_size: float, monkeypatch: pytest.MonkeyPatch
 ):
     """Visual span height (bbox height) must not change after a content edit.
 
@@ -501,9 +505,13 @@ def test_edit_preserves_span_bbox_height_after_content_change(
         assert before is not None
         _, height_before = before
 
+        # Force the htmlbox insertion path so this test guards line-height fidelity,
+        # not the single-line insert_text fast path.
+        monkeypatch.setattr(model, "_needs_cjk_font", lambda _text: True)
+
         hit = model.get_text_info_at_point(1, probe)
         assert hit is not None
-        model.edit_text(
+        result = model.edit_text(
             page_num=1,
             rect=hit.target_bbox,
             new_text="Hi World",
@@ -513,6 +521,10 @@ def test_edit_preserves_span_bbox_height_after_content_change(
             original_text=hit.target_text,
             target_span_id=hit.target_span_id,
             target_mode="run",
+        )
+        assert result is EditTextResult.SUCCESS
+        assert _page_contains_text(model, 1, "Hi World"), (
+            "Edited content not found after edit_text — no-op edits must fail this test"
         )
 
         after = _measure_span_at(model, 1, probe)
@@ -528,7 +540,7 @@ def test_edit_preserves_span_bbox_height_after_content_change(
         model.close()
 
 
-def test_single_line_edit_does_not_push_unedited_text(tmp_path: Path):
+def test_single_line_edit_does_not_push_unedited_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A single-character edit on one line must not shift unedited text below it.
 
     Reproduces the user's "push unedited lines away" symptom: editing a heading
@@ -541,9 +553,11 @@ def test_single_line_edit_does_not_push_unedited_text(tmp_path: Path):
     pdf_path = tmp_path / "layout.pdf"
     doc = fitz.open()
     page = doc.new_page(width=400, height=400)
-    page.insert_text((50, 100), "Heading line", fontname="helv", fontsize=12.0)
+    # 7.5pt keeps the meaningful-growth threshold at 1.5pt, so MuPDF's fixed
+    # ~2pt htmlbox overhead will wrongly trigger push-down if not subtracted.
+    page.insert_text((50, 100), "Heading line", fontname="helv", fontsize=7.5)
     # Anchor text below — should NOT shift after the heading edit.
-    page.insert_text((50, 200), "Anchor text below", fontname="helv", fontsize=12.0)
+    page.insert_text((50, 200), "Anchor text below", fontname="helv", fontsize=7.5)
     doc.save(str(pdf_path), garbage=0)
     doc.close()
 
@@ -555,10 +569,13 @@ def test_single_line_edit_does_not_push_unedited_text(tmp_path: Path):
         assert anchor_before is not None
         anchor_y_before = float(anchor_before.target_bbox.y0)
 
+        # Force htmlbox path so the pre-push probe path is actually exercised.
+        monkeypatch.setattr(model, "_needs_cjk_font", lambda _text: True)
+
         # Edit the heading
         hit = model.get_text_info_at_point(1, fitz.Point(60, 100))
         assert hit is not None
-        model.edit_text(
+        result = model.edit_text(
             page_num=1,
             rect=hit.target_bbox,
             new_text=hit.target_text + "X",
@@ -568,6 +585,10 @@ def test_single_line_edit_does_not_push_unedited_text(tmp_path: Path):
             original_text=hit.target_text,
             target_span_id=hit.target_span_id,
             target_mode="run",
+        )
+        assert result is EditTextResult.SUCCESS
+        assert _page_contains_text(model, 1, "HeadingX"), (
+            "Heading text did not change — test must fail on no-op edits"
         )
 
         model.ensure_page_index_built(1)
@@ -633,16 +654,21 @@ def test_repeated_edits_do_not_accumulate_size_drift(tmp_path: Path):
             model.ensure_page_index_built(1)
             hit = model.get_text_info_at_point(1, probe)
             assert hit is not None, f"Span lost on iteration {i}"
-            model.edit_text(
+            replacement = f"Edit {i} sentinel"
+            result = model.edit_text(
                 page_num=1,
                 rect=hit.target_bbox,
-                new_text=f"Edit {i}",
+                new_text=replacement,
                 font=hit.font,
                 size=hit.size,
                 color=hit.color,
                 original_text=hit.target_text,
                 target_span_id=hit.target_span_id,
                 target_mode="run",
+            )
+            assert result is EditTextResult.SUCCESS, f"edit_text failed on iteration {i}"
+            assert _page_contains_text(model, 1, replacement), (
+                f"Replacement text missing after iteration {i} — edit did not commit"
             )
 
         after = _measure_span_at(model, 1, probe)
@@ -702,6 +728,34 @@ def _find_any_editable_span(model: PDFModel, page_num: int):
     return None
 
 
+def _find_span_with_text(model: PDFModel, page_num: int, needle: str):
+    """Return the first span whose extracted text contains ``needle``."""
+    model.ensure_page_index_built(page_num)
+    page_rect = model.doc[page_num - 1].rect
+    seen: set = set()
+    for y in range(20, int(page_rect.height) - 10, 10):
+        for x in range(15, int(page_rect.width) - 15, 12):
+            hit = model.get_text_info_at_point(page_num, fitz.Point(x, y))
+            if hit is None:
+                continue
+            if hit.target_span_id in seen:
+                continue
+            seen.add(hit.target_span_id)
+            text = (hit.target_text or "").strip()
+            if needle in text:
+                return hit
+    return None
+
+
+def _normalized_ws(text: str) -> str:
+    return " ".join((text or "").replace("\u00a0", " ").split())
+
+
+def _page_contains_text(model: PDFModel, page_num: int, needle: str) -> bool:
+    page_text = model.doc[page_num - 1].get_text("text")
+    return _normalized_ws(needle) in _normalized_ws(page_text)
+
+
 def test_build_insert_css_explicit_tight_line_height_not_clamped():
     """_build_insert_css must honor explicit line_height values below font size.
 
@@ -711,7 +765,7 @@ def test_build_insert_css_explicit_tight_line_height_not_clamped():
     will be taller than original and surrounding text gets pushed.
     With the fix, explicit positive values bypass the max(size, ...) clamp.
     """
-    model = PDFModel.__new__(PDFModel)
+    model = PDFModel()
     model._resolve_add_text_font = lambda hint: "helv"
     model._resolve_cjk_companion_font = lambda font: "helv"
     model._font_face_css_for_token = lambda token: ""
@@ -726,7 +780,9 @@ def test_build_insert_css_explicit_tight_line_height_not_clamped():
     )
 
 
-def test_real_pdf_complexed_layout_edit_does_not_enlarge_span(tmp_path: Path):
+def test_real_pdf_complexed_layout_edit_does_not_enlarge_span(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     """Editing the largest-font heading in test-complexed-layout.pdf must not grow
     the span's vertical extent.
 
@@ -747,14 +803,17 @@ def test_real_pdf_complexed_layout_edit_does_not_enlarge_span(tmp_path: Path):
     model = PDFModel()
     model.open_pdf(str(pdf_copy))
     try:
-        # Target the heading (largest font) — that's what the screenshots show breaking
+        # Target the heading proxy (largest font span) from the reproducer.
         hit = _find_largest_font_span(model, 1)
         assert hit is not None, "Could not find any editable text on page 1"
         height_before = float(hit.target_bbox.height)
-        probe_pt = fitz.Point(float(hit.target_bbox.x0) + 2, float(hit.target_bbox.y0) + 2)
+        marker = "QFIDLARGE"
+
+        # Force htmlbox path so this integration test actually exercises CSS line-height.
+        monkeypatch.setattr(model, "_needs_cjk_font", lambda _text: True)
 
         # Prepend "X" so the edit is a real content change (trailing space gets stripped)
-        new_text = "X" + hit.target_text
+        new_text = f"{marker} {hit.target_text}"
         result = model.edit_text(
             page_num=1,
             rect=hit.target_bbox,
@@ -771,9 +830,9 @@ def test_real_pdf_complexed_layout_edit_does_not_enlarge_span(tmp_path: Path):
         )
 
         model.ensure_page_index_built(1)
-        hit_after = model.get_text_info_at_point(1, probe_pt)
+        hit_after = _find_span_with_text(model, 1, marker)
         assert hit_after is not None, (
-            f"Span not found at {probe_pt} after edit — did the text move unexpectedly? "
+            f"Edited marker {marker!r} not found after edit — did commit fail? "
             f"height_before={height_before:.2f}pt"
         )
         height_after = float(hit_after.target_bbox.height)
@@ -787,7 +846,9 @@ def test_real_pdf_complexed_layout_edit_does_not_enlarge_span(tmp_path: Path):
         model.close()
 
 
-def test_real_pdf_colored_background_edit_does_not_shrink_span(tmp_path: Path):
+def test_real_pdf_colored_background_edit_does_not_shrink_span(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     """Editing text in test-colored-background.pdf must not shrink the span's vertical extent.
 
     'Smaller' symptom reproducer (manual-smaller-222143/147/151): white text on dark
@@ -810,9 +871,12 @@ def test_real_pdf_colored_background_edit_does_not_shrink_span(tmp_path: Path):
         hit = _find_any_editable_span(model, 1)
         assert hit is not None, "Could not find any editable text on page 1"
         height_before = float(hit.target_bbox.height)
-        probe_pt = fitz.Point(float(hit.target_bbox.x0) + 2, float(hit.target_bbox.y0) + 2)
+        marker = "QFIDSMALL"
 
-        new_text = "X" + hit.target_text
+        # Force htmlbox path so this test measures committed layout behavior.
+        monkeypatch.setattr(model, "_needs_cjk_font", lambda _text: True)
+
+        new_text = f"{marker} {hit.target_text}"
         result = model.edit_text(
             page_num=1,
             rect=hit.target_bbox,
@@ -829,23 +893,9 @@ def test_real_pdf_colored_background_edit_does_not_shrink_span(tmp_path: Path):
         )
 
         model.ensure_page_index_built(1)
-        # Scan a broad area: editing large text can shift position by more than 2pt.
-        # Check up to 40pt around the original anchor point.
-        hit_after = None
-        bx0, by0 = float(hit.target_bbox.x0), float(hit.target_bbox.y0)
-        for dy in range(-15, 40, 8):
-            for dx in range(-15, 40, 8):
-                candidate = model.get_text_info_at_point(
-                    1, fitz.Point(bx0 + dx, by0 + dy)
-                )
-                if candidate is not None and candidate.target_text.strip():
-                    hit_after = candidate
-                    break
-            if hit_after is not None:
-                break
-
+        hit_after = _find_span_with_text(model, 1, marker)
         assert hit_after is not None, (
-            f"Span not found near ({bx0:.0f},{by0:.0f}) ±40pt after edit — "
+            f"Edited marker {marker!r} not found after edit — "
             f"height_before={height_before:.2f}pt, text={hit.target_text[:30]!r}"
         )
         height_after = float(hit_after.target_bbox.height)

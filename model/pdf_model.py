@@ -2778,13 +2778,20 @@ class PDFModel:
         font_face_block = "\n".join(font_face_rules)
 
         # 行高：優先使用傳入值，否則從字體 metrics 計算
-        if line_height <= 0:
+        auto_line_height = line_height <= 0
+        if auto_line_height:
             try:
                 font_obj = fitz.Font(resolved_font)
                 line_height = max(size * 1.1, (font_obj.ascender - font_obj.descender) * size)
             except Exception:
                 line_height = size * 1.2
-        line_height = round(max(size, line_height), 2)
+            # Auto-derived line height should not go below font size.
+            line_height = max(size, line_height)
+        else:
+            # Explicit line heights come from measured source layout and must be
+            # honored as-is (including tight leading values below font size).
+            line_height = max(0.1, float(line_height))
+        line_height = round(float(line_height), 2)
 
         return f"""
             {font_face_block}
