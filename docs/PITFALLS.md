@@ -522,3 +522,23 @@
 **Cause:** `get_render_width_for_edit` returned `max(rect.width, page-margin-safe-width)`, potentially wider than the source rect. Qt's font renderer (with slightly different horizontal glyph metrics than PyMuPDF) then re-laid the text at different break points.  
 **Fix:** Return `float(rect.width)` directly so the editor wraps at exactly the same character positions as the source PDF.  
 **File:** `model/pdf_model.py`
+
+---
+
+## Fidelity tests can pass on no-op edits unless they assert committed content
+
+**Area:** `test_scripts/test_edit_text_helpers.py`  
+**Symptom:** Font-size / bbox-height / anchor-drift tests can stay green even when `edit_text(...)` returns success but does not actually change page text. Real-PDF checks can also pass by sampling an unrelated nearby span after edit.  
+**Cause:** Assertions focused on geometry and status code only; they did not require proof that the edited text was committed or that post-edit measurement targeted the edited span.  
+**Fix:** Add explicit committed-content checks (`_page_contains_text(...)`), force htmlbox path when testing line-height/probe behavior, and tag real-PDF edits with unique markers then locate post-edit spans via marker lookup (`_find_span_with_text(...)`).  
+**File:** `test_scripts/test_edit_text_helpers.py`
+
+---
+
+## `_build_insert_css` unconditional clamp defeats explicit tight line heights
+
+**Area:** `model/pdf_model.py` — `_build_insert_css`  
+**Symptom:** Edited text remains visibly taller than original even after `_apply_redact_insert` correctly computes `_line_ht` from source spans. Surrounding unedited content still gets pushed when the source PDF has tight leading (baseline advance below font size).  
+**Cause:** `line_height = round(max(size, line_height), 2)` ran unconditionally for both auto-calculated and caller-supplied values. An explicit tight value (e.g. 8pt advance for a 10pt font) was silently raised to font size, so committed boxes stayed taller than original.  
+**Fix:** Apply the `max(size, ...)` floor only when `line_height <= 0` (auto-calculate path). Explicit positive values are honored as-is with only a tiny minimum safety bound (`max(0.1, ...)`) and a final rounding step.  
+**File:** `model/pdf_model.py` — `_build_insert_css`
