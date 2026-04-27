@@ -1652,3 +1652,78 @@ def test_phase2_editor_height_honors_embedded_newlines(
     assert editor._height > two_line_ceiling_px, (
         f"Four-line editor collapsed to {editor._height}px — newlines ignored?"
     )
+
+
+def test_create_text_editor_uses_source_span_font_size_and_width(
+    monkeypatch: pytest.MonkeyPatch, qapp
+) -> None:
+    """The inline editor must open with font size and width that match the source span.
+
+    Regression guard for two pre-commit fidelity failures:
+    - Editor font pt != _display_font_pt(span_size, render_scale) → user sees
+      glyphs at a different size than the rendered PDF.
+    - Editor width != int(rect.width * render_scale) → text wraps at different
+      positions than the source span and the committed PDF will diverge.
+    """
+    class _FakeSceneWithAddWidget(_FakeScene):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_proxy: _FakeProxy | None = None
+
+        def addWidget(self, widget):
+            self.last_proxy = _FakeProxy(widget)
+            return self.last_proxy
+
+    source_font_size = 14.0
+    source_rect = fitz.Rect(50, 80, 250, 100)  # width = 200pt
+    render_scale = 1.0
+
+    view = _make_view()
+    _attach_text_property_panel(view)
+    view.scene = _FakeSceneWithAddWidget()
+    view._render_scale = render_scale
+    # Mirror PDFModel.get_render_width_for_edit on this branch: returns float(rect.width)
+    view.controller = SimpleNamespace(
+        model=SimpleNamespace(
+            get_render_width_for_edit=lambda page_num, rect, rotation, font_size: float(rect.width)
+        )
+    )
+    view._refresh_undo_redo_action_state = lambda: None
+    view._set_document_undo_redo_enabled = lambda enabled: None
+    view._set_edit_focus_guard = lambda enabled: None
+    view._sync_text_property_panel_state = lambda: None
+
+    manager = pdf_view.TextEditManager(view)
+    manager.refresh_text_editor_mask_color = lambda: None
+
+    monkeypatch.setattr(text_editing, "InlineTextEditor", _FakeInlineTextEditor)
+    monkeypatch.setattr(text_editing, "_EditorShortcutForwarder", lambda view: object())
+
+    manager.create_text_editor(
+        rect=source_rect,
+        text="Sample span text",
+        font_name="helv",
+        font_size=source_font_size,
+        color=(0.0, 0.0, 0.0),
+        rotation=0,
+        target_span_id="test-span",
+        target_mode="run",
+    )
+
+    editor = view.scene.last_proxy._widget
+    assert hasattr(editor, "font"), "setFont was never called — editor creation failed"
+
+    expected_font_pt = text_editing._display_font_pt(source_font_size, render_scale)
+    actual_font_pt = editor.font.pointSizeF()
+    assert abs(actual_font_pt - expected_font_pt) < 0.05, (
+        f"Editor font {actual_font_pt:.3f}pt ≠ expected display pt {expected_font_pt:.3f}pt "
+        f"(source span {source_font_size}pt at render_scale={render_scale}) — "
+        f"editor will show glyphs at a different size than the rendered PDF"
+    )
+
+    expected_width_px = int(round(source_rect.width * render_scale))
+    assert editor._width == expected_width_px, (
+        f"Editor width {editor._width}px ≠ expected {expected_width_px}px "
+        f"(rect.width={source_rect.width}pt at render_scale={render_scale}) — "
+        f"editor will wrap text differently than the source span"
+    )
