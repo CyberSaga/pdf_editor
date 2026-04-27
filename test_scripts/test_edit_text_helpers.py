@@ -781,7 +781,7 @@ def test_build_insert_css_explicit_tight_line_height_not_clamped():
 
 
 def test_real_pdf_complexed_layout_edit_does_not_enlarge_span(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ):
     """Editing the largest-font heading in test-complexed-layout.pdf must not grow
     the span's vertical extent.
@@ -803,14 +803,18 @@ def test_real_pdf_complexed_layout_edit_does_not_enlarge_span(
     model = PDFModel()
     model.open_pdf(str(pdf_copy))
     try:
-        # Target the heading proxy (largest font span) from the reproducer.
-        hit = _find_largest_font_span(model, 1)
-        assert hit is not None, "Could not find any editable text on page 1"
+        # Deterministic target: '在編輯文字時清除舊有文字的做法' at bbox [117.6, 80.2, 252.6, 89.2]
+        # CJK content naturally routes through insert_htmlbox path — no monkeypatch needed.
+        model.ensure_page_index_built(1)
+        hit = model.get_text_info_at_point(1, fitz.Point(185, 85))
+        assert hit is not None, (
+            "Could not find CJK heading span at (185, 85) on page 1 of complexed-layout.pdf"
+        )
+        assert "在" in hit.target_text, (
+            f"Expected CJK heading but found: {hit.target_text!r}"
+        )
         height_before = float(hit.target_bbox.height)
         marker = "QFIDLARGE"
-
-        # Force htmlbox path so this integration test actually exercises CSS line-height.
-        monkeypatch.setattr(model, "_needs_cjk_font", lambda _text: True)
 
         # Prepend "X" so the edit is a real content change (trailing space gets stripped)
         new_text = f"{marker} {hit.target_text}"
@@ -847,7 +851,7 @@ def test_real_pdf_complexed_layout_edit_does_not_enlarge_span(
 
 
 def test_real_pdf_colored_background_edit_does_not_shrink_span(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ):
     """Editing text in test-colored-background.pdf must not shrink the span's vertical extent.
 
@@ -868,13 +872,22 @@ def test_real_pdf_colored_background_edit_does_not_shrink_span(
     model = PDFModel()
     model.open_pdf(str(pdf_copy))
     try:
-        hit = _find_any_editable_span(model, 1)
-        assert hit is not None, "Could not find any editable text on page 1"
+        # Deterministic target: CJK portion '前置作業操作流程' of the size-60pt heading
+        # at bbox ≈ Rect(554, 270, 1030, 330). CJK content naturally routes through
+        # insert_htmlbox path — no monkeypatch needed.
+        model.ensure_page_index_built(1)
+        hit = model.get_text_info_at_point(1, fitz.Point(720, 295))
+        assert hit is not None, (
+            "Could not find CJK heading span at (720, 295) on page 1 of colored-background.pdf"
+        )
+        assert "前置" in hit.target_text, (
+            f"Expected '前置作業操作流程' heading but found: {hit.target_text!r}"
+        )
+        assert hit.size >= 50.0, (
+            f"Expected size~60pt heading span, got size={hit.size:.1f}pt — wrong target"
+        )
         height_before = float(hit.target_bbox.height)
         marker = "QFIDSMALL"
-
-        # Force htmlbox path so this test measures committed layout behavior.
-        monkeypatch.setattr(model, "_needs_cjk_font", lambda _text: True)
 
         new_text = f"{marker} {hit.target_text}"
         result = model.edit_text(
