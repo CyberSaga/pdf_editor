@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 from model.edit_commands import EditTextResult  # noqa: E402
 from model.pdf_model import PDFModel  # noqa: E402
+import model.pdf_model as pdf_model_module  # noqa: E402
 
 
 @pytest.fixture()
@@ -127,6 +128,36 @@ def test_mode_default_no_args(model_with_pdf: PDFModel) -> None:
     )
 
     assert effective == "paragraph"
+
+
+def test_classify_insert_path_fast_vs_htmlbox() -> None:
+    """Shared classifier should pick fast path only for strict single-line cases."""
+    # empty member_spans → htmlbox (no anchor span available for insert_text origin)
+    assert pdf_model_module._classify_insert_path(
+        new_text="hello",
+        member_spans=[],
+        rect=fitz.Rect(0, 0, 100, 20),
+        rotation=0,
+        preserve_multi_style=False,
+        has_new_rect=False,
+        needs_cjk=False,
+        text_width=40.0,
+        available_width=80.0,
+        size=12.0,
+    ) == "htmlbox"
+
+    assert pdf_model_module._classify_insert_path(
+        new_text="hello\nworld",
+        member_spans=[],
+        rect=fitz.Rect(0, 0, 100, 20),
+        rotation=0,
+        preserve_multi_style=False,
+        has_new_rect=False,
+        needs_cjk=False,
+        text_width=40.0,
+        available_width=80.0,
+        size=12.0,
+    ) == "htmlbox"
 
 
 def test_mode_explicit_span_id(model_with_pdf: PDFModel) -> None:
@@ -920,3 +951,27 @@ def test_real_pdf_colored_background_edit_does_not_shrink_span(
         )
     finally:
         model.close()
+
+
+# Task 1 regression: empty member_spans must not select fast path.
+def test_classify_insert_path_empty_member_spans_routes_to_htmlbox():
+    import fitz
+    from model.pdf_model import _classify_insert_path
+
+    result = _classify_insert_path(
+        new_text="hi",
+        member_spans=[],
+        rect=fitz.Rect(0, 0, 100, 20),
+        rotation=0,
+        preserve_multi_style=False,
+        has_new_rect=False,
+        needs_cjk=False,
+        text_width=10.0,
+        available_width=100.0,
+        size=12.0,
+    )
+    assert result == "htmlbox", (
+        "Empty member_spans means there's no anchor span for insert_text fast path; "
+        "must fall back to htmlbox to avoid downstream min(member_spans, ...) crash. "
+        f"Got: {result!r}"
+    )
