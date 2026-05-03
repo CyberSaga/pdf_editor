@@ -3285,6 +3285,7 @@ class PDFView(QMainWindow):
                 info.rotation,
                 info.target_span_id,
                 getattr(info, "target_mode", "run"),
+                cluster_span_ids=list(getattr(info, "cluster_span_ids", None) or []),
             )
             return True
         except Exception as exc:
@@ -3907,6 +3908,7 @@ class PDFView(QMainWindow):
         target_span_id: str = None,
         target_mode: str = "run",
         editor_intent: str = "edit_existing",
+        cluster_span_ids: list[str] | None = None,
     ):
         """建立文字編輯框，設定寬度與換行以預覽渲染後的排版（與 PDF insert_htmlbox 一致）。"""
         self._ensure_text_edit_manager().create_text_editor(
@@ -3919,6 +3921,7 @@ class PDFView(QMainWindow):
             target_span_id=target_span_id,
             target_mode=target_mode,
             editor_intent=editor_intent,
+            cluster_span_ids=cluster_span_ids,
         )
         # Hide the dim block outline for the block being edited
         try:

@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import fitz
+from PySide6.QtGui import QImage
 
 from model.edit_commands import EditTextResult
 from model.pdf_model import PDFModel
@@ -250,3 +251,51 @@ def test_preview_render_rotation_90_swaps_pixel_dimensions(qapp) -> None:
     )
     assert image_h.width() == 200 and image_h.height() == 50
     assert image_v.width() == 50 and image_v.height() == 200
+
+
+# Task 3a — line_height threading.
+
+def test_preview_render_uses_explicit_line_height_not_auto(qapp, tmp_path) -> None:
+    """Tight vs. loose line_height must produce different pixel layouts.
+    Guards the gap where auto-derive leading diverges from the committed CSS."""
+    renderer = PreviewRenderer(model=None)
+    rect = fitz.Rect(0, 0, 200, 40)
+
+    img_auto = renderer.render(
+        text="Line1\nLine2", font_name="helv", font_size=12.0,
+        color=(0, 0, 0), member_spans=None, rect_pt=rect,
+        rotation=0, render_scale=2.0, line_height=0.0,
+    )
+    img_tight = renderer.render(
+        text="Line1\nLine2", font_name="helv", font_size=12.0,
+        color=(0, 0, 0), member_spans=None, rect_pt=rect,
+        rotation=0, render_scale=2.0, line_height=5.0,
+    )
+    img_loose = renderer.render(
+        text="Line1\nLine2", font_name="helv", font_size=12.0,
+        color=(0, 0, 0), member_spans=None, rect_pt=rect,
+        rotation=0, render_scale=2.0, line_height=25.0,
+    )
+    assert img_auto is not img_tight
+    assert img_auto is not img_loose
+
+    def _ink_count(img: QImage) -> int:
+        """Count opaque-ish dark pixels (text glyphs)."""
+        return sum(
+            1
+            for y in range(img.height())
+            for x in range(0, img.width(), 4)
+            if img.pixelColor(x, y).alpha() > 30 and img.pixelColor(x, y).lightness() < 150
+        )
+
+    auto_ink  = _ink_count(img_auto)
+    tight_ink = _ink_count(img_tight)
+    loose_ink = _ink_count(img_loose)
+
+    # Tight line_height (5pt) should pack glyphs differently than auto or loose (25pt).
+    # At least one pair must differ to show leading is being honoured.
+    assert auto_ink != tight_ink or auto_ink != loose_ink, (
+        f"Different line_height values must produce different glyph layouts. "
+        f"auto={auto_ink} tight={tight_ink} loose={loose_ink}. "
+        "Check that render() passes line_height into CSS and cache key includes it."
+    )

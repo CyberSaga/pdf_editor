@@ -303,8 +303,9 @@ class PreviewRenderer:
             else:
                 import html as _html_mod
                 r, g, b = (int(c * 255) for c in color)
+                lh_css = f" line-height: {line_height}pt;" if line_height > 0 else ""
                 css = (
-                    f"span {{ font-family: Helvetica; font-size: {font_size}pt; "
+                    f"span {{ font-family: Helvetica; font-size: {font_size}pt;{lh_css} "
                     f"color: rgb({r},{g},{b}); white-space: pre-wrap; }}"
                 )
                 html = f"<span>{_html_mod.escape(text or '')}</span>"
@@ -595,6 +596,7 @@ class TextEditManager:
         target_span_id: str = None,
         target_mode: str = "run",
         editor_intent: str = "edit_existing",
+        cluster_span_ids: list[str] | None = None,
     ) -> None:
         view = self._view
         if view.text_editor:
@@ -666,14 +668,47 @@ class TextEditManager:
         setattr(editor, "_height", editor_height_px)
         editor.setLineWrapMode(QTextEdit.WidgetWidth)
         editor.setWordWrapMode(QTextOption.WrapAnywhere)
+
+        # Compute line_height from cluster spans so CSS leading matches the commit path.
+        _line_ht_for_preview = 0.0
+        _member_spans_for_preview = None
+        if cluster_span_ids:
+            try:
+                model_ref = getattr(getattr(view, "controller", None), "model", None)
+                if model_ref is not None:
+                    bm = model_ref.block_manager
+                    spans = [
+                        bm.find_span_by_id(page_idx, sid)
+                        for sid in cluster_span_ids
+                    ]
+                    spans = [s for s in spans if s is not None]
+                    if spans:
+                        _member_spans_for_preview = spans
+                        sorted_spans = sorted(spans, key=lambda s: float(s.bbox.y0))
+                        if len(sorted_spans) >= 2:
+                            advances = [
+                                abs(float(sorted_spans[i + 1].bbox.y0) - float(sorted_spans[i].bbox.y0))
+                                for i in range(len(sorted_spans) - 1)
+                                if abs(float(sorted_spans[i + 1].bbox.y0) - float(sorted_spans[i].bbox.y0)) > 0.5
+                            ]
+                            if advances:
+                                _line_ht_for_preview = sorted(advances)[len(advances) // 2]
+                        if _line_ht_for_preview <= 0:
+                            heights = [float(s.bbox.height) for s in spans if s.bbox.height > 0]
+                            if heights:
+                                _line_ht_for_preview = max(heights)
+            except Exception:
+                _line_ht_for_preview = 0.0
+
         editor.configure_render_context(
             font_name=font_name,
             font_size=float(font_size),
             color=tuple(float(c) for c in color),
-            member_spans=None,
+            member_spans=_member_spans_for_preview,
             rect_pt=fitz.Rect(rect),
             rotation=normalized_rotation,
             render_scale=float(rs),
+            line_height=_line_ht_for_preview,
         )
 
         size_str = _format_font_size(font_size)
