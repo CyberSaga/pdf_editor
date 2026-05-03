@@ -402,3 +402,16 @@ Contract:
 
 Guardrails (do not change casually):
 - If you modify list ordering, add/remove, or refresh behavior, update `docs/FEATURES.md` section “Merge PDFs (頁面 Tab)” and re-run the regression tests in `test_scripts/test_pdf_merge_workflow.py` that assert reorder-then-add/remove preserves order.
+
+## 10. Text Editing Render-Preview Overlay
+
+Inline text editing now uses a preview-backed widget in `view/text_editing.py`:
+
+- `PreviewRenderer` provides **bit-exact** preview image generation by rasterizing edited text via PyMuPDF `insert_htmlbox` on a temp page sized rotation-aware to the source rect, at `render_scale × 72` DPI matching the page render. Reuses `model._build_insert_css` and `model._convert_text_to_html` so preview pixels and commit pixels come from the same engine path. Caches by `(text, font, size, color, rotation, render_scale, line_height, rect-dims)`.
+- `PreviewBackedInlineTextEditor` owns viewport painting for the inline edit session, drawing the preview image first, then editor affordances (caret/selection). Calls `_regenerate_preview` on `textChanged` with a 150ms debounce.
+- `TextEditManager.create_text_editor(...)` instantiates `PreviewBackedInlineTextEditor` and injects render context (`font`, `size`, `color`, `rect`, `rotation`, `render_scale`, `line_height`). It computes `line_height` from `cluster_span_ids` via `block_manager.find_span_by_id()` using the same median baseline-to-baseline logic as `_apply_redact_insert`, ensuring leading is consistent between preview and commit.
+
+Model-side path parity contract:
+
+- `_classify_insert_path(...)` in `model/pdf_model.py` is the shared decision point for `fast` vs `htmlbox` insert behavior. Returns `"htmlbox"` when `member_spans` is empty (no anchor for `insert_text` origin).
+- `_apply_redact_insert(...)` delegates path selection to this helper, keeping path decisions deterministic and reusable.
