@@ -248,7 +248,16 @@ class PreviewRenderer:
         rect_pt: fitz.Rect,
         rotation: int,
         render_scale: float,
+        line_height: float = 0.0,
     ) -> QImage:
+        """Rasterize proposed edit content via insert_htmlbox at exactly the
+        DPI / CSS / font / color the commit will use, returning a QImage sized
+        to rect × render_scale (rotation-aware).
+
+        Uses model._build_insert_css / _convert_text_to_html when a model is
+        available so preview pixels and commit pixels come from the same engine.
+        Falls back to minimal CSS/HTML for unit-test isolation (model=None).
+        """
         key = (
             text,
             font_name,
@@ -256,12 +265,70 @@ class PreviewRenderer:
             tuple(float(c) for c in color),
             int(rotation),
             float(render_scale),
+            float(line_height),
             int(round(float(rect_pt.width) * 100)),
             int(round(float(rect_pt.height) * 100)),
         )
         if key == self._cache_key and self._cache_image is not None:
             return self._cache_image
-        image = self._to_qimage_dimensions(rect=rect_pt, render_scale=render_scale, rotation=rotation)
+
+        normalized_rotation = int(rotation) % 360
+        if normalized_rotation in (90, 270):
+            page_w_pt = float(rect_pt.height)
+            page_h_pt = float(rect_pt.width)
+        else:
+            page_w_pt = float(rect_pt.width)
+            page_h_pt = float(rect_pt.height)
+
+        page_w_pt = max(page_w_pt, 1.0)
+        page_h_pt = max(page_h_pt, 1.0)
+
+        temp_doc = fitz.open()
+        try:
+            temp_page = temp_doc.new_page(width=page_w_pt, height=page_h_pt)
+
+            if self._model is not None and hasattr(self._model, "_build_insert_css"):
+                css = self._model._build_insert_css(
+                    size=float(font_size),
+                    color=tuple(float(c) for c in color),
+                    font_hint=str(font_name),
+                    line_height=float(line_height),
+                )
+                html = self._model._convert_text_to_html(
+                    text=text or "",
+                    size=float(font_size),
+                    color=tuple(float(c) for c in color),
+                    latin_font=str(font_name),
+                )
+            else:
+                import html as _html_mod
+                r, g, b = (int(c * 255) for c in color)
+                css = (
+                    f"span {{ font-family: Helvetica; font-size: {font_size}pt; "
+                    f"color: rgb({r},{g},{b}); white-space: pre-wrap; }}"
+                )
+                html = f"<span>{_html_mod.escape(text or '')}</span>"
+
+            target_rect = fitz.Rect(0, 0, page_w_pt, page_h_pt)
+            try:
+                temp_page.insert_htmlbox(target_rect, html, css=css, rotate=normalized_rotation)
+            except TypeError:
+                temp_page.insert_htmlbox(target_rect, html, css=css)
+
+            matrix = fitz.Matrix(float(render_scale), float(render_scale))
+            pixmap = temp_page.get_pixmap(matrix=matrix, alpha=True)
+
+            fmt = QImage.Format_RGBA8888 if pixmap.alpha else QImage.Format_RGB888
+            image = QImage(
+                pixmap.samples,
+                pixmap.width,
+                pixmap.height,
+                pixmap.stride,
+                fmt,
+            ).copy()
+        finally:
+            temp_doc.close()
+
         self._cache_key = key
         self._cache_image = image
         return image
@@ -299,6 +366,7 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
             rect_pt=fitz.Rect(self._render_args.get("rect_pt")),
             rotation=int(self._render_args.get("rotation", 0)),
             render_scale=float(self._render_args.get("render_scale", 1.0)),
+            line_height=float(self._render_args.get("line_height", 0.0)),
         )
         self.viewport().update()
 
