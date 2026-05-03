@@ -1761,3 +1761,43 @@ def test_preview_backed_editor_font_is_callable(qapp):
     )
     qfont = editor.font()
     assert qfont.pointSizeF() > 0
+
+
+# Task 4 — paintEvent visible pixels.
+def test_preview_backed_editor_paintEvent_shows_text_pixels(qapp) -> None:
+    """After real rasterization lands in PreviewRenderer.render, the editor
+    viewport must contain visible glyph pixels after a brief event-loop pump."""
+    from PySide6.QtCore import QEventLoop, QTimer
+    from view.text_editing import PreviewBackedInlineTextEditor, PreviewRenderer
+
+    renderer = PreviewRenderer(model=None)
+    editor = PreviewBackedInlineTextEditor("ABC", renderer)
+    editor.configure_render_context(
+        font_name="helv",
+        font_size=14.0,
+        color=(0.0, 0.0, 0.0),
+        member_spans=None,
+        rect_pt=fitz.Rect(0, 0, 200, 30),
+        rotation=0,
+        render_scale=2.0,
+    )
+    editor.resize(400, 60)
+    editor.show()
+
+    loop = QEventLoop()
+    QTimer.singleShot(300, loop.quit)
+    loop.exec()
+
+    pixmap = editor.viewport().grab()
+    image = pixmap.toImage()
+    dark_pixels = sum(
+        1
+        for y in range(0, image.height(), 2)
+        for x in range(0, image.width(), 2)
+        if image.pixelColor(x, y).alpha() > 50 and image.pixelColor(x, y).lightness() < 150
+    )
+    assert dark_pixels > 30, (
+        f"After paintEvent, editor viewport should contain visible glyphs. "
+        f"Found {dark_pixels} dark pixels — preview image may not be reaching paintEvent."
+    )
+    editor.close()

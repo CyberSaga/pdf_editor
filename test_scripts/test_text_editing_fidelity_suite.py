@@ -299,3 +299,64 @@ def test_preview_render_uses_explicit_line_height_not_auto(qapp, tmp_path) -> No
         f"auto={auto_ink} tight={tight_ink} loose={loose_ink}. "
         "Check that render() passes line_height into CSS and cache key includes it."
     )
+
+
+# Task 5 — pixel-height parity.
+
+def test_inline_editor_glyph_height_matches_pdf_at_render_scale_2x(qapp, tmp_path) -> None:
+    """E2E: PreviewRenderer.render at render_scale=2.0 must produce glyph
+    ink-pixel-height within 20% of the direct PyMuPDF rasterization of the
+    same text. Regression guard for 'glyphs unexpectedly larger or smaller
+    on click' — both sides use the same engine path so the ratio must be ~1."""
+    font_size = 14.0
+    span_rect = fitz.Rect(0, 0, 150, 25)
+
+    def _ink_extent_px(image: QImage) -> int:
+        """Vertical span of opaque dark pixels (text ink)."""
+        top_row = None
+        bottom_row = None
+        for y in range(image.height()):
+            has_ink = any(
+                image.pixelColor(x, y).alpha() > 50 and image.pixelColor(x, y).lightness() < 150
+                for x in range(0, image.width(), 4)
+            )
+            if has_ink:
+                if top_row is None:
+                    top_row = y
+                bottom_row = y
+        return (bottom_row - top_row + 1) if top_row is not None else 0
+
+    # Reference: rasterize the same span directly via PyMuPDF at 2x.
+    ref_doc = fitz.open()
+    ref_page = ref_doc.new_page(width=float(span_rect.width), height=float(span_rect.height))
+    css_ref = f"span {{ font-family: Helvetica; font-size: {font_size}pt; color: rgb(0,0,0); }}"
+    ref_page.insert_htmlbox(fitz.Rect(0, 0, float(span_rect.width), float(span_rect.height)), "<span>Hello World</span>", css=css_ref)
+    ref_pixmap = ref_page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0), alpha=True)
+    ref_doc.close()
+    ref_image = QImage(ref_pixmap.samples, ref_pixmap.width, ref_pixmap.height, ref_pixmap.stride, QImage.Format_RGBA8888).copy()
+    ref_ink_h = _ink_extent_px(ref_image)
+
+    # Preview: render via PreviewRenderer (should use same engine path).
+    renderer = PreviewRenderer(model=None)
+    preview_image = renderer.render(
+        text="Hello World",
+        font_name="helv",
+        font_size=font_size,
+        color=(0.0, 0.0, 0.0),
+        member_spans=None,
+        rect_pt=span_rect,
+        rotation=0,
+        render_scale=2.0,
+    )
+    preview_ink_h = _ink_extent_px(preview_image)
+
+    assert ref_ink_h > 0, "Reference render produced no ink pixels"
+    assert preview_ink_h > 0, "Preview render produced no ink pixels"
+
+    tolerance = max(3, int(0.20 * ref_ink_h))
+    delta = abs(preview_ink_h - ref_ink_h)
+    assert delta <= tolerance, (
+        f"Preview ink-height ({preview_ink_h}px) diverges from reference "
+        f"({ref_ink_h}px) by {delta}px (tol={tolerance}px) — "
+        "glyph-size regression: preview and commit use different rasterizer paths."
+    )
