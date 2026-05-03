@@ -78,6 +78,32 @@ PdfAuditReport = pdf_optimizer.PdfAuditReport
 PdfOptimizationResult = pdf_optimizer.PdfOptimizationResult
 
 
+def _classify_insert_path(
+    *,
+    new_text: str,
+    member_spans: list[EditableSpan],
+    rect: fitz.Rect,
+    rotation: int,
+    preserve_multi_style: bool,
+    has_new_rect: bool,
+    needs_cjk: bool,
+    text_width: float,
+    available_width: float,
+    size: float,
+) -> str:
+    """Classify text insert path for parity between preview and commit."""
+    is_vertical = int(rotation) in (90, 270)
+    if is_vertical or has_new_rect or "\n" in new_text or preserve_multi_style or needs_cjk:
+        return "htmlbox"
+    if text_width <= 0 or text_width > available_width:
+        return "htmlbox"
+    if not member_spans:
+        return "htmlbox"
+    span_band_h = max(float(span.bbox.y1) for span in member_spans) - min(float(span.bbox.y0) for span in member_spans)
+    single_line_members = span_band_h <= max(2.0, float(size) * 1.5)
+    return "fast" if single_line_members else "htmlbox"
+
+
 @dataclass
 class TextHit:
     target_span_id: str
@@ -3490,55 +3516,54 @@ class PDFModel:
         else:
             base_layout = fitz.Rect(resolve_result.target.layout_rect)
 
-        single_line_members = (
-            bool(member_spans)
-            and max(float(span.bbox.y1) for span in member_spans) - min(float(span.bbox.y0) for span in member_spans)
-            <= max(2.0, float(size) * 1.5)
-        )
+        margin = 15
+        right_margin_pt = max(60.0, min(120.0, float(size) * 2.0))
+        right_safe = page_rect.x1 - right_margin_pt
+        available_w = max(0.0, right_safe - max(float(base_layout.x0), page_rect.x0) - margin)
+        insert_font = self._resolve_font_for_push(resolve_result.resolved_font)
+        try:
+            font_obj = fitz.Font(insert_font)
+            text_width = font_obj.text_length(new_text, fontsize=size)
+        except Exception:
+            insert_font = "helv"
+            text_width = fitz.Font(insert_font).text_length(new_text, fontsize=size)
 
-        if (
-            not resolve_result.is_vertical
-            and new_rect is None
-            and "\n" not in new_text
-            and single_line_members
-            and not self._needs_cjk_font(new_text)
-            and not preserve_multi_style
-        ):
-            margin = 15
-            right_margin_pt = max(60.0, min(120.0, float(size) * 2.0))
-            right_safe = page_rect.x1 - right_margin_pt
-            available_w = max(0.0, right_safe - max(float(base_layout.x0), page_rect.x0) - margin)
-            insert_font = self._resolve_font_for_push(resolve_result.resolved_font)
-            try:
-                font_obj = fitz.Font(insert_font)
-                text_width = font_obj.text_length(new_text, fontsize=size)
-            except Exception:
-                insert_font = "helv"
-                text_width = fitz.Font(insert_font).text_length(new_text, fontsize=size)
-            if 0 < text_width <= available_w:
-                origin_span = min(
-                    member_spans,
-                    key=lambda span: (float(span.origin.x), float(span.origin.y)),
-                )
-                origin = fitz.Point(
-                    float(origin_span.origin.x),
-                    float(origin_span.origin.y),
-                )
-                page.insert_text(
-                    origin,
-                    new_text,
-                    fontname=insert_font,
-                    fontsize=float(size),
-                    color=tuple(float(c) for c in color),
-                    rotate=0,
-                )
-                original_bbox = rect_union([fitz.Rect(span.bbox) for span in member_spans])
-                return fitz.Rect(
-                    original_bbox.x0,
-                    original_bbox.y0,
-                    min(original_bbox.x0 + text_width, page_rect.x1 - 10),
-                    original_bbox.y1,
-                )
+        insert_path = _classify_insert_path(
+            new_text=new_text,
+            member_spans=member_spans,
+            rect=fitz.Rect(base_layout),
+            rotation=resolve_result.rotation,
+            preserve_multi_style=preserve_multi_style,
+            has_new_rect=new_rect is not None,
+            needs_cjk=self._needs_cjk_font(new_text),
+            text_width=float(text_width),
+            available_width=float(available_w),
+            size=float(size),
+        )
+        if insert_path == "fast":
+            origin_span = min(
+                member_spans,
+                key=lambda span: (float(span.origin.x), float(span.origin.y)),
+            )
+            origin = fitz.Point(
+                float(origin_span.origin.x),
+                float(origin_span.origin.y),
+            )
+            page.insert_text(
+                origin,
+                new_text,
+                fontname=insert_font,
+                fontsize=float(size),
+                color=tuple(float(c) for c in color),
+                rotate=0,
+            )
+            original_bbox = rect_union([fitz.Rect(span.bbox) for span in member_spans])
+            return fitz.Rect(
+                original_bbox.x0,
+                original_bbox.y0,
+                min(original_bbox.x0 + text_width, page_rect.x1 - 10),
+                original_bbox.y1,
+            )
 
         if resolve_result.is_vertical:
             if new_rect is not None:
