@@ -296,7 +296,7 @@ class PreviewRenderer:
                 )
                 html = self._model._convert_text_to_html(
                     text=text or "",
-                    size=float(font_size),
+                    font_size=float(font_size),
                     color=tuple(float(c) for c in color),
                     latin_font=str(font_name),
                 )
