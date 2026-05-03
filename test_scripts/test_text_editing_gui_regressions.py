@@ -1612,7 +1612,7 @@ def test_phase2_editor_font_matches_pdf_render_scale(
     )
 
     editor = view.scene.last_proxy._widget
-    widget_pt = editor.font.pointSizeF()
+    widget_pt = editor.font().pointSizeF()
     widget_dpi = text_editing._widget_logical_dpi()
     widget_em_px = widget_pt * (widget_dpi / 72.0)
     pdf_em_px = pdf_font_size * render_scale
@@ -1711,10 +1711,10 @@ def test_create_text_editor_uses_source_span_font_size_and_width(
     )
 
     editor = view.scene.last_proxy._widget
-    assert hasattr(editor, "font"), "setFont was never called — editor creation failed"
+    assert callable(editor.font), "editor.font must remain QTextEdit.font() method — setFont was never called or method was shadowed"
 
     expected_font_pt = text_editing._display_font_pt(source_font_size, render_scale)
-    actual_font_pt = editor.font.pointSizeF()
+    actual_font_pt = editor.font().pointSizeF()
     assert abs(actual_font_pt - expected_font_pt) < 0.05, (
         f"Editor font {actual_font_pt:.3f}pt ≠ expected display pt {expected_font_pt:.3f}pt "
         f"(source span {source_font_size}pt at render_scale={render_scale}) — "
@@ -1727,3 +1727,37 @@ def test_create_text_editor_uses_source_span_font_size_and_width(
         f"(rect.width={source_rect.width}pt at render_scale={render_scale}) — "
         f"editor will wrap text differently than the source span"
     )
+
+def test_preview_pixmap_dimensions_match_render_scale_2x() -> None:
+    renderer = text_editing.PreviewRenderer()
+    image = renderer._to_qimage_dimensions(rect=fitz.Rect(0, 0, 200, 80), render_scale=2.0, rotation=0)
+    assert image.width() == 400
+    assert image.height() == 160
+
+
+def test_preview_pixmap_width_equals_source_rect_times_render_scale() -> None:
+    renderer = text_editing.PreviewRenderer()
+    image = renderer._to_qimage_dimensions(rect=fitz.Rect(0, 0, 200, 80), render_scale=1.5, rotation=0)
+    assert image.width() == 300
+
+
+# Task 2 regression: editor.font must remain a callable Qt method.
+def test_preview_backed_editor_font_is_callable(qapp):
+    """PreviewBackedInlineTextEditor.font() must be the QTextEdit method,
+    not a QFont attribute. Regression for the editor.font = qt_font_obj
+    shadow that broke on_edit_font_size_changed and on_edit_font_family_changed."""
+    from view.text_editing import PreviewBackedInlineTextEditor, PreviewRenderer
+
+    renderer = PreviewRenderer(model=None)
+    editor = PreviewBackedInlineTextEditor("hello", renderer)
+    from PySide6.QtGui import QFont
+    qt_font = QFont("Arial")
+    qt_font.setPointSizeF(12.0)
+    editor.setFont(qt_font)
+    # Must be callable (QTextEdit method), not a QFont attribute.
+    assert callable(editor.font), (
+        "editor.font is not callable — the QTextEdit.font() method was overwritten "
+        "by an attribute assignment. Remove 'editor.font = qt_font_obj' from create_text_editor."
+    )
+    qfont = editor.font()
+    assert qfont.pointSizeF() > 0

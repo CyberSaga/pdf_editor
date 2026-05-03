@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from __future__ import annotations
 import logging
 import unicodedata
 from dataclasses import dataclass
@@ -7,7 +7,7 @@ from enum import Enum
 
 import fitz
 from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QGuiApplication, QPen, QTextCursor, QTextDocument, QTextOption
+from PySide6.QtGui import QBrush, QColor, QFont, QGuiApplication, QImage, QPainter, QPen, QTextCursor, QTextDocument, QTextOption
 from PySide6.QtWidgets import QTextEdit
 
 from model.edit_requests import EditTextRequest, MoveTextRequest  # re-exported for view/controller
@@ -220,6 +220,101 @@ class InlineTextEditor(QTextEdit):
     def focusOutEvent(self, event) -> None:
         super().focusOutEvent(event)
         self.focus_out_requested.emit()
+
+
+class PreviewRenderer:
+    def __init__(self, model=None) -> None:
+        self._model = model
+        self._cache_key: tuple | None = None
+        self._cache_image: QImage | None = None
+
+    def _to_qimage_dimensions(self, *, rect: fitz.Rect, render_scale: float, rotation: int) -> QImage:
+        width = max(1, int(round(float(rect.width) * float(render_scale))))
+        height = max(1, int(round(float(rect.height) * float(render_scale))))
+        if int(rotation) % 360 in (90, 270):
+            width, height = height, width
+        image = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
+        image.fill(Qt.transparent)
+        return image
+
+    def render(
+        self,
+        *,
+        text: str,
+        font_name: str,
+        font_size: float,
+        color: tuple[float, float, float],
+        member_spans: list[object] | None,
+        rect_pt: fitz.Rect,
+        rotation: int,
+        render_scale: float,
+    ) -> QImage:
+        key = (
+            text,
+            font_name,
+            float(font_size),
+            tuple(float(c) for c in color),
+            int(rotation),
+            float(render_scale),
+            int(round(float(rect_pt.width) * 100)),
+            int(round(float(rect_pt.height) * 100)),
+        )
+        if key == self._cache_key and self._cache_image is not None:
+            return self._cache_image
+        image = self._to_qimage_dimensions(rect=rect_pt, render_scale=render_scale, rotation=rotation)
+        self._cache_key = key
+        self._cache_image = image
+        return image
+
+
+class PreviewBackedInlineTextEditor(InlineTextEditor):
+    def __init__(self, text: str, renderer: PreviewRenderer) -> None:
+        super().__init__()
+        self._renderer = renderer
+        self._preview_image: QImage | None = None
+        self._render_args: dict[str, object] = {}
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(150)
+        self._debounce.timeout.connect(self._regenerate_preview)
+        self.setPlainText(text)
+        self.textChanged.connect(self._schedule_preview)
+
+    def configure_render_context(self, **kwargs) -> None:
+        self._render_args.update(kwargs)
+        self._regenerate_preview()
+
+    def _schedule_preview(self) -> None:
+        self._debounce.start()
+
+    def _regenerate_preview(self) -> None:
+        if not self._render_args:
+            return
+        self._preview_image = self._renderer.render(
+            text=self.toPlainText(),
+            font_name=str(self._render_args.get("font_name", "helv")),
+            font_size=float(self._render_args.get("font_size", 12.0)),
+            color=tuple(self._render_args.get("color", (0.0, 0.0, 0.0))),
+            member_spans=self._render_args.get("member_spans"),
+            rect_pt=fitz.Rect(self._render_args.get("rect_pt")),
+            rotation=int(self._render_args.get("rotation", 0)),
+            render_scale=float(self._render_args.get("render_scale", 1.0)),
+        )
+        self.viewport().update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self.viewport())
+        if self._preview_image is not None:
+            painter.drawImage(0, 0, self._preview_image)
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            selection_color = QColor(80, 140, 255, 60)
+            painter.fillRect(self.cursorRect(cursor), selection_color)
+        if self.hasFocus():
+            caret = self.cursorRect()
+            painter.setPen(QPen(QColor(40, 40, 40), 1))
+            painter.drawLine(caret.topLeft(), caret.bottomLeft())
+        painter.end()
 @dataclass(frozen=True)
 class ViewportAnchor:
     page_idx: int
@@ -357,6 +452,7 @@ def _viewport_editor_height_cap_px(view) -> int | None:
 class TextEditManager:
     def __init__(self, view) -> None:
         self._view = view
+        self._preview_renderer: PreviewRenderer | None = None
 
     def _clear_text_editor_mask_item(self) -> None:
         mask_item = getattr(self._view, "_text_editor_mask_item", None)
@@ -471,7 +567,10 @@ class TextEditManager:
             content_height_px=content_height_px,
         )
 
-        editor = InlineTextEditor(text)
+        if self._preview_renderer is None:
+            model = getattr(getattr(view, "controller", None), "model", None)
+            self._preview_renderer = PreviewRenderer(model=model)
+        editor = PreviewBackedInlineTextEditor(text, self._preview_renderer)
         editor.setProperty("original_text", text)
         view._editing_rotation = normalized_rotation
         view.editing_target_span_id = target_span_id
@@ -491,12 +590,23 @@ class TextEditManager:
         editor.setStyleSheet(view._build_text_editor_stylesheet(text_rgb, mask_color))
 
         editor.setFixedWidth(editor_width_px)
+        setattr(editor, "_width", editor_width_px)
         if normalized_rotation in (90, 270):
             editor.setFixedHeight(editor_height_px)
         else:
             editor.setFixedHeight(editor_height_px)
+        setattr(editor, "_height", editor_height_px)
         editor.setLineWrapMode(QTextEdit.WidgetWidth)
         editor.setWordWrapMode(QTextOption.WrapAnywhere)
+        editor.configure_render_context(
+            font_name=font_name,
+            font_size=float(font_size),
+            color=tuple(float(c) for c in color),
+            member_spans=None,
+            rect_pt=fitz.Rect(rect),
+            rotation=normalized_rotation,
+            render_scale=float(rs),
+        )
 
         size_str = _format_font_size(font_size)
         if view.text_size.findText(size_str) == -1:
@@ -529,7 +639,8 @@ class TextEditManager:
             view.text_editor.setRotation(float(normalized_rotation))
         self.refresh_text_editor_mask_color()
         view._editor_shortcut_forwarder = _EditorShortcutForwarder(view)
-        editor.installEventFilter(view._editor_shortcut_forwarder)
+        if isinstance(view._editor_shortcut_forwarder, QObject):
+            editor.installEventFilter(view._editor_shortcut_forwarder)
         editor.focus_out_requested.connect(view._schedule_finalize_on_focus_change)
         document = editor.document() if hasattr(editor, "document") else None
         refresh_undo_redo = getattr(view, "_refresh_undo_redo_action_state", None)
