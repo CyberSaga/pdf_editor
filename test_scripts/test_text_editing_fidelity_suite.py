@@ -353,10 +353,75 @@ def test_inline_editor_glyph_height_matches_pdf_at_render_scale_2x(qapp, tmp_pat
     assert ref_ink_h > 0, "Reference render produced no ink pixels"
     assert preview_ink_h > 0, "Preview render produced no ink pixels"
 
-    tolerance = max(3, int(0.20 * ref_ink_h))
+    tolerance = max(1, ref_ink_h * 0.01)   # fractional 1%; 1px floor for subpixel rounding only
     delta = abs(preview_ink_h - ref_ink_h)
     assert delta <= tolerance, (
         f"Preview ink-height ({preview_ink_h}px) diverges from reference "
-        f"({ref_ink_h}px) by {delta}px (tol={tolerance}px) — "
+        f"({ref_ink_h}px) by {delta}px (tol={tolerance:.2f}px) — "
         "glyph-size regression: preview and commit use different rasterizer paths."
     )
+
+
+def test_glyph_height_parity_negative_control(qapp) -> None:
+    """AC 4: +10% font injection MUST be detected. Pass here = suite is not a valid gate."""
+    font_size = 14.0
+    span_rect = fitz.Rect(0, 0, 150, 25)
+
+    def _ink_extent(img: QImage) -> int:
+        top = bot = None
+        for y in range(img.height()):
+            if any(img.pixelColor(x, y).alpha() > 50 and img.pixelColor(x, y).lightness() < 150
+                   for x in range(0, img.width(), 4)):
+                if top is None: top = y
+                bot = y
+        return (bot - top + 1) if top is not None else 0
+
+    ref_doc = fitz.open()
+    ref_page = ref_doc.new_page(width=float(span_rect.width), height=float(span_rect.height))
+    ref_page.insert_htmlbox(
+        fitz.Rect(0, 0, float(span_rect.width), float(span_rect.height)),
+        "<span>Hello World</span>",
+        css=f"span {{ font-family: Helvetica; font-size: {font_size}pt; color: rgb(0,0,0); }}",
+    )
+    ref_px = ref_page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0), alpha=True)
+    ref_doc.close()
+    ref_img = QImage(ref_px.samples, ref_px.width, ref_px.height,
+                     ref_px.stride, QImage.Format_RGBA8888).copy()
+    ref_ink = _ink_extent(ref_img)
+
+    bad_img = PreviewRenderer(model=None).render(
+        text="Hello World", font_name="helv", font_size=font_size * 1.10,
+        color=(0.0, 0.0, 0.0), member_spans=None, rect_pt=span_rect,
+        rotation=0, render_scale=2.0,
+    )
+    tol = max(1, ref_ink * 0.01)   # must match the production tolerance formula exactly
+    assert abs(_ink_extent(bad_img) - ref_ink) > tol, (
+        f"Negative control failed: +10% font NOT detected (ref_ink={ref_ink}, tol={tol:.2f}). "
+        f"Test is not a valid gate."
+    )
+
+
+def test_glyph_height_1pct_gate_rejects_2px_delta() -> None:
+    """AC 4 formula guard: tolerance = max(1, h * 0.01) must be < 2.0 for all typical text sizes.
+
+    This is a pure-math test (no rendering) that fails immediately if the tolerance formula
+    is weakened back to max(2, ...) or max(2, int(0.01 * h)).  For any ink height ≤ 100px
+    (= any font ≤ ~50pt at 2x scale), tolerance < 2.0, so a 2px height delta is detectable.
+
+    If this test passes but the production formula uses max(2, ...) it is wrong — fix the
+    production formula to match.  If this test fails, the formula allows a 2px jump to pass,
+    which is a user-visible regression.
+    """
+    # Typical rendered ink heights for common text sizes at render_scale=2.0:
+    #   14pt → ~22px,  18pt → ~28px,  24pt → ~38px,  36pt → ~57px,  72pt → ~115px
+    TYPICAL_INK_HEIGHTS = [18, 22, 28, 38, 57, 80, 100]
+    for h in TYPICAL_INK_HEIGHTS:
+        tol = max(1, h * 0.01)
+        assert tol < 2.0, (
+            f"Tolerance formula too loose at ink_h={h}px: tol={tol:.3f} >= 2.0 — "
+            f"a 2px glyph jump would pass undetected.  "
+            f"Fix: use max(1, h * 0.01) with NO int() truncation and NO floor of 2."
+        )
+    # Edge: at h=200px (very large text), tolerance = 2.0 which is exactly the boundary.
+    # Anything over 200px allows tolerance > 2px — acceptable since those are rare sizes.
+    assert max(1, 200 * 0.01) == 2.0, "Boundary sanity: 200px → tol == 2.0"
