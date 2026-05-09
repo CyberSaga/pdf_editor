@@ -22,6 +22,8 @@ Enforcement logic (layered, each layer catches a distinct attack class):
      invalid artifacts (e.g. forged .gate_passed with correct git_commit but no
      real test run, or forged signoff.json) are rejected here because
      check_gate_passed.py re-runs the actual tests and verifies real evidence.
+     Layer 7 always runs (no cache) — a cache stored in the writable workspace
+     can be pre-populated by an agent to skip this decisive check.
 
 This is an OUT-OF-AGENT enforcement point: the agent cannot bypass it by
 pasting text or skipping completion_gate.py, because every Stop event fires
@@ -233,7 +235,13 @@ def main() -> int:
     # are both crafted to match their recorded digests while containing no real
     # gate evidence.  Invoking check_gate_passed.py here closes this because it
     # re-runs the actual test suite and validates real artifact content — not
-    # just hashes.  This is the decisive enforcement layer.
+    # just hashes.
+    #
+    # No cache: a cache stored in test_artifacts/ lives in the writable workspace
+    # and can be pre-populated by an agent to skip this decisive check.  The
+    # performance cost of always running check_gate_passed.py is accepted because
+    # Layer 7 only fires when a valid .completion_proof.json is present, i.e. only
+    # after the agent has already run completion_gate.py.
     print(
         "[stop-hook] Field/digest checks passed; invoking check_gate_passed.py "
         "for full independent re-verification…",

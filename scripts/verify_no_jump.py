@@ -125,8 +125,9 @@ _REQUIRED_FIXED_IDS: frozenset[str] = frozenset({
     "pixel_negative_control",
     "geom_neg_fontsize_cjk",
     "geom_neg_fontsize_unknown_font",
-    "e2e_click_to_edit",          # real PDF + real geometry pipeline (model.get_text_info_at_point)
-    "e2e_qtest_click_to_edit",    # full-stack QTest: real viewport click → editor first frame
+    "e2e_click_to_edit",                       # real PDF + real geometry pipeline (model.get_text_info_at_point)
+    "e2e_qtest_click_to_edit_colored",         # full-stack QTest on Latin colored-bg PDF
+    "e2e_qtest_click_to_edit_complexed",       # full-stack QTest on CJK complex-layout PDF
 })
 
 
@@ -157,7 +158,10 @@ def _expected_case_ids() -> set[str]:
         f"spec must cover helv, cjk, unknown_font; got {font_cases}"
     assert 90 in rotations, "spec must include rotation=90"
     assert "e2e_click_to_edit" in _REQUIRED_FIXED_IDS, "real-geometry e2e test must be in fixed IDs"
-    assert "e2e_qtest_click_to_edit" in _REQUIRED_FIXED_IDS, "QTest full-stack e2e test must be in fixed IDs"
+    assert "e2e_qtest_click_to_edit_colored" in _REQUIRED_FIXED_IDS, \
+        "QTest full-stack e2e (colored-bg PDF) must be in fixed IDs"
+    assert "e2e_qtest_click_to_edit_complexed" in _REQUIRED_FIXED_IDS, \
+        "QTest full-stack e2e (complex-layout PDF) must be in fixed IDs — covers CJK regression"
 
     return expected
 
@@ -578,7 +582,11 @@ def _check_signoff(min_signoff_time: float) -> bool:
     # Cases that produce before/after/diff PNGs: pixel_* and the two e2e IDs.
     # This is derived from the hardcoded spec, NOT from the manifest — the manifest
     # is mutable, but the required image cases are fixed.
-    _IMAGE_CASES_IN_VERIFIER = frozenset({"e2e_click_to_edit", "e2e_qtest_click_to_edit"})
+    _IMAGE_CASES_IN_VERIFIER = frozenset({
+        "e2e_click_to_edit",
+        "e2e_qtest_click_to_edit_colored",
+        "e2e_qtest_click_to_edit_complexed",
+    })
 
     def _verifier_has_image_artifacts(tid: str) -> bool:
         return tid.startswith("pixel_") or tid in _IMAGE_CASES_IN_VERIFIER

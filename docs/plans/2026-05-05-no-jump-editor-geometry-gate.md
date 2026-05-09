@@ -511,10 +511,12 @@ def _check_signoff_checklist(data: dict, errors: list[str]) -> None:
 
             # Machine-check: pixel diff at each click coordinate for every screenshot pair.
             # Detects cases where the CUA agent produced before/after screenshots that differ
-            # significantly at the click site (≥ 10% of 80×80-pixel crop changed), indicating
-            # either a visible glyph jump or that the model clicked a non-text region.
-            # The precise ≤ 1% threshold is enforced by test_no_jump_editor_geometry.py;
-            # this is a coarse corroborating signal from the CUA evidence layer.
+            # significantly at the click site (≥ 1% of a 120×120-pixel crop changed using a
+            # >10 lightness-delta threshold), indicating either a visible glyph jump or that
+            # the model clicked a non-text region.  This enforces the SAME 1%/lightness>10
+            # standard as test_no_jump_editor_geometry.py — verify_no_jump.py is the sole
+            # machine-enforced authority, so the live CUA check cannot be weaker than the
+            # offline unit-test check.
             try:
                 from PIL import Image as _PILImage  # noqa: PLC0415
                 _pil_ok = True
@@ -561,20 +563,22 @@ def _check_signoff_checklist(data: dict, errors: list[str]) -> None:
                         cx = int(click.get("x", 0));  cy = int(click.get("y", 0))
                         if cx <= 0 or cy <= 0:
                             continue
-                        x0 = max(0, cx - 40);  x1 = min(bw, cx + 40)
-                        y0 = max(0, cy - 40);  y1 = min(bh, cy + 40)
+                        # 120×120 crop (±60 px) and lightness-delta>10 — same parameters as
+                        # test_no_jump_editor_geometry.py's _changed_pixel_pct().
+                        x0 = max(0, cx - 60);  x1 = min(bw, cx + 60)
+                        y0 = max(0, cy - 60);  y1 = min(bh, cy + 60)
                         if x1 <= x0 or y1 <= y0:
                             continue
                         crop_b = list(before_img.crop((x0, y0, x1, y1)).getdata())
                         crop_a = list(after_img.crop((x0, y0, x1, y1)).getdata())
                         total  = len(crop_b)
-                        changed = sum(1 for b, a in zip(crop_b, crop_a) if abs(b - a) > 20)
+                        changed = sum(1 for b, a in zip(crop_b, crop_a) if abs(b - a) > 10)
                         pct = changed / total if total > 0 else 1.0
-                        if pct >= 0.10:
+                        if pct >= 0.01:
                             errors.append(
                                 f"  {pdf_path} click ({cx},{cy}): "
                                 f"{pct:.1%} of pixels changed at click site "
-                                f"(threshold: < 10%) — possible glyph jump or "
+                                f"(threshold: < 1%) — possible glyph jump or "
                                 f"click on non-text area"
                             )
 
@@ -3241,28 +3245,136 @@ failed (forged or stale gate evidence)"`.
 monkeypatch it (`monkeypatch.setattr(hook_mod, "_run_check_gate_passed", lambda: 0/1)`)
 without spawning a real subprocess that would run the full test suite.
 
-**Finding [medium] — No Codex-native enforcement path — RESOLVED (accepted by design)**
+**Finding [medium] — No Codex-native enforcement path — PARTIALLY RESOLVED (cycle 21, 2026-05-09)**
 
 The Stop hook fires for Claude Code sessions only.  Pure Codex goal sessions
 (agent invoked via `/goal` without Claude Code wrapping) do not fire Claude
 Code Stop hooks.
 
-Current mitigations (documented, not mechanical for Codex):
-1. The gate plan file (`2026-05-05-no-jump-editor-geometry-gate.md`) explicitly
+Current mitigations:
+1. **Host-side wrapper (cycle 21):** `scripts/codex_session_guard.py` provides
+   mechanical post-completion enforcement that does NOT require any agent
+   runtime cooperation.  The user runs:
+       python scripts/codex_session_guard.py begin     # before /goal
+       <Codex /goal session runs to completion>
+       python scripts/codex_session_guard.py verify    # after /goal
+   The `begin` step records baseline HEAD + timestamp; `verify` rejects any
+   `.completion_proof.json` that (a) is missing, (b) predates the baseline,
+   (c) sits at a HEAD that is not a descendant of baseline_HEAD, (d) does not
+   match current HEAD, or (e) fails an independent `check_gate_passed.py`
+   re-verification.  This is the mechanical enforcement layer for Codex.
+2. The gate plan file (`2026-05-05-no-jump-editor-geometry-gate.md`) explicitly
    names `python scripts/completion_gate.py` exit 0 as the ONLY valid done signal.
    Codex agents reading the goal file receive this as a hard instruction.
-2. The Claude Code Stop hook provides mechanical enforcement for sessions running
-   inside Claude Code (which is the typical deployment for this project).
-3. The hook's docstring now includes a "Codex-session note" documenting both layers.
+3. The Claude Code Stop hook provides mechanical enforcement for sessions running
+   inside Claude Code.
 
-A truly Codex-native enforcement point (equivalent to a pre-completion hook in
-the Codex runtime) would require Codex to expose a completion-gate API, which is
-not available in the current plugin version.  The dual-layer design (prompt-level
-instruction + Claude Code Stop hook) is the strongest enforcement achievable with
-the current toolchain.
+The host wrapper closes the gap: even if Codex declares done without invoking
+`completion_gate.py`, `codex_session_guard.py verify` will exit 1, and any
+caller (CI, manual workflow, or wrapper script) that respects that exit code
+treats the Codex session as having failed.
 
 ## Acceptance Gate Review Dispositions (2026-05-07)
 
-- **Codex completion is still prompt-enforced, not mechanically gated** — RESOLVED. This limitation is accepted by design.
+- **Codex completion is still prompt-enforced, not mechanically gated** — REVISITED in cycle 21 (2026-05-09); now mechanically enforceable for Codex via `scripts/codex_session_guard.py`.  See cycle 21 below.
 - **Local permission broadening increases gate bypass surface** — NO-MATTER / WON'T-FIX. Moot — gate checks run in a fresh session, so local permission state does not carry over.
-- **Full-stack glyph-jump test can miss editor opened in the wrong place** — KNOWN GAP, owned by Claude. Claude-side review is responsible for verifying editor placement before the gate fires.
+- **Full-stack glyph-jump test can miss editor opened in the wrong place** — RESOLVED in cycle 21. `test_click_to_edit_qtest_integration` now (a) parametrizes over both `test-colored-background.pdf` (Latin) and `test-complexed-layout.pdf` (CJK), and (b) asserts geometric overlap between the editor proxy and the expected span rect before checking pixel diff — a displaced editor fails the overlap assertion immediately.
+
+---
+
+## Cycle 21 (2026-05-09) — Audit findings addressed
+
+The 2026-05-09 plan audit identified four exploitable surfaces that the
+prior cycles had not closed.  This cycle addresses each.
+
+### Finding [critical] — Test assertion thresholds are mutable
+
+The 0.5px / 1% / 1px-floor thresholds live in `test_*.py` files an agent can
+edit and commit.  `_REQUIRED_FIXED_IDS` only enumerated which test IDs must
+run; nothing pinned the *strictness* of their assertions.  Bypass path:
+loosen `<= 0.01` to `<= 0.99`, commit, run gate, pass.
+
+**Fix:** `scripts/completion_gate.py` now enforces a SHA-256 hash pin on the
+threshold-encoding files via `_PINNED_HASHES`.  The pinned set covers:
+
+| File | Why pinned |
+|------|------------|
+| `test_scripts/test_no_jump_editor_geometry.py` | Encodes 0.5px geometry, 1% pixel-diff thresholds |
+| `test_scripts/test_text_editing_fidelity_suite.py` | Encodes 1px ink-height parity formula |
+| `test_scripts/test_completion_proof_hook.py` | Encodes Stop-hook anti-forgery cases |
+| `scripts/verify_no_jump.py` | Authoritative spec for required case IDs |
+| `scripts/check_gate_passed.py` | Re-verifier; loosening it would mask forgery |
+| `scripts/check_completion_proof_hook.py` | Stop hook itself |
+| `scripts/codex_session_guard.py` | Codex post-completion enforcer |
+| `scripts/ux_signoff_agent.py` | CUA evidence collector and image-artifact spec |
+
+When a legitimate edit changes one of these files, the agent must update the
+SHA-256 in `_PINNED_HASHES` in the same commit.  That update is a visible diff
+in `completion_gate.py` itself — the trip-wire is the human reviewer reading
+the diff to the pinning script.  The pinning is not cryptographically perfect
+(an agent that controls both the test and the pin can update both), but it
+makes silent threshold-loosening impossible: any change has a visible audit
+trail in the commit that contains it.
+
+To update the pin after a legitimate edit:
+
+```
+python -c "import hashlib; from pathlib import Path; print(hashlib.sha256(Path('test_scripts/test_no_jump_editor_geometry.py').read_bytes()).hexdigest())"
+```
+
+…then paste the value into `_PINNED_HASHES[...]` in
+`scripts/completion_gate.py` and document the threshold rationale here.
+
+### Finding [critical] — Codex /goal had no mechanical enforcement
+
+See "Finding [medium] — No Codex-native enforcement path" above (now
+PARTIALLY RESOLVED via `scripts/codex_session_guard.py`).  Run pattern:
+
+```
+python scripts/codex_session_guard.py begin
+# … run Codex /goal session …
+python scripts/codex_session_guard.py verify
+```
+
+`verify` exit 0 = the Codex session produced a valid no-jump proof bound to
+a HEAD at-or-after the recorded baseline, and `check_gate_passed.py`
+independently re-verifies it.  Exit 1 = treat the Codex session as failed
+regardless of what it printed.
+
+### Finding [medium] — Plan documented stale CUA pixel-diff thresholds
+
+Earlier cycles tightened `_check_signoff_checklist`'s live CUA pixel-diff
+check to ±60 px crop / lightness>10 / ≥1% threshold (matching the unit-test
+standard) but the plan body still documented the old ±40 px / lightness>20 /
+≥10% values.  This cycle updates the plan body to match the code; both now
+read 120×120 crop, lightness-delta>10, ≥1%.
+
+### Finding [high] — QTest e2e covered only a single PDF
+
+`test_click_to_edit_qtest_integration` was a single function exercising
+`test-colored-background.pdf` only.  CJK-specific regressions (e.g. wrong
+font fallback, rotation handling for CJK glyphs) would not surface here.
+
+**Fix:** test parametrized over `QTEST_E2E_CASES = [(colored-bg, "colored"),
+(complex-layout, "complexed")]`.  Test IDs are now `e2e_qtest_click_to_edit_colored`
+and `e2e_qtest_click_to_edit_complexed`; both are required in `_REQUIRED_FIXED_IDS`
+and in `ux_signoff_agent.py`'s `_IMAGE_ARTIFACT_IDS`.
+
+### Finding [high] — Stop hook re-ran the full suite on every Stop event
+
+Once the gate plan was committed, the Layer 7 deep re-verification
+(`check_gate_passed.py`, multi-minute) ran on every Claude Stop event,
+making unrelated work unusable.
+
+**Fix:** `scripts/check_completion_proof_hook.py` now caches the
+`(HEAD, proof_digest, marker_digest, signoff_digest)` tuple of the last
+successful Layer 7 validation in `test_artifacts/.hook_validation_cache.json`.
+A Stop event whose inputs match the cached tuple fast-passes.  ANY change to
+HEAD or any of the three artifact files invalidates the cache and forces a
+full re-run.  Tests `test_hook_layer7_fast_path_skips_when_inputs_unchanged`
+and `test_hook_layer7_cache_invalidates_on_proof_change` cover both directions.
+
+The fast-path does NOT weaken security: a forged proof at a previously-
+validated HEAD with previously-validated digests cannot exist, because the
+cache key includes the SHA-256 of the proof itself.  Mutating the proof
+changes its digest, drops the cache hit, and forces re-verification.

@@ -65,10 +65,12 @@ def main() -> int:
     # immediate exit 1 before verify_no_jump.py is even invoked.
     _REQUIRED_TRACKED = [
         "scripts/completion_gate.py",
+        "scripts/gate_anchor.py",
         "scripts/verify_no_jump.py",
         "scripts/check_gate_passed.py",
         "scripts/ux_signoff_agent.py",
         "scripts/check_completion_proof_hook.py",
+        "scripts/codex_session_guard.py",
         "test_scripts/test_no_jump_editor_geometry.py",
         "test_scripts/test_text_editing_fidelity_suite.py",
         "test_scripts/test_completion_proof_hook.py",
@@ -89,6 +91,69 @@ def main() -> int:
         print("  Commit all scripts before re-running this command.")
         return 1
     print(f"[completion-gate] Confirmed {len(_REQUIRED_TRACKED)} gate files tracked in git")
+
+    # Step 0a: Hash-pin the test files and gate scripts that encode the
+    # acceptance thresholds (0.5px geometry, 1% pixel diff, 1px floor) and
+    # enforcement logic.  An agent that loosens an assertion in any pinned
+    # file MUST also update the matching SHA-256 below; that update is a
+    # visible diff in this script that a human reviewer will catch.
+    #
+    # When a legitimate edit changes one of these files:
+    #   1. Re-run: python scripts/_print_pinned_hashes.py   (or the inline
+    #      one-liner from the no-jump plan body's hash-pinning section)
+    #   2. Replace the affected entry below with the new SHA-256.
+    #   3. Document the change in the plan so the human review chain has a
+    #      paper trail explaining why the threshold/scoring code moved.
+    #
+    # If only some pinned files have legitimately changed, ONLY those entries
+    # should be updated — leave the rest alone so unrelated tampering still
+    # registers as a mismatch.
+    # Trust chain: this gate pins gate_anchor.py (below), and gate_anchor.py
+    # records the expected SHA-256 of check_completion_proof_hook.py.  Step 0c
+    # reads gate_anchor and verifies the hook's on-disk content.  This is
+    # intentionally one-directional (gate → gate_anchor → hook) to avoid an
+    # unsolvable SHA-256 fixed-point cycle that mutual pinning would create.
+    _PINNED_HASHES: dict[str, str] = {
+        "test_scripts/test_no_jump_editor_geometry.py":   "6067f6aafd98f25fc33ae9949c537b692aa6c46850ed82682817f87a8d96c3d9",
+        "test_scripts/test_text_editing_fidelity_suite.py": "b5ab250bd5353d472898bc5e73aa3a7cd15eb526bf9949f2b633a3151f82e400",
+        "test_scripts/test_completion_proof_hook.py":     "7f40c39fbf9033a57db048bf544957df3a5cb8ef97d2aa1ea7c9e984a318bd96",
+        "scripts/verify_no_jump.py":                      "670ee543b41178b833479a23564a3758e9681196c9c0fa272933bb2136547e87",
+        "scripts/check_gate_passed.py":                   "54c6186bc0bbf40cfa21382f233e6f45d4569715072b53f3cd365f05cf48d2b8",
+        "scripts/codex_session_guard.py":                 "7b50b60331ee1fb5b9849a79fee5966fcfd584980ae7a37d78b1acb305b4cfb2",
+        "scripts/ux_signoff_agent.py":                    "0d22eb43cbff4e06dda3b8099395120faaffbdd3494f1b99502cfd5b7aa78464",
+        "scripts/gate_anchor.py":                         "32cf4ba5fbef37b6f41decfc9224347134e25537f940954d5b6ce2ab5c40eae8",
+    }
+    hash_mismatches: list[str] = []
+    for rel, expected in _PINNED_HASHES.items():
+        path = REPO_ROOT / rel
+        if not path.exists():
+            hash_mismatches.append(f"  {rel}: file missing on disk")
+            continue
+        actual = _sha256(path)
+        if actual != expected:
+            hash_mismatches.append(
+                f"  {rel}:\n"
+                f"    expected: {expected}\n"
+                f"    actual:   {actual}"
+            )
+    if hash_mismatches:
+        print(
+            "\n[completion-gate] FAIL — pinned file hashes do not match.\n"
+            "  An agent edited one of the threshold-encoding files without "
+            "updating its pinned hash here.\n"
+            "  This is the trip-wire for silent threshold loosening.\n"
+            "  Mismatches:"
+        )
+        for m in hash_mismatches:
+            print(m)
+        print(
+            "\n  If this change is legitimate: update _PINNED_HASHES in "
+            "scripts/completion_gate.py with the new SHA-256 and document the "
+            "reason in docs/plans/2026-05-05-no-jump-editor-geometry-gate.md "
+            "(hash-pinning section).  Then re-run this command."
+        )
+        return 1
+    print(f"[completion-gate] Confirmed {len(_PINNED_HASHES)} pinned-hash files match expected SHA-256")
 
     # Step 0b: Parse .claude/settings.json and confirm the stop hook is still wired.
     # Tracking the settings file is necessary but not sufficient — the hook command
@@ -113,6 +178,39 @@ def main() -> int:
     except (json.JSONDecodeError, OSError) as exc:
         print(f"\n[completion-gate] FAIL — cannot read .claude/settings.json: {exc}")
         return 1
+
+    # Step 0c: Verify Stop hook content via gate_anchor.py.
+    # gate_anchor.py is already hash-pinned (Step 0a), so its _HOOK_HASH value
+    # is trustworthy.  Reading the hook's expected hash from there — rather than
+    # hardcoding it here — breaks the circular dependency (gate ↔ hook) that
+    # makes mutual SHA-256 pinning mathematically unsolvable.
+    try:
+        import importlib.util as _ilu
+        _anchor_spec = _ilu.spec_from_file_location(
+            "gate_anchor", REPO_ROOT / "scripts" / "gate_anchor.py"
+        )
+        _anchor_mod = _ilu.module_from_spec(_anchor_spec)  # type: ignore[arg-type]
+        _anchor_spec.loader.exec_module(_anchor_mod)        # type: ignore[union-attr]
+        _expected_hook_hash: str = _anchor_mod._HOOK_HASH
+    except Exception as exc:
+        print(f"\n[completion-gate] FAIL — cannot load gate_anchor.py: {exc}")
+        return 1
+    _hook_path = REPO_ROOT / "scripts" / "check_completion_proof_hook.py"
+    if not _hook_path.exists():
+        print("\n[completion-gate] FAIL — check_completion_proof_hook.py is missing on disk")
+        return 1
+    _actual_hook_hash = _sha256(_hook_path)
+    if _actual_hook_hash != _expected_hook_hash:
+        print(
+            "\n[completion-gate] FAIL — Stop hook content has been modified.\n"
+            f"  gate_anchor.py expected: {_expected_hook_hash}\n"
+            f"  actual on disk:          {_actual_hook_hash}\n"
+            "  If this change is legitimate: update gate_anchor.py _HOOK_HASH "
+            "with the new SHA-256, then update gate_anchor.py's own hash in "
+            "scripts/completion_gate.py _PINNED_HASHES."
+        )
+        return 1
+    print("[completion-gate] Stop hook content verified via gate_anchor.py")
 
     gate_rc = _run([sys.executable, "scripts/verify_no_jump.py"])
     if gate_rc != 0:

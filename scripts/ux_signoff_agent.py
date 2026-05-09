@@ -78,7 +78,8 @@ _IMAGE_ARTIFACT_IDS: frozenset[str] = frozenset({
     # Cases that produce before/after/diff images — must match the verifier's expected key set.
     # Add new pixel/e2e cases here AND in verify_no_jump.py's _check_signoff() filter.
     "e2e_click_to_edit",
-    "e2e_qtest_click_to_edit",
+    "e2e_qtest_click_to_edit_colored",
+    "e2e_qtest_click_to_edit_complexed",
 })
 
 

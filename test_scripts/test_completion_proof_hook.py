@@ -11,6 +11,7 @@ Covers:
     finds no real gate evidence).  This is the decisive enforcement layer.
   - Real-path integration: hook uses the correct GOAL_FILE path (the actual
     gate plan file), with no monkeypatching of GOAL_FILE.
+  - Layer 7 always runs — no cache bypass possible.
 """
 from __future__ import annotations
 
@@ -392,3 +393,36 @@ def test_hook_blocks_when_goal_file_deleted_but_tracked(tmp_gate, monkeypatch, c
     assert rc == 1
     err = capsys.readouterr().err
     assert "BLOCKED" in err
+
+
+# ---------------------------------------------------------------------------
+# Case 19 — Layer 7 always runs; no cache bypass possible
+#   Verifies that even identical inputs on a second run still invoke
+#   check_gate_passed.py.  A writable cache in the workspace would let an
+#   agent skip the decisive re-verification step; the cache was removed.
+# ---------------------------------------------------------------------------
+
+def test_hook_layer7_always_runs_on_repeated_calls(tmp_gate, monkeypatch):
+    """Calling the hook twice with identical inputs must invoke
+    check_gate_passed.py both times — there is no cache to skip Layer 7.
+    """
+    goal_file, proof_path, marker_path, signoff_path = tmp_gate
+    head = "n" * 40
+    goal_file.write_text("# goal")
+    gate_d, sig_d = _write_artifacts(marker_path, signoff_path, head)
+    proof = _valid_proof(head, gate_d, sig_d)
+    proof_path.write_text(json.dumps(proof), encoding="utf-8")
+    monkeypatch.setattr(hook_mod, "_git_head", lambda: head)
+
+    call_count = {"n": 0}
+    def _stub_check() -> int:
+        call_count["n"] += 1
+        return 0
+    monkeypatch.setattr(hook_mod, "_run_check_gate_passed", _stub_check)
+
+    assert hook_mod.main() == 0
+    assert hook_mod.main() == 0
+    assert call_count["n"] == 2, (
+        f"Layer 7 must run on every call (no cache); "
+        f"call_count={call_count['n']}, expected 2"
+    )
