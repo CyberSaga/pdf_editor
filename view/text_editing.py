@@ -408,7 +408,11 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
             rotation = int(self._render_args.get("rotation", 0)) % 360
             if rotation in (90, 270):
                 width_px, height_px = height_px, width_px
-            self.setFixedSize(width_px, height_px)
+            # Keep geometry chosen by create_text_editor() for no-jump UX.
+            # Only apply rect-derived size when this editor has no explicit frame yet
+            # (or in legacy standalone mode where rect sizing is the only input).
+            if self._legacy_standalone_mode or self.width() <= 1 or self.height() <= 1:
+                self.setFixedSize(width_px, height_px)
         self._regenerate_preview()
 
     def _schedule_preview(self) -> None:
@@ -638,6 +642,7 @@ class TextEditManager:
         editor = editor_proxy.widget()
         text_rgb = editor.property("text_rgb") or (0, 0, 0)
         mask_color = _readable_editor_mask_color(text_rgb)
+        self._sync_text_editor_mask_item(scene_rect, mask_color)
         editor.setStyleSheet(self._view._build_text_editor_stylesheet(text_rgb, mask_color))
         editor.setProperty("mask_rgb", (mask_color.red(), mask_color.green(), mask_color.blue()))
 
