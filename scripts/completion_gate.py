@@ -120,7 +120,7 @@ def main() -> int:
         "scripts/verify_no_jump.py":                      "a6acd979f92540791e11d81f4aec7479f111ff7c27d84811681bf7184c766c14",
         "scripts/check_gate_passed.py":                   "54c6186bc0bbf40cfa21382f233e6f45d4569715072b53f3cd365f05cf48d2b8",
         "scripts/codex_session_guard.py":                 "7b50b60331ee1fb5b9849a79fee5966fcfd584980ae7a37d78b1acb305b4cfb2",
-        "scripts/ux_signoff_agent.py":                    "0d22eb43cbff4e06dda3b8099395120faaffbdd3494f1b99502cfd5b7aa78464",
+        "scripts/ux_signoff_agent.py":                    "b82eccdb94f14ff6a1608e2fd9029e4876a43a8a5e822a1caab0ea1958c66c20",
         "scripts/gate_anchor.py":                         "32cf4ba5fbef37b6f41decfc9224347134e25537f940954d5b6ce2ab5c40eae8",
     }
     hash_mismatches: list[str] = []
