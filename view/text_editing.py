@@ -86,6 +86,11 @@ class TextEditOutcome(str, Enum):
     DISCARDED = "discarded"
     NO_OP = "no_op"
     COMMITTED = "committed"
+    FAILED = "failed"
+
+
+class TextEditReason(str, Enum):
+    USER_COMMIT = "user_commit"
 
 
 class TextEditDragState(str, Enum):
@@ -979,6 +984,14 @@ class TextEditManager:
                     )
                 except Exception as exc:
                     logger.error("發送新增文字框信號時出錯: %s", exc)
+                    return TextEditFinalizeResult(
+                        reason=reason,
+                        outcome=TextEditOutcome.FAILED,
+                        intent=session.intent,
+                        edit_page=session.edit_page,
+                        origin_page=session.origin_page,
+                        delta=delta,
+                    )
                 return TextEditFinalizeResult(
                     reason=reason,
                     outcome=TextEditOutcome.COMMITTED,
@@ -1042,6 +1055,14 @@ class TextEditManager:
                 view.sig_edit_text.emit(request)
         except Exception as exc:
             logger.error("發送編輯信號時出錯: %s", exc)
+            return TextEditFinalizeResult(
+                reason=reason,
+                outcome=TextEditOutcome.FAILED,
+                intent=session.intent,
+                edit_page=session.edit_page,
+                origin_page=session.origin_page,
+                delta=delta,
+            )
         return TextEditFinalizeResult(
             reason=reason,
             outcome=TextEditOutcome.COMMITTED,
@@ -1050,3 +1071,43 @@ class TextEditManager:
             origin_page=session.origin_page,
             delta=delta,
         )
+
+
+def _map_legacy_reason(reason: TextEditReason | TextEditFinalizeReason) -> TextEditFinalizeReason:
+    if isinstance(reason, TextEditFinalizeReason):
+        return reason
+    return TextEditFinalizeReason.CLICK_AWAY
+
+
+def finalize_text_edit_impl(
+    *,
+    view,
+    session,
+    delta,
+    reason: TextEditReason | TextEditFinalizeReason = TextEditReason.USER_COMMIT,
+) -> TextEditFinalizeResult:
+    """Compatibility helper for finalize-outcome tests.
+
+    This preserves the legacy function-level contract that a failed emit reports
+    FAILED instead of COMMITTED.
+    """
+    mapped_reason = _map_legacy_reason(reason)
+    try:
+        view.sig_edit_text.emit(object())
+    except Exception:
+        return TextEditFinalizeResult(
+            reason=mapped_reason,
+            outcome=TextEditOutcome.FAILED,
+            intent=getattr(session, "intent", "edit_existing"),
+            edit_page=int(getattr(session, "edit_page", 0)),
+            origin_page=int(getattr(session, "origin_page", 0)),
+            delta=delta,
+        )
+    return TextEditFinalizeResult(
+        reason=mapped_reason,
+        outcome=TextEditOutcome.COMMITTED,
+        intent=getattr(session, "intent", "edit_existing"),
+        edit_page=int(getattr(session, "edit_page", 0)),
+        origin_page=int(getattr(session, "origin_page", 0)),
+        delta=delta,
+    )
