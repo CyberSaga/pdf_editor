@@ -405,6 +405,9 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
             rect = fitz.Rect(rect_val)
             width_px = max(1, int(round(float(rect.width) * scale_val)))
             height_px = max(1, int(round(float(rect.height) * scale_val)))
+            rotation = int(self._render_args.get("rotation", 0)) % 360
+            if rotation in (90, 270):
+                width_px, height_px = height_px, width_px
             self.setFixedSize(width_px, height_px)
         self._regenerate_preview()
 
@@ -684,6 +687,16 @@ class TextEditManager:
             rotation=rotation,
             content_height_px=content_height_px,
         )
+        if normalized_rotation == 90:
+            editor_width_px = max(int(round(scaled_rect.height)), 1)
+            editor_height_px = max(int(round(scaled_rect.width)), 1)
+            pos_x = float(scaled_rect.x1)
+            pos_y = float(y0 + scaled_rect.y0)
+        elif normalized_rotation == 270:
+            editor_width_px = max(int(round(scaled_rect.height)), 1)
+            editor_height_px = max(int(round(scaled_rect.width)), 1)
+            pos_x = float(scaled_rect.x0)
+            pos_y = float(y0 + scaled_rect.y1)
         initial_frame = None
         graphics_view = getattr(view, "graphics_view", None)
         if graphics_view is not None and hasattr(graphics_view, "viewport"):
