@@ -1420,7 +1420,10 @@ class PDFView(QMainWindow):
     def _on_text_cancel_clicked(self):
         if not self.text_editor or not self.text_editor.widget():
             return
+        keep_edit_mode = self.current_mode == "edit_text"
         self._finalize_text_edit(TextEditFinalizeReason.CANCEL_BUTTON)
+        if keep_edit_mode and self.current_mode != "edit_text":
+            self.set_mode("edit_text")
 
     def _set_text_property_actions_enabled(self, enabled: bool) -> None:
         for attr in ("text_apply_btn", "text_cancel_btn"):
@@ -2419,18 +2422,6 @@ class PDFView(QMainWindow):
 
     def _event_viewport_pos(self, event) -> QPoint:
         raw_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
-        graphics_view = getattr(self, "graphics_view", None)
-        viewport = None
-        if graphics_view is not None and hasattr(graphics_view, "viewport"):
-            try:
-                viewport = graphics_view.viewport()
-            except Exception:
-                viewport = None
-        if viewport is not None:
-            try:
-                raw_pos = viewport.mapFrom(graphics_view, raw_pos)
-            except Exception:
-                pass
         return QPoint(raw_pos)
 
     def _event_scene_pos(self, event) -> QPointF:
@@ -2520,7 +2511,7 @@ class PDFView(QMainWindow):
             # Objects/text editing modes own object manipulation. Browse owns text selection.
             # Keep this early-return path lightweight so tests can exercise mode gating without
             # constructing the full edit-text state machine.
-            if self.current_mode in ("objects", "text_edit", "edit_text"):
+            if self.current_mode in ("objects", "text_edit"):
                 _resize_handle_idx = (
                     self._hit_object_resize_handle_index(scene_pos)
                     if self._selected_object_info is not None
@@ -2673,14 +2664,26 @@ class PDFView(QMainWindow):
                 self._clear_hover_highlight()
                 page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
                 try:
-                    info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
+                    info = self.controller.get_text_info_at_point(
+                        page_idx + 1,
+                        doc_point,
+                        allow_fallback=True,
+                    )
                     if info:
-                        # 存下文字塊資訊，但先不開啟編輯框（等 release 或 drag 決定）
+                        # Click-to-edit should open immediately for a fresh target.
+                        # Deferring to mouse-release can miss reopen paths after a
+                        # cancel/apply cycle due stale drag state.
                         self.editing_font_name = info.font
                         self.editing_color = info.color
                         self.editing_original_text = info.target_text
                         self._editing_page_idx = page_idx
-                        self._pending_text_info = (
+                        self._pending_text_info = None
+                        self._drag_pending = False
+                        self._drag_active = False
+                        self._text_edit_drag_state = TextEditDragState.IDLE
+                        self._drag_start_scene_pos = None
+                        self._drag_editor_start_pos = None
+                        self._create_text_editor(
                             info.target_bbox,
                             info.target_text,
                             info.font,
@@ -2690,11 +2693,7 @@ class PDFView(QMainWindow):
                             info.target_span_id,
                             getattr(info, "target_mode", "run"),
                         )
-                        self._drag_pending = True
-                        self._drag_active = False
-                        self._text_edit_drag_state = TextEditDragState.PENDING
-                        self._drag_start_scene_pos = scene_pos
-                        self._drag_editor_start_pos = None  # 尚無編輯框
+                        event.accept()
                         return
                 except Exception as e:
                     logger.error(f"開啟編輯框失敗: {e}")
@@ -3672,7 +3671,7 @@ class PDFView(QMainWindow):
             event.accept()
             return
         # ── 拖曳移動文字框的放開處理 ──
-        if self.current_mode in ("objects", "text_edit", "edit_text") and event.button() == Qt.LeftButton:
+        if self.current_mode in ("objects", "text_edit") and event.button() == Qt.LeftButton:
             if getattr(self, "_object_resize_pending", False):
                 preview = getattr(self, "_object_resize_preview_rect", None)
                 start_rect = getattr(self, "_object_resize_start_doc_rect", None)
