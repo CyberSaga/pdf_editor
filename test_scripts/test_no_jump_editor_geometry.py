@@ -377,12 +377,28 @@ def test_click_to_edit_real_geometry_pipeline(qapp):
 # grab — it observes exactly what the user sees at the moment of transition.
 
 
-def test_click_to_edit_qtest_integration(qapp):
+QTEST_E2E_CASES = [
+    # (pdf_filename, slug)  — slug becomes part of the test_id.
+    # Both PDFs MUST exist; missing reference PDFs are a hard failure (see assertion below).
+    # colored-bg exercises Latin text on a coloured background;
+    # complex-layout exercises CJK glyph rendering and dense layouts — two distinct
+    # codepaths through PreviewRenderer.render() and _compute_editor_proxy_layout().
+    ("test-colored-background.pdf", "colored"),
+    ("test-complexed-layout.pdf",   "complexed"),
+]
+
+
+@pytest.mark.parametrize("pdf_filename,pdf_slug", QTEST_E2E_CASES)
+def test_click_to_edit_qtest_integration(qapp, pdf_filename, pdf_slug):
     """AC 2 full-stack: real QTest click drives the complete click-to-edit transition.
 
     Sets up PDFView + PDFController + PDFModel exactly as main.py does, loads
-    test-colored-background.pdf, enters edit_text mode, finds a real text span,
-    and uses QTest.mousePress + QTest.mouseRelease to trigger the editor.
+    a reference PDF (parametrized — see QTEST_E2E_CASES), enters edit_text mode,
+    finds a real text span, and uses QTest.mousePress + QTest.mouseRelease to
+    trigger the editor.
+
+    Parametrizing across PDFs catches font-family / layout-dependent regressions
+    that single-PDF coverage would miss (CJK handling, complex layouts).
 
     Captures the viewport sub-region containing the span:
       before — PDF page rendering (what the user sees before clicking)
@@ -400,7 +416,7 @@ def test_click_to_edit_qtest_integration(qapp):
     from PySide6.QtCore import Qt, QPoint, QPointF, QRect
     from PySide6.QtTest import QTest
 
-    pdf_path = REPO_ROOT / "test_files" / "test-colored-background.pdf"
+    pdf_path = REPO_ROOT / "test_files" / pdf_filename
     assert pdf_path.exists(), f"Reference PDF not found: {pdf_path}"
 
     # Wire up the full app stack exactly as main.py does
@@ -440,7 +456,7 @@ def test_click_to_edit_qtest_integration(qapp):
         if span_data:
             break
     assert span_data is not None, \
-        "No text span found on page 1 of test-colored-background.pdf"
+        f"No text span found on page 1 of {pdf_filename}"
 
     span_bbox  = fitz.Rect(span_data["bbox"])
     render_scale = view._render_scale if view._render_scale > 0 else 1.0
@@ -528,9 +544,11 @@ def test_click_to_edit_qtest_integration(qapp):
     assert not after_img.isNull(), "after_img grab returned null"
 
     changed_pct = _changed_pixel_pct(before_img, after_img)
-    _save_artifacts("e2e_qtest_click_to_edit", before_img, after_img,
+    test_id = f"e2e_qtest_click_to_edit_{pdf_slug}"
+    _save_artifacts(test_id, before_img, after_img,
                     {"render_scale": render_scale, "changed_px_pct": changed_pct,
-                     "span_bbox": list(span_bbox), "grab_rect_padded": True})
+                     "span_bbox": list(span_bbox), "pdf_filename": pdf_filename,
+                     "grab_rect_padded": True})
 
     # Cleanup
     view.close()
@@ -538,10 +556,10 @@ def test_click_to_edit_qtest_integration(qapp):
     qapp.processEvents()
 
     assert changed_pct <= 0.01, (
-        f"QTest click-to-edit jump: {changed_pct:.2%} pixels changed in the padded "
-        f"span region (span ± one span-width padding).  The editor's first frame "
-        f"does not match the PDF rendering at that location.  "
-        f"Open test_artifacts/no_jump/e2e_qtest_click_to_edit/diff.png"
+        f"QTest click-to-edit jump on {pdf_filename}: {changed_pct:.2%} pixels "
+        f"changed in the padded span region (span ± one span-width padding).  "
+        f"The editor's first frame does not match the PDF rendering at that location.  "
+        f"Open test_artifacts/no_jump/{test_id}/diff.png"
     )
 
 

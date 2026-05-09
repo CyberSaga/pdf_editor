@@ -29,4 +29,5 @@
 * 符合 PDF Standards
 * 要可以點選操作原本就存在 PDF 內的圖片物件（之前有規劃但實作被延後了）
 * 以及檔案右鍵選單「用 PDF Editor 合併 PDF」 ← 已有 API，未綁 Windows Registry 測試
+* 拉正頁面
 -> 提出建議的實現方法並實作
