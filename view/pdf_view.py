@@ -3994,7 +3994,7 @@ class PDFView(QMainWindow):
             self._autopan_manual_menu = False
 
     def _show_context_menu(self, pos):
-        if self._autopan_suppress_next_context_menu and not self._autopan_manual_menu:
+        if getattr(self, "_autopan_suppress_next_context_menu", False) and not getattr(self, "_autopan_manual_menu", False):
             self._autopan_suppress_next_context_menu = False
             return
         menu = QMenu()
