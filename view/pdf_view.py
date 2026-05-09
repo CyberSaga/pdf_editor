@@ -3598,6 +3598,8 @@ class PDFView(QMainWindow):
     def _draw_all_block_outlines(self, *args) -> None:
         """Draw persistent dim outlines around text blocks on visible pages."""
         self._clear_all_block_outlines()
+        if getattr(self, "current_mode", "browse") == "edit_text":
+            return
         model = getattr(getattr(self, "controller", None), "model", None)
         if model is None or not getattr(model, "doc", None):
             return
