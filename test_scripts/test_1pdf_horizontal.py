@@ -22,6 +22,7 @@ def run_horizontal_edit_and_verify(use_gui_flow: bool = False, save_output: str 
     root = Path(__file__).resolve().parents[1]
     candidates = [
         root / "test_files" / "1.pdf",
+        root / "test_files" / "test-horizontal-texts.pdf",
         Path(__file__).parent / "1.pdf",
     ]
     path = next((p for p in candidates if p.exists()), candidates[0])
