@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import fitz
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -300,9 +301,13 @@ def test_1pdf_text_hit_does_not_contain_replacement_character_when_plain_text_ha
 
 
 def test_vertical_paragraph_groups_adjacent_columns_in_reading_order() -> None:
+    fixture = Path("test_files/when I was young I.pdf")
+    if not fixture.exists():
+        pytest.skip("missing optional fixture: test_files/when I was young I.pdf")
+
     model = PDFModel()
     try:
-        model.open_pdf("test_files/when I was young I.pdf")
+        model.open_pdf(str(fixture))
         model.ensure_page_index_built(1)
         model.set_text_target_mode("paragraph")
 
