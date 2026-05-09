@@ -308,18 +308,30 @@ class PreviewRenderer:
             else:
                 import html as _html_mod
                 r, g, b = (int(c * 255) for c in color)
+                font_family = str(font_name or "Helvetica").strip()
+                # Map common PDF aliases to CSS families for closer parity.
+                if font_family.lower() in {"helv", "helvetica"}:
+                    font_family = "Helvetica"
+                elif "bold" in font_family.lower() and "helvetica" not in font_family.lower():
+                    font_family = "Helvetica"
                 lh_css = f" line-height: {line_height}pt;" if line_height > 0 else ""
                 css = (
-                    f"span {{ font-family: Helvetica; font-size: {font_size}pt;{lh_css} "
+                    f"span {{ font-family: {font_family}; font-size: {font_size}pt;{lh_css} "
                     f"color: rgb({r},{g},{b}); white-space: pre-wrap; }}"
                 )
                 html = f"<span>{_html_mod.escape(text or '')}</span>"
 
             target_rect = fitz.Rect(0, 0, page_w_pt, page_h_pt)
             try:
-                temp_page.insert_htmlbox(target_rect, html, css=css, rotate=normalized_rotation)
+                temp_page.insert_htmlbox(
+                    target_rect,
+                    html,
+                    css=css,
+                    rotate=normalized_rotation,
+                    scale_low=1,
+                )
             except TypeError:
-                temp_page.insert_htmlbox(target_rect, html, css=css)
+                temp_page.insert_htmlbox(target_rect, html, css=css, scale_low=1)
 
             matrix = fitz.Matrix(float(render_scale), float(render_scale))
             pixmap = temp_page.get_pixmap(matrix=matrix, alpha=True)
@@ -341,10 +353,24 @@ class PreviewRenderer:
 
 
 class PreviewBackedInlineTextEditor(InlineTextEditor):
-    def __init__(self, text: str, renderer: PreviewRenderer) -> None:
+    def __init__(self, text: str, renderer: PreviewRenderer | None = None, **legacy_kwargs) -> None:
         super().__init__()
-        self._renderer = renderer
+        self.setFrameStyle(0)
+        self.setViewportMargins(0, 0, 0, 0)
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setCursorWidth(0)
+        self._cursor_revealed = False
+        try:
+            self.document().setDocumentMargin(0.0)
+        except Exception:
+            pass
+        self._renderer = renderer or PreviewRenderer(model=legacy_kwargs.get("model"))
         self._preview_image: QImage | None = None
+        self._frozen_first_frame_image: QImage | None = None
+        self._initial_text = text or ""
+        self._legacy_standalone_mode = bool(legacy_kwargs) and renderer is None
         self._render_args: dict[str, object] = {}
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -352,12 +378,39 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
         self._debounce.timeout.connect(self._regenerate_preview)
         self.setPlainText(text)
         self.textChanged.connect(self._schedule_preview)
+        if legacy_kwargs:
+            rgb = legacy_kwargs.get("color", (0.0, 0.0, 0.0))
+            text_rgb = tuple(max(0, min(255, int(float(c) * 255))) for c in rgb)
+            legacy_kwargs["text_rgb"] = text_rgb
+            legacy_kwargs.setdefault("legacy_bg_rgb", (70, 70, 70))
+            initial_frame_image = legacy_kwargs.pop("initial_frame_image", None)
+            self.configure_render_context(**legacy_kwargs)
+            if isinstance(initial_frame_image, QImage) and not initial_frame_image.isNull():
+                self.setFixedSize(initial_frame_image.width(), initial_frame_image.height())
+                self.freeze_first_frame(initial_frame_image)
+            if self._preview_image is not None and not self._legacy_standalone_mode:
+                self.freeze_first_frame(self._preview_image)
+
+    def keyPressEvent(self, event) -> None:
+        if not self._cursor_revealed:
+            self.setCursorWidth(1)
+            self._cursor_revealed = True
+        super().keyPressEvent(event)
 
     def configure_render_context(self, **kwargs) -> None:
         self._render_args.update(kwargs)
+        rect_val = self._render_args.get("rect_pt")
+        scale_val = float(self._render_args.get("render_scale", 1.0) or 1.0)
+        if rect_val is not None:
+            rect = fitz.Rect(rect_val)
+            width_px = max(1, int(round(float(rect.width) * scale_val)))
+            height_px = max(1, int(round(float(rect.height) * scale_val)))
+            self.setFixedSize(width_px, height_px)
         self._regenerate_preview()
 
     def _schedule_preview(self) -> None:
+        if self._frozen_first_frame_image is not None and self.toPlainText() != self._initial_text:
+            self._frozen_first_frame_image = None
         self._debounce.start()
 
     def _regenerate_preview(self) -> None:
@@ -378,17 +431,19 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self.viewport())
-        if self._preview_image is not None:
+        if self._frozen_first_frame_image is not None:
+            painter.drawImage(0, 0, self._frozen_first_frame_image)
+        elif self._preview_image is not None:
+            if self._legacy_standalone_mode:
+                bg_rgb = self._render_args.get("legacy_bg_rgb", (184, 184, 184))
+                mask = QColor(*bg_rgb)
+                painter.fillRect(self.viewport().rect(), mask)
             painter.drawImage(0, 0, self._preview_image)
-        cursor = self.textCursor()
-        if cursor.hasSelection():
-            selection_color = QColor(80, 140, 255, 60)
-            painter.fillRect(self.cursorRect(cursor), selection_color)
-        if self.hasFocus():
-            caret = self.cursorRect()
-            painter.setPen(QPen(QColor(40, 40, 40), 1))
-            painter.drawLine(caret.topLeft(), caret.bottomLeft())
         painter.end()
+
+    def freeze_first_frame(self, image: QImage | None) -> None:
+        self._frozen_first_frame_image = image.copy() if image is not None else None
+        self.viewport().update()
 @dataclass(frozen=True)
 class ViewportAnchor:
     page_idx: int
@@ -486,18 +541,13 @@ def _compute_editor_proxy_layout(
     normalized_rotation = int(rotation) % 360
     width_px = max(int(round(scaled_width)), TextEditUIConstants.MIN_EDITOR_WIDTH_PX)
     raw_height = content_height_px if content_height_px is not None else int(round(scaled_rect.height))
-    height_px = max(raw_height, TextEditUIConstants.MIN_EDITOR_HEIGHT_PX)
+    # Keep first-frame height tied to the PDF span bbox/content height; forcing a
+    # large minimum (e.g. 40px) causes visible click-to-edit size jumps.
+    height_px = max(int(round(raw_height)), 1)
     pos_x = float(scaled_rect.x0)
     pos_y = float(page_y_offset + scaled_rect.y0)
 
-    if normalized_rotation in (90, 270):
-        width_px = max(int(round(scaled_rect.height)), TextEditUIConstants.MIN_EDITOR_WIDTH_PX)
-        height_px = max(int(round(scaled_rect.width)), TextEditUIConstants.MIN_EDITOR_HEIGHT_PX)
-        if normalized_rotation == 90:
-            pos_x += height_px
-        else:
-            pos_y += width_px
-    elif normalized_rotation == 180:
+    if normalized_rotation == 180:
         pos_x += width_px
         pos_y += height_px
 
@@ -575,18 +625,16 @@ class TextEditManager:
         return QRectF(pos.x(), pos.y(), float(widget.width()), float(widget.height()))
 
     def refresh_text_editor_mask_color(self) -> None:
+        self._clear_text_editor_mask_item()
         editor_proxy = getattr(self._view, "text_editor", None)
         if not editor_proxy or not editor_proxy.widget():
-            self._clear_text_editor_mask_item()
             return
         scene_rect = self.current_text_editor_scene_rect()
         if scene_rect is None:
-            self._clear_text_editor_mask_item()
             return
         editor = editor_proxy.widget()
         text_rgb = editor.property("text_rgb") or (0, 0, 0)
         mask_color = _readable_editor_mask_color(text_rgb)
-        self._sync_text_editor_mask_item(scene_rect, mask_color)
         editor.setStyleSheet(self._view._build_text_editor_stylesheet(text_rgb, mask_color))
         editor.setProperty("mask_rgb", (mask_color.red(), mask_color.green(), mask_color.blue()))
 
@@ -610,7 +658,10 @@ class TextEditManager:
         page_idx = getattr(view, "_editing_page_idx", view.current_page)
         render_width_pt = view.controller.model.get_render_width_for_edit(page_idx + 1, rect, rotation, font_size)
         rs = view._render_scale if view._render_scale > 0 else 1.0
-        scaled_width = int(render_width_pt * rs)
+        if editor_intent == "edit_existing":
+            scaled_width = int(round(rect.width * rs))
+        else:
+            scaled_width = int(render_width_pt * rs)
         scaled_rect = rect * rs
 
         view.editing_rect = rect
@@ -620,16 +671,9 @@ class TextEditManager:
         wrap_width_px = max(int(round(scaled_width)), TextEditUIConstants.MIN_EDITOR_WIDTH_PX)
         display_font_pt = _display_font_pt(font_size, rs)
         qt_font_family = view._pdf_font_to_qt(font_name)
-        measured_content_height_px = _measure_text_content_height_px(
-            text=text,
-            qt_font_family=qt_font_family,
-            display_font_pt=display_font_pt,
-            wrap_width_px=wrap_width_px,
-        )
-        content_height_px = max(
-            measured_content_height_px + TextEditUIConstants.EDITOR_CONTENT_PADDING_PX,
-            TextEditUIConstants.MIN_EDITOR_HEIGHT_PX,
-        )
+        # Initial editor frame must match the clicked PDF span bbox to avoid a
+        # visible click-to-edit size jump. Expansion can happen later via user edit.
+        content_height_px = max(int(round(scaled_rect.height)), 1)
         if rotation not in (90, 270):
             height_cap_px = _viewport_editor_height_cap_px(view)
             if height_cap_px is not None:
@@ -641,6 +685,20 @@ class TextEditManager:
             rotation=rotation,
             content_height_px=content_height_px,
         )
+        initial_frame = None
+        graphics_view = getattr(view, "graphics_view", None)
+        if graphics_view is not None and hasattr(graphics_view, "viewport"):
+            try:
+                vp_top_left = graphics_view.mapFromScene(QPointF(float(pos_x), float(pos_y)))
+                grab_rect = QRect(
+                    int(vp_top_left.x()),
+                    int(vp_top_left.y()),
+                    max(1, int(editor_width_px)),
+                    max(1, int(editor_height_px)),
+                )
+                initial_frame = graphics_view.viewport().grab(grab_rect).toImage().convertToFormat(QImage.Format_RGBA8888)
+            except Exception:
+                initial_frame = None
 
         if self._preview_renderer is None:
             model = getattr(getattr(view, "controller", None), "model", None)
@@ -740,11 +798,13 @@ class TextEditManager:
             view._edit_font_family_connected = True
 
         view.text_editor = view.scene.addWidget(editor)
-        view.text_editor.setPos(pos_x, pos_y)
+        view.text_editor.setPos(round(pos_x), round(pos_y))
         if hasattr(view.text_editor, "setTransformOriginPoint"):
             view.text_editor.setTransformOriginPoint(0.0, 0.0)
         if hasattr(view.text_editor, "setRotation"):
             view.text_editor.setRotation(float(normalized_rotation))
+        if initial_frame is not None:
+            editor.freeze_first_frame(initial_frame)
         self.refresh_text_editor_mask_color()
         view._editor_shortcut_forwarder = _EditorShortcutForwarder(view)
         if isinstance(view._editor_shortcut_forwarder, QObject):

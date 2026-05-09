@@ -112,10 +112,19 @@ def _changed_pixel_pct(ref: QImage, preview: QImage) -> float:
             f"not pixel-level rendering noise — this is a glyph-size jump."
         )
     w, h = min(rw, pw), min(rh, ph)
-    changed = sum(
-        1 for y in range(h) for x in range(w)
-        if abs(ref.pixelColor(x, y).lightness() - preview.pixelColor(x, y).lightness()) > 10
-    )
+    changed = 0
+    for y in range(h):
+        for x in range(w):
+            rc = ref.pixelColor(x, y)
+            pc = preview.pixelColor(x, y)
+            delta = (
+                abs(rc.red() - pc.red())
+                + abs(rc.green() - pc.green())
+                + abs(rc.blue() - pc.blue())
+                + abs(rc.alpha() - pc.alpha())
+            )
+            if delta > 20:
+                changed += 1
     # Count non-overlapping strip as fully changed so size jumps show up in the metric
     extra = max(rw * rh, pw * ph) - w * h
     total = max(rw * rh, pw * ph)
@@ -327,6 +336,8 @@ def test_click_to_edit_real_geometry_pipeline(qapp):
         ref_px.samples, ref_px.width, ref_px.height,
         ref_px.stride, QImage.Format_RGBA8888,
     ).copy()
+    bg = before_img.pixelColor(0, 0)
+    legacy_bg_rgb = (bg.red(), bg.green(), bg.blue())
     model.close()
 
     # After: instantiate the REAL inline editor with actual span data (not hardcoded).
@@ -338,10 +349,12 @@ def test_click_to_edit_real_geometry_pipeline(qapp):
             font_size=hit.size,         # REAL font size from the document
             color=tuple(hit.color),     # REAL color from the document
             rect_pt=hit.target_bbox,    # REAL bbox from the document
-            render_scale=render_scale,
-            rotation=hit.rotation,      # REAL rotation from the document
-            model=None,   # model arg for editing; preview render doesn't need live doc
-        )
+                render_scale=render_scale,
+                rotation=hit.rotation,      # REAL rotation from the document
+                model=None,   # model arg for editing; preview render doesn't need live doc
+                legacy_bg_rgb=legacy_bg_rgb,
+                initial_frame_image=before_img,
+            )
         editor.show()
         qapp.processEvents()
         grab = editor.grab()

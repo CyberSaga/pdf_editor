@@ -78,6 +78,37 @@ PdfAuditReport = pdf_optimizer.PdfAuditReport
 PdfOptimizationResult = pdf_optimizer.PdfOptimizationResult
 
 
+def _install_rawdict_text_compat() -> None:
+    """Backfill span['text'] for fitz rawdict payloads that only expose chars.
+
+    Some PyMuPDF builds omit the ``text`` key in rawdict spans and only return
+    ``chars``. Our no-jump E2E gate inspects span text directly from rawdict.
+    """
+    sentinel = "_pdf_editor_rawdict_text_compat"
+    if getattr(fitz.Page, sentinel, False):
+        return
+    original_get_text = fitz.Page.get_text
+
+    def _compat_get_text(page, option="text", *args, **kwargs):
+        result = original_get_text(page, option, *args, **kwargs)
+        if option != "rawdict" or not isinstance(result, dict):
+            return result
+        for block in result.get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    if span.get("text") is None and isinstance(span.get("chars"), list):
+                        span["text"] = "".join(ch.get("c", "") for ch in span["chars"])
+        return result
+
+    fitz.Page.get_text = _compat_get_text
+    setattr(fitz.Page, sentinel, True)
+
+
+_install_rawdict_text_compat()
+
+
 def _classify_insert_path(
     *,
     new_text: str,
@@ -208,9 +239,11 @@ class PDFModel:
             return repr(exc)
 
     def _active_session(self) -> DocumentSession | None:
-        if not self._active_session_id:
+        active_session_id = getattr(self, "_active_session_id", None)
+        if not active_session_id:
             return None
-        return self._sessions_by_id.get(self._active_session_id)
+        sessions_by_id = getattr(self, "_sessions_by_id", {})
+        return sessions_by_id.get(active_session_id)
 
     @contextmanager
     def _activate_temporarily(self, session_id: str) -> Iterator[None]:
@@ -322,7 +355,7 @@ class PDFModel:
         return True
 
     def close_all_sessions(self) -> None:
-        for sid in list(self._session_ids):
+        for sid in list(getattr(self, "_session_ids", [])):
             self.close_session(sid)
 
     def save_session_as(self, session_id: str, new_path: str) -> None:
@@ -855,11 +888,17 @@ class PDFModel:
         self._legacy_doc = None
         self._legacy_original_path = None
         self._legacy_saved_path = None
-        self._legacy_block_manager.clear()
-        self._legacy_command_manager.clear()
-        self._legacy_pending_edits.clear()
+        legacy_block_manager = getattr(self, "_legacy_block_manager", None)
+        if legacy_block_manager is not None:
+            legacy_block_manager.clear()
+        legacy_command_manager = getattr(self, "_legacy_command_manager", None)
+        if legacy_command_manager is not None:
+            legacy_command_manager.clear()
+        legacy_pending_edits = getattr(self, "_legacy_pending_edits", None)
+        if isinstance(legacy_pending_edits, list):
+            legacy_pending_edits.clear()
         self._legacy_edit_count = 0
-        if self.temp_dir:
+        if getattr(self, "temp_dir", None):
             self.temp_dir.cleanup()
             logger.debug("臨時目錄已清理")
             self.temp_dir = None
@@ -3938,7 +3977,7 @@ class PDFModel:
                         )
             if should_promote:
                 effective = "paragraph"
-                logger.debug("auto-promoted target_mode run->paragraph (no explicit span_id)")
+                logger.warning("auto-promoted target_mode run->paragraph (no explicit span_id)")
         return effective
 
     def edit_text(self, page_num: int, rect: fitz.Rect, new_text: str,
