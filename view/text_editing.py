@@ -678,9 +678,18 @@ class TextEditManager:
         y0 = view.page_y_positions[page_idx] if (view.continuous_pages and page_idx < len(view.page_y_positions)) else 0
         display_font_pt = _display_font_pt(font_size, rs)
         qt_font_family = view._pdf_font_to_qt(font_name)
-        # Initial editor frame must match the clicked PDF span bbox to avoid a
-        # visible click-to-edit size jump. Expansion can happen later via user edit.
+        # Initial editor frame must match the clicked PDF span bbox for run-level
+        # edits; paragraph-mode edits can span oversized region boxes, so use real
+        # wrapped text layout height there.
         content_height_px = max(int(round(scaled_rect.height)), 1)
+        if target_mode == "paragraph":
+            measured_height_px = _measure_text_content_height_px(
+                text=text,
+                qt_font_family=qt_font_family,
+                display_font_pt=display_font_pt,
+                wrap_width_px=max(int(round(scaled_width)), 1),
+            )
+            content_height_px = max(measured_height_px, 1)
         if rotation not in (90, 270):
             height_cap_px = _viewport_editor_height_cap_px(view)
             if height_cap_px is not None:
