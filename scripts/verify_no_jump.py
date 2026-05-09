@@ -169,8 +169,8 @@ def _expected_case_ids() -> set[str]:
 def _assert_clean_worktree() -> None:
     """Abort if uncommitted source changes could contaminate test results.
 
-    Only files under test_artifacts/ (generated during the gate run) are allowed
-    to be dirty.  Any other dirty file means the tested code differs from the
+    Only generated artifacts and local, machine-specific overrides are allowed
+    to be dirty. Any other dirty file means the tested code differs from the
     recorded git_commit, making the completion proof unverifiable.
     """
     result = subprocess.run(
@@ -180,6 +180,9 @@ def _assert_clean_worktree() -> None:
     if result.returncode != 0:
         raise RuntimeError(f"git status --porcelain failed: {result.stderr.strip()}")
     dirty = []
+    allowed_dirty = {
+        ".claude/settings.local.json",  # local-only operator preferences
+    }
     for line in result.stdout.splitlines():
         if not line.strip():
             continue
@@ -187,8 +190,11 @@ def _assert_clean_worktree() -> None:
         path = line[3:].strip()
         if " -> " in path:
             path = path.split(" -> ")[-1]
-        if path.replace("\\", "/").startswith("test_artifacts/"):
+        norm_path = path.replace("\\", "/")
+        if norm_path.startswith("test_artifacts/"):
             continue   # generated artefacts are expected to be untracked
+        if norm_path in allowed_dirty:
+            continue
         dirty.append(line)
     if dirty:
         print("[gate] FAIL — uncommitted source changes detected:")
