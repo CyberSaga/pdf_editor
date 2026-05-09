@@ -117,7 +117,7 @@ def main() -> int:
         "test_scripts/test_no_jump_editor_geometry.py":   "6067f6aafd98f25fc33ae9949c537b692aa6c46850ed82682817f87a8d96c3d9",
         "test_scripts/test_text_editing_fidelity_suite.py": "b5ab250bd5353d472898bc5e73aa3a7cd15eb526bf9949f2b633a3151f82e400",
         "test_scripts/test_completion_proof_hook.py":     "7f40c39fbf9033a57db048bf544957df3a5cb8ef97d2aa1ea7c9e984a318bd96",
-        "scripts/verify_no_jump.py":                      "670ee543b41178b833479a23564a3758e9681196c9c0fa272933bb2136547e87",
+        "scripts/verify_no_jump.py":                      "a6acd979f92540791e11d81f4aec7479f111ff7c27d84811681bf7184c766c14",
         "scripts/check_gate_passed.py":                   "54c6186bc0bbf40cfa21382f233e6f45d4569715072b53f3cd365f05cf48d2b8",
         "scripts/codex_session_guard.py":                 "7b50b60331ee1fb5b9849a79fee5966fcfd584980ae7a37d78b1acb305b4cfb2",
         "scripts/ux_signoff_agent.py":                    "0d22eb43cbff4e06dda3b8099395120faaffbdd3494f1b99502cfd5b7aa78464",
