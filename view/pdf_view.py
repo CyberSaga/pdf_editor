@@ -3598,8 +3598,58 @@ class PDFView(QMainWindow):
     def _draw_all_block_outlines(self, *args) -> None:
         """Draw persistent dim outlines around text blocks on visible pages."""
         self._clear_all_block_outlines()
-        # Disable dim-outline rendering to keep click-to-edit first-frame pixels stable.
-        return
+        model = getattr(getattr(self, "controller", None), "model", None)
+        if model is None or not getattr(model, "doc", None):
+            return
+
+        try:
+            start_page, end_page = self.visible_page_range(prefetch=0)
+        except Exception:
+            return
+        if start_page > end_page:
+            return
+
+        rs = self._render_scale if self._render_scale > 0 else 1.0
+        mode = getattr(model, "text_target_mode", "run")
+        outline_pen = QPen(QColor(90, 130, 190, 90), 1)
+        outline_brush = QBrush(Qt.NoBrush)
+
+        for page_idx in range(int(start_page), int(end_page) + 1):
+            try:
+                model.ensure_page_index_built(page_idx + 1)
+            except Exception:
+                continue
+
+            if mode == "paragraph":
+                candidates = getattr(model.block_manager, "get_paragraphs", lambda _i: [])(page_idx) or []
+                def _bbox(item):
+                    return getattr(item, "bbox", None) or getattr(item, "rect", None)
+            else:
+                candidates = getattr(model.block_manager, "get_runs", lambda _i: [])(page_idx) or []
+                if not candidates:
+                    candidates = getattr(model.block_manager, "get_blocks", lambda _i: [])(page_idx) or []
+                def _bbox(item):
+                    return getattr(item, "bbox", None) or getattr(item, "rect", None)
+
+            y0 = (
+                self.page_y_positions[page_idx]
+                if (self.continuous_pages and page_idx < len(self.page_y_positions))
+                else 0.0
+            )
+            for idx, item in enumerate(candidates):
+                rect = _bbox(item)
+                if rect is None:
+                    continue
+                scene_rect = QRectF(
+                    float(rect.x0) * rs,
+                    float(y0) + float(rect.y0) * rs,
+                    float(rect.width) * rs,
+                    float(rect.height) * rs,
+                )
+                outline_item = self.scene.addRect(scene_rect, outline_pen, outline_brush)
+                outline_item.setZValue(6)
+                key = (int(page_idx), int(idx))
+                self._block_outline_items[key] = outline_item
 
     def _clear_all_block_outlines(self) -> None:
         """Remove all persistent block outline items from the scene."""
