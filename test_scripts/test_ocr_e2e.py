@@ -29,7 +29,8 @@ def _surya_available() -> bool:
 
 
 pytestmark = pytest.mark.skipif(
-    not _surya_available(), reason="surya-ocr not installed"
+    (not _surya_available()) or (not all(path.exists() for path in PDFS.values())),
+    reason="surya-ocr or OCR fixture PDFs not available",
 )
 
 
