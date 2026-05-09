@@ -2714,7 +2714,7 @@ class PDFView(QMainWindow):
         QGraphicsView.mousePressEvent(self.graphics_view, event)
 
     def _mouse_move(self, event):
-        if self._autopan_active:
+        if getattr(self, "_autopan_active", False):
             self._autopan_cursor_viewport = self._event_viewport_pos(event)
             event.accept()
             return
