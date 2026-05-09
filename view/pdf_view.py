@@ -2419,10 +2419,16 @@ class PDFView(QMainWindow):
 
     def _event_viewport_pos(self, event) -> QPoint:
         raw_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
-        viewport = self.graphics_view.viewport() if getattr(self, "graphics_view", None) is not None else None
+        graphics_view = getattr(self, "graphics_view", None)
+        viewport = None
+        if graphics_view is not None and hasattr(graphics_view, "viewport"):
+            try:
+                viewport = graphics_view.viewport()
+            except Exception:
+                viewport = None
         if viewport is not None:
             try:
-                raw_pos = viewport.mapFrom(self.graphics_view, raw_pos)
+                raw_pos = viewport.mapFrom(graphics_view, raw_pos)
             except Exception:
                 pass
         return QPoint(raw_pos)
@@ -2490,7 +2496,7 @@ class PDFView(QMainWindow):
 
     def _mouse_press(self, event):
         viewport_pos = self._event_viewport_pos(event)
-        if self._autopan_active:
+        if getattr(self, "_autopan_active", False):
             button = event.button()
             self._exit_autopan()
             if button == Qt.RightButton:
