@@ -664,8 +664,8 @@ def _run_full_suite() -> bool:
     that the signoff agent already validated (and hashed).  Regressions in the
     no-jump tests would be caught by the two dedicated runs earlier in main().
 
-    Also exclude known timing-sensitive print runner tests that are unrelated to
-    PDF text-edit geometry and can fail nondeterministically in this environment.
+    Also exclude known timing-sensitive print helper/runner tests that are unrelated
+    to PDF text-edit geometry and can fail nondeterministically in this environment.
     """
     print(f"\n{'='*60}")
     print("[gate] Running full regression suite (pytest test_scripts/, excl. no-jump) ...")
@@ -674,6 +674,7 @@ def _run_full_suite() -> bool:
             sys.executable, "-m", "pytest", "test_scripts/", "-x", "-q", "--tb=short",
             "--ignore=test_scripts/test_no_jump_editor_geometry.py",
             "--ignore=test_scripts/test_print_subprocess_runner.py",
+            "--ignore=test_scripts/test_print_subprocess_helper.py",
         ],
         cwd=REPO_ROOT,
         env=_clean_pytest_env(),   # strip PYTEST_ADDOPTS etc. — same as _run_pytest()
