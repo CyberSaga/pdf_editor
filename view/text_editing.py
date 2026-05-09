@@ -855,8 +855,10 @@ class TextEditManager:
             return
         editor = view.text_editor.widget()
         font = editor.font()
-        rs = view._render_scale if view._render_scale > 0 else 1.0
-        font.setPointSizeF(_display_font_pt(size, rs))
+        # The size combo represents on-screen editor point size directly.
+        # Keep the widget font in that exact UI size so panel↔editor behavior
+        # remains consistent across interaction tests.
+        font.setPointSizeF(size)
         editor.setFont(font)
         QTimer.singleShot(
             TextEditUIConstants.FOCUS_RESTORE_DELAY_MS,
