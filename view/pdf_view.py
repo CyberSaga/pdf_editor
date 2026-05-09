@@ -2422,6 +2422,17 @@ class PDFView(QMainWindow):
 
     def _event_viewport_pos(self, event) -> QPoint:
         raw_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        graphics_view = getattr(self, "graphics_view", None)
+        if graphics_view is not None and hasattr(graphics_view, "viewport"):
+            try:
+                viewport = graphics_view.viewport()
+            except Exception:
+                viewport = None
+            if viewport is not None and hasattr(viewport, "mapFrom"):
+                try:
+                    raw_pos = viewport.mapFrom(graphics_view, raw_pos)
+                except Exception:
+                    pass
         return QPoint(raw_pos)
 
     def _event_scene_pos(self, event) -> QPointF:
