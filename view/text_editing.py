@@ -668,7 +668,6 @@ class TextEditManager:
         view._editing_original_rect = fitz.Rect(rect)
         view._editing_origin_page_idx = page_idx
         y0 = view.page_y_positions[page_idx] if (view.continuous_pages and page_idx < len(view.page_y_positions)) else 0
-        wrap_width_px = max(int(round(scaled_width)), TextEditUIConstants.MIN_EDITOR_WIDTH_PX)
         display_font_pt = _display_font_pt(font_size, rs)
         qt_font_family = view._pdf_font_to_qt(font_name)
         # Initial editor frame must match the clicked PDF span bbox to avoid a
