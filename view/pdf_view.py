@@ -3678,7 +3678,7 @@ class PDFView(QMainWindow):
             self._hover_hidden_outline_key = None
 
     def _mouse_release(self, event):
-        if self._autopan_active:
+        if getattr(self, "_autopan_active", False):
             event.accept()
             return
         # ── 拖曳移動文字框的放開處理 ──
