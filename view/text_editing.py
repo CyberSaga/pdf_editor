@@ -353,6 +353,11 @@ class PreviewRenderer:
 
 
 class PreviewBackedInlineTextEditor(InlineTextEditor):
+    # Treat effectively-transparent mutated previews as invalid and fall back
+    # to native QTextEdit painting for readability continuity while typing.
+    _MUTATED_PREVIEW_MIN_NONTRANSPARENT_COVERAGE = 0.0001
+    _VISIBLE_ALPHA_THRESHOLD = 8
+
     def __init__(self, text: str, renderer: PreviewRenderer | None = None, **legacy_kwargs) -> None:
         super().__init__()
         self.setFrameStyle(0)
@@ -370,6 +375,13 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
         self._preview_image: QImage | None = None
         self._frozen_first_frame_image: QImage | None = None
         self._initial_text = text or ""
+        # Cache of (toPlainText() == _initial_text), updated on every
+        # textChanged signal; read by paintEvent.  See _schedule_preview and
+        # paintEvent for why this is cached rather than recomputed per paint.
+        self._text_matches_initial: bool = True
+        self._text_is_nonempty: bool = bool(self._initial_text)
+        self._preview_nontransparent_coverage: float = 0.0
+        self._mutated_preview_is_valid: bool = True
         self._legacy_standalone_mode = bool(legacy_kwargs) and renderer is None
         self._render_args: dict[str, object] = {}
         self._debounce = QTimer(self)
@@ -416,15 +428,59 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
         self._regenerate_preview()
 
     def _schedule_preview(self) -> None:
-        if self._frozen_first_frame_image is not None and self.toPlainText() != self._initial_text:
-            self._frozen_first_frame_image = None
+        # ──────────────────────────────────────────────────────────────────
+        # CRITICAL — do not "simplify" by clearing _frozen_first_frame_image
+        # here.  The frozen first frame is the actual MuPDF pixmap of the PDF
+        # span as the user saw it before the click.  paintEvent decides per
+        # frame whether to display it (text == initial) or the CSS-rendered
+        # live preview (text mutated).  Releasing the frozen image on first
+        # mutation makes type+delete a one-way trip — the editor never
+        # returns to the PDF-rendering appearance even when the document
+        # content is identical to the original, producing a non-zero
+        # restore_delta on every text round-trip.
+        #
+        # Acceptance gates that exercise this contract — DO NOT remove the
+        # frozen-frame retention without making these tests still pass:
+        #   test_no_jump_editor_geometry.test_click_to_edit_qtest_integration
+        #   test_no_jump_editor_geometry.test_click_to_edit_then_insert_
+        #     then_delete_stays_stable
+        # ──────────────────────────────────────────────────────────────────
+
+        # Refresh the cached flag here (and only here): textChanged is the
+        # only event that can flip the comparison result.  paintEvent — which
+        # fires on cursor blink, focus changes, scrolls, etc. — must not
+        # recompute toPlainText() per frame; on a paragraph-length edit that
+        # would walk the whole QTextDocument 60+ times per second.
+        self._text_matches_initial = (self.toPlainText() == self._initial_text)
+        self._text_is_nonempty = bool(self.toPlainText())
+
         self._debounce.start()
+        # Repaint immediately so paintEvent re-evaluates the frozen-vs-
+        # preview decision based on the freshly-cached flag.
+        self.viewport().update()
+
+    def _compute_nontransparent_coverage(self, image: QImage | None) -> float:
+        if image is None or image.isNull():
+            return 0.0
+        width = int(image.width())
+        height = int(image.height())
+        if width <= 0 or height <= 0:
+            return 0.0
+        visible = 0
+        total = width * height
+        for y in range(height):
+            for x in range(width):
+                if image.pixelColor(x, y).alpha() > self._VISIBLE_ALPHA_THRESHOLD:
+                    visible += 1
+        return visible / float(total)
 
     def _regenerate_preview(self) -> None:
         if not self._render_args:
             return
+        text = self.toPlainText()
+        self._text_is_nonempty = bool(text)
         self._preview_image = self._renderer.render(
-            text=self.toPlainText(),
+            text=text,
             font_name=str(self._render_args.get("font_name", "helv")),
             font_size=float(self._render_args.get("font_size", 12.0)),
             color=tuple(self._render_args.get("color", (0.0, 0.0, 0.0))),
@@ -434,18 +490,78 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
             render_scale=float(self._render_args.get("render_scale", 1.0)),
             line_height=float(self._render_args.get("line_height", 0.0)),
         )
+        self._preview_nontransparent_coverage = self._compute_nontransparent_coverage(self._preview_image)
+        self._mutated_preview_is_valid = (
+            not self._text_is_nonempty
+            or self._preview_nontransparent_coverage
+            > self._MUTATED_PREVIEW_MIN_NONTRANSPARENT_COVERAGE
+        )
         self.viewport().update()
 
     def paintEvent(self, event) -> None:
-        painter = QPainter(self.viewport())
-        if self._frozen_first_frame_image is not None:
+        # ──────────────────────────────────────────────────────────────────
+        # CRITICAL — visual fidelity contract.
+        # Whenever the editor's text content matches the original (including
+        # after a type-then-delete round-trip), paint the frozen first frame
+        # — a true MuPDF pixmap grab of the PDF span.  CSS-based
+        # PreviewRenderer output never pixel-matches MuPDF's font hinting, so
+        # falling back to it for unchanged text introduces a permanent visual
+        # delta even when nothing has actually changed.
+        #
+        # _text_matches_initial is cached and updated only in
+        # _schedule_preview.  Do NOT replace this with a per-paint
+        # ``self.toPlainText() == self._initial_text`` comparison: paintEvent
+        # fires on cursor blink, focus changes, and scrolls, none of which
+        # change the answer, and toPlainText() walks the full QTextDocument
+        # on every call.
+        #
+        # Acceptance gates that exercise this contract — DO NOT remove the
+        # _text_matches_initial branch without making these tests still pass:
+        #   test_no_jump_editor_geometry.test_click_to_edit_qtest_integration
+        #   test_no_jump_editor_geometry.test_click_to_edit_then_insert_
+        #     then_delete_stays_stable
+        # ──────────────────────────────────────────────────────────────────
+        if self._frozen_first_frame_image is not None and self._text_matches_initial:
+            painter = QPainter(self.viewport())
             painter.drawImage(0, 0, self._frozen_first_frame_image)
-        elif self._preview_image is not None:
+            painter.end()
+            return
+        if (
+            self._preview_image is not None
+            and self._text_is_nonempty
+            and not self._text_matches_initial
+            and not self._mutated_preview_is_valid
+        ):
+            # Mutated-state fail-safe: CSS/MuPDF preview rendered effectively
+            # transparent. Seed the frame with the frozen MuPDF capture, then
+            # use native QTextEdit paint with background fill suppressed so
+            # typed text stays readable without repainting the full region.
+            if self._frozen_first_frame_image is not None:
+                frozen_painter = QPainter(self.viewport())
+                frozen_painter.drawImage(0, 0, self._frozen_first_frame_image)
+                frozen_painter.end()
+            viewport = self.viewport()
+            old_auto_fill = viewport.autoFillBackground()
+            viewport.setAutoFillBackground(False)
+            super().paintEvent(event)
+            viewport.setAutoFillBackground(old_auto_fill)
+            return
+        painter = QPainter(self.viewport())
+        if self._preview_image is not None:
             if self._legacy_standalone_mode:
                 bg_rgb = self._render_args.get("legacy_bg_rgb", (184, 184, 184))
                 mask = QColor(*bg_rgb)
                 painter.fillRect(self.viewport().rect(), mask)
             painter.drawImage(0, 0, self._preview_image)
+        elif self._frozen_first_frame_image is not None:
+            # Fallback: text differs but the live preview hasn't been
+            # generated yet (debounce in flight).  Draw the frozen frame so
+            # the editor never goes blank during the transition.
+            painter.drawImage(0, 0, self._frozen_first_frame_image)
+        else:
+            painter.end()
+            super().paintEvent(event)
+            return
         painter.end()
 
     def freeze_first_frame(self, image: QImage | None) -> None:
@@ -672,7 +788,7 @@ class TextEditManager:
             scaled_width = int(render_width_pt * rs)
         scaled_rect = rect * rs
 
-        view.editing_rect = rect
+        view.editing_rect = fitz.Rect(rect)
         view._editing_original_rect = fitz.Rect(rect)
         view._editing_origin_page_idx = page_idx
         y0 = view.page_y_positions[page_idx] if (view.continuous_pages and page_idx < len(view.page_y_positions)) else 0
@@ -715,14 +831,62 @@ class TextEditManager:
         graphics_view = getattr(view, "graphics_view", None)
         if graphics_view is not None and hasattr(graphics_view, "viewport"):
             try:
-                vp_top_left = graphics_view.mapFromScene(QPointF(float(pos_x), float(pos_y)))
-                grab_rect = QRect(
-                    int(vp_top_left.x()),
-                    int(vp_top_left.y()),
-                    max(1, int(editor_width_px)),
-                    max(1, int(editor_height_px)),
-                )
-                initial_frame = graphics_view.viewport().grab(grab_rect).toImage().convertToFormat(QImage.Format_RGBA8888)
+                # ──────────────────────────────────────────────────────────
+                # CRITICAL — frozen-frame capture point for rotated spans.
+                #
+                # For rotation=0/180 the editor's pre-rotation rect IS the
+                # PDF bbox; we grab that directly and use it as-is.
+                #
+                # For rotation=90/270 the editor's local paint space is
+                # SWAPPED (50×14 for a 14×50 PDF bbox) and the
+                # QGraphicsScene rotates the proxy at display time.  We must
+                # grab the actual axis-aligned PDF bbox (14×50) and
+                # COUNTER-rotate the captured image so the widget's local
+                # paint, after the proxy's setRotation, lands back on the
+                # correct PDF pixels.  Without this, the grab samples an
+                # empty page-margin region to the right of the rotated text
+                # and the editor opens blank — the vertical-texts.pdf bug
+                # uncovered by Codex's manual retest in cycle 22.
+                #
+                # Acceptance gate that exercises this contract — DO NOT
+                # collapse the rotation branch back into the unconditional
+                # ``grab(pos_x, pos_y, editor_w, editor_h)`` form without
+                # making this test still pass:
+                #   test_no_jump_editor_geometry.test_click_to_edit_qtest_
+                #     integration[test-vertical-texts.pdf-vertical]
+                # ──────────────────────────────────────────────────────────
+                if normalized_rotation in (90, 270):
+                    bbox_tl = graphics_view.mapFromScene(QPointF(
+                        float(scaled_rect.x0),
+                        float(y0 + scaled_rect.y0),
+                    ))
+                    bbox_grab = QRect(
+                        int(bbox_tl.x()),
+                        int(bbox_tl.y()),
+                        max(1, int(round(scaled_rect.width))),
+                        max(1, int(round(scaled_rect.height))),
+                    )
+                    raw_img = (
+                        graphics_view.viewport().grab(bbox_grab)
+                        .toImage()
+                        .convertToFormat(QImage.Format_RGBA8888)
+                    )
+                    from PySide6.QtGui import QTransform
+                    angle_ccw_for_90 = -90.0   # widget rotates +90 CW; counter-rotate the bytes
+                    angle_cw_for_270 = 90.0
+                    counter = (angle_ccw_for_90
+                               if normalized_rotation == 90
+                               else angle_cw_for_270)
+                    initial_frame = raw_img.transformed(QTransform().rotate(counter))
+                else:
+                    vp_top_left = graphics_view.mapFromScene(QPointF(float(pos_x), float(pos_y)))
+                    grab_rect = QRect(
+                        int(vp_top_left.x()),
+                        int(vp_top_left.y()),
+                        max(1, int(editor_width_px)),
+                        max(1, int(editor_height_px)),
+                    )
+                    initial_frame = graphics_view.viewport().grab(grab_rect).toImage().convertToFormat(QImage.Format_RGBA8888)
             except Exception:
                 initial_frame = None
 
@@ -814,6 +978,7 @@ class TextEditManager:
         view._set_text_font_by_pdf(normalized_font)
         view._editing_initial_font_name = normalized_font
         view._editing_initial_size = float(font_size)
+        view._editing_current_pdf_size = float(font_size)
         if not hasattr(view, "editing_font_name"):
             view.editing_font_name = normalized_font
         if not getattr(view, "_edit_font_size_connected", False):
@@ -865,6 +1030,8 @@ class TextEditManager:
         font = editor.font()
         font.setFamily(view._pdf_font_to_qt(selected_pdf_font))
         editor.setFont(font)
+        if hasattr(editor, "configure_render_context"):
+            editor.configure_render_context(font_name=selected_pdf_font)
         view.editing_font_name = selected_pdf_font
         QTimer.singleShot(
             TextEditUIConstants.FOCUS_RESTORE_DELAY_MS,
@@ -880,13 +1047,15 @@ class TextEditManager:
         size = _parse_font_size_str(size_str)
         if size is None or size <= 0:
             return
+        view._editing_current_pdf_size = float(size)
         editor = view.text_editor.widget()
         font = editor.font()
-        # The size combo represents on-screen editor point size directly.
-        # Keep the widget font in that exact UI size so panel↔editor behavior
-        # remains consistent across interaction tests.
-        font.setPointSizeF(size)
+        # Keep combo values in PDF points; editor widget font stays display-scaled.
+        rs = view._render_scale if getattr(view, "_render_scale", 0) > 0 else 1.0
+        font.setPointSizeF(_display_font_pt(size, rs))
         editor.setFont(font)
+        if hasattr(editor, "configure_render_context"):
+            editor.configure_render_context(font_size=float(size))
         QTimer.singleShot(
             TextEditUIConstants.FOCUS_RESTORE_DELAY_MS,
             lambda: editor.setFocus(Qt.OtherFocusReason)
@@ -949,18 +1118,23 @@ class TextEditManager:
         )
 
         combo_size = _parse_font_size_str(view.text_size.currentText())
-        initial_size_attr = getattr(view, "_editing_initial_size", combo_size)
+        current_size_attr = getattr(view, "_editing_current_pdf_size", combo_size)
+        initial_size_attr = getattr(view, "_editing_initial_size", current_size_attr)
         try:
-            initial_size = float(initial_size_attr) if initial_size_attr is not None else (combo_size or 0.0)
+            current_size = float(current_size_attr) if current_size_attr is not None else (combo_size or 0.0)
         except (TypeError, ValueError):
-            initial_size = combo_size or 0.0
+            current_size = combo_size or 0.0
+        try:
+            initial_size = float(initial_size_attr) if initial_size_attr is not None else current_size
+        except (TypeError, ValueError):
+            initial_size = current_size
         session = TextEditSession(
             original_rect=fitz.Rect(original_rect) if original_rect else None,
             current_rect=fitz.Rect(current_rect) if current_rect else None,
             current_font=getattr(view, "editing_font_name", "helv"),
             initial_font=getattr(view, "_editing_initial_font_name", getattr(view, "editing_font_name", "helv")),
             original_color=getattr(view, "editing_color", (0, 0, 0)),
-            current_size=float(combo_size) if combo_size is not None else float(initial_size),
+            current_size=float(current_size),
             initial_size=float(initial_size),
             edit_page=getattr(view, "_editing_page_idx", view.current_page),
             origin_page=getattr(view, "_editing_origin_page_idx", getattr(view, "_editing_page_idx", view.current_page)),
@@ -1026,6 +1200,8 @@ class TextEditManager:
             del view._editing_initial_font_name
         if hasattr(view, "_editing_initial_size"):
             del view._editing_initial_size
+        if hasattr(view, "_editing_current_pdf_size"):
+            del view._editing_current_pdf_size
         if hasattr(view, "editing_color"):
             del view.editing_color
         if hasattr(view, "_editing_page_idx"):

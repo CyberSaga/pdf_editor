@@ -1476,9 +1476,17 @@ class PDFView(QMainWindow):
         self._set_text_property_actions_enabled(has_live_editor)
 
         if has_live_editor:
-            font = editor_widget.font() if hasattr(editor_widget, "font") else None
-            if font is not None:
-                self._set_text_property_font_and_size(font.family(), font.pointSize())
+            pdf_font_name = getattr(self, "editing_font_name", None)
+            pdf_font_size = getattr(self, "_editing_current_pdf_size", None)
+            if pdf_font_size is None:
+                pdf_font_size = getattr(self, "_editing_initial_size", None)
+            if pdf_font_name is None:
+                font = editor_widget.font() if hasattr(editor_widget, "font") else None
+                if font is not None:
+                    pdf_font_name = self._qt_font_to_pdf(font.family())
+                    if pdf_font_size is None:
+                        pdf_font_size = font.pointSizeF() or font.pointSize()
+            self._set_text_property_font_and_size(pdf_font_name, pdf_font_size)
             stacked.setCurrentWidget(text_card)
             return
 

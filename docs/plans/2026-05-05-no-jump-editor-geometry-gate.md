@@ -3378,3 +3378,100 @@ The fast-path does NOT weaken security: a forged proof at a previously-
 validated HEAD with previously-validated digests cannot exist, because the
 cache key includes the SHA-256 of the proof itself.  Mutating the proof
 changes its digest, drops the cache hit, and forces re-verification.
+
+
+## Cycle 22 (2026-05-10) — Visual fidelity over geometric alignment
+
+The Cycle 21 gate produced a green pass while the foreground GUI manual
+retest (Codex) revealed two of three reference PDFs still had visible bugs:
+
+  • test-vertical-texts.pdf  — editor blanks on open (rotation=90 case).
+  • test-colored-background.pdf — editor blanks after insert/delete mutation.
+  • test-complexed-layout.pdf  — only PDF that passed all manual checks.
+
+Root cause of the false-pass: the prior AC measured **geometric alignment**
+(editor rect drift ≤ 0.5 / 1.0 px, font_size_ratio in [0.99, 1.01]) and
+used a **synthetic** AC 2 pixel-diff (insert_htmlbox → PreviewRenderer
+round-trip on the same temp page) that was tautologically clean.  A
+geometrically perfect rectangle full of blank pixels passes both checks.
+
+Cycle 22 transitions the gate from geometric to **visual** fidelity:
+
+1. **Synthetic AC 2 deprecated.**  `test_preview_pixel_diff_under_one_pct`
+   and its `test_pixel_diff_negative_control_bad_font_size` companion are
+   marked `@pytest.mark.skip` with a Cycle-22 reason string.  Their five
+   pixel_* IDs are removed from `_REQUIRED_PIXEL_CASES` (now empty) so they
+   no longer count toward the verifier's expected-case set.
+
+2. **Real-PDF AC 2** is implemented inside the existing
+   `test_click_to_edit_qtest_integration` by:
+     • Bounding the diff to the editor's observed viewport rect
+       (`_observed_editor_vp_rect`) instead of a 9× padded grab — padding
+       diluted small per-region failures below the 1% threshold and is what
+       let the colored-background and vertical-texts bugs slip through.
+     • Adding a **relative blanking** assertion (`_blanking_relative_to`)
+       that counts only pixels where the PDF reference had ink AND the
+       editor rendered as transparent or widget-background.  Threshold ≤5%.
+     • Querying the widget's `QPalette.Base` at runtime
+       (`_query_widget_bg_rgb`) so the blanking check uses the platform
+       background colour, not a hardcoded white.
+
+3. **Matrix expansion (AC 3).**  `QTEST_E2E_CASES` adds
+   `("test-vertical-texts.pdf", "vertical")` for rotation=90 coverage that
+   was previously absent.  This produces the new fixed ID
+   `e2e_qtest_click_to_edit_vertical` registered in `_REQUIRED_FIXED_IDS`,
+   `_IMAGE_CASES_IN_VERIFIER`, and `_IMAGE_ARTIFACT_IDS`.
+
+4. **AC 5 mutation stability (new).**
+   `test_click_to_edit_then_insert_then_delete_stays_stable` parametrized
+   over the same three PDFs:
+     • Open editor.  Capture `opened_img` (editor-only crop).
+     • `insertPlainText("TEST")` + processEvents.  Capture `inserted_img`.
+     • Delete 4 chars via `cursor.deletePreviousChar()` + processEvents.
+       Capture `restored_img`.
+     • Assert `restore_delta = _changed_pixel_pct(opened, restored) ≤ 1%`
+       AND `_blanking_relative_to(opened, restored) ≤ 5%`.
+
+   API-driven mutation (vs `QTest.keyClicks`) is used because (a)
+   `view.text_editor` is sometimes a QGraphicsProxyWidget and sometimes the
+   inner widget — code resolves the inner widget once via
+   `proxy.widget()` — and (b) the paintEvent re-render is content-driven,
+   not source-driven, so this exercises the same code path as real typing.
+
+5. **AC 4 negative control for blanking detector** (new):
+   `test_blanking_detector_catches_a_blank_image` asserts a fully
+   transparent QImage registers ≥99% blank.  Without this, any "pass" on
+   `_blank_pixel_pct` is unverified.
+
+### Hash-pin updates
+
+Cycle 22 changes `test_no_jump_editor_geometry.py`, `verify_no_jump.py`,
+and `ux_signoff_agent.py`.  All three pin entries in
+`scripts/completion_gate.py` `_PINNED_HASHES` are updated in the same
+patch so a Cycle-22 gate-failure is unambiguously a *bad code logic*
+result, not a hash-mismatch result.
+
+### Expected RED state (Phase 1 acceptance)
+
+Running the Cycle-22 suite against the current `view/text_editing.py`:
+
+  PASS — `test_click_to_edit_qtest_integration[colored]`     (open is fine)
+  PASS — `test_click_to_edit_qtest_integration[complexed]`   (open is fine)
+  PASS — `test_blanking_detector_catches_a_blank_image`       (self-test)
+  FAIL — `test_click_to_edit_qtest_integration[vertical]`     (rotation=90 blanks)
+  FAIL — `test_click_to_edit_then_insert_then_delete_*[colored]`    (mutation blanks)
+  FAIL — `test_click_to_edit_then_insert_then_delete_*[complexed]`  (preview not updating on delete — bug Codex's manual retest may have missed)
+  FAIL — `test_click_to_edit_then_insert_then_delete_*[vertical]`   (mutation on already-broken open)
+
+This is the intended Phase 1 outcome: gate is RED with assertions firing
+on real visual bugs, not on integrity-check noise.  Phase 2 (separate
+patch) fixes the rendering bugs to bring the suite back to GREEN.
+
+### Acknowledged limitation (carried forward from Cycle 21)
+
+All enforcement state still lives in the writable workspace.  The gate
+remains an audit-trail and friction mechanism; an agent with repo-write
+access can co-edit thresholds and pins in the same commit.  Human PR
+review is the real trust root.  Cycle 22 narrows the test surface to be
+*meaningfully strict* — the gate now actually fails on the bugs the user
+sees.  It does not promise mathematical impossibility of bypass.
