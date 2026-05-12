@@ -491,6 +491,29 @@ def test_text_property_panel_helper_enables_actions_for_live_editor(qapp) -> Non
     assert view.text_cancel_btn.isEnabled() is True
 
 
+def test_text_property_panel_live_editor_uses_pdf_size_state_not_display_pt(qapp) -> None:
+    from PySide6.QtGui import QFont
+
+    class _EditorWithDisplayFont:
+        def __init__(self) -> None:
+            self._font = QFont("Arial")
+            self._font.setPointSizeF(9.0)
+
+        def font(self):
+            return self._font
+
+    view = _make_view()
+    _attach_text_property_panel(view)
+    view.text_editor = _FakeProxy(_EditorWithDisplayFont())
+    view.editing_font_name = "helv"
+    view._editing_initial_size = 14.0
+    view._editing_current_pdf_size = 14.0
+
+    view._sync_text_property_panel_state()
+
+    assert view.text_size.currentText() == "14"
+
+
 def test_context_menu_includes_safe_browse_actions_for_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     view = _make_view()
     view.total_pages = 1

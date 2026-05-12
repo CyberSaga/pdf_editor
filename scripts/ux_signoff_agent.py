@@ -47,6 +47,7 @@ CUA_EVIDENCE_DIR = REPO_ROOT / "test_artifacts" / "cua_evidence"
 REFERENCE_PDFS = [
     "test_files/test-colored-background.pdf",
     "test_files/test-complexed-layout.pdf",
+    "test_files/test-vertical-texts.pdf",
 ]
 MODEL = "gpt-5.4"          # update to gpt-5.5 when available
 CHECKLIST = [
@@ -79,6 +80,16 @@ _IMAGE_ARTIFACT_IDS: frozenset[str] = frozenset({
     "e2e_click_to_edit",
     "e2e_qtest_click_to_edit_colored",
     "e2e_qtest_click_to_edit_complexed",
+    "e2e_qtest_click_to_edit_vertical",          # Cycle 22 — rotation=90 coverage
+    "e2e_qtest_mutation_colored",                # Cycle 22 — opened/restored snapshots
+    "e2e_qtest_mutation_complexed",              # Cycle 22
+    "e2e_qtest_mutation_vertical",               # Cycle 22
+    "e2e_qtest_mutation_continuous5_colored",    # Cycle 22 continuous 5x mutation
+    "e2e_qtest_mutation_continuous5_complexed",  # Cycle 22 continuous 5x mutation
+    "e2e_qtest_mutation_continuous5_vertical",   # Cycle 22 continuous 5x mutation
+    "e2e_qtest_reopen_cycles5_colored",          # Cycle 23 reopen-loop
+    "e2e_qtest_reopen_cycles5_complexed",        # Cycle 23 reopen-loop
+    "e2e_qtest_reopen_cycles5_vertical",         # Cycle 23 reopen-loop
 })
 
 
@@ -565,94 +576,69 @@ def main() -> int:
     CUA_EVIDENCE_DIR.mkdir(parents=True)
 
     if client is None:
-        print("[signoff] OPENAI_API_KEY not set (or openai missing) — using local deterministic fallback.")
-        for pdf_path in REFERENCE_PDFS:
-            pdf_slug = Path(pdf_path).stem.replace(" ", "_")
-            pdf_evidence_dir = CUA_EVIDENCE_DIR / pdf_slug
-            pdf_evidence_dir.mkdir(parents=True, exist_ok=True)
+        print("[signoff] FAIL — OPENAI_API_KEY not set or openai unavailable; refusing fake signoff.")
+        return 1
 
-            checklist: list[dict] = []
-            action_trace: list[dict] = []
-            screenshot_pairs: list[dict] = []
+    for pdf_path in REFERENCE_PDFS:
+        pdf_slug = Path(pdf_path).stem.replace(" ", "_")
+        pdf_evidence_dir = CUA_EVIDENCE_DIR / pdf_slug
+        pdf_evidence_dir.mkdir(parents=True, exist_ok=True)
+        app_proc = None
+        trace: list[dict] = []
+        screenshot_pairs: list[dict] = []
 
-            for idx, label in enumerate(CHECKLIST, start=1):
-                cx = 220 + (idx * 120)
-                cy = 180 + (idx * 55)
-                checklist.append({
-                    "item_number": idx,
-                    "item_label": label,
-                    "verdict": "PASS",
-                    "observation": "No visible glyph-size jump detected at click target.",
-                    "click_x": cx,
-                    "click_y": cy,
-                    "before_screenshot_taken": True,
-                    "after_screenshot_taken": True,
-                })
-                action_trace.append({
-                    "action": "click",
-                    "x": cx,
-                    "y": cy,
-                    "t": time.time(),
-                })
-
-                before_path = pdf_evidence_dir / f"turn_{idx:02d}_before.png"
-                after_path  = pdf_evidence_dir / f"turn_{idx:02d}_after.png"
-                # Identical before/after synthetic evidence so pixel delta is 0% at click site.
-                img = _PILImage.new("RGB", (1920, 1080), color=(245, 245, 245))
-                img.save(before_path)
-                img.save(after_path)
-                screenshot_pairs.append({
-                    "turn": idx,
-                    "clicks": [{"x": cx, "y": cy}],
-                    "before_path": str(before_path.relative_to(REPO_ROOT / "test_artifacts")).replace("\\", "/"),
-                    "after_path": str(after_path.relative_to(REPO_ROOT / "test_artifacts")).replace("\\", "/"),
-                })
-
-            parsed_results[pdf_path] = {
-                "pdf": Path(pdf_path).name,
-                "checklist": checklist,
-                "overall": "PASS",
-                "action_trace": action_trace,
-                "screenshot_pairs": screenshot_pairs,
-            }
-    else:
-        for pdf_path in REFERENCE_PDFS:
-            pdf_slug = Path(pdf_path).stem.replace(" ", "_")
-            pdf_evidence_dir = CUA_EVIDENCE_DIR / pdf_slug
-
-            print(f"[signoff] Launching app with {pdf_path} ...")
-        app_proc = subprocess.Popen(
-            [sys.executable, "main.py", pdf_path], cwd=REPO_ROOT
-        )
+        print(f"[signoff] Launching app with {pdf_path} ...")
         try:
-            _assert_app_window_shows_pdf(app_proc.pid, Path(pdf_path).name)
-            print(f"[signoff] Running CUA checklist for {pdf_path} ...")
-            raw, trace, screenshot_pairs = _run_agent_on_pdf(client, pdf_path, pdf_evidence_dir)
-            print(f"[signoff] Execution trace: {len(trace)} click(s), "
+            app_proc = subprocess.Popen(
+                [sys.executable, "main.py", pdf_path], cwd=REPO_ROOT
+            )
+            try:
+                _assert_app_window_shows_pdf(app_proc.pid, Path(pdf_path).name)
+                print(f"[signoff] Running CUA checklist for {pdf_path} ...")
+                raw, trace, screenshot_pairs = _run_agent_on_pdf(client, pdf_path, pdf_evidence_dir)
+                print(f"[signoff] Execution trace: {len(trace)} click(s), "
                   f"{len(screenshot_pairs)} screenshot pair(s) saved")
-            pdf_name = Path(pdf_path).name
-            validated = _validate_signoff_report(raw, trace, expected_pdf_name=pdf_name)
-            if validated is None:
-                print(f"[signoff] FAIL — schema validation failed for {pdf_path}")
+                pdf_name = Path(pdf_path).name
+                validated = _validate_signoff_report(raw, trace, expected_pdf_name=pdf_name)
+                if validated is None:
+                    print(f"[signoff] FAIL — schema validation failed for {pdf_path}")
+                    overall_verdict = "FAIL"
+                    parsed_results[pdf_path] = {
+                        "overall": "FAIL", "error": "schema_invalid",
+                        "action_trace": trace,
+                        "screenshot_pairs": screenshot_pairs,
+                    }
+                else:
+                    print(f"[signoff] {pdf_path}: {validated['overall']}")
+                    validated["action_trace"]      = trace
+                    validated["screenshot_pairs"]  = screenshot_pairs
+                    parsed_results[pdf_path] = validated
+                    if validated.get("overall") != "PASS":
+                        overall_verdict = "FAIL"
+            except Exception as exc:
+                print(f"[signoff] FAIL — runtime error for {pdf_path}: {exc}")
                 overall_verdict = "FAIL"
                 parsed_results[pdf_path] = {
-                    "overall": "FAIL", "error": "schema_invalid",
+                    "overall": "FAIL",
+                    "error": f"runtime_error: {exc}",
                     "action_trace": trace,
                     "screenshot_pairs": screenshot_pairs,
                 }
-            else:
-                print(f"[signoff] {pdf_path}: {validated['overall']}")
-                validated["action_trace"]      = trace
-                validated["screenshot_pairs"]  = screenshot_pairs
-                parsed_results[pdf_path] = validated
-                if validated.get("overall") != "PASS":
-                    overall_verdict = "FAIL"
-        finally:
-            app_proc.terminate()
-            try:
-                app_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                app_proc.kill()
+            finally:
+                app_proc.terminate()
+                try:
+                    app_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    app_proc.kill()
+        except Exception as exc:
+            print(f"[signoff] FAIL — launch error for {pdf_path}: {exc}")
+            overall_verdict = "FAIL"
+            parsed_results[pdf_path] = {
+                "overall": "FAIL",
+                "error": f"launch_error: {exc}",
+                "action_trace": trace,
+                "screenshot_pairs": screenshot_pairs,
+            }
 
     signoff = {
         "model":             MODEL,

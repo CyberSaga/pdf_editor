@@ -1,6 +1,7 @@
 # test_scripts/test_no_jump_editor_geometry.py
 from __future__ import annotations
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,7 +12,10 @@ from PySide6.QtGui import QImage
 from view.text_editing import (
     _compute_editor_proxy_layout,
     _display_font_pt,
+    _parse_font_size_str,
     PreviewRenderer,
+    TextEditFinalizeReason,
+    TextEditOutcome,
 )
 
 ARTIFACT_DIR = Path("test_artifacts") / "no_jump"
@@ -129,6 +133,167 @@ def _changed_pixel_pct(ref: QImage, preview: QImage) -> float:
     extra = max(rw * rh, pw * ph) - w * h
     total = max(rw * rh, pw * ph)
     return (changed + extra) / total
+
+
+# ── Cycle-22 helpers: editor-only crop, blanking detector, real-PDF ink probe ─
+
+def _crop(img: QImage, rect) -> QImage:
+    """Crop an image to the given rect, clamped to image bounds.
+    Returns a 1×1 image if the rect is fully outside (avoids zero-dim errors)."""
+    rx = max(0, rect.x())
+    ry = max(0, rect.y())
+    rw = min(img.width()  - rx, rect.width())
+    rh = min(img.height() - ry, rect.height())
+    if rw <= 0 or rh <= 0:
+        return QImage(1, 1, QImage.Format_RGBA8888)
+    return img.copy(rx, ry, rw, rh)
+
+
+def _query_widget_bg_rgb(widget) -> tuple[int, int, int]:
+    """Return the QPalette base colour of a widget as (R, G, B).
+    Used as the 'blank' reference so the test does not hardcode the platform-
+    dependent widget background colour.
+
+    Sanity fallback: a base of (0, 0, 0) is almost always a transparent widget
+    (an inline editor designed to overlay a PDF page) — pure black is not a
+    realistic text-editor background.  Fall back to white, which matches the
+    parent QTextEdit's typical paper colour and what the underlying PDF region
+    most often is."""
+    from PySide6.QtGui import QPalette
+    c = widget.palette().color(QPalette.Base)
+    rgb = (c.red(), c.green(), c.blue())
+    if rgb == (0, 0, 0):
+        return (255, 255, 255)
+    return rgb
+
+
+def _is_blank_pixel(c, bg_rgb: tuple[int, int, int], tol: int) -> bool:
+    """Inline test: pixel is transparent or within ``tol`` of ``bg_rgb``."""
+    if c.alpha() == 0:
+        return True
+    br, bg_, bb = bg_rgb
+    return (abs(c.red()   - br)  <= tol
+            and abs(c.green() - bg_) <= tol
+            and abs(c.blue()  - bb)  <= tol)
+
+
+def _blank_pixel_pct(img: QImage, bg_rgb: tuple[int, int, int] = (255, 255, 255),
+                     tol: int = 8) -> float:
+    """Absolute fraction of pixels that are alpha=0 OR within ``tol`` of ``bg_rgb``.
+
+    Used for the blanking-detector self-test (a fully transparent QImage must
+    register ≥99%).  For real bug detection use ``_blanking_relative_to`` —
+    comparing the editor against a PDF reference avoids false positives on
+    natural whitespace within the bbox."""
+    w, h = img.width(), img.height()
+    if w == 0 or h == 0:
+        raise AssertionError(f"image has zero dimensions: {w}×{h}")
+    blank = 0
+    for y in range(h):
+        for x in range(w):
+            if _is_blank_pixel(img.pixelColor(x, y), bg_rgb, tol):
+                blank += 1
+    return blank / (w * h)
+
+
+def _blanking_relative_to(reference_img: QImage, source_img: QImage,
+                          bg_rgb: tuple[int, int, int] = (255, 255, 255),
+                          tol: int = 8) -> float:
+    """Fraction of *reference-ink* pixels where ``source_img`` is blank.
+
+    Numerator: pixels where reference has ink (non-blank) AND source is blank.
+    Denominator: pixels where reference has ink.
+
+    This is the correct metric for 'editor failed to paint where PDF had
+    content.'  An absolute blank fraction over-counts natural whitespace
+    (gaps between glyphs, padding around text) and produces false positives
+    even when the editor faithfully reproduces the PDF."""
+    rw, rh = reference_img.width(), reference_img.height()
+    sw, sh = source_img.width(),    source_img.height()
+    if rw == 0 or rh == 0 or sw == 0 or sh == 0:
+        raise AssertionError(f"image has zero dimensions: ref={rw}×{rh} src={sw}×{sh}")
+    w, h = min(rw, sw), min(rh, sh)
+    ref_ink = 0
+    blanked = 0
+    for y in range(h):
+        for x in range(w):
+            r_blank = _is_blank_pixel(reference_img.pixelColor(x, y), bg_rgb, tol)
+            if r_blank:
+                continue
+            ref_ink += 1
+            if _is_blank_pixel(source_img.pixelColor(x, y), bg_rgb, tol):
+                blanked += 1
+    if ref_ink == 0:
+        return 0.0
+    return blanked / ref_ink
+
+
+def _pdf_region_has_ink(pdf_path: Path, page_idx: int, bbox: fitz.Rect,
+                       ink_threshold: float = 0.05) -> bool:
+    """True if the source PDF actually has non-white content in ``bbox``.
+
+    Used so the blanking assertion only fires when the editor SHOULD have
+    painted something — avoids false positives on whitespace gutters."""
+    doc = fitz.open(str(pdf_path))
+    try:
+        page = doc[page_idx]
+        clip = bbox & page.rect   # clamp to MediaBox
+        if clip.is_empty:
+            return False
+        px = page.get_pixmap(clip=clip, alpha=False)
+        img = QImage(px.samples, px.width, px.height,
+                     px.stride, QImage.Format_RGB888).copy()
+    finally:
+        doc.close()
+    w, h = img.width(), img.height()
+    if w == 0 or h == 0:
+        return False
+    non_white = 0
+    for y in range(h):
+        for x in range(w):
+            c = img.pixelColor(x, y)
+            if c.red() < 245 or c.green() < 245 or c.blue() < 245:
+                non_white += 1
+    return (non_white / (w * h)) >= ink_threshold
+
+
+def _observed_editor_vp_rect(view):
+    """Return the editor's current viewport rectangle (observed, not predicted).
+
+    Maps the proxy widget's scene rect to viewport coords; uses min/max to
+    handle rotation transforms (rotated proxies have non-axis-aligned
+    sceneBoundingRect already, so taking min/max of the four corners gives
+    the axis-aligned cover rect that QGraphicsView would paint)."""
+    from PySide6.QtCore import QPointF, QRect
+    proxy = view.text_editor.graphicsProxyWidget()
+    if proxy is not None:
+        sr = proxy.sceneBoundingRect()
+        corners = [
+            view.graphics_view.mapFromScene(QPointF(sr.left(),  sr.top())),
+            view.graphics_view.mapFromScene(QPointF(sr.right(), sr.top())),
+            view.graphics_view.mapFromScene(QPointF(sr.right(), sr.bottom())),
+            view.graphics_view.mapFromScene(QPointF(sr.left(),  sr.bottom())),
+        ]
+        xs = [p.x() for p in corners]
+        ys = [p.y() for p in corners]
+        x0, y0 = min(xs), min(ys)
+        x1, y1 = max(xs), max(ys)
+        return QRect(int(x0), int(y0),
+                     max(1, int(x1 - x0)), max(1, int(y1 - y0)))
+    geom = view.text_editor.geometry()
+    return QRect(geom.x(), geom.y(),
+                 max(1, geom.width()), max(1, geom.height()))
+
+
+def _detect_span_rotation(span_data: dict) -> int:
+    """Snap a PyMuPDF span's writing-direction vector to {0, 90, 180, 270}.
+
+    Vertical text has dir near (0, ±1).  Used to label the test artifact and
+    feed the rotation parameter when comparing predicted vs observed rects."""
+    dx, dy = span_data.get("dir", (1.0, 0.0))
+    if abs(dx) >= abs(dy):
+        return 0 if dx >= 0 else 180
+    return 90 if dy >= 0 else 270
 
 
 # ── AC 1 + AC 3: geometry match across full matrix ────────────────────────────
@@ -392,13 +557,97 @@ def test_click_to_edit_real_geometry_pipeline(qapp):
 
 QTEST_E2E_CASES = [
     # (pdf_filename, slug)  — slug becomes part of the test_id.
-    # Both PDFs MUST exist; missing reference PDFs are a hard failure (see assertion below).
-    # colored-bg exercises Latin text on a coloured background;
-    # complex-layout exercises CJK glyph rendering and dense layouts — two distinct
-    # codepaths through PreviewRenderer.render() and _compute_editor_proxy_layout().
+    # All three PDFs MUST exist; missing reference PDFs are a hard failure.
+    # colored-bg     — Latin text on a coloured background (background-fill regression class)
+    # complex-layout — CJK glyph rendering, dense layouts (font-fallback regression class)
+    # vertical-texts — rotation=90 spans (rotation regression class — the bug
+    #                  Codex's manual retest exposed where the editor blanks on open)
     ("test-colored-background.pdf", "colored"),
     ("test-complexed-layout.pdf",   "complexed"),
+    ("test-vertical-texts.pdf",     "vertical"),
 ]
+
+MUTATION_INSERT_REPAINT_MAX = 0.60
+MUTATION_INSERT_BLANKING_MAX = 0.35
+MUTATION_GEOMETRY_DRIFT_MAX_PX = 1
+CONTINUOUS_INSERTION_STEPS = 5
+REOPEN_SESSION_CYCLES = max(1, int(os.environ.get("NO_JUMP_REOPEN_CYCLES", "5")))
+REOPEN_GEOMETRY_DRIFT_MAX_PX = 1
+REOPEN_FONT_PT_DRIFT_MAX = 0.5
+REOPEN_PIXEL_DIFF_MAX = 0.01
+
+
+def _resolve_inner_editor_widget(editor_obj):
+    from PySide6.QtWidgets import QGraphicsProxyWidget
+
+    if isinstance(editor_obj, QGraphicsProxyWidget):
+        return editor_obj.widget()
+    return editor_obj
+
+
+def _first_non_empty_span_data(model, page_idx: int = 0):
+    fitz_page = model.doc[page_idx]
+    for block in fitz_page.get_text("rawdict").get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                if (span.get("text") or "").strip():
+                    return span
+    return None
+
+
+def _cycle_replacement_text_same_length(original_text: str, cycle: int) -> str:
+    """Return deterministic replacement text with the same length as input."""
+    src = original_text or ""
+    if not src:
+        return f"R{cycle}"
+    token = f"R{cycle:02d}X"
+    replacement = (token * ((len(src) // len(token)) + 1))[: len(src)]
+    if replacement == src:
+        replacement = ("Z" + replacement[1:]) if len(replacement) > 1 else "Z"
+    return replacement
+
+
+def _grab_editor_only_image(view, qapp):
+    for _ in range(3):
+        qapp.processEvents()
+    full = view.graphics_view.viewport().grab().toImage().convertToFormat(
+        QImage.Format_RGBA8888
+    )
+    rect = _observed_editor_vp_rect(view)
+    return _crop(full, rect), rect
+
+
+def _rect_drift_metrics(reference_rect, current_rect) -> dict[str, int]:
+    return {
+        "dx": int(current_rect.x() - reference_rect.x()),
+        "dy": int(current_rect.y() - reference_rect.y()),
+        "dw": int(current_rect.width() - reference_rect.width()),
+        "dh": int(current_rect.height() - reference_rect.height()),
+    }
+
+
+def _assert_rect_drift_within(
+    *,
+    reference_rect,
+    current_rect,
+    tolerance_px: int,
+    context: str,
+) -> None:
+    drift = _rect_drift_metrics(reference_rect, current_rect)
+    assert abs(drift["dx"]) <= tolerance_px, (
+        f"{context}: editor x drift {drift['dx']}px exceeds ±{tolerance_px}px"
+    )
+    assert abs(drift["dy"]) <= tolerance_px, (
+        f"{context}: editor y drift {drift['dy']}px exceeds ±{tolerance_px}px"
+    )
+    assert abs(drift["dw"]) <= tolerance_px, (
+        f"{context}: editor width drift {drift['dw']}px exceeds ±{tolerance_px}px"
+    )
+    assert abs(drift["dh"]) <= tolerance_px, (
+        f"{context}: editor height drift {drift['dh']}px exceeds ±{tolerance_px}px"
+    )
 
 
 @pytest.mark.parametrize("pdf_filename,pdf_slug", QTEST_E2E_CASES)
@@ -556,27 +805,671 @@ def test_click_to_edit_qtest_integration(qapp, pdf_filename, pdf_slug):
     after_img  = after_grab.toImage().convertToFormat(QImage.Format_RGBA8888)
     assert not after_img.isNull(), "after_img grab returned null"
 
-    changed_pct = _changed_pixel_pct(before_img, after_img)
+    # Cycle-22: editor-only crop instead of padded grab.  The padded diff
+    # dilutes per-region blanking below 1% (the editor is ~1/9 of the grab),
+    # which is how colored-background blanking and vertical-texts open-blanking
+    # slipped through earlier gates.  Capture both for diagnostic visibility.
+    changed_pct_padded = _changed_pixel_pct(before_img, after_img)
+    obs_editor = _observed_editor_vp_rect(view)
+    editor_in_grab = obs_editor.intersected(grab_rect).translated(
+        -grab_rect.x(), -grab_rect.y())
+    if editor_in_grab.width() <= 0 or editor_in_grab.height() <= 0:
+        view.close(); view.deleteLater(); qapp.processEvents()
+        pytest.fail(
+            f"Editor at viewport {obs_editor} is outside grab region "
+            f"{grab_rect} on {pdf_filename} — geometric jump.")
+    before_crop = _crop(before_img, editor_in_grab)
+    after_crop  = _crop(after_img,  editor_in_grab)
+    changed_pct_editor = _changed_pixel_pct(before_crop, after_crop)
+    # `view.text_editor` may be the QTextEdit-derived widget OR a
+    # QGraphicsProxyWidget wrapping it; unwrap once for palette/focus access.
+    from PySide6.QtWidgets import QGraphicsProxyWidget as _QGPW
+    _inner = view.text_editor.widget() if isinstance(view.text_editor, _QGPW) else view.text_editor
+    bg_rgb             = _query_widget_bg_rgb(_inner)
+    # Relative blanking — fraction of PDF-ink pixels where the editor is blank.
+    # Avoids false positives on natural whitespace (gaps between glyphs, padding).
+    blanking_pct       = _blanking_relative_to(before_crop, after_crop, bg_rgb=bg_rgb)
+    pdf_has_ink        = _pdf_region_has_ink(pdf_path, 0, span_bbox)
+    span_rotation      = _detect_span_rotation(span_data)
+
     test_id = f"e2e_qtest_click_to_edit_{pdf_slug}"
-    _save_artifacts(test_id, before_img, after_img,
-                    {"render_scale": render_scale, "changed_px_pct": changed_pct,
-                     "span_bbox": list(span_bbox), "pdf_filename": pdf_filename,
-                     "grab_rect_padded": True})
+    _save_artifacts(test_id, before_img, after_img, {
+        "render_scale":           render_scale,
+        "changed_px_pct_padded":  changed_pct_padded,
+        "changed_px_pct_editor":  changed_pct_editor,
+        "blanking_pct_vs_pdf":    blanking_pct,
+        "pdf_has_ink":            pdf_has_ink,
+        "bg_rgb":                 list(bg_rgb),
+        "span_rotation":          span_rotation,
+        "span_bbox":              list(span_bbox),
+        "pdf_filename":           pdf_filename,
+    })
 
     # Cleanup
     view.close()
     view.deleteLater()
     qapp.processEvents()
 
-    assert changed_pct <= 0.01, (
-        f"QTest click-to-edit jump on {pdf_filename}: {changed_pct:.2%} pixels "
-        f"changed in the padded span region (span ± one span-width padding).  "
-        f"The editor's first frame does not match the PDF rendering at that location.  "
+    assert changed_pct_editor <= 0.01, (
+        f"Editor-region changed_pct {changed_pct_editor:.2%} > 1% on "
+        f"{pdf_filename} (padded crop {changed_pct_padded:.2%}).  "
+        f"The editor's first frame does not match the PDF rendering.  "
         f"Open test_artifacts/no_jump/{test_id}/diff.png"
     )
+    if pdf_has_ink:
+        assert blanking_pct <= 0.05, (
+            f"Editor blanked: {blanking_pct:.2%} of PDF-ink pixels render as "
+            f"transparent or background-colour ({bg_rgb}) in the editor.  "
+            f"This is the vertical-text / colored-bg blanking bug class. "
+            f"{pdf_filename}  span_rotation={span_rotation}°"
+        )
 
 
-# ── AC 2 + AC 3: pixel diff ───────────────────────────────────────────────────
+# ── AC 5 (Cycle 22): mutation stability — type then delete must restore ──────
+
+@pytest.mark.parametrize("pdf_filename,pdf_slug", QTEST_E2E_CASES)
+def test_click_to_edit_then_insert_then_delete_stays_stable(qapp, pdf_filename, pdf_slug):
+    """AC 5: opening + typing 'TEST' + backspacing it out must restore the
+    editor to its open-state appearance within 1% delta, with the editor
+    region still showing PDF-derived content (not blanked).
+
+    Catches the bug class the previous gate missed: mutation-triggered blanking
+    on coloured backgrounds where geometry stays fixed but the editor paints
+    nothing recognisable after a roundtrip type+delete."""
+    from model.pdf_model import PDFModel
+    from view.pdf_view import PDFView
+    from controller.pdf_controller import PDFController
+    from PySide6.QtCore import Qt, QPoint, QPointF
+    from PySide6.QtTest import QTest
+
+    pdf_path = REPO_ROOT / "test_files" / pdf_filename
+    assert pdf_path.exists(), f"Reference PDF not found: {pdf_path}"
+
+    model = PDFModel(); view = PDFView()
+    controller = PDFController(model, view); view.controller = controller
+    controller.activate(); view.show()
+    for _ in range(10): qapp.processEvents()
+    controller.open_pdf(str(pdf_path))
+    for _ in range(20): qapp.processEvents()
+    view.set_mode("edit_text")
+    for _ in range(5): qapp.processEvents()
+
+    # Find a real text span on page 1
+    model.ensure_page_index_built(1)
+    fitz_page = model.doc[0]
+    blocks = fitz_page.get_text("rawdict")["blocks"]
+    span_data = None
+    for block in blocks:
+        if block.get("type") != 0: continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                if span.get("text", "").strip():
+                    span_data = span; break
+            if span_data: break
+        if span_data: break
+    assert span_data is not None, f"No text span on page 1 of {pdf_filename}"
+
+    span_bbox = fitz.Rect(span_data["bbox"])
+    render_scale = view._render_scale if view._render_scale > 0 else 1.0
+    y0 = (view.page_y_positions[0]
+          if (view.continuous_pages and view.page_y_positions) else 0.0)
+    sx = span_bbox.x0 * render_scale + (span_bbox.width * render_scale) / 2
+    sy = y0 + span_bbox.y0 * render_scale + (span_bbox.height * render_scale) / 2
+    vp_pt = view.graphics_view.mapFromScene(QPointF(sx, sy))
+    click_pos = QPoint(int(vp_pt.x()), int(vp_pt.y()))
+
+    QTest.mousePress(view.graphics_view.viewport(), Qt.LeftButton, pos=click_pos)
+    qapp.processEvents()
+    QTest.mouseRelease(view.graphics_view.viewport(), Qt.LeftButton, pos=click_pos)
+    for _ in range(10): qapp.processEvents()
+    assert view.text_editor is not None, (
+        f"editor did not open on {pdf_filename} click_pos={click_pos}")
+
+    # `view.text_editor` may be either the QTextEdit-derived widget or a
+    # QGraphicsProxyWidget wrapping it. Resolve once to the inner widget for
+    # focus, palette, and mutation operations.
+    inner_editor = _resolve_inner_editor_widget(view.text_editor)
+    assert inner_editor is not None, (
+        f"could not resolve inner editor widget on {pdf_filename}")
+    bg_rgb = _query_widget_bg_rgb(inner_editor)
+    opened_img, opened_rect = _grab_editor_only_image(view, qapp)
+    assert opened_img.width() > 0 and opened_img.height() > 0, (
+        f"opened_img has zero dimensions on {pdf_filename}")
+
+    # Mutate via the QTextEdit API rather than QTest.keyClicks: the latter
+    # is fragile across PySide6 versions and proxy-widget contexts. The
+    # paintEvent re-render is triggered by content change, not by the input
+    # source, so this exercises the same code path that user typing would.
+    inner_editor.setFocus()
+    qapp.processEvents()
+    inner_editor.insertPlainText("TEST")
+    for _ in range(10): qapp.processEvents()
+    inserted_img, inserted_rect = _grab_editor_only_image(view, qapp)
+    _assert_rect_drift_within(
+        reference_rect=opened_rect,
+        current_rect=inserted_rect,
+        tolerance_px=MUTATION_GEOMETRY_DRIFT_MAX_PX,
+        context=f"{pdf_filename} inserted state",
+    )
+
+    cursor = inner_editor.textCursor()
+    for _ in range(4):
+        cursor.deletePreviousChar()
+    inner_editor.setTextCursor(cursor)
+    for _ in range(10): qapp.processEvents()
+    restored_img, restored_rect = _grab_editor_only_image(view, qapp)
+    _assert_rect_drift_within(
+        reference_rect=opened_rect,
+        current_rect=restored_rect,
+        tolerance_px=MUTATION_GEOMETRY_DRIFT_MAX_PX,
+        context=f"{pdf_filename} restored state",
+    )
+
+    insert_delta = _changed_pixel_pct(opened_img, inserted_img)
+    insert_blanking = _blanking_relative_to(opened_img, inserted_img, bg_rgb=bg_rgb)
+    restore_delta = _changed_pixel_pct(opened_img, restored_img)
+    # Relative blanking: of the pixels that had ink in the opened editor,
+    # what fraction went blank in the restored editor? This catches the
+    # mutation-blanking bug class (colored-bg) while ignoring natural
+    # whitespace that's blank in both opened and restored.
+    blanking_after = _blanking_relative_to(opened_img, restored_img, bg_rgb=bg_rgb)
+
+    test_id = f"e2e_qtest_mutation_{pdf_slug}"
+    _save_artifacts(test_id, opened_img, restored_img, {
+        "insert_delta":             insert_delta,
+        "insert_blanking_vs_opened": insert_blanking,
+        "restore_delta":            restore_delta,
+        "blanking_pct_vs_opened":   blanking_after,
+        "insert_rect_drift":        _rect_drift_metrics(opened_rect, inserted_rect),
+        "restored_rect_drift":      _rect_drift_metrics(opened_rect, restored_rect),
+        "bg_rgb":                   list(bg_rgb),
+        "pdf_filename":             pdf_filename,
+        "span_rotation":            _detect_span_rotation(span_data),
+    })
+
+    view.close(); view.deleteLater(); qapp.processEvents()
+
+    assert insert_delta <= MUTATION_INSERT_REPAINT_MAX, (
+        f"Inserted-state repaint {insert_delta:.2%} exceeds "
+        f"{MUTATION_INSERT_REPAINT_MAX:.0%} on {pdf_filename}. "
+        f"Mutation preview replaced too much of the editor region.")
+    assert insert_blanking <= MUTATION_INSERT_BLANKING_MAX, (
+        f"Inserted-state blanking {insert_blanking:.2%} exceeds "
+        f"{MUTATION_INSERT_BLANKING_MAX:.0%} on {pdf_filename}. "
+        f"Opened-state ink is being lost during mutation.")
+    assert restore_delta <= 0.01, (
+        f"Restore delta {restore_delta:.2%} > 1% on {pdf_filename} - typing "
+        f"then deleting did NOT return the editor to its opened-state "
+        f"appearance. This is the mutation-blanking bug class. "
+        f"insert_delta={insert_delta:.2%}")
+    assert blanking_after <= 0.05, (
+        f"After type+delete, {blanking_after:.2%} of opened-state ink pixels "
+        f"went blank (transparent or bg={bg_rgb}) on {pdf_filename} - the "
+        f"editor lost original page content during mutation.")
+
+
+@pytest.mark.parametrize("pdf_filename,pdf_slug", QTEST_E2E_CASES)
+def test_click_to_edit_continuous_insertions_then_delete_stays_stable(
+    qapp, pdf_filename, pdf_slug
+):
+    """Cycle22 continuous mutation scenario: 5 in-session insertions, then full delete.
+
+    Asserts three invariants in one open editor session:
+      1) no geometry drift while mutating,
+      2) inserted-state continuity on every step,
+      3) restored-state parity after deleting all inserted text.
+    """
+    from model.pdf_model import PDFModel
+    from view.pdf_view import PDFView
+    from controller.pdf_controller import PDFController
+    from PySide6.QtCore import Qt, QPoint, QPointF
+    from PySide6.QtTest import QTest
+
+    pdf_path = REPO_ROOT / "test_files" / pdf_filename
+    assert pdf_path.exists(), f"Reference PDF not found: {pdf_path}"
+
+    model = PDFModel(); view = PDFView()
+    controller = PDFController(model, view); view.controller = controller
+    controller.activate(); view.show()
+    for _ in range(10): qapp.processEvents()
+    controller.open_pdf(str(pdf_path))
+    for _ in range(20): qapp.processEvents()
+    view.set_mode("edit_text")
+    for _ in range(5): qapp.processEvents()
+
+    model.ensure_page_index_built(1)
+    fitz_page = model.doc[0]
+    blocks = fitz_page.get_text("rawdict")["blocks"]
+    span_data = None
+    for block in blocks:
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                if span.get("text", "").strip():
+                    span_data = span
+                    break
+            if span_data:
+                break
+        if span_data:
+            break
+    assert span_data is not None, f"No text span on page 1 of {pdf_filename}"
+
+    span_bbox = fitz.Rect(span_data["bbox"])
+    render_scale = view._render_scale if view._render_scale > 0 else 1.0
+    y0 = (view.page_y_positions[0]
+          if (view.continuous_pages and view.page_y_positions) else 0.0)
+    sx = span_bbox.x0 * render_scale + (span_bbox.width * render_scale) / 2
+    sy = y0 + span_bbox.y0 * render_scale + (span_bbox.height * render_scale) / 2
+    vp_pt = view.graphics_view.mapFromScene(QPointF(sx, sy))
+    click_pos = QPoint(int(vp_pt.x()), int(vp_pt.y()))
+
+    QTest.mousePress(view.graphics_view.viewport(), Qt.LeftButton, pos=click_pos)
+    qapp.processEvents()
+    QTest.mouseRelease(view.graphics_view.viewport(), Qt.LeftButton, pos=click_pos)
+    for _ in range(10): qapp.processEvents()
+    assert view.text_editor is not None, (
+        f"editor did not open on {pdf_filename} click_pos={click_pos}")
+
+    inner_editor = _resolve_inner_editor_widget(view.text_editor)
+    assert inner_editor is not None, (
+        f"could not resolve inner editor widget on {pdf_filename}")
+    bg_rgb = _query_widget_bg_rgb(inner_editor)
+
+    opened_img, opened_rect = _grab_editor_only_image(view, qapp)
+    assert opened_img.width() > 0 and opened_img.height() > 0, (
+        f"opened_img has zero dimensions on {pdf_filename}")
+
+    inner_editor.setFocus()
+    qapp.processEvents()
+
+    per_step = []
+    for step in range(1, CONTINUOUS_INSERTION_STEPS + 1):
+        inner_editor.insertPlainText("X")
+        for _ in range(8):
+            qapp.processEvents()
+        step_img, step_rect = _grab_editor_only_image(view, qapp)
+        step_delta = _changed_pixel_pct(opened_img, step_img)
+        step_blanking = _blanking_relative_to(opened_img, step_img, bg_rgb=bg_rgb)
+        step_drift = _rect_drift_metrics(opened_rect, step_rect)
+        per_step.append(
+            {
+                "step": step,
+                "insert_delta": step_delta,
+                "insert_blanking_vs_opened": step_blanking,
+                "rect_drift": step_drift,
+            }
+        )
+
+        _assert_rect_drift_within(
+            reference_rect=opened_rect,
+            current_rect=step_rect,
+            tolerance_px=MUTATION_GEOMETRY_DRIFT_MAX_PX,
+            context=f"{pdf_filename} continuous step {step}",
+        )
+        assert step_delta <= MUTATION_INSERT_REPAINT_MAX, (
+            f"Step {step} inserted-state repaint {step_delta:.2%} exceeds "
+            f"{MUTATION_INSERT_REPAINT_MAX:.0%} on {pdf_filename}.")
+        assert step_blanking <= MUTATION_INSERT_BLANKING_MAX, (
+            f"Step {step} inserted-state blanking {step_blanking:.2%} exceeds "
+            f"{MUTATION_INSERT_BLANKING_MAX:.0%} on {pdf_filename}.")
+
+    cursor = inner_editor.textCursor()
+    for _ in range(CONTINUOUS_INSERTION_STEPS):
+        cursor.deletePreviousChar()
+    inner_editor.setTextCursor(cursor)
+    for _ in range(10):
+        qapp.processEvents()
+    restored_img, restored_rect = _grab_editor_only_image(view, qapp)
+    _assert_rect_drift_within(
+        reference_rect=opened_rect,
+        current_rect=restored_rect,
+        tolerance_px=MUTATION_GEOMETRY_DRIFT_MAX_PX,
+        context=f"{pdf_filename} continuous restored state",
+    )
+
+    restore_delta = _changed_pixel_pct(opened_img, restored_img)
+    blanking_after = _blanking_relative_to(opened_img, restored_img, bg_rgb=bg_rgb)
+
+    test_id = f"e2e_qtest_mutation_continuous5_{pdf_slug}"
+    _save_artifacts(test_id, opened_img, restored_img, {
+        "continuous_insertion_steps": CONTINUOUS_INSERTION_STEPS,
+        "steps": per_step,
+        "restore_delta": restore_delta,
+        "blanking_pct_vs_opened": blanking_after,
+        "restored_rect_drift": _rect_drift_metrics(opened_rect, restored_rect),
+        "bg_rgb": list(bg_rgb),
+        "pdf_filename": pdf_filename,
+        "span_rotation": _detect_span_rotation(span_data),
+    })
+
+    view.close(); view.deleteLater(); qapp.processEvents()
+
+    assert restore_delta <= 0.01, (
+        f"Continuous restore delta {restore_delta:.2%} > 1% on {pdf_filename}.")
+    assert blanking_after <= 0.05, (
+        f"After continuous type+delete, {blanking_after:.2%} of opened-state "
+        f"ink pixels went blank on {pdf_filename}.")
+
+
+@pytest.mark.parametrize("pdf_filename,pdf_slug", QTEST_E2E_CASES)
+def test_reopen_same_textbox_cycles_do_not_cumulate_shrink(qapp, pdf_filename, pdf_slug):
+    """Across-session regression guard for repeated open→edit→commit→reopen.
+
+    This is the exact failure mode reported by manual QA:
+      reopen same textbox, edit, close, reopen, repeat on the same span.
+    The editor box must not cumulatively shrink across cycles.
+    """
+    from model.pdf_model import PDFModel
+    from view.pdf_view import PDFView
+    from controller.pdf_controller import PDFController
+    from PySide6.QtCore import Qt, QPoint, QPointF
+    from PySide6.QtTest import QTest
+
+    pdf_path = REPO_ROOT / "test_files" / pdf_filename
+    assert pdf_path.exists(), f"Reference PDF not found: {pdf_path}"
+
+    model = PDFModel()
+    view = PDFView()
+    controller = PDFController(model, view)
+    view.controller = controller
+    controller.activate()
+    view.show()
+    for _ in range(10):
+        qapp.processEvents()
+    controller.open_pdf(str(pdf_path))
+    for _ in range(20):
+        qapp.processEvents()
+    view.set_mode("edit_text")
+    for _ in range(5):
+        qapp.processEvents()
+    target_mode_combo = getattr(view, "text_target_mode_combo", None)
+    if target_mode_combo is not None:
+        run_idx = target_mode_combo.findData("run")
+        if run_idx >= 0:
+            target_mode_combo.setCurrentIndex(run_idx)
+            qapp.processEvents()
+
+    model.ensure_page_index_built(1)
+    span_data = _first_non_empty_span_data(model, page_idx=0)
+    assert span_data is not None, f"No text span found on page 1 of {pdf_filename}"
+    span_bbox = fitz.Rect(span_data["bbox"])
+    probe_pt = fitz.Point(span_bbox.x0 + span_bbox.width / 2, span_bbox.y0 + span_bbox.height / 2)
+
+    def _resolve_hit_near_probe():
+        hit = model.get_text_info_at_point(1, probe_pt)
+        if hit is not None and (hit.target_text or "").strip():
+            return hit
+        for radius in (1.5, 3.0, 6.0):
+            offsets = (
+                (0.0, 0.0),
+                (radius, 0.0), (-radius, 0.0),
+                (0.0, radius), (0.0, -radius),
+                (radius, radius), (radius, -radius),
+                (-radius, radius), (-radius, -radius),
+            )
+            for ox, oy in offsets:
+                probe = fitz.Point(probe_pt.x + ox, probe_pt.y + oy)
+                candidate = model.get_text_info_at_point(1, probe)
+                if candidate is not None and (candidate.target_text or "").strip():
+                    return candidate
+        return None
+
+    opened_rects = []
+    cycle_metrics = []
+    hit_sizes = []
+    opened_images = []
+    open_changed_px_pcts = []
+    first_open_img = None
+    final_open_img = None
+    baseline_text = None
+
+    try:
+        # Commit through the exact user path (APPLY finalize), not direct
+        # model.edit_text(), to cover the real reopen-loop regression.
+        def _open_editor_snapshot(cycle_idx: int):
+            model.ensure_page_index_built(1)
+            hit = _resolve_hit_near_probe()
+            assert hit is not None, (
+                f"Could not resolve span near probe on cycle {cycle_idx} for {pdf_filename}"
+            )
+
+            render_scale = view._render_scale if view._render_scale > 0 else 1.0
+            y0 = (
+                view.page_y_positions[0]
+                if (view.continuous_pages and view.page_y_positions)
+                else 0.0
+            )
+            sx = float(hit.target_bbox.x0) + float(hit.target_bbox.width) / 2.0
+            sy = float(hit.target_bbox.y0) + float(hit.target_bbox.height) / 2.0
+            scene_x = sx * render_scale
+            scene_y = y0 + sy * render_scale
+            vp_pt = view.graphics_view.mapFromScene(QPointF(scene_x, scene_y))
+            click_pos = QPoint(int(vp_pt.x()), int(vp_pt.y()))
+            before_full = view.graphics_view.viewport().grab().toImage().convertToFormat(
+                QImage.Format_RGBA8888
+            )
+
+            QTest.mousePress(view.graphics_view.viewport(), Qt.LeftButton, pos=click_pos)
+            qapp.processEvents()
+            QTest.mouseRelease(view.graphics_view.viewport(), Qt.LeftButton, pos=click_pos)
+            for _ in range(10):
+                qapp.processEvents()
+            assert view.text_editor is not None, (
+                f"Editor did not open on cycle {cycle_idx} ({pdf_filename}) click={click_pos}"
+            )
+
+            opened_img, opened_rect = _grab_editor_only_image(view, qapp)
+            assert opened_img.width() > 0 and opened_img.height() > 0, (
+                f"opened_img has zero dimensions on cycle {cycle_idx} ({pdf_filename})"
+            )
+            before_crop = _crop(before_full, opened_rect)
+            open_changed_px_pct = _changed_pixel_pct(before_crop, opened_img)
+
+            combo_pdf_size = _parse_font_size_str(view.text_size.currentText())
+            assert combo_pdf_size is not None, (
+                f"text_size combo does not contain a parseable PDF pt value on cycle "
+                f"{cycle_idx} for {pdf_filename}: {view.text_size.currentText()!r}"
+            )
+            assert abs(float(combo_pdf_size) - float(hit.size)) <= REOPEN_FONT_PT_DRIFT_MAX, (
+                f"Cycle {cycle_idx}: text_size combo drifted from resolved PDF size on "
+                f"{pdf_filename} (combo={combo_pdf_size:.3f}pt, hit={float(hit.size):.3f}pt)."
+            )
+            return hit, opened_img, opened_rect, float(combo_pdf_size), open_changed_px_pct
+
+        # Each round: open baseline -> mutate + APPLY -> reopen -> restore + APPLY.
+        # This exercises iterative real commits while keeping the span content
+        # stable between rounds so pixel-diff consistency is meaningful.
+        for cycle_idx in range(1, REOPEN_SESSION_CYCLES + 1):
+            hit, opened_img, opened_rect, combo_pdf_size, open_changed_px_pct = _open_editor_snapshot(cycle_idx)
+            if first_open_img is None:
+                first_open_img = opened_img
+            final_open_img = opened_img
+            opened_images.append(opened_img)
+            open_changed_px_pcts.append(float(open_changed_px_pct))
+            opened_rects.append(opened_rect)
+            hit_sizes.append(float(hit.size))
+            if baseline_text is None:
+                baseline_text = hit.target_text or ""
+
+            cycle_metrics.append(
+                {
+                    "cycle": cycle_idx,
+                    "target_span_id": getattr(hit, "target_span_id", None),
+                    "hit_font": str(getattr(hit, "font", "")),
+                    "hit_size_pt": float(hit.size),
+                    "combo_size_pt": combo_pdf_size,
+                    "open_changed_px_pct": float(open_changed_px_pct),
+                    "editor_rect": {
+                        "x": int(opened_rect.x()),
+                        "y": int(opened_rect.y()),
+                        "w": int(opened_rect.width()),
+                        "h": int(opened_rect.height()),
+                    },
+                }
+            )
+
+            inner_editor = _resolve_inner_editor_widget(view.text_editor)
+            assert inner_editor is not None
+            mutated_text = _cycle_replacement_text_same_length(
+                baseline_text or (hit.target_text or ""),
+                cycle_idx,
+            )
+            assert mutated_text != (hit.target_text or ""), (
+                f"Cycle {cycle_idx}: replacement text unexpectedly equals current text "
+                f"for {pdf_filename}; cannot force a real commit."
+            )
+            inner_editor.setPlainText(mutated_text)
+            qapp.processEvents()
+            result = view._finalize_text_edit(TextEditFinalizeReason.APPLY)
+            assert result is not None
+            assert result.outcome is TextEditOutcome.COMMITTED, (
+                f"Cycle {cycle_idx}: UI APPLY finalize did not commit for {pdf_filename} "
+                f"(outcome={result.outcome.value})"
+            )
+            assert view.text_editor is None
+            for _ in range(10):
+                qapp.processEvents()
+
+            restore_hit, _, _, _, restore_open_changed_px_pct = _open_editor_snapshot(cycle_idx)
+            open_changed_px_pcts.append(float(restore_open_changed_px_pct))
+            restore_editor = _resolve_inner_editor_widget(view.text_editor)
+            assert restore_editor is not None
+            restore_editor.setPlainText(baseline_text or (restore_hit.target_text or ""))
+            qapp.processEvents()
+            restore_result = view._finalize_text_edit(TextEditFinalizeReason.APPLY)
+            assert restore_result is not None
+            assert restore_result.outcome is TextEditOutcome.COMMITTED, (
+                f"Cycle {cycle_idx}: restore APPLY finalize did not commit for {pdf_filename} "
+                f"(outcome={restore_result.outcome.value})"
+            )
+            assert view.text_editor is None
+            for _ in range(10):
+                qapp.processEvents()
+
+        terminal_cycle = REOPEN_SESSION_CYCLES + 1
+        terminal_hit, terminal_img, terminal_rect, terminal_combo_pdf_size, terminal_open_changed_px_pct = _open_editor_snapshot(terminal_cycle)
+        final_open_img = terminal_img
+        opened_images.append(terminal_img)
+        open_changed_px_pcts.append(float(terminal_open_changed_px_pct))
+        opened_rects.append(terminal_rect)
+        hit_sizes.append(float(terminal_hit.size))
+        cycle_metrics.append(
+            {
+                "cycle": terminal_cycle,
+                "target_span_id": getattr(terminal_hit, "target_span_id", None),
+                "hit_font": str(getattr(terminal_hit, "font", "")),
+                "hit_size_pt": float(terminal_hit.size),
+                "combo_size_pt": terminal_combo_pdf_size,
+                "open_changed_px_pct": float(terminal_open_changed_px_pct),
+                "editor_rect": {
+                    "x": int(terminal_rect.x()),
+                    "y": int(terminal_rect.y()),
+                    "w": int(terminal_rect.width()),
+                    "h": int(terminal_rect.height()),
+                },
+            }
+        )
+        result = view._finalize_text_edit(TextEditFinalizeReason.ESCAPE)
+        assert result is not None
+        assert result.outcome in {TextEditOutcome.DISCARDED, TextEditOutcome.NO_OP}
+        assert view.text_editor is None
+        for _ in range(8):
+            qapp.processEvents()
+
+        assert len(opened_rects) == REOPEN_SESSION_CYCLES + 1, (
+            f"Expected {REOPEN_SESSION_CYCLES + 1} open snapshots, got {len(opened_rects)}"
+        )
+        assert first_open_img is not None and final_open_img is not None
+
+        baseline_rect = opened_rects[0]
+        for idx, rect in enumerate(opened_rects[1:], start=2):
+            _assert_rect_drift_within(
+                reference_rect=baseline_rect,
+                current_rect=rect,
+                tolerance_px=REOPEN_GEOMETRY_DRIFT_MAX_PX,
+                context=f"{pdf_filename} reopen cycle {idx}",
+            )
+
+        widths = [int(r.width()) for r in opened_rects]
+        heights = [int(r.height()) for r in opened_rects]
+        width_shrink_px = max(0, widths[0] - min(widths))
+        height_shrink_px = max(0, heights[0] - min(heights))
+        font_shrink_pt = max(0.0, hit_sizes[0] - min(hit_sizes))
+        font_abs_drift_pt = max(abs(float(size) - float(hit_sizes[0])) for size in hit_sizes)
+        reopen_changed_px_pct = _changed_pixel_pct(first_open_img, final_open_img)
+        max_open_changed_px_pct = max(open_changed_px_pcts) if open_changed_px_pcts else 0.0
+
+        test_id = f"e2e_qtest_reopen_cycles{REOPEN_SESSION_CYCLES}_{pdf_slug}"
+        _save_artifacts(
+            test_id,
+            first_open_img,
+            final_open_img,
+            {
+                "pdf_filename": pdf_filename,
+                "cycles": REOPEN_SESSION_CYCLES,
+                "widths": widths,
+                "heights": heights,
+                "hit_sizes_pt": hit_sizes,
+                "width_shrink_px": width_shrink_px,
+                "height_shrink_px": height_shrink_px,
+                "font_shrink_pt": font_shrink_pt,
+                "font_abs_drift_pt": font_abs_drift_pt,
+                "reopen_changed_px_pct_first_to_last": reopen_changed_px_pct,
+                "open_changed_px_pcts": open_changed_px_pcts,
+                "max_open_changed_px_pct": max_open_changed_px_pct,
+                "cycle_metrics": cycle_metrics,
+            },
+        )
+
+        assert width_shrink_px <= REOPEN_GEOMETRY_DRIFT_MAX_PX, (
+            f"Width cumulatively shrank by {width_shrink_px}px over "
+            f"{REOPEN_SESSION_CYCLES} reopen cycles on {pdf_filename}."
+        )
+        assert height_shrink_px <= REOPEN_GEOMETRY_DRIFT_MAX_PX, (
+            f"Height cumulatively shrank by {height_shrink_px}px over "
+            f"{REOPEN_SESSION_CYCLES} reopen cycles on {pdf_filename}."
+        )
+        assert font_shrink_pt <= REOPEN_FONT_PT_DRIFT_MAX, (
+            f"Resolved hit size shrank by {font_shrink_pt:.3f}pt over "
+            f"{REOPEN_SESSION_CYCLES} reopen cycles on {pdf_filename}."
+        )
+        assert font_abs_drift_pt <= REOPEN_FONT_PT_DRIFT_MAX, (
+            f"Resolved hit size drifted by {font_abs_drift_pt:.3f}pt over "
+            f"{REOPEN_SESSION_CYCLES} reopen cycles on {pdf_filename}."
+        )
+        assert max_open_changed_px_pct <= REOPEN_PIXEL_DIFF_MAX, (
+            f"Open-time pixel diff {max_open_changed_px_pct:.2%} exceeds "
+            f"{REOPEN_PIXEL_DIFF_MAX:.2%} on {pdf_filename}; reopen content is not "
+            "visually consistent with underlying PDF after repeated edit/apply cycles."
+        )
+    finally:
+        try:
+            model.close_all_sessions()
+        except Exception:
+            pass
+        view.close()
+        view.deleteLater()
+        qapp.processEvents()
+
+# ── AC 4 (Cycle 22): blanking-detector negative control ──────────────────────
+
+def test_blanking_detector_catches_a_blank_image(qapp):
+    """AC 4: a fully transparent QImage MUST register ≥99% blank.  If this
+    fails, the blanking detector itself is broken and any 'pass' on
+    _blank_pixel_pct elsewhere is meaningless."""
+    blank = QImage(40, 20, QImage.Format_RGBA8888)
+    blank.fill(0x00FFFFFF)  # alpha=0
+    pct = _blank_pixel_pct(blank)
+    _save_artifacts("blanking_detector_negative_control", None, None,
+                    {"blank_pct_observed": pct})
+    assert pct >= 0.99, (
+        f"Blanking detector failed: only {pct:.2%} of fully transparent pixels "
+        f"detected as blank.  Detector is broken; AC 5 blanking checks are "
+        f"unreliable until this passes.")
+
+
+# ── AC 2 (DEPRECATED): synthetic round-trip — superseded by real-PDF e2e ──────
 
 PIXEL_CASES = [
     ("helv", 0.67), ("helv", 1.0), ("helv", 2.0),
@@ -584,6 +1477,12 @@ PIXEL_CASES = [
 ]
 
 
+@pytest.mark.skip(reason=(
+    "Cycle 22: superseded by test_click_to_edit_qtest_integration which "
+    "compares the real PDF region to the actual editor paintEvent output.  "
+    "The synthetic round-trip (insert_htmlbox vs PreviewRenderer using the "
+    "same MuPDF engine) is tautological and let visible bugs through."
+))
 @pytest.mark.parametrize("font_name,render_scale", PIXEL_CASES)
 def test_preview_pixel_diff_under_one_pct(qapp, font_name, render_scale):
     """AC 2+3: PreviewRenderer vs direct MuPDF rasterization < 1% changed pixels."""
@@ -617,6 +1516,11 @@ def test_preview_pixel_diff_under_one_pct(qapp, font_name, render_scale):
     )
 
 
+@pytest.mark.skip(reason=(
+    "Cycle 22: companion control for the synthetic AC 2 test which is itself "
+    "skipped — both rely on the same insert_htmlbox→PreviewRenderer round-trip "
+    "that does not exercise the real click-to-edit pipeline."
+))
 def test_pixel_diff_negative_control_bad_font_size(qapp):
     """AC 4: +10% font MUST produce > 1% pixel diff; if not, pixel test is useless."""
     font_size = 14.0; span_rect = fitz.Rect(0, 0, 150, 25); text = "Hello World"

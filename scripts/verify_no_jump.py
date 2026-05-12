@@ -32,6 +32,7 @@ SIGNOFF_FILE = REPO_ROOT / "test_artifacts" / "signoff.json"
 REFERENCE_PDFS = [
     "test_files/test-colored-background.pdf",
     "test_files/test-complexed-layout.pdf",
+    "test_files/test-vertical-texts.pdf",
 ]
 PYTEST_TARGETS = [
     "test_scripts/test_text_edit_finalize_outcome.py",
@@ -114,20 +115,30 @@ _REQUIRED_GEOMETRY_CASES = [
     (2.0,  96,  "helv",         90),
 ]
 
-_REQUIRED_PIXEL_CASES = [
-    # (font_name, render_scale)
-    ("helv", 0.67), ("helv", 1.0), ("helv", 2.0),
-    ("cjk",  1.0),  ("cjk",  2.0),
-]
+# Cycle 22: synthetic pixel cases removed from the spec.  The synthetic
+# round-trip (insert_htmlbox → PreviewRenderer) compares the same MuPDF engine
+# to itself and is tautologically clean — it let visible bugs through.  Real
+# PDF→editor pixel diffing is now performed in test_click_to_edit_qtest_*.
+_REQUIRED_PIXEL_CASES: list[tuple[str, float]] = []
 
 _REQUIRED_FIXED_IDS: frozenset[str] = frozenset({
     "geom_negative_control",
-    "pixel_negative_control",
     "geom_neg_fontsize_cjk",
     "geom_neg_fontsize_unknown_font",
     "e2e_click_to_edit",                       # real PDF + real geometry pipeline (model.get_text_info_at_point)
     "e2e_qtest_click_to_edit_colored",         # full-stack QTest on Latin colored-bg PDF
     "e2e_qtest_click_to_edit_complexed",       # full-stack QTest on CJK complex-layout PDF
+    "e2e_qtest_click_to_edit_vertical",        # full-stack QTest on rotation=90 PDF (Cycle 22)
+    "e2e_qtest_mutation_colored",              # AC 5 mutation-stability (Cycle 22)
+    "e2e_qtest_mutation_complexed",            # AC 5 mutation-stability (Cycle 22)
+    "e2e_qtest_mutation_vertical",             # AC 5 mutation-stability (Cycle 22)
+    "e2e_qtest_mutation_continuous5_colored",  # AC 5 continuous mutation (Cycle 22)
+    "e2e_qtest_mutation_continuous5_complexed",# AC 5 continuous mutation (Cycle 22)
+    "e2e_qtest_mutation_continuous5_vertical", # AC 5 continuous mutation (Cycle 22)
+    "e2e_qtest_reopen_cycles5_colored",        # AC 6 reopen-loop across sessions (Cycle 23)
+    "e2e_qtest_reopen_cycles5_complexed",      # AC 6 reopen-loop across sessions (Cycle 23)
+    "e2e_qtest_reopen_cycles5_vertical",       # AC 6 reopen-loop across sessions (Cycle 23)
+    "blanking_detector_negative_control",      # AC 4 blanking-detector self-test (Cycle 22)
 })
 
 
@@ -162,6 +173,19 @@ def _expected_case_ids() -> set[str]:
         "QTest full-stack e2e (colored-bg PDF) must be in fixed IDs"
     assert "e2e_qtest_click_to_edit_complexed" in _REQUIRED_FIXED_IDS, \
         "QTest full-stack e2e (complex-layout PDF) must be in fixed IDs — covers CJK regression"
+    assert "e2e_qtest_click_to_edit_vertical" in _REQUIRED_FIXED_IDS, \
+        "QTest full-stack e2e (vertical-texts PDF) must be in fixed IDs — Cycle 22 rotation=90 coverage"
+    for _slug in ("colored", "complexed", "vertical"):
+        assert f"e2e_qtest_mutation_{_slug}" in _REQUIRED_FIXED_IDS, \
+            f"AC 5 mutation-stability case e2e_qtest_mutation_{_slug} must be in fixed IDs (Cycle 22)"
+    for _slug in ("colored", "complexed", "vertical"):
+        assert f"e2e_qtest_mutation_continuous5_{_slug}" in _REQUIRED_FIXED_IDS, \
+            f"AC 5 continuous mutation case e2e_qtest_mutation_continuous5_{_slug} must be in fixed IDs (Cycle 22)"
+    for _slug in ("colored", "complexed", "vertical"):
+        assert f"e2e_qtest_reopen_cycles5_{_slug}" in _REQUIRED_FIXED_IDS, \
+            f"AC 6 reopen-loop case e2e_qtest_reopen_cycles5_{_slug} must be in fixed IDs (Cycle 23)"
+    assert "blanking_detector_negative_control" in _REQUIRED_FIXED_IDS, \
+        "Blanking-detector self-test must be in fixed IDs (Cycle 22)"
 
     return expected
 
@@ -595,9 +619,21 @@ def _check_signoff(min_signoff_time: float) -> bool:
         "e2e_click_to_edit",
         "e2e_qtest_click_to_edit_colored",
         "e2e_qtest_click_to_edit_complexed",
+        "e2e_qtest_click_to_edit_vertical",       # Cycle 22
+        "e2e_qtest_mutation_colored",             # Cycle 22 — saves opened/restored
+        "e2e_qtest_mutation_complexed",           # Cycle 22
+        "e2e_qtest_mutation_vertical",            # Cycle 22
+        "e2e_qtest_mutation_continuous5_colored", # Cycle 22 continuous 5x mutation
+        "e2e_qtest_mutation_continuous5_complexed", # Cycle 22 continuous 5x mutation
+        "e2e_qtest_mutation_continuous5_vertical",  # Cycle 22 continuous 5x mutation
+        "e2e_qtest_reopen_cycles5_colored",       # Cycle 23 reopen-loop
+        "e2e_qtest_reopen_cycles5_complexed",     # Cycle 23 reopen-loop
+        "e2e_qtest_reopen_cycles5_vertical",      # Cycle 23 reopen-loop
     })
 
     def _verifier_has_image_artifacts(tid: str) -> bool:
+        # Note: pixel_* removed from required set in Cycle 22; check kept for any
+        # legacy artifacts still present in test_artifacts/.
         return tid.startswith("pixel_") or tid in _IMAGE_CASES_IN_VERIFIER
 
     manifest_path = ARTIFACT_DIR / "manifest.json"

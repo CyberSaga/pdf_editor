@@ -183,6 +183,7 @@ class _EditTextResolveResult:
     is_vertical: bool
     insert_rotate: int
     redact_rect: fitz.Rect
+    reopen_anchor_rect: fitz.Rect | None = None
 
 
 @dataclass
@@ -197,6 +198,8 @@ class DocumentSession:
     command_manager: CommandManager = field(default_factory=CommandManager)
     pending_edits: list = field(default_factory=list)
     edit_count: int = 0
+    run_reopen_anchors: dict[str, fitz.Rect] = field(default_factory=dict)
+    run_reopen_anchor_sizes: dict[str, float] = field(default_factory=dict)
 
 class PDFModel:
     def __init__(self):
@@ -211,6 +214,8 @@ class PDFModel:
         self._legacy_command_manager: CommandManager = CommandManager()
         self._legacy_edit_count: int = 0
         self._legacy_pending_edits: list = []
+        self._legacy_run_reopen_anchors: dict[str, fitz.Rect] = {}
+        self._legacy_run_reopen_anchor_sizes: dict[str, float] = {}
         self.temp_dir = None
         # 是否在「存回原檔」時使用增量更新（Incremental Update），以減少對數位簽章與大檔的影響
         self.use_incremental_save: bool = True
@@ -458,6 +463,69 @@ class PDFModel:
             session.pending_edits = value
         else:
             self._legacy_pending_edits = value
+
+    @property
+    def run_reopen_anchors(self) -> dict[str, fitz.Rect]:
+        session = self._active_session()
+        return session.run_reopen_anchors if session else self._legacy_run_reopen_anchors
+
+    @run_reopen_anchors.setter
+    def run_reopen_anchors(self, value: dict[str, fitz.Rect]) -> None:
+        session = self._active_session()
+        if session:
+            session.run_reopen_anchors = value
+        else:
+            self._legacy_run_reopen_anchors = value
+
+    @property
+    def run_reopen_anchor_sizes(self) -> dict[str, float]:
+        session = self._active_session()
+        return session.run_reopen_anchor_sizes if session else self._legacy_run_reopen_anchor_sizes
+
+    @run_reopen_anchor_sizes.setter
+    def run_reopen_anchor_sizes(self, value: dict[str, float]) -> None:
+        session = self._active_session()
+        if session:
+            session.run_reopen_anchor_sizes = value
+        else:
+            self._legacy_run_reopen_anchor_sizes = value
+
+    @staticmethod
+    def _run_reopen_anchor_key(page_idx: int, span_id: str) -> str:
+        return f"{int(page_idx)}::{span_id}"
+
+    def _get_run_reopen_anchor_rect(self, page_idx: int, span_id: str | None) -> fitz.Rect | None:
+        if not span_id:
+            return None
+        rect = self.run_reopen_anchors.get(self._run_reopen_anchor_key(page_idx, span_id))
+        return fitz.Rect(rect) if rect is not None else None
+
+    def _set_run_reopen_anchor_rect(self, page_idx: int, span_id: str | None, rect: fitz.Rect | None) -> None:
+        if not span_id or rect is None:
+            return
+        self.run_reopen_anchors[self._run_reopen_anchor_key(page_idx, span_id)] = fitz.Rect(rect)
+
+    def _get_run_reopen_anchor_size(self, page_idx: int, span_id: str | None) -> float | None:
+        if not span_id:
+            return None
+        key = self._run_reopen_anchor_key(page_idx, span_id)
+        value = self.run_reopen_anchor_sizes.get(key)
+        return float(value) if value is not None else None
+
+    def _set_run_reopen_anchor_size(self, page_idx: int, span_id: str | None, size: float | None) -> None:
+        if not span_id or size is None:
+            return
+        self.run_reopen_anchor_sizes[self._run_reopen_anchor_key(page_idx, span_id)] = float(size)
+
+    def _iter_run_reopen_anchors_for_page(self, page_idx: int) -> Iterator[tuple[str, fitz.Rect]]:
+        prefix = f"{int(page_idx)}::"
+        for key, rect in list(self.run_reopen_anchors.items()):
+            if not key.startswith(prefix):
+                continue
+            span_id = key[len(prefix):]
+            if not span_id:
+                continue
+            yield span_id, fitz.Rect(rect)
 
     def set_text_target_mode(self, mode: str) -> None:
         normalized = (mode or "").strip().lower()
@@ -1296,9 +1364,52 @@ class PDFModel:
         mode = (self.text_target_mode or "run").lower()
 
         spans = self.block_manager.get_runs(page_idx)
-        hit_spans = [s for s in spans if point in fitz.Rect(s.bbox)]
+        anchored_hit: EditableSpan | None = None
+        anchored_rect: fitz.Rect | None = None
+        anchored_size: float | None = None
+        anchored_distance_sq: float | None = None
+        for anchor_span_id, anchor_rect in self._iter_run_reopen_anchors_for_page(page_idx):
+            if point not in anchor_rect:
+                continue
+            anchor_run = self.block_manager.find_run_by_id(page_idx, anchor_span_id)
+            if anchor_run is None and spans:
+                anchor_cx = float(anchor_rect.x0 + (anchor_rect.width / 2.0))
+                anchor_cy = float(anchor_rect.y0 + (anchor_rect.height / 2.0))
+                anchor_run = min(
+                    spans,
+                    key=lambda span: (
+                        (float(span.bbox.x0 + (span.bbox.width / 2.0)) - anchor_cx) ** 2
+                        + (float(span.bbox.y0 + (span.bbox.height / 2.0)) - anchor_cy) ** 2
+                    ),
+                )
+                self._set_run_reopen_anchor_rect(page_idx, anchor_run.span_id, anchor_rect)
+                old_size = self._get_run_reopen_anchor_size(page_idx, anchor_span_id)
+                self._set_run_reopen_anchor_size(
+                    page_idx,
+                    anchor_run.span_id,
+                    old_size if old_size is not None else float(anchor_run.size),
+                )
+            if anchor_run is None:
+                continue
+            center_x = float(anchor_rect.x0 + (anchor_rect.width / 2.0))
+            center_y = float(anchor_rect.y0 + (anchor_rect.height / 2.0))
+            distance_sq = ((float(point.x) - center_x) ** 2) + ((float(point.y) - center_y) ** 2)
+            if anchored_hit is None or anchored_distance_sq is None or distance_sq < anchored_distance_sq:
+                anchored_hit = anchor_run
+                anchored_rect = fitz.Rect(anchor_rect)
+                anchored_size = self._get_run_reopen_anchor_size(page_idx, anchor_span_id)
+                if anchored_size is None:
+                    anchored_size = float(anchor_run.size)
+                anchored_distance_sq = distance_sq
+
+        hit_spans = [anchored_hit] if anchored_hit is not None else [s for s in spans if point in fitz.Rect(s.bbox)]
         if hit_spans:
             target = hit_spans[-1]  # Topmost = last extracted/drawn.
+            reopen_anchor_rect = (
+                fitz.Rect(anchored_rect)
+                if anchored_rect is not None
+                else self._get_run_reopen_anchor_rect(page_idx, target.span_id)
+            )
             if mode == "paragraph":
                 para = self.block_manager.find_paragraph_for_run(page_idx, target.span_id)
                 if para is not None:
@@ -1321,10 +1432,10 @@ class PDFModel:
             cluster = self.block_manager.find_overlapping_runs(page_idx, target.bbox, tol=0.5)
             return TextHit(
                 target_span_id=target.span_id,
-                target_bbox=fitz.Rect(target.bbox),
+                target_bbox=fitz.Rect(reopen_anchor_rect if reopen_anchor_rect is not None else target.bbox),
                 target_text=target.text,
                 font=target.font,
-                size=float(target.size),
+                size=float(anchored_size if anchored_size is not None else target.size),
                 color=tuple(target.color),
                 rotation=int(target.rotation),
                 cluster_span_ids=[s.span_id for s in cluster],
@@ -3354,7 +3465,17 @@ class PDFModel:
             resolved_target_span_id = target_span.span_id
 
         target_member_span_ids: set[str] = {resolved_target_span_id}
-        target_bbox_for_cluster = fitz.Rect(target_span.bbox)
+        reopen_anchor_rect: fitz.Rect | None = None
+        if effective_target_mode == "run" and new_rect is None and resolved_target_span_id:
+            reopen_anchor_rect = self._get_run_reopen_anchor_rect(page_idx, resolved_target_span_id)
+            if reopen_anchor_rect is None:
+                reopen_anchor_rect = fitz.Rect(target_span.bbox)
+                self._set_run_reopen_anchor_rect(page_idx, resolved_target_span_id, reopen_anchor_rect)
+            if self._get_run_reopen_anchor_size(page_idx, resolved_target_span_id) is None:
+                self._set_run_reopen_anchor_size(page_idx, resolved_target_span_id, float(target_span.size))
+        target_bbox_for_cluster = fitz.Rect(
+            reopen_anchor_rect if reopen_anchor_rect is not None else target_span.bbox
+        )
         target_block_idx = target_span.block_idx
         target_rotation = int(target_span.rotation)
         if effective_target_mode == "paragraph":
@@ -3371,6 +3492,7 @@ class PDFModel:
                 target_rotation = int(para.rotation)
                 if para.run_ids and resolved_target_span_id not in target_member_span_ids:
                     resolved_target_span_id = para.run_ids[0]
+                reopen_anchor_rect = None
             else:
                 logger.debug(
                     "paragraph mode requested but paragraph not resolved for run=%s; fallback to run mode",
@@ -3448,6 +3570,7 @@ class PDFModel:
             is_vertical=is_vertical,
             insert_rotate=insert_rotate,
             redact_rect=redact_rect,
+            reopen_anchor_rect=fitz.Rect(reopen_anchor_rect) if reopen_anchor_rect is not None else None,
         )
 
     def _apply_redact_insert(
@@ -3553,7 +3676,11 @@ class PDFModel:
                 clamped_new = fitz.Rect(resolve_result.target.layout_rect)
             base_layout = clamped_new
         else:
-            base_layout = fitz.Rect(resolve_result.target.layout_rect)
+            base_layout = fitz.Rect(
+                resolve_result.reopen_anchor_rect
+                if resolve_result.reopen_anchor_rect is not None
+                else resolve_result.target.layout_rect
+            )
 
         margin = 15
         right_margin_pt = max(60.0, min(120.0, float(size) * 2.0))
@@ -3802,6 +3929,8 @@ class PDFModel:
             new_layout_rect.x1, computed_y1
         )
         shrunk_rect = clamp_rect_to_page(shrunk_rect, page_rect)
+        if resolve_result.reopen_anchor_rect is not None:
+            return clamp_rect_to_page(fitz.Rect(resolve_result.reopen_anchor_rect), page_rect)
         return fitz.Rect(shrunk_rect)
 
     def _verify_rebuild_edit(
@@ -3927,6 +4056,46 @@ class PDFModel:
             update_kwargs["layout_rect"] = new_layout_rect
         self.block_manager.update_block(resolve_result.target, **update_kwargs)
         self.block_manager.rebuild_page(page_idx, self.doc)
+        if resolve_result.reopen_anchor_rect is not None:
+            anchor_rect = fitz.Rect(resolve_result.reopen_anchor_rect)
+            anchor_size = self._get_run_reopen_anchor_size(
+                page_idx,
+                resolve_result.resolved_target_span_id,
+            )
+            if anchor_size is None:
+                anchor_size = float(size)
+            self._set_run_reopen_anchor_rect(
+                page_idx,
+                resolve_result.resolved_target_span_id,
+                anchor_rect,
+            )
+            self._set_run_reopen_anchor_size(
+                page_idx,
+                resolve_result.resolved_target_span_id,
+                anchor_size,
+            )
+            try:
+                rebuilt_runs = self.block_manager.get_runs(page_idx)
+                if rebuilt_runs:
+                    norm_new = normalize_text(new_text or "")
+                    anchor_cx = float(anchor_rect.x0 + (anchor_rect.width / 2.0))
+                    anchor_cy = float(anchor_rect.y0 + (anchor_rect.height / 2.0))
+
+                    def _run_anchor_score(span: EditableSpan) -> tuple[int, float]:
+                        span_rect = fitz.Rect(span.bbox)
+                        span_cx = float(span_rect.x0 + (span_rect.width / 2.0))
+                        span_cy = float(span_rect.y0 + (span_rect.height / 2.0))
+                        distance_sq = ((span_cx - anchor_cx) ** 2) + ((span_cy - anchor_cy) ** 2)
+                        text_match_penalty = 0
+                        if norm_new:
+                            text_match_penalty = 0 if normalize_text(span.text) == norm_new else 1
+                        return (text_match_penalty, distance_sq)
+
+                    best_run = min(rebuilt_runs, key=_run_anchor_score)
+                    self._set_run_reopen_anchor_rect(page_idx, best_run.span_id, anchor_rect)
+                    self._set_run_reopen_anchor_size(page_idx, best_run.span_id, anchor_size)
+            except Exception as anchor_exc:
+                logger.debug("run anchor refresh skipped after rebuild: %s", anchor_exc)
         logger.debug(
             "編輯文字成功: 頁面 %s, block_id=%s, text='%s...'",
             page_num,
