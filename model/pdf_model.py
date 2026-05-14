@@ -517,6 +517,13 @@ class PDFModel:
             return
         self.run_reopen_anchor_sizes[self._run_reopen_anchor_key(page_idx, span_id)] = float(size)
 
+    def _delete_run_reopen_anchor(self, page_idx: int, span_id: str | None) -> None:
+        if not span_id:
+            return
+        key = self._run_reopen_anchor_key(page_idx, span_id)
+        self.run_reopen_anchors.pop(key, None)
+        self.run_reopen_anchor_sizes.pop(key, None)
+
     def _iter_run_reopen_anchors_for_page(self, page_idx: int) -> Iterator[tuple[str, fitz.Rect]]:
         prefix = f"{int(page_idx)}::"
         for key, rect in list(self.run_reopen_anchors.items()):
@@ -1692,15 +1699,14 @@ class PDFModel:
             bounds.include_rect(line_rect)
         return "\n".join(line_texts).strip(), bounds
 
-    def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect, rotation: int = 0, font_size: float = 12) -> float:
+    def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect) -> float:
         """Return the wrap width (points) for the inline editor.
 
         For visual fidelity, the editor's wrap width must match the original
         text block's width exactly. A wider editor would let Qt re-layout the
         text at different break points than the rendered PDF (because Qt and
         PyMuPDF have slightly different horizontal glyph metrics), producing
-        the "break lines once edit box opened" symptom. ``font_size`` is kept
-        in the signature for API stability with existing callers.
+        the "break lines once edit box opened" symptom.
         """
         return float(rect.width)
 
@@ -4092,6 +4098,15 @@ class PDFModel:
                         return (text_match_penalty, distance_sq)
 
                     best_run = min(rebuilt_runs, key=_run_anchor_score)
+                    if best_run.span_id != resolve_result.resolved_target_span_id:
+                        # rebuild_page assigned a new span_id; the pre-rebuild
+                        # key written above is now an orphan — drop it before
+                        # writing under the new id so the anchor dict can't
+                        # grow without bound across reopen cycles.
+                        self._delete_run_reopen_anchor(
+                            page_idx,
+                            resolve_result.resolved_target_span_id,
+                        )
                     self._set_run_reopen_anchor_rect(page_idx, best_run.span_id, anchor_rect)
                     self._set_run_reopen_anchor_size(page_idx, best_run.span_id, anchor_size)
             except Exception as anchor_exc:

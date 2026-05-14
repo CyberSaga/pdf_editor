@@ -1708,7 +1708,7 @@ def test_create_text_editor_uses_source_span_font_size_and_width(
     # Mirror PDFModel.get_render_width_for_edit on this branch: returns float(rect.width)
     view.controller = SimpleNamespace(
         model=SimpleNamespace(
-            get_render_width_for_edit=lambda page_num, rect, rotation, font_size: float(rect.width)
+            get_render_width_for_edit=lambda page_num, rect: float(rect.width)
         )
     )
     view._refresh_undo_redo_action_state = lambda: None

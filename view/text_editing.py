@@ -1,5 +1,4 @@
 from __future__ import annotations
-from __future__ import annotations
 import logging
 import unicodedata
 from dataclasses import dataclass
@@ -460,19 +459,33 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
         self.viewport().update()
 
     def _compute_nontransparent_coverage(self, image: QImage | None) -> float:
-        if image is None or image.isNull():
+        # Fail-safe is only consumed when _frozen_first_frame_image exists
+        # (see paintEvent's mutated-preview branch).  Skip the scan otherwise
+        # — the coverage value can't change the paint decision.
+        if (
+            image is None
+            or image.isNull()
+            or self._frozen_first_frame_image is None
+        ):
             return 0.0
         width = int(image.width())
         height = int(image.height())
         if width <= 0 or height <= 0:
             return 0.0
+        # RGBA8888 stores alpha as byte 3 of every 4.  bytesPerLine may add
+        # row padding, so iterate row-by-row using bytesPerLine as the stride.
+        if image.format() != QImage.Format_RGBA8888:
+            image = image.convertToFormat(QImage.Format_RGBA8888)
+        threshold = int(self._VISIBLE_ALPHA_THRESHOLD)
+        stride = int(image.bytesPerLine())
+        buf = bytes(image.constBits())
         visible = 0
-        total = width * height
         for y in range(height):
-            for x in range(width):
-                if image.pixelColor(x, y).alpha() > self._VISIBLE_ALPHA_THRESHOLD:
-                    visible += 1
-        return visible / float(total)
+            row_start = y * stride
+            # Alpha byte = row_start + 4*x + 3; slice [row_start+3 : row_start+4*width : 4]
+            row_alpha = buf[row_start + 3 : row_start + 4 * width : 4]
+            visible += sum(1 for a in row_alpha if a > threshold)
+        return visible / float(width * height)
 
     def _regenerate_preview(self) -> None:
         if not self._render_args:
@@ -587,17 +600,24 @@ def _average_image_rect_color(image, rect: QRect) -> QColor:
     bounded = rect.intersected(image.rect())
     if bounded.isEmpty():
         return QColor(_DEFAULT_EDITOR_MASK_COLOR)
+    if image.format() != QImage.Format_RGBA8888:
+        image = image.convertToFormat(QImage.Format_RGBA8888)
+    stride = int(image.bytesPerLine())
+    buf = bytes(image.constBits())
     total_r = 0
     total_g = 0
     total_b = 0
-    count = 0
+    left = bounded.left()
+    right = bounded.right()  # inclusive
+    width = right - left + 1
     for y in range(bounded.top(), bounded.bottom() + 1):
-        for x in range(bounded.left(), bounded.right() + 1):
-            color = image.pixelColor(x, y)
-            total_r += color.red()
-            total_g += color.green()
-            total_b += color.blue()
-            count += 1
+        base = y * stride + left * 4
+        end = base + width * 4
+        row = buf[base:end]
+        total_r += sum(row[0::4])
+        total_g += sum(row[1::4])
+        total_b += sum(row[2::4])
+    count = width * (bounded.bottom() - bounded.top() + 1)
     if count <= 0:
         return QColor(_DEFAULT_EDITOR_MASK_COLOR)
     return QColor(total_r // count, total_g // count, total_b // count)
@@ -770,7 +790,7 @@ class TextEditManager:
         font_size: float,
         color: tuple = (0, 0, 0),
         rotation: int = 0,
-        target_span_id: str = None,
+        target_span_id: str | None = None,
         target_mode: str = "run",
         editor_intent: str = "edit_existing",
         cluster_span_ids: list[str] | None = None,
@@ -780,11 +800,11 @@ class TextEditManager:
             view._finalize_text_edit()
 
         page_idx = getattr(view, "_editing_page_idx", view.current_page)
-        render_width_pt = view.controller.model.get_render_width_for_edit(page_idx + 1, rect, rotation, font_size)
         rs = view._render_scale if view._render_scale > 0 else 1.0
         if editor_intent == "edit_existing":
             scaled_width = int(round(rect.width * rs))
         else:
+            render_width_pt = view.controller.model.get_render_width_for_edit(page_idx + 1, rect)
             scaled_width = int(render_width_pt * rs)
         scaled_rect = rect * rs
 
@@ -887,7 +907,8 @@ class TextEditManager:
                         max(1, int(editor_height_px)),
                     )
                     initial_frame = graphics_view.viewport().grab(grab_rect).toImage().convertToFormat(QImage.Format_RGBA8888)
-            except Exception:
+            except (RuntimeError, ValueError, AttributeError, TypeError) as exc:
+                logger.debug("frozen-frame grab failed: %s", exc)
                 initial_frame = None
 
         if self._preview_renderer is None:
@@ -914,10 +935,7 @@ class TextEditManager:
 
         editor.setFixedWidth(editor_width_px)
         setattr(editor, "_width", editor_width_px)
-        if normalized_rotation in (90, 270):
-            editor.setFixedHeight(editor_height_px)
-        else:
-            editor.setFixedHeight(editor_height_px)
+        editor.setFixedHeight(editor_height_px)
         setattr(editor, "_height", editor_height_px)
         editor.setLineWrapMode(QTextEdit.WidgetWidth)
         editor.setWordWrapMode(QTextOption.WrapAnywhere)
