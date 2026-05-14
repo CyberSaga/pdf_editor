@@ -22,6 +22,7 @@ test_artifacts/
 .cursor/
 .agents/
 .worktrees/
+.claude
 
 # 單一程式
 for_Linux/

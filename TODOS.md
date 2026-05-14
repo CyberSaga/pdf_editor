@@ -1,5 +1,22 @@
 # TODOS
 
+## Done (2026-05-14) -- No-Jump UX: eliminate click-to-edit glyph jump (gate verified)
+
+- What: Closed the "glyph size jump on click-to-edit" problem end-to-end across all PDF types, zoom levels, DPIs, rotations, and paragraph/run modes. A tamper-evident acceptance gate enforces the result.
+- Root causes fixed:
+  1. **DPI mismatch:** Qt widget fonts used raw PDF points; introduced `_display_font_pt(pdf_size, render_scale) = pdf_size × render_scale × 72 / screen_dpi` for correct widget sizing at any zoom/DPI.
+  2. **Qt frame chrome:** Editor had Qt-default frame borders and viewport margins adding extra pixels. Zeroed with `setFrameStyle(0)`, `setViewportMargins(0,0,0,0)`, `document().setDocumentMargin(0.0)`, `setContentsMargins(0,0,0,0)`.
+  3. **First-frame jump:** Editor opened showing blank/Qt-painted text before first preview rendered. Introduced `freeze_first_frame(image)` that stamps the first preview frame; `paintEvent` draws it immediately so click-to-edit is visually seamless.
+  4. **Frame overwrite by render-context:** `configure_render_context` called `setFixedSize` unconditionally, clobbering the carefully-set `create_text_editor` frame. Fixed with `width <= 1` guard.
+  5. **Rotated editor dimension swap:** 90°/270° editors did not swap `width_px`/`height_px` in the proxy layout or render context. Fixed in both `create_text_editor` geometry and `configure_render_context`.
+  6. **Paragraph-mode oversized void:** Editor used full block-bbox height; introduced `_measure_text_content_height_px` probe to use actual wrapped-content height in paragraph mode.
+  7. **`scale_low` default in preview:** `insert_htmlbox` default `scale_low` allowed MuPDF to scale glyphs, diverging preview from commit metrics. Fixed with `scale_low=1` in `PreviewRenderer.render`.
+  8. **Block outline overlap during edit:** Block outlines remained visible behind open editor. Fixed by suppressing outline for the active editing target.
+  9. **Font-size combo double-DPI:** Size-change handler re-applied DPI correction to the combo value, double-scaling the editor font. Fixed to apply combo size directly.
+- Acceptance gate: `scripts/completion_gate.py` + `scripts/verify_no_jump.py` + `scripts/check_gate_passed.py` + `scripts/check_completion_proof_hook.py` Stop hook. Gate covers geometry assertions, pixel-diff ≤1%, blanking detection, mutation stability, and reopen-loop stability.
+- New test files: `test_scripts/test_no_jump_editor_geometry.py` (19+ cases), `test_scripts/test_text_editing_fidelity_suite.py`, `test_scripts/test_completion_proof_hook.py` (18 cases), `test_scripts/test_ux_signoff_agent.py`, `test_scripts/test_snapshot_restore.py`, `test_scripts/test_text_edit_finalize_outcome.py`, `test_scripts/test_resolve_target_mode.py`.
+- Outcome: No glyph jump on click-to-edit across all real PDF types tested. Gate is green. PITFALLS, ARCHITECTURE, FEATURES, README, README.zh-TW, TEST_SCRIPTS.md all updated.
+
 ## Done (2026-04-22) -- Phase 2 text-editing fidelity
 
 - What: Closed the Phase 2 gap between current text-edit behavior and Acrobat-level stability across five tasks.
