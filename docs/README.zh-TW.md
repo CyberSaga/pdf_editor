@@ -10,7 +10,7 @@
 - 操作物件模式：可移動/縮放/旋轉/刪除矩形與圖片，且允許物件彼此重疊
 - 檔案頁籤提供最佳化副本輸出：內建 `快速` / `平衡` / `極致壓縮` 預設、可按需查看空間審計報告，並顯示容量縮減摘要
 - 單一匯出對話框：可選當前頁/指定頁、DPI（`72` 到 `2400`）、輸出 PDF 或影像（`JPG/PNG/TIFF`）
-- 重疊安全的文字編輯
+- 重疊安全的文字編輯，並具備所見即所得（WYSIWYG）保真度：點擊文字時，編輯框以凍結的 PyMuPDF 預覽影格開啟，字形不會跳動；在任何縮放比例與 DPI 下，編輯框大小、換行寬度與行高均與來源 PDF 完全一致
 - 文字編輯框若清空後提交，會刪除該文字框內容（可復原/重做）
 - 獨立新增文字模式
 - 文字屬性可用 `套用/取消` 明確提交或捨棄，且字體/字級選單不會誤關閉編輯框
@@ -41,7 +41,8 @@
 - PySide6
 - PyMuPDF (`fitz`)
 - Pillow
-- pytesseract（選用）
+- surya-ocr（選用）
+- torch（選用，強烈建議用於 GPU 加速）
 
 ## 安裝
 
@@ -56,7 +57,7 @@ python -m venv .venv
 .venv\Scripts\python -m pip install -r optional-requirements.txt
 ```
 
-OCR 說明：請安裝 Tesseract OCR，並確保 `tesseract` 可由 PATH 找到。
+OCR 說明：OCR 功能使用 Surya，需安裝 `surya-ocr`（選用 `torch`）。請執行 `pip install surya-ocr torch` 或使用 `optional-requirements.txt`。GPU 會自動優先使用（CUDA → MPS → CPU），並可在 OCR 對話框中手動設定。
 
 ## 執行
 
