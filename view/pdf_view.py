@@ -3936,7 +3936,7 @@ class PDFView(QMainWindow):
         font_size: float,
         color: tuple = (0, 0, 0),
         rotation: int = 0,
-        target_span_id: str = None,
+        target_span_id: str | None = None,
         target_mode: str = "run",
         editor_intent: str = "edit_existing",
         cluster_span_ids: list[str] | None = None,

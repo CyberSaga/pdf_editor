@@ -656,7 +656,7 @@ def test_render_width_for_edit_does_not_exceed_rect_width(tmp_path: Path):
     try:
         test_rect = fitz.Rect(50, 80, 200, 100)  # width = 150pt
         returned_width = model.get_render_width_for_edit(
-            page_num=1, rect=test_rect, rotation=0, font_size=12.0
+            page_num=1, rect=test_rect
         )
         assert returned_width <= test_rect.width + 0.5, (
             f"Editor width {returned_width:.1f}pt exceeds source rect width "
