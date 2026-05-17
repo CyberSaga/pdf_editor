@@ -130,3 +130,28 @@ For tasks larger than a single function change:
 - **Continuous mode rendering:** `change_scale` must rebuild the full scene, not a single page.
 - **Text index lifecycle:** call `model.ensure_page_index_built(page_num)` before any edit/search; structural ops mark pages `"stale"` rather than eagerly rebuilding.
 - **Controller activation:** `PDFController.__init__()` must stay cheap; all signal wiring goes in `PDFController.activate()`.
+
+## 10. Code Intelligence
+
+`.codegraph/graph.db` is a pre-indexed semantic knowledge graph (2874 nodes, 19097 edges). Use it before reading source files.
+
+**Quick lookup (CLI):**
+```
+python .codegraph/query.py search <symbol>       # FTS search by name/keyword/docstring
+python .codegraph/query.py context <symbol>      # node info + direct callers/callees
+python .codegraph/query.py callers <symbol>      # who calls/imports this symbol
+python .codegraph/query.py callees <symbol>      # what this symbol calls
+python .codegraph/query.py explore <symbol> [N]  # BFS traversal to depth N (default 2)
+```
+
+All commands output compact JSON.
+
+**Full inventory (one read):**
+Read `CODEINDEX.md` — complete symbol map + import graph for all 167 source files.
+
+**Re-index after structural changes:**
+```
+python .codegraph/indexer.py
+```
+
+Exclude patterns are in `.codegraphignore` (gitignore-style). Schema details in `.codegraph/README.md`.
