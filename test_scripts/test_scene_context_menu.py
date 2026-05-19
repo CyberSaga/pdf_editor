@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import fitz
 
@@ -13,9 +12,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint  # noqa: E402
 
-import view.pdf_view as pdf_view
+import view.pdf_view as pdf_view  # noqa: E402
 
 
 class _FakeViewport:
@@ -47,6 +46,8 @@ def _make_view() -> pdf_view.PDFView:
     view._fullscreen_active = False
     view._selected_text_cached = ""
     view._selected_text_rect_doc = None
+    view._autopan_suppress_next_context_menu = False
+    view._autopan_manual_menu = False
     view._resolve_text_info_for_context_menu_pos = lambda pos: None
     return view
 

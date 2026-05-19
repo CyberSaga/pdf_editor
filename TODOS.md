@@ -111,3 +111,28 @@
 - What: Captured fresh baseline numbers for startup, synthetic large-file open, page render, repeated-edit latency, and a first optimize-copy sample, then wrote the dedicated `B4` child plan for closing performance with measured wins.
 - Why: The backlog requires `B4` to stay open until we have both baseline evidence and shipped before/after improvements. We had planning placeholders, but not a concrete performance handoff with real numbers and hotspots.
 - Outcome: `B4` is now `in_progress` instead of vague-open. The plan identifies large-file optimize-copy as the highest-risk hotspot on this machine, and the next step is shipping measured wins for open, page-change, and optimize-copy flows.
+
+## Done (2026-04-30) -- Text editing fidelity render-preview + 15-test suite
+
+- What: Added a preview-backed inline text editing surface and a 15-test fidelity suite for text edit rendering and commit parity.
+- Changes shipped:
+  - Shared insert path classifier `_classify_insert_path(...)` in `model/pdf_model.py`, with `_apply_redact_insert(...)` routed through the shared decision.
+  - `PreviewRenderer` and `PreviewBackedInlineTextEditor` in `view/text_editing.py`.
+  - `TextEditManager.create_text_editor(...)` now uses preview-backed editor and configures render context.
+  - New regression suite: `test_scripts/test_text_editing_fidelity_suite.py` (15 tests).
+- Outcome: New fidelity suite passes in full (15/15 green).
+
+## Done (2026-05-01) -- Real MuPDF rasterization + three blocker fixes (Phase 2 complete)
+
+- What: Completed Phase 2 stretch goal — replaced blank QImage scaffolding in `PreviewRenderer.render` with real `insert_htmlbox` rasterization. Fixed three runtime blockers identified in adversarial review.
+- Changes shipped:
+  - **Blocker 1 (critical):** `editor.font = qt_font_obj` shadow removed from `create_text_editor` — `editor.font()` now works correctly in font/size-change handlers. (`view/text_editing.py`)
+  - **Blocker 2 (high):** `PreviewRenderer.render()` now rasterizes via temp document + `insert_htmlbox` + `get_pixmap` + `QImage.copy()`. Uses `model._build_insert_css`/`_convert_text_to_html` for bit-exact preview/commit parity. (`view/text_editing.py`)
+  - **Blocker 3 (high):** `_classify_insert_path` now returns `"htmlbox"` on empty `member_spans` instead of `"fast"`, preventing downstream `min()` crash. (`model/pdf_model.py`)
+  - **line_height threading:** `cluster_span_ids` threaded from `_start_text_edit_from_hit` → `_create_text_editor` → `create_text_editor`; `_line_ht` computed from block manager and passed to `configure_render_context(line_height=...)`. (`view/pdf_view.py`, `view/text_editing.py`)
+  - **10 new tests** across `test_edit_text_helpers.py`, `test_text_editing_gui_regressions.py`, `test_text_editing_fidelity_suite.py`.
+- Outcome: 103 text-editing tests pass. No regressions. PITFALLS + ARCHITECTURE updated.
+- Follow-ups (deferred):
+  - Editor proxy height re-measurement on font-size change — `view/text_editing.py:~688–705` (review issue #6).
+  - Promote `MUPDF_HTMLBOX_OVERHEAD_PT` to module-level named constant with citation comment (review issue #3).
+  - Decompose `_apply_redact_insert` into per-strategy helpers (review issue #1).

@@ -1,0 +1,45 @@
+● Task 3 complete — style-aware reinsertion for multi-style paragraphs
+
+  Changes applied to model/pdf_model.py:
+
+  - Added _build_multi_style_html (next to _convert_text_to_html): uses difflib.SequenceMatcher to map each character of
+   new_text back to its source span's color when the diff matches, and inherits the nearest preceding span's color for
+  inserted/replaced characters. Groups consecutive same-color chars into span runs to keep the HTML compact.
+  - Rewired _apply_redact_insert:
+    - Computes member_spans and preserve_multi_style earlier in the function.
+    - preserve_multi_style fires when: paragraph mode AND member spans have ≥2 distinct colors AND the request color
+  matches one of them (i.e., the caller isn't explicitly restyling).
+    - When preserving, HTML comes from _build_multi_style_html; otherwise the original single-color HTML path.
+    - Gated the single-line page.insert_text(...) fast path with and not preserve_multi_style (that path can only emit a
+   single color, so it would silently collapse styles).
+
+  Verification:
+
+| #   | Test                                                                 | Status        |
+|-----|----------------------------------------------------------------------|---------------|
+| 1   | test_phase2_single_line_run_edit_preserves_anchor_without_drag       | ✅            |
+| 2a  | test_phase2_edit_text_preserves_fractional_font_size (model)         | ✅            |
+| 2b  | test_phase2_finalize_preserves_fractional_font_size_in_edit_request (view) | ✅      |
+| 3   | test_phase2_paragraph_edit_preserves_mixed_color_runs                | ✅ NOW GREEN  |
+| 4   | test_phase2_refresh_mask_keeps_editor_stylesheet_transparent         | ✅            |
+| 5   | test_phase2_create_text_editor_records_fractional_initial_size       | ✅            |
+
+  All 6 Phase-2 red-light tests green. 88 passes across all text-editing test files. Only the same 5 pre-existing
+  test_text_editing_gui_regressions.py failures remain (unchanged before/after Task 3). Ruff clean on my edits (one
+  pre-existing F841 unused-var at pdf_model.py:2308 unrelated to my changes).
+
+  Scope notes (what I deliberately did NOT do, per "don't add features beyond what task requires"):
+  - Did not rewrite anchor preservation logic — the existing pipeline already handles the red-light test (symptom 1
+  passed as lock-in).
+  - Did not add style-collapse rollback to _verify_rebuild_edit. The plan suggested it but no test drives that check;
+  adding speculative rollback would risk false-positive rollbacks on legitimate single-color content edits.
+
+  Ready for feedback. Next batch = Task 4 (inline-editor geometry, transparency, rotated editing) — the view-side
+  complement. Given the pre-existing 5 test_text_editing_gui_regressions.py failures are all view-side, I'll flag
+  whether any are actually Phase-2-adjacent when I start Task 4.
+
+✻ Worked for 2m 17s
+
+※ recap: Goal: closing the Phase 2 text-editing fidelity plan on branch phase2-text-editing-fidelity, making all six
+  red-light tests green. Tasks 1-3 are done; next is Task 4 (fix inline-editor geometry, transparency, and rotated
+  editing in view/text_editing.py and view/pdf_view.py).

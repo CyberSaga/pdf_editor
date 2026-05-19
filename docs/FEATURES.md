@@ -118,7 +118,30 @@ Structural page operations (insert/delete) avoid full-document text reindex:
 
 Key functions include model `delete_pages(...)`, `insert_blank_page(...)`, `insert_pages_from_file(...)`, `ensure_page_index_built(...)`, `TextBlockManager.shift_after_insert/delete`, controller `_schedule_stale_index_drain(...)`, and snapshot restore via `SnapshotCommand`.
 
-## 13. Text Font Families and CJK Rendering
+## 13. Text Editing Fidelity and No-Jump UX
+
+The inline text editor is designed so that opening an editor is visually imperceptible — no glyph size jump, no bbox size jump, no wrap-point divergence.
+
+### 13.1 What-You-See-Is-What-You-Edit (WYSIWYG preview)
+
+The editor renders a bit-exact preview image using the same PyMuPDF `insert_htmlbox` engine that `edit_text(...)` uses to commit. The preview and the commit go through `_build_insert_css` and `_convert_text_to_html` with the same parameters, so what appears in the editor is what ends up in the PDF.
+
+### 13.2 No-Jump Geometry Invariants
+
+- **DPI-corrected widget font:** Qt widget fonts are specified in physical pixels matching the PyMuPDF raster, not in raw PDF points. `_display_font_pt = pdf_size × render_scale × 72 / screen_dpi` ensures editor glyphs match the surrounding rendered PDF at any zoom and DPI.
+- **Frozen first frame:** The editor opens showing the same PyMuPDF preview image that would be generated for the unchanged text, so the glyph appears to not move on click.
+- **Paragraph-mode height from wrapped content:** In paragraph mode, the editor height is measured from the actual text wrap (via `QTextDocument` probe) rather than the full paragraph block bbox, avoiding an oversized grey void below single-line edits.
+- **Rotation-aware proxy:** Rotated editors (90°/270°) use swapped width/height in both the widget frame and the preview render context so the editor occupies the correct visual region without transposing dimensions.
+- **Exact wrap width:** The editor wraps at `float(source_rect.width)` exactly, matching the PyMuPDF layout. No margin or padding is added.
+- **Source line height threaded through:** The `line_height` used in both preview and commit is derived from the source span's median baseline-to-baseline advance, so committed text preserves original leading.
+
+### 13.3 Style and Multi-Style Preservation
+
+- **Float font sizes throughout:** `EditTextRequest.size`, `MoveTextRequest.size`, and all session fields are `float`. Fractional sizes (e.g. 9.5pt) survive the full edit–preview–commit cycle without truncation.
+- **Multi-style paragraph preservation:** When editing a paragraph with ≥2 distinct span colors, `_build_multi_style_html(...)` uses difflib char-level mapping to rebuild per-run colored HTML. This path is gated on `preserve_multi_style` and skips the single-line fast path.
+- **Tight leading honored:** `_build_insert_css` applies the `max(size, ...)` floor only when `line_height <= 0` (auto-calculate). Explicit tight values are honored as-is so committed boxes stay the same height as the original PDF text blocks.
+
+## 14. Text Font Families and CJK Rendering
 
 The text properties font menu supports PDF-safe Latin families and CJK families, including explicit Windows CJK selections:
 - `Microsoft JhengHei`
@@ -129,7 +152,7 @@ For htmlbox insertion, model CSS generation can inject `@font-face` rules when l
 
 Key functions include `_qt_font_to_pdf(...)`, `_pdf_font_to_qt(...)`, `_resolve_add_text_font(...)`, `_font_face_css_for_token(...)`, `_convert_text_to_html(...)`, and `_build_insert_css(...)`.
 
-## 14. Keyboard Shortcuts and Save Prompt Keys
+## 15. Keyboard Shortcuts and Save Prompt Keys
 
 Core keyboard shortcuts include `Ctrl+Z` (undo), `Ctrl+Y` (redo), `Ctrl+S` (save), `Ctrl+Shift+S` (save as), and `F2` (enter edit-text mode). On macOS, `Cmd+Shift+Z` is also registered as a redo alias (`_redo_mac_shortcut`) to match macOS convention alongside `Cmd+Y`.  
 `Esc` handling follows priority rules: close active editor/dialog first (and keep current mode), otherwise switch non-browse mode back to `browse`, otherwise run existing browse fallback (for example search sidebar close).  
@@ -149,7 +172,7 @@ Zoom UI contract:
 - The zoom combo box is editable: users can type a custom percent, while the dropdown list remains the fixed preset set (`50%`, `75%`, `100%`, `125%`, `150%`, `200%`).
 - `適應畫面` (fit-to-view) uses the same zoom pipeline as manual zoom: the recorded zoom state and the visible percent are synchronized to the actual fitted scale so subsequent zoom adjustments remain accurate.
 
-## 15. Native Printer Properties Entry
+## 16. Native Printer Properties Entry
 
 In the unified print dialog, the printer selector row includes a `屬性` button beside the printer combo. On supported systems, this opens the OS-native printer properties/preferences dialog for the currently selected printer so users can adjust vendor-specific settings with system tools. Returned/default preferences are synchronized back into dialog controls (`paper_size`, `orientation`, `duplex`, `color_mode`, `dpi`, `copies`).
 Paper tray is not exposed as an app-side field. Tray and vendor/private options are inherited from system/native properties and passed through by keeping tray source unmodified in app defaults.
@@ -161,7 +184,7 @@ Print preview no longer requires building the full print snapshot before the dia
 The preview header shows a readable page summary (for example `第 1 頁 / 共 12 頁（本次列印 12 頁）`) instead of mojibake.
 Job-level settings remain app-owned regardless of native properties: `copies`, `dpi`, `collate`, page range, page subset, reverse order, and scaling are always taken from the unified print dialog.
 
-## 16. Print Lifecycle Resilience (Windows)
+## 17. Print Lifecycle Resilience (Windows)
 
 Windows print submission can hang inside the GUI process due to OS/driver stack behavior. The app protects responsiveness and shutdown correctness with the following behavior:
 
@@ -176,13 +199,13 @@ Key files/functions:
 - Helper protocol and job payload: `src/printing/helper_protocol.py` (`PrintHelperJob`) and `src/printing/helper_main.py`.
 - Subprocess runner: `src/printing/subprocess_runner.py`.
 
-## 17. Fullscreen Viewing
+## 18. Fullscreen Viewing
 
 Fullscreen is available from any mode via `F5` or the top-right `全螢幕` button. Entering fullscreen cancels any active inline editor or partial draw/drag state, clears transient selection/search UI state, and forces `browse` mode before showing the fullscreen window. The fullscreen view hides all chrome (toolbars, tab bar, sidebars, status bar) and fits the current page using a contain scale so the entire page is visible. A top-edge hover reveals a small `X` exit affordance; `Esc`, `F5`, and the `X` button all exit fullscreen. While fullscreen is active, tab switching is allowed and each visited tab restores its pre-fullscreen zoom and scroll anchor on exit.
 
 Key functions include controller `enter_fullscreen()`, `exit_fullscreen()`, `toggle_fullscreen()`, view `enter_fullscreen_ui()`, `exit_fullscreen_ui()`, `cancel_interaction_for_fullscreen()`, and viewport anchor capture/restore helpers.
 
-## 18. Merge PDFs (頁面 Tab)
+## 19. Merge PDFs (頁面 Tab)
 
 This section follows `docs/Methodology_for_Writing_Docs.md` as behavior-level source of truth.
 
@@ -209,7 +232,7 @@ Outputs:
 Regression guardrails:
 - The list-order contract is covered by tests in `test_scripts/test_pdf_merge_workflow.py` (reorder then add/remove must not revert).
 
-## 19. Optimize PDF Copy (檔案 Tab)
+## 20. Optimize PDF Copy (檔案 Tab)
 
 The `檔案` tab includes `另存為最佳化的副本`, which always writes a new optimized PDF copy and never overwrites the active document through the optimizer flow.
 
