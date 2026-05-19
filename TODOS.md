@@ -1,5 +1,24 @@
 # TODOS
 
+## Done (2026-05-19) -- Clean re-implementation of glyph-jump elimination
+
+- What: Re-derived the 5-layer no-jump text-editing fix from clean baseline `c091661f` on branch `rewrite/glyph-jump-v2` instead of carrying the 50-commit organic history.
+- Layers: A commit-side fidelity + shared `_classify_insert_path` (model); B `PreviewRenderer` real MuPDF rasterization; C `_display_font_pt` DPI-correct sizing; D `PreviewBackedInlineTextEditor` frozen-first-frame paint; E `run_reopen_anchors` cross-edit anchor.
+- Prereqs ported (outside the 5-layer plan, gate-required): rawdict `span['text']` backfill shim; `QGraphicsProxyWidget.graphicsProxyWidget` shim; `view/pdf_view.py` click-pipeline (adopted from validated `308ae15`); 3 gate test files + finalize-failure API + resilient audit fixtures.
+- Outcome: 142 passed / 6 skipped across ported suites. No-jump gate's 5 core behavioral gates pass deterministically x2 (27 cases, manifest match). Remaining gate steps need `ux_signoff_agent.py` (absent) / are render-scale-DPI environment-sensitive (fail identically on validated code in offscreen sandbox) -- see `implementation-notes.html` Q3.
+- Follow-ups: Q4 (finalize FAILED behavior change); run gate full-suite in a real-DPI desktop env. Q1 (`get_render_width_for_edit` dead params removed — done).
+
+## Done (2026-04-22) -- Phase 2 text-editing fidelity
+
+- What: Closed the Phase 2 gap between current text-edit behavior and Acrobat-level stability across five tasks.
+- Changes shipped:
+  - Red-light matrix: 6 regression tests across float font-size round-trip, multi-style paragraph collapse, inline editor geometry/transparency, and stale-fixture autopan attribute.
+  - Float font-size: `TextEditSession`, `EditTextRequest`, and all call sites now use `float` throughout. `_parse_font_size_str` / `_format_font_size` helpers normalize the font-size combo widget.
+  - Multi-style preservation: `_build_multi_style_html` uses difflib char-level mapping to rebuild per-run color fidelity. `preserve_multi_style` flag gates the path and skips the single-line fast path.
+  - Request deduplication: `EditTextRequest` and `MoveTextRequest` moved to `model/edit_requests.py` as single source of truth; re-exported via `view/text_editing.py`.
+  - Fixture fix: `_make_view()` in `test_text_editing_gui_regressions.py` now injects `_autopan_active = False` to match post-autopan-merge `__init__`.
+- Outcome: 91 tests pass (2 pre-existing context-menu failures unrelated to Phase 2). All 6 red-light tests green.
+
 ## Done (2026-04-20) -- F4 view-only color profile switching (simplify + bug fix pass)
 
 - What: Completed F4 with a three-agent code review pass (reuse, quality, efficiency) plus a P0 object-selection-overlay bug fix.

@@ -195,6 +195,26 @@
 
 ---
 
+## Multi-style paragraph edit collapses all runs to one color
+
+**Area:** `model/pdf_model.py` — `_apply_redact_insert`
+**Symptom:** Editing a paragraph that contains runs with different colors (e.g. one red word, rest black) makes the entire replacement text appear in a single color.
+**Cause:** `_convert_text_to_html(new_text, color=color)` uses the dominant color for the whole string. Additionally, the single-line fast path (`page.insert_text(...)`) bypassed multi-style detection entirely.
+**Fix:** Detect `preserve_multi_style` when in paragraph mode with ≥2 distinct span colors and the request color matches one of them. When active, use `_build_multi_style_html(...)` (difflib char-level mapping) to rebuild per-run colored HTML, and skip the single-line fast path.
+**File:** `model/pdf_model.py`
+
+---
+
+## Test fixture skips `__init__` — manually inject `_autopan_active`
+
+**Area:** `test_scripts/test_text_editing_gui_regressions.py`
+**Symptom:** Three drag tests fail with `AttributeError: 'PDFView' object has no attribute '_autopan_active'` after the middle-click autopan merge.
+**Cause:** The `_make_view()` fixture uses `PDFView.__new__(PDFView)` to skip `__init__`, so any attribute set in `__init__` is absent. The autopan merge added `self._autopan_active = False` in `__init__`.
+**Fix:** Add `view._autopan_active = False` to the fixture's manual attribute injection block.
+**File:** `test_scripts/test_text_editing_gui_regressions.py`
+
+---
+
 ## Continuous mode `change_scale` only redraws one page
 
 **Area:** `controller/pdf_controller.py` — `change_scale`  
@@ -442,3 +462,24 @@
 **Cause:** The auto-pan exit path intentionally shows the regular context menu immediately, but `QGraphicsView.customContextMenuRequested` can still fire afterward for the same gesture and trigger a second menu.  
 **Fix:** Gate `_show_context_menu(...)` with a one-shot `_autopan_suppress_next_context_menu` flag, and route the intentional exit-path menu through `_show_context_menu_manual(...)` so the manual call bypasses suppression while the next signal-driven call is swallowed.  
 **File:** `view/pdf_view.py`
+
+## PyMuPDF rawdict drops span['text'] once Qt is live
+**Area:** `model/pdf_model.py` (text extraction), no-jump E2E gate
+**Symptom:** With a QApplication running (e.g. offscreen test env), `page.get_text("rawdict")` returns spans whose `text` key is absent/None even though `get_text("text")` works; every real-PDF gate test fails at span lookup.
+**Cause:** Some PyMuPDF builds only populate per-`chars` data in rawdict spans under that condition.
+**Fix:** `_install_rawdict_text_compat()` wraps `fitz.Page.get_text` once at import to backfill `span['text']` from `chars`.
+**File:** `model/pdf_model.py`
+
+## Inline editor glyphs differ in size from the rendered PDF
+**Area:** `view/text_editing.py` (inline text editor)
+**Symptom:** Opening the editor makes text visibly larger/smaller than the PDF; reopen cumulatively shrinks the box.
+**Cause:** (1) Qt renders `setPointSizeF(P)` at `P×logical_dpi/72` px while MuPDF rasterizes at `72×render_scale` DPI — using the raw pdf pt desyncs them. (2) `editor.font = qfont` shadows `QTextEdit.font()`. (3) Per-commit shrink had no cross-edit anchor.
+**Fix:** `_display_font_pt(pdf_pt, rs)=pdf_pt×rs×72/logical_dpi` for the widget font; never assign `editor.font`; `run_reopen_anchors` pin original bbox+size across reopen cycles.
+**File:** `view/text_editing.py`, `model/pdf_model.py`
+
+## test_19b font-size assertion is render-scale/DPI sensitive
+**Area:** `test_scripts/test_multi_tab_plan.py`, gate `full_suite`
+**Symptom:** `assert 14 == 18` on `editor.font().pointSize()` after setting size combo to 18, in offscreen/low-DPI environments.
+**Cause:** Layer C intentionally display-scales the widget font; the assertion only holds when `view._render_scale ≈ 1.333` cancels `72/96`. Fails identically on validated baseline code in such environments — not a regression.
+**Fix:** Run the gate's full-suite step in a normal desktop (real screen DPI) environment; treat as environment fragility, not a code defect.
+**File:** `test_scripts/test_multi_tab_plan.py`

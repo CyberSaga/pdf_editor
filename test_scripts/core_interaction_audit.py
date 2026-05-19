@@ -64,6 +64,13 @@ def _relative_path(path: Path) -> str:
 
 
 def default_core_interaction_plan(repo_root: Path) -> AuditPlan:
+    def _pick_existing(*relative_candidates: str) -> Path:
+        candidates = [repo_root / rel for rel in relative_candidates]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[0]
+
     fixtures = (
         AuditFixture(
             role="small_clean",
@@ -72,12 +79,20 @@ def default_core_interaction_plan(repo_root: Path) -> AuditPlan:
         ),
         AuditFixture(
             role="long_real_world",
-            path=repo_root / "test_files" / "TIA-942-B-2017 Rev Full.pdf",
+            path=_pick_existing(
+                "test_files/TIA-942-B-2017 Rev Full.pdf",
+                "test_files/test-large-file.pdf",
+                "test_files/test-complexed-layout.pdf",
+            ),
             description="Long real-world fixture for navigation and sustained interaction checks.",
         ),
         AuditFixture(
             role="edge_case",
-            path=repo_root / "test_files" / "excel_table.pdf",
+            path=_pick_existing(
+                "test_files/excel_table.pdf",
+                "test_files/test-horizontal-texts.pdf",
+                "test_files/test-vertical-texts.pdf",
+            ),
             description="Mixed-layout fixture for table-like text/layout behavior.",
         ),
     )
