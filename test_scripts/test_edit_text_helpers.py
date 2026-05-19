@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import fitz
 import pytest
@@ -136,8 +137,8 @@ def test_classify_insert_path_fast_vs_htmlbox() -> None:
     assert pdf_model_module._classify_insert_path(
         new_text="hello",
         member_spans=[],
-        rect=fitz.Rect(0, 0, 100, 20),
         rotation=0,
+        is_vertical=False,
         preserve_multi_style=False,
         has_new_rect=False,
         needs_cjk=False,
@@ -149,8 +150,22 @@ def test_classify_insert_path_fast_vs_htmlbox() -> None:
     assert pdf_model_module._classify_insert_path(
         new_text="hello\nworld",
         member_spans=[],
-        rect=fitz.Rect(0, 0, 100, 20),
         rotation=0,
+        is_vertical=False,
+        preserve_multi_style=False,
+        has_new_rect=False,
+        needs_cjk=False,
+        text_width=40.0,
+        available_width=80.0,
+        size=12.0,
+    ) == "htmlbox"
+
+    vertical_span = SimpleNamespace(bbox=fitz.Rect(0, 0, 40, 12))
+    assert pdf_model_module._classify_insert_path(
+        new_text="hello",
+        member_spans=[vertical_span],
+        rotation=0,
+        is_vertical=True,
         preserve_multi_style=False,
         has_new_rect=False,
         needs_cjk=False,
@@ -955,14 +970,13 @@ def test_real_pdf_colored_background_edit_does_not_shrink_span(
 
 # Task 1 regression: empty member_spans must not select fast path.
 def test_classify_insert_path_empty_member_spans_routes_to_htmlbox():
-    import fitz
     from model.pdf_model import _classify_insert_path
 
     result = _classify_insert_path(
         new_text="hi",
         member_spans=[],
-        rect=fitz.Rect(0, 0, 100, 20),
         rotation=0,
+        is_vertical=False,
         preserve_multi_style=False,
         has_new_rect=False,
         needs_cjk=False,

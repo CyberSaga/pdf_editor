@@ -3,6 +3,7 @@ from __future__ import annotations
 import fitz
 import pytest
 
+from model import pdf_model as pdf_model_module
 from model.pdf_model import PDFModel
 
 
@@ -43,3 +44,52 @@ def test_ocr_no_doc_returns_empty():
 def test_ocr_invalid_page_raises(model_with_text_pdf):
     with pytest.raises((ValueError, RuntimeError)):
         model_with_text_pdf.tools.ocr.ocr_pages([999])
+
+
+def test_rawdict_text_compat_backfills_keyword_option(monkeypatch):
+    sentinel = "_pdf_editor_rawdict_text_compat"
+
+    def fake_get_text(page, option="text", *args, **kwargs):
+        selected_option = kwargs.get("option", option)
+        if selected_option != "rawdict":
+            return "plain text"
+        return {
+            "blocks": [
+                {
+                    "type": 0,
+                    "lines": [
+                        {
+                            "spans": [
+                                {
+                                    "chars": [
+                                        {"c": "H"},
+                                        {"c": "i"},
+                                    ]
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(fitz.Page, sentinel, False, raising=False)
+    monkeypatch.setattr(fitz.Page, "get_text", fake_get_text)
+    pdf_model_module._install_rawdict_text_compat()
+
+    doc = fitz.open()
+    try:
+        page = doc.new_page()
+        rawdict = page.get_text(option="rawdict")
+    finally:
+        doc.close()
+
+    span = rawdict["blocks"][0]["lines"][0]["spans"][0]
+    assert span["text"] == "Hi"
+
+
+def test_close_all_sessions_tolerates_new_bypass_instance():
+    model = PDFModel.__new__(PDFModel)
+
+    model.close_all_sessions()
+    model.__del__()
