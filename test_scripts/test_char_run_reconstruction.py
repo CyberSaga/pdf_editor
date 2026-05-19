@@ -232,10 +232,82 @@ def test_paragraph_drag_twice_with_stale_span_id() -> None:
         model.close()
 
 
+# ── Phase-2 red-light regression ───────────────────────────────────────────
+
+
+def test_phase2_paragraph_edit_preserves_mixed_color_runs() -> None:
+    """Phase-2 symptom 3: content-only paragraph edits must not collapse multi-style runs
+    onto the dominant (usually ``helv`` / black) style.
+    """
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "mixed_color.pdf"
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), "Red part ", fontsize=12.0, fontname="helv", color=(1, 0, 0))
+        page.insert_text((135, 100), "black part", fontsize=12.0, fontname="helv", color=(0, 0, 0))
+        doc.save(str(pdf_path), garbage=0)
+        doc.close()
+
+        model = PDFModel()
+        try:
+            model.open_pdf(str(pdf_path))
+            model.ensure_page_index_built(1)
+
+            runs_before = [r for r in model.block_manager.get_runs(0) if (r.text or "").strip()]
+            colors_before = {tuple(round(float(c), 3) for c in r.color) for r in runs_before}
+            assert len(colors_before) >= 2, (
+                f"Fixture invalid: expected multi-color paragraph, got {colors_before}"
+            )
+
+            model.set_text_target_mode("paragraph")
+            red_run = next(
+                (r for r in runs_before if tuple(round(float(c), 3) for c in r.color) == (1.0, 0.0, 0.0)),
+                None,
+            )
+            assert red_run is not None, (
+                f"cannot locate red-colored run among {[(r.text, r.color) for r in runs_before]}"
+            )
+
+            hit = model.get_text_info_at_point(
+                1,
+                fitz.Point(
+                    (red_run.bbox.x0 + red_run.bbox.x1) / 2.0,
+                    (red_run.bbox.y0 + red_run.bbox.y1) / 2.0,
+                ),
+            )
+            assert hit is not None and hit.target_mode == "paragraph"
+
+            result = model.edit_text(
+                page_num=1,
+                rect=fitz.Rect(hit.target_bbox),
+                new_text=(hit.target_text or "") + " CHANGED",
+                font=hit.font,
+                size=float(hit.size),
+                color=tuple(float(c) for c in hit.color),
+                original_text=hit.target_text,
+                target_mode="paragraph",
+            )
+            assert result.name == "SUCCESS"
+            model.block_manager.rebuild_page(0, model.doc)
+
+            runs_after = [r for r in model.block_manager.get_runs(0) if (r.text or "").strip()]
+            colors_after = {tuple(round(float(c), 3) for c in r.color) for r in runs_after}
+            assert len(colors_after) >= 2, (
+                "Multi-style paragraph collapsed to single style after content-only edit: "
+                f"before={colors_before}, after={colors_after}"
+            )
+        finally:
+            model.close()
+
+
 if __name__ == "__main__":
     test_runs_merge_micro_spans_on_test_file_1()
     test_hit_and_edit_use_reconstructed_run()
     test_paragraph_mode_hit_and_redo_stability()
     test_paragraph_drag_without_text_change_with_overlap()
     test_paragraph_drag_twice_with_stale_span_id()
+    test_phase2_paragraph_edit_preserves_mixed_color_runs()
     print("PASS: char-run reconstruction regression suite")

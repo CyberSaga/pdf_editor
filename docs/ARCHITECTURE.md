@@ -52,6 +52,7 @@ Snapshot APIs include `_capture_doc_snapshot()`, `_restore_doc_from_snapshot(...
 - Phase 2 (mutate): `_apply_redact_insert(...)`
 - Phase 3 (verify + index): `_verify_rebuild_edit(...)`
 - Horizontal single-line edits that still fit on one line use an origin-preserving `insert_text(...)` fast path inside `_apply_redact_insert(...)`; wrapped / dragged / vertical cases still use the existing htmlbox flow.
+- Paragraph-mode edits that span ≥2 distinct span colors use `_build_multi_style_html(...)` (difflib char-level mapping) to rebuild per-run color fidelity. This path is gated on `preserve_multi_style` and takes priority over the single-line fast path.
 
 This structure is enforced by per-phase unit tests using real PyMuPDF documents (no mocks) in `test_scripts/test_edit_text_helpers.py`.
 
@@ -110,9 +111,10 @@ The text editor state is split by intent:
 - `add_new` for inserting new page text.
 - Browse-mode drag selection still starts in the view, but the actual copied text and highlight bounds are resolved through the model's run-anchored selection helpers so the MVC boundary stays intact. Start requires a direct run hit via strict hit-testing (`allow_fallback=False`); the end point may snap to the nearest run on the same page only after exact-run hit detection misses.
 
-Typed edit payloads are part of the view/controller boundary:
+Typed edit payloads are part of the view/controller boundary and are defined in `model/edit_requests.py` (single source of truth):
 - `EditTextRequest` packages same-page edit commits.
 - `MoveTextRequest` packages cross-page text moves and replaces the previous positional `sig_move_text_across_pages(...)` signature.
+Both are re-exported via `view/text_editing.py` for backward-compatible view/controller imports.
 
 Inline editor finalization is guarded by focus context:
 - Focus transitions inside text-edit context (editor widget, text property panel, combo popups) keep the session alive.
@@ -400,3 +402,40 @@ Contract:
 
 Guardrails (do not change casually):
 - If you modify list ordering, add/remove, or refresh behavior, update `docs/FEATURES.md` section “Merge PDFs (頁面 Tab)” and re-run the regression tests in `test_scripts/test_pdf_merge_workflow.py` that assert reorder-then-add/remove preserves order.
+
+## 10. No-Jump Inline Text Editing
+
+The inline editor must be pixel-faithful to the committed PDF so opening,
+typing, and reopening never visibly shift glyphs. Five cooperating pieces:
+
+- **Shared insert classifier** — `model.pdf_model._classify_insert_path` is the
+  single source of truth for "fast `insert_text`" vs "`insert_htmlbox`". Both
+  the commit path (`_apply_redact_insert`) and the preview path
+  (`PreviewRenderer`) route through it; they cannot diverge.
+- **`PreviewRenderer`** (view) rasterizes proposed content through the *same*
+  MuPDF `insert_htmlbox` engine and CSS the commit uses (borrowed from the
+  model when present), cached by full arg tuple incl. `line_height`.
+- **`_display_font_pt`** converts pdf pt → Qt widget pt
+  (`× render_scale × 72/logical_dpi`) so editor glyphs equal rendered-PDF
+  glyphs in physical pixels.
+- **`PreviewBackedInlineTextEditor`** paints a *frozen* MuPDF capture of the
+  span while text == initial, the live CSS preview once mutated; the decision
+  flag is cached on `textChanged`, never recomputed per paint.
+- **Run-reopen anchors** (`DocumentSession.run_reopen_anchors/_sizes`, keyed
+  `"{page_idx}::{span_id}"`) record the original bbox+size on the first
+  run-mode non-drag edit; commit pins layout back to the anchor and migrates it
+  onto the best-scoring rebuilt run, so reopen cycles do not cumulate shrink.
+
+Boundary note: `view/pdf_view.py` only emits signals
+(`sig_edit_text`/`sig_add_textbox`) — the View→Controller→Model rule holds.
+Two import-time compatibility shims exist (rawdict `span['text']` backfill in
+the model; `QGraphicsProxyWidget.graphicsProxyWidget` in the view) — see
+`docs/PITFALLS.md`.
+
+Guardrails (do not change casually):
+- Preview and commit must keep sharing `_classify_insert_path`.
+- Never assign `editor.font = <QFont>` (shadows `QTextEdit.font()`); build the
+  `QFont` with `_display_font_pt`.
+- The `paintEvent` frozen-vs-preview two-branch contract and the
+  `_text_matches_initial` caching are load-bearing — the gate
+  `scripts/verify_no_jump.py` (27 deterministic cases, run twice) enforces it.
