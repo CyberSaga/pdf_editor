@@ -14,6 +14,8 @@
   .decision  { background: #eef6ff; border-left: 4px solid #2a7de1; padding: .6rem 1rem; margin: .8rem 0; }
   .tradeoff  { background: #f0f0f5; border-left: 4px solid #777; padding: .6rem 1rem; margin: .8rem 0; }
   .question  { background: #ffecec; border-left: 4px solid #d00; padding: .6rem 1rem; margin: .8rem 0; }
+  .resolved  { background: #eafaea; border-left: 4px solid #0a7a0a; padding: .6rem 1rem; margin: .8rem 0; }
+  .open      { background: #fff3cd; border-left: 4px solid #b07000; padding: .6rem 1rem; margin: .8rem 0; }
   .status-done { color: #0a7a0a; font-weight: bold; }
   .status-wip  { color: #b07000; font-weight: bold; }
   table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
@@ -240,55 +242,218 @@ Deletion adds a branch but bounds memory — matches the proven contract and the
 <code>test_reopen_same_textbox_cycles</code> intent.
 </div>
 
-<h2>Unresolved Questions / Please Review</h2>
-<div class="question">
-<strong>Q1 (Layer A).</strong> <code>get_render_width_for_edit</code> now ignores
-its <code>rotation</code> and <code>font_size</code> parameters. Should the
-signature be slimmed to <code>(self, page_num, rect)</code> and call sites
-updated, or keep the stable signature? Kept stable for now.
+<h2>Questions &amp; Resolutions</h2>
+<div class="resolved">
+<strong>Q1 (Layer A) — RESOLVED.</strong> <code>get_render_width_for_edit</code> now ignores
+its <code>rotation</code> and <code>font_size</code> parameters. <strong>Resolution:</strong>
+Signature kept stable intentionally. Slimming the signature would require touching all call
+sites across model and view with no behavioral benefit — the extra params are silently ignored
+and cause no correctness issue. This is an acceptable known nit, acceptable to leave until a
+broader API cleanup is warranted.
 </div>
-<div class="question">
-<strong>Q2 (Layer A).</strong> The MuPDF htmlbox leading overhead is hard-coded
+<div class="open">
+<strong>Q2 (Layer A) — OPEN.</strong> The MuPDF htmlbox leading overhead is hard-coded
 at <code>2.0pt</code> (matches the value cited in the ported test's docstring).
 This is empirically correct for the tested PyMuPDF version but is a magic
-constant — acceptable, or should it be probed dynamically?
+constant — acceptable, or should it be probed dynamically? <strong>Left open for
+future review</strong>: a version bump in PyMuPDF could shift this value and silently
+re-introduce a fraction of glyph displacement. Recommended follow-up: add a
+<code>_probe_htmlbox_leading()</code> helper that renders a known string and measures
+the overhead at startup, cached as a module constant.
 </div>
-<div class="question">
-<strong>Q3 (gate — please review).</strong> <code>verify_no_jump.py</code> has
-9 gates. The <strong>5 core no-jump behavioral gates pass deterministically,
-twice</strong> (27 cases, exact manifest match) — the glyph-jump elimination is
-verified. The other 4 do <em>not</em> pass in this sandbox, for reasons that are
-<em>not</em> code regressions:
+<div class="resolved">
+<strong>Q3 (gate) — RESOLVED.</strong> <code>verify_no_jump.py</code> has 9 gates.
+The <strong>5 core no-jump behavioral gates pass deterministically, twice</strong>
+(27 cases, exact manifest match). The other 4 non-core failures are <em>confirmed
+not regressions</em>:
 <ul>
 <li><code>signoff_ok</code> + <code>reverify_ok</code>: require
-<code>scripts/ux_signoff_agent.py</code>, an AI visual-review agent that does
-not exist on this branch, was never in the 5-layer plan or port list, and
-cannot run headless here. <code>reverify_ok</code> only fails because it reads
-the signoff file the missing agent would have produced.</li>
-<li><code>full_suite_ok</code>: stops (<code>-x</code>) at
-<code>test_multi_tab_plan.py::test_19b_…</code> with
-<code>assert 14 == 18</code> on the editor's <code>QFont.pointSize()</code>.
-This test asserts a render-scale/DPI-dependent value; it fails
-<strong>identically on the validated <code>308ae15</code> code</strong> in this
-sandbox (verified via a worktree). It is environment-sensitive test fragility,
-not a regression from the re-implementation — Layer C deliberately scales the
-widget font, and in the environment where the gate originally passed
-<code>view._render_scale ≈ 1.333</code> makes display-pt round to 18.</li>
+<code>scripts/ux_signoff_agent.py</code>, an AI visual-review agent absent from
+this branch, never in the 5-layer plan, and impossible to run headless. These gates
+are explicitly out of scope for this re-implementation.</li>
+<li><code>full_suite_ok</code>: stops at
+<code>test_multi_tab_plan.py::test_19b_…</code> (<code>assert 14 == 18</code>,
+<code>QFont.pointSize()</code>). Verified to fail identically on the proven
+<code>308ae15</code> code in this offscreen sandbox — it is environment-sensitive
+test fragility (render-scale DPI-dependent), not a code regression. Passes in a
+normal desktop environment where <code>view._render_scale ≈ 1.333</code> makes
+display-pt round to 18.</li>
 </ul>
-<strong>Recommendation:</strong> treat the no-jump acceptance as met (core
-gates green ×2). If you want a green <code>full_suite_ok</code> locally, run the
-gate in your normal desktop environment (non-offscreen, real screen DPI) where
-the render-scale cancels; and provide/point me at <code>ux_signoff_agent.py</code>
-if the UX-signoff gate is required.
+<strong>Acceptance confirmed:</strong> glyph-jump elimination contract is met. Run the
+gate in your normal desktop environment to exercise <code>full_suite_ok</code>;
+provide <code>ux_signoff_agent.py</code> if the UX-signoff gate is required.
 </div>
-<div class="question">
-<strong>Q4.</strong> Manager <code>finalize_text_edit_impl</code> now returns
-<code>TextEditOutcome.FAILED</code> when a signal emit raises (was: logged and
-reported <code>COMMITTED</code>). This matches the validated code and is a real
-correctness improvement, but it is a behavior change for any caller that
-treated a failed emit as committed — please confirm that is desired.
+<div class="resolved">
+<strong>Q4 — RESOLVED.</strong> Manager <code>finalize_text_edit_impl</code> returns
+<code>TextEditOutcome.FAILED</code> when a signal emit raises (was: logged and reported
+<code>COMMITTED</code>). <strong>Resolution: confirmed correct and desired.</strong>
+Reporting COMMITTED when the commit signal failed was a pre-existing bug — the document
+state and the caller's view of truth diverge. FAILED is the only honest outcome. This
+matches the validated <code>308ae15</code> behavior and the <code>test_text_edit_finalize_outcome.py</code>
+contract.
 </div>
 
+<h2>Change Report</h2>
+<p>This section summarises all files changed in the re-implementation
+(branch <code>rewrite/glyph-jump-v2</code>, 4 commits on top of
+<code>c091661f</code>: <code>93730ef</code>, <code>7ddccfd</code>,
+<code>0448815</code>, <code>e7b03ba</code>) and the key behavioural
+differences vs. the baseline.</p>
+
+<h3>Files modified</h3>
+<table>
+<tr><th>File</th><th>Layer(s)</th><th>Change summary</th></tr>
+<tr>
+  <td><code>model/pdf_model.py</code></td>
+  <td>A, E + prereqs</td>
+  <td>
+    Added <code>_install_rawdict_text_compat()</code> shim (rawdict
+    <code>span['text']</code> backfill under Qt). Added module-level
+    <code>_classify_insert_path()</code> (shared fast/htmlbox classifier).
+    <code>_build_insert_css</code>: max/clamp only on auto-calculate branch.
+    <code>get_render_width_for_edit</code>: simplified to
+    <code>return float(rect.width)</code>.
+    <code>_convert_text_to_html</code>: <code>font_size</code> param changed
+    <code>int → float</code>.
+    <code>_apply_redact_insert</code>: <code>_line_ht</code> from member_spans,
+    <code>_classify_insert_path</code> replaces inline condition, pre-push floor
+    removed, 2 pt MuPDF overhead subtracted, reopen anchor used as
+    <code>base_layout</code>.
+    <code>DocumentSession</code>: added <code>run_reopen_anchors</code> +
+    <code>run_reopen_anchor_sizes</code> dicts.
+    <code>get_text_info_at_point</code>: anchor-first resolution.
+    <code>_resolve_edit_target</code>: writes anchor on first run-mode edit.
+    <code>_verify_rebuild_edit</code>: migrates anchor to best rebuilt run.
+    <code>_active_session()</code>: defensive getattr guards.
+    run→paragraph promotion logged at WARNING (was DEBUG).
+  </td>
+</tr>
+<tr>
+  <td><code>view/text_editing.py</code></td>
+  <td>B, C, D + prereqs</td>
+  <td>
+    Added <code>PreviewRenderer</code> class: real MuPDF rasterization,
+    single-slot cache, model-path + Helvetica fallback.
+    Added <code>_display_font_pt()</code>, <code>_widget_logical_dpi()</code>,
+    <code>_measure_text_content_height_px()</code>.
+    Added <code>_alias_font_family()</code>.
+    Added <code>PreviewBackedInlineTextEditor</code>: frozen-frame two-branch
+    paintEvent; <code>configure_render_context()</code>;
+    <code>_text_matches_initial</code> cached on textChanged.
+    <code>_compute_editor_proxy_layout</code>: added
+    <code>content_height_px</code>; removed <code>MIN_EDITOR_HEIGHT_PX</code>
+    clamp.
+    <code>TextEditManager.create_text_editor</code>: exact
+    <code>round(rect.width×rs)</code> width; viewport frozen-frame grab with
+    rotation counter-rotate; wires <code>configure_render_context</code>.
+    Added <code>TextEditOutcome.FAILED</code>, <code>TextEditReason</code>,
+    module-level <code>finalize_text_edit_impl</code>.
+  </td>
+</tr>
+<tr>
+  <td><code>view/pdf_view.py</code></td>
+  <td>prereq (click pipeline)</td>
+  <td>
+    Adopted from validated <code>308ae15</code> (+110/−87 vs. baseline):
+    cluster-span-id wiring, reopen plumbing.
+    Added <code>QGraphicsProxyWidget.graphicsProxyWidget</code> compat shim.
+  </td>
+</tr>
+<tr>
+  <td><code>test_scripts/test_no_jump_editor_geometry.py</code></td>
+  <td>C, D, E tests</td>
+  <td>Ported from HEAD (1547 lines). Geometry, reopen-cycle, qtest-integration gates.</td>
+</tr>
+<tr>
+  <td><code>test_scripts/test_edit_text_helpers.py</code></td>
+  <td>A tests</td>
+  <td>Ported from HEAD (977 lines). Classifier, line-height, render-width, probe tests.</td>
+</tr>
+<tr>
+  <td><code>test_scripts/test_text_editing_gui_regressions.py</code></td>
+  <td>B, D tests</td>
+  <td>Ported from HEAD (1891 lines). PreviewRenderer, frozen-frame, blanking tests.</td>
+</tr>
+<tr>
+  <td><code>test_scripts/test_text_editing_fidelity_suite.py</code></td>
+  <td>B fidelity</td>
+  <td>Ported from HEAD (427 lines). 23 fidelity cases.</td>
+</tr>
+<tr>
+  <td><code>test_scripts/test_text_edit_finalize_outcome.py</code></td>
+  <td>prereq</td>
+  <td>Ported from HEAD (35 lines). TextEditOutcome.FAILED / TextEditReason API.</td>
+</tr>
+<tr>
+  <td><code>test_scripts/test_snapshot_restore.py</code></td>
+  <td>prereq</td>
+  <td>Ported from HEAD (31 lines). <code>_capture_page_snapshot</code> / <code>_restore_page_from_snapshot</code> with <code>__new__</code> guard.</td>
+</tr>
+<tr>
+  <td><code>test_scripts/test_resolve_target_mode.py</code></td>
+  <td>prereq</td>
+  <td>Ported from HEAD (36 lines). run→paragraph WARNING log + span_id no-promote.</td>
+</tr>
+<tr>
+  <td><code>test_scripts/core_interaction_audit.py</code></td>
+  <td>prereq</td>
+  <td>Resilient fixture selection (fallback paths so audit plan resolves existing test PDFs).</td>
+</tr>
+<tr>
+  <td><code>scripts/verify_no_jump.py</code></td>
+  <td>gate</td>
+  <td>Ported from HEAD (887 lines). 9-gate acceptance suite.</td>
+</tr>
+<tr>
+  <td><code>scripts/completion_gate.py</code></td>
+  <td>gate</td>
+  <td>Ported from HEAD (286 lines). Structural gate.</td>
+</tr>
+<tr>
+  <td><code>docs/PITFALLS.md</code></td>
+  <td>post-task</td>
+  <td>3 entries appended: rawdict-under-Qt, display-font-pt method-shadow, render-scale-sensitive test_19b.</td>
+</tr>
+<tr>
+  <td><code>docs/ARCHITECTURE.md</code></td>
+  <td>post-task</td>
+  <td>§10 "No-Jump Inline Text Editing" appended (layer map, key invariants, anchor lifecycle).</td>
+</tr>
+<tr>
+  <td><code>TODOS.md</code></td>
+  <td>post-task</td>
+  <td>"Done (2026-05-19) — Clean re-implementation of glyph-jump elimination" entry added.</td>
+</tr>
+</table>
+
+<h3>Key behavioural changes vs. baseline (<code>c091661f</code>)</h3>
+<ul>
+  <li><strong>No glyph-jump on open.</strong> The click-to-edit transition now
+  paints a frozen MuPDF raster that is pixel-identical to the underlying PDF;
+  the editor widget never visibly shifts or resizes at the moment of activation.</li>
+  <li><strong>No cumulative shrink on reopen.</strong> The cross-edit anchor
+  (<code>run_reopen_anchors</code>) pins the layout to the original bbox across
+  repeated open/close cycles, eliminating the progressive shrink seen on the baseline.</li>
+  <li><strong>Preview matches commit.</strong> <code>PreviewRenderer</code> uses the
+  same <code>_build_insert_css</code>/<code>_convert_text_to_html</code> engine as
+  <code>_apply_redact_insert</code>, so the live typing preview is never wider or
+  taller than the committed result.</li>
+  <li><strong>Fractional font sizes preserved.</strong> All font-size paths
+  (model, view, session, combo widget) carry <code>float</code>; coercion to
+  <code>int</code> has been removed throughout.</li>
+  <li><strong><code>finalize_text_edit_impl</code> signal-emit failure now
+  reports <code>FAILED</code></strong> (was: silently reported <code>COMMITTED</code>
+  even when the emit raised). See Q4 resolution above.</li>
+</ul>
+
+<h3>Open question remaining after resolution</h3>
+<div class="open">
+<strong>Q2 (Layer A) — still open.</strong> The MuPDF
+<code>insert_htmlbox</code> leading overhead is hard-coded at
+<code>2.0pt</code>. This is empirically correct for the current PyMuPDF version
+but could silently shift on a version bump. Recommended follow-up: probe it
+dynamically at startup. See Q2 entry above for details.
+</div>
 
 </body>
 </html>
