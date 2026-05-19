@@ -52,6 +52,7 @@ Snapshot APIs include `_capture_doc_snapshot()`, `_restore_doc_from_snapshot(...
 - Phase 2 (mutate): `_apply_redact_insert(...)`
 - Phase 3 (verify + index): `_verify_rebuild_edit(...)`
 - Horizontal single-line edits that still fit on one line use an origin-preserving `insert_text(...)` fast path inside `_apply_redact_insert(...)`; wrapped / dragged / vertical cases still use the existing htmlbox flow.
+- Paragraph-mode edits that span ≥2 distinct span colors use `_build_multi_style_html(...)` (difflib char-level mapping) to rebuild per-run color fidelity. This path is gated on `preserve_multi_style` and takes priority over the single-line fast path.
 
 This structure is enforced by per-phase unit tests using real PyMuPDF documents (no mocks) in `test_scripts/test_edit_text_helpers.py`.
 
@@ -110,9 +111,10 @@ The text editor state is split by intent:
 - `add_new` for inserting new page text.
 - Browse-mode drag selection still starts in the view, but the actual copied text and highlight bounds are resolved through the model's run-anchored selection helpers so the MVC boundary stays intact. Start requires a direct run hit via strict hit-testing (`allow_fallback=False`); the end point may snap to the nearest run on the same page only after exact-run hit detection misses.
 
-Typed edit payloads are part of the view/controller boundary:
+Typed edit payloads are part of the view/controller boundary and are defined in `model/edit_requests.py` (single source of truth):
 - `EditTextRequest` packages same-page edit commits.
 - `MoveTextRequest` packages cross-page text moves and replaces the previous positional `sig_move_text_across_pages(...)` signature.
+Both are re-exported via `view/text_editing.py` for backward-compatible view/controller imports.
 
 Inline editor finalization is guarded by focus context:
 - Focus transitions inside text-edit context (editor widget, text property panel, combo popups) keep the session alive.
@@ -400,3 +402,48 @@ Contract:
 
 Guardrails (do not change casually):
 - If you modify list ordering, add/remove, or refresh behavior, update `docs/FEATURES.md` section “Merge PDFs (頁面 Tab)” and re-run the regression tests in `test_scripts/test_pdf_merge_workflow.py` that assert reorder-then-add/remove preserves order.
+
+## 10. Text Editing Render-Preview Overlay
+
+Inline text editing now uses a preview-backed widget in `view/text_editing.py` that is designed to produce zero visible glyph jump between the rendered PDF and the open editor.
+
+### 10.1 PreviewRenderer
+
+`PreviewRenderer` generates **bit-exact** preview images by rasterizing edited text via PyMuPDF `insert_htmlbox` on a temp page sized rotation-aware to the source rect, at `render_scale × 72` DPI matching the page render. It reuses `model._build_insert_css` and `model._convert_text_to_html` so preview pixels and commit pixels come from the same engine path. Results are cached by `(text, font, size, color, rotation, render_scale, line_height, rect-dims)`. `scale_low=1` is passed to `insert_htmlbox` so vertical metrics match the commit path exactly.
+
+### 10.2 PreviewBackedInlineTextEditor — no-jump contract
+
+`PreviewBackedInlineTextEditor` suppresses all Qt text painting and instead draws the MuPDF preview image and editor affordances (caret/selection) directly in `paintEvent`. Key invariants that eliminate the click-to-edit glyph jump:
+
+1. **Zero Qt chrome:** `setFrameStyle(0)`, `setViewportMargins(0,0,0,0)`, `document().setDocumentMargin(0.0)`, and `setContentsMargins(0,0,0,0)` are applied at construction so the widget occupies exactly its `fixedSize` without extra border pixels.
+2. **Frozen first frame:** `freeze_first_frame(image)` stamps the very first preview render into `_frozen_first_frame_image`. `paintEvent` draws this frozen frame until text changes, so the editor opens visually identical to the PDF glyph it replaces.
+3. **Cursor hidden until first keypress:** `setCursorWidth(0)` hides the blinking cursor; `keyPressEvent` reveals it on first key, so the frozen preview frame is not disrupted by caret paint on open.
+4. **Geometry not overwritten:** `configure_render_context` only applies `setFixedSize` when the widget has no explicit frame yet (`width <= 1`). The frame chosen by `create_text_editor` is preserved across subsequent render-context updates.
+
+`textChanged` signals trigger `_schedule_preview` with a 150 ms debounce.
+
+### 10.3 TextEditManager — geometry pipeline
+
+`TextEditManager.create_text_editor(...)` orchestrates the no-jump geometry pipeline:
+
+- **DPI-corrected font size:** `_display_font_pt(pdf_font_size, render_scale) = pdf_font_size × render_scale × 72 / logical_screen_dpi`. This bridges the gap between PyMuPDF raster coords (`pdf_pt × render_scale` px) and Qt widget coords (`qt_pt × screen_dpi/72` px). Stored session/request sizes remain in PDF points; only the display path is corrected.
+- **Content height for paragraph mode:** In `paragraph` mode, `_measure_text_content_height_px` (a `QTextDocument` probe with the target font and wrap width) determines the editor height instead of the block-bbox height. This prevents the oversized grey void that appeared when editing a single line inside a multi-line paragraph block.
+- **Rotation-aware frame:** For rotated targets (90°/270°), `create_text_editor` computes swapped `editor_width_px`/`editor_height_px` before calling `_compute_editor_proxy_layout` and positions the proxy accordingly.
+- **Line height from source spans:** `line_height` is computed from `cluster_span_ids` via `block_manager.find_span_by_id()` using the same median baseline-to-baseline logic as `_apply_redact_insert`, ensuring leading is consistent between preview and commit.
+
+### 10.4 Model-side path parity contract
+
+- `_classify_insert_path(...)` in `model/pdf_model.py` is the shared decision point for `fast` vs `htmlbox` insert behavior. Returns `"htmlbox"` when `member_spans` is empty (no anchor for `insert_text` origin). Both `_apply_redact_insert(...)` and `PreviewRenderer` use this contract so path decisions are always in sync.
+- Stored sizes in `EditTextRequest`, `MoveTextRequest`, and `TextEditSession` are always PDF points (`float`). The DPI correction is applied only in the display layer (`_display_font_pt`).
+
+### 10.5 No-Jump Acceptance Gate
+
+A tamper-evident acceptance gate enforces that the "no glyph jump" goal is provably met before any work can be declared done:
+
+- `scripts/completion_gate.py` — chains `verify_no_jump.py` + `check_gate_passed.py`, writes `.completion_proof.json` with `invocation_id`, `git_commit`, and SHA-256 digests of `.gate_passed` + `signoff.json`.
+- `scripts/verify_no_jump.py` — two-run pytest gate executing the `test_no_jump_editor_geometry.py` case matrix, manifest exact-set check, UX CUA signoff validation, full-suite regression, and lint. Pixel diff tolerance is ≤1% changed pixels with >10 lightness delta.
+- `scripts/check_gate_passed.py` — independent re-verifier binding to `.gate_passed` digest + signoff digest from the completion marker.
+- `scripts/check_completion_proof_hook.py` — Claude Code Stop hook (7-layer verification); fails closed when the goal file is git-tracked but deleted or when `.completion_proof.json` is absent, corrupt, stale, or self-consistently forged.
+- `scripts/ux_signoff_agent.py` — CUA (Computer Use Agent) that captures before/after screenshots for each test PDF and writes tamper-evident `signoff.json`.
+- `test_scripts/test_no_jump_editor_geometry.py` — 19+ geometry + pixel-diff test cases covering font size, render scale, rotation, paragraph mode, reopen loops, and blanking detection, with negative controls.
+- `test_scripts/test_completion_proof_hook.py` — 18-case test suite covering all bypass vectors including self-consistent forged artifacts and goal-file deletion.

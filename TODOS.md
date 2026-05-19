@@ -1,5 +1,33 @@
 # TODOS
 
+## Done (2026-05-14) -- No-Jump UX: eliminate click-to-edit glyph jump (gate verified)
+
+- What: Closed the "glyph size jump on click-to-edit" problem end-to-end across all PDF types, zoom levels, DPIs, rotations, and paragraph/run modes. A tamper-evident acceptance gate enforces the result.
+- Root causes fixed:
+  1. **DPI mismatch:** Qt widget fonts used raw PDF points; introduced `_display_font_pt(pdf_size, render_scale) = pdf_size × render_scale × 72 / screen_dpi` for correct widget sizing at any zoom/DPI.
+  2. **Qt frame chrome:** Editor had Qt-default frame borders and viewport margins adding extra pixels. Zeroed with `setFrameStyle(0)`, `setViewportMargins(0,0,0,0)`, `document().setDocumentMargin(0.0)`, `setContentsMargins(0,0,0,0)`.
+  3. **First-frame jump:** Editor opened showing blank/Qt-painted text before first preview rendered. Introduced `freeze_first_frame(image)` that stamps the first preview frame; `paintEvent` draws it immediately so click-to-edit is visually seamless.
+  4. **Frame overwrite by render-context:** `configure_render_context` called `setFixedSize` unconditionally, clobbering the carefully-set `create_text_editor` frame. Fixed with `width <= 1` guard.
+  5. **Rotated editor dimension swap:** 90°/270° editors did not swap `width_px`/`height_px` in the proxy layout or render context. Fixed in both `create_text_editor` geometry and `configure_render_context`.
+  6. **Paragraph-mode oversized void:** Editor used full block-bbox height; introduced `_measure_text_content_height_px` probe to use actual wrapped-content height in paragraph mode.
+  7. **`scale_low` default in preview:** `insert_htmlbox` default `scale_low` allowed MuPDF to scale glyphs, diverging preview from commit metrics. Fixed with `scale_low=1` in `PreviewRenderer.render`.
+  8. **Block outline overlap during edit:** Block outlines remained visible behind open editor. Fixed by suppressing outline for the active editing target.
+  9. **Font-size combo double-DPI:** Size-change handler re-applied DPI correction to the combo value, double-scaling the editor font. Fixed to apply combo size directly.
+- Acceptance gate: `scripts/completion_gate.py` + `scripts/verify_no_jump.py` + `scripts/check_gate_passed.py` + `scripts/check_completion_proof_hook.py` Stop hook. Gate covers geometry assertions, pixel-diff ≤1%, blanking detection, mutation stability, and reopen-loop stability.
+- New test files: `test_scripts/test_no_jump_editor_geometry.py` (19+ cases), `test_scripts/test_text_editing_fidelity_suite.py`, `test_scripts/test_completion_proof_hook.py` (18 cases), `test_scripts/test_ux_signoff_agent.py`, `test_scripts/test_snapshot_restore.py`, `test_scripts/test_text_edit_finalize_outcome.py`, `test_scripts/test_resolve_target_mode.py`.
+- Outcome: No glyph jump on click-to-edit across all real PDF types tested. Gate is green. PITFALLS, ARCHITECTURE, FEATURES, README, README.zh-TW, TEST_SCRIPTS.md all updated.
+
+## Done (2026-04-22) -- Phase 2 text-editing fidelity
+
+- What: Closed the Phase 2 gap between current text-edit behavior and Acrobat-level stability across five tasks.
+- Changes shipped:
+  - Red-light matrix: 6 regression tests across float font-size round-trip, multi-style paragraph collapse, inline editor geometry/transparency, and stale-fixture autopan attribute.
+  - Float font-size: `TextEditSession`, `EditTextRequest`, and all call sites now use `float` throughout. `_parse_font_size_str` / `_format_font_size` helpers normalize the font-size combo widget.
+  - Multi-style preservation: `_build_multi_style_html` uses difflib char-level mapping to rebuild per-run color fidelity. `preserve_multi_style` flag gates the path and skips the single-line fast path.
+  - Request deduplication: `EditTextRequest` and `MoveTextRequest` moved to `model/edit_requests.py` as single source of truth; re-exported via `view/text_editing.py`.
+  - Fixture fix: `_make_view()` in `test_text_editing_gui_regressions.py` now injects `_autopan_active = False` to match post-autopan-merge `__init__`.
+- Outcome: 91 tests pass (2 pre-existing context-menu failures unrelated to Phase 2). All 6 red-light tests green.
+
 ## Done (2026-04-20) -- F4 view-only color profile switching (simplify + bug fix pass)
 
 - What: Completed F4 with a three-agent code review pass (reuse, quality, efficiency) plus a P0 object-selection-overlay bug fix.
@@ -92,3 +120,28 @@
 - What: Captured fresh baseline numbers for startup, synthetic large-file open, page render, repeated-edit latency, and a first optimize-copy sample, then wrote the dedicated `B4` child plan for closing performance with measured wins.
 - Why: The backlog requires `B4` to stay open until we have both baseline evidence and shipped before/after improvements. We had planning placeholders, but not a concrete performance handoff with real numbers and hotspots.
 - Outcome: `B4` is now `in_progress` instead of vague-open. The plan identifies large-file optimize-copy as the highest-risk hotspot on this machine, and the next step is shipping measured wins for open, page-change, and optimize-copy flows.
+
+## Done (2026-04-30) -- Text editing fidelity render-preview + 15-test suite
+
+- What: Added a preview-backed inline text editing surface and a 15-test fidelity suite for text edit rendering and commit parity.
+- Changes shipped:
+  - Shared insert path classifier `_classify_insert_path(...)` in `model/pdf_model.py`, with `_apply_redact_insert(...)` routed through the shared decision.
+  - `PreviewRenderer` and `PreviewBackedInlineTextEditor` in `view/text_editing.py`.
+  - `TextEditManager.create_text_editor(...)` now uses preview-backed editor and configures render context.
+  - New regression suite: `test_scripts/test_text_editing_fidelity_suite.py` (15 tests).
+- Outcome: New fidelity suite passes in full (15/15 green).
+
+## Done (2026-05-01) -- Real MuPDF rasterization + three blocker fixes (Phase 2 complete)
+
+- What: Completed Phase 2 stretch goal — replaced blank QImage scaffolding in `PreviewRenderer.render` with real `insert_htmlbox` rasterization. Fixed three runtime blockers identified in adversarial review.
+- Changes shipped:
+  - **Blocker 1 (critical):** `editor.font = qt_font_obj` shadow removed from `create_text_editor` — `editor.font()` now works correctly in font/size-change handlers. (`view/text_editing.py`)
+  - **Blocker 2 (high):** `PreviewRenderer.render()` now rasterizes via temp document + `insert_htmlbox` + `get_pixmap` + `QImage.copy()`. Uses `model._build_insert_css`/`_convert_text_to_html` for bit-exact preview/commit parity. (`view/text_editing.py`)
+  - **Blocker 3 (high):** `_classify_insert_path` now returns `"htmlbox"` on empty `member_spans` instead of `"fast"`, preventing downstream `min()` crash. (`model/pdf_model.py`)
+  - **line_height threading:** `cluster_span_ids` threaded from `_start_text_edit_from_hit` → `_create_text_editor` → `create_text_editor`; `_line_ht` computed from block manager and passed to `configure_render_context(line_height=...)`. (`view/pdf_view.py`, `view/text_editing.py`)
+  - **10 new tests** across `test_edit_text_helpers.py`, `test_text_editing_gui_regressions.py`, `test_text_editing_fidelity_suite.py`.
+- Outcome: 103 text-editing tests pass. No regressions. PITFALLS + ARCHITECTURE updated.
+- Follow-ups (deferred):
+  - Editor proxy height re-measurement on font-size change — `view/text_editing.py:~688–705` (review issue #6).
+  - Promote `MUPDF_HTMLBOX_OVERHEAD_PT` to module-level named constant with citation comment (review issue #3).
+  - Decompose `_apply_redact_insert` into per-strategy helpers (review issue #1).
