@@ -1,0 +1,11 @@
+.venv/
+test_files/
+__pycache__/
+*.pyc
+*.pyo
+build/
+dist/
+*.egg-info/
+.codegraph/
+node_modules/
+.git/

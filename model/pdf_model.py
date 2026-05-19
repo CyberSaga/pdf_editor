@@ -78,6 +78,63 @@ PdfAuditReport = pdf_optimizer.PdfAuditReport
 PdfOptimizationResult = pdf_optimizer.PdfOptimizationResult
 
 
+def _install_rawdict_text_compat() -> None:
+    """Backfill span['text'] for fitz rawdict payloads that only expose chars.
+
+    Some PyMuPDF builds omit the ``text`` key in rawdict spans and only return
+    ``chars``. Our no-jump E2E gate inspects span text directly from rawdict.
+    """
+    sentinel = "_pdf_editor_rawdict_text_compat"
+    if getattr(fitz.Page, sentinel, False):
+        return
+    original_get_text = fitz.Page.get_text
+
+    def _compat_get_text(page, option="text", *args, **kwargs):
+        result = original_get_text(page, option, *args, **kwargs)
+        if option != "rawdict" or not isinstance(result, dict):
+            return result
+        for block in result.get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    if span.get("text") is None and isinstance(span.get("chars"), list):
+                        span["text"] = "".join(ch.get("c", "") for ch in span["chars"])
+        return result
+
+    fitz.Page.get_text = _compat_get_text
+    setattr(fitz.Page, sentinel, True)
+
+
+_install_rawdict_text_compat()
+
+
+def _classify_insert_path(
+    *,
+    new_text: str,
+    member_spans: list[EditableSpan],
+    rect: fitz.Rect,
+    rotation: int,
+    preserve_multi_style: bool,
+    has_new_rect: bool,
+    needs_cjk: bool,
+    text_width: float,
+    available_width: float,
+    size: float,
+) -> str:
+    """Classify text insert path for parity between preview and commit."""
+    is_vertical = int(rotation) in (90, 270)
+    if is_vertical or has_new_rect or "\n" in new_text or preserve_multi_style or needs_cjk:
+        return "htmlbox"
+    if text_width <= 0 or text_width > available_width:
+        return "htmlbox"
+    if not member_spans:
+        return "htmlbox"
+    span_band_h = max(float(span.bbox.y1) for span in member_spans) - min(float(span.bbox.y0) for span in member_spans)
+    single_line_members = span_band_h <= max(2.0, float(size) * 1.5)
+    return "fast" if single_line_members else "htmlbox"
+
+
 @dataclass
 class TextHit:
     target_span_id: str
@@ -126,6 +183,7 @@ class _EditTextResolveResult:
     is_vertical: bool
     insert_rotate: int
     redact_rect: fitz.Rect
+    reopen_anchor_rect: fitz.Rect | None = None
 
 
 @dataclass
@@ -140,6 +198,8 @@ class DocumentSession:
     command_manager: CommandManager = field(default_factory=CommandManager)
     pending_edits: list = field(default_factory=list)
     edit_count: int = 0
+    run_reopen_anchors: dict[str, fitz.Rect] = field(default_factory=dict)
+    run_reopen_anchor_sizes: dict[str, float] = field(default_factory=dict)
 
 class PDFModel:
     def __init__(self):
@@ -154,6 +214,8 @@ class PDFModel:
         self._legacy_command_manager: CommandManager = CommandManager()
         self._legacy_edit_count: int = 0
         self._legacy_pending_edits: list = []
+        self._legacy_run_reopen_anchors: dict[str, fitz.Rect] = {}
+        self._legacy_run_reopen_anchor_sizes: dict[str, float] = {}
         self.temp_dir = None
         # 是否在「存回原檔」時使用增量更新（Incremental Update），以減少對數位簽章與大檔的影響
         self.use_incremental_save: bool = True
@@ -182,9 +244,11 @@ class PDFModel:
             return repr(exc)
 
     def _active_session(self) -> DocumentSession | None:
-        if not self._active_session_id:
+        active_session_id = getattr(self, "_active_session_id", None)
+        if not active_session_id:
             return None
-        return self._sessions_by_id.get(self._active_session_id)
+        sessions_by_id = getattr(self, "_sessions_by_id", {})
+        return sessions_by_id.get(active_session_id)
 
     @contextmanager
     def _activate_temporarily(self, session_id: str) -> Iterator[None]:
@@ -296,7 +360,7 @@ class PDFModel:
         return True
 
     def close_all_sessions(self) -> None:
-        for sid in list(self._session_ids):
+        for sid in list(getattr(self, "_session_ids", [])):
             self.close_session(sid)
 
     def save_session_as(self, session_id: str, new_path: str) -> None:
@@ -399,6 +463,76 @@ class PDFModel:
             session.pending_edits = value
         else:
             self._legacy_pending_edits = value
+
+    @property
+    def run_reopen_anchors(self) -> dict[str, fitz.Rect]:
+        session = self._active_session()
+        return session.run_reopen_anchors if session else self._legacy_run_reopen_anchors
+
+    @run_reopen_anchors.setter
+    def run_reopen_anchors(self, value: dict[str, fitz.Rect]) -> None:
+        session = self._active_session()
+        if session:
+            session.run_reopen_anchors = value
+        else:
+            self._legacy_run_reopen_anchors = value
+
+    @property
+    def run_reopen_anchor_sizes(self) -> dict[str, float]:
+        session = self._active_session()
+        return session.run_reopen_anchor_sizes if session else self._legacy_run_reopen_anchor_sizes
+
+    @run_reopen_anchor_sizes.setter
+    def run_reopen_anchor_sizes(self, value: dict[str, float]) -> None:
+        session = self._active_session()
+        if session:
+            session.run_reopen_anchor_sizes = value
+        else:
+            self._legacy_run_reopen_anchor_sizes = value
+
+    @staticmethod
+    def _run_reopen_anchor_key(page_idx: int, span_id: str) -> str:
+        return f"{int(page_idx)}::{span_id}"
+
+    def _get_run_reopen_anchor_rect(self, page_idx: int, span_id: str | None) -> fitz.Rect | None:
+        if not span_id:
+            return None
+        rect = self.run_reopen_anchors.get(self._run_reopen_anchor_key(page_idx, span_id))
+        return fitz.Rect(rect) if rect is not None else None
+
+    def _set_run_reopen_anchor_rect(self, page_idx: int, span_id: str | None, rect: fitz.Rect | None) -> None:
+        if not span_id or rect is None:
+            return
+        self.run_reopen_anchors[self._run_reopen_anchor_key(page_idx, span_id)] = fitz.Rect(rect)
+
+    def _get_run_reopen_anchor_size(self, page_idx: int, span_id: str | None) -> float | None:
+        if not span_id:
+            return None
+        key = self._run_reopen_anchor_key(page_idx, span_id)
+        value = self.run_reopen_anchor_sizes.get(key)
+        return float(value) if value is not None else None
+
+    def _set_run_reopen_anchor_size(self, page_idx: int, span_id: str | None, size: float | None) -> None:
+        if not span_id or size is None:
+            return
+        self.run_reopen_anchor_sizes[self._run_reopen_anchor_key(page_idx, span_id)] = float(size)
+
+    def _delete_run_reopen_anchor(self, page_idx: int, span_id: str | None) -> None:
+        if not span_id:
+            return
+        key = self._run_reopen_anchor_key(page_idx, span_id)
+        self.run_reopen_anchors.pop(key, None)
+        self.run_reopen_anchor_sizes.pop(key, None)
+
+    def _iter_run_reopen_anchors_for_page(self, page_idx: int) -> Iterator[tuple[str, fitz.Rect]]:
+        prefix = f"{int(page_idx)}::"
+        for key, rect in list(self.run_reopen_anchors.items()):
+            if not key.startswith(prefix):
+                continue
+            span_id = key[len(prefix):]
+            if not span_id:
+                continue
+            yield span_id, fitz.Rect(rect)
 
     def set_text_target_mode(self, mode: str) -> None:
         normalized = (mode or "").strip().lower()
@@ -829,11 +963,17 @@ class PDFModel:
         self._legacy_doc = None
         self._legacy_original_path = None
         self._legacy_saved_path = None
-        self._legacy_block_manager.clear()
-        self._legacy_command_manager.clear()
-        self._legacy_pending_edits.clear()
+        legacy_block_manager = getattr(self, "_legacy_block_manager", None)
+        if legacy_block_manager is not None:
+            legacy_block_manager.clear()
+        legacy_command_manager = getattr(self, "_legacy_command_manager", None)
+        if legacy_command_manager is not None:
+            legacy_command_manager.clear()
+        legacy_pending_edits = getattr(self, "_legacy_pending_edits", None)
+        if isinstance(legacy_pending_edits, list):
+            legacy_pending_edits.clear()
         self._legacy_edit_count = 0
-        if self.temp_dir:
+        if getattr(self, "temp_dir", None):
             self.temp_dir.cleanup()
             logger.debug("臨時目錄已清理")
             self.temp_dir = None
@@ -1231,13 +1371,59 @@ class PDFModel:
         mode = (self.text_target_mode or "run").lower()
 
         spans = self.block_manager.get_runs(page_idx)
-        hit_spans = [s for s in spans if point in fitz.Rect(s.bbox)]
+        anchored_hit: EditableSpan | None = None
+        anchored_rect: fitz.Rect | None = None
+        anchored_size: float | None = None
+        anchored_distance_sq: float | None = None
+        for anchor_span_id, anchor_rect in self._iter_run_reopen_anchors_for_page(page_idx):
+            if point not in anchor_rect:
+                continue
+            anchor_run = self.block_manager.find_run_by_id(page_idx, anchor_span_id)
+            if anchor_run is None and spans:
+                anchor_cx = float(anchor_rect.x0 + (anchor_rect.width / 2.0))
+                anchor_cy = float(anchor_rect.y0 + (anchor_rect.height / 2.0))
+                anchor_run = min(
+                    spans,
+                    key=lambda span: (
+                        (float(span.bbox.x0 + (span.bbox.width / 2.0)) - anchor_cx) ** 2
+                        + (float(span.bbox.y0 + (span.bbox.height / 2.0)) - anchor_cy) ** 2
+                    ),
+                )
+                self._set_run_reopen_anchor_rect(page_idx, anchor_run.span_id, anchor_rect)
+                old_size = self._get_run_reopen_anchor_size(page_idx, anchor_span_id)
+                self._set_run_reopen_anchor_size(
+                    page_idx,
+                    anchor_run.span_id,
+                    old_size if old_size is not None else float(anchor_run.size),
+                )
+            if anchor_run is None:
+                continue
+            center_x = float(anchor_rect.x0 + (anchor_rect.width / 2.0))
+            center_y = float(anchor_rect.y0 + (anchor_rect.height / 2.0))
+            distance_sq = ((float(point.x) - center_x) ** 2) + ((float(point.y) - center_y) ** 2)
+            if anchored_hit is None or anchored_distance_sq is None or distance_sq < anchored_distance_sq:
+                anchored_hit = anchor_run
+                anchored_rect = fitz.Rect(anchor_rect)
+                anchored_size = self._get_run_reopen_anchor_size(page_idx, anchor_span_id)
+                if anchored_size is None:
+                    anchored_size = float(anchor_run.size)
+                anchored_distance_sq = distance_sq
+
+        hit_spans = [anchored_hit] if anchored_hit is not None else [s for s in spans if point in fitz.Rect(s.bbox)]
         if hit_spans:
             target = hit_spans[-1]  # Topmost = last extracted/drawn.
+            reopen_anchor_rect = (
+                fitz.Rect(anchored_rect)
+                if anchored_rect is not None
+                else self._get_run_reopen_anchor_rect(page_idx, target.span_id)
+            )
             if mode == "paragraph":
                 para = self.block_manager.find_paragraph_for_run(page_idx, target.span_id)
                 if para is not None:
-                    cluster = self.block_manager.find_overlapping_runs(page_idx, para.bbox, tol=0.5)
+                    para_run_ids = set(para.run_ids)
+                    cluster = [span for span in spans if span.span_id in para_run_ids]
+                    if not cluster:
+                        cluster = self.block_manager.find_overlapping_runs(page_idx, para.bbox, tol=0.5)
                     return TextHit(
                         target_span_id=target.span_id,
                         target_bbox=fitz.Rect(para.bbox),
@@ -1253,10 +1439,10 @@ class PDFModel:
             cluster = self.block_manager.find_overlapping_runs(page_idx, target.bbox, tol=0.5)
             return TextHit(
                 target_span_id=target.span_id,
-                target_bbox=fitz.Rect(target.bbox),
+                target_bbox=fitz.Rect(reopen_anchor_rect if reopen_anchor_rect is not None else target.bbox),
                 target_text=target.text,
                 font=target.font,
-                size=float(target.size),
+                size=float(anchored_size if anchored_size is not None else target.size),
                 color=tuple(target.color),
                 rotation=int(target.rotation),
                 cluster_span_ids=[s.span_id for s in cluster],
@@ -1513,19 +1699,16 @@ class PDFModel:
             bounds.include_rect(line_rect)
         return "\n".join(line_texts).strip(), bounds
 
-    def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect, rotation: int = 0, font_size: float = 12) -> float:
-        """取得編輯時會使用的換行寬度（points），供編輯框預覽與 PDF 渲染一致。"""
-        if not self.doc or page_num < 1 or page_num > len(self.doc):
-            return rect.width
-        page = self.doc[page_num - 1]
-        page_rect = page.rect
-        margin = 15
-        right_margin_pt = max(60.0, min(120.0, float(font_size) * 2.0))
-        right_safe = page_rect.x1 - right_margin_pt
-        if rotation in (90, 270):
-            return rect.width
-        max_w = right_safe - max(rect.x0, page_rect.x0) - margin
-        return max(rect.width, min(max_w, page_rect.width * 0.98))
+    def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect) -> float:
+        """Return the wrap width (points) for the inline editor.
+
+        For visual fidelity, the editor's wrap width must match the original
+        text block's width exactly. A wider editor would let Qt re-layout the
+        text at different break points than the rendered PDF (because Qt and
+        PyMuPDF have slightly different horizontal glyph metrics), producing
+        the "break lines once edit box opened" symptom.
+        """
+        return float(rect.width)
 
     def _resolve_add_text_font(self, font_hint: str) -> str:
         """Resolve add-text font name with CJK-safe default."""
@@ -2305,7 +2488,6 @@ class PDFModel:
             page.delete_annot(annot)
             return True
         if payload["kind"] == "image":
-            xref = int(payload.get("xref", 0) or 0)
             old_rect = fitz.Rect(payload.get("rect") or annot.rect)
             try:
                 page.add_redact_annot(old_rect)
@@ -2337,7 +2519,7 @@ class PDFModel:
     def _convert_text_to_html(
         self,
         text: str,
-        font_size: int,
+        font_size: float,
         color: tuple,
         latin_font: str = "helv",
     ) -> str:
@@ -2365,6 +2547,90 @@ class PDFModel:
             else:
                 html_parts.append(f'<span style="font-family: {latin_css_family};">{_html_mod.escape(part)}</span>')
 
+        return "".join(html_parts)
+
+    def _build_multi_style_html(
+        self,
+        new_text: str,
+        member_spans: list,
+        default_color: tuple,
+        latin_font: str = "helv",
+    ) -> str:
+        """Build HTML that preserves per-run colors from ``member_spans``.
+
+        Used when a paragraph-mode edit should not collapse multi-style runs
+        onto the dominant color: characters in ``new_text`` that diff-match a
+        source span inherit that span's color; inserted/replaced chunks inherit
+        the nearest preceding span's color (or the first span's color at the
+        start).
+        """
+        if not new_text:
+            return ""
+        ordered = sorted(
+            member_spans,
+            key=lambda s: (float(s.bbox.y0), float(s.bbox.x0)),
+        )
+        source_chars: list[str] = []
+        source_colors: list[tuple[float, float, float]] = []
+        for span in ordered:
+            span_text = span.text or ""
+            span_color = tuple(float(c) for c in (span.color or default_color))
+            for ch in span_text:
+                source_chars.append(ch)
+                source_colors.append(span_color)
+        source_text = "".join(source_chars)
+        if not source_text or not source_colors:
+            return self._convert_text_to_html(
+                new_text, 12, default_color, latin_font=latin_font
+            )
+
+        new_colors: list[tuple | None] = [None] * len(new_text)
+        matcher = difflib.SequenceMatcher(a=source_text, b=new_text, autojunk=False)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                for k in range(j2 - j1):
+                    new_colors[j1 + k] = source_colors[i1 + k]
+            else:
+                inherit = source_colors[i1 - 1] if i1 > 0 else source_colors[0]
+                for k in range(j2 - j1):
+                    new_colors[j1 + k] = inherit
+        for idx in range(len(new_colors)):
+            if new_colors[idx] is None:
+                new_colors[idx] = tuple(float(c) for c in default_color)
+
+        latin_font_name = self._resolve_add_text_font(latin_font)
+        cjk_font_name = self._resolve_cjk_companion_font(latin_font_name)
+        latin_css_family = self._font_token_to_css_family(latin_font_name)
+        cjk_css_family = self._font_token_to_css_family(cjk_font_name)
+
+        html_parts: list[str] = []
+        idx = 0
+        while idx < len(new_text):
+            run_color = new_colors[idx]
+            start = idx
+            idx += 1
+            while idx < len(new_text) and new_colors[idx] == run_color:
+                idx += 1
+            chunk = new_text[start:idx]
+            r = int(round(run_color[0] * 255))
+            g = int(round(run_color[1] * 255))
+            b = int(round(run_color[2] * 255))
+            color_css = f"color: rgb({r}, {g}, {b});"
+            for part in _RE_HTML_TEXT_PARTS.findall(chunk):
+                if part == "\n":
+                    html_parts.append("<br>")
+                elif part.isspace():
+                    html_parts.append(
+                        f'<span style="font-family: {latin_css_family}; {color_css}">{part}</span>'
+                    )
+                elif _RE_CJK.match(part):
+                    html_parts.append(
+                        f'<span style="font-family: {cjk_css_family}; {color_css}">{_html_mod.escape(part)}</span>'
+                    )
+                else:
+                    html_parts.append(
+                        f'<span style="font-family: {latin_css_family}; {color_css}">{_html_mod.escape(part)}</span>'
+                    )
         return "".join(html_parts)
 
 
@@ -2694,13 +2960,20 @@ class PDFModel:
         font_face_block = "\n".join(font_face_rules)
 
         # 行高：優先使用傳入值，否則從字體 metrics 計算
-        if line_height <= 0:
+        auto_line_height = line_height <= 0
+        if auto_line_height:
             try:
                 font_obj = fitz.Font(resolved_font)
                 line_height = max(size * 1.1, (font_obj.ascender - font_obj.descender) * size)
             except Exception:
                 line_height = size * 1.2
-        line_height = round(max(size, line_height), 2)
+            # Auto-derived line height should not go below font size.
+            line_height = max(size, line_height)
+        else:
+            # Explicit line heights come from measured source layout and must be
+            # honored as-is (including tight leading values below font size).
+            line_height = max(0.1, float(line_height))
+        line_height = round(float(line_height), 2)
 
         return f"""
             {font_face_block}
@@ -3198,7 +3471,17 @@ class PDFModel:
             resolved_target_span_id = target_span.span_id
 
         target_member_span_ids: set[str] = {resolved_target_span_id}
-        target_bbox_for_cluster = fitz.Rect(target_span.bbox)
+        reopen_anchor_rect: fitz.Rect | None = None
+        if effective_target_mode == "run" and new_rect is None and resolved_target_span_id:
+            reopen_anchor_rect = self._get_run_reopen_anchor_rect(page_idx, resolved_target_span_id)
+            if reopen_anchor_rect is None:
+                reopen_anchor_rect = fitz.Rect(target_span.bbox)
+                self._set_run_reopen_anchor_rect(page_idx, resolved_target_span_id, reopen_anchor_rect)
+            if self._get_run_reopen_anchor_size(page_idx, resolved_target_span_id) is None:
+                self._set_run_reopen_anchor_size(page_idx, resolved_target_span_id, float(target_span.size))
+        target_bbox_for_cluster = fitz.Rect(
+            reopen_anchor_rect if reopen_anchor_rect is not None else target_span.bbox
+        )
         target_block_idx = target_span.block_idx
         target_rotation = int(target_span.rotation)
         if effective_target_mode == "paragraph":
@@ -3215,6 +3498,7 @@ class PDFModel:
                 target_rotation = int(para.rotation)
                 if para.run_ids and resolved_target_span_id not in target_member_span_ids:
                     resolved_target_span_id = para.run_ids[0]
+                reopen_anchor_rect = None
             else:
                 logger.debug(
                     "paragraph mode requested but paragraph not resolved for run=%s; fallback to run mode",
@@ -3292,6 +3576,7 @@ class PDFModel:
             is_vertical=is_vertical,
             insert_rotate=insert_rotate,
             redact_rect=redact_rect,
+            reopen_anchor_rect=fitz.Rect(reopen_anchor_rect) if reopen_anchor_rect is not None else None,
         )
 
     def _apply_redact_insert(
@@ -3327,10 +3612,63 @@ class PDFModel:
             resolve_result.redact_rect,
         )
 
-        html_content = self._convert_text_to_html(
-            new_text, int(size), color, latin_font=resolve_result.resolved_font
+        member_spans = [
+            span for span in resolve_result.overlap_cluster
+            if span.span_id in resolve_result.target_member_span_ids
+        ]
+        member_colors_distinct = {
+            tuple(round(float(c), 3) for c in (s.color or (0.0, 0.0, 0.0)))
+            for s in member_spans
+        }
+        request_color_rounded = tuple(
+            round(float(c), 3) for c in (color or (0.0, 0.0, 0.0))
         )
-        css = self._build_insert_css(size, color, resolve_result.resolved_font)
+        preserve_multi_style = (
+            resolve_result.effective_target_mode == "paragraph"
+            and len(member_colors_distinct) > 1
+            and request_color_rounded in member_colors_distinct
+        )
+
+        if preserve_multi_style:
+            html_content = self._build_multi_style_html(
+                new_text,
+                member_spans,
+                default_color=color,
+                latin_font=resolve_result.resolved_font,
+            )
+            logger.debug(
+                "multi-style paragraph preserve: page=%s members=%s distinct_colors=%s",
+                page_num,
+                len(member_spans),
+                len(member_colors_distinct),
+            )
+        else:
+            html_content = self._convert_text_to_html(
+                new_text, size, color, latin_font=resolve_result.resolved_font
+            )
+
+        # Preserve the original visual line height to keep committed text
+        # the same vertical size as the original. Without this, _build_insert_css
+        # auto-calculates line_height ≈ size × 1.1, which differs from the
+        # original PDF's actual leading and pushes surrounding text.
+        _line_ht = 0.0
+        if member_spans:
+            sorted_spans = sorted(member_spans, key=lambda s: float(s.origin.y))
+            if len(sorted_spans) >= 2:
+                _advances = [
+                    abs(float(sorted_spans[i + 1].origin.y) - float(sorted_spans[i].origin.y))
+                    for i in range(len(sorted_spans) - 1)
+                    if abs(float(sorted_spans[i + 1].origin.y) - float(sorted_spans[i].origin.y)) > 0.5
+                ]
+                if _advances:
+                    _line_ht = sorted(_advances)[len(_advances) // 2]
+            if _line_ht <= 0:
+                _heights = [float(s.bbox.height) for s in member_spans if s.bbox.height > 0]
+                if _heights:
+                    _line_ht = max(_heights)
+        css = self._build_insert_css(
+            size, color, resolve_result.resolved_font, line_height=_line_ht
+        )
 
         if new_rect is not None:
             clamped_new = fitz.Rect(
@@ -3344,60 +3682,60 @@ class PDFModel:
                 clamped_new = fitz.Rect(resolve_result.target.layout_rect)
             base_layout = clamped_new
         else:
-            base_layout = fitz.Rect(resolve_result.target.layout_rect)
+            base_layout = fitz.Rect(
+                resolve_result.reopen_anchor_rect
+                if resolve_result.reopen_anchor_rect is not None
+                else resolve_result.target.layout_rect
+            )
 
-        member_spans = [
-            span for span in resolve_result.overlap_cluster
-            if span.span_id in resolve_result.target_member_span_ids
-        ]
-        single_line_members = (
-            bool(member_spans)
-            and max(float(span.bbox.y1) for span in member_spans) - min(float(span.bbox.y0) for span in member_spans)
-            <= max(2.0, float(size) * 1.5)
+        margin = 15
+        right_margin_pt = max(60.0, min(120.0, float(size) * 2.0))
+        right_safe = page_rect.x1 - right_margin_pt
+        available_w = max(0.0, right_safe - max(float(base_layout.x0), page_rect.x0) - margin)
+        insert_font = self._resolve_font_for_push(resolve_result.resolved_font)
+        try:
+            font_obj = fitz.Font(insert_font)
+            text_width = font_obj.text_length(new_text, fontsize=size)
+        except Exception:
+            insert_font = "helv"
+            text_width = fitz.Font(insert_font).text_length(new_text, fontsize=size)
+
+        insert_path = _classify_insert_path(
+            new_text=new_text,
+            member_spans=member_spans,
+            rect=fitz.Rect(base_layout),
+            rotation=resolve_result.rotation,
+            preserve_multi_style=preserve_multi_style,
+            has_new_rect=new_rect is not None,
+            needs_cjk=self._needs_cjk_font(new_text),
+            text_width=float(text_width),
+            available_width=float(available_w),
+            size=float(size),
         )
-
-        if (
-            not resolve_result.is_vertical
-            and new_rect is None
-            and "\n" not in new_text
-            and single_line_members
-            and not self._needs_cjk_font(new_text)
-        ):
-            margin = 15
-            right_margin_pt = max(60.0, min(120.0, float(size) * 2.0))
-            right_safe = page_rect.x1 - right_margin_pt
-            available_w = max(0.0, right_safe - max(float(base_layout.x0), page_rect.x0) - margin)
-            insert_font = self._resolve_font_for_push(resolve_result.resolved_font)
-            try:
-                font_obj = fitz.Font(insert_font)
-                text_width = font_obj.text_length(new_text, fontsize=size)
-            except Exception:
-                insert_font = "helv"
-                text_width = fitz.Font(insert_font).text_length(new_text, fontsize=size)
-            if 0 < text_width <= available_w:
-                origin_span = min(
-                    member_spans,
-                    key=lambda span: (float(span.origin.x), float(span.origin.y)),
-                )
-                origin = fitz.Point(
-                    float(origin_span.origin.x),
-                    float(origin_span.origin.y),
-                )
-                page.insert_text(
-                    origin,
-                    new_text,
-                    fontname=insert_font,
-                    fontsize=float(size),
-                    color=tuple(float(c) for c in color),
-                    rotate=0,
-                )
-                original_bbox = rect_union([fitz.Rect(span.bbox) for span in member_spans])
-                return fitz.Rect(
-                    original_bbox.x0,
-                    original_bbox.y0,
-                    min(original_bbox.x0 + text_width, page_rect.x1 - 10),
-                    original_bbox.y1,
-                )
+        if insert_path == "fast":
+            origin_span = min(
+                member_spans,
+                key=lambda span: (float(span.origin.x), float(span.origin.y)),
+            )
+            origin = fitz.Point(
+                float(origin_span.origin.x),
+                float(origin_span.origin.y),
+            )
+            page.insert_text(
+                origin,
+                new_text,
+                fontname=insert_font,
+                fontsize=float(size),
+                color=tuple(float(c) for c in color),
+                rotate=0,
+            )
+            original_bbox = rect_union([fitz.Rect(span.bbox) for span in member_spans])
+            return fitz.Rect(
+                original_bbox.x0,
+                original_bbox.y0,
+                min(original_bbox.x0 + text_width, page_rect.x1 - 10),
+                original_bbox.y1,
+            )
 
         if resolve_result.is_vertical:
             if new_rect is not None:
@@ -3448,14 +3786,26 @@ class PDFModel:
                 )
                 _probe_doc.close()
                 _probe_used_h = insert_rect.height - _probe_spare
-                _probe_y1 = insert_rect.y0 + _probe_used_h
-                _probe_y1 = float(min(max(_probe_y1, base_y1), page_rect.y1))
-                height_growth = _probe_y1 - resolve_result.redact_rect.y1
+                _probe_actual_y1 = insert_rect.y0 + _probe_used_h
+                # Trust the probe's actual measurement of needed height.
+                # The previous max(_probe_y1, base_y1) clamping injected a
+                # heuristic floor (line_count × size × 2 + size × 2) that
+                # over-estimated single-line edits by ~4× and forced
+                # spurious push-downs.
+                _probe_y1 = float(min(_probe_actual_y1, page_rect.y1))
+                # MuPDF's insert_htmlbox adds a small fixed leading (~2pt) on
+                # every rendering on top of CSS line-height. Subtract it so a
+                # single-line non-wrapping edit doesn't look like genuine
+                # height growth and erroneously push unedited content away.
+                MUPDF_HTMLBOX_OVERHEAD_PT = 2.0
+                raw_growth = _probe_y1 - resolve_result.redact_rect.y1
+                height_growth = max(0.0, raw_growth - MUPDF_HTMLBOX_OVERHEAD_PT)
                 meaningful_growth = max(0.5, float(size) * 0.2)
                 if height_growth > meaningful_growth:
                     logger.debug(
-                        "換行預估溢出 %.1fpt，預先推移下方文字塊（pre-push）",
+                        "換行預估溢出 %.1fpt（raw=%.1fpt），預先推移下方文字塊（pre-push）",
                         height_growth,
+                        raw_growth,
                     )
                     self._push_down_overlapping_text(
                         page, page_rect,
@@ -3585,6 +3935,8 @@ class PDFModel:
             new_layout_rect.x1, computed_y1
         )
         shrunk_rect = clamp_rect_to_page(shrunk_rect, page_rect)
+        if resolve_result.reopen_anchor_rect is not None:
+            return clamp_rect_to_page(fitz.Rect(resolve_result.reopen_anchor_rect), page_rect)
         return fitz.Rect(shrunk_rect)
 
     def _verify_rebuild_edit(
@@ -3710,6 +4062,55 @@ class PDFModel:
             update_kwargs["layout_rect"] = new_layout_rect
         self.block_manager.update_block(resolve_result.target, **update_kwargs)
         self.block_manager.rebuild_page(page_idx, self.doc)
+        if resolve_result.reopen_anchor_rect is not None:
+            anchor_rect = fitz.Rect(resolve_result.reopen_anchor_rect)
+            anchor_size = self._get_run_reopen_anchor_size(
+                page_idx,
+                resolve_result.resolved_target_span_id,
+            )
+            if anchor_size is None:
+                anchor_size = float(size)
+            self._set_run_reopen_anchor_rect(
+                page_idx,
+                resolve_result.resolved_target_span_id,
+                anchor_rect,
+            )
+            self._set_run_reopen_anchor_size(
+                page_idx,
+                resolve_result.resolved_target_span_id,
+                anchor_size,
+            )
+            try:
+                rebuilt_runs = self.block_manager.get_runs(page_idx)
+                if rebuilt_runs:
+                    norm_new = normalize_text(new_text or "")
+                    anchor_cx = float(anchor_rect.x0 + (anchor_rect.width / 2.0))
+                    anchor_cy = float(anchor_rect.y0 + (anchor_rect.height / 2.0))
+
+                    def _run_anchor_score(span: EditableSpan) -> tuple[int, float]:
+                        span_rect = fitz.Rect(span.bbox)
+                        span_cx = float(span_rect.x0 + (span_rect.width / 2.0))
+                        span_cy = float(span_rect.y0 + (span_rect.height / 2.0))
+                        distance_sq = ((span_cx - anchor_cx) ** 2) + ((span_cy - anchor_cy) ** 2)
+                        text_match_penalty = 0
+                        if norm_new:
+                            text_match_penalty = 0 if normalize_text(span.text) == norm_new else 1
+                        return (text_match_penalty, distance_sq)
+
+                    best_run = min(rebuilt_runs, key=_run_anchor_score)
+                    if best_run.span_id != resolve_result.resolved_target_span_id:
+                        # rebuild_page assigned a new span_id; the pre-rebuild
+                        # key written above is now an orphan — drop it before
+                        # writing under the new id so the anchor dict can't
+                        # grow without bound across reopen cycles.
+                        self._delete_run_reopen_anchor(
+                            page_idx,
+                            resolve_result.resolved_target_span_id,
+                        )
+                    self._set_run_reopen_anchor_rect(page_idx, best_run.span_id, anchor_rect)
+                    self._set_run_reopen_anchor_size(page_idx, best_run.span_id, anchor_size)
+            except Exception as anchor_exc:
+                logger.debug("run anchor refresh skipped after rebuild: %s", anchor_exc)
         logger.debug(
             "編輯文字成功: 頁面 %s, block_id=%s, text='%s...'",
             page_num,
@@ -3760,7 +4161,7 @@ class PDFModel:
                         )
             if should_promote:
                 effective = "paragraph"
-                logger.debug("auto-promoted target_mode run->paragraph (no explicit span_id)")
+                logger.warning("auto-promoted target_mode run->paragraph (no explicit span_id)")
         return effective
 
     def edit_text(self, page_num: int, rect: fitz.Rect, new_text: str,

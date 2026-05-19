@@ -3,13 +3,26 @@ from __future__ import annotations
 from pathlib import Path
 
 import fitz
+import pytest
+
+
+def _resolve_fixture_pdf() -> Path:
+    root = Path(__file__).resolve().parents[1]
+    candidates = [
+        root / "test_files" / "2.pdf",
+        root / "test_files" / "test-horizontal-texts.pdf",
+        root / "test_files" / "test-colored-background.pdf",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    pytest.skip("no render-colorspace fixture PDF available")
 
 
 def test_tool_manager_render_page_pixmap_accepts_colorspace() -> None:
     from model.pdf_model import PDFModel
 
-    root = Path(__file__).resolve().parents[1]
-    pdf_path = root / "test_files" / "2.pdf"
+    pdf_path = _resolve_fixture_pdf()
 
     model = PDFModel()
     model.open_pdf(str(pdf_path))
@@ -32,8 +45,7 @@ def test_tool_manager_render_page_pixmap_accepts_colorspace() -> None:
 def test_pdf_model_render_entry_points_forward_colorspace() -> None:
     from model.pdf_model import PDFModel
 
-    root = Path(__file__).resolve().parents[1]
-    pdf_path = root / "test_files" / "2.pdf"
+    pdf_path = _resolve_fixture_pdf()
 
     model = PDFModel()
     model.open_pdf(str(pdf_path))

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import fitz
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -232,10 +233,178 @@ def test_paragraph_drag_twice_with_stale_span_id() -> None:
         model.close()
 
 
+# ── Phase-2 red-light regression ───────────────────────────────────────────
+
+
+def test_1pdf_paragraph_target_excludes_overlapping_run_or_not_run() -> None:
+    model = PDFModel()
+    try:
+        model.open_pdf("test_files/1.pdf")
+        model.ensure_page_index_built(1)
+        model.set_text_target_mode("paragraph")
+
+        runs = [r for r in model.block_manager.get_runs(0) if (r.text or "").strip()]
+        paragraphs = [p for p in model.block_manager.get_paragraphs(0) if (p.text or "").strip()]
+        paragraph_anchor = next((r for r in runs if _norm(r.text) == "program"), None)
+        overlap_paragraph = next(
+            (
+                p
+                for p in paragraphs
+                if all(token in _norm(p.text) for token in ("run", "not"))
+            ),
+            None,
+        )
+        assert paragraph_anchor is not None, "cannot locate paragraph anchor run 'program'"
+        assert overlap_paragraph is not None, "cannot locate overlap control paragraph 'run or not run'"
+
+        center = fitz.Point(
+            (paragraph_anchor.bbox.x0 + paragraph_anchor.bbox.x1) / 2.0,
+            (paragraph_anchor.bbox.y0 + paragraph_anchor.bbox.y1) / 2.0,
+        )
+        hit = model.get_text_info_at_point(1, center)
+        assert hit is not None and hit.target_mode == "paragraph"
+        overlap_run_ids = set(overlap_paragraph.run_ids)
+        leaked = overlap_run_ids.intersection(set(hit.cluster_span_ids or []))
+        assert not leaked, (
+            "paragraph target should not leak unrelated overlapping paragraph runs into cluster_span_ids; "
+            f"leaked={sorted(leaked)!r}"
+        )
+    finally:
+        model.close()
+
+
+def test_1pdf_text_hit_does_not_contain_replacement_character_when_plain_text_has_alternative() -> None:
+    model = PDFModel()
+    try:
+        model.open_pdf("test_files/1.pdf")
+        model.ensure_page_index_built(1)
+        model.set_text_target_mode("paragraph")
+
+        runs = [r for r in model.block_manager.get_runs(0) if (r.text or "").strip()]
+        anchor = next((r for r in runs if _norm(r.text) == "young"), None)
+        assert anchor is not None, "cannot locate anchor run 'young'"
+
+        center = fitz.Point(
+            (anchor.bbox.x0 + anchor.bbox.x1) / 2.0,
+            (anchor.bbox.y0 + anchor.bbox.y1) / 2.0,
+        )
+        hit = model.get_text_info_at_point(1, center)
+        assert hit is not None and hit.target_mode == "paragraph"
+
+        plain_text = model.doc[0].get_text("text")
+        assert "\ufffd" not in plain_text, "fixture must expose non-replacement plain text"
+        assert "\ufffd" not in (hit.target_text or ""), (
+            f"paragraph hit text still contains replacement characters: {hit.target_text!r}"
+        )
+    finally:
+        model.close()
+
+
+def test_vertical_paragraph_groups_adjacent_columns_in_reading_order() -> None:
+    fixture = Path("test_files/when I was young I.pdf")
+    if not fixture.exists():
+        pytest.skip("missing optional fixture: test_files/when I was young I.pdf")
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(fixture))
+        model.ensure_page_index_built(1)
+        model.set_text_target_mode("paragraph")
+
+        runs = [r for r in model.block_manager.get_runs(0) if (r.text or "").strip()]
+        anchor = next((r for r in runs if "radio" in _norm(r.text)), None)
+        assert anchor is not None, "cannot locate anchor run containing 'radio'"
+
+        center = fitz.Point(
+            (anchor.bbox.x0 + anchor.bbox.x1) / 2.0,
+            (anchor.bbox.y0 + anchor.bbox.y1) / 2.0,
+        )
+        hit = model.get_text_info_at_point(1, center)
+        assert hit is not None and hit.target_mode == "paragraph"
+
+        hit_text = _norm(hit.target_text)
+        for token in ("when", "radio", "song"):
+            assert token in hit_text, (
+                "vertical paragraph target must group adjacent columns into one coherent target; "
+                f"missing token={token!r}, text={hit.target_text!r}"
+            )
+    finally:
+        model.close()
+
+
+def test_phase2_paragraph_edit_preserves_mixed_color_runs() -> None:
+    """Phase-2 symptom 3: content-only paragraph edits must not collapse multi-style runs
+    onto the dominant (usually ``helv`` / black) style.
+    """
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = Path(tmp) / "mixed_color.pdf"
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), "Red part ", fontsize=12.0, fontname="helv", color=(1, 0, 0))
+        page.insert_text((135, 100), "black part", fontsize=12.0, fontname="helv", color=(0, 0, 0))
+        doc.save(str(pdf_path), garbage=0)
+        doc.close()
+
+        model = PDFModel()
+        try:
+            model.open_pdf(str(pdf_path))
+            model.ensure_page_index_built(1)
+
+            runs_before = [r for r in model.block_manager.get_runs(0) if (r.text or "").strip()]
+            colors_before = {tuple(round(float(c), 3) for c in r.color) for r in runs_before}
+            assert len(colors_before) >= 2, (
+                f"Fixture invalid: expected multi-color paragraph, got {colors_before}"
+            )
+
+            model.set_text_target_mode("paragraph")
+            red_run = next(
+                (r for r in runs_before if tuple(round(float(c), 3) for c in r.color) == (1.0, 0.0, 0.0)),
+                None,
+            )
+            assert red_run is not None, (
+                f"cannot locate red-colored run among {[(r.text, r.color) for r in runs_before]}"
+            )
+
+            hit = model.get_text_info_at_point(
+                1,
+                fitz.Point(
+                    (red_run.bbox.x0 + red_run.bbox.x1) / 2.0,
+                    (red_run.bbox.y0 + red_run.bbox.y1) / 2.0,
+                ),
+            )
+            assert hit is not None and hit.target_mode == "paragraph"
+
+            result = model.edit_text(
+                page_num=1,
+                rect=fitz.Rect(hit.target_bbox),
+                new_text=(hit.target_text or "") + " CHANGED",
+                font=hit.font,
+                size=float(hit.size),
+                color=tuple(float(c) for c in hit.color),
+                original_text=hit.target_text,
+                target_mode="paragraph",
+            )
+            assert result.name == "SUCCESS"
+            model.block_manager.rebuild_page(0, model.doc)
+
+            runs_after = [r for r in model.block_manager.get_runs(0) if (r.text or "").strip()]
+            colors_after = {tuple(round(float(c), 3) for c in r.color) for r in runs_after}
+            assert len(colors_after) >= 2, (
+                "Multi-style paragraph collapsed to single style after content-only edit: "
+                f"before={colors_before}, after={colors_after}"
+            )
+        finally:
+            model.close()
+
+
 if __name__ == "__main__":
     test_runs_merge_micro_spans_on_test_file_1()
     test_hit_and_edit_use_reconstructed_run()
     test_paragraph_mode_hit_and_redo_stability()
     test_paragraph_drag_without_text_change_with_overlap()
     test_paragraph_drag_twice_with_stale_span_id()
+    test_phase2_paragraph_edit_preserves_mixed_color_runs()
     print("PASS: char-run reconstruction regression suite")

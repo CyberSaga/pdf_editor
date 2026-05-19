@@ -10,7 +10,7 @@ Desktop PDF editor written in Python with a Qt UI.
 - Objects mode: move/resize/rotate/delete rectangles and images; objects may overlap
 - File-tab optimizer: save an optimized copy with presets (`快速` / `平衡` / `極致壓縮`), on-demand space audit report, and size-reduction summary
 - Unified export dialog: current/selected pages, DPI (`72` to `2400`), output as PDF or images (`JPG/PNG/TIFF`)
-- Text editing with overlap-safe behavior
+- Text editing with overlap-safe behavior and WYSIWYG fidelity: the inline editor opens with a frozen PyMuPDF preview frame so glyphs do not jump on click; editor size, wrap width, and line height all match the source PDF span exactly at any zoom and DPI
 - Empty inline edit commit deletes the target textbox content (undo/redo supported)
 - Dedicated add-text mode
 - Text properties commit/discard controls (`套用` / `取消`) with focus-safe inline editing
