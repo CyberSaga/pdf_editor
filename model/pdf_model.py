@@ -92,8 +92,16 @@ def _install_rawdict_text_compat() -> None:
     original_get_text = fitz.Page.get_text
 
     def _compat_get_text(page, option="text", *args, **kwargs):
-        result = original_get_text(page, option, *args, **kwargs)
-        if option != "rawdict" or not isinstance(result, dict):
+        keyword_option = kwargs.get("option")
+        if option == "text" and keyword_option is not None:
+            effective_option = keyword_option
+            result = original_get_text(page, *args, **kwargs)
+        else:
+            effective_option = option
+            call_kwargs = dict(kwargs)
+            call_kwargs.pop("option", None)
+            result = original_get_text(page, option, *args, **call_kwargs)
+        if effective_option != "rawdict" or not isinstance(result, dict):
             return result
         for block in result.get("blocks", []):
             if block.get("type") != 0:
@@ -166,8 +174,8 @@ def _classify_insert_path(
     *,
     new_text: str,
     member_spans: list,
-    rect: fitz.Rect,
     rotation: int,
+    is_vertical: bool,
     preserve_multi_style: bool,
     has_new_rect: bool,
     needs_cjk: bool,
@@ -189,6 +197,8 @@ def _classify_insert_path(
     ``min(member_spans, ...)`` would raise.
     """
     if not member_spans:
+        return "htmlbox"
+    if is_vertical:
         return "htmlbox"
     if rotation in (90, 270):
         return "htmlbox"
@@ -388,7 +398,7 @@ class PDFModel:
         return True
 
     def close_all_sessions(self) -> None:
-        for sid in list(self._session_ids):
+        for sid in list(getattr(self, "_session_ids", [])):
             self.close_session(sid)
 
     def save_session_as(self, session_id: str, new_path: str) -> None:
@@ -597,7 +607,10 @@ class PDFModel:
                 raise RuntimeError(f"無法創建後備臨時目錄: {e!s}")
 
     def __del__(self):
-        self.close()
+        try:
+            self.close()
+        except AttributeError:
+            pass
 
     def open_pdf(self, path: str, password: str | None = None, append: bool = False) -> str:
         """
@@ -2517,7 +2530,6 @@ class PDFModel:
             page.delete_annot(annot)
             return True
         if payload["kind"] == "image":
-            xref = int(payload.get("xref", 0) or 0)
             old_rect = fitz.Rect(payload.get("rect") or annot.rect)
             try:
                 page.add_redact_annot(old_rect)
@@ -3739,8 +3751,8 @@ class PDFModel:
         insert_path = _classify_insert_path(
             new_text=new_text,
             member_spans=member_spans,
-            rect=fitz.Rect(base_layout),
             rotation=int(resolve_result.rotation),
+            is_vertical=bool(resolve_result.is_vertical),
             preserve_multi_style=preserve_multi_style,
             has_new_rect=new_rect is not None,
             needs_cjk=needs_cjk,

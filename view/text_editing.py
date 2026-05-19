@@ -519,6 +519,10 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
     # back to native QTextEdit painting so typed text stays readable.
     _MUTATED_PREVIEW_MIN_NONTRANSPARENT_COVERAGE = 0.0001
     _VISIBLE_ALPHA_THRESHOLD = 8
+    _VISIBLE_ALPHA_TRANSLATE = bytes(
+        1 if value > 8 else 0
+        for value in range(256)
+    )
 
     def __init__(self, text: str, renderer: PreviewRenderer | None = None, **legacy_kwargs) -> None:
         super().__init__()
@@ -621,12 +625,21 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
             image = image.convertToFormat(QImage.Format_RGBA8888)
         threshold = int(self._VISIBLE_ALPHA_THRESHOLD)
         stride = int(image.bytesPerLine())
-        buf = bytes(image.constBits())
-        visible = 0
-        for y in range(height):
-            row_start = y * stride
-            row_alpha = buf[row_start + 3 : row_start + 4 * width : 4]
-            visible += sum(1 for a in row_alpha if a > threshold)
+        size_bytes = int(image.sizeInBytes())
+        buf = memoryview(image.constBits())[:size_bytes]
+        try:
+            import numpy as np
+
+            pixels = np.frombuffer(buf, dtype=np.uint8, count=stride * height)
+            rows = pixels.reshape((height, stride))
+            visible = int(np.count_nonzero(rows[:, 3 : 4 * width : 4] > threshold))
+        except ImportError:
+            visible = 0
+            translate = self._VISIBLE_ALPHA_TRANSLATE
+            for y in range(height):
+                row_start = y * stride
+                row_alpha = buf[row_start + 3 : row_start + 4 * width : 4]
+                visible += sum(row_alpha.tobytes().translate(translate))
         return visible / float(width * height)
 
     def _regenerate_preview(self) -> None:

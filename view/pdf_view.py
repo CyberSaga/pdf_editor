@@ -2395,12 +2395,14 @@ class PDFView(QMainWindow):
             self.sig_jump_to_annotation.emit(xref)
 
     def _navigate_search_previous(self):
-        if not self.current_search_results: return
+        if not self.current_search_results:
+            return
         self.current_search_index = (self.current_search_index - 1 + len(self.current_search_results)) % len(self.current_search_results)
         self._jump_to_search_index(self.current_search_index)
 
     def _navigate_search_next(self):
-        if not self.current_search_results: return
+        if not self.current_search_results:
+            return
         self.current_search_index = (self.current_search_index + 1) % len(self.current_search_results)
         self._jump_to_search_index(self.current_search_index)
 
@@ -2413,7 +2415,8 @@ class PDFView(QMainWindow):
 
     def _wheel_event(self, event):
         if event.modifiers() & Qt.ControlModifier:
-            if self.text_editor: self._finalize_text_edit()
+            if self.text_editor:
+                self._finalize_text_edit()
             factor = 1.1 if event.angleDelta().y() > 0 else 0.9
             self.scale *= factor
             # 即時套用 view transform，提供流暢的視覺縮放預覽（此時 pixmap 尚未重渲，畫面模糊屬正常）
@@ -2689,6 +2692,9 @@ class PDFView(QMainWindow):
                         allow_fallback=True,
                     )
                     if info:
+                        # intentional change from 308ae15: open the editor on
+                        # press so reopen-after-apply/cancel does not depend on
+                        # stale pending drag state surviving until release.
                         # Click-to-edit should open immediately for a fresh target.
                         # Deferring to mouse-release can miss reopen paths after a
                         # cancel/apply cycle due stale drag state.
@@ -3607,6 +3613,8 @@ class PDFView(QMainWindow):
         """Draw persistent dim outlines around text blocks on visible pages."""
         self._clear_all_block_outlines()
         if getattr(self, "current_mode", "browse") == "edit_text":
+            # intentional change from 308ae15: edit_text uses hover/active-editor
+            # feedback instead of persistent outlines while text editing is armed.
             return
         model = getattr(getattr(self, "controller", None), "model", None)
         if model is None or not getattr(model, "doc", None):
@@ -4166,8 +4174,10 @@ class PDFView(QMainWindow):
         if ok and pages:
             try:
                 parsed = parse_pages(pages, self.total_pages)
-                if parsed: self.sig_delete_pages.emit(parsed)
-            except ValueError: show_error(self, "頁碼格式錯誤")
+                if parsed:
+                    self.sig_delete_pages.emit(parsed)
+            except ValueError:
+                show_error(self, "頁碼格式錯誤")
 
     def _delete_specific_pages(self, pages: list[int]) -> None:
         if self.total_pages == 0:
@@ -4183,8 +4193,10 @@ class PDFView(QMainWindow):
             if ok:
                 try:
                     parsed = parse_pages(pages, self.total_pages)
-                    if parsed: self.sig_rotate_pages.emit(parsed, degrees)
-                except ValueError: show_error(self, "頁碼格式錯誤")
+                    if parsed:
+                        self.sig_rotate_pages.emit(parsed, degrees)
+                except ValueError:
+                    show_error(self, "頁碼格式錯誤")
 
     def _rotate_specific_pages(self, pages: list[int], degrees: int) -> None:
         if self.total_pages == 0:
