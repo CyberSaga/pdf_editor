@@ -1,5 +1,13 @@
 # TODOS
 
+## Done (2026-05-19) -- Clean re-implementation of glyph-jump elimination
+
+- What: Re-derived the 5-layer no-jump text-editing fix from clean baseline `c091661f` on branch `rewrite/glyph-jump-v2` instead of carrying the 50-commit organic history.
+- Layers: A commit-side fidelity + shared `_classify_insert_path` (model); B `PreviewRenderer` real MuPDF rasterization; C `_display_font_pt` DPI-correct sizing; D `PreviewBackedInlineTextEditor` frozen-first-frame paint; E `run_reopen_anchors` cross-edit anchor.
+- Prereqs ported (outside the 5-layer plan, gate-required): rawdict `span['text']` backfill shim; `QGraphicsProxyWidget.graphicsProxyWidget` shim; `view/pdf_view.py` click-pipeline (adopted from validated `308ae15`); 3 gate test files + finalize-failure API + resilient audit fixtures.
+- Outcome: 142 passed / 6 skipped across ported suites. No-jump gate's 5 core behavioral gates pass deterministically x2 (27 cases, manifest match). Remaining gate steps need `ux_signoff_agent.py` (absent) / are render-scale-DPI environment-sensitive (fail identically on validated code in offscreen sandbox) -- see `implementation-notes.html` Q3.
+- Follow-ups: confirm Q1 (`get_render_width_for_edit` signature slimming), Q4 (finalize FAILED behavior change); run gate full-suite in a real-DPI desktop env.
+
 ## Done (2026-04-22) -- Phase 2 text-editing fidelity
 
 - What: Closed the Phase 2 gap between current text-edit behavior and Acrobat-level stability across five tasks.

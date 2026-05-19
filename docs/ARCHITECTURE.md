@@ -402,3 +402,40 @@ Contract:
 
 Guardrails (do not change casually):
 - If you modify list ordering, add/remove, or refresh behavior, update `docs/FEATURES.md` section “Merge PDFs (頁面 Tab)” and re-run the regression tests in `test_scripts/test_pdf_merge_workflow.py` that assert reorder-then-add/remove preserves order.
+
+## 10. No-Jump Inline Text Editing
+
+The inline editor must be pixel-faithful to the committed PDF so opening,
+typing, and reopening never visibly shift glyphs. Five cooperating pieces:
+
+- **Shared insert classifier** — `model.pdf_model._classify_insert_path` is the
+  single source of truth for "fast `insert_text`" vs "`insert_htmlbox`". Both
+  the commit path (`_apply_redact_insert`) and the preview path
+  (`PreviewRenderer`) route through it; they cannot diverge.
+- **`PreviewRenderer`** (view) rasterizes proposed content through the *same*
+  MuPDF `insert_htmlbox` engine and CSS the commit uses (borrowed from the
+  model when present), cached by full arg tuple incl. `line_height`.
+- **`_display_font_pt`** converts pdf pt → Qt widget pt
+  (`× render_scale × 72/logical_dpi`) so editor glyphs equal rendered-PDF
+  glyphs in physical pixels.
+- **`PreviewBackedInlineTextEditor`** paints a *frozen* MuPDF capture of the
+  span while text == initial, the live CSS preview once mutated; the decision
+  flag is cached on `textChanged`, never recomputed per paint.
+- **Run-reopen anchors** (`DocumentSession.run_reopen_anchors/_sizes`, keyed
+  `"{page_idx}::{span_id}"`) record the original bbox+size on the first
+  run-mode non-drag edit; commit pins layout back to the anchor and migrates it
+  onto the best-scoring rebuilt run, so reopen cycles do not cumulate shrink.
+
+Boundary note: `view/pdf_view.py` only emits signals
+(`sig_edit_text`/`sig_add_textbox`) — the View→Controller→Model rule holds.
+Two import-time compatibility shims exist (rawdict `span['text']` backfill in
+the model; `QGraphicsProxyWidget.graphicsProxyWidget` in the view) — see
+`docs/PITFALLS.md`.
+
+Guardrails (do not change casually):
+- Preview and commit must keep sharing `_classify_insert_path`.
+- Never assign `editor.font = <QFont>` (shadows `QTextEdit.font()`); build the
+  `QFont` with `_display_font_pt`.
+- The `paintEvent` frozen-vs-preview two-branch contract and the
+  `_text_matches_initial` caching are load-bearing — the gate
+  `scripts/verify_no_jump.py` (27 deterministic cases, run twice) enforces it.
