@@ -1219,7 +1219,7 @@ def test_create_text_editor_keeps_background_transparent_for_edit_and_add_text(
     view.scene = _FakeSceneWithAddWidget()
     view._render_scale = 1.0
     view.controller = SimpleNamespace(
-        model=SimpleNamespace(get_render_width_for_edit=lambda *args, **kwargs: 40.0)
+        model=SimpleNamespace(get_render_width_for_edit=lambda page_num, rect: 40.0)
     )
     view._refresh_undo_redo_action_state = lambda: None
     view._set_document_undo_redo_enabled = lambda enabled: None
@@ -1265,7 +1265,7 @@ def test_create_text_editor_rotates_proxy_for_vertical_text(monkeypatch: pytest.
     view.scene = _FakeSceneWithAddWidget()
     view._render_scale = 1.0
     view.controller = SimpleNamespace(
-        model=SimpleNamespace(get_render_width_for_edit=lambda *args, **kwargs: 40.0)
+        model=SimpleNamespace(get_render_width_for_edit=lambda page_num, rect: 40.0)
     )
     view._refresh_undo_redo_action_state = lambda: None
     view._set_document_undo_redo_enabled = lambda enabled: None
@@ -1321,7 +1321,7 @@ def test_create_text_editor_adds_mask_item_to_hide_display_text(monkeypatch: pyt
     view.scene = _FakeSceneWithEditorMask()
     view._render_scale = 1.0
     view.controller = SimpleNamespace(
-        model=SimpleNamespace(get_render_width_for_edit=lambda *args, **kwargs: 40.0)
+        model=SimpleNamespace(get_render_width_for_edit=lambda page_num, rect: 40.0)
     )
     view._refresh_undo_redo_action_state = lambda: None
     view._set_document_undo_redo_enabled = lambda enabled: None
@@ -1443,7 +1443,7 @@ def test_phase2_create_text_editor_records_fractional_initial_size(
     view.scene = _FakeSceneWithAddWidget()
     view._render_scale = 1.0
     view.controller = SimpleNamespace(
-        model=SimpleNamespace(get_render_width_for_edit=lambda *args, **kwargs: 40.0)
+        model=SimpleNamespace(get_render_width_for_edit=lambda page_num, rect: 40.0)
     )
     view._refresh_undo_redo_action_state = lambda: None
     view._set_document_undo_redo_enabled = lambda enabled: None
@@ -1565,7 +1565,7 @@ def _make_phase2_height_view(monkeypatch: pytest.MonkeyPatch) -> tuple[pdf_view.
     view.scene = _FakeSceneCapture()
     view._render_scale = 2.0
     view.controller = SimpleNamespace(
-        model=SimpleNamespace(get_render_width_for_edit=lambda *args, **kwargs: 200.0)
+        model=SimpleNamespace(get_render_width_for_edit=lambda page_num, rect: 200.0)
     )
     view._refresh_undo_redo_action_state = lambda: None
     view._set_document_undo_redo_enabled = lambda _: None

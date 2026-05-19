@@ -1744,7 +1744,7 @@ class PDFModel:
             bounds.include_rect(line_rect)
         return "\n".join(line_texts).strip(), bounds
 
-    def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect, rotation: int = 0, font_size: float = 12) -> float:
+    def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect) -> float:
         """編輯換行寬度 == 原文字框寬度（point），不再加任何 Qt margin。
 
         編輯框比原 rect 寬時，Qt 字型渲染（與 PyMuPDF glyph metrics 略有
