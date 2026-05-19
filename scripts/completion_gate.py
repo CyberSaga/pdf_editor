@@ -236,12 +236,13 @@ def main(skip_signoff: bool = False) -> int:
         print(f"\n[completion-gate] FAIL — cannot resolve git HEAD for proof: {exc}")
         return 1
 
-    # Both evidence files MUST exist; if they disappeared between sub-runs and
-    # proof-write, something mutated the filesystem and the proof is invalid.
-    for path, name in [(MARKER_PATH, ".gate_passed"), (SIGNOFF_PATH, "signoff.json")]:
-        if not path.exists():
-            print(f"\n[completion-gate] FAIL — {name} missing when writing proof — "
-                  f"filesystem was mutated after gate run"); return 1
+    # .gate_passed MUST exist.  signoff.json only required when signoff was not skipped.
+    if not MARKER_PATH.exists():
+        print(f"\n[completion-gate] FAIL — .gate_passed missing when writing proof — "
+              f"filesystem was mutated after gate run"); return 1
+    if not skip_signoff and not SIGNOFF_PATH.exists():
+        print(f"\n[completion-gate] FAIL — signoff.json missing when writing proof — "
+              f"filesystem was mutated after gate run"); return 1
 
     # Verify .gate_passed's recorded commit matches HEAD (final sanity check)
     try:
@@ -262,7 +263,7 @@ def main(skip_signoff: bool = False) -> int:
         "verify_no_jump_exit_code":    gate_rc,   # 0 — verified above
         "check_gate_passed_exit_code": check_rc,  # 0 — verified above
         "gate_passed_digest":          _sha256(MARKER_PATH),
-        "signoff_digest":              _sha256(SIGNOFF_PATH),
+        "signoff_digest":              "SKIPPED" if skip_signoff else _sha256(SIGNOFF_PATH),
         "tracked_scripts":             _REQUIRED_TRACKED,  # auditable: all were git-tracked at proof time
     }
     PROOF_PATH.write_text(json.dumps(proof, indent=2), encoding="utf-8")
