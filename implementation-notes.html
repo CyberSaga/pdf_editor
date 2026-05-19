@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Glyph-Jump Elimination v2 — Implementation Notes</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 980px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.55; color: #1a1a1a; }
+  h1 { border-bottom: 3px solid #333; padding-bottom: .3rem; }
+  h2 { margin-top: 2.2rem; border-bottom: 1px solid #ccc; padding-bottom: .2rem; }
+  h3 { margin-top: 1.4rem; color: #b03000; }
+  code { background: #f3f3f3; padding: .1rem .35rem; border-radius: 3px; font-size: .92em; }
+  pre { background: #1e1e1e; color: #e8e8e8; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .deviation { background: #fff6e5; border-left: 4px solid #e0a000; padding: .6rem 1rem; margin: .8rem 0; }
+  .decision  { background: #eef6ff; border-left: 4px solid #2a7de1; padding: .6rem 1rem; margin: .8rem 0; }
+  .tradeoff  { background: #f0f0f5; border-left: 4px solid #777; padding: .6rem 1rem; margin: .8rem 0; }
+  .question  { background: #ffecec; border-left: 4px solid #d00; padding: .6rem 1rem; margin: .8rem 0; }
+  .status-done { color: #0a7a0a; font-weight: bold; }
+  .status-wip  { color: #b07000; font-weight: bold; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid #ccc; padding: .4rem .6rem; text-align: left; font-size: .92em; }
+  th { background: #f0f0f0; }
+</style>
+</head>
+<body>
+<h1>Glyph-Jump Elimination v2 — Implementation Notes</h1>
+<p><em>Clean re-implementation from baseline <code>c091661f</code> on branch
+<code>rewrite/glyph-jump-v2</code>, guided by the approved 5-layer plan.</em></p>
+
+<h2>Context &amp; Overall Approach</h2>
+<div class="decision">
+<strong>Spec source.</strong> The Chinese analysis document
+(<code>分析文字編輯為何成功.md</code>) that originally drove the plan is <em>not present</em>
+on the <code>c091661f</code> baseline (it was an untracked working-tree file authored
+after the baseline, and is not recoverable from git history on this branch). The
+approved plan in <code>i-ve-been-working-on-async-grove.md</code> — which was itself
+distilled from that analysis in the prior session — is therefore treated as the
+authoritative specification. Where the plan is silent, the <em>ported test suite</em>
+(copied from <code>308ae15</code>) is the tie-breaker, since those tests encode the
+exact behavioral contract the organic fix converged on.
+</div>
+<div class="decision">
+<strong>TDD ordering.</strong> Per CLAUDE.md §5.1 (Red-Light First), the validated
+test files are ported first to establish red, then each layer is implemented until
+its slice of the suite is green. Red baseline confirmed: Layer-A tests fail with
+<code>AttributeError: module 'model.pdf_model' has no attribute '_classify_insert_path'</code>.
+</div>
+
+<h2>Layer Status</h2>
+<table>
+<tr><th>Layer</th><th>Area</th><th>Status</th></tr>
+<tr><td>A — commit-side fidelity</td><td>model/pdf_model.py</td><td class="status-done">Done — 30/30 green</td></tr>
+<tr><td>B — real preview rasterization</td><td>view/text_editing.py</td><td>Pending</td></tr>
+<tr><td>C — DPI-correct Qt font sizing</td><td>view/text_editing.py</td><td>Pending</td></tr>
+<tr><td>D — frozen-frame proxy geometry</td><td>view/text_editing.py</td><td>Pending</td></tr>
+<tr><td>E — cross-edit anchor</td><td>model/pdf_model.py</td><td>Pending</td></tr>
+</table>
+
+<h2>Design Decisions</h2>
+
+<h3>Layer A — commit-side fidelity</h3>
+<div class="decision">
+<strong>Baseline already passed 26/30 Layer-A tests.</strong> <code>c091661f</code>
+("Phase 2 fidelity — float sizes") is <em>not</em> a blank slate: float font sizes,
+multi-style preservation and the no-op/rollback machinery already exist. Only 4
+tests were red. Layer A was therefore scoped to the minimal change set that turns
+those 4 green <em>without regressing the 26</em> (which include the real-PDF
+<code>test-complexed-layout</code> / <code>test-colored-background</code> height
+regression tests). Result: 30/30 green.
+</div>
+<div class="decision">
+<strong><code>_classify_insert_path</code> encodes the pre-existing inline condition
+exactly.</strong> The plan asks for a shared module-level classifier used by both
+preview and commit. To avoid behavioral drift, the classifier reproduces the
+baseline fast-path predicate bit-for-bit: non-empty <code>member_spans</code>,
+unrotated, no <code>new_rect</code>, no newline, not CJK, not multi-style,
+member-span vertical extent ≤ <code>max(2, size×1.5)</code>, and
+<code>0 &lt; text_width ≤ available_width</code>. <code>_apply_redact_insert</code>
+now computes the fast-path inputs unconditionally and delegates the decision to
+the classifier — same outcome, single source of truth.
+</div>
+<div class="decision">
+<strong><code>_line_ht</code> derivation.</strong> Multi-line: median of positive
+adjacent <code>origin.y</code> advances (robust to outliers vs. mean). Single-line
+(or undetermined): max member-span bbox height. Passed explicitly to
+<code>_build_insert_css</code>, which now only applies the
+<code>max(size, line_height)</code> clamp on the auto-calculate branch
+(<code>line_height ≤ 0</code>); explicit values (incl. tight leading like 8pt &lt;
+10pt size) pass through as <code>round(line_height, 2)</code>.
+</div>
+<div class="decision">
+<strong>Pre-push probe.</strong> Removed the
+<code>line_count×size×2 + size×2</code> floor on <code>base_y1</code> (it forced
+spurious push-downs on single-line edits) and subtract a fixed
+<code>2.0pt</code> MuPDF <code>insert_htmlbox</code> leading overhead from the
+probed used-height so the growth comparison reflects real ink, not renderer
+padding.
+</div>
+
+
+<h2>Deviations from Specification</h2>
+<div class="deviation">
+<strong>Plan Layer A listed test names to "port"; baseline already satisfied most.</strong>
+The plan framed Layer A as a large rewrite. In reality the clean baseline already
+embodied most Phase-2 fidelity, so the implemented diff is far smaller than the
+plan's bullet list implies. Functionally equivalent end state; less code churn.
+No behavioral deviation — every plan bullet (float sizes, line-height derivation,
+clamp-on-auto-only, exact render width, pre-push floor removal, shared classifier,
+empty-member guard) is implemented; several were partially pre-satisfied.
+</div>
+<div class="deviation">
+<strong><code>get_render_width_for_edit</code> body fully replaced with
+<code>return float(rect.width)</code>.</strong> The plan specifies exactly this.
+The old doc/rotation/font_size parameters are retained in the signature (callers
+still pass them) but are now unused. Left in place to avoid touching call sites;
+flagged for review below.
+</div>
+
+
+<h2>Trade-offs</h2>
+<p><em>(populated as implementation proceeds)</em></p>
+
+<h2>Unresolved Questions / Please Review</h2>
+<div class="question">
+<strong>Q1 (Layer A).</strong> <code>get_render_width_for_edit</code> now ignores
+its <code>rotation</code> and <code>font_size</code> parameters. Should the
+signature be slimmed to <code>(self, page_num, rect)</code> and call sites
+updated, or keep the stable signature? Kept stable for now.
+</div>
+<div class="question">
+<strong>Q2 (Layer A).</strong> The MuPDF htmlbox leading overhead is hard-coded
+at <code>2.0pt</code> (matches the value cited in the ported test's docstring).
+This is empirically correct for the tested PyMuPDF version but is a magic
+constant — acceptable, or should it be probed dynamically?
+</div>
+
+
+</body>
+</html>

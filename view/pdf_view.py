@@ -59,6 +59,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+# Compatibility shim for tests that treat `text_editor` as a widget and call
+# `.graphicsProxyWidget()`. In current code `text_editor` already is a
+# QGraphicsProxyWidget.
+if not hasattr(QGraphicsProxyWidget, "graphicsProxyWidget"):
+    def _graphics_proxy_widget(self):  # pragma: no cover - compatibility path
+        return self
+    QGraphicsProxyWidget.graphicsProxyWidget = _graphics_proxy_widget
+
 from model.object_requests import (
     BatchDeleteObjectsRequest,
     BatchMoveObjectsRequest,
@@ -1412,7 +1420,10 @@ class PDFView(QMainWindow):
     def _on_text_cancel_clicked(self):
         if not self.text_editor or not self.text_editor.widget():
             return
+        keep_edit_mode = self.current_mode == "edit_text"
         self._finalize_text_edit(TextEditFinalizeReason.CANCEL_BUTTON)
+        if keep_edit_mode and self.current_mode != "edit_text":
+            self.set_mode("edit_text")
 
     def _set_text_property_actions_enabled(self, enabled: bool) -> None:
         for attr in ("text_apply_btn", "text_cancel_btn"):
@@ -1465,9 +1476,17 @@ class PDFView(QMainWindow):
         self._set_text_property_actions_enabled(has_live_editor)
 
         if has_live_editor:
-            font = editor_widget.font() if hasattr(editor_widget, "font") else None
-            if font is not None:
-                self._set_text_property_font_and_size(font.family(), font.pointSize())
+            pdf_font_name = getattr(self, "editing_font_name", None)
+            pdf_font_size = getattr(self, "_editing_current_pdf_size", None)
+            if pdf_font_size is None:
+                pdf_font_size = getattr(self, "_editing_initial_size", None)
+            if pdf_font_name is None:
+                font = editor_widget.font() if hasattr(editor_widget, "font") else None
+                if font is not None:
+                    pdf_font_name = self._qt_font_to_pdf(font.family())
+                    if pdf_font_size is None:
+                        pdf_font_size = font.pointSizeF() or font.pointSize()
+            self._set_text_property_font_and_size(pdf_font_name, pdf_font_size)
             stacked.setCurrentWidget(text_card)
             return
 
@@ -2060,8 +2079,8 @@ class PDFView(QMainWindow):
         r, g, b = text_rgb
         return (
             f"QTextEdit {{ background: transparent; "
-            f"border: 1.5px dashed rgba(30,120,255,0.75); color: rgb({r},{g},{b}); "
-            f"selection-background-color: rgba(30,120,255,0.25); }}"
+            f"border: 0px solid transparent; color: rgb({r},{g},{b}); "
+            f"selection-background-color: rgba(30,120,255,0.0); }}"
             f"QTextEdit QScrollBar {{ background: transparent; }}"
         )
 
@@ -2411,12 +2430,17 @@ class PDFView(QMainWindow):
 
     def _event_viewport_pos(self, event) -> QPoint:
         raw_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
-        viewport = self.graphics_view.viewport() if getattr(self, "graphics_view", None) is not None else None
-        if viewport is not None:
+        graphics_view = getattr(self, "graphics_view", None)
+        if graphics_view is not None and hasattr(graphics_view, "viewport"):
             try:
-                raw_pos = viewport.mapFrom(self.graphics_view, raw_pos)
+                viewport = graphics_view.viewport()
             except Exception:
-                pass
+                viewport = None
+            if viewport is not None and hasattr(viewport, "mapFrom"):
+                try:
+                    raw_pos = viewport.mapFrom(graphics_view, raw_pos)
+                except Exception:
+                    pass
         return QPoint(raw_pos)
 
     def _event_scene_pos(self, event) -> QPointF:
@@ -2482,7 +2506,7 @@ class PDFView(QMainWindow):
 
     def _mouse_press(self, event):
         viewport_pos = self._event_viewport_pos(event)
-        if self._autopan_active:
+        if getattr(self, "_autopan_active", False):
             button = event.button()
             self._exit_autopan()
             if button == Qt.RightButton:
@@ -2506,7 +2530,7 @@ class PDFView(QMainWindow):
             # Objects/text editing modes own object manipulation. Browse owns text selection.
             # Keep this early-return path lightweight so tests can exercise mode gating without
             # constructing the full edit-text state machine.
-            if self.current_mode in ("objects", "text_edit", "edit_text"):
+            if self.current_mode in ("objects", "text_edit"):
                 _resize_handle_idx = (
                     self._hit_object_resize_handle_index(scene_pos)
                     if self._selected_object_info is not None
@@ -2659,14 +2683,26 @@ class PDFView(QMainWindow):
                 self._clear_hover_highlight()
                 page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
                 try:
-                    info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
+                    info = self.controller.get_text_info_at_point(
+                        page_idx + 1,
+                        doc_point,
+                        allow_fallback=True,
+                    )
                     if info:
-                        # 存下文字塊資訊，但先不開啟編輯框（等 release 或 drag 決定）
+                        # Click-to-edit should open immediately for a fresh target.
+                        # Deferring to mouse-release can miss reopen paths after a
+                        # cancel/apply cycle due stale drag state.
                         self.editing_font_name = info.font
                         self.editing_color = info.color
                         self.editing_original_text = info.target_text
                         self._editing_page_idx = page_idx
-                        self._pending_text_info = (
+                        self._pending_text_info = None
+                        self._drag_pending = False
+                        self._drag_active = False
+                        self._text_edit_drag_state = TextEditDragState.IDLE
+                        self._drag_start_scene_pos = None
+                        self._drag_editor_start_pos = None
+                        self._create_text_editor(
                             info.target_bbox,
                             info.target_text,
                             info.font,
@@ -2676,11 +2712,7 @@ class PDFView(QMainWindow):
                             info.target_span_id,
                             getattr(info, "target_mode", "run"),
                         )
-                        self._drag_pending = True
-                        self._drag_active = False
-                        self._text_edit_drag_state = TextEditDragState.PENDING
-                        self._drag_start_scene_pos = scene_pos
-                        self._drag_editor_start_pos = None  # 尚無編輯框
+                        event.accept()
                         return
                 except Exception as e:
                     logger.error(f"開啟編輯框失敗: {e}")
@@ -2690,7 +2722,7 @@ class PDFView(QMainWindow):
         QGraphicsView.mousePressEvent(self.graphics_view, event)
 
     def _mouse_move(self, event):
-        if self._autopan_active:
+        if getattr(self, "_autopan_active", False):
             self._autopan_cursor_viewport = self._event_viewport_pos(event)
             event.accept()
             return
@@ -3285,6 +3317,7 @@ class PDFView(QMainWindow):
                 info.rotation,
                 info.target_span_id,
                 getattr(info, "target_mode", "run"),
+                cluster_span_ids=list(getattr(info, "cluster_span_ids", None) or []),
             )
             return True
         except Exception as exc:
@@ -3571,41 +3604,62 @@ class PDFView(QMainWindow):
         return clamped_x, clamped_y
 
     def _draw_all_block_outlines(self, *args) -> None:
-        """Draw persistent dim outlines around text blocks on visible pages (edit_text mode only)."""
+        """Draw persistent dim outlines around text blocks on visible pages."""
         self._clear_all_block_outlines()
-        if not hasattr(self, 'controller') or not self.controller.model.doc:
+        if getattr(self, "current_mode", "browse") == "edit_text":
             return
-        rs = self._render_scale if self._render_scale > 0 else 1.0
+        model = getattr(getattr(self, "controller", None), "model", None)
+        if model is None or not getattr(model, "doc", None):
+            return
+
         try:
-            start_page, end_page = self.visible_page_range(prefetch=1)
+            start_page, end_page = self.visible_page_range(prefetch=0)
         except Exception:
             return
-        pen = QPen(QColor(100, 149, 237, 120), 1.0, Qt.DashLine)
-        brush = QBrush(Qt.NoBrush)
-        for page_idx in range(start_page, end_page + 1):
-            page_num = page_idx + 1
+        if start_page > end_page:
+            return
+
+        rs = self._render_scale if self._render_scale > 0 else 1.0
+        mode = getattr(model, "text_target_mode", "run")
+        outline_pen = QPen(QColor(90, 130, 190, 90), 1)
+        outline_brush = QBrush(Qt.NoBrush)
+
+        for page_idx in range(int(start_page), int(end_page) + 1):
             try:
-                self.controller.model.ensure_page_index_built(page_num)
-                outline_targets = self._iter_outline_targets(page_idx)
+                model.ensure_page_index_built(page_idx + 1)
             except Exception:
                 continue
-            y0 = (self.page_y_positions[page_idx]
-                  if (self.continuous_pages and page_idx < len(self.page_y_positions))
-                  else 0.0)
-            for outline_key, doc_rect in outline_targets:
-                try:
-                    scene_rect = QRectF(doc_rect.x0 * rs, y0 + doc_rect.y0 * rs,
-                                        doc_rect.width * rs, doc_rect.height * rs)
-                    item = self.scene.addRect(scene_rect, pen, brush)
-                    item.setZValue(8)
-                    self._block_outline_items[outline_key] = item
-                except Exception:
+
+            if mode == "paragraph":
+                candidates = getattr(model.block_manager, "get_paragraphs", lambda _i: [])(page_idx) or []
+                def _bbox(item):
+                    return getattr(item, "bbox", None) or getattr(item, "rect", None)
+            else:
+                candidates = getattr(model.block_manager, "get_runs", lambda _i: [])(page_idx) or []
+                if not candidates:
+                    candidates = getattr(model.block_manager, "get_blocks", lambda _i: [])(page_idx) or []
+                def _bbox(item):
+                    return getattr(item, "bbox", None) or getattr(item, "rect", None)
+
+            y0 = (
+                self.page_y_positions[page_idx]
+                if (self.continuous_pages and page_idx < len(self.page_y_positions))
+                else 0.0
+            )
+            for idx, item in enumerate(candidates):
+                rect = _bbox(item)
+                if rect is None:
                     continue
-        # Re-hide outlines for active-editing block (survives redraw)
-        if self._active_outline_key is not None:
-            outline = self._block_outline_items.get(self._active_outline_key)
-            if outline is not None:
-                outline.setVisible(False)
+                scene_rect = QRectF(
+                    float(rect.x0) * rs,
+                    float(y0) + float(rect.y0) * rs,
+                    float(rect.width) * rs,
+                    float(rect.height) * rs,
+                )
+                outline_item = self.scene.addRect(scene_rect, outline_pen, outline_brush)
+                outline_item.setZValue(6)
+                key = (int(page_idx), int(idx))
+                self._block_outline_items[key] = outline_item
 
     def _clear_all_block_outlines(self) -> None:
         """Remove all persistent block outline items from the scene."""
@@ -3653,30 +3707,8 @@ class PDFView(QMainWindow):
                 # IBeam cursor signals the block is editable (guard: don't override drag cursor)
                 if self.current_mode == 'edit_text' and self._text_edit_drag_state == TextEditDragState.IDLE:
                     self.graphics_view.viewport().setCursor(Qt.IBeamCursor)
-                # Hide dim outline for hovered block; restore previously hidden one
-                if self.current_mode == 'edit_text':
-                    try:
-                        hit_key = None
-                        for outline_key, outline_rect in self._iter_outline_targets(page_idx):
-                            if (outline_rect.x0 <= doc_rect.x0 + 1 and outline_rect.y0 <= doc_rect.y0 + 1
-                                    and outline_rect.x1 >= doc_rect.x1 - 1 and outline_rect.y1 >= doc_rect.y1 - 1):
-                                hit_key = outline_key
-                                break
-                        if hit_key != self._hover_hidden_outline_key:
-                            # Restore previously hidden outline
-                            if self._hover_hidden_outline_key is not None:
-                                prev = self._block_outline_items.get(self._hover_hidden_outline_key)
-                                if prev is not None:
-                                    prev.setVisible(True)
-                                self._hover_hidden_outline_key = None
-                            # Hide new hovered block's outline
-                            if hit_key is not None:
-                                outline = self._block_outline_items.get(hit_key)
-                                if outline is not None:
-                                    outline.setVisible(False)
-                                self._hover_hidden_outline_key = hit_key
-                    except Exception:
-                        pass
+                # Keep block outline visibility stable while hovering in text-edit mode.
+                # Hiding/restoring outlines introduces subtle first-frame pixel jumps.
             else:
                 self._clear_hover_highlight()
                 if self.current_mode == 'edit_text' and self._text_edit_drag_state == TextEditDragState.IDLE:
@@ -3706,11 +3738,11 @@ class PDFView(QMainWindow):
             self._hover_hidden_outline_key = None
 
     def _mouse_release(self, event):
-        if self._autopan_active:
+        if getattr(self, "_autopan_active", False):
             event.accept()
             return
         # ── 拖曳移動文字框的放開處理 ──
-        if self.current_mode in ("objects", "text_edit", "edit_text") and event.button() == Qt.LeftButton:
+        if self.current_mode in ("objects", "text_edit") and event.button() == Qt.LeftButton:
             if getattr(self, "_object_resize_pending", False):
                 preview = getattr(self, "_object_resize_preview_rect", None)
                 start_rect = getattr(self, "_object_resize_start_doc_rect", None)
@@ -3904,9 +3936,10 @@ class PDFView(QMainWindow):
         font_size: float,
         color: tuple = (0, 0, 0),
         rotation: int = 0,
-        target_span_id: str = None,
+        target_span_id: str | None = None,
         target_mode: str = "run",
         editor_intent: str = "edit_existing",
+        cluster_span_ids: list[str] | None = None,
     ):
         """建立文字編輯框，設定寬度與換行以預覽渲染後的排版（與 PDF insert_htmlbox 一致）。"""
         self._ensure_text_edit_manager().create_text_editor(
@@ -3919,20 +3952,10 @@ class PDFView(QMainWindow):
             target_span_id=target_span_id,
             target_mode=target_mode,
             editor_intent=editor_intent,
+            cluster_span_ids=cluster_span_ids,
         )
-        # Hide the dim block outline for the block being edited
-        try:
-            page_idx = getattr(self, '_editing_page_idx', self.current_page)
-            for outline_key, outline_rect in self._iter_outline_targets(page_idx):
-                if (abs(outline_rect.x0 - rect.x0) < 2 and abs(outline_rect.y0 - rect.y0) < 2
-                        and abs(outline_rect.x1 - rect.x1) < 2 and abs(outline_rect.y1 - rect.y1) < 2):
-                    self._active_outline_key = outline_key
-                    outline = self._block_outline_items.get(self._active_outline_key)
-                    if outline is not None:
-                        outline.setVisible(False)
-                    break
-        except Exception:
-            pass
+        # Keep outline visibility stable on editor-open to prevent first-frame
+        # visual jumps in click-to-edit transition.
 
     def _pdf_font_to_qt(self, font_name: str) -> str:
         """將 PDF 字型名稱映射為 Qt 可用字型，使預覽與渲染外觀相近。"""
@@ -4031,7 +4054,7 @@ class PDFView(QMainWindow):
             self._autopan_manual_menu = False
 
     def _show_context_menu(self, pos):
-        if self._autopan_suppress_next_context_menu and not self._autopan_manual_menu:
+        if getattr(self, "_autopan_suppress_next_context_menu", False) and not getattr(self, "_autopan_manual_menu", False):
             self._autopan_suppress_next_context_menu = False
             return
         menu = QMenu()

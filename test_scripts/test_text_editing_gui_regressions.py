@@ -302,6 +302,9 @@ class _FakeViewport:
     def setCursor(self, cursor) -> None:
         self.cursor = cursor
 
+    def height(self) -> int:
+        return 800
+
 
 class _FakeGraphicsView:
     def __init__(self) -> None:
@@ -317,6 +320,22 @@ class _FakeGraphicsView:
         if hasattr(pos, "x") and hasattr(pos, "y"):
             return QPoint(int(pos.x()), int(pos.y()))
         return QPoint(0, 0)
+
+
+class _FakeViewportWithHeight:
+    def __init__(self, height: int) -> None:
+        self._height = int(height)
+
+    def height(self) -> int:
+        return self._height
+
+
+class _FakeGraphicsViewWithViewportHeight:
+    def __init__(self, height: int) -> None:
+        self._viewport = _FakeViewportWithHeight(height)
+
+    def viewport(self):
+        return self._viewport
 
 
 class _FakeMouseEvent:
@@ -363,6 +382,8 @@ def _make_view() -> pdf_view.PDFView:
     view._selected_text_cached = ""
     view._selected_text_hit_info = None
     view._autopan_active = False
+    view._autopan_suppress_next_context_menu = False
+    view._autopan_manual_menu = False
     return view
 
 
@@ -468,6 +489,29 @@ def test_text_property_panel_helper_enables_actions_for_live_editor(qapp) -> Non
     assert view.right_stacked_widget.currentWidget() is view.text_card
     assert view.text_apply_btn.isEnabled() is True
     assert view.text_cancel_btn.isEnabled() is True
+
+
+def test_text_property_panel_live_editor_uses_pdf_size_state_not_display_pt(qapp) -> None:
+    from PySide6.QtGui import QFont
+
+    class _EditorWithDisplayFont:
+        def __init__(self) -> None:
+            self._font = QFont("Arial")
+            self._font.setPointSizeF(9.0)
+
+        def font(self):
+            return self._font
+
+    view = _make_view()
+    _attach_text_property_panel(view)
+    view.text_editor = _FakeProxy(_EditorWithDisplayFont())
+    view.editing_font_name = "helv"
+    view._editing_initial_size = 14.0
+    view._editing_current_pdf_size = 14.0
+
+    view._sync_text_property_panel_state()
+
+    assert view.text_size.currentText() == "14"
 
 
 def test_context_menu_includes_safe_browse_actions_for_selection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1141,6 +1185,71 @@ def test_build_text_editor_stylesheet_keeps_editor_background_transparent() -> N
     assert "background: rgb(" not in stylesheet
 
 
+@pytest.mark.parametrize("editor_intent", ["edit_existing", "add_new"])
+def test_create_text_editor_keeps_background_transparent_for_edit_and_add_text(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp,
+    editor_intent: str,
+) -> None:
+    class _FakePreviewBackedInlineTextEditor(_FakeInlineTextEditor):
+        def __init__(self, text: str, renderer=None, **legacy_kwargs) -> None:
+            super().__init__(text)
+            self.renderer = renderer
+
+        def configure_render_context(self, **kwargs) -> None:
+            self.render_context = kwargs
+
+        def freeze_first_frame(self, image) -> None:
+            self.frozen_first_frame = image
+
+        def setFocus(self, *args, **kwargs) -> None:
+            self.focused = True
+
+    class _FakeSceneWithAddWidget(_FakeScene):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_proxy: _FakeProxy | None = None
+
+        def addWidget(self, widget):
+            self.last_proxy = _FakeProxy(widget)
+            return self.last_proxy
+
+    view = _make_view()
+    _attach_text_property_panel(view)
+    view.scene = _FakeSceneWithAddWidget()
+    view._render_scale = 1.0
+    view.controller = SimpleNamespace(
+        model=SimpleNamespace(get_render_width_for_edit=lambda *args, **kwargs: 40.0)
+    )
+    view._refresh_undo_redo_action_state = lambda: None
+    view._set_document_undo_redo_enabled = lambda enabled: None
+    view._set_edit_focus_guard = lambda enabled: None
+    view._sync_text_property_panel_state = lambda: None
+
+    manager = pdf_view.TextEditManager(view)
+    manager.refresh_text_editor_mask_color = lambda: None
+
+    monkeypatch.setattr(text_editing, "PreviewBackedInlineTextEditor", _FakePreviewBackedInlineTextEditor)
+    monkeypatch.setattr(text_editing, "_EditorShortcutForwarder", lambda view: object())
+
+    manager.create_text_editor(
+        rect=fitz.Rect(10, 20, 50, 40),
+        text="transparent text",
+        font_name="helv",
+        font_size=12.0,
+        color=(0.0, 0.0, 0.0),
+        editor_intent=editor_intent,
+    )
+
+    proxy = view.scene.last_proxy
+    assert proxy is not None
+    editor_widget = proxy.widget()
+    assert editor_widget.auto_fill_background is False
+    assert editor_widget.viewport().auto_fill_background is False
+    assert "background: transparent" in editor_widget.stylesheet
+    assert "background: rgb(" not in editor_widget.stylesheet
+
+
 def test_create_text_editor_rotates_proxy_for_vertical_text(monkeypatch: pytest.MonkeyPatch, qapp) -> None:
     class _FakeSceneWithAddWidget(_FakeScene):
         def __init__(self) -> None:
@@ -1235,7 +1344,13 @@ def test_create_text_editor_adds_mask_item_to_hide_display_text(monkeypatch: pyt
 
     assert getattr(view, "_text_editor_mask_item", None) is view.scene.last_mask_item
     assert view.scene.last_mask_item is not None
-    assert view.scene.last_mask_item.rect == QRectF(10.0, 20.0, 80.0, 40.0)
+    # Mask rect must cover the editor proxy; exact height depends on measured
+    # content layout (QTextDocument), not a fixed formula.
+    editor_widget = view.scene.last_proxy._widget
+    assert view.scene.last_mask_item.rect.x() == 10.0
+    assert view.scene.last_mask_item.rect.y() == 20.0
+    assert view.scene.last_mask_item.rect.width() == 80.0
+    assert view.scene.last_mask_item.rect.height() == float(editor_widget._height)
 
 
 def test_finalize_text_edit_removes_mask_item(qapp) -> None:
@@ -1359,16 +1474,22 @@ def test_phase2_create_text_editor_records_fractional_initial_size(
     )
 
 
-def test_phase2_refresh_mask_keeps_editor_stylesheet_transparent() -> None:
-    """Phase-2 symptom 4: refreshing the mask color must not paint a solid fill on the
-    editor widget — transparency is split between widget stylesheet and scene mask.
+def test_phase2_refresh_mask_uses_readable_underlay_without_sampling_text() -> None:
+    """Phase-2 symptom 4: refreshing the mask color must not sample text pixels,
+    but the scene mask must still hide the original PDF glyphs while editing.
     """
     view = _make_view()
     editor_widget = _FakeEditorWidget("mask text", "mask text")
     editor_widget.setProperty("text_rgb", (12, 34, 56))
     view.text_editor = _FakeProxy(editor_widget, pos=QPointF(10, 20))
     view._editing_page_idx = 0
-    view._sample_page_mask_color = lambda page_idx, scene_rect: QColor(210, 220, 230)
+    sample_calls: list[tuple[int, QRectF]] = []
+
+    def _track_sample(page_idx, scene_rect):
+        sample_calls.append((page_idx, QRectF(scene_rect)))
+        return QColor(210, 220, 230)
+
+    view._sample_page_mask_color = _track_sample
 
     class _SceneWithAddRect(_FakeScene):
         def addRect(self, rect, pen=None, brush=None):
@@ -1391,5 +1512,380 @@ def test_phase2_refresh_mask_keeps_editor_stylesheet_transparent() -> None:
     mask_item = getattr(view, "_text_editor_mask_item", None)
     assert mask_item is not None, "mask refresh must create the scene mask item"
     assert mask_item.brush is not None, (
-        "mask refresh must assign the sampled brush so the scene mask actually hides PDF text"
+        "mask refresh must assign a readable underlay brush to hide PDF text"
     )
+    assert mask_item.brush.color() == QColor(255, 255, 255), (
+        f"scene mask must be a stable white underlay, got {mask_item.brush.color().getRgb()}"
+    )
+    assert sample_calls == [], (
+        f"readable scene mask should not sample text pixels, got calls={sample_calls!r}"
+    )
+
+
+def test_phase2_refresh_mask_uses_dark_underlay_for_light_text() -> None:
+    view = _make_view()
+    editor_widget = _FakeEditorWidget("mask text", "mask text")
+    editor_widget.setProperty("text_rgb", (250, 250, 250))
+    view.text_editor = _FakeProxy(editor_widget, pos=QPointF(10, 20))
+    view._editing_page_idx = 0
+
+    class _SceneWithAddRect(_FakeScene):
+        def addRect(self, rect, pen=None, brush=None):
+            item = _FakeRectItem(rect)
+            item.pen = pen
+            item.brush = brush
+            return item
+
+    view.scene = _SceneWithAddRect()
+
+    manager = pdf_view.TextEditManager(view)
+    manager.refresh_text_editor_mask_color()
+
+    mask_item = getattr(view, "_text_editor_mask_item", None)
+    assert mask_item is not None, "mask refresh must create the scene mask item"
+    assert mask_item.brush is not None, "mask refresh must assign a readable underlay brush"
+    assert mask_item.brush.color() != QColor(255, 255, 255), (
+        f"light editor text needs a dark underlay, got {mask_item.brush.color().getRgb()}"
+    )
+
+
+class _FakeSceneCapture(_FakeScene):
+    def __init__(self) -> None:
+        super().__init__()
+        self.last_proxy: _FakeProxy | None = None
+
+    def addWidget(self, widget):
+        self.last_proxy = _FakeProxy(widget)
+        return self.last_proxy
+
+
+def _make_phase2_height_view(monkeypatch: pytest.MonkeyPatch) -> tuple[pdf_view.PDFView, pdf_view.TextEditManager]:
+    view = _make_view()
+    _attach_text_property_panel(view)
+    view.scene = _FakeSceneCapture()
+    view._render_scale = 2.0
+    view.controller = SimpleNamespace(
+        model=SimpleNamespace(get_render_width_for_edit=lambda *args, **kwargs: 200.0)
+    )
+    view._refresh_undo_redo_action_state = lambda: None
+    view._set_document_undo_redo_enabled = lambda _: None
+    view._set_edit_focus_guard = lambda _: None
+    view._sync_text_property_panel_state = lambda: None
+
+    manager = pdf_view.TextEditManager(view)
+    manager.refresh_text_editor_mask_color = lambda: None
+
+    monkeypatch.setattr(text_editing, "InlineTextEditor", _FakeInlineTextEditor)
+    monkeypatch.setattr(text_editing, "_EditorShortcutForwarder", lambda v: object())
+    return view, manager
+
+
+def test_phase2_editor_height_fits_content_not_paragraph_rect(
+    monkeypatch: pytest.MonkeyPatch, qapp
+) -> None:
+    """Finding 1: paragraph rect is 300pt tall but text is one line.
+
+    Editor proxy height must be ≈ one line height, NOT the full paragraph
+    bounding-box height (~600px at 2× scale).
+
+    Root cause: _compute_editor_proxy_layout blindly used scaled_rect.height
+    from the paragraph-mode resolver, ignoring that rendered text occupies one
+    line. Fix measures actual content via QTextDocument layout.
+    """
+    view, manager = _make_phase2_height_view(monkeypatch)
+
+    manager.create_text_editor(
+        rect=fitz.Rect(0, 0, 200, 300.0),
+        text="single line of text",
+        font_name="helv",
+        font_size=10.0,
+        color=(0.0, 0.0, 0.0),
+        rotation=0,
+        target_span_id="span-1",
+        target_mode="paragraph",
+    )
+
+    editor = view.scene.last_proxy._widget
+    # Generous ceiling: 3× one-line height at 10pt. Paragraph rect (600px
+    # at 2× scale) is ~15× a single line — so this fails loudly if the fix
+    # regresses back to rect-based height.
+    max_acceptable_px = int(10.0 * 2.0 * 3)
+    assert editor._height <= max_acceptable_px, (
+        f"Editor height {editor._height}px exceeds single-line ceiling "
+        f"{max_acceptable_px}px for a paragraph rect of 300pt "
+        f"(oversized grey void — Finding 1)"
+    )
+
+
+def test_phase2_editor_height_accommodates_wrapped_paragraph(
+    monkeypatch: pytest.MonkeyPatch, qapp
+) -> None:
+    """Guard against the opposite failure: wrapped multi-line paragraph text
+    usually has NO ``\\n`` (adjacent lines joined with spaces by
+    ``EditableParagraph`` assembly). A naive ``text.count('\\n') + 1`` heuristic
+    would under-size the editor to 1 line, cutting off the user's content.
+
+    The measurement must use real text layout (QTextDocument) so wrapping
+    across a narrow width produces a tall-enough editor.
+    """
+    view, manager = _make_phase2_height_view(monkeypatch)
+    long_text = " ".join(["paragraph word"] * 60)  # ~800 chars, no newlines
+    single_line_baseline_px = int(10.0 * 2.0 * 2)  # generous 2× one-line ceiling
+
+    manager.create_text_editor(
+        rect=fitz.Rect(0, 0, 100, 200),
+        text=long_text,
+        font_name="helv",
+        font_size=10.0,
+        color=(0.0, 0.0, 0.0),
+        rotation=0,
+        target_span_id="span-wrap",
+        target_mode="paragraph",
+    )
+
+    editor = view.scene.last_proxy._widget
+    assert editor._height > single_line_baseline_px, (
+        f"Wrapped paragraph got only {editor._height}px — under-sized by "
+        f"a newline-counting heuristic? Expected multi-line layout."
+    )
+
+
+def test_editor_height_capped_to_viewport_ratio_for_long_text(
+    monkeypatch: pytest.MonkeyPatch, qapp
+) -> None:
+    view, manager = _make_phase2_height_view(monkeypatch)
+    view.graphics_view = _FakeGraphicsViewWithViewportHeight(300)
+    long_text = " ".join(["word"] * 400)
+
+    manager.create_text_editor(
+        rect=fitz.Rect(0, 0, 80, 300),
+        text=long_text,
+        font_name="helv",
+        font_size=10.0,
+        color=(0.0, 0.0, 0.0),
+        rotation=0,
+        target_span_id="span-long",
+        target_mode="paragraph",
+    )
+
+    editor = view.scene.last_proxy._widget
+    assert editor._height <= 180, (
+        f"Editor height {editor._height}px should cap at 60% of a 300px viewport"
+    )
+
+
+def test_phase2_editor_font_matches_pdf_render_scale(
+    monkeypatch: pytest.MonkeyPatch, qapp
+) -> None:
+    """Editing-vs-committed visual parity: widget glyphs must render at the
+    same physical pixel size as the rendered PDF glyphs underneath. Otherwise
+    the text in the editor appears a different size than the final PDF output,
+    and wrapping boundaries drift between editing and after commit.
+
+    Relationship: ``widget_pt × logical_dpi/72`` widget-px per em (Qt font
+    rendering) must equal ``pdf_font × render_scale`` physical-px per em
+    (PyMuPDF raster at ``72×rs`` DPI). Scene is 1:1 with physical px at
+    devicePixelRatio=1, so widget-px ≈ physical-px.
+    """
+    view, manager = _make_phase2_height_view(monkeypatch)
+    render_scale = view._render_scale  # 2.0 from the helper
+    pdf_font_size = 10.0
+
+    manager.create_text_editor(
+        rect=fitz.Rect(0, 0, 200, 40),
+        text="visual parity check",
+        font_name="helv",
+        font_size=pdf_font_size,
+        color=(0.0, 0.0, 0.0),
+    )
+
+    editor = view.scene.last_proxy._widget
+    widget_pt = editor.font().pointSizeF()
+    widget_dpi = text_editing._widget_logical_dpi()
+    widget_em_px = widget_pt * (widget_dpi / 72.0)
+    pdf_em_px = pdf_font_size * render_scale
+
+    visual_ratio = widget_em_px / pdf_em_px
+    assert 0.95 < visual_ratio < 1.05, (
+        f"Widget em-height {widget_em_px:.2f}px vs PDF em-height {pdf_em_px:.2f}px "
+        f"(ratio {visual_ratio:.3f}) — editor text will look visually "
+        f"different from the underlying PDF, breaking editing↔committed parity."
+    )
+
+
+def test_phase2_editor_height_honors_embedded_newlines(
+    monkeypatch: pytest.MonkeyPatch, qapp
+) -> None:
+    """Paragraphs split on bullets / large gaps DO get literal ``\\n`` from
+    ``EditableParagraph`` assembly. The editor must size tall enough for
+    those explicit line breaks.
+    """
+    view, manager = _make_phase2_height_view(monkeypatch)
+
+    manager.create_text_editor(
+        rect=fitz.Rect(0, 0, 200, 200),
+        text="line one\nline two\nline three\nline four",
+        font_name="helv",
+        font_size=10.0,
+        color=(0.0, 0.0, 0.0),
+        rotation=0,
+        target_span_id="span-multi",
+        target_mode="paragraph",
+    )
+
+    editor = view.scene.last_proxy._widget
+    # Four explicit lines must exceed a two-line ceiling, and must not hit
+    # the MIN clamp at 40px.
+    two_line_ceiling_px = int(10.0 * 2.0 * 2)
+    assert editor._height > two_line_ceiling_px, (
+        f"Four-line editor collapsed to {editor._height}px — newlines ignored?"
+    )
+
+
+def test_create_text_editor_uses_source_span_font_size_and_width(
+    monkeypatch: pytest.MonkeyPatch, qapp
+) -> None:
+    """The inline editor must open with font size and width that match the source span.
+
+    Regression guard for two pre-commit fidelity failures:
+    - Editor font pt != _display_font_pt(span_size, render_scale) → user sees
+      glyphs at a different size than the rendered PDF.
+    - Editor width != int(rect.width * render_scale) → text wraps at different
+      positions than the source span and the committed PDF will diverge.
+    """
+    class _FakeSceneWithAddWidget(_FakeScene):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_proxy: _FakeProxy | None = None
+
+        def addWidget(self, widget):
+            self.last_proxy = _FakeProxy(widget)
+            return self.last_proxy
+
+    source_font_size = 14.0
+    source_rect = fitz.Rect(50, 80, 250, 100)  # width = 200pt
+    render_scale = 1.0
+
+    view = _make_view()
+    _attach_text_property_panel(view)
+    view.scene = _FakeSceneWithAddWidget()
+    view._render_scale = render_scale
+    # Mirror PDFModel.get_render_width_for_edit on this branch: returns float(rect.width)
+    view.controller = SimpleNamespace(
+        model=SimpleNamespace(
+            get_render_width_for_edit=lambda page_num, rect: float(rect.width)
+        )
+    )
+    view._refresh_undo_redo_action_state = lambda: None
+    view._set_document_undo_redo_enabled = lambda enabled: None
+    view._set_edit_focus_guard = lambda enabled: None
+    view._sync_text_property_panel_state = lambda: None
+
+    manager = pdf_view.TextEditManager(view)
+    manager.refresh_text_editor_mask_color = lambda: None
+
+    monkeypatch.setattr(text_editing, "InlineTextEditor", _FakeInlineTextEditor)
+    monkeypatch.setattr(text_editing, "_EditorShortcutForwarder", lambda view: object())
+
+    manager.create_text_editor(
+        rect=source_rect,
+        text="Sample span text",
+        font_name="helv",
+        font_size=source_font_size,
+        color=(0.0, 0.0, 0.0),
+        rotation=0,
+        target_span_id="test-span",
+        target_mode="run",
+    )
+
+    editor = view.scene.last_proxy._widget
+    assert callable(editor.font), "editor.font must remain QTextEdit.font() method — setFont was never called or method was shadowed"
+
+    expected_font_pt = text_editing._display_font_pt(source_font_size, render_scale)
+    actual_font_pt = editor.font().pointSizeF()
+    assert abs(actual_font_pt - expected_font_pt) < 0.05, (
+        f"Editor font {actual_font_pt:.3f}pt ≠ expected display pt {expected_font_pt:.3f}pt "
+        f"(source span {source_font_size}pt at render_scale={render_scale}) — "
+        f"editor will show glyphs at a different size than the rendered PDF"
+    )
+
+    expected_width_px = int(round(source_rect.width * render_scale))
+    assert editor._width == expected_width_px, (
+        f"Editor width {editor._width}px ≠ expected {expected_width_px}px "
+        f"(rect.width={source_rect.width}pt at render_scale={render_scale}) — "
+        f"editor will wrap text differently than the source span"
+    )
+
+def test_preview_pixmap_dimensions_match_render_scale_2x() -> None:
+    renderer = text_editing.PreviewRenderer()
+    image = renderer._to_qimage_dimensions(rect=fitz.Rect(0, 0, 200, 80), render_scale=2.0, rotation=0)
+    assert image.width() == 400
+    assert image.height() == 160
+
+
+def test_preview_pixmap_width_equals_source_rect_times_render_scale() -> None:
+    renderer = text_editing.PreviewRenderer()
+    image = renderer._to_qimage_dimensions(rect=fitz.Rect(0, 0, 200, 80), render_scale=1.5, rotation=0)
+    assert image.width() == 300
+
+
+# Task 2 regression: editor.font must remain a callable Qt method.
+def test_preview_backed_editor_font_is_callable(qapp):
+    """PreviewBackedInlineTextEditor.font() must be the QTextEdit method,
+    not a QFont attribute. Regression for the editor.font = qt_font_obj
+    shadow that broke on_edit_font_size_changed and on_edit_font_family_changed."""
+    from view.text_editing import PreviewBackedInlineTextEditor, PreviewRenderer
+
+    renderer = PreviewRenderer(model=None)
+    editor = PreviewBackedInlineTextEditor("hello", renderer)
+    from PySide6.QtGui import QFont
+    qt_font = QFont("Arial")
+    qt_font.setPointSizeF(12.0)
+    editor.setFont(qt_font)
+    # Must be callable (QTextEdit method), not a QFont attribute.
+    assert callable(editor.font), (
+        "editor.font is not callable — the QTextEdit.font() method was overwritten "
+        "by an attribute assignment. Remove 'editor.font = qt_font_obj' from create_text_editor."
+    )
+    qfont = editor.font()
+    assert qfont.pointSizeF() > 0
+
+
+# Task 4 — paintEvent visible pixels.
+def test_preview_backed_editor_paintEvent_shows_text_pixels(qapp) -> None:
+    """After real rasterization lands in PreviewRenderer.render, the editor
+    viewport must contain visible glyph pixels after a brief event-loop pump."""
+    from PySide6.QtCore import QEventLoop, QTimer
+    from view.text_editing import PreviewBackedInlineTextEditor, PreviewRenderer
+
+    renderer = PreviewRenderer(model=None)
+    editor = PreviewBackedInlineTextEditor("ABC", renderer)
+    editor.configure_render_context(
+        font_name="helv",
+        font_size=14.0,
+        color=(0.0, 0.0, 0.0),
+        member_spans=None,
+        rect_pt=fitz.Rect(0, 0, 200, 30),
+        rotation=0,
+        render_scale=2.0,
+    )
+    editor.resize(400, 60)
+    editor.show()
+
+    loop = QEventLoop()
+    QTimer.singleShot(300, loop.quit)
+    loop.exec()
+
+    pixmap = editor.viewport().grab()
+    image = pixmap.toImage()
+    dark_pixels = sum(
+        1
+        for y in range(0, image.height(), 2)
+        for x in range(0, image.width(), 2)
+        if image.pixelColor(x, y).alpha() > 50 and image.pixelColor(x, y).lightness() < 150
+    )
+    assert dark_pixels > 30, (
+        f"After paintEvent, editor viewport should contain visible glyphs. "
+        f"Found {dark_pixels} dark pixels — preview image may not be reaching paintEvent."
+    )
+    editor.close()
