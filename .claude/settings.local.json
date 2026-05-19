@@ -24,7 +24,8 @@
       "Bash(python reflow/iter8_space_fix_verify.py)",
       "Bash(python reflow/iter9_edge_cases.py)",
       "Bash(python -m pytest test_scripts/test_track_c.py -v -s)",
-      "Bash(python -m pytest test_scripts/test_track_c.py::test_real_pdfs -v -s)"
+      "Bash(python -m pytest test_scripts/test_track_c.py::test_real_pdfs -v -s)",
+      "Skill(codex:adversarial-review)"
     ]
   }
 }

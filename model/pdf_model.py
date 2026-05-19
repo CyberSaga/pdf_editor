@@ -1011,11 +1011,17 @@ class PDFModel:
         self._legacy_doc = None
         self._legacy_original_path = None
         self._legacy_saved_path = None
-        self._legacy_block_manager.clear()
-        self._legacy_command_manager.clear()
-        self._legacy_pending_edits.clear()
+        legacy_block_manager = getattr(self, "_legacy_block_manager", None)
+        if legacy_block_manager is not None:
+            legacy_block_manager.clear()
+        legacy_command_manager = getattr(self, "_legacy_command_manager", None)
+        if legacy_command_manager is not None:
+            legacy_command_manager.clear()
+        legacy_pending_edits = getattr(self, "_legacy_pending_edits", None)
+        if isinstance(legacy_pending_edits, list):
+            legacy_pending_edits.clear()
         self._legacy_edit_count = 0
-        if self.temp_dir:
+        if getattr(self, "temp_dir", None):
             self.temp_dir.cleanup()
             logger.debug("臨時目錄已清理")
             self.temp_dir = None
@@ -1468,7 +1474,10 @@ class PDFModel:
             if mode == "paragraph":
                 para = self.block_manager.find_paragraph_for_run(page_idx, target.span_id)
                 if para is not None:
-                    cluster = self.block_manager.find_overlapping_runs(page_idx, para.bbox, tol=0.5)
+                    para_run_ids = set(para.run_ids)
+                    cluster = [span for span in spans if span.span_id in para_run_ids]
+                    if not cluster:
+                        cluster = self.block_manager.find_overlapping_runs(page_idx, para.bbox, tol=0.5)
                     return TextHit(
                         target_span_id=target.span_id,
                         target_bbox=fitz.Rect(para.bbox),
@@ -3847,8 +3856,9 @@ class PDFModel:
                 meaningful_growth = max(0.5, float(size) * 0.2)
                 if height_growth > meaningful_growth:
                     logger.debug(
-                        "換行預估溢出 %.1fpt，預先推移下方文字塊（pre-push）",
+                        "換行預估溢出 %.1fpt（raw=%.1fpt），預先推移下方文字塊（pre-push）",
                         height_growth,
+                        raw_growth,
                     )
                     self._push_down_overlapping_text(
                         page, page_rect,

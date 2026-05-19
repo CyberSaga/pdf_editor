@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import logging
 import unicodedata
 from dataclasses import dataclass
@@ -245,6 +244,362 @@ class InlineTextEditor(QTextEdit):
     def focusOutEvent(self, event) -> None:
         super().focusOutEvent(event)
         self.focus_out_requested.emit()
+
+
+class PreviewRenderer:
+    def __init__(self, model=None) -> None:
+        self._model = model
+        self._cache_key: tuple | None = None
+        self._cache_image: QImage | None = None
+
+    def _to_qimage_dimensions(self, *, rect: fitz.Rect, render_scale: float, rotation: int) -> QImage:
+        width = max(1, int(round(float(rect.width) * float(render_scale))))
+        height = max(1, int(round(float(rect.height) * float(render_scale))))
+        if int(rotation) % 360 in (90, 270):
+            width, height = height, width
+        image = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
+        image.fill(Qt.transparent)
+        return image
+
+    def render(
+        self,
+        *,
+        text: str,
+        font_name: str,
+        font_size: float,
+        color: tuple[float, float, float],
+        member_spans: list[object] | None,
+        rect_pt: fitz.Rect,
+        rotation: int,
+        render_scale: float,
+        line_height: float = 0.0,
+    ) -> QImage:
+        """Rasterize proposed edit content via insert_htmlbox at exactly the
+        DPI / CSS / font / color the commit will use, returning a QImage sized
+        to rect × render_scale (rotation-aware).
+
+        Uses model._build_insert_css / _convert_text_to_html when a model is
+        available so preview pixels and commit pixels come from the same engine.
+        Falls back to minimal CSS/HTML for unit-test isolation (model=None).
+        """
+        key = (
+            text,
+            font_name,
+            float(font_size),
+            tuple(float(c) for c in color),
+            int(rotation),
+            float(render_scale),
+            float(line_height),
+            int(round(float(rect_pt.width) * 100)),
+            int(round(float(rect_pt.height) * 100)),
+        )
+        if key == self._cache_key and self._cache_image is not None:
+            return self._cache_image
+
+        normalized_rotation = int(rotation) % 360
+        if normalized_rotation in (90, 270):
+            page_w_pt = float(rect_pt.height)
+            page_h_pt = float(rect_pt.width)
+        else:
+            page_w_pt = float(rect_pt.width)
+            page_h_pt = float(rect_pt.height)
+
+        page_w_pt = max(page_w_pt, 1.0)
+        page_h_pt = max(page_h_pt, 1.0)
+
+        temp_doc = fitz.open()
+        try:
+            temp_page = temp_doc.new_page(width=page_w_pt, height=page_h_pt)
+
+            if self._model is not None and hasattr(self._model, "_build_insert_css"):
+                css = self._model._build_insert_css(
+                    size=float(font_size),
+                    color=tuple(float(c) for c in color),
+                    font_hint=str(font_name),
+                    line_height=float(line_height),
+                )
+                html = self._model._convert_text_to_html(
+                    text=text or "",
+                    font_size=float(font_size),
+                    color=tuple(float(c) for c in color),
+                    latin_font=str(font_name),
+                )
+            else:
+                import html as _html_mod
+                r, g, b = (int(c * 255) for c in color)
+                font_family = str(font_name or "Helvetica").strip()
+                # Map common PDF aliases to CSS families for closer parity.
+                if font_family.lower() in {"helv", "helvetica"}:
+                    font_family = "Helvetica"
+                elif "bold" in font_family.lower() and "helvetica" not in font_family.lower():
+                    font_family = "Helvetica"
+                lh_css = f" line-height: {line_height}pt;" if line_height > 0 else ""
+                css = (
+                    f"span {{ font-family: {font_family}; font-size: {font_size}pt;{lh_css} "
+                    f"color: rgb({r},{g},{b}); white-space: pre-wrap; }}"
+                )
+                html = f"<span>{_html_mod.escape(text or '')}</span>"
+
+            target_rect = fitz.Rect(0, 0, page_w_pt, page_h_pt)
+            try:
+                temp_page.insert_htmlbox(
+                    target_rect,
+                    html,
+                    css=css,
+                    rotate=normalized_rotation,
+                    scale_low=1,
+                )
+            except TypeError:
+                temp_page.insert_htmlbox(target_rect, html, css=css, scale_low=1)
+
+            matrix = fitz.Matrix(float(render_scale), float(render_scale))
+            pixmap = temp_page.get_pixmap(matrix=matrix, alpha=True)
+
+            fmt = QImage.Format_RGBA8888 if pixmap.alpha else QImage.Format_RGB888
+            image = QImage(
+                pixmap.samples,
+                pixmap.width,
+                pixmap.height,
+                pixmap.stride,
+                fmt,
+            ).copy()
+        finally:
+            temp_doc.close()
+
+        self._cache_key = key
+        self._cache_image = image
+        return image
+
+
+class PreviewBackedInlineTextEditor(InlineTextEditor):
+    # Treat effectively-transparent mutated previews as invalid and fall back
+    # to native QTextEdit painting for readability continuity while typing.
+    _MUTATED_PREVIEW_MIN_NONTRANSPARENT_COVERAGE = 0.0001
+    _VISIBLE_ALPHA_THRESHOLD = 8
+
+    def __init__(self, text: str, renderer: PreviewRenderer | None = None, **legacy_kwargs) -> None:
+        super().__init__()
+        self.setFrameStyle(0)
+        self.setViewportMargins(0, 0, 0, 0)
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setCursorWidth(0)
+        self._cursor_revealed = False
+        try:
+            self.document().setDocumentMargin(0.0)
+        except Exception:
+            pass
+        self._renderer = renderer or PreviewRenderer(model=legacy_kwargs.get("model"))
+        self._preview_image: QImage | None = None
+        self._frozen_first_frame_image: QImage | None = None
+        self._initial_text = text or ""
+        # Cache of (toPlainText() == _initial_text), updated on every
+        # textChanged signal; read by paintEvent.  See _schedule_preview and
+        # paintEvent for why this is cached rather than recomputed per paint.
+        self._text_matches_initial: bool = True
+        self._text_is_nonempty: bool = bool(self._initial_text)
+        self._preview_nontransparent_coverage: float = 0.0
+        self._mutated_preview_is_valid: bool = True
+        self._legacy_standalone_mode = bool(legacy_kwargs) and renderer is None
+        self._render_args: dict[str, object] = {}
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(150)
+        self._debounce.timeout.connect(self._regenerate_preview)
+        self.setPlainText(text)
+        self.textChanged.connect(self._schedule_preview)
+        if legacy_kwargs:
+            rgb = legacy_kwargs.get("color", (0.0, 0.0, 0.0))
+            text_rgb = tuple(max(0, min(255, int(float(c) * 255))) for c in rgb)
+            legacy_kwargs["text_rgb"] = text_rgb
+            legacy_kwargs.setdefault("legacy_bg_rgb", (70, 70, 70))
+            initial_frame_image = legacy_kwargs.pop("initial_frame_image", None)
+            self.configure_render_context(**legacy_kwargs)
+            if isinstance(initial_frame_image, QImage) and not initial_frame_image.isNull():
+                self.setFixedSize(initial_frame_image.width(), initial_frame_image.height())
+                self.freeze_first_frame(initial_frame_image)
+            if self._preview_image is not None and not self._legacy_standalone_mode:
+                self.freeze_first_frame(self._preview_image)
+
+    def keyPressEvent(self, event) -> None:
+        if not self._cursor_revealed:
+            self.setCursorWidth(1)
+            self._cursor_revealed = True
+        super().keyPressEvent(event)
+
+    def configure_render_context(self, **kwargs) -> None:
+        self._render_args.update(kwargs)
+        rect_val = self._render_args.get("rect_pt")
+        scale_val = float(self._render_args.get("render_scale", 1.0) or 1.0)
+        if rect_val is not None:
+            rect = fitz.Rect(rect_val)
+            width_px = max(1, int(round(float(rect.width) * scale_val)))
+            height_px = max(1, int(round(float(rect.height) * scale_val)))
+            rotation = int(self._render_args.get("rotation", 0)) % 360
+            if rotation in (90, 270):
+                width_px, height_px = height_px, width_px
+            # Keep geometry chosen by create_text_editor() for no-jump UX.
+            # Only apply rect-derived size when this editor has no explicit frame yet
+            # (or in legacy standalone mode where rect sizing is the only input).
+            if self._legacy_standalone_mode or self.width() <= 1 or self.height() <= 1:
+                self.setFixedSize(width_px, height_px)
+        self._regenerate_preview()
+
+    def _schedule_preview(self) -> None:
+        # ──────────────────────────────────────────────────────────────────
+        # CRITICAL — do not "simplify" by clearing _frozen_first_frame_image
+        # here.  The frozen first frame is the actual MuPDF pixmap of the PDF
+        # span as the user saw it before the click.  paintEvent decides per
+        # frame whether to display it (text == initial) or the CSS-rendered
+        # live preview (text mutated).  Releasing the frozen image on first
+        # mutation makes type+delete a one-way trip — the editor never
+        # returns to the PDF-rendering appearance even when the document
+        # content is identical to the original, producing a non-zero
+        # restore_delta on every text round-trip.
+        #
+        # Acceptance gates that exercise this contract — DO NOT remove the
+        # frozen-frame retention without making these tests still pass:
+        #   test_no_jump_editor_geometry.test_click_to_edit_qtest_integration
+        #   test_no_jump_editor_geometry.test_click_to_edit_then_insert_
+        #     then_delete_stays_stable
+        # ──────────────────────────────────────────────────────────────────
+
+        # Refresh the cached flag here (and only here): textChanged is the
+        # only event that can flip the comparison result.  paintEvent — which
+        # fires on cursor blink, focus changes, scrolls, etc. — must not
+        # recompute toPlainText() per frame; on a paragraph-length edit that
+        # would walk the whole QTextDocument 60+ times per second.
+        self._text_matches_initial = (self.toPlainText() == self._initial_text)
+        self._text_is_nonempty = bool(self.toPlainText())
+
+        self._debounce.start()
+        # Repaint immediately so paintEvent re-evaluates the frozen-vs-
+        # preview decision based on the freshly-cached flag.
+        self.viewport().update()
+
+    def _compute_nontransparent_coverage(self, image: QImage | None) -> float:
+        # Fail-safe is only consumed when _frozen_first_frame_image exists
+        # (see paintEvent's mutated-preview branch).  Skip the scan otherwise
+        # — the coverage value can't change the paint decision.
+        if (
+            image is None
+            or image.isNull()
+            or self._frozen_first_frame_image is None
+        ):
+            return 0.0
+        width = int(image.width())
+        height = int(image.height())
+        if width <= 0 or height <= 0:
+            return 0.0
+        # RGBA8888 stores alpha as byte 3 of every 4.  bytesPerLine may add
+        # row padding, so iterate row-by-row using bytesPerLine as the stride.
+        if image.format() != QImage.Format_RGBA8888:
+            image = image.convertToFormat(QImage.Format_RGBA8888)
+        threshold = int(self._VISIBLE_ALPHA_THRESHOLD)
+        stride = int(image.bytesPerLine())
+        buf = bytes(image.constBits())
+        visible = 0
+        for y in range(height):
+            row_start = y * stride
+            # Alpha byte = row_start + 4*x + 3; slice [row_start+3 : row_start+4*width : 4]
+            row_alpha = buf[row_start + 3 : row_start + 4 * width : 4]
+            visible += sum(1 for a in row_alpha if a > threshold)
+        return visible / float(width * height)
+
+    def _regenerate_preview(self) -> None:
+        if not self._render_args:
+            return
+        text = self.toPlainText()
+        self._text_is_nonempty = bool(text)
+        self._preview_image = self._renderer.render(
+            text=text,
+            font_name=str(self._render_args.get("font_name", "helv")),
+            font_size=float(self._render_args.get("font_size", 12.0)),
+            color=tuple(self._render_args.get("color", (0.0, 0.0, 0.0))),
+            member_spans=self._render_args.get("member_spans"),
+            rect_pt=fitz.Rect(self._render_args.get("rect_pt")),
+            rotation=int(self._render_args.get("rotation", 0)),
+            render_scale=float(self._render_args.get("render_scale", 1.0)),
+            line_height=float(self._render_args.get("line_height", 0.0)),
+        )
+        self._preview_nontransparent_coverage = self._compute_nontransparent_coverage(self._preview_image)
+        self._mutated_preview_is_valid = (
+            not self._text_is_nonempty
+            or self._preview_nontransparent_coverage
+            > self._MUTATED_PREVIEW_MIN_NONTRANSPARENT_COVERAGE
+        )
+        self.viewport().update()
+
+    def paintEvent(self, event) -> None:
+        # ──────────────────────────────────────────────────────────────────
+        # CRITICAL — visual fidelity contract.
+        # Whenever the editor's text content matches the original (including
+        # after a type-then-delete round-trip), paint the frozen first frame
+        # — a true MuPDF pixmap grab of the PDF span.  CSS-based
+        # PreviewRenderer output never pixel-matches MuPDF's font hinting, so
+        # falling back to it for unchanged text introduces a permanent visual
+        # delta even when nothing has actually changed.
+        #
+        # _text_matches_initial is cached and updated only in
+        # _schedule_preview.  Do NOT replace this with a per-paint
+        # ``self.toPlainText() == self._initial_text`` comparison: paintEvent
+        # fires on cursor blink, focus changes, and scrolls, none of which
+        # change the answer, and toPlainText() walks the full QTextDocument
+        # on every call.
+        #
+        # Acceptance gates that exercise this contract — DO NOT remove the
+        # _text_matches_initial branch without making these tests still pass:
+        #   test_no_jump_editor_geometry.test_click_to_edit_qtest_integration
+        #   test_no_jump_editor_geometry.test_click_to_edit_then_insert_
+        #     then_delete_stays_stable
+        # ──────────────────────────────────────────────────────────────────
+        if self._frozen_first_frame_image is not None and self._text_matches_initial:
+            painter = QPainter(self.viewport())
+            painter.drawImage(0, 0, self._frozen_first_frame_image)
+            painter.end()
+            return
+        if (
+            self._preview_image is not None
+            and self._text_is_nonempty
+            and not self._text_matches_initial
+            and not self._mutated_preview_is_valid
+        ):
+            # Mutated-state fail-safe: CSS/MuPDF preview rendered effectively
+            # transparent. Seed the frame with the frozen MuPDF capture, then
+            # use native QTextEdit paint with background fill suppressed so
+            # typed text stays readable without repainting the full region.
+            if self._frozen_first_frame_image is not None:
+                frozen_painter = QPainter(self.viewport())
+                frozen_painter.drawImage(0, 0, self._frozen_first_frame_image)
+                frozen_painter.end()
+            viewport = self.viewport()
+            old_auto_fill = viewport.autoFillBackground()
+            viewport.setAutoFillBackground(False)
+            super().paintEvent(event)
+            viewport.setAutoFillBackground(old_auto_fill)
+            return
+        painter = QPainter(self.viewport())
+        if self._preview_image is not None:
+            if self._legacy_standalone_mode:
+                bg_rgb = self._render_args.get("legacy_bg_rgb", (184, 184, 184))
+                mask = QColor(*bg_rgb)
+                painter.fillRect(self.viewport().rect(), mask)
+            painter.drawImage(0, 0, self._preview_image)
+        elif self._frozen_first_frame_image is not None:
+            # Fallback: text differs but the live preview hasn't been
+            # generated yet (debounce in flight).  Draw the frozen frame so
+            # the editor never goes blank during the transition.
+            painter.drawImage(0, 0, self._frozen_first_frame_image)
+        else:
+            painter.end()
+            super().paintEvent(event)
+            return
+        painter.end()
+
+    def freeze_first_frame(self, image: QImage | None) -> None:
+        self._frozen_first_frame_image = image.copy() if image is not None else None
+        self.viewport().update()
 @dataclass(frozen=True)
 class ViewportAnchor:
     page_idx: int
@@ -265,17 +620,24 @@ def _average_image_rect_color(image, rect: QRect) -> QColor:
     bounded = rect.intersected(image.rect())
     if bounded.isEmpty():
         return QColor(_DEFAULT_EDITOR_MASK_COLOR)
+    if image.format() != QImage.Format_RGBA8888:
+        image = image.convertToFormat(QImage.Format_RGBA8888)
+    stride = int(image.bytesPerLine())
+    buf = bytes(image.constBits())
     total_r = 0
     total_g = 0
     total_b = 0
-    count = 0
+    left = bounded.left()
+    right = bounded.right()  # inclusive
+    width = right - left + 1
     for y in range(bounded.top(), bounded.bottom() + 1):
-        for x in range(bounded.left(), bounded.right() + 1):
-            color = image.pixelColor(x, y)
-            total_r += color.red()
-            total_g += color.green()
-            total_b += color.blue()
-            count += 1
+        base = y * stride + left * 4
+        end = base + width * 4
+        row = buf[base:end]
+        total_r += sum(row[0::4])
+        total_g += sum(row[1::4])
+        total_b += sum(row[2::4])
+    count = width * (bounded.bottom() - bounded.top() + 1)
     if count <= 0:
         return QColor(_DEFAULT_EDITOR_MASK_COLOR)
     return QColor(total_r // count, total_g // count, total_b // count)
