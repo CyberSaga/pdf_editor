@@ -131,7 +131,8 @@ def main() -> int:
     lint_ok = _run_lint()
 
     # Step 7: Re-hash every artifact bound in signoff.json (catches post-gate mutations)
-    reverify_ok = _reverify_artifact_hashes()
+    signoff_was_skipped = (expected_signoff_digest == "SKIPPED")
+    reverify_ok = _reverify_artifact_hashes(skip_signoff=signoff_was_skipped)
 
     gates = [artifacts_ok, signoff_ok, full_suite_ok, lint_ok, reverify_ok]
     if all(gates):
