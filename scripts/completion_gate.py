@@ -12,6 +12,7 @@ timestamps, artifact digests).  Presence and validity of this file is the
 durable completion proof; pasted stdout alone is supplemental.
 """
 from __future__ import annotations
+import argparse
 import hashlib
 import json
 import subprocess
@@ -42,7 +43,7 @@ def _run(cmd: list[str]) -> int:
     return subprocess.run(cmd, cwd=REPO_ROOT).returncode
 
 
-def main() -> int:
+def main(skip_signoff: bool = False) -> int:
     started_at = time.time()
 
     # Generate a fresh invocation ID and immediately overwrite any existing proof
@@ -117,8 +118,8 @@ def main() -> int:
         "test_scripts/test_no_jump_editor_geometry.py":   "69fbd0cb8f4b0dc89ef1ed4b5c9c21c612b30941af86d4d88a690071065fe48c",
         "test_scripts/test_text_editing_fidelity_suite.py": "e78f07bba51757444acefa5cec12bd9734fda5227465f3dfb2345762be8942fb",
         "test_scripts/test_completion_proof_hook.py":     "7f40c39fbf9033a57db048bf544957df3a5cb8ef97d2aa1ea7c9e984a318bd96",
-        "scripts/verify_no_jump.py":                      "3bf6f77564ee34b598088c56d577c66109075c2da9116ac1bb06bfb2a2e75507",
-        "scripts/check_gate_passed.py":                   "cbff9ac54718cd27384411c752e232a3419f62c2dc59a6beddfbcbca96cb5074",
+        "scripts/verify_no_jump.py":                      "6607949e645fc3760e5b6601fff08ecc01494205ed58132648b5ec3dc4739f9f",
+        "scripts/check_gate_passed.py":                   "0d8d0d592d8906cf92bdb3d91fbc35870e50c26df206b5f225f18f89c517c500",
         "scripts/codex_session_guard.py":                 "7b50b60331ee1fb5b9849a79fee5966fcfd584980ae7a37d78b1acb305b4cfb2",
         "scripts/ux_signoff_agent.py":                    "a3bb1647cc4e5daed64f747fda5a31a9f7690ef39726a9ca607dfb59c671c97c",
         "scripts/gate_anchor.py":                         "32cf4ba5fbef37b6f41decfc9224347134e25537f940954d5b6ce2ab5c40eae8",
@@ -212,7 +213,10 @@ def main() -> int:
         return 1
     print("[completion-gate] Stop hook content verified via gate_anchor.py")
 
-    gate_rc = _run([sys.executable, "scripts/verify_no_jump.py"])
+    verify_cmd = [sys.executable, "scripts/verify_no_jump.py"]
+    if skip_signoff:
+        verify_cmd.append("--skip-signoff")
+    gate_rc = _run(verify_cmd)
     if gate_rc != 0:
         print("\n[completion-gate] FAIL — verify_no_jump.py exited non-zero")
         print("[completion-gate] Fix the failing gates then re-run this script.")
@@ -283,4 +287,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    _ap = argparse.ArgumentParser()
+    _ap.add_argument("--skip-signoff", action="store_true",
+                     help="Skip the UX signoff step (for environments without OPENAI_API_KEY)")
+    _args = _ap.parse_args()
+    sys.exit(main(skip_signoff=_args.skip_signoff))

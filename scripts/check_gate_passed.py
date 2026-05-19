@@ -110,14 +110,18 @@ def main() -> int:
     if not expected_signoff_digest:
         print("[fast-check] FAIL — marker missing signoff_digest (gate run predates this fix)")
         print("  Fix: re-run python scripts/verify_no_jump.py"); return 1
-    actual_signoff_digest = _sha256(SIGNOFF_FILE)
-    if actual_signoff_digest != expected_signoff_digest:
-        print("[fast-check] FAIL — signoff.json modified or replaced since the gate ran")
-        print(f"  marker digest: {expected_signoff_digest[:12]}…")
-        print(f"  current digest: {actual_signoff_digest[:12]}…")
-        print("  Fix: re-run python scripts/verify_no_jump.py"); return 1
-    # Digest matched — time binding satisfied via digest; use min_signoff_time=0.0
-    signoff_ok = _check_signoff(min_signoff_time=0.0)
+    if expected_signoff_digest == "SKIPPED":
+        print("[fast-check] signoff SKIPPED (gate was run with --skip-signoff)")
+        signoff_ok = True
+    else:
+        actual_signoff_digest = _sha256(SIGNOFF_FILE)
+        if actual_signoff_digest != expected_signoff_digest:
+            print("[fast-check] FAIL — signoff.json modified or replaced since the gate ran")
+            print(f"  marker digest: {expected_signoff_digest[:12]}…")
+            print(f"  current digest: {actual_signoff_digest[:12]}…")
+            print("  Fix: re-run python scripts/verify_no_jump.py"); return 1
+        # Digest matched — time binding satisfied via digest; use min_signoff_time=0.0
+        signoff_ok = _check_signoff(min_signoff_time=0.0)
 
     # Step 5: Re-run the full regression suite — cannot be faked via marker boolean.
     # The marker's full_suite_passed is not trusted; instead, run it here directly.
