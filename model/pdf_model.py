@@ -270,9 +270,13 @@ class PDFModel:
             return repr(exc)
 
     def _active_session(self) -> DocumentSession | None:
-        if not self._active_session_id:
+        # getattr-guarded so PDFModel.__new__(...) instances (used by some
+        # unit tests that bypass __init__) don't AttributeError here.
+        active_session_id = getattr(self, "_active_session_id", None)
+        if not active_session_id:
             return None
-        return self._sessions_by_id.get(self._active_session_id)
+        sessions_by_id = getattr(self, "_sessions_by_id", {})
+        return sessions_by_id.get(active_session_id)
 
     @contextmanager
     def _activate_temporarily(self, session_id: str) -> Iterator[None]:
@@ -4183,7 +4187,7 @@ class PDFModel:
                         )
             if should_promote:
                 effective = "paragraph"
-                logger.debug("auto-promoted target_mode run->paragraph (no explicit span_id)")
+                logger.warning("auto-promoted target_mode run->paragraph (no explicit span_id)")
         return effective
 
     def edit_text(self, page_num: int, rect: fitz.Rect, new_text: str,
