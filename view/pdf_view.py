@@ -2692,12 +2692,10 @@ class PDFView(QMainWindow):
                         allow_fallback=True,
                     )
                     if info:
-                        # intentional change from 308ae15: open the editor on
-                        # press so reopen-after-apply/cancel does not depend on
-                        # stale pending drag state surviving until release.
-                        # Click-to-edit should open immediately for a fresh target.
-                        # Deferring to mouse-release can miss reopen paths after a
-                        # cancel/apply cycle due stale drag state.
+                        # Open the editor on press, not on release: deferring to
+                        # mouse-release relies on pending drag state surviving the
+                        # gesture, which a prior cancel/apply cycle can clear,
+                        # silently missing the reopen.
                         self.editing_font_name = info.font
                         self.editing_color = info.color
                         self.editing_original_text = info.target_text
@@ -3613,8 +3611,8 @@ class PDFView(QMainWindow):
         """Draw persistent dim outlines around text blocks on visible pages."""
         self._clear_all_block_outlines()
         if getattr(self, "current_mode", "browse") == "edit_text":
-            # intentional change from 308ae15: edit_text uses hover/active-editor
-            # feedback instead of persistent outlines while text editing is armed.
+            # edit_text relies on hover/active-editor feedback; persistent
+            # outlines here cause first-frame pixel jumps on click-to-edit.
             return
         model = getattr(getattr(self, "controller", None), "model", None)
         if model is None or not getattr(model, "doc", None):

@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 import fitz
 
@@ -182,7 +183,7 @@ def _classify_insert_path(
     text_width: float,
     available_width: float,
     size: float,
-) -> str:
+) -> Literal["htmlbox", "fast"]:
     """Shared insert-path classifier: ``"fast"`` (single-line ``insert_text``)
     vs ``"htmlbox"`` (``insert_htmlbox``).
 
