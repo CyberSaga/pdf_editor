@@ -1185,6 +1185,71 @@ def test_build_text_editor_stylesheet_keeps_editor_background_transparent() -> N
     assert "background: rgb(" not in stylesheet
 
 
+@pytest.mark.parametrize("editor_intent", ["edit_existing", "add_new"])
+def test_create_text_editor_keeps_background_transparent_for_edit_and_add_text(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp,
+    editor_intent: str,
+) -> None:
+    class _FakePreviewBackedInlineTextEditor(_FakeInlineTextEditor):
+        def __init__(self, text: str, renderer=None, **legacy_kwargs) -> None:
+            super().__init__(text)
+            self.renderer = renderer
+
+        def configure_render_context(self, **kwargs) -> None:
+            self.render_context = kwargs
+
+        def freeze_first_frame(self, image) -> None:
+            self.frozen_first_frame = image
+
+        def setFocus(self, *args, **kwargs) -> None:
+            self.focused = True
+
+    class _FakeSceneWithAddWidget(_FakeScene):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_proxy: _FakeProxy | None = None
+
+        def addWidget(self, widget):
+            self.last_proxy = _FakeProxy(widget)
+            return self.last_proxy
+
+    view = _make_view()
+    _attach_text_property_panel(view)
+    view.scene = _FakeSceneWithAddWidget()
+    view._render_scale = 1.0
+    view.controller = SimpleNamespace(
+        model=SimpleNamespace(get_render_width_for_edit=lambda *args, **kwargs: 40.0)
+    )
+    view._refresh_undo_redo_action_state = lambda: None
+    view._set_document_undo_redo_enabled = lambda enabled: None
+    view._set_edit_focus_guard = lambda enabled: None
+    view._sync_text_property_panel_state = lambda: None
+
+    manager = pdf_view.TextEditManager(view)
+    manager.refresh_text_editor_mask_color = lambda: None
+
+    monkeypatch.setattr(text_editing, "PreviewBackedInlineTextEditor", _FakePreviewBackedInlineTextEditor)
+    monkeypatch.setattr(text_editing, "_EditorShortcutForwarder", lambda view: object())
+
+    manager.create_text_editor(
+        rect=fitz.Rect(10, 20, 50, 40),
+        text="transparent text",
+        font_name="helv",
+        font_size=12.0,
+        color=(0.0, 0.0, 0.0),
+        editor_intent=editor_intent,
+    )
+
+    proxy = view.scene.last_proxy
+    assert proxy is not None
+    editor_widget = proxy.widget()
+    assert editor_widget.auto_fill_background is False
+    assert editor_widget.viewport().auto_fill_background is False
+    assert "background: transparent" in editor_widget.stylesheet
+    assert "background: rgb(" not in editor_widget.stylesheet
+
+
 def test_create_text_editor_rotates_proxy_for_vertical_text(monkeypatch: pytest.MonkeyPatch, qapp) -> None:
     class _FakeSceneWithAddWidget(_FakeScene):
         def __init__(self) -> None:
