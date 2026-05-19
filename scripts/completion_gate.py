@@ -114,13 +114,13 @@ def main() -> int:
     # intentionally one-directional (gate → gate_anchor → hook) to avoid an
     # unsolvable SHA-256 fixed-point cycle that mutual pinning would create.
     _PINNED_HASHES: dict[str, str] = {
-        "test_scripts/test_no_jump_editor_geometry.py":   "6bd186e6923ac11efd7107a849271af8a61c860d0df0e3da0bafce5523d35f11",
-        "test_scripts/test_text_editing_fidelity_suite.py": "b5ab250bd5353d472898bc5e73aa3a7cd15eb526bf9949f2b633a3151f82e400",
+        "test_scripts/test_no_jump_editor_geometry.py":   "69fbd0cb8f4b0dc89ef1ed4b5c9c21c612b30941af86d4d88a690071065fe48c",
+        "test_scripts/test_text_editing_fidelity_suite.py": "e78f07bba51757444acefa5cec12bd9734fda5227465f3dfb2345762be8942fb",
         "test_scripts/test_completion_proof_hook.py":     "7f40c39fbf9033a57db048bf544957df3a5cb8ef97d2aa1ea7c9e984a318bd96",
-        "scripts/verify_no_jump.py":                      "72557fc0ebbb8a8a58e311229786fd59ce8d7c06f07cb3f888e1890264dfe402",
-        "scripts/check_gate_passed.py":                   "54c6186bc0bbf40cfa21382f233e6f45d4569715072b53f3cd365f05cf48d2b8",
+        "scripts/verify_no_jump.py":                      "3bf6f77564ee34b598088c56d577c66109075c2da9116ac1bb06bfb2a2e75507",
+        "scripts/check_gate_passed.py":                   "cbff9ac54718cd27384411c752e232a3419f62c2dc59a6beddfbcbca96cb5074",
         "scripts/codex_session_guard.py":                 "7b50b60331ee1fb5b9849a79fee5966fcfd584980ae7a37d78b1acb305b4cfb2",
-        "scripts/ux_signoff_agent.py":                    "1e1549bf15e8c3913e3220a008a1302fc2952cfd97d45f1ca86f4053401a14f5",
+        "scripts/ux_signoff_agent.py":                    "a3bb1647cc4e5daed64f747fda5a31a9f7690ef39726a9ca607dfb59c671c97c",
         "scripts/gate_anchor.py":                         "32cf4ba5fbef37b6f41decfc9224347134e25537f940954d5b6ce2ab5c40eae8",
     }
     hash_mismatches: list[str] = []
