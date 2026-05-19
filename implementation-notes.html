@@ -174,9 +174,9 @@ empty-member guard) is implemented; several were partially pre-satisfied.
 <div class="deviation">
 <strong><code>get_render_width_for_edit</code> body fully replaced with
 <code>return float(rect.width)</code>.</strong> The plan specifies exactly this.
-The old doc/rotation/font_size parameters are retained in the signature (callers
-still pass them) but are now unused. Left in place to avoid touching call sites;
-flagged for review below.
+The dead <code>rotation</code> and <code>font_size</code> parameters have been
+removed from the signature. The single call site in <code>view/text_editing.py</code>
+was updated to pass only <code>(page_num, rect)</code>.
 </div>
 <div class="deviation">
 <strong>Approach for Layers B–E: hand re-derived (per your explicit choice).</strong>
@@ -244,12 +244,13 @@ Deletion adds a branch but bounds memory — matches the proven contract and the
 
 <h2>Questions &amp; Resolutions</h2>
 <div class="resolved">
-<strong>Q1 (Layer A) — RESOLVED.</strong> <code>get_render_width_for_edit</code> now ignores
-its <code>rotation</code> and <code>font_size</code> parameters. <strong>Resolution:</strong>
-Signature kept stable intentionally. Slimming the signature would require touching all call
-sites across model and view with no behavioral benefit — the extra params are silently ignored
-and cause no correctness issue. This is an acceptable known nit, acceptable to leave until a
-broader API cleanup is warranted.
+<strong>Q1 (Layer A) — RESOLVED.</strong> The dead <code>rotation</code> and
+<code>font_size</code> parameters have been <strong>removed</strong> from
+<code>get_render_width_for_edit</code>. The body is <code>return float(rect.width)</code>;
+the signature is now <code>(self, page_num: int, rect: fitz.Rect) → float</code>.
+The single call site in <code>view/text_editing.py:819</code> was updated to pass
+only the two positional args it already used. A signature-guard test in
+<code>test_edit_text_helpers.py</code> locks this down.
 </div>
 <div class="open">
 <strong>Q2 (Layer A) — OPEN.</strong> The MuPDF htmlbox leading overhead is hard-coded
@@ -312,7 +313,8 @@ differences vs. the baseline.</p>
     <code>_classify_insert_path()</code> (shared fast/htmlbox classifier).
     <code>_build_insert_css</code>: max/clamp only on auto-calculate branch.
     <code>get_render_width_for_edit</code>: simplified to
-    <code>return float(rect.width)</code>.
+    <code>return float(rect.width)</code>; dead <code>rotation</code> and
+    <code>font_size</code> params removed.
     <code>_convert_text_to_html</code>: <code>font_size</code> param changed
     <code>int → float</code>.
     <code>_apply_redact_insert</code>: <code>_line_ht</code> from member_spans,

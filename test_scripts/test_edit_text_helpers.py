@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -679,6 +680,13 @@ def test_render_width_for_edit_does_not_exceed_rect_width(tmp_path: Path):
         )
     finally:
         model.close()
+
+
+def test_render_width_for_edit_signature_is_slimmed_to_page_and_rect() -> None:
+    """The render-width helper no longer accepts unused layout hints."""
+    signature = inspect.signature(PDFModel.get_render_width_for_edit)
+
+    assert list(signature.parameters) == ["self", "page_num", "rect"]
 
 
 def test_repeated_edits_do_not_accumulate_size_drift(tmp_path: Path):
