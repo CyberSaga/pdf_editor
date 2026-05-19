@@ -118,7 +118,7 @@ def main(skip_signoff: bool = False) -> int:
         "test_scripts/test_no_jump_editor_geometry.py":   "69fbd0cb8f4b0dc89ef1ed4b5c9c21c612b30941af86d4d88a690071065fe48c",
         "test_scripts/test_text_editing_fidelity_suite.py": "e78f07bba51757444acefa5cec12bd9734fda5227465f3dfb2345762be8942fb",
         "test_scripts/test_completion_proof_hook.py":     "7f40c39fbf9033a57db048bf544957df3a5cb8ef97d2aa1ea7c9e984a318bd96",
-        "scripts/verify_no_jump.py":                      "1265497c268a220ac9c1f2e5f49cf49b313edb673872459de2cf3637df61d5b3",
+        "scripts/verify_no_jump.py":                      "8f6898e816229c92b1fe991e426f22c6c982dcef4ad63e3161ad340f800141a8",
         "scripts/check_gate_passed.py":                   "6c9304abf17891de4dd3c30301472443f08d5c724f953b19799bb173e5ca6544",
         "scripts/codex_session_guard.py":                 "7b50b60331ee1fb5b9849a79fee5966fcfd584980ae7a37d78b1acb305b4cfb2",
         "scripts/ux_signoff_agent.py":                    "a3bb1647cc4e5daed64f747fda5a31a9f7690ef39726a9ca607dfb59c671c97c",
