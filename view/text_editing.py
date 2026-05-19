@@ -5,6 +5,11 @@ import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
 import fitz
 from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -519,10 +524,6 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
     # back to native QTextEdit painting so typed text stays readable.
     _MUTATED_PREVIEW_MIN_NONTRANSPARENT_COVERAGE = 0.0001
     _VISIBLE_ALPHA_THRESHOLD = 8
-    _VISIBLE_ALPHA_TRANSLATE = bytes(
-        1 if value > 8 else 0
-        for value in range(256)
-    )
 
     def __init__(self, text: str, renderer: PreviewRenderer | None = None, **legacy_kwargs) -> None:
         super().__init__()
@@ -546,7 +547,6 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
         # fires on cursor blink/scroll and would walk the whole document).
         self._text_matches_initial: bool = True
         self._text_is_nonempty: bool = bool(self._initial_text)
-        self._preview_nontransparent_coverage: float = 0.0
         self._mutated_preview_is_valid: bool = True
         self._legacy_standalone_mode = bool(legacy_kwargs) and renderer is None
         self._render_args: dict[str, object] = {}
@@ -610,37 +610,41 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
         self._debounce.start()
         self.viewport().update()
 
-    def _compute_nontransparent_coverage(self, image: QImage | None) -> float:
+    def _mutated_preview_has_visible_ink(self, image: QImage | None) -> bool:
+        # The only consumer compares coverage against a tiny fraction, so we
+        # just need "are there at least N visible alpha bytes?" — scan and stop
+        # as soon as the count crosses the threshold instead of summing every
+        # pixel of the preview on every debounced regenerate.
         if (
             image is None
             or image.isNull()
             or self._frozen_first_frame_image is None
         ):
-            return 0.0
+            return False
         width = int(image.width())
         height = int(image.height())
         if width <= 0 or height <= 0:
-            return 0.0
+            return False
         if image.format() != QImage.Format_RGBA8888:
             image = image.convertToFormat(QImage.Format_RGBA8888)
         threshold = int(self._VISIBLE_ALPHA_THRESHOLD)
         stride = int(image.bytesPerLine())
         size_bytes = int(image.sizeInBytes())
         buf = memoryview(image.constBits())[:size_bytes]
-        try:
-            import numpy as np
-
+        needed = self._MUTATED_PREVIEW_MIN_NONTRANSPARENT_COVERAGE * width * height
+        if np is not None:
             pixels = np.frombuffer(buf, dtype=np.uint8, count=stride * height)
             rows = pixels.reshape((height, stride))
             visible = int(np.count_nonzero(rows[:, 3 : 4 * width : 4] > threshold))
-        except ImportError:
-            visible = 0
-            translate = self._VISIBLE_ALPHA_TRANSLATE
-            for y in range(height):
-                row_start = y * stride
-                row_alpha = buf[row_start + 3 : row_start + 4 * width : 4]
-                visible += sum(row_alpha.tobytes().translate(translate))
-        return visible / float(width * height)
+            return visible > needed
+        visible = 0
+        for y in range(height):
+            row_start = y * stride
+            row_alpha = buf[row_start + 3 : row_start + 4 * width : 4]
+            visible += sum(1 for a in row_alpha if a > threshold)
+            if visible > needed:
+                return True
+        return visible > needed
 
     def _regenerate_preview(self) -> None:
         if not self._render_args:
@@ -658,13 +662,9 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
             render_scale=float(self._render_args.get("render_scale", 1.0)),
             line_height=float(self._render_args.get("line_height", 0.0)),
         )
-        self._preview_nontransparent_coverage = self._compute_nontransparent_coverage(
-            self._preview_image
-        )
         self._mutated_preview_is_valid = (
             not self._text_is_nonempty
-            or self._preview_nontransparent_coverage
-            > self._MUTATED_PREVIEW_MIN_NONTRANSPARENT_COVERAGE
+            or self._mutated_preview_has_visible_ink(self._preview_image)
         )
         self.viewport().update()
 
