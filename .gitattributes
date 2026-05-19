@@ -1,0 +1,13 @@
+# Gate trust chain: byte-for-byte hash-pinned files MUST be LF on every OS.
+# completion_gate.py / gate_anchor.py read these with raw read_bytes(); a
+# Windows autocrlf CRLF checkout would change the bytes and break every pin.
+scripts/completion_gate.py text eol=lf
+scripts/gate_anchor.py text eol=lf
+scripts/check_completion_proof_hook.py text eol=lf
+scripts/check_gate_passed.py text eol=lf
+scripts/codex_session_guard.py text eol=lf
+scripts/ux_signoff_agent.py text eol=lf
+scripts/verify_no_jump.py text eol=lf
+test_scripts/test_no_jump_editor_geometry.py text eol=lf
+test_scripts/test_text_editing_fidelity_suite.py text eol=lf
+test_scripts/test_completion_proof_hook.py text eol=lf
