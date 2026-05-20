@@ -945,9 +945,44 @@ class TextEditManager:
             logger.debug("text editor mask removal skipped")
         self._view._text_editor_mask_item = None
 
+    def _clear_text_editor_focus_border_item(self) -> None:
+        border_item = getattr(self._view, "_text_editor_focus_border_item", None)
+        if border_item is None:
+            return
+        try:
+            if border_item.scene():
+                self._view.scene.removeItem(border_item)
+        except Exception:
+            logger.debug("text editor focus border removal skipped")
+        self._view._text_editor_focus_border_item = None
+
+    def _sync_text_editor_focus_border_item(self, scene_rect: QRectF) -> None:
+        if scene_rect.isEmpty() or not hasattr(self._view, "scene"):
+            self._clear_text_editor_focus_border_item()
+            return
+        if not hasattr(self._view.scene, "addRect"):
+            return
+        border_rect = scene_rect.adjusted(-2.0, -2.0, 2.0, 2.0)
+        pen = QPen(QColor(30, 120, 255, 230), 2)
+        brush = QBrush(Qt.NoBrush)
+        border_item = getattr(self._view, "_text_editor_focus_border_item", None)
+        if border_item is None:
+            border_item = self._view.scene.addRect(border_rect, pen, brush)
+            self._view._text_editor_focus_border_item = border_item
+        else:
+            if hasattr(border_item, "setRect"):
+                border_item.setRect(border_rect)
+            if hasattr(border_item, "setPen"):
+                border_item.setPen(pen)
+            if hasattr(border_item, "setBrush"):
+                border_item.setBrush(brush)
+        if hasattr(border_item, "setZValue"):
+            border_item.setZValue(13)
+
     def _sync_text_editor_mask_item(self, scene_rect: QRectF, mask_brush: QBrush) -> None:
         if scene_rect.isEmpty() or not hasattr(self._view, "scene"):
             self._clear_text_editor_mask_item()
+            self._clear_text_editor_focus_border_item()
             return
         if not hasattr(self._view.scene, "addRect"):
             return
@@ -1119,10 +1154,12 @@ class TextEditManager:
             text_rgb,
         )
         if signature == self._last_mask_signature and getattr(self._view, "_text_editor_mask_item", None) is not None:
+            self._sync_text_editor_focus_border_item(scene_rect)
             return
 
         mask_brush, mask_color, mask_debug = self._build_background_matched_mask(scene_rect, text_rgb)
         self._sync_text_editor_mask_item(scene_rect, mask_brush)
+        self._sync_text_editor_focus_border_item(scene_rect)
         editor.setStyleSheet(self._view._build_text_editor_stylesheet(text_rgb, mask_color))
         editor.setProperty("mask_rgb", (mask_color.red(), mask_color.green(), mask_color.blue()))
         editor.setProperty("mask_debug_metrics", mask_debug)
@@ -1525,6 +1562,7 @@ class TextEditManager:
         if proxy_to_remove.scene():
             view.scene.removeItem(proxy_to_remove)
         self._clear_text_editor_mask_item()
+        self._clear_text_editor_focus_border_item()
         # Restore dim outline for the block that was just edited
         try:
             active_key = getattr(view, '_active_outline_key', None)

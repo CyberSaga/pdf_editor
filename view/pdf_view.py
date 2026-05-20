@@ -1409,6 +1409,8 @@ class PDFView(QMainWindow):
         if mode not in ("run", "paragraph"):
             mode = "run"
         self.sig_text_target_mode_changed.emit(mode)
+        if getattr(self, "current_mode", "browse") == "edit_text":
+            self._draw_all_block_outlines()
         # force hover target refresh under new granularity
         self._last_hover_scene_pos = None
 
@@ -3616,12 +3618,11 @@ class PDFView(QMainWindow):
     def _draw_all_block_outlines(self, *args) -> None:
         """Draw persistent dim outlines around text blocks on visible pages."""
         self._clear_all_block_outlines()
-        if getattr(self, "current_mode", "browse") == "edit_text":
-            # edit_text relies on hover/active-editor feedback; persistent
-            # outlines here cause first-frame pixel jumps on click-to-edit.
-            return
         model = getattr(getattr(self, "controller", None), "model", None)
         if model is None or not getattr(model, "doc", None):
+            return
+        mode = getattr(model, "text_target_mode", "run")
+        if getattr(self, "current_mode", "browse") == "edit_text" and mode != "paragraph":
             return
 
         try:
@@ -3632,8 +3633,10 @@ class PDFView(QMainWindow):
             return
 
         rs = self._render_scale if self._render_scale > 0 else 1.0
-        mode = getattr(model, "text_target_mode", "run")
         outline_pen = QPen(QColor(90, 130, 190, 90), 1)
+        if mode == "paragraph":
+            outline_pen = QPen(QColor(147, 197, 253, 170), 1)
+            outline_pen.setStyle(Qt.DashLine)
         outline_brush = QBrush(Qt.NoBrush)
 
         for page_idx in range(int(start_page), int(end_page) + 1):

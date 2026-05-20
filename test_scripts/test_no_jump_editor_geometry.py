@@ -20,6 +20,7 @@ from view.text_editing import (
 )
 
 ARTIFACT_DIR = Path("test_artifacts") / "no_jump"
+EDITOR_CHROME_INSET_PX = 3
 
 
 # ── run_id helpers (bound to current verifier invocation) ─────────────────────
@@ -158,6 +159,17 @@ def _crop(img: QImage, rect) -> QImage:
     if rw <= 0 or rh <= 0:
         return QImage(1, 1, QImage.Format_RGBA8888)
     return img.copy(rx, ry, rw, rh)
+
+
+def _inset_editor_content_rect(rect):
+    if rect.width() <= EDITOR_CHROME_INSET_PX * 2 or rect.height() <= EDITOR_CHROME_INSET_PX * 2:
+        return rect
+    return rect.adjusted(
+        EDITOR_CHROME_INSET_PX,
+        EDITOR_CHROME_INSET_PX,
+        -EDITOR_CHROME_INSET_PX,
+        -EDITOR_CHROME_INSET_PX,
+    )
 
 
 def _query_widget_bg_rgb(widget) -> tuple[int, int, int]:
@@ -686,7 +698,7 @@ def _grab_editor_only_image(view, qapp):
         .convertToFormat(QImage.Format_RGBA8888)
     )
     rect = _observed_editor_vp_rect(view)
-    return _crop(full, rect), rect
+    return _crop(full, _inset_editor_content_rect(rect)), rect
 
 
 def _rect_drift_metrics(reference_rect, current_rect) -> dict[str, int]:
@@ -884,7 +896,7 @@ def test_click_to_edit_qtest_integration(qapp, pdf_filename, pdf_slug):
     # slipped through earlier gates.  Capture both for diagnostic visibility.
     changed_pct_padded = _changed_pixel_pct(before_img, after_img)
     obs_editor = _observed_editor_vp_rect(view)
-    editor_in_grab = obs_editor.intersected(grab_rect).translated(
+    editor_in_grab = _inset_editor_content_rect(obs_editor).intersected(grab_rect).translated(
         -grab_rect.x(), -grab_rect.y()
     )
     if editor_in_grab.width() <= 0 or editor_in_grab.height() <= 0:
@@ -1479,7 +1491,7 @@ def test_reopen_same_textbox_cycles_do_not_cumulate_shrink(
             assert opened_img.width() > 0 and opened_img.height() > 0, (
                 f"opened_img has zero dimensions on cycle {cycle_idx} ({pdf_filename})"
             )
-            before_crop = _crop(before_full, opened_rect)
+            before_crop = _crop(before_full, _inset_editor_content_rect(opened_rect))
             open_changed_px_pct = _changed_pixel_pct(before_crop, opened_img)
 
             combo_pdf_size = _parse_font_size_str(view.text_size.currentText())

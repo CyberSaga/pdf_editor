@@ -1175,6 +1175,46 @@ def test_block_outlines_follow_run_boxes_in_run_mode(monkeypatch: pytest.MonkeyP
     assert view.scene.added_rects == [QRectF(20.0, 30.0, 50.0, 14.0)]
 
 
+def test_paragraph_outlines_use_light_blue_dashed_border(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeSceneWithAddRect(_FakeScene):
+        def __init__(self) -> None:
+            super().__init__()
+            self.added: list[tuple[QRectF, object, object]] = []
+
+        def addRect(self, rect, pen=None, brush=None):
+            self.added.append((QRectF(rect), pen, brush))
+            return SimpleNamespace(setZValue=lambda z: None, setVisible=lambda v: None)
+
+    view = _make_view()
+    view.current_mode = "edit_text"
+    view._block_outline_items = {}
+    view._hover_hidden_outline_key = None
+    view._active_outline_key = None
+    view._render_scale = 1.0
+    view.scene = _FakeSceneWithAddRect()
+    view.page_y_positions = [0.0]
+    view.continuous_pages = False
+
+    fake_para = SimpleNamespace(bbox=fitz.Rect(20, 30, 170, 74))
+    view.controller = SimpleNamespace(
+        model=SimpleNamespace(
+            doc=True,
+            text_target_mode="paragraph",
+            ensure_page_index_built=lambda page_num: None,
+            block_manager=SimpleNamespace(get_paragraphs=lambda page_idx: [fake_para]),
+        )
+    )
+    monkeypatch.setattr(view, "visible_page_range", lambda prefetch=0: (0, 0))
+
+    view._draw_all_block_outlines()
+
+    assert len(view.scene.added) == 1
+    _, pen, brush = view.scene.added[0]
+    assert pen.style() == Qt.DashLine
+    assert pen.color() == QColor(147, 197, 253, 170)
+    assert brush.style() == Qt.NoBrush
+
+
 def test_build_text_editor_stylesheet_keeps_editor_background_transparent() -> None:
     view = _make_view()
 
@@ -1304,6 +1344,7 @@ def test_create_text_editor_adds_mask_item_to_hide_display_text(monkeypatch: pyt
             super().__init__()
             self.last_proxy: _FakeProxy | None = None
             self.last_mask_item: _FakeRectItem | None = None
+            self.last_focus_border_item: _FakeRectItem | None = None
 
         def addWidget(self, widget):
             self.last_proxy = _FakeProxy(widget)
@@ -1313,7 +1354,10 @@ def test_create_text_editor_adds_mask_item_to_hide_display_text(monkeypatch: pyt
             item = _FakeRectItem(rect)
             item.pen = pen
             item.brush = brush
-            self.last_mask_item = item
+            if pen is not None and pen.style() == Qt.NoPen:
+                self.last_mask_item = item
+            else:
+                self.last_focus_border_item = item
             return item
 
     view = _make_view()
@@ -1351,19 +1395,30 @@ def test_create_text_editor_adds_mask_item_to_hide_display_text(monkeypatch: pyt
     assert view.scene.last_mask_item.rect.y() == 20.0
     assert view.scene.last_mask_item.rect.width() == 80.0
     assert view.scene.last_mask_item.rect.height() == float(editor_widget._height)
+    assert getattr(view, "_text_editor_focus_border_item", None) is view.scene.last_focus_border_item
+    assert view.scene.last_focus_border_item is not None
+    assert view.scene.last_focus_border_item.rect == view.scene.last_mask_item.rect.adjusted(
+        -2.0, -2.0, 2.0, 2.0
+    )
+    assert view.scene.last_focus_border_item.pen.style() == Qt.SolidLine
+    assert view.scene.last_focus_border_item.pen.color() == QColor(30, 120, 255, 230)
 
 
 def test_finalize_text_edit_removes_mask_item(qapp) -> None:
     view = _make_view_for_finalize()
     mask_item = _FakeRectItem(QRectF(10, 20, 120, 40))
+    border_item = _FakeRectItem(QRectF(10, 20, 120, 40))
     view._text_editor_mask_item = mask_item
+    view._text_editor_focus_border_item = border_item
     view._block_outline_items = {}
     view._active_outline_key = None
 
     view._finalize_text_edit_impl(pdf_view.TextEditFinalizeReason.ESCAPE)
 
     assert mask_item in view.scene.removed
+    assert border_item in view.scene.removed
     assert getattr(view, "_text_editor_mask_item", None) is None
+    assert getattr(view, "_text_editor_focus_border_item", None) is None
 
 
 def test_cmd_shift_z_fires_redo(qapp) -> None:
