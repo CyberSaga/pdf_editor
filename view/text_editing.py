@@ -64,6 +64,10 @@ _MASK_RING_THICKNESS_PX = 3
 _MASK_MIN_CONTRAST_RATIO = 3.2
 _MASK_MAX_TINT_STRENGTH = 0.20
 _MASK_TEXTURE_MAX_LEAK_PCT = 0.01
+_MASK_TINT_LADDER: tuple[float, ...] = (0.04, 0.08, 0.12, 0.16, _MASK_MAX_TINT_STRENGTH)
+
+MASK_MODE_BACKGROUND_MATCH = "background_match"
+MASK_MODE_FALLBACK = "fallback"
 
 
 def _readable_editor_mask_color(text_rgb: tuple[int, int, int] | None = None) -> QColor:
@@ -269,30 +273,10 @@ def _normalize_for_edit_compare(text: str) -> str:
 
 
 def _average_image_rect_color(image, rect: QRect) -> QColor:
-    bounded = rect.intersected(image.rect())
-    if bounded.isEmpty():
+    mean = _qimage_mean_rgb(image, rect)
+    if mean is None:
         return QColor(_DEFAULT_EDITOR_MASK_COLOR)
-    if image.format() != QImage.Format_RGBA8888:
-        image = image.convertToFormat(QImage.Format_RGBA8888)
-    stride = int(image.bytesPerLine())
-    buf = bytes(image.constBits())
-    total_r = 0
-    total_g = 0
-    total_b = 0
-    left = bounded.left()
-    right = bounded.right()  # inclusive
-    width = right - left + 1
-    for y in range(bounded.top(), bounded.bottom() + 1):
-        base = y * stride + left * 4
-        end = base + width * 4
-        row = buf[base:end]
-        total_r += sum(row[0::4])
-        total_g += sum(row[1::4])
-        total_b += sum(row[2::4])
-    count = width * (bounded.bottom() - bounded.top() + 1)
-    if count <= 0:
-        return QColor(_DEFAULT_EDITOR_MASK_COLOR)
-    return QColor(total_r // count, total_g // count, total_b // count)
+    return QColor(int(round(mean[0])), int(round(mean[1])), int(round(mean[2])))
 
 
 def _contrast_ratio_rgb(foreground: tuple[float, float, float], background: tuple[float, float, float]) -> float:
@@ -316,23 +300,33 @@ def _qimage_mean_rgb(image: QImage, rect: QRect) -> tuple[float, float, float] |
     if image.format() != QImage.Format_RGBA8888:
         image = image.convertToFormat(QImage.Format_RGBA8888)
     stride = int(image.bytesPerLine())
-    buf = bytes(image.constBits())
-    total_r = 0
-    total_g = 0
-    total_b = 0
+    size_bytes = int(image.sizeInBytes())
+    buf = memoryview(image.constBits())[:size_bytes]
     left = bounded.left()
     right = bounded.right()
     width = right - left + 1
+    height = bounded.bottom() - bounded.top() + 1
+    count = width * height
+    if count <= 0:
+        return None
+    if np is not None:
+        img_height = int(image.height())
+        img_width = int(image.width())
+        arr = np.frombuffer(buf, dtype=np.uint8, count=stride * img_height).reshape((img_height, stride))
+        rgba = arr[:, : img_width * 4].reshape((img_height, img_width, 4))
+        crop = rgba[bounded.top() : bounded.bottom() + 1, left : right + 1, :3]
+        mean_rgb = crop.reshape(-1, 3).mean(axis=0, dtype=np.float64)
+        return (float(mean_rgb[0]), float(mean_rgb[1]), float(mean_rgb[2]))
+    total_r = 0
+    total_g = 0
+    total_b = 0
     for y in range(bounded.top(), bounded.bottom() + 1):
         base = y * stride + left * 4
         end = base + width * 4
-        row = buf[base:end]
+        row = bytes(buf[base:end])
         total_r += sum(row[0::4])
         total_g += sum(row[1::4])
         total_b += sum(row[2::4])
-    count = width * (bounded.bottom() - bounded.top() + 1)
-    if count <= 0:
-        return None
     return (
         total_r / count,
         total_g / count,
@@ -463,6 +457,28 @@ def _mask_leak_ratio(patch: QImage, reference_rgb: tuple[float, float, float], t
             if delta > threshold * 3.0:
                 leaking += 1
     return leaking / total
+
+
+def _make_fallback_mask_result(
+    text_rgb_f: tuple[float, float, float],
+) -> tuple[QBrush, QColor, dict[str, object]]:
+    fallback_color = _readable_editor_mask_color(tuple(int(round(v)) for v in text_rgb_f))
+    fallback_rgb = (
+        float(fallback_color.red()),
+        float(fallback_color.green()),
+        float(fallback_color.blue()),
+    )
+    return (
+        QBrush(fallback_color),
+        QColor(fallback_color),
+        {
+            "mask_mode": MASK_MODE_FALLBACK,
+            "ring_delta": None,
+            "leak_pct": None,
+            "contrast_ratio": _contrast_ratio_rgb(text_rgb_f, fallback_rgb),
+            "tint_strength": 0.0,
+        },
+    )
 
 
 def _widget_logical_dpi() -> float:
@@ -915,8 +931,10 @@ class TextEditManager:
     def __init__(self, view) -> None:
         self._view = view
         self._preview_renderer: PreviewRenderer | None = None
+        self._last_mask_signature: tuple | None = None
 
     def _clear_text_editor_mask_item(self) -> None:
+        self._last_mask_signature = None
         mask_item = getattr(self._view, "_text_editor_mask_item", None)
         if mask_item is None:
             return
@@ -987,43 +1005,18 @@ class TextEditManager:
         scene_rect: QRectF,
         text_rgb: tuple[int, int, int],
     ) -> tuple[QBrush, QColor, dict[str, object]]:
+        text_rgb_f: tuple[float, float, float] = tuple(float(v) for v in text_rgb)  # type: ignore[assignment]
+
         sampled = self._resolve_mask_sampling_context(scene_rect)
-        if sampled is None:
-            fallback = _readable_editor_mask_color(text_rgb)
-            return (
-                QBrush(fallback),
-                QColor(fallback),
-                {
-                    "mask_mode": "fallback",
-                    "ring_delta": None,
-                    "leak_pct": None,
-                    "contrast_ratio": _contrast_ratio_rgb(
-                        tuple(float(v) for v in text_rgb),
-                        (float(fallback.red()), float(fallback.green()), float(fallback.blue())),
-                    ),
-                    "tint_strength": 0.0,
-                },
-            )
-
-        image, image_rect = sampled
-        ring_rgb = _qimage_ring_mean_rgb(image, image_rect, _MASK_RING_THICKNESS_PX)
+        ring_rgb = (
+            _qimage_ring_mean_rgb(sampled[0], sampled[1], _MASK_RING_THICKNESS_PX)
+            if sampled is not None
+            else None
+        )
         if ring_rgb is None:
-            fallback = _readable_editor_mask_color(text_rgb)
-            return (
-                QBrush(fallback),
-                QColor(fallback),
-                {
-                    "mask_mode": "fallback",
-                    "ring_delta": None,
-                    "leak_pct": None,
-                    "contrast_ratio": _contrast_ratio_rgb(
-                        tuple(float(v) for v in text_rgb),
-                        (float(fallback.red()), float(fallback.green()), float(fallback.blue())),
-                    ),
-                    "tint_strength": 0.0,
-                },
-            )
+            return _make_fallback_mask_result(text_rgb_f)
 
+        image_rect = sampled[1]
         # The editor rectangle itself can contain source glyph pixels. Build
         # a fail-closed opaque patch from the local perimeter color instead of
         # reusing interior texture that could ghost old glyphs during editing.
@@ -1043,7 +1036,6 @@ class TextEditManager:
         leak_pct = _mask_leak_ratio(patch, ring_rgb)
 
         mask_mean_rgb = _qimage_mean_rgb(patch, patch.rect()) or ring_rgb
-        text_rgb_f = tuple(float(v) for v in text_rgb)
         contrast_ratio = _contrast_ratio_rgb(text_rgb_f, mask_mean_rgb)
         tint_strength = 0.0
         if contrast_ratio < _MASK_MIN_CONTRAST_RATIO:
@@ -1051,7 +1043,7 @@ class TextEditManager:
             light_contrast = _contrast_ratio_rgb(text_rgb_f, (255.0, 255.0, 255.0))
             tint_target = (0.0, 0.0, 0.0) if dark_contrast >= light_contrast else (255.0, 255.0, 255.0)
             base_patch = patch.copy()
-            for candidate in (0.04, 0.08, 0.12, 0.16, _MASK_MAX_TINT_STRENGTH):
+            for candidate in _MASK_TINT_LADDER:
                 patch = base_patch.copy()
                 _blend_patch_towards_rgb(patch, tint_target, candidate)
                 candidate_mean = _qimage_mean_rgb(patch, patch.rect()) or mask_mean_rgb
@@ -1077,7 +1069,7 @@ class TextEditManager:
             brush,
             mask_color,
             {
-                "mask_mode": "background_match",
+                "mask_mode": MASK_MODE_BACKGROUND_MATCH,
                 "ring_delta": float(ring_delta),
                 "leak_pct": float(leak_pct),
                 "contrast_ratio": float(contrast_ratio),
@@ -1096,23 +1088,45 @@ class TextEditManager:
         return QRectF(pos.x(), pos.y(), float(widget.width()), float(widget.height()))
 
     def refresh_text_editor_mask_color(self) -> None:
-        self._clear_text_editor_mask_item()
         editor_proxy = getattr(self._view, "text_editor", None)
         if not editor_proxy or not editor_proxy.widget():
+            self._last_mask_signature = None
             return
         scene_rect = self.current_text_editor_scene_rect()
         if scene_rect is None:
+            self._last_mask_signature = None
             return
         editor = editor_proxy.widget()
-        text_rgb = editor.property("text_rgb") or (0, 0, 0)
-        # Underlay is sampled from the page perimeter around the editor and
-        # then fail-closed to an opaque local-color patch to suppress source
-        # glyphs during live editing.
+        text_rgb = tuple(editor.property("text_rgb") or (0, 0, 0))
+
+        # Short-circuit when the inputs that drive mask appearance haven't
+        # changed: same page pixmap, same editor footprint, same text color.
+        page_idx = int(getattr(self._view, "_editing_page_idx", -1))
+        page_items = getattr(self._view, "page_items", None)
+        pixmap_key: int | None = None
+        if isinstance(page_items, list) and 0 <= page_idx < len(page_items):
+            page_item = page_items[page_idx]
+            if page_item is not None and hasattr(page_item, "pixmap"):
+                pixmap = page_item.pixmap()
+                if pixmap is not None and not pixmap.isNull():
+                    cache_key_fn = getattr(pixmap, "cacheKey", None)
+                    pixmap_key = int(cache_key_fn()) if callable(cache_key_fn) else id(pixmap)
+        aligned = scene_rect.toAlignedRect()
+        signature = (
+            pixmap_key,
+            page_idx,
+            (aligned.x(), aligned.y(), aligned.width(), aligned.height()),
+            text_rgb,
+        )
+        if signature == self._last_mask_signature and getattr(self._view, "_text_editor_mask_item", None) is not None:
+            return
+
         mask_brush, mask_color, mask_debug = self._build_background_matched_mask(scene_rect, text_rgb)
         self._sync_text_editor_mask_item(scene_rect, mask_brush)
         editor.setStyleSheet(self._view._build_text_editor_stylesheet(text_rgb, mask_color))
         editor.setProperty("mask_rgb", (mask_color.red(), mask_color.green(), mask_color.blue()))
         editor.setProperty("mask_debug_metrics", mask_debug)
+        self._last_mask_signature = signature
 
     def create_text_editor(
         self,
