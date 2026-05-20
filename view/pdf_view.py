@@ -2231,6 +2231,8 @@ class PDFView(QMainWindow):
             return
         self.page_items[page_idx].setPixmap(pix)
         self.page_items[page_idx].setTransform(QTransform())
+        if self.text_editor and page_idx == getattr(self, "_editing_page_idx", -1):
+            self._refresh_text_editor_mask_color()
 
     def update_page_in_scene_scaled(self, page_idx: int, pix: QPixmap, rendered_scale: float, target_scale: float):
         """更新連續場景中某一頁的 pixmap，必要時以 item transform 放大低解析度預覽。"""
@@ -2239,6 +2241,8 @@ class PDFView(QMainWindow):
         self.page_items[page_idx].setPixmap(pix)
         scale_factor = max(0.1, float(target_scale)) / max(0.1, float(rendered_scale))
         self.page_items[page_idx].setTransform(QTransform.fromScale(scale_factor, scale_factor))
+        if self.text_editor and page_idx == getattr(self, "_editing_page_idx", -1):
+            self._refresh_text_editor_mask_color()
 
     def initialize_continuous_placeholders(
         self,

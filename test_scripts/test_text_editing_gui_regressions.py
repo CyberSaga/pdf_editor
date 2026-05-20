@@ -1474,22 +1474,21 @@ def test_phase2_create_text_editor_records_fractional_initial_size(
     )
 
 
-def test_phase2_refresh_mask_uses_readable_underlay_without_sampling_text() -> None:
-    """Phase-2 symptom 4: refreshing the mask color must not sample text pixels,
-    but the scene mask must still hide the original PDF glyphs while editing.
-    """
+def test_phase2_refresh_mask_matches_local_background_with_texture_underlay(qapp) -> None:
+    """Mask should use a background-matched texture (opaque) rather than a flat fill."""
     view = _make_view()
     editor_widget = _FakeEditorWidget("mask text", "mask text")
     editor_widget.setProperty("text_rgb", (12, 34, 56))
     view.text_editor = _FakeProxy(editor_widget, pos=QPointF(10, 20))
     view._editing_page_idx = 0
-    sample_calls: list[tuple[int, QRectF]] = []
-
-    def _track_sample(page_idx, scene_rect):
-        sample_calls.append((page_idx, QRectF(scene_rect)))
-        return QColor(210, 220, 230)
-
-    view._sample_page_mask_color = _track_sample
+    page_img = _make_image(400, 400, QColor(210, 220, 230))
+    # Simulate dark source glyph strokes inside the editor region; the mask
+    # generation should smooth and blend these out.
+    for y in range(24, 58):
+        for x in range(18, 126):
+            if (x + y) % 5 == 0:
+                page_img.setPixelColor(x, y, QColor(30, 30, 30))
+    view.page_items = [_FakePageItem(page_img, QRectF(0, 0, 400, 400))]
 
     class _SceneWithAddRect(_FakeScene):
         def addRect(self, rect, pen=None, brush=None):
@@ -1512,22 +1511,32 @@ def test_phase2_refresh_mask_uses_readable_underlay_without_sampling_text() -> N
     mask_item = getattr(view, "_text_editor_mask_item", None)
     assert mask_item is not None, "mask refresh must create the scene mask item"
     assert mask_item.brush is not None, (
-        "mask refresh must assign a readable underlay brush to hide PDF text"
+        "mask refresh must assign an opaque underlay brush to hide PDF text"
     )
-    assert mask_item.brush.color() == QColor(255, 255, 255), (
-        f"scene mask must be a stable white underlay, got {mask_item.brush.color().getRgb()}"
+    assert not mask_item.brush.texture().isNull(), (
+        "background-matched mask should use a texture brush from local page pixels"
     )
-    assert sample_calls == [], (
-        f"readable scene mask should not sample text pixels, got calls={sample_calls!r}"
-    )
+    mask_rgb = editor_widget.property("mask_rgb")
+    assert isinstance(mask_rgb, tuple) and len(mask_rgb) == 3
+    # The generated underlay should stay near the local page background color.
+    assert abs(mask_rgb[0] - 210) <= 35
+    assert abs(mask_rgb[1] - 220) <= 35
+    assert abs(mask_rgb[2] - 230) <= 35
+    debug = editor_widget.property("mask_debug_metrics") or {}
+    assert debug.get("mask_mode") == "background_match"
+    assert float(debug.get("ring_delta", 999.0)) <= 35.0
+    assert float(debug.get("leak_pct", 1.0)) <= 0.01
+    assert float(debug.get("contrast_ratio", 0.0)) >= 1.0
+    assert float(debug.get("tint_strength", 1.0)) <= 0.20
 
 
-def test_phase2_refresh_mask_uses_dark_underlay_for_light_text() -> None:
+def test_phase2_refresh_mask_falls_back_to_dark_underlay_for_light_text() -> None:
     view = _make_view()
     editor_widget = _FakeEditorWidget("mask text", "mask text")
     editor_widget.setProperty("text_rgb", (250, 250, 250))
     view.text_editor = _FakeProxy(editor_widget, pos=QPointF(10, 20))
-    view._editing_page_idx = 0
+    view._editing_page_idx = 9  # force unavailable sampling path
+    view.page_items = []
 
     class _SceneWithAddRect(_FakeScene):
         def addRect(self, rect, pen=None, brush=None):
@@ -1545,8 +1554,10 @@ def test_phase2_refresh_mask_uses_dark_underlay_for_light_text() -> None:
     assert mask_item is not None, "mask refresh must create the scene mask item"
     assert mask_item.brush is not None, "mask refresh must assign a readable underlay brush"
     assert mask_item.brush.color() != QColor(255, 255, 255), (
-        f"light editor text needs a dark underlay, got {mask_item.brush.color().getRgb()}"
+        f"light editor text needs a dark fallback underlay, got {mask_item.brush.color().getRgb()}"
     )
+    debug = editor_widget.property("mask_debug_metrics") or {}
+    assert debug.get("mask_mode") == "fallback"
 
 
 class _FakeSceneCapture(_FakeScene):

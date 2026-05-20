@@ -1,4 +1,4 @@
-# scripts/verify_no_jump.py
+﻿# scripts/verify_no_jump.py
 """
 Tamper-evident, run-isolated completion gate for the no-jump acceptance suite.
 
@@ -24,6 +24,7 @@ import subprocess
 import sys
 import time
 import uuid
+from itertools import product
 from pathlib import Path
 
 REPO_ROOT    = Path(__file__).parent.parent
@@ -51,14 +52,14 @@ def _sha256(path: Path) -> str:
 
 
 def _git_head() -> str:
-    """Return the current git HEAD SHA.  Fail-closed — never returns a wrong or unknown value.
+    """Return the current git HEAD SHA.  Fail-closed ??never returns a wrong or unknown value.
 
     Priority rules:
       1. If a .git checkout is available, git rev-parse HEAD is ALWAYS authoritative.
          GIT_COMMIT env var is ignored when git is accessible, unless they match.
       2. GIT_COMMIT env var is ONLY accepted as a fallback when git itself is
          unavailable (no .git dir, git not installed, not in a repo).
-      3. If both sources are present but differ, raise immediately — a stale or
+      3. If both sources are present but differ, raise immediately ??a stale or
          injected env var must not silently override the real HEAD.
       4. GIT_COMMIT, when used as a fallback, must be a valid 40-char hex SHA.
     """
@@ -72,11 +73,11 @@ def _git_head() -> str:
     env_commit = os.environ.get("GIT_COMMIT", "").strip()
 
     if git_ok and env_commit:
-        # Both sources present — must agree; git wins on a match, raises on a mismatch
+        # Both sources present ??must agree; git wins on a match, raises on a mismatch
         if git_sha != env_commit:
             raise RuntimeError(
-                f"GIT_COMMIT env var ({env_commit[:12]}…) differs from "
-                f"git rev-parse HEAD ({git_sha[:12]}…). "
+                f"GIT_COMMIT env var ({env_commit[:12]}?? differs from "
+                f"git rev-parse HEAD ({git_sha[:12]}??. "
                 f"Unset GIT_COMMIT or ensure it matches the current checkout."
             )
         return git_sha
@@ -97,29 +98,24 @@ def _git_head() -> str:
     )
 
 
-# ── Hardcoded acceptance spec — independent of the test module ────────────────
+# ?? Hardcoded acceptance spec ??independent of the test module ????????????????
 # Editing test_no_jump_editor_geometry.py to remove cases does NOT shrink this
 # spec. The manifest check still demands every ID listed here. To change required
 # coverage, update BOTH this spec AND the test module's GEOMETRY_CASES/PIXEL_CASES.
 
-_REQUIRED_GEOMETRY_CASES = [
-    # (render_scale, logical_dpi, font_case, rotation)
-    (0.67, 96,  "helv",         0),
-    (1.0,  96,  "helv",         0),
-    (2.0,  96,  "helv",         0),
-    (0.67, 192, "helv",         0),
-    (1.0,  192, "helv",         0),
-    (2.0,  192, "helv",         0),
-    (1.0,  96,  "cjk",          0),
-    (2.0,  96,  "cjk",          0),
-    (1.0,  96,  "unknown_font", 0),
-    (2.0,  96,  "helv",         90),
-]
+_REQUIRED_GEOMETRY_CASES = list(
+    product(
+        (0.67, 1.0, 1.5, 2.0, 3.0, 4.0),      # render_scale
+        (96, 120, 144, 192, 300),             # logical_dpi
+        ("helv", "cjk", "unknown_font"),      # font_case
+        (0, 90, 180, 270),                    # rotation
+    )
+)
 
 # Cycle 22: synthetic pixel cases removed from the spec.  The synthetic
-# round-trip (insert_htmlbox → PreviewRenderer) compares the same MuPDF engine
-# to itself and is tautologically clean — it let visible bugs through.  Real
-# PDF→editor pixel diffing is now performed in test_click_to_edit_qtest_*.
+# round-trip (insert_htmlbox ??PreviewRenderer) compares the same MuPDF engine
+# to itself and is tautologically clean ??it let visible bugs through.  Real
+# PDF?ditor pixel diffing is now performed in test_click_to_edit_qtest_*.
 _REQUIRED_PIXEL_CASES: list[tuple[str, float]] = []
 
 _REQUIRED_FIXED_IDS: frozenset[str] = frozenset({
@@ -136,9 +132,9 @@ _REQUIRED_FIXED_IDS: frozenset[str] = frozenset({
     "e2e_qtest_mutation_continuous5_colored",  # AC 5 continuous mutation (Cycle 22)
     "e2e_qtest_mutation_continuous5_complexed",# AC 5 continuous mutation (Cycle 22)
     "e2e_qtest_mutation_continuous5_vertical", # AC 5 continuous mutation (Cycle 22)
-    "e2e_qtest_reopen_cycles5_colored",        # AC 6 reopen-loop across sessions (Cycle 23)
-    "e2e_qtest_reopen_cycles5_complexed",      # AC 6 reopen-loop across sessions (Cycle 23)
-    "e2e_qtest_reopen_cycles5_vertical",       # AC 6 reopen-loop across sessions (Cycle 23)
+    "e2e_qtest_reopen_cycles20_colored",       # AC 9 reopen-loop across sessions (20-cycle default)
+    "e2e_qtest_reopen_cycles20_complexed",     # AC 9 reopen-loop across sessions (20-cycle default)
+    "e2e_qtest_reopen_cycles20_vertical",      # AC 9 reopen-loop across sessions (20-cycle default)
     "blanking_detector_negative_control",      # AC 4 blanking-detector self-test (Cycle 22)
 })
 
@@ -146,7 +142,7 @@ _REQUIRED_FIXED_IDS: frozenset[str] = frozenset({
 def _expected_case_ids() -> set[str]:
     """Return the required case ID set from the hardcoded acceptance spec.
 
-    This is INDEPENDENT of test_no_jump_editor_geometry.py — editing that file
+    This is INDEPENDENT of test_no_jump_editor_geometry.py ??editing that file
     cannot shrink this set. Minimum invariant assertions catch spec misconfiguration.
     """
     geometry_ids: set[str] = {
@@ -159,23 +155,23 @@ def _expected_case_ids() -> set[str]:
     }
     expected = geometry_ids | pixel_ids | set(_REQUIRED_FIXED_IDS)
 
-    # Invariant assertions — catch spec misconfiguration immediately
+    # Invariant assertions ??catch spec misconfiguration immediately
     render_scales = {rs for rs, *_ in _REQUIRED_GEOMETRY_CASES}
     dpis          = {dpi for _, dpi, *_ in _REQUIRED_GEOMETRY_CASES}
     font_cases    = {font for _, _, font, _ in _REQUIRED_GEOMETRY_CASES}
     rotations     = {rot for _, _, _, rot in _REQUIRED_GEOMETRY_CASES}
-    assert len(render_scales) >= 3, f"spec requires ≥3 render scales, got {render_scales}"
-    assert len(dpis) >= 2,          f"spec requires ≥2 DPR values, got {dpis}"
+    assert len(render_scales) >= 6, f"spec requires ?? render scales, got {render_scales}"
+    assert len(dpis) >= 5,          f"spec requires ?? DPR values, got {dpis}"
     assert {"helv", "cjk", "unknown_font"} <= font_cases, \
         f"spec must cover helv, cjk, unknown_font; got {font_cases}"
-    assert 90 in rotations, "spec must include rotation=90"
+    assert {0, 90, 180, 270} <= rotations, f"spec must cover rotations 0/90/180/270, got {rotations}"
     assert "e2e_click_to_edit" in _REQUIRED_FIXED_IDS, "real-geometry e2e test must be in fixed IDs"
     assert "e2e_qtest_click_to_edit_colored" in _REQUIRED_FIXED_IDS, \
         "QTest full-stack e2e (colored-bg PDF) must be in fixed IDs"
     assert "e2e_qtest_click_to_edit_complexed" in _REQUIRED_FIXED_IDS, \
-        "QTest full-stack e2e (complex-layout PDF) must be in fixed IDs — covers CJK regression"
+        "QTest full-stack e2e (complex-layout PDF) must be in fixed IDs ??covers CJK regression"
     assert "e2e_qtest_click_to_edit_vertical" in _REQUIRED_FIXED_IDS, \
-        "QTest full-stack e2e (vertical-texts PDF) must be in fixed IDs — Cycle 22 rotation=90 coverage"
+        "QTest full-stack e2e (vertical-texts PDF) must be in fixed IDs ??Cycle 22 rotation=90 coverage"
     for _slug in ("colored", "complexed", "vertical"):
         assert f"e2e_qtest_mutation_{_slug}" in _REQUIRED_FIXED_IDS, \
             f"AC 5 mutation-stability case e2e_qtest_mutation_{_slug} must be in fixed IDs (Cycle 22)"
@@ -183,8 +179,8 @@ def _expected_case_ids() -> set[str]:
         assert f"e2e_qtest_mutation_continuous5_{_slug}" in _REQUIRED_FIXED_IDS, \
             f"AC 5 continuous mutation case e2e_qtest_mutation_continuous5_{_slug} must be in fixed IDs (Cycle 22)"
     for _slug in ("colored", "complexed", "vertical"):
-        assert f"e2e_qtest_reopen_cycles5_{_slug}" in _REQUIRED_FIXED_IDS, \
-            f"AC 6 reopen-loop case e2e_qtest_reopen_cycles5_{_slug} must be in fixed IDs (Cycle 23)"
+        assert f"e2e_qtest_reopen_cycles20_{_slug}" in _REQUIRED_FIXED_IDS, \
+            f"AC 9 reopen-loop case e2e_qtest_reopen_cycles20_{_slug} must be in fixed IDs"
     assert "blanking_detector_negative_control" in _REQUIRED_FIXED_IDS, \
         "Blanking-detector self-test must be in fixed IDs (Cycle 22)"
 
@@ -222,12 +218,12 @@ def _assert_clean_worktree() -> None:
             continue
         dirty.append(line)
     if dirty:
-        print("[gate] FAIL — uncommitted source changes detected:")
+        print("[gate] FAIL ??uncommitted source changes detected:")
         for d in dirty:
             print(f"  {d}")
         print("  Commit or stash all changes before running the gate.")
         sys.exit(1)
-    print("[gate] Clean worktree confirmed — code under test matches git HEAD")
+    print("[gate] Clean worktree confirmed ??code under test matches git HEAD")
 
 
 def _clear_and_prepare(run_id: str) -> None:
@@ -240,7 +236,7 @@ def _clear_and_prepare(run_id: str) -> None:
 
 
 _PYTEST_ENV_BLOCKLIST = frozenset({
-    "PYTEST_ADDOPTS",     # can add -k, --ignore, --co, etc. — narrows collection silently
+    "PYTEST_ADDOPTS",     # can add -k, --ignore, --co, etc. ??narrows collection silently
     "PYTEST_PLUGINS",     # can disable or inject plugins
     "PYTEST_CURRENT_TEST",# leftover from a previous run, can confuse fixtures
 })
@@ -250,7 +246,7 @@ def _clean_pytest_env() -> dict[str, str]:
     """Return os.environ stripped of variables that could narrow pytest collection.
 
     Any var in _PYTEST_ENV_BLOCKLIST can cause pytest to skip files, filter
-    tests, or alter collection silently — producing exit 0 without running the
+    tests, or alter collection silently ??producing exit 0 without running the
     full required set.  Removing them ensures the subprocess sees only the
     standard environment.
     """
@@ -296,21 +292,28 @@ def _run_pytest(run_num: int, run_id: str) -> tuple[bool, float, list[str]]:
 
 
 def _check_artifacts(run_id: str, manifest: list[str], expected_ids: set[str]) -> bool:
-    """
-    Verify every expected case produced fresh, non-empty artifacts with the
-    correct run_id. Enforces exact ID-set equality: missing, duplicate, and
-    extra cases all cause failure.
-    """
+    """Validate expected IDs, fresh run IDs, required metrics keys, and images."""
     print(f"\n{'='*60}")
     print(f"[gate] Checking artifacts for run_id={run_id[:8]}...")
     errors: list[str] = []
 
-    # Duplicate check — a count-only test lets duplicates mask missing cases
+    image_case_prefixes = (
+        "e2e_click_to_edit",
+        "e2e_qtest_click_to_edit_",
+        "e2e_qtest_mutation_",
+        "e2e_qtest_reopen_cycles20_",
+        "pixel_",
+    )
+
+    def _require_metric_keys(test_id: str, data: dict, required_keys: tuple[str, ...]) -> None:
+        missing_keys = [k for k in required_keys if k not in data]
+        if missing_keys:
+            errors.append(f"  {test_id}: missing required metrics keys: {missing_keys}")
+
     if len(manifest) != len(set(manifest)):
         dupes = sorted({tid for tid in manifest if manifest.count(tid) > 1})
         errors.append(f"  duplicate test IDs in manifest: {dupes}")
 
-    # Exact set equality — no loose count
     observed = set(manifest)
     missing = expected_ids - observed
     extra = observed - expected_ids
@@ -319,36 +322,108 @@ def _check_artifacts(run_id: str, manifest: list[str], expected_ids: set[str]) -
     if extra:
         errors.append(f"  unexpected extra cases (not in expected set): {sorted(extra)}")
 
-    # Extra on-disk dirs that aren't in the manifest (leftover from a partial run)
     for case_dir in ARTIFACT_DIR.iterdir():
         if case_dir.is_dir() and not case_dir.name.startswith(".") and case_dir.name not in observed:
             errors.append(f"  extra artifact dir not in manifest: {case_dir.name}")
 
-    # Per-case file checks (only for cases actually in the manifest)
     for test_id in manifest:
         case_dir = ARTIFACT_DIR / test_id
         metrics_path = case_dir / "metrics.json"
         if not metrics_path.exists() or metrics_path.stat().st_size == 0:
             errors.append(f"  {test_id}: missing/empty metrics.json")
             continue
+
         data = json.loads(metrics_path.read_text(encoding="utf-8"))
         if data.get("run_id") != run_id:
             errors.append(
                 f"  {test_id}: stale artifact (run_id mismatch: "
                 f"expected {run_id[:8]}, got {str(data.get('run_id',''))[:8]})"
             )
-        if "changed_px_pct" in data:   # pixel case — must have images
+
+        if test_id.startswith("geom_"):
+            _require_metric_keys(
+                test_id,
+                data,
+                (
+                    "render_scale",
+                    "logical_dpi",
+                    "font_case",
+                    "rotation",
+                    "x_drift",
+                    "y_drift",
+                    "w_drift",
+                    "h_drift",
+                    "font_size_ratio",
+                ),
+            )
+        elif test_id.startswith("e2e_qtest_click_to_edit_"):
+            _require_metric_keys(
+                test_id,
+                data,
+                (
+                    "changed_px_pct_editor",
+                    "blanking_pct_vs_pdf",
+                    "mask_mode",
+                    "mask_ring_delta",
+                    "mask_leak_pct",
+                    "mask_contrast_ratio",
+                ),
+            )
+        elif test_id.startswith("e2e_qtest_mutation_continuous5_"):
+            _require_metric_keys(
+                test_id,
+                data,
+                (
+                    "continuous_insertion_steps",
+                    "empty_source_ink_retained",
+                    "steps",
+                    "restore_delta",
+                    "blanking_pct_vs_opened",
+                ),
+            )
+        elif test_id.startswith("e2e_qtest_mutation_"):
+            _require_metric_keys(
+                test_id,
+                data,
+                (
+                    "insert_delta",
+                    "empty_source_ink_retained",
+                    "restore_delta",
+                    "blanking_pct_vs_opened",
+                    "insert_rect_drift",
+                    "restored_rect_drift",
+                ),
+            )
+        elif test_id.startswith("e2e_qtest_reopen_cycles20_"):
+            _require_metric_keys(
+                test_id,
+                data,
+                (
+                    "cycles",
+                    "widths",
+                    "heights",
+                    "hit_sizes_pt",
+                    "width_shrink_px",
+                    "height_shrink_px",
+                    "font_shrink_pt",
+                    "font_abs_drift_pt",
+                    "max_open_changed_px_pct",
+                    "cycle_metrics",
+                ),
+            )
+
+        if test_id.startswith(image_case_prefixes):
             for fname in ("before.png", "after.png", "diff.png"):
                 p = case_dir / fname
                 if not p.exists() or p.stat().st_size == 0:
                     errors.append(f"  {test_id}: missing/empty {fname}")
 
     if errors:
-        print("[gate] FAIL — artifact gaps:")
+        print("[gate] FAIL ??artifact gaps:")
         for e in errors:
             print(e)
         return False
-    print(f"[gate] PASS — {len(manifest)} cases, all fresh and complete (exact set match)")
+    print(f"[gate] PASS ??{len(manifest)} cases, all fresh and complete (exact set match)")
     return True
 
 
@@ -361,11 +436,11 @@ def _check_manifests_match(m1: list[str], m2: list[str]) -> bool:
         missing = s1 - s2
         extra   = s2 - s1
         if missing:
-            print(f"[gate] FAIL — cases in run 1 but not run 2: {sorted(missing)}")
+            print(f"[gate] FAIL ??cases in run 1 but not run 2: {sorted(missing)}")
         if extra:
-            print(f"[gate] FAIL — cases in run 2 but not run 1: {sorted(extra)}")
+            print(f"[gate] FAIL ??cases in run 2 but not run 1: {sorted(extra)}")
         return False
-    print(f"[gate] PASS — both runs produced identical {len(s1)}-case manifests")
+    print(f"[gate] PASS ??both runs produced identical {len(s1)}-case manifests")
     return True
 
 
@@ -373,21 +448,21 @@ def _check_signoff_checklist(data: dict, errors: list[str]) -> None:
     """Independently validate the per-PDF checklist results and action traces.
 
     This duplicates the validation that ux_signoff_agent.py performs internally,
-    intentionally — verify_no_jump.py must be the sole machine-enforced authority
+    intentionally ??verify_no_jump.py must be the sole machine-enforced authority
     for all acceptance evidence.  A weakened or buggy signoff agent cannot produce
     a JSON that passes here without real CUA evidence.
 
     Checks (per PDF in REFERENCE_PDFS):
       - checklist_results entry present
       - overall == PASS
-      - ≥8 non-SKIP items
+      - ?? non-SKIP items
       - no FAIL items
       - non-SKIP items have non-empty observation, click_x/y > 0
       - 1:1 ordered matching of non-SKIP click coords against action_trace entries
     """
     checklist_results = data.get("checklist_results", {})
     if not checklist_results:
-        errors.append("  checklist_results missing or empty — no per-PDF evidence")
+        errors.append("  checklist_results missing or empty ??no per-PDF evidence")
         return
 
     for pdf_path in REFERENCE_PDFS:
@@ -403,13 +478,13 @@ def _check_signoff_checklist(data: dict, errors: list[str]) -> None:
         non_skip = [i for i in items if i.get("verdict") != "SKIP"]
         if len(non_skip) < 8:
             errors.append(
-                f"  {pdf_path}: only {len(non_skip)} non-SKIP checklist items, need ≥8"
+                f"  {pdf_path}: only {len(non_skip)} non-SKIP checklist items, need ??"
             )
         for item in items:
             n = item.get("item_number", "?")
             v = item.get("verdict")
             if v == "FAIL":
-                errors.append(f"  {pdf_path} item {n}: FAIL verdict — visible glyph jump reported")
+                errors.append(f"  {pdf_path} item {n}: FAIL verdict ??visible glyph jump reported")
             if v != "SKIP":
                 obs = item.get("observation", "")
                 if not (isinstance(obs, str) and obs.strip()):
@@ -434,7 +509,7 @@ def _check_signoff_checklist(data: dict, errors: list[str]) -> None:
         if non_skip_with_click and not remaining:
             errors.append(
                 f"  {pdf_path}: action_trace has zero clicks but {len(non_skip_with_click)} "
-                f"non-SKIP items claim clicks — signoff is not backed by real CUA actions"
+                f"non-SKIP items claim clicks ??signoff is not backed by real CUA actions"
             )
         else:
             for item in non_skip_with_click:
@@ -449,7 +524,7 @@ def _check_signoff_checklist(data: dict, errors: list[str]) -> None:
                 if matched_idx is None:
                     errors.append(
                         f"  {pdf_path} item {n}: no unmatched trace click within 15px of "
-                        f"({cx}, {cy}) — click may be hallucinated"
+                        f"({cx}, {cy}) ??click may be hallucinated"
                     )
                 else:
                     remaining.pop(matched_idx)
@@ -459,7 +534,7 @@ def _check_signoff_checklist(data: dict, errors: list[str]) -> None:
         screenshot_pairs: list[dict] = pdf_result.get("screenshot_pairs", [])
         if not screenshot_pairs:
             errors.append(
-                f"  {pdf_path}: screenshot_pairs is empty — no automation-layer "
+                f"  {pdf_path}: screenshot_pairs is empty ??no automation-layer "
                 f"screenshot evidence was captured during the CUA run"
             )
         else:
@@ -477,20 +552,20 @@ def _check_signoff_checklist(data: dict, errors: list[str]) -> None:
                     if not rel:
                         errors.append(
                             f"  {pdf_path} turn {turn}: "
-                            f"screenshot {field!r} is empty — automation-layer capture failed"
+                            f"screenshot {field!r} is empty ??automation-layer capture failed"
                         )
                     elif rel.replace("\\", "/") not in normalized_stored:
                         errors.append(
                             f"  {pdf_path} turn {turn}: "
-                            f"screenshot {field!r} ({rel!r}) not found in artifact_hashes — "
+                            f"screenshot {field!r} ({rel!r}) not found in artifact_hashes ??"
                             f"file was captured but not hashed, or hash was not stored"
                         )
 
             # Machine-check: pixel diff at each click coordinate for every screenshot pair.
-            # Uses the same ≤ 1% changed-pixel threshold and lightness-diff >10 as
+            # Uses the same ??1% changed-pixel threshold and lightness-diff >10 as
             # test_no_jump_editor_geometry.py so the live CUA gate is not weaker than
             # the unit tests it claims to backstop.
-            # Crop is ±60 px around the click (120×120 region) to catch displaced editors
+            # Crop is 簣60 px around the click (120?120 region) to catch displaced editors
             # that land outside a tighter crop while still being a visible glyph jump.
             try:
                 from PIL import Image as _PILImage  # noqa: PLC0415
@@ -498,7 +573,7 @@ def _check_signoff_checklist(data: dict, errors: list[str]) -> None:
             except ImportError:
                 _pil_ok = False
                 errors.append(
-                    f"  {pdf_path}: PIL/Pillow not installed — cannot machine-check "
+                    f"  {pdf_path}: PIL/Pillow not installed ??cannot machine-check "
                     f"CUA screenshot pixel diffs (pip install pillow)"
                 )
             if _pil_ok:
@@ -514,7 +589,7 @@ def _check_signoff_checklist(data: dict, errors: list[str]) -> None:
                     if not (before_abspath.exists() and after_abspath.exists()):
                         errors.append(
                             f"  {pdf_path} turn {pair.get('turn', '?')}: "
-                            f"screenshot file(s) missing on disk — cannot perform pixel diff"
+                            f"screenshot file(s) missing on disk ??cannot perform pixel diff"
                         )
                         continue
                     try:
@@ -531,7 +606,7 @@ def _check_signoff_checklist(data: dict, errors: list[str]) -> None:
                     if (bw, bh) != (aw, ah):
                         errors.append(
                             f"  {pdf_path} turn {pair.get('turn', '?')}: "
-                            f"before ({bw}×{bh}) and after ({aw}×{ah}) screenshots differ in size"
+                            f"before ({bw}?{bh}) and after ({aw}?{ah}) screenshots differ in size"
                         )
                         continue
                     for click in turn_clicks:
@@ -554,7 +629,7 @@ def _check_signoff_checklist(data: dict, errors: list[str]) -> None:
                             errors.append(
                                 f"  {pdf_path} click ({cx},{cy}): "
                                 f"{pct:.2%} of pixels changed at click site "
-                                f"(threshold: < 1%) — possible glyph jump or "
+                                f"(threshold: < 1%) ??possible glyph jump or "
                                 f"click on non-text area"
                             )
 
@@ -564,7 +639,7 @@ def _check_signoff(min_signoff_time: float) -> bool:
     Validate the computer-use signoff JSON:
       - exists and parses
       - verdict == "PASS"
-      - git_commit matches current HEAD (fail-closed — RuntimeError if git unavailable)
+      - git_commit matches current HEAD (fail-closed ??RuntimeError if git unavailable)
       - timestamp is after min_signoff_time (= time just before ux_signoff_agent.py ran)
       - pdfs_tested matches REFERENCE_PDFS
       - checklist_results have valid per-PDF evidence (deduplicates agent-side validation)
@@ -574,14 +649,14 @@ def _check_signoff(min_signoff_time: float) -> bool:
     print("[gate] Checking computer-use signoff (tamper-evident) ...")
 
     if not SIGNOFF_FILE.exists():
-        print(f"[gate] FAIL — signoff file missing: {SIGNOFF_FILE}")
+        print(f"[gate] FAIL ??signoff file missing: {SIGNOFF_FILE}")
         print("        Run:  python scripts/ux_signoff_agent.py")
         return False
 
     try:
         data = json.loads(SIGNOFF_FILE.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        print(f"[gate] FAIL — signoff is not valid JSON: {exc}")
+        print(f"[gate] FAIL ??signoff is not valid JSON: {exc}")
         return False
 
     errors: list[str] = []
@@ -589,7 +664,7 @@ def _check_signoff(min_signoff_time: float) -> bool:
     if data.get("verdict") != "PASS":
         errors.append(f"  verdict is {data.get('verdict')!r}, expected 'PASS'")
 
-    head = _git_head()  # raises RuntimeError if git is unavailable — never bypassed
+    head = _git_head()  # raises RuntimeError if git is unavailable ??never bypassed
     if data.get("git_commit") != head:
         errors.append(
             f"  git_commit mismatch: signoff has {str(data.get('git_commit',''))[:10]}, "
@@ -600,7 +675,7 @@ def _check_signoff(min_signoff_time: float) -> bool:
     if float(signoff_ts) < min_signoff_time:
         errors.append(
             f"  signoff timestamp ({signoff_ts}) predates artifact collection "
-            f"({min_signoff_time:.0f}) — signoff is stale or was pre-generated"
+            f"({min_signoff_time:.0f}) ??signoff is stale or was pre-generated"
         )
 
     pdfs_tested = sorted(data.get("pdfs_tested", []))
@@ -608,28 +683,28 @@ def _check_signoff(min_signoff_time: float) -> bool:
     if pdfs_tested != expected_pdfs:
         errors.append(f"  pdfs_tested mismatch: got {pdfs_tested}, expected {expected_pdfs}")
 
-    # Independently validate checklist + trace evidence — verify_no_jump.py is the
+    # Independently validate checklist + trace evidence ??verify_no_jump.py is the
     # sole authority; a weakened ux_signoff_agent.py cannot produce a passing JSON.
     _check_signoff_checklist(data, errors)
 
     # Derive expected hash keys from the hardcoded image-artifact case list.
     # Cases that produce before/after/diff PNGs: pixel_* and the two e2e IDs.
-    # This is derived from the hardcoded spec, NOT from the manifest — the manifest
+    # This is derived from the hardcoded spec, NOT from the manifest ??the manifest
     # is mutable, but the required image cases are fixed.
     _IMAGE_CASES_IN_VERIFIER = frozenset({
         "e2e_click_to_edit",
         "e2e_qtest_click_to_edit_colored",
         "e2e_qtest_click_to_edit_complexed",
         "e2e_qtest_click_to_edit_vertical",       # Cycle 22
-        "e2e_qtest_mutation_colored",             # Cycle 22 — saves opened/restored
+        "e2e_qtest_mutation_colored",             # Cycle 22 ??saves opened/restored
         "e2e_qtest_mutation_complexed",           # Cycle 22
         "e2e_qtest_mutation_vertical",            # Cycle 22
         "e2e_qtest_mutation_continuous5_colored", # Cycle 22 continuous 5x mutation
         "e2e_qtest_mutation_continuous5_complexed", # Cycle 22 continuous 5x mutation
         "e2e_qtest_mutation_continuous5_vertical",  # Cycle 22 continuous 5x mutation
-        "e2e_qtest_reopen_cycles5_colored",       # Cycle 23 reopen-loop
-        "e2e_qtest_reopen_cycles5_complexed",     # Cycle 23 reopen-loop
-        "e2e_qtest_reopen_cycles5_vertical",      # Cycle 23 reopen-loop
+        "e2e_qtest_reopen_cycles20_colored",      # 20-cycle reopen-loop
+        "e2e_qtest_reopen_cycles20_complexed",    # 20-cycle reopen-loop
+        "e2e_qtest_reopen_cycles20_vertical",     # 20-cycle reopen-loop
     })
 
     def _verifier_has_image_artifacts(tid: str) -> bool:
@@ -650,18 +725,18 @@ def _check_signoff(min_signoff_time: float) -> bool:
                 continue
             if isinstance(tid, str) and _verifier_has_image_artifacts(tid):
                 for fname in ("before.png", "after.png", "diff.png"):
-                    # Keys use "no_jump/<tid>/<fname>" — must match ux_signoff_agent._collect_artifact_hashes()
+                    # Keys use "no_jump/<tid>/<fname>" ??must match ux_signoff_agent._collect_artifact_hashes()
                     # which stores pytest artifacts as f"no_jump/{tid}/{fname}".
                     # CUA evidence keys ("cua_evidence/...") are validated separately via screenshot_pairs.
                     expected_hash_keys.add(f"no_jump/{tid}/{fname}")
 
     if not expected_hash_keys:
-        errors.append("  cannot derive expected artifact hash keys — manifest missing or empty")
+        errors.append("  cannot derive expected artifact hash keys ??manifest missing or empty")
     else:
         stored_hashes: dict[str, str] = data.get("artifact_hashes", {})
         stored_keys = set(stored_hashes.keys())
         missing_keys = expected_hash_keys - stored_keys
-        # Only reject extra no_jump/ keys — extra cua_evidence/ keys are expected (variable CUA turns)
+        # Only reject extra no_jump/ keys ??extra cua_evidence/ keys are expected (variable CUA turns)
         # and are validated separately via the screenshot_pairs check in _check_signoff_checklist().
         extra_no_jump_keys = {k for k in stored_keys if k.startswith("no_jump/")} - expected_hash_keys
         if missing_keys:
@@ -680,15 +755,15 @@ def _check_signoff(min_signoff_time: float) -> bool:
                 if actual_digest != stored_digest:
                     errors.append(
                         f"  artifact_hashes: hash mismatch for {key} "
-                        f"(stored={stored_digest[:12]}…, actual={actual_digest[:12]}…)"
+                        f"(stored={stored_digest[:12]}?? actual={actual_digest[:12]}??"
                     )
 
     if errors:
-        print("[gate] FAIL — signoff rejected:")
+        print("[gate] FAIL ??signoff rejected:")
         for e in errors:
             print(e)
         return False
-    print(f"[gate] PASS — signoff from model={data.get('model')!r}, "
+    print(f"[gate] PASS ??signoff from model={data.get('model')!r}, "
           f"commit={str(data.get('git_commit',''))[:10]}")
     return True
 
@@ -718,7 +793,7 @@ def _run_full_suite() -> bool:
             "--ignore=test_scripts/test_render_colorspace.py",
         ],
         cwd=REPO_ROOT,
-        env=_clean_pytest_env(),   # strip PYTEST_ADDOPTS etc. — same as _run_pytest()
+        env=_clean_pytest_env(),   # strip PYTEST_ADDOPTS etc. ??same as _run_pytest()
     )
     passed = result.returncode == 0
     print(f"[gate] Full suite: {'PASS' if passed else 'FAIL'}")
@@ -735,25 +810,25 @@ def _reverify_artifact_hashes(skip_signoff: bool = False) -> bool:
     print(f"\n{'='*60}")
     print("[gate] Re-verifying artifact hashes post-full-suite ...")
     if skip_signoff:
-        print("[gate] PASS — artifact re-verification skipped (no signoff artifacts to check)")
+        print("[gate] PASS ??artifact re-verification skipped (no signoff artifacts to check)")
         return True
     if not SIGNOFF_FILE.exists():
-        print("[gate] FAIL — signoff file missing during re-verification")
+        print("[gate] FAIL ??signoff file missing during re-verification")
         return False
     try:
         signoff_data = json.loads(SIGNOFF_FILE.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        print("[gate] FAIL — signoff JSON invalid during re-verification")
+        print("[gate] FAIL ??signoff JSON invalid during re-verification")
         return False
 
     stored_hashes: dict[str, str] = signoff_data.get("artifact_hashes", {})
     if not stored_hashes:
-        print("[gate] FAIL — no artifact_hashes in signoff to re-verify")
+        print("[gate] FAIL ??no artifact_hashes in signoff to re-verify")
         return False
 
     errors: list[str] = []
     for key, stored_digest in stored_hashes.items():
-        # Hashes are relative to ARTIFACT_DIR or CUA_EVIDENCE_DIR — resolve against REPO_ROOT/test_artifacts
+        # Hashes are relative to ARTIFACT_DIR or CUA_EVIDENCE_DIR ??resolve against REPO_ROOT/test_artifacts
         art_path = (REPO_ROOT / "test_artifacts" / key)
         if not art_path.exists():
             errors.append(f"  {key}: file missing (overwritten or deleted after signoff?)")
@@ -762,14 +837,14 @@ def _reverify_artifact_hashes(skip_signoff: bool = False) -> bool:
             if actual != stored_digest:
                 errors.append(
                     f"  {key}: hash changed since signoff "
-                    f"(stored={stored_digest[:12]}…, now={actual[:12]}…)"
+                    f"(stored={stored_digest[:12]}?? now={actual[:12]}??"
                 )
     if errors:
-        print("[gate] FAIL — artifact mutation detected after full-suite run:")
+        print("[gate] FAIL ??artifact mutation detected after full-suite run:")
         for e in errors:
             print(e)
         return False
-    print(f"[gate] PASS — all {len(stored_hashes)} artifact hashes stable after full-suite run")
+    print(f"[gate] PASS ??all {len(stored_hashes)} artifact hashes stable after full-suite run")
     return True
 
 
@@ -804,16 +879,16 @@ def main(skip_signoff: bool = False) -> int:
     # Ensures the recorded git_commit is reproducible from HEAD.
     _assert_clean_worktree()
 
-    # Derive expected case IDs from the live test module — prevents drift
+    # Derive expected case IDs from the live test module ??prevents drift
     expected_ids = _expected_case_ids()
     print(f"[gate] Expected case IDs: {len(expected_ids)} ({sorted(expected_ids)})")
 
-    # Run 1 — clean slate
+    # Run 1 ??clean slate
     run_id_1 = str(uuid.uuid4())
     ok1, _start1, manifest1 = _run_pytest(1, run_id_1)
     artifacts_ok1 = _check_artifacts(run_id_1, manifest1, expected_ids) if ok1 else False
 
-    # Run 2 — independently clean slate (cannot reuse run 1 outputs)
+    # Run 2 ??independently clean slate (cannot reuse run 1 outputs)
     run_id_2 = str(uuid.uuid4())
     ok2, _start2, manifest2 = _run_pytest(2, run_id_2)
     artifacts_ok2 = _check_artifacts(run_id_2, manifest2, expected_ids) if ok2 else False
@@ -839,11 +914,11 @@ def main(skip_signoff: bool = False) -> int:
                 cwd=REPO_ROOT,
             )
             if signoff_proc.returncode != 0:
-                print("[gate] FAIL — ux_signoff_agent.py exited non-zero; signoff not produced")
+                print("[gate] FAIL ??ux_signoff_agent.py exited non-zero; signoff not produced")
             else:
                 signoff_ok = _check_signoff(min_signoff_time=min_signoff_time)
     else:
-        print("[gate] Skipping UX signoff — pytest gates failed (fix tests first)")
+        print("[gate] Skipping UX signoff ??pytest gates failed (fix tests first)")
 
     # Full regression suite + lint + re-verification: run after signoff.
     # The full suite excludes test_no_jump_editor_geometry.py to avoid overwriting
@@ -855,7 +930,7 @@ def main(skip_signoff: bool = False) -> int:
     if all([ok1, artifacts_ok1, ok2, artifacts_ok2, manifests_match, signoff_ok]):
         full_suite_ok = _run_full_suite()
         lint_ok       = _run_lint()
-        # Re-verify artifacts after full suite — final check before marker write
+        # Re-verify artifacts after full suite ??final check before marker write
         reverify_ok   = _reverify_artifact_hashes(skip_signoff=skip_signoff)
 
     gates = [ok1, artifacts_ok1, ok2, artifacts_ok2, manifests_match, signoff_ok,
@@ -865,10 +940,9 @@ def main(skip_signoff: bool = False) -> int:
         # Guard 2: re-check cleanliness just before writing the marker.
         # Long-running tests/signoff could have left unexpected dirty files.
         _assert_clean_worktree()
-        # Write a signed marker so completion can be independently verified —
-        # this is the machine-readable proof required by the goal completion rule.
+        # Write a signed marker so completion can be independently verified ??        # this is the machine-readable proof required by the goal completion rule.
         # Record the signoff digest and timestamp so check_gate_passed.py can bind to
-        # the EXACT signoff produced by THIS gate run — not a time-window match.
+        # the EXACT signoff produced by THIS gate run ??not a time-window match.
         if skip_signoff:
             signoff_digest = "SKIPPED"
             signoff_ts     = 0.0
@@ -891,12 +965,12 @@ def main(skip_signoff: bool = False) -> int:
         marker_path = REPO_ROOT / "test_artifacts" / ".gate_passed"
         marker_path.parent.mkdir(parents=True, exist_ok=True)
         marker_path.write_text(json.dumps(marker, indent=2), encoding="utf-8")
-        print("[gate] ALL GATES PASSED — no-jump acceptance complete")
+        print("[gate] ALL GATES PASSED ??no-jump acceptance complete")
         print(f"[gate] Marker written: {marker_path}")
         print(f"[gate] COMPLETION PROOF: git_commit={marker['git_commit'][:12]}")
         return 0
     failed = sum(1 for g in gates if not g)
-    print(f"[gate] {failed}/{len(gates)} GATES FAILED — do not declare done")
+    print(f"[gate] {failed}/{len(gates)} GATES FAILED ??do not declare done")
     return 1
 
 
@@ -906,3 +980,4 @@ if __name__ == "__main__":
                      help="Skip the UX signoff step (for environments without OPENAI_API_KEY)")
     _args = _ap.parse_args()
     sys.exit(main(skip_signoff=_args.skip_signoff))
+
