@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import math
 import unicodedata
 from dataclasses import dataclass
 from enum import Enum
@@ -19,6 +20,7 @@ from PySide6.QtGui import (
     QImage,
     QPainter,
     QPen,
+    QPixmap,
     QTextCursor,
     QTextDocument,
     QTextOption,
@@ -58,6 +60,12 @@ _LIGATURE_EXPAND = {
 _DEFAULT_EDITOR_MASK_COLOR = QColor("#FFFFFF")
 _DARK_EDITOR_MASK_COLOR = QColor("#18181B")
 _LIGHT_TEXT_LUMA_THRESHOLD = 180.0
+_MASK_RING_THICKNESS_PX = 3
+_MASK_MIN_CONTRAST_RATIO = 3.2
+_MASK_MAX_TINT_STRENGTH = 0.20
+_MASK_TEXTURE_DOWNSAMPLE_FACTOR = 0.20
+_MASK_TEXTURE_MAX_LEAK_PCT = 0.01
+_MASK_OUTLIER_DELTA_THRESHOLD = 20.0
 
 
 def _readable_editor_mask_color(text_rgb: tuple[int, int, int] | None = None) -> QColor:
@@ -246,7 +254,7 @@ class InlineTextEditor(QTextEdit):
         self.focus_out_requested.emit()
 
 
-class PreviewRenderer:
+class PreviewRenderer:  # noqa: F811 - intentional redefinition; later implementation is authoritative
     def __init__(self, model=None) -> None:
         self._model = model
         self._cache_key: tuple | None = None
@@ -371,7 +379,7 @@ class PreviewRenderer:
         return image
 
 
-class PreviewBackedInlineTextEditor(InlineTextEditor):
+class PreviewBackedInlineTextEditor(InlineTextEditor):  # noqa: F811 - intentional redefinition; later implementation is authoritative
     # Treat effectively-transparent mutated previews as invalid and fall back
     # to native QTextEdit painting for readability continuity while typing.
     _MUTATED_PREVIEW_MIN_NONTRANSPARENT_COVERAGE = 0.0001
@@ -565,14 +573,10 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
             and not self._text_matches_initial
             and not self._mutated_preview_is_valid
         ):
-            # Mutated-state fail-safe: CSS/MuPDF preview rendered effectively
-            # transparent. Seed the frame with the frozen MuPDF capture, then
-            # use native QTextEdit paint with background fill suppressed so
-            # typed text stays readable without repainting the full region.
-            if self._frozen_first_frame_image is not None:
-                frozen_painter = QPainter(self.viewport())
-                frozen_painter.drawImage(0, 0, self._frozen_first_frame_image)
-                frozen_painter.end()
+            # Mutated-state fail-safe: never repaint the frozen source glyphs
+            # while editing. The opaque mask item below this transparent
+            # editor suppresses the PDF underlay; native QTextEdit paint adds
+            # only the current live text.
             viewport = self.viewport()
             old_auto_fill = viewport.autoFillBackground()
             viewport.setAutoFillBackground(False)
@@ -586,10 +590,18 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
                 mask = QColor(*bg_rgb)
                 painter.fillRect(self.viewport().rect(), mask)
             painter.drawImage(0, 0, self._preview_image)
+        elif self._text_is_nonempty and not self._text_matches_initial:
+            # Debounce window before the live preview arrives: paint only the
+            # current QTextEdit contents over the underlay mask. Drawing the
+            # frozen first frame here would overlap old and new glyphs.
+            painter.end()
+            viewport = self.viewport()
+            old_auto_fill = viewport.autoFillBackground()
+            viewport.setAutoFillBackground(False)
+            super().paintEvent(event)
+            viewport.setAutoFillBackground(old_auto_fill)
+            return
         elif self._frozen_first_frame_image is not None:
-            # Fallback: text differs but the live preview hasn't been
-            # generated yet (debounce in flight).  Draw the frozen frame so
-            # the editor never goes blank during the transition.
             painter.drawImage(0, 0, self._frozen_first_frame_image)
         else:
             painter.end()
@@ -641,6 +653,215 @@ def _average_image_rect_color(image, rect: QRect) -> QColor:
     if count <= 0:
         return QColor(_DEFAULT_EDITOR_MASK_COLOR)
     return QColor(total_r // count, total_g // count, total_b // count)
+
+
+def _contrast_ratio_rgb(foreground: tuple[float, float, float], background: tuple[float, float, float]) -> float:
+    def _channel(v: float) -> float:
+        value = max(0.0, min(255.0, float(v))) / 255.0
+        return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+
+    fr, fg, fb = foreground
+    br, bg, bb = background
+    lum_f = 0.2126 * _channel(fr) + 0.7152 * _channel(fg) + 0.0722 * _channel(fb)
+    lum_b = 0.2126 * _channel(br) + 0.7152 * _channel(bg) + 0.0722 * _channel(bb)
+    light = max(lum_f, lum_b)
+    dark = min(lum_f, lum_b)
+    return (light + 0.05) / (dark + 0.05)
+
+
+def _qimage_mean_rgb(image: QImage, rect: QRect) -> tuple[float, float, float] | None:
+    bounded = rect.intersected(image.rect())
+    if bounded.isEmpty():
+        return None
+    if image.format() != QImage.Format_RGBA8888:
+        image = image.convertToFormat(QImage.Format_RGBA8888)
+    stride = int(image.bytesPerLine())
+    buf = bytes(image.constBits())
+    total_r = 0
+    total_g = 0
+    total_b = 0
+    left = bounded.left()
+    right = bounded.right()
+    width = right - left + 1
+    for y in range(bounded.top(), bounded.bottom() + 1):
+        base = y * stride + left * 4
+        end = base + width * 4
+        row = buf[base:end]
+        total_r += sum(row[0::4])
+        total_g += sum(row[1::4])
+        total_b += sum(row[2::4])
+    count = width * (bounded.bottom() - bounded.top() + 1)
+    if count <= 0:
+        return None
+    return (
+        total_r / count,
+        total_g / count,
+        total_b / count,
+    )
+
+
+def _qimage_ring_mean_rgb(image: QImage, inner_rect: QRect, ring_px: int) -> tuple[float, float, float] | None:
+    if ring_px <= 0:
+        return _qimage_mean_rgb(image, inner_rect)
+    outer = inner_rect.adjusted(-ring_px, -ring_px, ring_px, ring_px).intersected(image.rect())
+    inner = inner_rect.intersected(outer)
+    if outer.isEmpty():
+        return None
+    if image.format() != QImage.Format_RGBA8888:
+        image = image.convertToFormat(QImage.Format_RGBA8888)
+    stride = int(image.bytesPerLine())
+    buf = bytes(image.constBits())
+    total_r = 0
+    total_g = 0
+    total_b = 0
+    count = 0
+    for y in range(outer.top(), outer.bottom() + 1):
+        for x in range(outer.left(), outer.right() + 1):
+            if inner.contains(x, y):
+                continue
+            offset = y * stride + x * 4
+            total_r += buf[offset]
+            total_g += buf[offset + 1]
+            total_b += buf[offset + 2]
+            count += 1
+    if count <= 0:
+        return _qimage_mean_rgb(image, inner_rect)
+    return (
+        total_r / count,
+        total_g / count,
+        total_b / count,
+    )
+
+
+def _smoothed_patch(image: QImage) -> QImage:
+    if image.isNull():
+        return image
+    rgba = image.convertToFormat(QImage.Format_RGBA8888)
+    width = max(1, int(rgba.width()))
+    height = max(1, int(rgba.height()))
+    down_w = max(1, int(round(width * _MASK_TEXTURE_DOWNSAMPLE_FACTOR)))
+    down_h = max(1, int(round(height * _MASK_TEXTURE_DOWNSAMPLE_FACTOR)))
+    coarse = rgba.scaled(down_w, down_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    return coarse.scaled(width, height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation).convertToFormat(
+        QImage.Format_RGBA8888
+    )
+
+
+def _blend_patch_towards_rgb(
+    patch: QImage,
+    target_rgb: tuple[float, float, float],
+    blend_strength: float,
+) -> None:
+    strength = max(0.0, min(1.0, float(blend_strength)))
+    if patch.isNull() or strength <= 0.0:
+        return
+    if patch.format() != QImage.Format_RGBA8888:
+        return
+    tr, tg, tb = [max(0.0, min(255.0, float(c))) for c in target_rgb]
+    stride = int(patch.bytesPerLine())
+    height = int(patch.height())
+    width = int(patch.width())
+    bits = patch.bits()
+    size_bytes = int(patch.sizeInBytes())
+    if hasattr(bits, "setsize"):
+        bits.setsize(size_bytes)
+    data = bits if isinstance(bits, memoryview) else memoryview(bits)
+    data = data[:size_bytes]
+    if np is not None:
+        arr = np.frombuffer(data, dtype=np.uint8).reshape((height, stride))
+        rgb = arr[:, : width * 4].reshape((height, width, 4))
+        rgb[:, :, 0] = np.clip(rgb[:, :, 0] * (1.0 - strength) + tr * strength, 0, 255).astype(np.uint8)
+        rgb[:, :, 1] = np.clip(rgb[:, :, 1] * (1.0 - strength) + tg * strength, 0, 255).astype(np.uint8)
+        rgb[:, :, 2] = np.clip(rgb[:, :, 2] * (1.0 - strength) + tb * strength, 0, 255).astype(np.uint8)
+        rgb[:, :, 3] = 255
+        return
+    for y in range(height):
+        row = y * stride
+        for x in range(width):
+            idx = row + x * 4
+            data[idx] = int(data[idx] * (1.0 - strength) + tr * strength)
+            data[idx + 1] = int(data[idx + 1] * (1.0 - strength) + tg * strength)
+            data[idx + 2] = int(data[idx + 2] * (1.0 - strength) + tb * strength)
+            data[idx + 3] = 255
+
+
+def _suppress_patch_outliers(
+    patch: QImage,
+    reference_rgb: tuple[float, float, float],
+    delta_threshold: float = _MASK_OUTLIER_DELTA_THRESHOLD,
+) -> None:
+    if patch.isNull() or patch.format() != QImage.Format_RGBA8888:
+        return
+    rr, rg, rb = [float(c) for c in reference_rgb]
+    stride = int(patch.bytesPerLine())
+    height = int(patch.height())
+    width = int(patch.width())
+    bits = patch.bits()
+    size_bytes = int(patch.sizeInBytes())
+    if hasattr(bits, "setsize"):
+        bits.setsize(size_bytes)
+    data = bits if isinstance(bits, memoryview) else memoryview(bits)
+    data = data[:size_bytes]
+    if np is not None:
+        arr = np.frombuffer(data, dtype=np.uint8).reshape((height, stride))
+        rgb = arr[:, : width * 4].reshape((height, width, 4))
+        delta = np.abs(rgb[:, :, 0].astype(np.float32) - rr)
+        delta += np.abs(rgb[:, :, 1].astype(np.float32) - rg)
+        delta += np.abs(rgb[:, :, 2].astype(np.float32) - rb)
+        mask = delta > (float(delta_threshold) * 3.0)
+        rgb[:, :, 0] = np.where(mask, np.uint8(round(rr)), rgb[:, :, 0])
+        rgb[:, :, 1] = np.where(mask, np.uint8(round(rg)), rgb[:, :, 1])
+        rgb[:, :, 2] = np.where(mask, np.uint8(round(rb)), rgb[:, :, 2])
+        rgb[:, :, 3] = 255
+        return
+    for y in range(height):
+        row = y * stride
+        for x in range(width):
+            idx = row + x * 4
+            delta = (
+                abs(float(data[idx]) - rr)
+                + abs(float(data[idx + 1]) - rg)
+                + abs(float(data[idx + 2]) - rb)
+            )
+            if delta > float(delta_threshold) * 3.0:
+                data[idx] = int(round(rr))
+                data[idx + 1] = int(round(rg))
+                data[idx + 2] = int(round(rb))
+            data[idx + 3] = 255
+
+
+def _mask_leak_ratio(patch: QImage, reference_rgb: tuple[float, float, float], threshold: float = 16.0) -> float:
+    if patch.isNull():
+        return 1.0
+    if patch.format() != QImage.Format_RGBA8888:
+        patch = patch.convertToFormat(QImage.Format_RGBA8888)
+    rr, rg, rb = [float(c) for c in reference_rgb]
+    stride = int(patch.bytesPerLine())
+    height = int(patch.height())
+    width = int(patch.width())
+    total = max(1, width * height)
+    leaking = 0
+    buf = memoryview(patch.constBits())[: int(patch.sizeInBytes())]
+    if np is not None:
+        arr = np.frombuffer(buf, dtype=np.uint8).reshape((height, stride))
+        rgb = arr[:, : width * 4].reshape((height, width, 4))
+        delta = np.abs(rgb[:, :, 0].astype(np.float32) - rr)
+        delta += np.abs(rgb[:, :, 1].astype(np.float32) - rg)
+        delta += np.abs(rgb[:, :, 2].astype(np.float32) - rb)
+        leaking = int(np.count_nonzero(delta > threshold * 3.0))
+        return leaking / total
+    for y in range(height):
+        row = y * stride
+        for x in range(width):
+            idx = row + x * 4
+            delta = (
+                abs(float(buf[idx]) - rr)
+                + abs(float(buf[idx + 1]) - rg)
+                + abs(float(buf[idx + 2]) - rb)
+            )
+            if delta > threshold * 3.0:
+                leaking += 1
+    return leaking / total
 
 
 def _widget_logical_dpi() -> float:
@@ -755,7 +976,7 @@ def _alias_font_family(font_name: str) -> str:
     return family
 
 
-class PreviewRenderer:
+class PreviewRenderer:  # noqa: F811 - intentional redefinition; later implementation is authoritative
     """Rasterizes proposed edit content through the *same* MuPDF
     ``insert_htmlbox`` engine the commit path uses, so the glyphs an opened
     editor shows are pixel-identical to what lands in the PDF.
@@ -874,7 +1095,7 @@ class PreviewRenderer:
         return image
 
 
-class PreviewBackedInlineTextEditor(InlineTextEditor):
+class PreviewBackedInlineTextEditor(InlineTextEditor):  # noqa: F811 - intentional redefinition; later implementation is authoritative
     """Inline editor that paints a MuPDF-rasterized preview instead of Qt's
     native glyphs, so the on-screen text is pixel-faithful to the committed
     PDF. While the text is unchanged it paints a *frozen* capture of the real
@@ -1049,13 +1270,10 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
             and not self._text_matches_initial
             and not self._mutated_preview_is_valid
         ):
-            # Fail-safe: mutated preview rendered effectively transparent. Seed
-            # with the frozen capture, then native-paint typed text with the
-            # background fill suppressed so it stays readable.
-            if self._frozen_first_frame_image is not None:
-                frozen_painter = QPainter(self.viewport())
-                frozen_painter.drawImage(0, 0, self._frozen_first_frame_image)
-                frozen_painter.end()
+            # Mutated-state fail-safe: never repaint the frozen source glyphs
+            # while editing. The opaque mask item below this transparent
+            # editor suppresses the PDF underlay; native QTextEdit paint adds
+            # only the current live text.
             viewport = self.viewport()
             old_auto_fill = viewport.autoFillBackground()
             viewport.setAutoFillBackground(False)
@@ -1068,9 +1286,18 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
                 bg_rgb = self._render_args.get("legacy_bg_rgb", (184, 184, 184))
                 painter.fillRect(self.viewport().rect(), QColor(*bg_rgb))
             painter.drawImage(0, 0, self._preview_image)
+        elif self._text_is_nonempty and not self._text_matches_initial:
+            # Debounce window before the live preview arrives: paint only the
+            # current QTextEdit contents over the underlay mask. Drawing the
+            # frozen first frame here would overlap old and new glyphs.
+            painter.end()
+            viewport = self.viewport()
+            old_auto_fill = viewport.autoFillBackground()
+            viewport.setAutoFillBackground(False)
+            super().paintEvent(event)
+            viewport.setAutoFillBackground(old_auto_fill)
+            return
         elif self._frozen_first_frame_image is not None:
-            # Text differs but debounce is still in flight: paint the frozen
-            # frame so the editor never flashes blank during the transition.
             painter.drawImage(0, 0, self._frozen_first_frame_image)
         else:
             painter.end()
@@ -1099,23 +1326,22 @@ class TextEditManager:
             logger.debug("text editor mask removal skipped")
         self._view._text_editor_mask_item = None
 
-    def _sync_text_editor_mask_item(self, scene_rect: QRectF, mask_color: QColor) -> None:
+    def _sync_text_editor_mask_item(self, scene_rect: QRectF, mask_brush: QBrush) -> None:
         if scene_rect.isEmpty() or not hasattr(self._view, "scene"):
             self._clear_text_editor_mask_item()
             return
         if not hasattr(self._view.scene, "addRect"):
             return
-        brush = QBrush(mask_color)
         pen = QPen(Qt.NoPen)
         mask_item = getattr(self._view, "_text_editor_mask_item", None)
         if mask_item is None:
-            mask_item = self._view.scene.addRect(scene_rect, pen, brush)
+            mask_item = self._view.scene.addRect(scene_rect, pen, mask_brush)
             self._view._text_editor_mask_item = mask_item
         else:
             if hasattr(mask_item, "setRect"):
                 mask_item.setRect(scene_rect)
             if hasattr(mask_item, "setBrush"):
-                mask_item.setBrush(brush)
+                mask_item.setBrush(mask_brush)
             if hasattr(mask_item, "setPen"):
                 mask_item.setPen(pen)
         if hasattr(mask_item, "setZValue"):
@@ -1123,6 +1349,140 @@ class TextEditManager:
         editor_proxy = getattr(self._view, "text_editor", None)
         if editor_proxy is not None and hasattr(editor_proxy, "setZValue"):
             editor_proxy.setZValue(12)
+
+    def _resolve_mask_sampling_context(self, scene_rect: QRectF) -> tuple[QImage, QRect] | None:
+        page_idx = int(getattr(self._view, "_editing_page_idx", getattr(self._view, "current_page", -1)))
+        page_items = getattr(self._view, "page_items", None)
+        if not isinstance(page_items, list) or page_idx < 0 or page_idx >= len(page_items):
+            return None
+        page_item = page_items[page_idx]
+        if page_item is None or not hasattr(page_item, "pixmap"):
+            return None
+        pixmap = page_item.pixmap()
+        if pixmap is None or pixmap.isNull():
+            return None
+        item_rect = page_item.sceneBoundingRect() if hasattr(page_item, "sceneBoundingRect") else QRectF()
+        if item_rect.isEmpty():
+            return None
+        local_rect = scene_rect.intersected(item_rect)
+        if local_rect.isEmpty():
+            return None
+        image = pixmap.toImage().convertToFormat(QImage.Format_RGBA8888)
+        if image.isNull():
+            return None
+        scale_x = float(image.width()) / max(1.0, float(item_rect.width()))
+        scale_y = float(image.height()) / max(1.0, float(item_rect.height()))
+        img_x = int(math.floor((float(local_rect.left()) - float(item_rect.left())) * scale_x))
+        img_y = int(math.floor((float(local_rect.top()) - float(item_rect.top())) * scale_y))
+        img_w = max(1, int(math.ceil(float(local_rect.width()) * scale_x)))
+        img_h = max(1, int(math.ceil(float(local_rect.height()) * scale_y)))
+        image_rect = QRect(img_x, img_y, img_w, img_h).intersected(image.rect())
+        if image_rect.isEmpty():
+            return None
+        return image, image_rect
+
+    def _build_background_matched_mask(
+        self,
+        scene_rect: QRectF,
+        text_rgb: tuple[int, int, int],
+    ) -> tuple[QBrush, QColor, dict[str, object]]:
+        sampled = self._resolve_mask_sampling_context(scene_rect)
+        if sampled is None:
+            fallback = _readable_editor_mask_color(text_rgb)
+            return (
+                QBrush(fallback),
+                QColor(fallback),
+                {
+                    "mask_mode": "fallback",
+                    "ring_delta": None,
+                    "leak_pct": None,
+                    "contrast_ratio": _contrast_ratio_rgb(
+                        tuple(float(v) for v in text_rgb),
+                        (float(fallback.red()), float(fallback.green()), float(fallback.blue())),
+                    ),
+                    "tint_strength": 0.0,
+                },
+            )
+
+        image, image_rect = sampled
+        ring_rgb = _qimage_ring_mean_rgb(image, image_rect, _MASK_RING_THICKNESS_PX)
+        if ring_rgb is None:
+            fallback = _readable_editor_mask_color(text_rgb)
+            return (
+                QBrush(fallback),
+                QColor(fallback),
+                {
+                    "mask_mode": "fallback",
+                    "ring_delta": None,
+                    "leak_pct": None,
+                    "contrast_ratio": _contrast_ratio_rgb(
+                        tuple(float(v) for v in text_rgb),
+                        (float(fallback.red()), float(fallback.green()), float(fallback.blue())),
+                    ),
+                    "tint_strength": 0.0,
+                },
+            )
+
+        patch = _smoothed_patch(image.copy(image_rect))
+        # The editor rectangle itself can contain the source glyphs we are
+        # trying to hide. Any retained interior texture risks leaving a ghost
+        # of those glyphs during live editing, so the strict no-leak path uses
+        # the local perimeter color as an opaque patch.
+        _blend_patch_towards_rgb(patch, ring_rgb, 1.0)
+        _suppress_patch_outliers(patch, ring_rgb)
+        leak_pct = _mask_leak_ratio(patch, ring_rgb)
+        if leak_pct > _MASK_TEXTURE_MAX_LEAK_PCT:
+            _blend_patch_towards_rgb(patch, ring_rgb, 0.80)
+            _suppress_patch_outliers(patch, ring_rgb)
+            leak_pct = _mask_leak_ratio(patch, ring_rgb)
+        if leak_pct > _MASK_TEXTURE_MAX_LEAK_PCT:
+            # Fail-closed: residual glyph structure is still visible, so force
+            # a local-color opaque fill rather than leaking source text.
+            _blend_patch_towards_rgb(patch, ring_rgb, 1.0)
+            leak_pct = _mask_leak_ratio(patch, ring_rgb)
+
+        mask_mean_rgb = _qimage_mean_rgb(patch, patch.rect()) or ring_rgb
+        text_rgb_f = tuple(float(v) for v in text_rgb)
+        contrast_ratio = _contrast_ratio_rgb(text_rgb_f, mask_mean_rgb)
+        tint_strength = 0.0
+        if contrast_ratio < _MASK_MIN_CONTRAST_RATIO:
+            dark_contrast = _contrast_ratio_rgb(text_rgb_f, (0.0, 0.0, 0.0))
+            light_contrast = _contrast_ratio_rgb(text_rgb_f, (255.0, 255.0, 255.0))
+            tint_target = (0.0, 0.0, 0.0) if dark_contrast >= light_contrast else (255.0, 255.0, 255.0)
+            base_patch = patch.copy()
+            for candidate in (0.04, 0.08, 0.12, 0.16, _MASK_MAX_TINT_STRENGTH):
+                patch = base_patch.copy()
+                _blend_patch_towards_rgb(patch, tint_target, candidate)
+                candidate_mean = _qimage_mean_rgb(patch, patch.rect()) or mask_mean_rgb
+                candidate_contrast = _contrast_ratio_rgb(text_rgb_f, candidate_mean)
+                tint_strength = float(candidate)
+                contrast_ratio = candidate_contrast
+                if candidate_contrast >= _MASK_MIN_CONTRAST_RATIO:
+                    break
+
+        mask_mean_rgb = _qimage_mean_rgb(patch, patch.rect()) or ring_rgb
+        ring_delta = (
+            abs(mask_mean_rgb[0] - ring_rgb[0])
+            + abs(mask_mean_rgb[1] - ring_rgb[1])
+            + abs(mask_mean_rgb[2] - ring_rgb[2])
+        ) / 3.0
+        mask_color = QColor(
+            int(round(mask_mean_rgb[0])),
+            int(round(mask_mean_rgb[1])),
+            int(round(mask_mean_rgb[2])),
+        )
+        brush = QBrush(QPixmap.fromImage(patch))
+        return (
+            brush,
+            mask_color,
+            {
+                "mask_mode": "background_match",
+                "ring_delta": float(ring_delta),
+                "leak_pct": float(leak_pct),
+                "contrast_ratio": float(contrast_ratio),
+                "tint_strength": float(tint_strength),
+            },
+        )
 
     def current_text_editor_scene_rect(self) -> QRectF | None:
         editor = getattr(self._view, "text_editor", None)
@@ -1148,10 +1508,11 @@ class TextEditManager:
         # frozen-frame preview already carries the true background; sampling
         # the live scene here would re-introduce the old glyphs under the
         # editor.
-        mask_color = _readable_editor_mask_color(text_rgb)
-        self._sync_text_editor_mask_item(scene_rect, mask_color)
+        mask_brush, mask_color, mask_debug = self._build_background_matched_mask(scene_rect, text_rgb)
+        self._sync_text_editor_mask_item(scene_rect, mask_brush)
         editor.setStyleSheet(self._view._build_text_editor_stylesheet(text_rgb, mask_color))
         editor.setProperty("mask_rgb", (mask_color.red(), mask_color.green(), mask_color.blue()))
+        editor.setProperty("mask_debug_metrics", mask_debug)
 
     def create_text_editor(
         self,
@@ -1416,6 +1777,7 @@ class TextEditManager:
         if hasattr(editor, "configure_render_context"):
             editor.configure_render_context(font_name=selected_pdf_font)
         view.editing_font_name = selected_pdf_font
+        self.refresh_text_editor_mask_color()
         QTimer.singleShot(
             TextEditUIConstants.FOCUS_RESTORE_DELAY_MS,
             lambda: editor.setFocus(Qt.OtherFocusReason)
@@ -1439,6 +1801,7 @@ class TextEditManager:
         editor.setFont(font)
         if hasattr(editor, "configure_render_context"):
             editor.configure_render_context(font_size=float(size))
+        self.refresh_text_editor_mask_color()
         QTimer.singleShot(
             TextEditUIConstants.FOCUS_RESTORE_DELAY_MS,
             lambda: editor.setFocus(Qt.OtherFocusReason)
