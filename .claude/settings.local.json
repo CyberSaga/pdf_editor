@@ -25,7 +25,10 @@
       "Bash(python reflow/iter9_edge_cases.py)",
       "Bash(python -m pytest test_scripts/test_track_c.py -v -s)",
       "Bash(python -m pytest test_scripts/test_track_c.py::test_real_pdfs -v -s)",
-      "Skill(codex:adversarial-review)"
+      "Skill(codex:adversarial-review)",
+      "PowerShell(git worktree remove \"C:\\\\Users\\\\jiang\\\\.claude\\\\jobs\\\\223f096d\\\\wt-e985876\" --force 2>&1)",
+      "PowerShell(git branch -D e9858762ec43fef575531f64b002ee736894c405 2>&1)",
+      "PowerShell(git worktree remove \"C:/Users/jiang/Documents/python programs/pdf_editor/e9858762ec43fef575531f64b002ee736894c405\" --force 2>&1)"
     ]
   }
 }
