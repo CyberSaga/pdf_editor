@@ -158,6 +158,7 @@ class PDFView(QMainWindow):
     sig_tab_close_requested = Signal(int)
     sig_delete_pages = Signal(list)
     sig_rotate_pages = Signal(list, int)
+    sig_straighten_page = Signal(int)
     sig_export_pages = Signal(list, str, bool, int, str)
     sig_add_highlight = Signal(int, object, object)
     sig_add_rect = Signal(int, object, object, bool)
@@ -991,6 +992,7 @@ class PDFView(QMainWindow):
         tb_page.setStyleSheet(toolbar_style)
         tb_page.addAction("刪除頁", self._delete_pages)
         tb_page.addAction("旋轉頁", self._rotate_pages)
+        tb_page.addAction("拉正頁面", self._straighten_current_page)
         tb_page.addAction("匯出頁", self._export_pages)
         tb_page.addAction("插入空白頁", self._insert_blank_page)
         tb_page.addAction("從檔案插入頁", self._insert_pages_from_file)
@@ -2378,6 +2380,7 @@ class PDFView(QMainWindow):
         menu.addSeparator()
         menu.addAction("向右旋轉 90°", lambda checked=False, p=page_num: self._rotate_specific_pages([p], 90))
         menu.addAction("向左旋轉 90°", lambda checked=False, p=page_num: self._rotate_specific_pages([p], 270))
+        menu.addAction("拉正此頁", lambda checked=False, p=page_num: self._straighten_specific_page(p))
         menu.addSeparator()
         menu.addAction("匯出此頁...", lambda checked=False, p=page_num: self._export_specific_pages([p]))
         menu.addSeparator()
@@ -4111,6 +4114,7 @@ class PDFView(QMainWindow):
             menu.addAction("匯出目前頁面...", lambda checked=False, p=current_page_num: self._export_specific_pages([p]))
             menu.addAction("向右旋轉目前頁面 90°", lambda checked=False, p=current_page_num: self._rotate_specific_pages([p], 90))
             menu.addAction("向左旋轉目前頁面 90°", lambda checked=False, p=current_page_num: self._rotate_specific_pages([p], 270))
+            menu.addAction("拉正目前頁面", lambda checked=False, p=current_page_num: self._straighten_specific_page(p))
             menu.addAction("刪除目前頁面", lambda checked=False, p=current_page_num: self._delete_specific_pages([p]))
             menu.addAction("在目前頁面後插入空白頁", lambda checked=False, p=current_page_num: self._insert_blank_page_at(p + 1))
             menu.addAction(
@@ -4213,6 +4217,19 @@ class PDFView(QMainWindow):
                         self.sig_rotate_pages.emit(parsed, degrees)
                 except ValueError:
                     show_error(self, "頁碼格式錯誤")
+
+    def _straighten_current_page(self) -> None:
+        if self.total_pages == 0:
+            show_error(self, "沒有開啟的PDF文件")
+            return
+        self._straighten_specific_page(self.current_page + 1)
+
+    def _straighten_specific_page(self, page_num: int) -> None:
+        if self.total_pages == 0:
+            show_error(self, "沒有開啟的PDF文件")
+            return
+        if page_num >= 1:
+            self.sig_straighten_page.emit(int(page_num))
 
     def _rotate_specific_pages(self, pages: list[int], degrees: int) -> None:
         if self.total_pages == 0:

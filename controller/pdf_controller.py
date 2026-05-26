@@ -400,6 +400,8 @@ class PDFController:
         self.view.sig_save.connect(self.save)
         self.view.sig_delete_pages.connect(self.delete_pages)
         self.view.sig_rotate_pages.connect(self.rotate_pages)
+        if hasattr(self.view, "sig_straighten_page"):
+            self.view.sig_straighten_page.connect(self.straighten_page)
         self.view.sig_export_pages.connect(self.export_pages)
         self.view.sig_add_highlight.connect(self.add_highlight)
         self.view.sig_add_rect.connect(self.add_rect)
@@ -1796,6 +1798,32 @@ class PDFController:
             before_bytes=before,
             after_bytes=after,
             description=f"旋轉頁面 {actual_rotated_pages} {degrees}°",
+        )
+        self.model.command_manager.record(cmd)
+        self._update_thumbnails()
+        self._rebuild_continuous_scene(self.view.current_page)
+        self._update_undo_redo_tooltips()
+
+    def straighten_page(self, page_num: int, angle_degrees: float | None = None) -> None:
+        if not self.model.doc or page_num < 1 or page_num > len(self.model.doc):
+            return
+        before = self.model._capture_doc_snapshot()
+        try:
+            ok = self.model.straighten_page(page_num, angle_degrees=angle_degrees)
+        except Exception as exc:
+            show_error(self.view, f"拉正頁面失敗：{exc}")
+            return
+        if not ok:
+            return
+        self._invalidate_active_render_state(clear_page_sizes=True)
+        after = self.model._capture_doc_snapshot()
+        cmd = SnapshotCommand(
+            model=self.model,
+            command_type="straighten_page",
+            affected_pages=[page_num],
+            before_bytes=before,
+            after_bytes=after,
+            description=f"拉正頁面 {page_num}",
         )
         self.model.command_manager.record(cmd)
         self._update_thumbnails()

@@ -4460,6 +4460,90 @@ class PDFModel:
             "output_path": str(target),
         }
 
+    def _render_page_gray_array(self, page_num: int, max_dim: int = 1000):
+        """Render a page to a downscaled grayscale numpy array for skew analysis."""
+        import numpy as np
+
+        page = self.doc[page_num - 1]
+        rect = fitz.Rect(page.rect)
+        longest = max(1.0, float(rect.width), float(rect.height))
+        scale = max(0.1, min(float(max_dim) / longest, 4.0))
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), colorspace=fitz.csGRAY, alpha=False)
+        return np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
+
+    def detect_page_skew(self, page_num: int, max_angle: float = 10.0, step: float = 0.5) -> float:
+        """Detect a page's skew via projection-profile variance.
+
+        Returns the corrective angle (degrees, CCW-positive) that, applied to the
+        page, best aligns text rows horizontally. The bars/text rows of a level
+        page produce a row-sum projection with sharp peaks (high variance); the
+        candidate angle maximizing that variance is the deskew angle.
+        """
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            raise ValueError(f"無效頁碼: {page_num}")
+        import numpy as np
+        from PIL import Image
+
+        arr = self._render_page_gray_array(page_num)
+        ink = ((arr < 128).astype(np.uint8) * 255)
+        img = Image.fromarray(ink, mode="L")
+        best_angle = 0.0
+        best_score = -1.0
+        steps = int(round((2.0 * max_angle) / max(1e-6, step))) + 1
+        for i in range(steps):
+            angle = -max_angle + i * step
+            rotated = img.rotate(angle, resample=Image.NEAREST, expand=False, fillcolor=0)
+            row_sums = np.asarray(rotated, dtype=np.float64).sum(axis=1)
+            score = float(np.var(row_sums))
+            if score > best_score:
+                best_score = score
+                best_angle = angle
+        return float(best_angle)
+
+    def straighten_page(self, page_num: int, angle_degrees: float | None = None) -> bool:
+        """Rotate a page to level it (deskew). Rasterizes the page.
+
+        When ``angle_degrees`` is None the skew is auto-detected. The corrected
+        page keeps the original size; rotated-out corners are filled white.
+        """
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            raise ValueError(f"無效頁碼: {page_num}")
+        if angle_degrees is None:
+            angle_degrees = self.detect_page_skew(page_num)
+        angle = float(angle_degrees)
+        idx = page_num - 1
+        rect = fitz.Rect(self.doc[idx].rect)
+        if abs(angle) < 0.05:
+            return True  # already level; nothing to correct
+
+        import io
+
+        from PIL import Image
+
+        scale = 2.0
+        pix = self.doc[idx].get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+        mode = "RGBA" if pix.alpha else "RGB"
+        img = Image.frombytes(mode, (pix.width, pix.height), pix.samples).convert("RGB")
+        straightened = img.rotate(
+            angle, resample=Image.BICUBIC, expand=False, fillcolor=(255, 255, 255)
+        )
+        buf = io.BytesIO()
+        straightened.save(buf, format="PNG")
+        png = buf.getvalue()
+
+        # Replace the page: insert a same-size blank page at idx (old shifts to
+        # idx+1), paint the straightened raster, then drop the old page.
+        new_page = self.doc.new_page(pno=idx, width=float(rect.width), height=float(rect.height))
+        new_page.insert_image(fitz.Rect(0.0, 0.0, float(rect.width), float(rect.height)), stream=png)
+        self.doc.delete_page(idx + 1)
+        try:
+            self.block_manager.rebuild_page(idx, self.doc)
+        except Exception:
+            logger.debug("block index rebuild after straighten skipped")
+        self.pending_edits.append({"page_idx": idx, "rect": fitz.Rect(rect)})
+        self.edit_count += 1
+        return True
+
     def save_as(self, new_path: str):
         """另存 PDF。若存回原檔且支援增量更新，則使用 incremental=True。"""
         if not self.doc:
