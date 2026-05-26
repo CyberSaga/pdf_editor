@@ -4409,6 +4409,57 @@ class PDFModel:
         else:
             self.doc.save(path, garbage=0)
 
+    def repair_document_xref(self, output_path: str) -> dict:
+        """Write a repaired copy of the active document with a rebuilt xref table.
+
+        PyMuPDF rebuilds a damaged cross-reference table when it opens a broken
+        PDF (``doc.is_repaired``). Saving with full garbage collection then writes
+        a fresh, consistent xref. The output is written atomically via a temp file
+        in the target directory so it is safe even when ``output_path`` equals the
+        currently-open source path. Returns a report describing the repair.
+        """
+        if not self.doc:
+            raise ValueError("沒有開啟的文件可供修復")
+
+        was_repaired = bool(getattr(self.doc, "is_repaired", False))
+        try:
+            xref_before = int(self.doc.xref_length())
+        except Exception:
+            xref_before = 0
+
+        target = Path(output_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp_fd, tmp_name = tempfile.mkstemp(suffix=".pdf", dir=str(target.parent))
+        os.close(tmp_fd)
+        try:
+            # garbage=4 prunes unused/duplicate objects and rebuilds the xref;
+            # clean sanitizes content streams; deflate compresses the result.
+            self.doc.save(tmp_name, garbage=4, clean=True, deflate=True)
+            os.replace(tmp_name, str(target))
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+
+        saved = fitz.open(str(target))
+        try:
+            xref_after = int(saved.xref_length())
+            clean_after_save = not bool(getattr(saved, "is_repaired", False))
+            page_count = int(saved.page_count)
+        finally:
+            saved.close()
+
+        return {
+            "was_repaired_on_open": was_repaired,
+            "xref_objects_before": xref_before,
+            "xref_objects_after": xref_after,
+            "page_count": page_count,
+            "clean_after_save": clean_after_save,
+            "output_path": str(target),
+        }
+
     def save_as(self, new_path: str):
         """另存 PDF。若存回原檔且支援增量更新，則使用 incremental=True。"""
         if not self.doc:

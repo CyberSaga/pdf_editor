@@ -440,6 +440,8 @@ class PDFController:
         self.view.sig_insert_pages_from_file.connect(self.insert_pages_from_file)
         self.view.sig_merge_pdfs_requested.connect(self.start_merge_pdfs)
         self.view.sig_optimize_pdf_copy_requested.connect(self.start_optimize_pdf_copy)
+        if hasattr(self.view, "sig_repair_xref_requested"):
+            self.view.sig_repair_xref_requested.connect(self.repair_document_xref)
 
         # Watermark connections
         self.view.sig_add_watermark.connect(self.add_watermark)
@@ -1235,6 +1237,55 @@ class PDFController:
                 return
 
         self._start_optimize_submission(output_path, dialog.get_options())
+
+    def repair_document_xref(self) -> None:
+        # file-tab action -> save path -> rebuild xref via garbage collection ->
+        # open the repaired copy as a new tab.
+        active_sid = self.model.get_active_session_id()
+        if not active_sid or not self.model.doc:
+            show_error(self.view, "沒有可修復的 PDF")
+            return
+
+        meta = self.model.get_session_meta(active_sid) or {}
+        source_path = meta.get("path") or "repaired.pdf"
+        source_stem = Path(source_path).stem or "repaired"
+        suggested_name = f"{source_stem}.repaired.pdf"
+
+        output_path, _ = QFileDialog.getSaveFileName(
+            self.view,
+            "修復 XREF 表並另存",
+            suggested_name,
+            "PDF (*.pdf)",
+        )
+        if not output_path:
+            return
+        if not Path(output_path).suffix:
+            output_path = f"{output_path}.pdf"
+        if meta.get("path"):
+            current_canonical = self.model._canonicalize_path(meta["path"])
+            if self.model._canonicalize_path(output_path) == current_canonical:
+                show_error(self.view, "修復副本必須使用新的輸出路徑，且不能覆蓋已開啟的檔案。")
+                return
+
+        try:
+            report = self.model.repair_document_xref(output_path)
+        except Exception as exc:
+            show_error(self.view, f"修復 XREF 表失敗：{exc}")
+            return
+
+        self.open_pdf(output_path)
+        status = (
+            "原始檔案的 XREF 表已損毀，已重建為乾淨的副本。"
+            if report.get("was_repaired_on_open")
+            else "原始 XREF 表完整；已重新建立為乾淨的副本。"
+        )
+        QMessageBox.information(
+            self.view,
+            "XREF 修復完成",
+            f"{status}\n"
+            f"物件數：{report.get('xref_objects_before')} → {report.get('xref_objects_after')}\n"
+            f"已儲存至：{report.get('output_path')}",
+        )
 
     def _has_active_optimize_submission(self) -> bool:
         return self._optimize_thread is not None
