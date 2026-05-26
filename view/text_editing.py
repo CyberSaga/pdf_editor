@@ -650,6 +650,14 @@ class PreviewRenderer:
             return self._cache_image
 
         normalized_rotation = int(rotation) % 360
+        # The preview is painted inside the inline editor proxy, which the view
+        # rotates via setRotation(rotation). The frozen first frame is likewise
+        # counter-rotated into upright local space. So the live preview glyphs
+        # must stay UPRIGHT here — the proxy applies the visual rotation. We only
+        # swap the page (wrap) dimensions for 90/270 so the upright text wraps
+        # along the rotated run's reading-direction length and the image fills
+        # the swapped editor frame. Rendering with rotate=normalized_rotation
+        # would double-rotate the content the moment the user types.
         if normalized_rotation in (90, 270):
             page_w_pt = max(float(rect_pt.height), 1.0)
             page_h_pt = max(float(rect_pt.width), 1.0)
@@ -689,12 +697,9 @@ class PreviewRenderer:
                 html = f"<span>{_html_mod.escape(text or '')}</span>"
 
             target_rect = fitz.Rect(0, 0, page_w_pt, page_h_pt)
-            try:
-                temp_page.insert_htmlbox(
-                    target_rect, html, css=css, rotate=normalized_rotation, scale_low=1
-                )
-            except TypeError:
-                temp_page.insert_htmlbox(target_rect, html, css=css, scale_low=1)
+            # rotate=0: glyphs stay upright; the editor proxy rotation supplies
+            # the on-screen rotation (see the page-dimension note above).
+            temp_page.insert_htmlbox(target_rect, html, css=css, scale_low=1)
 
             pixmap = temp_page.get_pixmap(
                 matrix=fitz.Matrix(float(render_scale), float(render_scale)),
@@ -807,7 +812,15 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
         # QTextDocument 60+ times/second.
         self._text_matches_initial = self.toPlainText() == self._initial_text
         self._text_is_nonempty = bool(self.toPlainText())
-        self._debounce.start()
+        if not self._text_is_nonempty:
+            # Box just emptied: regenerate synchronously so the editor does not
+            # linger on the stale preview of the previous text (which would flash
+            # the old glyphs over the mask until the debounce fires). Ongoing
+            # typing stays debounced for performance.
+            self._debounce.stop()
+            self._regenerate_preview()
+        else:
+            self._debounce.start()
         self.viewport().update()
 
     def _mutated_preview_has_visible_ink(self, image: QImage | None) -> bool:
