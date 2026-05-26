@@ -43,10 +43,12 @@ def match_standard_paper_size(
     short = min(width_pt, height_pt)
     long = max(width_pt, height_pt)
     best_key: str | None = None
-    best_err = tolerance_pt
+    best_err: float | None = None
     for key, (std_short, std_long) in PAPER_SIZE_POINTS.items():
         err = max(abs(short - std_short), abs(long - std_long))
-        if err <= best_err:
+        # Eligible if within tolerance; only replace on a strictly smaller error
+        # so insertion order (most canonical sizes first) breaks exact ties.
+        if err <= tolerance_pt and (best_err is None or err < best_err):
             best_err = err
             best_key = key
     return best_key

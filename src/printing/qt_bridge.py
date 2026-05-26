@@ -35,7 +35,6 @@ _NAMED_Q_PAGE_SIZES = {
     "letter": QPageSize.Letter,
     "legal": QPageSize.Legal,
     "tabloid": QPageSize.Tabloid,
-    "ledger": QPageSize.Ledger,
     "executive": QPageSize.Executive,
 }
 

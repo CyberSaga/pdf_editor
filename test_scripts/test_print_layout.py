@@ -17,8 +17,10 @@ from pathlib import Path
 
 import fitz
 from PySide6.QtCore import QRectF
-from PySide6.QtGui import QPageSize
+from PySide6.QtGui import QPageLayout, QPageSize
 from PySide6.QtWidgets import QApplication
+
+from src.printing.base_driver import PrintJobOptions
 
 from src.printing import qt_bridge as qtb
 from src.printing.base_driver import PrinterDevice
@@ -98,6 +100,15 @@ def test_to_q_page_size_auto_non_standard_falls_back_to_custom() -> None:
     assert {pts.width(), pts.height()} == {700, 900}
 
 
+def test_to_q_page_size_auto_non_standard_landscape_is_portrait_normalised() -> None:
+    """Custom fallback must store dims portrait-first so orientation is applied
+    separately (a landscape source must not end up flipped back to portrait)."""
+    size = qtb._to_q_page_size("auto", QRectF(0.0, 0.0, 900.0, 700.0))
+    assert size.id() == QPageSize.Custom
+    pts = size.sizePoints()
+    assert pts.width() < pts.height(), f"expected portrait-normalised, got {pts.width()}×{pts.height()}"
+
+
 def test_to_q_page_size_explicit_a4_overrides_source() -> None:
     """AC-3d: explicit A4 wins regardless of an A3-sized source page."""
     size = qtb._to_q_page_size("a4", QRectF(0.0, 0.0, *A3_PORTRAIT))
@@ -112,6 +123,68 @@ def test_to_q_page_size_explicit_a3_returns_named_a3() -> None:
 def test_to_q_page_size_explicit_tabloid_returns_named_tabloid() -> None:
     size = qtb._to_q_page_size("tabloid", QRectF(0.0, 0.0, *A4_PORTRAIT))
     assert size.id() == QPageSize.Tabloid
+
+
+# ---------------------------------------------------------------------------
+# AC-2: orientation — auto-detect + explicit override (via _set_page_layout)
+# ---------------------------------------------------------------------------
+
+
+class _LayoutPrinter:
+    """QPrinter stand-in backed by a real QPageLayout for orientation checks."""
+
+    def __init__(self) -> None:
+        self._layout = QPageLayout()
+
+    def pageLayout(self):
+        return self._layout
+
+    def setPageLayout(self, layout) -> None:
+        self._layout = layout
+
+
+def test_set_page_layout_auto_landscape_source_sets_landscape() -> None:
+    """AC-2a: a landscape source page (w>h) auto-resolves to landscape."""
+    printer = _LayoutPrinter()
+    qtb._set_page_layout(
+        printer,
+        QRectF(0.0, 0.0, A4_PORTRAIT[1], A4_PORTRAIT[0]),
+        PrintJobOptions(paper_size="auto", orientation="auto"),
+    )
+    assert printer.pageLayout().orientation() == QPageLayout.Landscape
+
+
+def test_set_page_layout_auto_portrait_source_sets_portrait() -> None:
+    """AC-2b: a portrait source page (h>w) auto-resolves to portrait."""
+    printer = _LayoutPrinter()
+    qtb._set_page_layout(
+        printer,
+        QRectF(0.0, 0.0, *A4_PORTRAIT),
+        PrintJobOptions(paper_size="auto", orientation="auto"),
+    )
+    assert printer.pageLayout().orientation() == QPageLayout.Portrait
+
+
+def test_set_page_layout_explicit_portrait_overrides_landscape_source() -> None:
+    """AC-2d: an explicit Portrait choice wins over a landscape source."""
+    printer = _LayoutPrinter()
+    qtb._set_page_layout(
+        printer,
+        QRectF(0.0, 0.0, A4_PORTRAIT[1], A4_PORTRAIT[0]),
+        PrintJobOptions(paper_size="auto", orientation="portrait"),
+    )
+    assert printer.pageLayout().orientation() == QPageLayout.Portrait
+
+
+def test_set_page_layout_explicit_landscape_overrides_portrait_source() -> None:
+    """AC-2d: an explicit Landscape choice wins over a portrait source."""
+    printer = _LayoutPrinter()
+    qtb._set_page_layout(
+        printer,
+        QRectF(0.0, 0.0, *A4_PORTRAIT),
+        PrintJobOptions(paper_size="auto", orientation="landscape"),
+    )
+    assert printer.pageLayout().orientation() == QPageLayout.Landscape
 
 
 # ---------------------------------------------------------------------------
