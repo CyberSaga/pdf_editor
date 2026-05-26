@@ -21,6 +21,14 @@ logger = logging.getLogger(__name__)
 OCR_RENDER_SCALE = 2.0
 _INSTALL_HINT = "pip install surya-ocr"
 
+# Surya predictors load model weights and are expensive to construct. The OCR
+# worker runs one page per `ocr_pages` call (for per-page commit + cancel), each
+# creating a fresh `_SuryaAdapter`; without a shared cache that reloads the models
+# on every page and every run, which is the root cause of the long idle gap
+# (CPU/GPU sit still while weights load). Cache predictors per resolved device so
+# the load happens once for the whole session.
+_PREDICTOR_CACHE: dict[str, tuple[object, object]] = {}
+
 
 def _check_surya_import() -> tuple[bool, str]:
     try:
@@ -118,6 +126,11 @@ class _SuryaAdapter:
         if self._recognizer is not None:
             return
         torch_device = _resolve_torch_device(self._requested_device)
+        cached = _PREDICTOR_CACHE.get(torch_device)
+        if cached is not None:
+            self._detector, self._recognizer = cached
+            self._resolved_device = torch_device
+            return
         logger.info("Initializing Surya predictors on device=%s", torch_device)
         try:
             detection_mod = importlib.import_module("surya.detection")
@@ -141,6 +154,7 @@ class _SuryaAdapter:
             self._detector = detection_mod.DetectionPredictor()
             self._recognizer = recognition_mod.RecognitionPredictor()
         self._resolved_device = torch_device
+        _PREDICTOR_CACHE[torch_device] = (self._detector, self._recognizer)
 
     def ocr(self, image, languages: list[str]) -> list[tuple[tuple[float, float, float, float], str, float]]:
         self._ensure_loaded()

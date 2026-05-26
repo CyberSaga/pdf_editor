@@ -219,6 +219,7 @@ class _OcrWorker(QObject):
     """Runs Surya OCR one page at a time on a background thread."""
 
     progress = Signal(int, int, int)
+    status = Signal(str)
     page_done = Signal(int, object)
     failed = Signal(object)
     finished = Signal()
@@ -244,6 +245,10 @@ class _OcrWorker(QObject):
     def run(self) -> None:
         try:
             total = len(self._page_nums)
+            # The first page triggers Surya model loading (weights load from disk
+            # with no visible CPU/GPU activity). Announce it so the wait does not
+            # look like a hang.
+            self.status.emit("正在載入文字辨識模型，首次使用可能需要數十秒…")
             for index, page_num in enumerate(self._page_nums, start=1):
                 if self._cancel_requested:
                     break
@@ -264,6 +269,7 @@ class _OcrWorker(QObject):
 
 class _OcrBridge(QObject):
     progress = Signal(int, int, int)
+    status = Signal(str)
     page_done = Signal(int, object)
     failed = Signal(object)
     thread_finished = Signal()
@@ -271,6 +277,10 @@ class _OcrBridge(QObject):
     @Slot(int, int, int)
     def forward_progress(self, page_num: int, done: int, total: int) -> None:
         self.progress.emit(page_num, done, total)
+
+    @Slot(str)
+    def forward_status(self, message: str) -> None:
+        self.status.emit(message)
 
     @Slot(int, object)
     def forward_page_done(self, page_num: int, spans) -> None:
@@ -348,6 +358,7 @@ class PDFController:
         if self._ocr_worker_bridge is None:
             self._ocr_worker_bridge = _OcrBridge(self.view)
             self._ocr_worker_bridge.progress.connect(self._on_ocr_progress)
+            self._ocr_worker_bridge.status.connect(self._on_ocr_status)
             self._ocr_worker_bridge.page_done.connect(self._on_ocr_page_done)
             self._ocr_worker_bridge.failed.connect(self._on_ocr_failed)
             self._ocr_worker_bridge.thread_finished.connect(self._on_ocr_thread_finished)
@@ -2419,6 +2430,7 @@ class PDFController:
         thread.started.connect(worker.run)
         if self._ocr_worker_bridge is not None:
             worker.progress.connect(self._ocr_worker_bridge.forward_progress)
+            worker.status.connect(self._ocr_worker_bridge.forward_status)
             worker.page_done.connect(self._ocr_worker_bridge.forward_page_done)
             worker.failed.connect(self._ocr_worker_bridge.forward_failed)
             thread.finished.connect(self._ocr_worker_bridge.notify_thread_finished)
@@ -2464,6 +2476,13 @@ class PDFController:
         dialog.setMaximum(total)
         dialog.setValue(done)
         dialog.setLabelText(f"辨識第 {done}/{total} 頁… (頁 {page_num})")
+
+    @Slot(str)
+    def _on_ocr_status(self, message: str) -> None:
+        dialog = self._ocr_progress_dialog
+        if dialog is None:
+            return
+        dialog.setLabelText(message)
 
     @Slot(int, object)
     def _on_ocr_page_done(self, page_num: int, spans) -> None:
