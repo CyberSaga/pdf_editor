@@ -2280,6 +2280,7 @@ class PDFView(QMainWindow):
             item = self.scene.addPixmap(self._placeholder_pixmap)
             item.setPos(0, y)
             item.setTransform(QTransform.fromScale(width_scene, height_scene))
+            item.setTransformationMode(Qt.SmoothTransformation)
             self.page_items.append(item)
             max_w = max(max_w, width_scene)
             y += height_scene + self.PAGE_GAP
@@ -2338,7 +2339,8 @@ class PDFView(QMainWindow):
         self.page_heights.clear()
         if pix.isNull():
             return
-        self.scene.addPixmap(pix)
+        single_item = self.scene.addPixmap(pix)
+        single_item.setTransformationMode(Qt.SmoothTransformation)
         self.current_page = page_num
         self.graphics_view.setSceneRect(self.scene.itemsBoundingRect())
         if highlight_rect:

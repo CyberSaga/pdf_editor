@@ -713,6 +713,24 @@ class PDFController:
             _, cost = self._render_cache.pop(key)
             self._render_cache_total_bytes = max(0, self._render_cache_total_bytes - cost)
 
+    def _render_device_pixel_ratio(self) -> float:
+        """Physical-pixel ratio of the page view, so renders stay crisp on HiDPI /
+        Windows-scaled displays instead of being upscaled (blurred) by the OS.
+
+        Capped at 2.0: beyond that the extra pixels are imperceptible but the
+        per-page rasterization cost (and render-cache memory) grows quadratically,
+        which would slow page changes on 3x/4x displays.
+        """
+        try:
+            gv = getattr(self.view, "graphics_view", None)
+            if gv is not None and hasattr(gv, "devicePixelRatioF"):
+                dpr = float(gv.devicePixelRatioF())
+                if dpr > 0.0:
+                    return min(dpr, 2.0)
+        except Exception:
+            pass
+        return 1.0
+
     def _render_cache_key(
         self,
         session_id: str,
@@ -720,7 +738,8 @@ class PDFController:
         page_idx: int,
         rendered_scale: float,
         quality: str,
-    ) -> tuple[str, str, int, int, str, int]:
+        device_pixel_ratio: float = 1.0,
+    ) -> tuple[str, str, int, int, str, int, int]:
         return (
             session_id,
             profile,
@@ -728,10 +747,11 @@ class PDFController:
             int(round(rendered_scale * 1000)),
             quality,
             self._render_revision(session_id),
+            int(round(device_pixel_ratio * 100)),
         )
 
-    def _get_cached_render(self, session_id: str, profile: str, page_idx: int, rendered_scale: float, quality: str) -> QPixmap | None:
-        key = self._render_cache_key(session_id, profile, page_idx, rendered_scale, quality)
+    def _get_cached_render(self, session_id: str, profile: str, page_idx: int, rendered_scale: float, quality: str, device_pixel_ratio: float = 1.0) -> QPixmap | None:
+        key = self._render_cache_key(session_id, profile, page_idx, rendered_scale, quality, device_pixel_ratio)
         cached = self._render_cache.pop(key, None)
         if cached is None:
             return None
@@ -739,8 +759,8 @@ class PDFController:
         self._render_cache[key] = (pixmap, cost)
         return pixmap
 
-    def _store_cached_render(self, session_id: str, profile: str, page_idx: int, rendered_scale: float, quality: str, pixmap: QPixmap) -> None:
-        key = self._render_cache_key(session_id, profile, page_idx, rendered_scale, quality)
+    def _store_cached_render(self, session_id: str, profile: str, page_idx: int, rendered_scale: float, quality: str, pixmap: QPixmap, device_pixel_ratio: float = 1.0) -> None:
+        key = self._render_cache_key(session_id, profile, page_idx, rendered_scale, quality, device_pixel_ratio)
         cost = max(1, pixmap.width()) * max(1, pixmap.height()) * 4
         previous = self._render_cache.pop(key, None)
         if previous is not None:
@@ -767,16 +787,22 @@ class PDFController:
             return False
         target_scale = max(0.1, float(self.view.scale))
         rendered_scale = self._render_scale_for_quality(target_scale, quality)
+        # High-quality renders are rasterized at the display's device-pixel ratio
+        # so text/images are crisp on HiDPI / Windows-scaled monitors. Low-quality
+        # previews stay at logical resolution to remain cheap and fast.
+        effective_dpr = self._render_device_pixel_ratio() if quality == "high" else 1.0
         profile = self._color_profile_for_session(session_id)
-        cached = self._get_cached_render(session_id, profile, page_idx, rendered_scale, quality)
+        cached = self._get_cached_render(session_id, profile, page_idx, rendered_scale, quality, effective_dpr)
         if cached is None:
             pix = self.model.get_page_pixmap(
                 page_idx + 1,
-                rendered_scale,
+                rendered_scale * effective_dpr,
                 colorspace=self._fitz_colorspace_for_profile(profile),
             )
             cached = pixmap_to_qpixmap(pix)
-            self._store_cached_render(session_id, profile, page_idx, rendered_scale, quality, cached)
+            if effective_dpr != 1.0:
+                cached.setDevicePixelRatio(effective_dpr)
+            self._store_cached_render(session_id, profile, page_idx, rendered_scale, quality, cached, effective_dpr)
         self.view.update_page_in_scene_scaled(page_idx, cached, rendered_scale, target_scale)
         self._page_quality_map(session_id, profile)[page_idx] = quality
         self._maybe_start_background_loading_after_render(session_id, page_idx, quality)
