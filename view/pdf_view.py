@@ -158,7 +158,7 @@ class PDFView(QMainWindow):
     sig_tab_close_requested = Signal(int)
     sig_delete_pages = Signal(list)
     sig_rotate_pages = Signal(list, int)
-    sig_straighten_page = Signal(int)
+    sig_straighten_pages = Signal(list)
     sig_export_pages = Signal(list, str, bool, int, str)
     sig_add_highlight = Signal(int, object, object)
     sig_add_rect = Signal(int, object, object, bool)
@@ -4222,14 +4222,38 @@ class PDFView(QMainWindow):
         if self.total_pages == 0:
             show_error(self, "沒有開啟的PDF文件")
             return
-        self._straighten_specific_page(self.current_page + 1)
+        choice, ok = QInputDialog.getItem(
+            self,
+            "拉正頁面",
+            "選擇要拉正的範圍：",
+            ["全部", "當前頁", "自訂"],
+            1,  # default to 當前頁 (preserves the previous one-click behaviour)
+            False,
+        )
+        if not ok:
+            return
+        if choice == "全部":
+            pages = list(range(1, self.total_pages + 1))
+        elif choice == "自訂":
+            text, ok = QInputDialog.getText(self, "拉正頁面", "輸入頁碼 (如 1,3-5):")
+            if not ok or not text:
+                return
+            try:
+                pages = parse_pages(text, self.total_pages)
+            except ValueError:
+                show_error(self, "頁碼格式錯誤")
+                return
+        else:  # 當前頁
+            pages = [self.current_page + 1]
+        if pages:
+            self.sig_straighten_pages.emit(sorted({int(p) for p in pages}))
 
     def _straighten_specific_page(self, page_num: int) -> None:
         if self.total_pages == 0:
             show_error(self, "沒有開啟的PDF文件")
             return
         if page_num >= 1:
-            self.sig_straighten_page.emit(int(page_num))
+            self.sig_straighten_pages.emit([int(page_num)])
 
     def _rotate_specific_pages(self, pages: list[int], degrees: int) -> None:
         if self.total_pages == 0:
