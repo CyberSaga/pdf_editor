@@ -45,6 +45,12 @@ class NativeImageInvocation:
     q_operator_index: int | None
     q_end_operator_index: int | None
     q_image_invocation_count: int
+    # xref whose /Resources/XObject holds ``xobject_name`` — the page for direct
+    # invocations, the Form XObject for form-nested ones. Used for resource pruning.
+    resource_owner_xref: int = 0
+    # True when the image is drawn inside a Form XObject rather than directly on
+    # the page; the rewrite path then works in the form's coordinate space.
+    is_form_nested: bool = False
 
 
 def _is_whitespace(byte: int) -> bool:
@@ -296,10 +302,129 @@ def discover_native_image_invocations(doc: fitz.Document, page_num: int) -> list
                     q_operator_index=q_index,
                     q_end_operator_index=q_to_end.get(q_index) if q_index is not None else None,
                     q_image_invocation_count=q_invocation_counts.get(q_index, 0) if q_index is not None else 0,
+                    resource_owner_xref=int(page.xref),
+                    is_form_nested=False,
                 )
             )
             occurrence_index += 1
+
+    occurrence_index = _discover_form_nested_invocations(
+        doc,
+        page,
+        page_num,
+        placements_by_xref,
+        placement_offsets,
+        invocations,
+        occurrence_index,
+    )
     return invocations
+
+
+def _discover_form_nested_invocations(
+    doc: fitz.Document,
+    page: fitz.Page,
+    page_num: int,
+    placements_by_xref: dict[int, list[tuple[fitz.Rect, fitz.Matrix]]],
+    placement_offsets: dict[int, int],
+    invocations: list[NativeImageInvocation],
+    occurrence_index: int,
+) -> int:
+    """Discover image ``Do`` invocations that live inside Form XObjects.
+
+    Many PDFs (e.g. exported from layout tools) wrap page content — including
+    images — in a Form XObject, so the page content stream only contains
+    ``/Fm0 Do`` and the image is invoked one level down. We walk each page-level
+    form's stream, resolve image names against that form's own resources, and
+    reuse the page-space placement from ``get_image_rects`` for the bbox.
+    Depth-1 only (forms referenced directly by the page), which covers the
+    common case. A PDF with no image-bearing forms is unaffected (no-op).
+    """
+    try:
+        form_xobjects = page.get_xobjects()
+    except Exception:
+        return occurrence_index
+
+    # Per-form image-name → xref maps, keyed by the referencing (form) xref.
+    images_by_referencer: dict[int, dict[str, int]] = {}
+    try:
+        for row in page.get_images(full=True):
+            referencer = int(row[9])
+            images_by_referencer.setdefault(referencer, {})[str(row[7])] = int(row[0])
+    except Exception:
+        return occurrence_index
+
+    processed_forms: set[int] = set()
+    for xobj in form_xobjects:
+        form_xref = int(xobj[0])
+        if form_xref in processed_forms:
+            continue
+        processed_forms.add(form_xref)
+        try:
+            subtype = doc.xref_get_key(form_xref, "Subtype")
+        except Exception:
+            continue
+        if not (isinstance(subtype, tuple) and subtype[1] == "/Form"):
+            continue
+        form_images = images_by_referencer.get(form_xref)
+        if not form_images:
+            continue
+        try:
+            stream = doc.xref_stream(form_xref)
+        except Exception:
+            continue
+        _, operators = parse_operators(stream)
+        q_to_end, q_invocation_counts = _q_bounds_by_operator_index(operators)
+        last_cm_by_depth: list[int | None] = [None]
+        q_stack: list[int] = []
+        for op_index, operator in enumerate(operators):
+            if operator.name == "q":
+                q_stack.append(op_index)
+                last_cm_by_depth.append(None)
+                continue
+            if operator.name == "Q":
+                if q_stack:
+                    q_stack.pop()
+                if len(last_cm_by_depth) > 1:
+                    last_cm_by_depth.pop()
+                continue
+            if operator.name == "cm":
+                last_cm_by_depth[-1] = op_index
+                continue
+            if operator.name != "Do" or not operator.operands:
+                continue
+            image_name = operator.operands[-1].raw.decode("latin-1").lstrip("/")
+            if image_name not in form_images:
+                continue
+            xref = form_images[image_name]
+            placements = placements_by_xref.get(xref, [])
+            placement_index = placement_offsets.get(xref, 0)
+            if placement_index >= len(placements):
+                continue
+            bbox, transform = placements[placement_index]
+            placement_offsets[xref] = placement_index + 1
+            rotation = _rotation_from_cm(transform.a, transform.b, transform.c, transform.d)
+            cm_index = last_cm_by_depth[-1]
+            q_index = q_stack[-1] if q_stack else None
+            invocations.append(
+                NativeImageInvocation(
+                    page_num=page_num,
+                    occurrence_index=occurrence_index,
+                    stream_xref=form_xref,
+                    xobject_name=image_name,
+                    xref=xref,
+                    bbox=fitz.Rect(bbox),
+                    rotation=rotation,
+                    cm_operator_index=cm_index,
+                    do_operator_index=op_index,
+                    q_operator_index=q_index,
+                    q_end_operator_index=q_to_end.get(q_index) if q_index is not None else None,
+                    q_image_invocation_count=q_invocation_counts.get(q_index, 0) if q_index is not None else 0,
+                    resource_owner_xref=form_xref,
+                    is_form_nested=True,
+                )
+            )
+            occurrence_index += 1
+    return occurrence_index
 
 
 def replace_operator_operands(tokens: list[ContentToken], operator: ParsedOperator, new_operands: list[bytes]) -> bytes:
@@ -342,4 +467,54 @@ def fitz_rect_to_stream_cm(rect: fitz.Rect, page: fitz.Page, rotation: int) -> l
         values = (-width, 0.0, 0.0, -height, x1, page_height - (y0 + crop_y0))
     else:
         values = (0.0, -height, width, 0.0, x0, page_height - (y0 + crop_y0))
+    return [f"{value:g}".encode("ascii") for value in values]
+
+
+def form_rect_to_stream_cm(
+    destination_rect: fitz.Rect,
+    current_cm_values: tuple[float, float, float, float, float, float],
+    current_page_bbox: fitz.Rect,
+    rotation: int,
+) -> list[bytes] | None:
+    """Build a new ``cm`` for an image drawn inside a Form XObject.
+
+    The image's cm lives in the *form's* coordinate space, which reaches page
+    space through an outer placement transform (the page ``cm`` before
+    ``/Fm Do`` composed with the form ``Matrix``). Rather than reconstruct that
+    transform from document internals, we recover the affine placement
+    empirically from the correspondence between the *current* form-space cm and
+    the *current* page-space bbox, then invert it for the destination rect.
+
+    Only axis-aligned, non-rotated placements/images are supported (the common
+    Form-wrapper case). Returns None for rotated/sheared images so the caller can
+    refuse the edit rather than corrupt the page.
+    """
+    a, b, c, d, e, f = current_cm_values
+    eps = 1e-6
+    # Reject shear/rotation in the image cm, and rotation of the placement
+    # itself (handled by demanding the current invocation be un-rotated).
+    if abs(b) > eps or abs(c) > eps or rotation % 360 != 0:
+        return None
+    if abs(a) < eps or abs(d) < eps:
+        return None
+
+    old = fitz.Rect(current_page_bbox)
+    if old.width <= eps or old.height <= eps:
+        return None
+
+    # Placement scale/translate with the page y-flip folded in:
+    #   page.x = sx * form.x + tx ,  page.y_top = -sy * form.y_top + ty
+    # derived from the current correspondence (image occupies [e, e+a]×[f, f+d]
+    # in form space and ``old`` in page space, page coords being y-down).
+    sx = old.width / a
+    sy = old.height / d
+    tx = old.x0 - sx * e
+    ty = old.y1 + sy * f
+
+    dest = fitz.Rect(destination_rect)
+    new_a = dest.width / sx
+    new_d = dest.height / sy
+    new_e = (dest.x0 - tx) / sx
+    new_f = (ty - dest.y1) / sy
+    values = (new_a, 0.0, 0.0, new_d, new_e, new_f)
     return [f"{value:g}".encode("ascii") for value in values]

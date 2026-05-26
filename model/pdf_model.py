@@ -25,8 +25,10 @@ import fitz
 from model import pdf_optimizer
 from model.pdf_content_ops import (
     NativeImageInvocation,
+    _cm_values_from_operands,
     discover_native_image_invocations,
     fitz_rect_to_stream_cm,
+    form_rect_to_stream_cm,
     parse_operators,
     remove_operator_range,
     replace_operator_operands,
@@ -1906,11 +1908,23 @@ class PDFModel:
         cm_operator = operators[invocation.cm_operator_index]
         if cm_operator.name != "cm":
             return False
-        new_stream = replace_operator_operands(
-            tokens,
-            cm_operator,
-            fitz_rect_to_stream_cm(fitz.Rect(destination_rect), page, rotation % 360),
-        )
+        if invocation.is_form_nested:
+            current_cm = _cm_values_from_operands(cm_operator.operands)
+            if current_cm is None:
+                return False
+            new_operands = form_rect_to_stream_cm(
+                fitz.Rect(destination_rect),
+                current_cm,
+                fitz.Rect(invocation.bbox),
+                rotation % 360,
+            )
+            if new_operands is None:
+                return False
+        else:
+            new_operands = fitz_rect_to_stream_cm(
+                fitz.Rect(destination_rect), page, rotation % 360
+            )
+        new_stream = replace_operator_operands(tokens, cm_operator, new_operands)
         self.doc.update_stream(invocation.stream_xref, new_stream)
         self.pending_edits.append({"page_idx": invocation.page_num - 1, "rect": fitz.Rect(destination_rect)})
         self.edit_count += 1
@@ -1963,13 +1977,21 @@ class PDFModel:
         new_stream = remove_operator_range(tokens, start_token, end_token)
         self.doc.update_stream(invocation.stream_xref, new_stream)
         name_bytes = f"/{invocation.xobject_name}".encode("latin-1")
+        # A form-nested image is named in the form's own resources and drawn from
+        # the form's single stream; a page-level image may be drawn from several
+        # page content streams and is named in the page resources.
+        if invocation.is_form_nested:
+            scan_streams = [invocation.stream_xref]
+            owner_xref = invocation.resource_owner_xref or invocation.stream_xref
+        else:
+            scan_streams = [int(xref) for xref in page.get_contents() if int(xref) > 0]
+            owner_xref = invocation.resource_owner_xref or page.xref
         still_referenced = any(
-            name_bytes in self.doc.xref_stream(int(xref))
-            for xref in page.get_contents() if int(xref) > 0
+            name_bytes in self.doc.xref_stream(int(xref)) for xref in scan_streams
         )
         if not still_referenced:
             try:
-                self.doc.xref_set_key(page.xref, f"Resources/XObject/{invocation.xobject_name}", "null")
+                self.doc.xref_set_key(owner_xref, f"Resources/XObject/{invocation.xobject_name}", "null")
             except Exception:
                 pass
         self.pending_edits.append({"page_idx": invocation.page_num - 1, "rect": fitz.Rect(invocation.bbox)})
@@ -2374,7 +2396,9 @@ class PDFModel:
             rotation=int(native_hit.rotation) % 360,
             supports_move=True,
             supports_delete=True,
-            supports_rotate=True,
+            # Form-nested images are repositioned in the form's coordinate space,
+            # which only supports axis-aligned move/resize — not rotation.
+            supports_rotate=not native_hit.is_form_nested,
         )
 
     def _redact_and_restore_textbox_region(self, page: fitz.Page, rect: fitz.Rect, object_id: str) -> None:
