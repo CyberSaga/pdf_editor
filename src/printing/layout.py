@@ -2,14 +2,54 @@
 
 from __future__ import annotations
 
+# Portrait dimensions in points (1 pt = 1/72 inch). ISO 216 (A/B series) and
+# ANSI sizes. These are the canonical sizes a printer driver recognises by name.
 PAPER_SIZE_POINTS = {
-    "a4": (595.0, 842.0),
+    "a0": (2383.94, 3370.39),
+    "a1": (1683.78, 2383.94),
+    "a2": (1190.55, 1683.78),
+    "a3": (841.89, 1190.55),
+    "a4": (595.28, 841.89),
+    "a5": (419.53, 595.28),
+    "a6": (297.64, 419.53),
+    "b4": (708.66, 1000.63),
+    "b5": (498.90, 708.66),
     "letter": (612.0, 792.0),
     "legal": (612.0, 1008.0),
+    "tabloid": (792.0, 1224.0),
+    "executive": (521.86, 756.0),
 }
+
+# How close (in points) a source page must be to a standard size to match it.
+# PyMuPDF rounds A4 to 595.0×842.0, so a couple of points of slack is required.
+_PAPER_MATCH_TOLERANCE_PT = 3.0
 
 _VALID_ORIENTATIONS = {"auto", "portrait", "landscape"}
 _VALID_SCALE_MODES = {"fit", "actual", "custom"}
+
+
+def match_standard_paper_size(
+    width_pt: float,
+    height_pt: float,
+    tolerance_pt: float = _PAPER_MATCH_TOLERANCE_PT,
+) -> str | None:
+    """Return the standard paper-size key matching the given dimensions, or None.
+
+    Matching is orientation-independent: dimensions are normalised to
+    (short, long) before comparison, so a landscape A3 page still matches "a3".
+    The closest size within ``tolerance_pt`` wins; genuinely non-standard sizes
+    return None so callers can fall back to a custom size.
+    """
+    short = min(width_pt, height_pt)
+    long = max(width_pt, height_pt)
+    best_key: str | None = None
+    best_err = tolerance_pt
+    for key, (std_short, std_long) in PAPER_SIZE_POINTS.items():
+        err = max(abs(short - std_short), abs(long - std_long))
+        if err <= best_err:
+            best_err = err
+            best_key = key
+    return best_key
 
 
 def normalize_orientation(value: str | None) -> str:

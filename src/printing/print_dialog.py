@@ -144,6 +144,7 @@ class UnifiedPrintDialog(QDialog):
         setting_form = QFormLayout(setting_box)
         self.paper_combo = QComboBox()
         self.paper_combo.addItem("Auto", "auto")
+        self.paper_combo.addItem("A3", "a3")
         self.paper_combo.addItem("A4", "a4")
         self.paper_combo.addItem("Letter", "letter")
         self.paper_combo.addItem("Legal", "legal")
@@ -527,10 +528,12 @@ class UnifiedPrintDialog(QDialog):
 
         resolutions = sorted(set(int(r) for r in info.supportedResolutions() if int(r) >= 72))
 
-        supported = ["a4", "letter", "legal"]
+        supported = ["a3", "a4", "letter", "legal"]
         page_sizes = {size.id() for size in info.supportedPageSizes()}
         available = ["auto"]
         # Filter to known paper names if printer reports them.
+        if any(size_id == QPageSize.A3 for size_id in page_sizes):
+            available.append("a3")
         if any(size_id == QPageSize.A4 for size_id in page_sizes):
             available.append("a4")
         if any(size_id == QPageSize.Letter for size_id in page_sizes):
@@ -544,6 +547,8 @@ class UnifiedPrintDialog(QDialog):
         self.paper_combo.blockSignals(True)
         self.paper_combo.clear()
         self.paper_combo.addItem("Auto", "auto")
+        if "a3" in available:
+            self.paper_combo.addItem("A3", "a3")
         if "a4" in available:
             self.paper_combo.addItem("A4", "a4")
         if "letter" in available:

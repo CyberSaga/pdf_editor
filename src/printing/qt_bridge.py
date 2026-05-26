@@ -11,12 +11,33 @@ from .base_driver import PrintJobOptions, PrintJobResult
 from .errors import PrintJobSubmissionError
 from .layout import (
     compute_target_draw_rect,
+    match_standard_paper_size,
     resolve_orientation,
     resolve_paper_size_points,
 )
 from .pdf_renderer import PDFRenderer, RenderedPage
 
 _APP_INSTANCE = None
+
+# Standard paper-size keys → driver-recognised named QPageSize constants. Named
+# sizes survive the trip through Windows/macOS/CUPS drivers; a custom QSizeF does
+# not (drivers snap it to their default tray size), so we prefer named here.
+_NAMED_Q_PAGE_SIZES = {
+    "a0": QPageSize.A0,
+    "a1": QPageSize.A1,
+    "a2": QPageSize.A2,
+    "a3": QPageSize.A3,
+    "a4": QPageSize.A4,
+    "a5": QPageSize.A5,
+    "a6": QPageSize.A6,
+    "b4": QPageSize.B4,
+    "b5": QPageSize.B5,
+    "letter": QPageSize.Letter,
+    "legal": QPageSize.Legal,
+    "tabloid": QPageSize.Tabloid,
+    "ledger": QPageSize.Ledger,
+    "executive": QPageSize.Executive,
+}
 
 
 def _ensure_qapplication() -> None:
@@ -86,13 +107,18 @@ def _to_q_page_size(
     paper_size: str,
     source_rect: QRectF,
 ) -> QPageSize:
-    paper = (paper_size or "auto").lower()
-    if paper == "a4":
-        return QPageSize(QPageSize.A4)
-    if paper == "letter":
-        return QPageSize(QPageSize.Letter)
-    if paper == "legal":
-        return QPageSize(QPageSize.Legal)
+    paper = (paper_size or "auto").strip().lower()
+
+    # Explicit paper choice always wins over the source page dimensions.
+    if paper != "auto" and paper in _NAMED_Q_PAGE_SIZES:
+        return QPageSize(_NAMED_Q_PAGE_SIZES[paper])
+
+    # Auto: if the source matches a standard size, use the driver-recognised
+    # named constant so the print spooler doesn't snap it to its default tray.
+    if paper == "auto":
+        matched = match_standard_paper_size(source_rect.width(), source_rect.height())
+        if matched is not None and matched in _NAMED_Q_PAGE_SIZES:
+            return QPageSize(_NAMED_Q_PAGE_SIZES[matched])
 
     width_pt, height_pt = resolve_paper_size_points(
         paper_size,
