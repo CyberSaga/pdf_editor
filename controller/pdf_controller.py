@@ -2830,6 +2830,17 @@ class PDFController:
     ) -> tuple[str, fitz.Rect | None]:
         return self.model.get_text_selection_snapshot_from_run(page_num, start_span_id, end_point)
 
+    def get_text_selection_lines(
+        self,
+        page_num: int,
+        start_span_id: str,
+        end_point: fitz.Point,
+        start_point: fitz.Point | None = None,
+    ) -> tuple[str, list[fitz.Rect]]:
+        return self.model.get_text_selection_lines(
+            page_num, start_span_id, end_point, start_point
+        )
+
     def _update_undo_redo_tooltips(self) -> None:
         """更新 View 的 undo/redo 按鈕 tooltip，顯示下一步操作描述。"""
         cm = self.model.command_manager

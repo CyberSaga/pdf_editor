@@ -1757,6 +1757,174 @@ class PDFModel:
             bounds.include_rect(line_rect)
         return "\n".join(line_texts).strip(), bounds
 
+    def get_chars_in_run(self, page_num: int, span_id: str) -> list[tuple[str, fitz.Rect]]:
+        """Per-character (glyph, bbox) pairs for a run, in reading order.
+
+        Glyph boxes come from PyMuPDF ``rawdict``; a char belongs to the run when
+        its centre lies inside the run's bbox. Used for character-level selection.
+        """
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return []
+        page_idx = page_num - 1
+        self.ensure_page_index_built(page_num)
+        run = self.block_manager.find_run_by_id(page_idx, span_id)
+        if run is None:
+            return []
+        run_rect = fitz.Rect(run.bbox)
+        # A small inset avoids picking up neighbouring runs whose boxes abut.
+        tol = 0.5
+        rotation = int(getattr(run, "rotation", 0)) % 360
+        is_vertical = rotation in (90, 270)
+        page = self.doc[page_idx]
+        try:
+            raw = page.get_text("rawdict")
+        except Exception:
+            return []
+        collected: list[tuple[str, fitz.Rect]] = []
+        for block in raw.get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    for ch in span.get("chars", []):
+                        glyph = ch.get("c", "")
+                        cb = fitz.Rect(ch.get("bbox"))
+                        cx = (cb.x0 + cb.x1) / 2.0
+                        cy = (cb.y0 + cb.y1) / 2.0
+                        if (
+                            run_rect.x0 - tol <= cx <= run_rect.x1 + tol
+                            and run_rect.y0 - tol <= cy <= run_rect.y1 + tol
+                        ):
+                            collected.append((glyph, cb))
+        collected.sort(key=lambda item: (item[1].y0, item[1].x0) if is_vertical else (item[1].x0,))
+        return collected
+
+    def get_text_selection_lines(
+        self,
+        page_num: int,
+        start_span_id: str,
+        end_point: fitz.Point,
+        start_point: fitz.Point | None = None,
+    ) -> tuple[str, list[fitz.Rect]]:
+        """Character-level browse selection from a start run/point to an end point.
+
+        Returns the exact selected text and one clipped rect per visual line
+        (partial first line → full middle lines → partial last line). The text
+        matches the highlighted glyphs exactly so copy stays in sync (AC-1).
+        """
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return "", []
+        page_idx = page_num - 1
+        self.ensure_page_index_built(page_num)
+        runs = self.block_manager.get_runs(page_idx)
+        if not runs:
+            return "", []
+        start_run = self.block_manager.find_run_by_id(page_idx, start_span_id)
+        if start_run is None:
+            return "", []
+
+        def _distance_sq_to_rect(point: fitz.Point, rect: fitz.Rect) -> float:
+            dx = max(rect.x0 - point.x, 0.0, point.x - rect.x1)
+            dy = max(rect.y0 - point.y, 0.0, point.y - rect.y1)
+            return dx * dx + dy * dy
+
+        end_run_info = self.get_text_info_at_point(page_num, end_point, allow_fallback=False)
+        resolved_end_run = None
+        if end_run_info is not None and getattr(end_run_info, "target_span_id", None):
+            resolved_end_run = self.block_manager.find_run_by_id(page_idx, end_run_info.target_span_id)
+        if resolved_end_run is None:
+            resolved_end_run = min(runs, key=lambda r: _distance_sq_to_rect(end_point, fitz.Rect(r.bbox)))
+
+        run_ids = [r.span_id for r in runs]
+        try:
+            start_idx = run_ids.index(start_run.span_id)
+            end_idx = run_ids.index(resolved_end_run.span_id)
+        except ValueError:
+            return "", []
+
+        # Order anchor/focus by reading order so clipping is direction-independent.
+        if start_idx <= end_idx:
+            first_run, first_point = start_run, start_point
+            last_run, last_point = resolved_end_run, end_point
+        else:
+            first_run, first_point = resolved_end_run, end_point
+            last_run, last_point = start_run, start_point
+
+        def _same_visual_line(left, right) -> bool:
+            left_rect = fitz.Rect(left.bbox)
+            right_rect = fitz.Rect(right.bbox)
+            lr = int(getattr(left, "rotation", 0)) % 360
+            rr = int(getattr(right, "rotation", 0)) % 360
+            if lr != rr:
+                return False
+            tol = 2.0
+            if lr in (90, 270):
+                return not (left_rect.x1 < right_rect.x0 - tol or right_rect.x1 < left_rect.x0 - tol)
+            return not (left_rect.y1 < right_rect.y0 - tol or right_rect.y1 < left_rect.y0 - tol)
+
+        line_groups: list[list] = []
+        run_to_line_idx: dict[str, int] = {}
+        for run in runs:
+            if line_groups and _same_visual_line(line_groups[-1][-1], run):
+                line_groups[-1].append(run)
+            else:
+                line_groups.append([run])
+            run_to_line_idx[run.span_id] = len(line_groups) - 1
+
+        first_line = run_to_line_idx.get(first_run.span_id)
+        last_line = run_to_line_idx.get(last_run.span_id)
+        if first_line is None or last_line is None:
+            return "", []
+        lo_line, hi_line = min(first_line, last_line), max(first_line, last_line)
+
+        def _slice_for_group(group_idx: int) -> list:
+            group_runs = line_groups[group_idx]
+            ids = [r.span_id for r in group_runs]
+            if first_line == last_line == group_idx:
+                a = ids.index(first_run.span_id)
+                b = ids.index(last_run.span_id)
+                return group_runs[min(a, b):max(a, b) + 1]
+            if group_idx == first_line:
+                return group_runs[ids.index(first_run.span_id):]
+            if group_idx == last_line:
+                return group_runs[:ids.index(last_run.span_id) + 1]
+            return group_runs
+
+        def _axis(point: fitz.Point, vertical: bool) -> float:
+            return point.y if vertical else point.x
+
+        line_texts: list[str] = []
+        line_rects: list[fitz.Rect] = []
+        same_run = first_run.span_id == last_run.span_id
+        for group_idx in range(lo_line, hi_line + 1):
+            glyphs: list[str] = []
+            rects: list[fitz.Rect] = []
+            for run in _slice_for_group(group_idx):
+                vertical = int(getattr(run, "rotation", 0)) % 360 in (90, 270)
+                chars = self.get_chars_in_run(page_num, run.span_id)
+                for glyph, cb in chars:
+                    coord = (cb.y0 + cb.y1) / 2.0 if vertical else (cb.x0 + cb.x1) / 2.0
+                    keep = True
+                    if same_run and run.span_id == first_run.span_id and first_point is not None and last_point is not None:
+                        lo = min(_axis(first_point, vertical), _axis(last_point, vertical))
+                        hi = max(_axis(first_point, vertical), _axis(last_point, vertical))
+                        keep = lo <= coord <= hi
+                    else:
+                        if run.span_id == first_run.span_id and first_point is not None:
+                            keep = keep and coord >= _axis(first_point, vertical)
+                        if run.span_id == last_run.span_id and last_point is not None:
+                            keep = keep and coord <= _axis(last_point, vertical)
+                    if keep:
+                        glyphs.append(glyph)
+                        rects.append(cb)
+            if not rects:
+                continue
+            line_rect = fitz.Rect(rects[0])
+            for r in rects[1:]:
+                line_rect.include_rect(r)
+            line_texts.append("".join(glyphs))
+            line_rects.append(line_rect)
+
+        return "\n".join(line_texts), line_rects
+
     def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect) -> float:
         """編輯換行寬度 == 原文字框寬度（point），不再加任何 Qt margin。
 

@@ -611,9 +611,9 @@ def test_finalize_text_selection_uses_run_anchored_snapshot_and_preserves_start_
     view._scene_rect_to_doc_rect = lambda rect, page_idx: fitz.Rect(rect.left(), rect.top(), rect.right(), rect.bottom())
     view._sync_text_property_panel_state = lambda: None
     view.controller = SimpleNamespace(
-        get_text_selection_snapshot_from_run=lambda page_num, start_span_id, end_point: (
+        get_text_selection_lines=lambda page_num, start_span_id, end_point, start_point=None: (
             "Beta Gamma\nDelta Epsilon Zeta\nEta Theta",
-            fitz.Rect(132, 59, 258, 123),
+            [fitz.Rect(132, 59, 258, 123)],
         )
     )
 

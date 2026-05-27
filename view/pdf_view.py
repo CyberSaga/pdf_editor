@@ -475,6 +475,8 @@ class PDFView(QMainWindow):
         self._selected_text_page_idx = None
         self._selected_text_cached = ""
         self._selected_text_hit_info = None
+        self._text_selection_start_doc_point = None
+        self._text_selection_extra_rect_items = []
         self._selected_object_info = None
         self._object_selection_rect_item = None
         self._object_rotate_handle_item = None
@@ -3175,6 +3177,7 @@ class PDFView(QMainWindow):
         self._text_selection_last_scene_pos = None
         self._text_selection_start_span_id = start_hit.target_span_id
         self._text_selection_start_hit_info = start_hit
+        self._text_selection_start_doc_point = doc_point
         pen = QPen(QColor(30, 120, 255, 220), 1)
         brush = QBrush(QColor(30, 120, 255, 35))
         rect = QRectF(start_pos, start_pos).normalized()
@@ -3182,6 +3185,7 @@ class PDFView(QMainWindow):
         self._text_selection_rect_item.setZValue(20)
         # Live highlight should only appear after snapping to actual text bounds.
         self._text_selection_rect_item.setVisible(False)
+        self._text_selection_extra_rect_items = []
 
     def _update_text_selection(self, scene_pos: QPointF, force: bool = False) -> None:
         if not self._text_selection_active or self._text_selection_page_idx is None:
@@ -3208,39 +3212,35 @@ class PDFView(QMainWindow):
             return
 
         try:
-            selected_text, precise_doc_rect = self.controller.get_text_selection_snapshot_from_run(
+            selected_text, line_rects = self.controller.get_text_selection_lines(
                 self._text_selection_page_idx + 1,
                 self._text_selection_start_span_id,
                 end_doc_point,
+                getattr(self, "_text_selection_start_doc_point", None),
             )
         except Exception:
             selected_text = ""
-            precise_doc_rect = None
-        if not selected_text.strip():
+            line_rects = []
+        if not selected_text.strip() or not line_rects:
             self._text_selection_live_doc_rect = None
             self._text_selection_live_text = ""
             self._text_selection_rect_item.setVisible(False)
-            return
-        if precise_doc_rect is None or precise_doc_rect.width <= 0 or precise_doc_rect.height <= 0:
-            self._text_selection_live_doc_rect = None
-            self._text_selection_live_text = ""
-            self._text_selection_rect_item.setVisible(False)
+            self._clear_text_selection_extra_rects()
             return
 
-        self._text_selection_live_doc_rect = precise_doc_rect
+        bounds = fitz.Rect(line_rects[0])
+        for line_rect in line_rects[1:]:
+            bounds.include_rect(line_rect)
+        if bounds.width <= 0 or bounds.height <= 0:
+            self._text_selection_live_doc_rect = None
+            self._text_selection_live_text = ""
+            self._text_selection_rect_item.setVisible(False)
+            self._clear_text_selection_extra_rects()
+            return
+
+        self._text_selection_live_doc_rect = bounds
         self._text_selection_live_text = selected_text
-        rs = self._render_scale if self._render_scale > 0 else 1.0
-        y0 = self.page_y_positions[self._text_selection_page_idx] if (
-            self.continuous_pages and self._text_selection_page_idx < len(self.page_y_positions)
-        ) else 0.0
-        precise_scene = QRectF(
-            precise_doc_rect.x0 * rs,
-            y0 + precise_doc_rect.y0 * rs,
-            max(1.0, precise_doc_rect.width * rs),
-            max(1.0, precise_doc_rect.height * rs),
-        )
-        self._text_selection_rect_item.setRect(precise_scene)
-        self._text_selection_rect_item.setVisible(True)
+        self._render_text_selection_line_rects(line_rects)
 
     def _finalize_text_selection(self, scene_pos: QPointF) -> None:
         if not self._text_selection_active:
@@ -3272,17 +3272,50 @@ class PDFView(QMainWindow):
         self._selected_text_rect_doc = fitz.Rect(doc_rect)
         self._selected_text_cached = selected_text
         self._selected_text_hit_info = getattr(self, "_text_selection_start_hit_info", None)
+        # Per-line highlight rects were already rendered by _update_text_selection
+        # above; keep them rather than collapsing to a single bounding rectangle.
+        self._sync_text_property_panel_state()
+
+    def _selection_doc_rect_to_scene(self, doc_rect: fitz.Rect) -> QRectF:
         rs = self._render_scale if self._render_scale > 0 else 1.0
-        y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0.0
-        precise_scene = QRectF(
+        page_idx = self._text_selection_page_idx or 0
+        y0 = self.page_y_positions[page_idx] if (
+            self.continuous_pages and page_idx < len(self.page_y_positions)
+        ) else 0.0
+        return QRectF(
             doc_rect.x0 * rs,
             y0 + doc_rect.y0 * rs,
             max(1.0, doc_rect.width * rs),
             max(1.0, doc_rect.height * rs),
         )
-        self._text_selection_rect_item.setRect(precise_scene)
+
+    def _clear_text_selection_extra_rects(self) -> None:
+        for item in getattr(self, "_text_selection_extra_rect_items", None) or []:
+            try:
+                self.scene.removeItem(item)
+            except Exception:
+                pass
+        self._text_selection_extra_rect_items = []
+
+    def _render_text_selection_line_rects(self, line_rects: list) -> None:
+        """Draw one highlight rect per visual line so a multi-line selection shows
+        a partial first line, full middle lines and a partial last line (AC-1d)."""
+        if self._text_selection_rect_item is None or not line_rects:
+            return
+        self._clear_text_selection_extra_rects()
+        self._text_selection_rect_item.setRect(self._selection_doc_rect_to_scene(line_rects[0]))
         self._text_selection_rect_item.setVisible(True)
-        self._sync_text_property_panel_state()
+        pen = QPen(QColor(30, 120, 255, 220), 1)
+        brush = QBrush(QColor(30, 120, 255, 35))
+        extras = []
+        for doc_rect in line_rects[1:]:
+            item = self.scene.addRect(self._selection_doc_rect_to_scene(doc_rect), pen, brush)
+            try:
+                item.setZValue(20)
+            except Exception:
+                pass
+            extras.append(item)
+        self._text_selection_extra_rect_items = extras
 
     def _clear_text_selection(self) -> None:
         self._text_selection_active = False
@@ -3304,6 +3337,8 @@ class PDFView(QMainWindow):
             except Exception:
                 pass
             self._text_selection_rect_item = None
+        self._clear_text_selection_extra_rects()
+        self._text_selection_start_doc_point = None
         self._sync_text_property_panel_state()
 
     def _resolve_text_info_for_doc_rect(self, page_idx: int, doc_rect: fitz.Rect):
