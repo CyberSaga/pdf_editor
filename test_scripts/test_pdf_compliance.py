@@ -66,3 +66,22 @@ def test_unopenable_file_reports_issue() -> None:
         not_a_pdf.write_bytes(b"this is not a pdf at all")
         issues = check_pdf_conformance(str(not_a_pdf))
         assert issues  # must not silently pass
+
+
+def test_encrypted_pdf_is_reported_not_silently_passed() -> None:
+    """An un-authenticated encrypted PDF cannot be validated and must be flagged
+    rather than returning a misleading clean result."""
+    with tempfile.TemporaryDirectory() as tmp:
+        enc = Path(tmp) / "enc.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((50, 50), "secret")
+        doc.save(
+            str(enc),
+            encryption=fitz.PDF_ENCRYPT_AES_256,
+            owner_pw="owner",
+            user_pw="user",
+        )
+        doc.close()
+        issues = check_pdf_conformance(str(enc))
+        assert issues
+        assert any("encrypt" in issue.lower() for issue in issues)

@@ -105,6 +105,8 @@ def test_macos_menu_uses_native_shortcuts() -> None:
     assert by_text["Close Tab"].shortcut() == QKeySequence(QKeySequence.StandardKey.Close)
     assert by_text["Copy"].shortcut() == QKeySequence(QKeySequence.StandardKey.Copy)
     assert by_text["Paste"].shortcut() == QKeySequence(QKeySequence.StandardKey.Paste)
+    # Close Tab must be wired to a real handler, not a missing attribute.
+    assert callable(getattr(pdf_view.PDFView, "_close_current_document_tab", None))
 
 
 def test_build_macos_menu_bar_assembles_menus_on_darwin(monkeypatch) -> None:
@@ -120,6 +122,7 @@ def test_build_macos_menu_bar_assembles_menus_on_darwin(monkeypatch) -> None:
             setattr(host, name, QAction(name, host))
         host._copy_selected_text_to_clipboard = lambda: None
         host._insert_image_object_from_clipboard_at_current_page = lambda: None
+        host._close_current_document_tab = lambda: None
         host._macos_menu_spec = pdf_view.PDFView._macos_menu_spec.__get__(host)
 
         built = pdf_view.PDFView._build_macos_menu_bar(host)

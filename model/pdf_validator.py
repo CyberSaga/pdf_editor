@@ -26,6 +26,12 @@ def check_pdf_conformance(path: str) -> list[str]:
         return [f"cannot open PDF: {exc}"]
 
     try:
+        # 0. Encryption: an un-authenticated encrypted document cannot be
+        #    structurally validated (pages/objects are inaccessible). Report it
+        #    rather than returning a misleading clean result.
+        if bool(getattr(doc, "needs_pass", False)):
+            return ["PDF is encrypted/password-protected; cannot validate without a password"]
+
         # 1. PDF version header — PyMuPDF exposes it via metadata "format".
         metadata = doc.metadata or {}
         fmt = str(metadata.get("format", "")).upper()
@@ -50,6 +56,10 @@ def check_pdf_conformance(path: str) -> list[str]:
                 try:
                     page = doc[index]
                     _ = page.rect
+                    # Touch the content so references reachable from the page
+                    # (content streams, fonts, XObjects) are dereferenced; a
+                    # dangling indirect reference raises here.
+                    page.get_text("text")
                 except Exception as exc:  # noqa: BLE001
                     issues.append(f"page {index + 1} is not parseable: {exc}")
 

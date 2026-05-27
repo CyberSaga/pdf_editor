@@ -977,6 +977,15 @@ class PDFView(QMainWindow):
         if index >= 0:
             self.sig_tab_close_requested.emit(index)
 
+    def _close_current_document_tab(self) -> None:
+        """Close the currently-active document tab (macOS Cmd+W / menu Close)."""
+        bar = getattr(self, "document_tab_bar", None)
+        if bar is None:
+            return
+        index = bar.currentIndex()
+        if index >= 0:
+            self._on_document_tab_close_requested(index)
+
     def _build_toolbar_tabs(self):
         """Top toolbar: 高度依字型與內距計算 — 標籤列 ~26px + 工具列 ~26px + 邊距 8px ≈ 60px，避免過窄截斷或過高留白。"""
         self._toolbar_container = QFrame()
@@ -1197,8 +1206,7 @@ class PDFView(QMainWindow):
 
         close_tab = QAction("Close Tab")
         close_tab.setShortcut(QKeySequence(QKeySequence.StandardKey.Close))
-        if hasattr(self, "_close_current_doc_tab"):
-            close_tab.triggered.connect(self._close_current_doc_tab)
+        close_tab.triggered.connect(self._close_current_document_tab)
 
         copy_action = QAction("Copy")
         copy_action.setShortcut(QKeySequence(QKeySequence.StandardKey.Copy))

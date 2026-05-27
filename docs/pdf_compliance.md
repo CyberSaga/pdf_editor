@@ -24,10 +24,14 @@ A document is considered structurally conformant when all of the following hold
 1. The file opens with a recognisable **PDF version header**.
 2. The **cross-reference table** is intact — PyMuPDF did not have to rebuild it
    on open (`Document.is_repaired` is false).
-3. The **page tree** is parseable and contains at least one page, and every page
-   object resolves.
-4. Every in-use **object reference** resolves to an object definition (no
-   dangling references).
+3. The **page tree** is parseable and contains at least one page; every page
+   object resolves and its content is dereferenceable (so a reference reachable
+   from a page — content stream, font, XObject — that dangles is caught).
+4. Every in-use **object reference** resolves to an object definition (the xref
+   scan flags entries that fail to parse).
+
+Encrypted/password-protected documents that are not authenticated cannot be
+structurally validated and are reported as such rather than passing silently.
 
 `check_pdf_conformance(path)` returns a list of human-readable issues; an empty
 list means no structural problems were detected. `is_pdf_conformant(path)` is a
