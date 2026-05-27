@@ -439,3 +439,132 @@ Guardrails (do not change casually):
 - The `paintEvent` frozen-vs-preview two-branch contract and the
   `_text_matches_initial` caching are load-bearing — the gate
   `scripts/verify_no_jump.py` (27 deterministic cases, run twice) enforces it.
+
+## 11. Character-Level Text Selection (Browse Mode)
+
+**Module:** `model/pdf_model.py:get_chars_in_run()`, `get_text_selection_lines()`
+
+Text selection in browse mode now operates at character granularity instead of
+run/line granularity. The model provides per-character bounding boxes extracted
+from `page.get_text("rawdict")` and clips boundary runs (start and end) to the
+actual character range between cursor start and cursor end points.
+
+- `get_chars_in_run(page_num, span_id) -> list[tuple[str, fitz.Rect]]` returns
+  per-character data for a single run, cached per page session.
+- `get_text_selection_lines(page_num, start_span_id, end_point, start_point)`
+  returns `(text: str, rects: list[Rect])` with one highlight rect per visual
+  line; boundary runs are clipped to character boundaries, intermediate runs are
+  fully included.
+- Character-bleed filtering uses asymmetric tolerance: loose along the reading
+  axis (x for horizontal, y for vertical) to accommodate natural inter-character
+  spacing; tight cross-axis to prevent glyphs from overlapping lines from
+  entering the wrong run's list.
+
+View-side: `_update_text_selection()` receives `(text, [rects])` from the model
+and renders one highlight item per rect, so multi-line selections show proper
+line-by-line coverage.
+
+## 12. Print — Auto Orientation & Paper Size
+
+**Modules:** `src/printing/layout.py`, `src/printing/qt_bridge.py`
+
+Print now auto-detects source PDF page dimensions and applies matching:
+- **Orientation:** If `width > height` (landscape), emit landscape orientation;
+  if `height > width`, emit portrait. Mixed-orientation PDFs handle each page
+  independently.
+- **Paper size:** Match source dimensions (±3pt tolerance) against an expanded
+  `PAPER_SIZE_POINTS` table (A0–A6, B4, B5, Letter, Legal, Tabloid). When a
+  match is found, return the named `QPageSize` constant (driver-recognized);
+  non-standard sizes fall back to a custom `QPageSize` with source dimensions.
+
+`match_standard_paper_size(width_pt, height_pt, tolerance_pt=3.0)` performs
+the matching with a tie-break fix: when two sizes are equally close, the first
+match is returned (no truncation of equally-close candidates).
+
+Windows printer drivers recognize named `QPageSize` objects but silently ignore
+custom ones, snapping to their default (usually A4 portrait). Named sizes
+guarantee driver-side behavior.
+
+## 13. Object Manipulation — Free Drag Rotation & Aspect Ratio Resize
+
+**Modules:** `view/pdf_view.py`, `model/pdf_content_ops.py`, `model/pdf_model.py`
+
+### 13.1 Free Drag Rotation
+
+Object rotate handles now support continuous real-time rotation on drag, not
+just 90° increments:
+- On press over rotate handle: capture starting angle (atan2 from object centre
+  to cursor).
+- On move: compute live angle, emit `RotateObjectRequest(absolute_rotation=...)`
+  each frame (throttled to 8ms).
+- On release: finalize; a single undo entry covers the entire drag sequence.
+
+Selection box outline and resize handles rotate with the object via
+`setTransformOriginPoint(center)` and `setRotation(angle)` applied to the
+selection rect item and each handle item.
+
+Moving a previously-rotated object preserves rotation by threading
+`current_rotation` through `MoveObjectRequest` into the model's cm-matrix
+rewrite path.
+
+### 13.2 Aspect Ratio Locked Resize
+
+Shift+drag on any resize handle locks the aspect ratio:
+- Newly inserted images default to free-form (no lock).
+- All native PDF images also default to free-form.
+- When locked, the secondary dimension is clamped to preserve the start rect's
+  aspect ratio.
+
+### 13.3 Native Image Selectability
+
+Native PDF images (Form XObjects and image XObjects) are discovered via a
+multi-pass scan in `discover_native_image_invocations()`:
+1. `page.get_images(full=True)` for directly embedded images.
+2. `page.get_xobjects()` enumeration for image-type XObjects (including nested
+   Form images).
+3. Secondary pass for Form XObjects not caught by the above (empirically
+   recovers placement affine from form-space to page-space via `form_rect_to_stream_cm()`).
+
+Object rotation, move, and resize rewrite the PDF content stream operators
+(`cm`, `Do`) in place, preserving overlapping text and graphics.
+
+## 14. macOS Native Menu Bar
+
+**Module:** `view/pdf_view.py:_build_macos_menu_bar()`, `_macos_menu_spec()`
+
+On macOS, a native menu bar is built from a spec that reuses ribbon QActions:
+- **App menu:** About, Preferences, Quit (role-tagged for OS relocation).
+- **File menu:** Open, Save, Save As, Print, Close Tab.
+- **Edit menu:** Undo, Redo, Copy, Paste (Copy/Paste use clipboard callbacks).
+- **View menu:** Fullscreen.
+- **Window, Help:** Standard macOS menu skeletons.
+
+All keyboard shortcuts use `QKeySequence.StandardKey` constants (Cmd-mapped on
+macOS: Cmd+Q, Cmd+W, Cmd+S, etc.).
+
+On Windows/Linux, `_build_macos_menu_bar()` returns `False` as a no-op, leaving
+existing platform-specific menu handling untouched.
+
+## 15. PDF Standards Compliance Validation
+
+**Module:** `model/pdf_validator.py`
+
+`check_pdf_conformance(path) -> list[str]` validates ISO 32000-1 (PDF 1.7)
+structural well-formedness:
+1. Recognizable PDF version header.
+2. Intact cross-reference table (PyMuPDF `is_repaired == False`).
+3. Parseable, non-empty page tree; every page object and its content
+   (streams, fonts, XObjects) resolve.
+4. All in-use xref entries resolve to object definitions.
+
+Returns an empty list if no issues detected; otherwise returns human-readable
+warnings.
+
+Encrypted/un-authenticated PDFs are reported as unable to validate rather than
+silently passing.
+
+The XREF-repair feature (`PDFModel.repair_document_xref()`, wired to file-tab
+UI) rebuilds a damaged xref on save (`garbage=4, clean=True`), then
+`check_pdf_conformance()` confirms restoration (the issue clears).
+
+See `docs/pdf_compliance.md` for scope, limitations, and test coverage.
