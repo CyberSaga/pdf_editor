@@ -2,6 +2,7 @@
 
 import logging
 import math
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -335,6 +336,8 @@ class PDFView(QMainWindow):
 
         # --- Top Toolbar (ToolbarTabs): 48px height ---
         self._build_toolbar_tabs()
+        # macOS uses the global menu bar in addition to the ribbon toolbar.
+        self._build_macos_menu_bar()
         main_layout.addWidget(self._toolbar_container)
         self._build_document_tabs_bar()
         main_layout.addWidget(self.document_tab_bar)
@@ -1169,6 +1172,88 @@ class PDFView(QMainWindow):
         self._action_undo.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self._action_redo.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self._action_fullscreen.setShortcut(QKeySequence(Qt.Key_F5))
+
+    def _macos_menu_spec(self) -> list[tuple[str, list]]:
+        """Ordered (menu-title, items) spec for the macOS menu bar.
+
+        Reuses the existing ribbon QActions and adds the app-menu entries
+        (About/Preferences/Quit) plus Copy/Paste/Close with macOS standard
+        shortcuts. ``None`` items render as separators. Qt relocates the
+        role-tagged actions into the application menu on macOS, and maps the
+        ribbon's Ctrl+ shortcuts to Cmd+ automatically.
+        """
+        about = QAction("About PDF Editor")
+        about.setMenuRole(QAction.MenuRole.AboutRole)
+        about.triggered.connect(
+            lambda: QMessageBox.about(self, "PDF Editor", "PDF Editor")
+        )
+        preferences = QAction("Preferences…")
+        preferences.setMenuRole(QAction.MenuRole.PreferencesRole)
+        preferences.setShortcut(QKeySequence(QKeySequence.StandardKey.Preferences))
+        quit_action = QAction("Quit PDF Editor")
+        quit_action.setMenuRole(QAction.MenuRole.QuitRole)
+        quit_action.setShortcut(QKeySequence(QKeySequence.StandardKey.Quit))
+        quit_action.triggered.connect(self.close)
+
+        close_tab = QAction("Close Tab")
+        close_tab.setShortcut(QKeySequence(QKeySequence.StandardKey.Close))
+        if hasattr(self, "_close_current_doc_tab"):
+            close_tab.triggered.connect(self._close_current_doc_tab)
+
+        copy_action = QAction("Copy")
+        copy_action.setShortcut(QKeySequence(QKeySequence.StandardKey.Copy))
+        copy_action.triggered.connect(self._copy_selected_text_to_clipboard)
+        paste_action = QAction("Paste")
+        paste_action.setShortcut(QKeySequence(QKeySequence.StandardKey.Paste))
+        paste_action.triggered.connect(
+            self._insert_image_object_from_clipboard_at_current_page
+        )
+
+        minimize = QAction("Minimize")
+        minimize.setShortcut(QKeySequence("Ctrl+M"))
+        minimize.triggered.connect(self.showMinimized)
+
+        help_action = QAction("PDF Editor Help")
+        help_action.triggered.connect(
+            lambda: QMessageBox.about(self, "PDF Editor Help", "PDF Editor")
+        )
+
+        # Keep references so the actions aren't garbage-collected.
+        self._macos_menu_actions = [
+            about, preferences, quit_action, close_tab,
+            copy_action, paste_action, minimize, help_action,
+        ]
+
+        return [
+            ("App", [about, preferences, quit_action]),
+            ("File", [
+                self._action_open, self._action_save, self._action_save_as,
+                self._action_print, None, close_tab,
+            ]),
+            ("Edit", [
+                self._action_undo, self._action_redo, None,
+                copy_action, paste_action,
+            ]),
+            ("View", [self._action_fullscreen]),
+            ("Window", [minimize]),
+            ("Help", [help_action]),
+        ]
+
+    def _build_macos_menu_bar(self) -> bool:
+        """Assemble the native menu bar on macOS only. No-op elsewhere so
+        Windows/Linux are unaffected. Returns True when a menu bar was built."""
+        if sys.platform != "darwin":
+            return False
+        menubar = self.menuBar()
+        menubar.clear()
+        for title, items in self._macos_menu_spec():
+            menu = menubar.addMenu(title)
+            for item in items:
+                if item is None:
+                    menu.addSeparator()
+                else:
+                    menu.addAction(item)
+        return True
 
     def _make_mode_action(self, text: str, mode: str) -> QAction:
         action = QAction(text, self)
