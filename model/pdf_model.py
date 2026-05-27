@@ -1771,7 +1771,9 @@ class PDFModel:
         if run is None:
             return []
         run_rect = fitz.Rect(run.bbox)
-        # A small inset avoids picking up neighbouring runs whose boxes abut.
+        # Tolerance is applied only along the run's *reading* axis (so the first
+        # and last glyphs aren't clipped); the cross axis stays tight to avoid
+        # picking up glyphs from an overlapping neighbouring line.
         tol = 0.5
         rotation = int(getattr(run, "rotation", 0)) % 360
         is_vertical = rotation in (90, 270)
@@ -1789,12 +1791,24 @@ class PDFModel:
                         cb = fitz.Rect(ch.get("bbox"))
                         cx = (cb.x0 + cb.x1) / 2.0
                         cy = (cb.y0 + cb.y1) / 2.0
-                        if (
-                            run_rect.x0 - tol <= cx <= run_rect.x1 + tol
-                            and run_rect.y0 - tol <= cy <= run_rect.y1 + tol
-                        ):
+                        if is_vertical:
+                            inside = (
+                                run_rect.x0 <= cx <= run_rect.x1
+                                and run_rect.y0 - tol <= cy <= run_rect.y1 + tol
+                            )
+                        else:
+                            inside = (
+                                run_rect.x0 - tol <= cx <= run_rect.x1 + tol
+                                and run_rect.y0 <= cy <= run_rect.y1
+                            )
+                        if inside:
                             collected.append((glyph, cb))
-        collected.sort(key=lambda item: (item[1].y0, item[1].x0) if is_vertical else (item[1].x0,))
+        if is_vertical:
+            # 90° reads top→bottom (ascending y); 270° reads bottom→top.
+            collected.sort(key=lambda item: item[1].y0, reverse=(rotation == 270))
+        else:
+            # Order by line then x so a span wrapped onto two rows stays in order.
+            collected.sort(key=lambda item: (round(item[1].y0), item[1].x0))
         return collected
 
     def get_text_selection_lines(

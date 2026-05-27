@@ -98,6 +98,41 @@ def test_same_run_drag_is_order_independent() -> None:
             model.close()
 
 
+def test_cross_run_same_line_clips_both_boundaries() -> None:
+    """AC-1c: a drag across two runs on the same visual line clips the start run
+    and the end run, with one highlight rect for the line."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "tworun.pdf"
+        doc = fitz.open()
+        page = doc.new_page(width=500, height=200)
+        page.insert_text((40, 60), "ALPHA", fontsize=20.0, fontname="helv")
+        page.insert_text((200, 60), "BETA", fontsize=20.0, fontname="cour")
+        doc.save(path)
+        doc.close()
+
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            model.ensure_page_index_built(1)
+            runs = model.block_manager.get_runs(0)
+            assert len(runs) == 2
+            run_a, run_b = runs[0], runs[1]
+            chars_a = model.get_chars_in_run(1, run_a.span_id)
+            chars_b = model.get_chars_in_run(1, run_b.span_id)
+            assert "".join(c for c, _ in chars_a) == "ALPHA"
+            assert "".join(c for c, _ in chars_b) == "BETA"
+
+            # Start inside ALPHA at char 2 (P), end inside BETA after char 1 (E).
+            start_pt = fitz.Point(chars_a[2][1].x0 + 0.5, (chars_a[2][1].y0 + chars_a[2][1].y1) / 2)
+            end_pt = fitz.Point(chars_b[1][1].x1 - 0.5, (chars_b[1][1].y0 + chars_b[1][1].y1) / 2)
+
+            text, rects = model.get_text_selection_lines(1, run_a.span_id, end_pt, start_pt)
+            assert text == "PHABE", f"expected 'PHABE', got {text!r}"
+            assert len(rects) == 1
+        finally:
+            model.close()
+
+
 def test_multi_line_drag_partial_first_full_middle_partial_last() -> None:
     """AC-1d: across visual lines — partial first, full middle, partial last."""
     with tempfile.TemporaryDirectory() as tmp:
