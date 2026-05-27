@@ -18,7 +18,7 @@ class ObjectHitInfo:
     object_id: str
     page_num: int
     bbox: fitz.Rect
-    rotation: int = 0
+    rotation: float = 0.0
     supports_move: bool = True
     supports_delete: bool = True
     supports_rotate: bool = False

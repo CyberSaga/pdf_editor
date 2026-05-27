@@ -118,3 +118,49 @@ def test_moving_a_freely_rotated_image_preserves_its_angle() -> None:
             assert abs((float(moved.rotation) % 360) - angle_before_move) <= 1.0
         finally:
             model.close()
+
+
+def test_resizing_a_rotated_image_does_not_inflate_geometry() -> None:
+    """A resize of a rotated image must produce ~the requested AABB, not an
+    AABB inflated by |cos|+|sin| (regression for the AABB→size inversion)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "rotresize.pdf"
+        _make_image_pdf(path)
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            hit = model.get_object_info_at_point(1, fitz.Point(170, 160))
+            assert hit is not None
+            assert model.rotate_object(
+                RotateObjectRequest(
+                    object_id=hit.object_id,
+                    object_kind=hit.object_kind,
+                    page_num=1,
+                    rotation_delta=0,
+                    absolute_rotation=30.0,
+                )
+            )
+
+            from model.object_requests import ResizeObjectRequest
+
+            rotated = model.get_object_info_at_point(1, fitz.Point(170, 160))
+            assert rotated is not None
+            dest = fitz.Rect(100, 100, 280, 240)  # requested AABB, centre (190,170)
+            assert model.resize_object(
+                ResizeObjectRequest(
+                    object_id=rotated.object_id,
+                    object_kind=rotated.object_kind,
+                    page_num=1,
+                    destination_rect=dest,
+                )
+            )
+
+            after = model.get_object_info_at_point(1, _center(dest))
+            assert after is not None
+            new_bbox = fitz.Rect(after.bbox)
+            # The rendered AABB should match the requested AABB within a couple pt,
+            # not be inflated ~1.37× (|cos30|+|sin30|).
+            assert abs(new_bbox.width - dest.width) <= 3.0
+            assert abs(new_bbox.height - dest.height) <= 3.0
+        finally:
+            model.close()

@@ -1935,9 +1935,22 @@ class PDFModel:
             dest = fitz.Rect(destination_rect)
             cur_bbox = fitz.Rect(invocation.bbox)
             if abs(dest.width - cur_bbox.width) < 0.5 and abs(dest.height - cur_bbox.height) < 0.5:
+                # Pure move: preserve the un-rotated size (and thus the angle).
                 unrotated_w, unrotated_h = cur_w, cur_h
             else:
-                unrotated_w, unrotated_h = dest.width, dest.height
+                # Resize: the destination is the new axis-aligned bounding box of
+                # the rotated image. Recover the un-rotated size so the rendered
+                # AABB matches the request, instead of treating the AABB as the
+                # image size (which would inflate it by |cos|+|sin|).
+                cos_t = abs(math.cos(math.radians(rot)))
+                sin_t = abs(math.sin(math.radians(rot)))
+                det = cos_t * cos_t - sin_t * sin_t
+                if abs(det) > 1e-3:
+                    unrotated_w = max(1.0, (dest.width * cos_t - dest.height * sin_t) / det)
+                    unrotated_h = max(1.0, (dest.height * cos_t - dest.width * sin_t) / det)
+                else:
+                    # Near 45°/135° the inversion is singular; keep current size.
+                    unrotated_w, unrotated_h = cur_w, cur_h
             page_height = float(fitz.Rect(page.mediabox).height)
             new_operands = rotated_image_stream_cm(
                 (dest.x0 + dest.x1) / 2.0,
@@ -2402,7 +2415,7 @@ class PDFModel:
                 object_id=str(payload["object_id"]),
                 page_num=page_num,
                 bbox=fitz.Rect(annot.rect),
-                rotation=int(payload.get("rotation", 0)) % 360,
+                rotation=float(payload.get("rotation", 0)) % 360,
                 supports_move=True,
                 supports_delete=True,
                 supports_rotate=kind in ("textbox", "image"),
@@ -2420,7 +2433,7 @@ class PDFModel:
             object_id=f"native_image:{page_num}:{native_hit.occurrence_index}",
             page_num=page_num,
             bbox=fitz.Rect(native_hit.bbox),
-            rotation=int(native_hit.rotation) % 360,
+            rotation=float(native_hit.rotation) % 360,
             supports_move=True,
             supports_delete=True,
             # Form-nested images are repositioned in the form's coordinate space,

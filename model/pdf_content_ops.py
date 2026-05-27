@@ -40,7 +40,7 @@ class NativeImageInvocation:
     xobject_name: str
     xref: int
     bbox: fitz.Rect
-    rotation: int
+    rotation: float
     cm_operator_index: int | None
     do_operator_index: int
     q_operator_index: int | None
