@@ -1015,7 +1015,17 @@ def test_19b_font_size_menu_keeps_editor_and_outside_focus_finalizes_editor(mvc,
     view.text_size.setCurrentText("18")
     _pump_events(120)
     assert view.text_editor is not None
-    assert view.text_editor.widget().font().pointSize() == 18
+    # The combo carries the PDF point size (18); the inline editor's widget font
+    # is display-scaled (points → screen at the current render scale), so assert
+    # the propagated PDF size plus the correctly-scaled widget font rather than a
+    # raw pointSize == 18 (which never holds once display scaling is applied).
+    from view.text_editing import _display_font_pt
+
+    rs = view._render_scale if view._render_scale > 0 else 1.0
+    assert float(view._editing_current_pdf_size) == 18.0
+    assert view.text_editor.widget().font().pointSizeF() == pytest.approx(
+        _display_font_pt(18, rs), abs=0.6
+    )
 
     editor_scene_rect = view.text_editor.mapRectToScene(view.text_editor.boundingRect())
     outside_pos = view.graphics_view.mapFromScene(editor_scene_rect.bottomRight() + QPoint(40, 40))
