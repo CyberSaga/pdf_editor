@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import fitz
@@ -152,24 +153,81 @@ def parse_operators(stream: bytes) -> tuple[list[ContentToken], list[ParsedOpera
     return tokens, operators
 
 
-def _rotation_from_cm(a: float, b: float, c: float, d: float) -> int:
-    candidates = {
-        0: (1.0, 0.0, 0.0, 1.0),
-        90: (0.0, 1.0, -1.0, 0.0),
-        180: (-1.0, 0.0, 0.0, -1.0),
-        270: (0.0, -1.0, 1.0, 0.0),
-    }
-    scale_x = max(abs(a), abs(b), 1e-9)
-    scale_y = max(abs(c), abs(d), 1e-9)
-    norm = (a / scale_x, b / scale_x, c / scale_y, d / scale_y)
-    best_rotation = 0
-    best_score = float("inf")
-    for rotation, expected in candidates.items():
-        score = sum(abs(norm[idx] - expected[idx]) for idx in range(4))
-        if score < best_score:
-            best_score = score
-            best_rotation = rotation
-    return best_rotation
+def _rotation_from_cm(a: float, b: float, c: float, d: float) -> float:
+    """Rotation angle (degrees, 0–360) of an image cm, from its first basis axis.
+
+    Returns the true angle so free (non-90°) rotations survive re-discovery, but
+    snaps to the nearest cardinal within 0.5° so the legacy 90° "fit to rect"
+    path and float noise from transforms keep producing exact 0/90/180/270.
+    """
+    angle = math.degrees(math.atan2(b, a)) % 360.0
+    for cardinal in (0.0, 90.0, 180.0, 270.0, 360.0):
+        if abs(angle - cardinal) <= 0.5:
+            return cardinal % 360.0
+    return round(angle, 2)
+
+
+def format_cm_value(value: float) -> bytes:
+    """Format a cm component for a PDF content stream.
+
+    ``f"{v:g}"`` emits scientific notation (e.g. ``1.2e-14``) for the near-zero
+    values that trig produces, which PDF tokenizers reject. Clamp tiny values to
+    zero and use fixed-point.
+    """
+    if abs(value) < 1e-9:
+        value = 0.0
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return (text if text not in ("", "-0") else "0").encode("ascii")
+
+
+def decompose_image_cm(
+    cm_values: tuple[float, float, float, float, float, float],
+) -> tuple[float, float, float, float, float]:
+    """Recover (width, height, angle_deg, centre_x, centre_y_user) from an image cm.
+
+    The cm maps the image unit square into user space; the basis-vector lengths
+    are the on-page width/height, ``atan2`` of the first basis gives the angle,
+    and the transform of (0.5, 0.5) is the centre (in PDF user space, y-up).
+    """
+    a, b, c, d, e, f = cm_values
+    width = math.hypot(a, b)
+    height = math.hypot(c, d)
+    angle = math.degrees(math.atan2(b, a)) % 360.0
+    centre_x = 0.5 * a + 0.5 * c + e
+    centre_y_user = 0.5 * b + 0.5 * d + f
+    return width, height, angle, centre_x, centre_y_user
+
+
+def rotated_image_stream_cm(
+    centre_x: float,
+    centre_y_fitz: float,
+    width: float,
+    height: float,
+    angle_deg: float,
+    page_height: float,
+) -> list[bytes]:
+    """Build an image cm that places a ``width``×``height`` image rotated about
+    its centre by ``angle_deg`` (screen clockwise) at the given centre.
+
+    ``centre_y_fitz`` is top-left/y-down (PyMuPDF) space; it is flipped to PDF
+    user space here. The angle is negated so a positive (screen-clockwise) angle
+    reads back as the same value via :func:`_rotation_from_cm`.
+    """
+    centre_y_user = page_height - centre_y_fitz
+    theta = math.radians(angle_deg)
+    # Sign chosen so the *raw* cm reads back as ``angle_deg`` via _rotation_from_cm
+    # (the page-level discovery convention). The rendered image is y-flipped, so
+    # the view maps screen-clockwise drags to the matching stored angle.
+    matrix = fitz.Matrix(width, 0.0, 0.0, height, 0.0, 0.0)
+    matrix = matrix * fitz.Matrix(1.0, 0.0, 0.0, 1.0, -width / 2.0, -height / 2.0)
+    matrix = matrix * fitz.Matrix(
+        math.cos(theta), math.sin(theta), -math.sin(theta), math.cos(theta), 0.0, 0.0
+    )
+    matrix = matrix * fitz.Matrix(1.0, 0.0, 0.0, 1.0, centre_x, centre_y_user)
+    return [
+        format_cm_value(value)
+        for value in (matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f)
+    ]
 
 
 def _cm_values_from_operands(operands: tuple[ContentToken, ...]) -> tuple[float, float, float, float, float, float] | None:

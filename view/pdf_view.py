@@ -110,6 +110,91 @@ def _ctrl_tab_direction(key: int, modifiers: Qt.KeyboardModifiers) -> int:
     return -1 if (modifiers & Qt.ShiftModifier) else 1
 
 
+def compute_object_resize_rect(
+    start_rect: fitz.Rect,
+    anchor: int,
+    dx: float,
+    dy: float,
+    lock_ar: bool,
+    min_size: float = 8.0,
+) -> fitz.Rect:
+    """Compute a resized rect for a corner-handle drag (doc-space deltas).
+
+    ``anchor`` is the dragged corner: 0=TL, 1=TR, 2=BL, 3=BR — its two owned
+    edges move while the opposite corner stays fixed. Plain drag (``lock_ar``
+    False) resizes freely; ``lock_ar`` True preserves the start rect's aspect
+    ratio about the fixed opposite corner (AC-5).
+    """
+    x0, y0, x1, y1 = start_rect.x0, start_rect.y0, start_rect.x1, start_rect.y1
+    if anchor == 0:    # TL: move x0, y0
+        nx0 = min(x0 + dx, x1 - min_size)
+        ny0 = min(y0 + dy, y1 - min_size)
+        free = fitz.Rect(nx0, ny0, x1, y1)
+    elif anchor == 1:  # TR: move x1, y0
+        nx1 = max(x1 + dx, x0 + min_size)
+        ny0 = min(y0 + dy, y1 - min_size)
+        free = fitz.Rect(x0, ny0, nx1, y1)
+    elif anchor == 2:  # BL: move x0, y1
+        nx0 = min(x0 + dx, x1 - min_size)
+        ny1 = max(y1 + dy, y0 + min_size)
+        free = fitz.Rect(nx0, y0, x1, ny1)
+    else:              # BR: move x1, y1
+        nx1 = max(x1 + dx, x0 + min_size)
+        ny1 = max(y1 + dy, y0 + min_size)
+        free = fitz.Rect(x0, y0, nx1, ny1)
+
+    if not lock_ar:
+        return free
+
+    start_w = max(min_size, start_rect.width)
+    start_h = max(min_size, start_rect.height)
+    ratio = start_w / start_h
+    fw = max(min_size, free.width)
+    fh = max(min_size, free.height)
+    # Drive both dimensions from whichever axis the user pushed further, so the
+    # locked box tracks the cursor on its dominant axis.
+    if fw / ratio >= fh:
+        new_w = fw
+        new_h = fw / ratio
+    else:
+        new_h = fh
+        new_w = fh * ratio
+
+    # Reposition the moved corner relative to the fixed opposite corner.
+    if anchor == 0:    # fixed BR (x1, y1)
+        return fitz.Rect(x1 - new_w, y1 - new_h, x1, y1)
+    if anchor == 1:    # fixed BL (x0, y1)
+        return fitz.Rect(x0, y1 - new_h, x0 + new_w, y1)
+    if anchor == 2:    # fixed TR (x1, y0)
+        return fitz.Rect(x1 - new_w, y0, x1, y0 + new_h)
+    return fitz.Rect(x0, y0, x0 + new_w, y0 + new_h)  # fixed TL (x0, y0)
+
+
+def screen_angle_degrees(center_x: float, center_y: float, x: float, y: float) -> float:
+    """Angle (degrees) of (x, y) about a centre, in scene coords (y-down).
+
+    Increasing angle is clockwise on screen, so a clockwise drag of the rotate
+    handle yields an increasing value (AC-4b direction match).
+    """
+    return math.degrees(math.atan2(y - center_y, x - center_x))
+
+
+def absolute_rotation_from_drag(
+    start_rotation: float,
+    start_angle: float,
+    current_angle: float,
+) -> float:
+    """Absolute stored rotation for a rotate-handle drag.
+
+    ``start_rotation`` is the object's stored angle at grab time;
+    ``start_angle``/``current_angle`` are :func:`screen_angle_degrees` samples.
+    The screen delta is clockwise-positive; the stored (raw-cm) convention is
+    the screen direction's inverse, so it is subtracted.
+    """
+    delta = current_angle - start_angle
+    return (start_rotation - delta) % 360.0
+
+
 class _NoCtrlTabTabBar(QTabBar):
     """Disable built-in Ctrl+Tab tab cycling on non-document tab bars."""
     def event(self, event):
@@ -396,6 +481,11 @@ class PDFView(QMainWindow):
         self._object_drag_pending = False
         self._object_drag_active = False
         self._object_rotate_pending = False
+        self._object_rotate_active = False
+        self._object_rotate_center_scene = None
+        self._object_rotate_start_angle = 0.0
+        self._object_rotate_start_rotation = 0.0
+        self._object_rotate_preview_angle = 0.0
         self._object_drag_start_scene_pos = None
         self._object_drag_start_doc_rect = None
         self._object_drag_start_doc_rects = None
@@ -2574,10 +2664,20 @@ class PDFView(QMainWindow):
                     self._object_drag_pending = False
                     self._object_drag_active = False
                     self._object_rotate_pending = True
+                    self._object_rotate_active = False
                     self._object_drag_start_scene_pos = scene_pos
                     self._object_drag_start_doc_rect = fitz.Rect(self._selected_object_info.bbox)
                     self._object_drag_preview_rect = fitz.Rect(self._selected_object_info.bbox)
                     self._object_drag_page_idx = max(0, int(self._selected_object_info.page_num) - 1)
+                    center = self._object_center_scene(self._selected_object_info)
+                    self._object_rotate_center_scene = center
+                    self._object_rotate_start_angle = screen_angle_degrees(
+                        center.x(), center.y(), scene_pos.x(), scene_pos.y()
+                    )
+                    self._object_rotate_start_rotation = float(
+                        getattr(self._selected_object_info, "rotation", 0) or 0
+                    )
+                    self._object_rotate_preview_angle = 0.0
                     event.accept()
                     return
                 page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
@@ -2762,27 +2862,31 @@ class PDFView(QMainWindow):
                     dy_doc = dy / rs
                     start_rect = fitz.Rect(self._object_resize_start_doc_rect)
                     anchor = getattr(self, "_object_resize_handle_anchor", 3)
-                    # anchor: 0=TL, 1=TR, 2=BL, 3=BR
-                    # Each handle moves its two owned edges; opposite edges stay anchored.
-                    _MIN = 8.0
-                    if anchor == 0:   # TL: move x0, y0
-                        x0 = min(start_rect.x0 + dx_doc, start_rect.x1 - _MIN)
-                        y0 = min(start_rect.y0 + dy_doc, start_rect.y1 - _MIN)
-                        preview = fitz.Rect(x0, y0, start_rect.x1, start_rect.y1)
-                    elif anchor == 1:  # TR: move x1, y0
-                        x1 = max(start_rect.x1 + dx_doc, start_rect.x0 + _MIN)
-                        y0 = min(start_rect.y0 + dy_doc, start_rect.y1 - _MIN)
-                        preview = fitz.Rect(start_rect.x0, y0, x1, start_rect.y1)
-                    elif anchor == 2:  # BL: move x0, y1
-                        x0 = min(start_rect.x0 + dx_doc, start_rect.x1 - _MIN)
-                        y1 = max(start_rect.y1 + dy_doc, start_rect.y0 + _MIN)
-                        preview = fitz.Rect(x0, start_rect.y0, start_rect.x1, y1)
-                    else:              # BR: move x1, y1
-                        x1 = max(start_rect.x1 + dx_doc, start_rect.x0 + _MIN)
-                        y1 = max(start_rect.y1 + dy_doc, start_rect.y0 + _MIN)
-                        preview = fitz.Rect(start_rect.x0, start_rect.y0, x1, y1)
+                    try:
+                        lock_ar = bool(event.modifiers() & Qt.ShiftModifier)
+                    except Exception:
+                        lock_ar = False
+                    preview = compute_object_resize_rect(
+                        start_rect, anchor, dx_doc, dy_doc, lock_ar
+                    )
                     self._object_resize_preview_rect = preview
                     self._update_object_selection_visuals(preview)
+                    event.accept()
+                    return
+            if getattr(self, "_object_rotate_pending", False) and getattr(self, "_object_drag_start_scene_pos", None) is not None:
+                dx = scene_pos.x() - self._object_drag_start_scene_pos.x()
+                dy = scene_pos.y() - self._object_drag_start_scene_pos.y()
+                if (
+                    not getattr(self, "_object_rotate_active", False)
+                    and math.hypot(dx, dy) >= TextEditGeometryConstants.DRAG_START_DISTANCE_PX
+                ):
+                    self._object_rotate_active = True
+                if getattr(self, "_object_rotate_active", False):
+                    center = getattr(self, "_object_rotate_center_scene", None)
+                    if center is not None:
+                        now = screen_angle_degrees(center.x(), center.y(), scene_pos.x(), scene_pos.y())
+                        self._object_rotate_preview_angle = now - self._object_rotate_start_angle
+                        self._apply_object_selection_rotation(self._object_rotate_preview_angle)
                     event.accept()
                     return
             if getattr(self, "_object_drag_pending", False) and getattr(self, "_object_drag_start_scene_pos", None) is not None:
@@ -3432,6 +3536,38 @@ class PDFView(QMainWindow):
             self._object_drag_preview_rect = fitz.Rect(self._selected_object_info.bbox)
         self._update_object_selection_visuals()
 
+    def _apply_object_selection_rotation(self, angle_deg: float) -> None:
+        """Rotate the selection box + handle items about the object centre, so the
+        whole frame turns rigidly with the object during a rotate drag (AC-4c)."""
+        center = getattr(self, "_object_rotate_center_scene", None)
+        if center is None:
+            return
+        items = [getattr(self, "_object_selection_rect_item", None)]
+        items.append(getattr(self, "_object_rotate_handle_item", None))
+        items.extend(getattr(self, "_object_resize_handle_items", None) or [])
+        for item in items:
+            if item is None:
+                continue
+            try:
+                item.setTransformOriginPoint(center)
+                item.setRotation(angle_deg)
+            except Exception:
+                continue
+
+    def _object_center_scene(self, info) -> QPointF:
+        """Scene-space centre of an object's bbox (accounts for render scale and
+        continuous-mode page offset)."""
+        rs = self._render_scale if self._render_scale > 0 else 1.0
+        page_idx = max(0, int(info.page_num) - 1)
+        y0 = self.page_y_positions[page_idx] if (
+            self.continuous_pages and page_idx < len(self.page_y_positions)
+        ) else 0.0
+        bbox = fitz.Rect(info.bbox)
+        return QPointF(
+            (bbox.x0 + bbox.x1) / 2.0 * rs,
+            y0 + (bbox.y0 + bbox.y1) / 2.0 * rs,
+        )
+
     def _update_object_selection_visuals(self, rect: fitz.Rect | None = None) -> None:
         info = getattr(self, "_selected_object_info", None)
         if info is None or getattr(self, "scene", None) is None:
@@ -3566,6 +3702,49 @@ class PDFView(QMainWindow):
             )
         )
         self._clear_object_selection()
+        return True
+
+    def _commit_free_rotation(self) -> bool:
+        """Emit an absolute-angle rotate request from an accumulated drag (AC-4a)."""
+        info = getattr(self, "_selected_object_info", None)
+        if info is None or not getattr(info, "supports_rotate", False):
+            return False
+        start_rotation = float(getattr(self, "_object_rotate_start_rotation", 0.0) or 0.0)
+        delta_screen = float(getattr(self, "_object_rotate_preview_angle", 0.0) or 0.0)
+        new_angle = (start_rotation - delta_screen) % 360.0
+        self.sig_rotate_object.emit(
+            RotateObjectRequest(
+                object_id=info.object_id,
+                object_kind=info.object_kind,
+                page_num=info.page_num,
+                rotation_delta=0,
+                absolute_rotation=new_angle,
+            )
+        )
+        self._object_rotate_preview_angle = 0.0
+        # Clear the live preview transform; the page re-render + reselect will
+        # rebuild the frame around the new (rotated) bounding box.
+        for item in (
+            [getattr(self, "_object_selection_rect_item", None),
+             getattr(self, "_object_rotate_handle_item", None)]
+            + (getattr(self, "_object_resize_handle_items", None) or [])
+        ):
+            if item is None:
+                continue
+            try:
+                item.setRotation(0.0)
+            except Exception:
+                continue
+        self._selected_object_info = type(info)(
+            object_kind=info.object_kind,
+            object_id=info.object_id,
+            page_num=info.page_num,
+            bbox=fitz.Rect(info.bbox),
+            rotation=new_angle,
+            supports_move=info.supports_move,
+            supports_delete=info.supports_delete,
+            supports_rotate=info.supports_rotate,
+        )
         return True
 
     def _rotate_selected_object(self, rotation_delta: int) -> bool:
@@ -3786,10 +3965,16 @@ class PDFView(QMainWindow):
                 event.accept()
                 return
             if getattr(self, "_object_rotate_pending", False):
+                was_drag = bool(getattr(self, "_object_rotate_active", False))
                 self._object_rotate_pending = False
+                self._object_rotate_active = False
                 self._object_drag_pending = False
                 if self._selected_object_info is not None:
-                    self._rotate_selected_object(90)
+                    if was_drag:
+                        self._commit_free_rotation()
+                    else:
+                        # A click without a drag keeps the legacy 90° step (AC-4e).
+                        self._rotate_selected_object(90)
                 event.accept()
                 return
 

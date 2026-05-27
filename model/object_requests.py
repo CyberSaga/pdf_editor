@@ -44,6 +44,10 @@ class RotateObjectRequest:
     object_kind: str
     page_num: int
     rotation_delta: int
+    # When set, the object is rotated to this absolute angle (degrees, screen
+    # clockwise) about its centre — used by free drag-rotation. When None, the
+    # legacy 90°-step ``rotation_delta`` "fit to rect" path is used.
+    absolute_rotation: float | None = None
 
 
 @dataclass(frozen=True)

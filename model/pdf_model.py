@@ -26,12 +26,14 @@ from model import pdf_optimizer
 from model.pdf_content_ops import (
     NativeImageInvocation,
     _cm_values_from_operands,
+    decompose_image_cm,
     discover_native_image_invocations,
     fitz_rect_to_stream_cm,
     form_rect_to_stream_cm,
     parse_operators,
     remove_operator_range,
     replace_operator_operands,
+    rotated_image_stream_cm,
 )
 from model.edit_commands import CommandManager, EditTextResult
 from model.object_requests import DeleteObjectRequest, MoveObjectRequest, ObjectHitInfo, RotateObjectRequest
@@ -1896,7 +1898,7 @@ class PDFModel:
         self,
         invocation: NativeImageInvocation,
         destination_rect: fitz.Rect,
-        rotation: int,
+        rotation: float,
     ) -> bool:
         page = self.doc[invocation.page_num - 1]
         if invocation.cm_operator_index is None:
@@ -1908,6 +1910,7 @@ class PDFModel:
         cm_operator = operators[invocation.cm_operator_index]
         if cm_operator.name != "cm":
             return False
+        rot = float(rotation) % 360.0
         if invocation.is_form_nested:
             current_cm = _cm_values_from_operands(cm_operator.operands)
             if current_cm is None:
@@ -1916,13 +1919,37 @@ class PDFModel:
                 fitz.Rect(destination_rect),
                 current_cm,
                 fitz.Rect(invocation.bbox),
-                rotation % 360,
+                rot,
             )
             if new_operands is None:
                 return False
+        elif abs(rot - round(rot / 90.0) * 90.0) > 0.5:
+            # Free (non-cardinal) rotation: place the image rotated about its
+            # centre. On a pure move the destination AABB has the same size as
+            # the current one, so preserve the un-rotated size (and thus the
+            # angle) rather than squashing the image into the new AABB.
+            current_cm = _cm_values_from_operands(cm_operator.operands)
+            if current_cm is None:
+                return False
+            cur_w, cur_h, _ang, _cx, _cy = decompose_image_cm(current_cm)
+            dest = fitz.Rect(destination_rect)
+            cur_bbox = fitz.Rect(invocation.bbox)
+            if abs(dest.width - cur_bbox.width) < 0.5 and abs(dest.height - cur_bbox.height) < 0.5:
+                unrotated_w, unrotated_h = cur_w, cur_h
+            else:
+                unrotated_w, unrotated_h = dest.width, dest.height
+            page_height = float(fitz.Rect(page.mediabox).height)
+            new_operands = rotated_image_stream_cm(
+                (dest.x0 + dest.x1) / 2.0,
+                (dest.y0 + dest.y1) / 2.0,
+                unrotated_w,
+                unrotated_h,
+                rot,
+                page_height,
+            )
         else:
             new_operands = fitz_rect_to_stream_cm(
-                fitz.Rect(destination_rect), page, rotation % 360
+                fitz.Rect(destination_rect), page, rot
             )
         new_stream = replace_operator_operands(tokens, cm_operator, new_operands)
         self.doc.update_stream(invocation.stream_xref, new_stream)
@@ -2451,7 +2478,7 @@ class PDFModel:
             old_rect = fitz.Rect(payload.get("rect") or annot.rect)
             dest_rect = fitz.Rect(request.destination_rect)
             xref = int(payload.get("xref", 0) or 0)
-            rotation = int(payload.get("rotation", 0)) % 360
+            rotation = float(payload.get("rotation", 0)) % 360
             if not xref:
                 return False
             invocation = self._find_app_image_invocation(request.source_page, xref, old_rect)
@@ -2491,12 +2518,49 @@ class PDFModel:
         self.block_manager.rebuild_page(request.destination_page - 1, self.doc)
         return True
 
+    def _rotate_native_image_absolute(
+        self,
+        invocation: NativeImageInvocation,
+        angle: float,
+    ) -> bool:
+        """Rotate a (non-form) native image to an absolute angle about its centre."""
+        if invocation.is_form_nested or invocation.cm_operator_index is None:
+            return False
+        page = self.doc[invocation.page_num - 1]
+        stream = self.doc.xref_stream(invocation.stream_xref)
+        tokens, operators = parse_operators(stream)
+        if invocation.cm_operator_index >= len(operators):
+            return False
+        cm_operator = operators[invocation.cm_operator_index]
+        if cm_operator.name != "cm":
+            return False
+        current_cm = _cm_values_from_operands(cm_operator.operands)
+        if current_cm is None:
+            return False
+        width, height, _ang, centre_x, centre_y_user = decompose_image_cm(current_cm)
+        page_height = float(fitz.Rect(page.mediabox).height)
+        new_operands = rotated_image_stream_cm(
+            centre_x,
+            page_height - centre_y_user,
+            width,
+            height,
+            float(angle) % 360.0,
+            page_height,
+        )
+        new_stream = replace_operator_operands(tokens, cm_operator, new_operands)
+        self.doc.update_stream(invocation.stream_xref, new_stream)
+        self.pending_edits.append({"page_idx": invocation.page_num - 1, "rect": fitz.Rect(invocation.bbox)})
+        self.edit_count += 1
+        return True
+
     def rotate_object(self, request: RotateObjectRequest) -> bool:
         if request.object_kind == "native_image":
             invocation = self._find_native_image_invocation(request.page_num, request.object_id)
             if invocation is None:
                 return False
-            new_rotation = (int(invocation.rotation) + int(request.rotation_delta)) % 360
+            if request.absolute_rotation is not None:
+                return self._rotate_native_image_absolute(invocation, request.absolute_rotation)
+            new_rotation = (float(invocation.rotation) + float(request.rotation_delta)) % 360
             return self._rewrite_native_image_matrix(
                 invocation,
                 fitz.Rect(invocation.bbox),
@@ -2511,16 +2575,27 @@ class PDFModel:
                 return False
             rect = fitz.Rect(payload.get("rect") or annot.rect)
             xref = int(payload.get("xref", 0) or 0)
-            old_rotation = int(payload.get("rotation", 0)) % 360
-            new_rotation = (old_rotation + int(request.rotation_delta)) % 360
             if not xref:
                 return False
             invocation = self._find_app_image_invocation(request.page_num, xref, rect)
             if invocation is None:
                 return False
+            if request.absolute_rotation is not None:
+                if not self._rotate_native_image_absolute(invocation, request.absolute_rotation):
+                    return False
+                updated = self._find_app_image_invocation(request.page_num, xref, rect)
+                new_bbox = fitz.Rect(updated.bbox) if updated is not None else rect
+                payload["rotation"] = float(request.absolute_rotation) % 360
+                payload["rect"] = [float(new_bbox.x0), float(new_bbox.y0), float(new_bbox.x1), float(new_bbox.y1)]
+                annot.set_rect(new_bbox)
+                annot.set_info(content=self._dump_app_object_payload(payload), subject=_IMAGE_OBJECT_SUBJECT)
+                annot.update()
+                return True
+            old_rotation = float(payload.get("rotation", 0)) % 360
+            new_rotation = (old_rotation + float(request.rotation_delta)) % 360
             if not self._rewrite_native_image_matrix(invocation, rect, new_rotation):
                 return False
-            payload["rotation"] = int(new_rotation) % 360
+            payload["rotation"] = new_rotation
             annot.set_info(content=self._dump_app_object_payload(payload), subject=_IMAGE_OBJECT_SUBJECT)
             annot.update()
             return True

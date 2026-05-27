@@ -226,6 +226,36 @@ def test_top_left_handle_drag_moves_x0_y0_preserves_x1_y1(monkeypatch) -> None:
     assert abs(dest.y1 - 80) < 1.0, f"expected y1 ≈ 80 (anchored), got {dest.y1}"
 
 
+def test_compute_resize_rect_free_form_changes_aspect_ratio() -> None:
+    """AC-5a: a plain drag resizes freely (aspect ratio is allowed to change)."""
+    start = fitz.Rect(20, 20, 120, 80)  # 100×60, ratio ≈ 1.667
+    # BR drag: widen a lot, shorten a little → ratio must change.
+    out = pdf_view.compute_object_resize_rect(start, anchor=3, dx=100.0, dy=-20.0, lock_ar=False)
+    assert abs(out.width - 200.0) < 1e-6
+    assert abs(out.height - 40.0) < 1e-6
+    assert abs((out.width / out.height) - (start.width / start.height)) > 0.1
+
+
+def test_compute_resize_rect_shift_locks_aspect_ratio() -> None:
+    """AC-5b: Shift+drag preserves the start rect's aspect ratio."""
+    start = fitz.Rect(20, 20, 120, 80)  # ratio 100/60
+    start_ratio = start.width / start.height
+    out = pdf_view.compute_object_resize_rect(start, anchor=3, dx=100.0, dy=-20.0, lock_ar=True)
+    assert abs((out.width / out.height) - start_ratio) < 1e-3
+    # BR drag keeps the opposite corner (TL = 20,20) anchored.
+    assert abs(out.x0 - 20.0) < 1e-6
+    assert abs(out.y0 - 20.0) < 1e-6
+
+
+def test_compute_resize_rect_lock_keeps_opposite_corner_for_tl() -> None:
+    """AC-5b: locking about a TL handle keeps the BR corner anchored."""
+    start = fitz.Rect(20, 20, 120, 80)
+    out = pdf_view.compute_object_resize_rect(start, anchor=0, dx=-50.0, dy=-10.0, lock_ar=True)
+    assert abs(out.x1 - 120.0) < 1e-6
+    assert abs(out.y1 - 80.0) < 1e-6
+    assert abs((out.width / out.height) - (start.width / start.height)) < 1e-3
+
+
 def test_bottom_left_handle_drag_moves_x0_y1_preserves_x1_y0(monkeypatch) -> None:
     """BL handle drag must move x0/y1; opposite corner edge x1 and top y0 must be anchored."""
     view = _make_view()
