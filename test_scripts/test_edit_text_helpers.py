@@ -653,6 +653,61 @@ def test_single_line_edit_does_not_push_unedited_text(tmp_path: Path, monkeypatc
         model.close()
 
 
+def test_prepush_growth_branch_does_not_raise_name_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    pdf_path = tmp_path / "prepush_growth.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=400, height=300)
+    page.insert_text((50, 100), "Heading", fontname="helv", fontsize=8.0)
+    doc.save(str(pdf_path), garbage=0)
+    doc.close()
+
+    model = PDFModel()
+    model.open_pdf(str(pdf_path))
+    try:
+        model.ensure_page_index_built(1)
+        hit = model.get_text_info_at_point(1, fitz.Point(60, 100))
+        assert hit is not None
+        monkeypatch.setattr(model, "_needs_cjk_font", lambda _text: True)
+        pushed = {"called": False}
+        monkeypatch.setattr(
+            model,
+            "_push_down_overlapping_text",
+            lambda *args, **kwargs: pushed.__setitem__("called", True),
+        )
+
+        real_insert_htmlbox = fitz.Page.insert_htmlbox
+        injected = {"done": False}
+
+        def forcing_probe_growth(page_obj, *args, **kwargs):
+            try:
+                is_probe_doc = page_obj.parent is not model.doc
+            except Exception:
+                is_probe_doc = False
+            if is_probe_doc and not injected["done"]:
+                injected["done"] = True
+                return -100.0, 0
+            return real_insert_htmlbox(page_obj, *args, **kwargs)
+
+        monkeypatch.setattr(fitz.Page, "insert_htmlbox", forcing_probe_growth)
+
+        result = model.edit_text(
+            page_num=1,
+            rect=hit.target_bbox,
+            new_text=hit.target_text + " extended",
+            font=hit.font,
+            size=hit.size,
+            color=hit.color,
+            original_text=hit.target_text,
+            target_span_id=hit.target_span_id,
+            target_mode="run",
+        )
+        assert injected["done"] is True
+        assert result is EditTextResult.SUCCESS
+        assert pushed["called"] is True
+    finally:
+        model.close()
+
+
 def test_render_width_for_edit_does_not_exceed_rect_width(tmp_path: Path):
     """Inline editor wrap width must match the original text-block width.
 

@@ -104,7 +104,7 @@ class _FakeEvent:
         self.accepted = True
 
 
-def _make_view():
+def _make_view(*, object_kind: str = "native_image"):
     view = pdf_view.PDFView.__new__(pdf_view.PDFView)
     view.graphics_view = _FakeGraphicsView()
     view.current_mode = "objects"
@@ -112,9 +112,15 @@ def _make_view():
     view.page_y_positions = [0.0]
     view.continuous_pages = True
     view._clear_text_selection = lambda: None
+    view._scene_pos_to_page_and_doc_point = lambda scene_pos: (0, fitz.Point(scene_pos.x(), scene_pos.y()))
+    view.controller = type(
+        "_Controller",
+        (),
+        {"get_object_info_at_point": staticmethod(lambda page_num, point: None)},
+    )()
     info = ObjectHitInfo(
-        object_kind="native_image",
-        object_id="native_image:1:0",
+        object_kind=object_kind,
+        object_id=f"{object_kind}:1:0",
         page_num=1,
         bbox=fitz.Rect(100, 100, 200, 180),
         rotation=0,
@@ -132,6 +138,8 @@ def _make_view():
     view._object_resize_pending = False
     view._object_drag_pending = False
     view._object_drag_active = False
+    view._text_selection_active = False
+    view.drawing_start = None
     view._hit_object_resize_handle_index = lambda pos: -1
     view._update_object_selection_visuals = lambda *a, **k: None
     view.sig_rotate_object = _FakeSignal()
@@ -156,6 +164,20 @@ def test_rotate_handle_drag_emits_absolute_rotation(monkeypatch) -> None:
     assert req.absolute_rotation is not None
     # Clockwise quarter-turn drag → stored angle ≈ 270 (0 - 90 mod 360).
     assert abs((req.absolute_rotation % 360) - 270.0) < 1.0
+
+
+def test_textbox_drag_rotate_does_not_emit_absolute_rotation(monkeypatch) -> None:
+    view = _make_view(object_kind="textbox")
+    monkeypatch.setattr(pdf_view.PDFView, "_point_hits_object_rotate_handle", lambda self, pos: True)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *a, **k: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseMoveEvent", lambda *a, **k: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *a, **k: None)
+
+    pdf_view.PDFView._mouse_press(view, _FakeEvent(250, 140))
+    pdf_view.PDFView._mouse_move(view, _FakeEvent(150, 240))
+    pdf_view.PDFView._mouse_release(view, _FakeEvent(150, 240))
+
+    assert not view.sig_rotate_object.emitted
 
 
 class _RotatableItem:

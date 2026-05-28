@@ -5,6 +5,26 @@
 
 ---
 
+## PDF cm tokens must not use scientific notation
+
+**Area:** `model/pdf_content_ops.py`  
+**Symptom:** Some rewritten content streams fail to parse in downstream PDF processors after object move/resize, especially when near-zero transform terms are present.  
+**Cause:** Serializing cm operands with `f"{value:g}"` can emit scientific notation (for example `1.2e-14`), which is not accepted consistently by PDF tokenizers.  
+**Fix:** Route cm serialization through `format_cm_value(...)` for all cm writers, clamp tiny values to `0`, and emit fixed-point ASCII tokens.  
+**File:** `model/pdf_content_ops.py`
+
+---
+
+## Probe-growth logs must not reference undefined or misleading variables
+
+**Area:** `model/pdf_model.py`  
+**Symptom:** Pre-push probe logging can either crash with `NameError` (undefined variable) or silently mislead debugging output with duplicated values under different labels.  
+**Cause:** The log path referenced `raw_growth` after refactors removed that variable, and a quick fix reused `height_growth` for both placeholders while keeping the `raw=` label.  
+**Fix:** Keep log arguments aligned with real computed values; if raw growth is not computed, remove the `raw=` placeholder and log only `height_growth`.  
+**File:** `model/pdf_model.py`
+
+---
+
 ## Rotated text editors need proxy geometry, not just a stored rotation flag
 
 **Area:** `view/text_editing.py`  

@@ -2753,7 +2753,7 @@ class PDFView(QMainWindow):
                 if (
                     self._selected_object_info is not None
                     and self._point_hits_object_rotate_handle(scene_pos)
-                    and getattr(self._selected_object_info, "supports_rotate", False)
+                    and self._supports_free_rotate(self._selected_object_info)
                 ):
                     self._clear_text_selection()
                     self._object_drag_pending = False
@@ -2823,9 +2823,11 @@ class PDFView(QMainWindow):
                         except Exception:
                             self._object_drag_start_doc_rects = None
                         self._object_drag_preview_rects = None
-                        self._object_drag_pending = not self._point_hits_object_rotate_handle(scene_pos)
+                        can_free_rotate = self._supports_free_rotate(object_info)
+                        hits_rotate_handle = can_free_rotate and self._point_hits_object_rotate_handle(scene_pos)
+                        self._object_drag_pending = not hits_rotate_handle
                         self._object_drag_active = False
-                        self._object_rotate_pending = not self._object_drag_pending
+                        self._object_rotate_pending = hits_rotate_handle
                         self._object_drag_start_scene_pos = scene_pos
                         self._object_drag_start_doc_rect = fitz.Rect(object_info.bbox)
                         self._object_drag_preview_rect = fitz.Rect(object_info.bbox)
@@ -3696,6 +3698,11 @@ class PDFView(QMainWindow):
             y0 + (bbox.y0 + bbox.y1) / 2.0 * rs,
         )
 
+    def _supports_free_rotate(self, info: object | None) -> bool:
+        if info is None or not getattr(info, "supports_rotate", False):
+            return False
+        return str(getattr(info, "object_kind", "") or "") in {"image", "native_image"}
+
     def _update_object_selection_visuals(self, rect: fitz.Rect | None = None) -> None:
         info = getattr(self, "_selected_object_info", None)
         if info is None or getattr(self, "scene", None) is None:
@@ -3732,7 +3739,7 @@ class PDFView(QMainWindow):
             self._object_selection_rect_item.setRect(scene_rect)
             self._object_selection_rect_item.setPen(pen)
             self._object_selection_rect_item.setBrush(brush)
-        if info.supports_rotate:
+        if self._supports_free_rotate(info):
             handle_rect = QRectF(scene_rect.right() - 12, scene_rect.top() - 18, 12, 12)
             if self._object_rotate_handle_item is None:
                 self._object_rotate_handle_item = self.scene.addEllipse(
@@ -3835,7 +3842,7 @@ class PDFView(QMainWindow):
     def _commit_free_rotation(self) -> bool:
         """Emit an absolute-angle rotate request from an accumulated drag (AC-4a)."""
         info = getattr(self, "_selected_object_info", None)
-        if info is None or not getattr(info, "supports_rotate", False):
+        if not self._supports_free_rotate(info):
             return False
         start_rotation = float(getattr(self, "_object_rotate_start_rotation", 0.0) or 0.0)
         delta_screen = float(getattr(self, "_object_rotate_preview_angle", 0.0) or 0.0)

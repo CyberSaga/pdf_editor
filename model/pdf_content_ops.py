@@ -525,7 +525,7 @@ def fitz_rect_to_stream_cm(rect: fitz.Rect, page: fitz.Page, rotation: int) -> l
         values = (-width, 0.0, 0.0, -height, x1, page_height - (y0 + crop_y0))
     else:
         values = (0.0, -height, width, 0.0, x0, page_height - (y0 + crop_y0))
-    return [f"{value:g}".encode("ascii") for value in values]
+    return [format_cm_value(value) for value in values]
 
 
 def form_rect_to_stream_cm(
@@ -575,4 +575,4 @@ def form_rect_to_stream_cm(
     new_e = (dest.x0 - tx) / sx
     new_f = (ty - dest.y1) / sy
     values = (new_a, 0.0, 0.0, new_d, new_e, new_f)
-    return [f"{value:g}".encode("ascii") for value in values]
+    return [format_cm_value(value) for value in values]

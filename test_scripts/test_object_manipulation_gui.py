@@ -241,7 +241,7 @@ def test_browse_object_drag_threshold_starts_drag(monkeypatch) -> None:
     assert view._object_drag_active is True
 
 
-def test_text_edit_mouse_press_on_rotate_handle_arms_rotation(monkeypatch) -> None:
+def test_text_edit_mouse_press_on_rotate_handle_does_not_arm_free_rotation(monkeypatch) -> None:
     view = _make_view()
     view.current_mode = "text_edit"
     hit = _make_object_hit(kind="textbox", supports_rotate=True)
@@ -254,8 +254,28 @@ def test_text_edit_mouse_press_on_rotate_handle_arms_rotation(monkeypatch) -> No
     event = _FakeEvent(40, 40)
     pdf_view.PDFView._mouse_press(view, event)
 
-    assert view._object_rotate_pending is True
+    assert view._object_rotate_pending is False
+    assert event.accepted is False
+
+
+def test_textbox_rotate_pending_release_uses_legacy_90_step(monkeypatch) -> None:
+    view = _make_view()
+    view.current_mode = "text_edit"
+    view._selected_object_info = _make_object_hit(kind="textbox", supports_rotate=True)
+    view._object_rotate_pending = True
+    view._object_rotate_active = False
+    view._object_drag_pending = False
+
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *args, **kwargs: None)
+
+    event = _FakeEvent(40, 40)
+    pdf_view.PDFView._mouse_release(view, event)
+
     assert event.accepted is True
+    assert len(view.sig_rotate_object.emitted) == 1
+    req = view.sig_rotate_object.emitted[0][0]
+    assert req.rotation_delta == 90
+    assert req.absolute_rotation is None
 
 
 def test_scene_context_menu_includes_object_actions(monkeypatch) -> None:

@@ -1757,11 +1757,17 @@ class PDFModel:
             bounds.include_rect(line_rect)
         return "\n".join(line_texts).strip(), bounds
 
-    def get_chars_in_run(self, page_num: int, span_id: str) -> list[tuple[str, fitz.Rect]]:
+    def get_chars_in_run(
+        self,
+        page_num: int,
+        span_id: str,
+        rawdict: dict | None = None,
+    ) -> list[tuple[str, fitz.Rect]]:
         """Per-character (glyph, bbox) pairs for a run, in reading order.
 
         Glyph boxes come from PyMuPDF ``rawdict``; a char belongs to the run when
         its centre lies inside the run's bbox. Used for character-level selection.
+        Pass ``rawdict`` to reuse one page extraction across multiple runs.
         """
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             return []
@@ -1777,11 +1783,14 @@ class PDFModel:
         tol = 0.5
         rotation = int(getattr(run, "rotation", 0)) % 360
         is_vertical = rotation in (90, 270)
-        page = self.doc[page_idx]
-        try:
-            raw = page.get_text("rawdict")
-        except Exception:
-            return []
+        if rawdict is None:
+            page = self.doc[page_idx]
+            try:
+                raw = page.get_text("rawdict")
+            except Exception:
+                return []
+        else:
+            raw = rawdict
         collected: list[tuple[str, fitz.Rect]] = []
         for block in raw.get("blocks", []):
             for line in block.get("lines", []):
@@ -1908,12 +1917,16 @@ class PDFModel:
         line_texts: list[str] = []
         line_rects: list[fitz.Rect] = []
         same_run = first_run.span_id == last_run.span_id
+        try:
+            rawdict = self.doc[page_idx].get_text("rawdict")
+        except Exception:
+            rawdict = None
         for group_idx in range(lo_line, hi_line + 1):
             glyphs: list[str] = []
             rects: list[fitz.Rect] = []
             for run in _slice_for_group(group_idx):
                 vertical = int(getattr(run, "rotation", 0)) % 360 in (90, 270)
-                chars = self.get_chars_in_run(page_num, run.span_id)
+                chars = self.get_chars_in_run(page_num, run.span_id, rawdict=rawdict)
                 for glyph, cb in chars:
                     coord = (cb.y0 + cb.y1) / 2.0 if vertical else (cb.x0 + cb.x1) / 2.0
                     keep = True
@@ -4150,9 +4163,8 @@ class PDFModel:
                 meaningful_growth = max(0.5, float(size) * 0.2)
                 if height_growth > meaningful_growth:
                     logger.debug(
-                        "換行預估溢出 %.1fpt（raw=%.1fpt），預先推移下方文字塊（pre-push）",
+                        "換行預估溢出 %.1fpt，預先推移下方文字塊（pre-push）",
                         height_growth,
-                        raw_growth,
                     )
                     self._push_down_overlapping_text(
                         page, page_rect,
@@ -4709,8 +4721,8 @@ class PDFModel:
         PyMuPDF rebuilds a damaged cross-reference table when it opens a broken
         PDF (``doc.is_repaired``). Saving with full garbage collection then writes
         a fresh, consistent xref. The output is written atomically via a temp file
-        in the target directory so it is safe even when ``output_path`` equals the
-        currently-open source path. Returns a report describing the repair.
+        in the target directory and then replaced into ``output_path``. Returns a
+        report describing the repair.
         """
         if not self.doc:
             raise ValueError("沒有開啟的文件可供修復")
