@@ -4830,6 +4830,9 @@ class PDFModel:
         pix = self.doc[idx].get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
         mode = "RGBA" if pix.alpha else "RGB"
         img = Image.frombytes(mode, (pix.width, pix.height), pix.samples).convert("RGB")
+        # Release the MuPDF pixmap's C buffer eagerly; PIL.frombytes already copied
+        # the pixel data, so holding pix through the rotation+save is dead weight.
+        del pix
         straightened = img.rotate(
             angle, resample=Image.BICUBIC, expand=False, fillcolor=(255, 255, 255)
         )

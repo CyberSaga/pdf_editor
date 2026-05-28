@@ -1767,6 +1767,10 @@ class PDFView(QMainWindow):
         if self.current_mode == 'browse' and mode != 'browse':
             self._reset_browse_hover_cursor()
             self._clear_text_selection()
+        if self.current_mode != mode:
+            # Object selection (frame, rotate handle, resize handles) is
+            # mode-specific; carrying it across a mode switch leaves orphan
+            # overlay items on the page.
             self._clear_object_selection()
         # 切換模式時清除所有拖曳/待定狀態
         self._drag_pending = False
@@ -2788,11 +2792,7 @@ class PDFView(QMainWindow):
                         if not hasattr(self, "_selected_object_page_idx"):
                             self._selected_object_page_idx = None
 
-                        additive = False
-                        try:
-                            additive = bool(getattr(event, "modifiers")() & Qt.ShiftModifier)
-                        except Exception:
-                            additive = False
+                        additive = bool(event.modifiers() & Qt.ShiftModifier)
 
                         if self._selected_object_page_idx is not None and int(self._selected_object_page_idx) != int(page_idx):
                             # Same-page only: selecting on a different page resets the set.
@@ -2959,10 +2959,7 @@ class PDFView(QMainWindow):
                     dy_doc = dy / rs
                     start_rect = fitz.Rect(self._object_resize_start_doc_rect)
                     anchor = getattr(self, "_object_resize_handle_anchor", 3)
-                    try:
-                        lock_ar = bool(event.modifiers() & Qt.ShiftModifier)
-                    except Exception:
-                        lock_ar = False
+                    lock_ar = bool(event.modifiers() & Qt.ShiftModifier)
                     preview = compute_object_resize_rect(
                         start_rect, anchor, dx_doc, dy_doc, lock_ar
                     )
@@ -3845,8 +3842,11 @@ class PDFView(QMainWindow):
         if not self._supports_free_rotate(info):
             return False
         start_rotation = float(getattr(self, "_object_rotate_start_rotation", 0.0) or 0.0)
+        start_angle = float(getattr(self, "_object_rotate_start_angle", 0.0) or 0.0)
         delta_screen = float(getattr(self, "_object_rotate_preview_angle", 0.0) or 0.0)
-        new_angle = (start_rotation - delta_screen) % 360.0
+        new_angle = absolute_rotation_from_drag(
+            start_rotation, start_angle, start_angle + delta_screen
+        )
         self.sig_rotate_object.emit(
             RotateObjectRequest(
                 object_id=info.object_id,
@@ -3870,15 +3870,8 @@ class PDFView(QMainWindow):
                 item.setRotation(0.0)
             except Exception:
                 continue
-        self._selected_object_info = type(info)(
-            object_kind=info.object_kind,
-            object_id=info.object_id,
-            page_num=info.page_num,
-            bbox=fitz.Rect(info.bbox),
-            rotation=new_angle,
-            supports_move=info.supports_move,
-            supports_delete=info.supports_delete,
-            supports_rotate=info.supports_rotate,
+        self._selected_object_info = replace(
+            info, bbox=fitz.Rect(info.bbox), rotation=new_angle
         )
         return True
 
@@ -3894,15 +3887,10 @@ class PDFView(QMainWindow):
                 rotation_delta=rotation_delta,
             )
         )
-        self._selected_object_info = type(info)(
-            object_kind=info.object_kind,
-            object_id=info.object_id,
-            page_num=info.page_num,
+        self._selected_object_info = replace(
+            info,
             bbox=fitz.Rect(info.bbox),
             rotation=(int(info.rotation) + int(rotation_delta)) % 360,
-            supports_move=info.supports_move,
-            supports_delete=info.supports_delete,
-            supports_rotate=info.supports_rotate,
         )
         self._update_object_selection_visuals()
         return True

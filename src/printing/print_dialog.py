@@ -647,41 +647,6 @@ class UnifiedPrintDialog(QDialog):
         except Exception as exc:
             self._show_preview_error(f"無法渲染預覽頁面: {exc}")
 
-    def _render_preview_legacy(self) -> None:
-        if not self._page_indices:
-            return
-        row = self.page_list.currentRow()
-        if row < 0:
-            row = 0
-            self.page_list.setCurrentRow(0)
-        if row >= len(self._page_indices):
-            row = len(self._page_indices) - 1
-
-        page_index = self._page_indices[row]
-        dpi = self.dpi_spin.value()
-        cache_key = (page_index, dpi)
-        image = self._preview_cache.get(cache_key)
-        if image is None:
-            pages = self.renderer.iter_page_images(self.pdf_path, [page_index], dpi)
-            try:
-                rendered = next(pages)
-            except StopIteration:
-                self._show_preview_error("無法渲染預覽頁面。")
-                return
-            image = rendered.image
-            self._preview_cache[cache_key] = image
-            while len(self._preview_cache) > 24:
-                self._preview_cache.pop(next(iter(self._preview_cache)))
-
-        options = self._build_effective_options()
-        pixmap = self._compose_preview_pixmap(image, options)
-        self.preview_label.setPixmap(pixmap)
-        self.page_info_label.setText(
-            f"第 {page_index + 1} 頁 / 共 {self.total_pages} 頁（本次列印 {len(self._page_indices)} 頁）"
-        )
-        self.prev_btn.setEnabled(row > 0)
-        self.next_btn.setEnabled(row < len(self._page_indices) - 1)
-
     def _load_preview_image(self, page_index: int, dpi: int) -> QImage:
         if self._preview_page_provider is not None:
             image = self._preview_page_provider(page_index, dpi)

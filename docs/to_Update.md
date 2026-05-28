@@ -13,15 +13,11 @@
 
 ## 做法修改：
 
-* 針對 macOS 要將選單移到上方列，符合 mac 應用程式的習慣 (已計劃過：docs\\plans\\2026-04-10-macos-native-menu-bar.md)
-* 物件旋轉不是點選旋轉鈕轉 90°，而應該拖曳旋轉鈕以自由轉動
+* 點選旋轉鈕是將物件轉動到 90°、180°、270°、360°
 -> 提出建議新做法並實作
 
 ## 功能新增：
 
-* 符合 PDF Standards (參考：docs\\pdf\_standards.txt 內的網址)
-* 要可以點選操作原本就存在 PDF 內的圖片物件 (已計劃過：docs\\plans\\0416-F1-Native-PDF-Image-Manipulation-(Objects-Mode).md)
-* 拉正頁面
-* 修復 XREF 表
+新增快捷鍵：跳回瀏覽模式
 -> 提出建議的實現方法並實作
 

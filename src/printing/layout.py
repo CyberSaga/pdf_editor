@@ -40,12 +40,12 @@ def match_standard_paper_size(
     The closest size within ``tolerance_pt`` wins; genuinely non-standard sizes
     return None so callers can fall back to a custom size.
     """
-    short = min(width_pt, height_pt)
-    long = max(width_pt, height_pt)
+    short_side = min(width_pt, height_pt)
+    long_side = max(width_pt, height_pt)
     best_key: str | None = None
     best_err: float | None = None
     for key, (std_short, std_long) in PAPER_SIZE_POINTS.items():
-        err = max(abs(short - std_short), abs(long - std_long))
+        err = max(abs(short_side - std_short), abs(long_side - std_long))
         # Eligible if within tolerance; only replace on a strictly smaller error
         # so insertion order (most canonical sizes first) breaks exact ties.
         if err <= tolerance_pt and (best_err is None or err < best_err):

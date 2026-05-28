@@ -56,9 +56,16 @@ class _FakeGraphicsView:
 
 
 class _FakeEvent:
-    def __init__(self, x: float, y: float, button=Qt.LeftButton) -> None:
+    def __init__(
+        self,
+        x: float,
+        y: float,
+        button=Qt.LeftButton,
+        modifiers: Qt.KeyboardModifiers = Qt.NoModifier,
+    ) -> None:
         self._point = QPointF(x, y)
         self._button = button
+        self._modifiers = modifiers
         self.accepted = False
 
     def position(self):
@@ -69,6 +76,9 @@ class _FakeEvent:
 
     def button(self):
         return self._button
+
+    def modifiers(self):
+        return self._modifiers
 
     def accept(self):
         self.accepted = True
