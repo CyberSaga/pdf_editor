@@ -1,0 +1,217 @@
+/* =============================================================================
+   PDF Editor · 顏色語言（精選三款）
+   Color tokens for three selected palettes — extracted from shared/tokens.jsx.
+
+   01 · 高山雪　Alpine Snow      ｜淺色 · 經典 Lupine
+        冷調近白面板 + 飽和靛紫 accent + 葉綠焦點環
+   02 · 草甸魯冰　Meadow Lupine   ｜淺色 · 低視覺負擔
+        面板帶綠色暖意——alpine sky over a meadow
+   05 · 墨瓷　Ink Porcelain      ｜深色 · 低視覺負擔
+        近中性炭黑，極輕的薰衣草氣息
+
+   用法
+   ----
+     <html data-theme="alpine-snow">  …  </html>
+     <html data-theme="meadow-lupine"> …  </html>
+     <html data-theme="ink-porcelain"> …  </html>
+
+   每個 block 是「合併基礎層後」的完整 token 集，三者可獨立使用，無相依。
+   ============================================================================= */
+
+
+/* -----------------------------------------------------------------------------
+   01 · 高山雪　Alpine Snow　— 正典版
+   冷調近白面板＋飽和靛紫＋葉綠焦點環
+   ----------------------------------------------------------------------------- */
+:root[data-theme="alpine-snow"],
+.theme-alpine-snow {
+  color-scheme: light;
+
+  /* Surfaces — 冷調 alpine 近白，bg / surface / sunken / elev 四層分離 */
+  --color-bg:          #f0ecfa;   /* desktop / chrome */
+  --color-surface:     #fafafc;   /* toolbars / panels */
+  --color-sunken:      #e2dcf2;   /* canvas well behind pages */
+  --color-elev:        #ffffff;   /* popovers / menus */
+
+  /* Borders */
+  --color-line:        #ddd6ec;
+  --color-line-strong: #b7add0;
+  --color-line-soft:   #ebe5f6;
+
+  /* Text — Lupine 規範的深 slate ink */
+  --color-fg:          #0f172a;
+  --color-fg-muted:    #3a4358;
+  --color-fg-subtle:   #6b7280;
+  --color-fg-faint:    #9aa0ad;
+
+  /* Accent — 飽和 Lupine 靛紫 */
+  --color-accent:        #4338ca;
+  --color-accent-fg:     #ffffff;
+  --color-accent-soft:   #e0dbf3;
+  --color-accent-line:   #b9aee2;
+
+  /* Status — 葉綠焦點環是 Lupine 的 signature */
+  --color-good:        #16a34a;
+  --color-good-soft:   #dcfce7;
+  --color-warn:        #a86a3a;
+  --color-warn-soft:   #f3e1cf;
+  --color-danger:      #a85f5f;
+  --color-danger-soft: #ecd2d2;
+  --color-highlight:   #f0d670;   /* 螢光筆 */
+
+  /* Interaction — 紫色傾向的 hover/press 疊色 */
+  --color-hover:        rgba(40, 28, 72, 0.06);
+  --color-hover-strong: rgba(40, 28, 72, 0.10);
+  --color-pressed:      rgba(40, 28, 72, 0.14);
+
+  /* Shadows — 微帶紫色的柔影 */
+  --shadow-sm: 0 1px 2px rgba(40, 28, 72, 0.06);
+  --shadow-md: 0 4px 12px rgba(40, 28, 72, 0.10), 0 1px 2px rgba(40, 28, 72, 0.06);
+  --shadow-lg: 0 14px 36px rgba(40, 28, 72, 0.18), 0 2px 6px rgba(40, 28, 72, 0.08);
+
+  /* Paper — 文件本體永遠純白 */
+  --color-paper:       #ffffff;
+  --color-paper-edge:  rgba(40, 28, 72, 0.12);
+
+  /* Swatches（識別色票，可用於 picker 預覽） */
+  --swatch-1: #f0ecfa;
+  --swatch-2: #fafafc;
+  --swatch-3: #4338ca;
+}
+
+
+/* -----------------------------------------------------------------------------
+   02 · 草甸魯冰　Meadow Lupine　— 草甸版（低視覺負擔）
+   面板帶綠色暖意——alpine sky over a meadow
+   ----------------------------------------------------------------------------- */
+:root[data-theme="meadow-lupine"],
+.theme-meadow-lupine {
+  color-scheme: light;
+
+  /* Surfaces — bg 維持冷紫天空，surface / elev 採 Meadow White 綠調暖白 */
+  --color-bg:          #eae6f3;   /* alpine sky */
+  --color-surface:     #f5f7f2;   /* meadow white card */
+  --color-sunken:      #dbd6e9;
+  --color-elev:        #fdfdf8;   /* warmest meadow-ivory */
+
+  /* Borders — 帶綠灰的分隔線，與面板同語系 */
+  --color-line:        #d4d7cf;
+  --color-line-strong: #a4ab9d;
+  --color-line-soft:   #e2e5dd;
+
+  /* Text */
+  --color-fg:          #0f172a;
+  --color-fg-muted:    #3a4358;
+  --color-fg-subtle:   #697282;
+  --color-fg-faint:    #969cab;
+
+  /* Accent — 保留 Lupine 靛紫，accentSoft 略偏暖 */
+  --color-accent:        #4338ca;
+  --color-accent-fg:     #ffffff;
+  --color-accent-soft:   #e2dcf3;
+  --color-accent-line:   #bcaee4;
+
+  /* Status — good 的軟色帶綠（與草甸面板共鳴） */
+  --color-good:        #16a34a;
+  --color-good-soft:   #d8ecd9;
+  --color-warn:        #a86a3a;
+  --color-warn-soft:   #f3e1cf;
+  --color-danger:      #a85f5f;
+  --color-danger-soft: #ecd2d2;
+  --color-highlight:   #f0d670;
+
+  --color-hover:        rgba(40, 28, 72, 0.06);
+  --color-hover-strong: rgba(40, 28, 72, 0.10);
+  --color-pressed:      rgba(40, 28, 72, 0.14);
+
+  --shadow-sm: 0 1px 2px rgba(40, 28, 72, 0.06);
+  --shadow-md: 0 4px 12px rgba(40, 28, 72, 0.10), 0 1px 2px rgba(40, 28, 72, 0.06);
+  --shadow-lg: 0 14px 36px rgba(40, 28, 72, 0.18), 0 2px 6px rgba(40, 28, 72, 0.08);
+
+  --color-paper:       #ffffff;
+  --color-paper-edge:  rgba(40, 28, 72, 0.12);
+
+  --swatch-1: #eae6f3;
+  --swatch-2: #f5f7f2;
+  --swatch-3: #4338ca;
+}
+
+
+/* -----------------------------------------------------------------------------
+   05 · 墨瓷　Ink Porcelain　— 低視覺負擔（深色官方款）
+   近中性炭黑，僅最微弱的紫色氣息；瀏覽日常文件最不刺激。
+   對應淺色的「瓷紫 Porcelain」。
+   ----------------------------------------------------------------------------- */
+:root[data-theme="ink-porcelain"],
+.theme-ink-porcelain {
+  color-scheme: dark;
+
+  /* Surfaces — 深炭階梯，sunken 最深、elev 最亮 */
+  --color-bg:          #18171c;
+  --color-surface:     #232228;
+  --color-sunken:      #101015;
+  --color-elev:        #2a2931;
+
+  /* Borders */
+  --color-line:        #2b2a33;
+  --color-line-strong: #403e49;
+  --color-line-soft:   #211f26;
+
+  /* Text */
+  --color-fg:          #e8e7eb;
+  --color-fg-muted:    #a39fad;
+  --color-fg-subtle:   #6f6c78;
+  --color-fg-faint:    #494754;
+
+  /* Accent — 柔和的薰衣草紫，僅在點選時亮起 */
+  --color-accent:        #9b8fc0;
+  --color-accent-fg:     #0d0c12;
+  --color-accent-soft:   rgba(155, 143, 192, 0.13);
+  --color-accent-line:   rgba(155, 143, 192, 0.32);
+
+  /* Status — 深色版的成功 / 警告 / 危險 / 螢光 */
+  --color-good:        #5db98c;
+  --color-good-soft:   rgba(93, 185, 140, 0.12);
+  --color-warn:        #d99353;
+  --color-warn-soft:   rgba(217, 147, 83, 0.12);
+  --color-danger:      #e26a6a;
+  --color-danger-soft: rgba(226, 106, 106, 0.12);
+  --color-highlight:   #e6c62c;
+
+  /* Interaction */
+  --color-hover:        rgba(255, 255, 255, 0.04);
+  --color-hover-strong: rgba(255, 255, 255, 0.07);
+  --color-pressed:      rgba(255, 255, 255, 0.12);
+
+  /* Shadows — 深色 UI 需要更深的影 */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.40), 0 1px 2px rgba(0, 0, 0, 0.28);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.32);
+
+  /* Paper — 深色 UI 中唯一的白是「文件」，刻意用象牙色降眩光 */
+  --color-paper:       #f1efe8;
+  --color-paper-edge:  rgba(0, 0, 0, 0.50);
+
+  --swatch-1: #18171c;
+  --swatch-2: #232228;
+  --swatch-3: #9b8fc0;
+}
+
+
+/* -----------------------------------------------------------------------------
+   建議用法（mapping 對照 — tokens.jsx 內部命名 vs CSS 變數）
+   -----------------------------------------------------------------------------
+     bg          → --color-bg            surface     → --color-surface
+     sunken      → --color-sunken        elev        → --color-elev
+     line        → --color-line          lineStrong  → --color-line-strong
+     lineSoft    → --color-line-soft
+     fg          → --color-fg            fgMuted     → --color-fg-muted
+     fgSubtle    → --color-fg-subtle     fgFaint     → --color-fg-faint
+     accent      → --color-accent        accentFg    → --color-accent-fg
+     accentSoft  → --color-accent-soft   accentLine  → --color-accent-line
+     good*       → --color-good*         warn*       → --color-warn*
+     danger*     → --color-danger*       highlight   → --color-highlight
+     hover*      → --color-hover*        pressed     → --color-pressed
+     shadowSm/Md/Lg → --shadow-sm/md/lg
+     paper       → --color-paper         paperEdge   → --color-paper-edge
+   ----------------------------------------------------------------------------- */

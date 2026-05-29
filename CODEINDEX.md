@@ -32,6 +32,7 @@
   - `model/pdf_content_ops.py`
   - `model/pdf_model.py`
   - `model/pdf_optimizer.py`
+  - `model/pdf_validator.py`
   - `model/text_block.py`
   - `model/text_normalization.py`
   - `model/tools/__init__.py`
@@ -123,11 +124,15 @@
   - `test_scripts/test_iso27001_sop_update.py`
   - `test_scripts/test_large_scale.py`
   - `test_scripts/test_linux_driver_overrides.py`
+  - `test_scripts/test_macos_menu.py`
   - `test_scripts/test_main_startup_behavior.py`
   - `test_scripts/test_multi_tab_plan.py`
+  - `test_scripts/test_native_image_discovery.py`
   - `test_scripts/test_native_pdf_images_model.py`
   - `test_scripts/test_no_jump_editor_geometry.py`
   - `test_scripts/test_object_controller_flow.py`
+  - `test_scripts/test_object_free_rotation.py`
+  - `test_scripts/test_object_free_rotation_gui.py`
   - `test_scripts/test_object_manipulation_gui.py`
   - `test_scripts/test_object_manipulation_model.py`
   - `test_scripts/test_object_multi_select.py`
@@ -136,13 +141,19 @@
   - `test_scripts/test_ocr_controller_flow.py`
   - `test_scripts/test_ocr_dialog.py`
   - `test_scripts/test_ocr_e2e.py`
+  - `test_scripts/test_ocr_loading_status.py`
   - `test_scripts/test_ocr_model_insert.py`
+  - `test_scripts/test_ocr_predictor_cache.py`
   - `test_scripts/test_ocr_tool_surya.py`
   - `test_scripts/test_ocr_types.py`
   - `test_scripts/test_ocr_view_entry.py`
   - `test_scripts/test_open_large_pdf.py`
   - `test_scripts/test_overlap_corpus_recursive.py`
   - `test_scripts/test_overlap_textbox_edit.py`
+  - `test_scripts/test_page_deskew.py`
+  - `test_scripts/test_page_deskew_scope.py`
+  - `test_scripts/test_pdf_compliance.py`
+  - `test_scripts/test_pdf_content_ops_cm_format.py`
   - `test_scripts/test_pdf_merge_workflow.py`
   - `test_scripts/test_pdf_optimize_workflow.py`
   - `test_scripts/test_performance.py`
@@ -150,13 +161,17 @@
   - `test_scripts/test_print_colorspace.py`
   - `test_scripts/test_print_controller_flow.py`
   - `test_scripts/test_print_dialog_properties_button.py`
+  - `test_scripts/test_print_layout.py`
+  - `test_scripts/test_print_speed.py`
   - `test_scripts/test_print_subprocess_helper.py`
   - `test_scripts/test_print_subprocess_runner.py`
   - `test_scripts/test_printing_pipeline.py`
   - `test_scripts/test_qt_bridge_layout.py`
   - `test_scripts/test_qt_pixmap_colorspaces.py`
+  - `test_scripts/test_render_clarity_dpr.py`
   - `test_scripts/test_render_colorspace.py`
   - `test_scripts/test_resolve_target_mode.py`
+  - `test_scripts/test_rotated_text_editor_preview.py`
   - `test_scripts/test_sample_pdfs.py`
   - `test_scripts/test_scene_context_menu.py`
   - `test_scripts/test_short_term_safety.py`
@@ -169,6 +184,7 @@
   - `test_scripts/test_text_editing_gui_regressions.py`
   - `test_scripts/test_text_extraction_line_joining.py`
   - `test_scripts/test_text_normalization.py`
+  - `test_scripts/test_text_selection.py`
   - `test_scripts/test_thumbnail_context_menu.py`
   - `test_scripts/test_tool_extensions.py`
   - `test_scripts/test_track_ab_5scenarios.py`
@@ -178,6 +194,7 @@
   - `test_scripts/test_ux_signoff_agent.py`
   - `test_scripts/test_week1_model_regressions.py`
   - `test_scripts/test_win_driver_properties.py`
+  - `test_scripts/test_xref_repair.py`
   - `test_scripts/validate_optimized_pdf.py`
 
 ## Module Map
@@ -211,8 +228,8 @@
 ### `controller/__init__.py`
 
 ### `controller/pdf_controller.py`
-**Classes:** `SessionUIState` (L91), `FullscreenSessionSnapshot` (L101), `PrintJobRequest` (L108), `OptimizePdfCopyRequest` (L117), `_PrintSubmissionWorker` (L122), `_PrintWorkerBridge` (L152), `_OptimizePdfCopyWorker` (L177), `_OptimizeWorkerBridge` (L200), `_OcrWorker` (L218), `_OcrBridge` (L265), `PDFController` (L288)
-**Methods (178):** `__init__`, `run`, `forward_progress`, `forward_prepared`, `forward_failed`, `notify_thread_finished`, `__init__`, `run`, `forward_succeeded`, `forward_failed`, `notify_thread_finished`, `__init__`, `request_cancel`, `run`, `forward_progress`, `forward_page_done`, `forward_failed`, `notify_thread_finished`, `__init__`, `is_active` …
+**Classes:** `SessionUIState` (L91), `FullscreenSessionSnapshot` (L101), `PrintJobRequest` (L108), `OptimizePdfCopyRequest` (L117), `_PrintSubmissionWorker` (L122), `_PrintWorkerBridge` (L152), `_OptimizePdfCopyWorker` (L177), `_OptimizeWorkerBridge` (L200), `_OcrWorker` (L218), `_OcrBridge` (L270), `PDFController` (L298)
+**Methods (184):** `__init__`, `run`, `forward_progress`, `forward_prepared`, `forward_failed`, `notify_thread_finished`, `__init__`, `run`, `forward_succeeded`, `forward_failed`, `notify_thread_finished`, `__init__`, `request_cancel`, `run`, `forward_progress`, `forward_status`, `forward_page_done`, `forward_failed`, `notify_thread_finished`, `__init__` …
 
 ### `main.py`
 **Functions:** `_configure_logging` (L9), `parse_cli` (L14), `run_merge_and_exit` (L25), `run` (L32)
@@ -243,20 +260,23 @@
 **Methods (7):** `__init__`, `add_files`, `add_resolved_files`, `remove_selected`, `remove_entries`, `set_order`, `can_confirm`
 
 ### `model/object_requests.py`
-**Classes:** `ObjectRef` (L9), `ObjectHitInfo` (L16), `MoveObjectRequest` (L28), `BatchMoveObjectsRequest` (L37), `RotateObjectRequest` (L42), `DeleteObjectRequest` (L50), `BatchDeleteObjectsRequest` (L57), `ResizeObjectRequest` (L62), `InsertImageObjectRequest` (L70)
+**Classes:** `ObjectRef` (L9), `ObjectHitInfo` (L16), `MoveObjectRequest` (L28), `BatchMoveObjectsRequest` (L37), `RotateObjectRequest` (L42), `DeleteObjectRequest` (L54), `BatchDeleteObjectsRequest` (L61), `ResizeObjectRequest` (L66), `InsertImageObjectRequest` (L74)
 
 ### `model/pdf_content_ops.py`
-**Classes:** `ContentToken` (L22), `ParsedOperator` (L27), `NativeImageInvocation` (L35)
-**Functions:** `_is_whitespace` (L50), `_is_delimiter` (L54), `tokenize_content_stream` (L58), `parse_operators` (L124), `_rotation_from_cm` (L149), `_cm_values_from_operands` (L169), `_bbox_from_stream_cm` (L179), `_q_bounds_by_operator_index` (L202), `discover_native_image_invocations` (L220), `replace_operator_operands` (L305), `remove_operator_range` (L313), `serialize_tokens` (L318), `fitz_rect_to_stream_cm` (L324)
+**Classes:** `ContentToken` (L23), `ParsedOperator` (L28), `NativeImageInvocation` (L36)
+**Functions:** `_is_whitespace` (L57), `_is_delimiter` (L61), `tokenize_content_stream` (L65), `parse_operators` (L131), `_rotation_from_cm` (L156), `format_cm_value` (L170), `decompose_image_cm` (L183), `rotated_image_stream_cm` (L201), `_cm_values_from_operands` (L233), `_bbox_from_stream_cm` (L243), `_q_bounds_by_operator_index` (L266), `discover_native_image_invocations` (L284), `_discover_form_nested_invocations` (L381), `replace_operator_operands` (L488), `remove_operator_range` (L496), `serialize_tokens` (L501), `fitz_rect_to_stream_cm` (L507), `form_rect_to_stream_cm` (L531)
 
 ### `model/pdf_model.py`
-**Classes:** `TextHit` (L124), `_EditTextResolveResult` (L158), `DocumentSession` (L227), `PDFModel` (L241)
-**Functions:** `_install_rawdict_text_compat` (L82), `_classify_insert_path` (L174)
-**Methods (166):** `_legacy`, `__getitem__`, `__iter__`, `__len__`, `__init__`, `_canonicalize_path`, `_safe_exc_message`, `_active_session`, `_activate_temporarily`, `session_ids`, `list_sessions`, `get_session_id_by_index`, `get_active_session_id`, `get_active_session_index`, `find_session_by_path`, `activate_session`, `activate_session_by_index`, `session_has_unsaved_changes`, `has_any_unsaved_changes`, `get_dirty_session_ids` …
+**Classes:** `TextHit` (L128), `_EditTextResolveResult` (L162), `DocumentSession` (L231), `PDFModel` (L245)
+**Functions:** `_install_rawdict_text_compat` (L86), `_classify_insert_path` (L178)
+**Methods (173):** `_legacy`, `__getitem__`, `__iter__`, `__len__`, `__init__`, `_canonicalize_path`, `_safe_exc_message`, `_active_session`, `_activate_temporarily`, `session_ids`, `list_sessions`, `get_session_id_by_index`, `get_active_session_id`, `get_active_session_index`, `find_session_by_path`, `activate_session`, `activate_session_by_index`, `session_has_unsaved_changes`, `has_any_unsaved_changes`, `get_dirty_session_ids` …
 
 ### `model/pdf_optimizer.py`
 **Classes:** `PdfOptimizeOptions` (L55), `PdfAuditItem` (L79), `PdfAuditReport` (L87), `PdfOptimizationResult` (L95), `PdfOptimizeExecutionProfile` (L106)
 **Functions:** `_init_image_rewrite_worker` (L112), `_classify_worker_pil_image_mode` (L117), `_transcode_image_payload` (L126), `_rewrite_source_image_task` (L175), `_rewrite_extracted_image_task` (L188), `preset_optimize_options` (L199), `normalize_optimize_options` (L230), `is_large_optimize_job` (L236), `resolve_optimize_execution_profile` (L240), `resolve_file_backed_optimize_source` (L271), `current_document_size_bytes` (L293), `build_working_doc_for_optimized_copy` (L302), `make_active_audit_cache_key` (L323), `blank_metadata_dict` (L337), `xref_size_bytes` (L354), `build_pdf_audit_report` (L370), `apply_optimize_options` (L441), `image_rewrite_settings` (L493), `parallel_image_worker_count` (L504), `can_use_parallel_image_rewrite` (L509), `rewrite_images_serially` (L526), `collect_extracted_images` (L545), `collect_image_usage` (L570), `rewrite_images_from_source_in_parallel` (L596), `rewrite_extracted_images_in_parallel` (L629), `rewrite_images_with_pillow` (L667), `requires_post_save_packaging` (L704), `fast_save_kwargs` (L708), `postprocess_optimized_pdf_with_pikepdf` (L721), `save_optimized_working_doc` (L751), `save_optimized_copy` (L775)
+
+### `model/pdf_validator.py`
+**Functions:** `check_pdf_conformance` (L15), `is_pdf_conformant` (L92)
 
 ### `model/text_block.py`
 **Classes:** `TextBlock` (L107), `EditableSpan` (L125), `EditableParagraph` (L142), `TextBlockManager` (L158)
@@ -281,8 +301,8 @@
 **Methods (9):** `__init__`, `on_session_open`, `on_session_close`, `on_session_saved`, `has_unsaved_changes`, `_active_session_id`, `render_page_pixmap`, `build_print_snapshot`, `prepare_doc_for_save`
 
 ### `model/tools/ocr_tool.py`
-**Classes:** `_SuryaAdapter` (L104), `OcrTool` (L198)
-**Functions:** `_check_surya_import` (L25), `is_device_available` (L33), `_empty_torch_cache` (L52), `_resolve_torch_device` (L75), `_create_surya_adapter` (L180), `_pixmap_to_image` (L184)
+**Classes:** `_SuryaAdapter` (L112), `OcrTool` (L212)
+**Functions:** `_check_surya_import` (L33), `is_device_available` (L41), `_empty_torch_cache` (L60), `_resolve_torch_device` (L83), `_create_surya_adapter` (L194), `_pixmap_to_image` (L198)
 **Methods (7):** `__init__`, `device`, `_ensure_loaded`, `ocr`, `__init__`, `availability`, `ocr_pages`
 
 ### `model/tools/ocr_types.py`
@@ -349,7 +369,7 @@
 **Methods (4):** `to_json_dict`, `from_json_dict`, `read`, `write`
 
 ### `src/printing/layout.py`
-**Functions:** `normalize_orientation` (L15), `normalize_scale_mode` (L20), `normalize_scale_percent` (L27), `resolve_paper_size_points` (L37), `resolve_orientation` (L51), `compute_target_draw_rect` (L62)
+**Functions:** `match_standard_paper_size` (L31), `normalize_orientation` (L57), `normalize_scale_mode` (L62), `normalize_scale_percent` (L69), `resolve_paper_size_points` (L79), `resolve_orientation` (L93), `compute_target_draw_rect` (L104)
 
 ### `src/printing/messages.py`
 
@@ -377,10 +397,10 @@
 
 ### `src/printing/print_dialog.py`
 **Classes:** `UnifiedPrintDialogResult` (L43), `UnifiedPrintDialog` (L48)
-**Methods (33):** `__init__`, `result_data`, `eventFilter`, `_build_ui`, `_load_printers`, `_wire_signals`, `_on_printer_changed`, `_on_hardware_field_changed`, `_sync_printer_properties_button`, `_open_printer_properties_dialog`, `_load_printer_preferences`, `_apply_printer_preferences`, `_update_inherited_property_fields`, `_current_hardware_values`, `_resolve_hardware_values`, `_build_effective_options`, `_build_submission_options`, `_sync_printer_capabilities`, `_on_range_mode_changed`, `_on_scale_mode_changed` …
+**Methods (32):** `__init__`, `result_data`, `eventFilter`, `_build_ui`, `_load_printers`, `_wire_signals`, `_on_printer_changed`, `_on_hardware_field_changed`, `_sync_printer_properties_button`, `_open_printer_properties_dialog`, `_load_printer_preferences`, `_apply_printer_preferences`, `_update_inherited_property_fields`, `_current_hardware_values`, `_resolve_hardware_values`, `_build_effective_options`, `_build_submission_options`, `_sync_printer_capabilities`, `_on_range_mode_changed`, `_on_scale_mode_changed` …
 
 ### `src/printing/qt_bridge.py`
-**Functions:** `_ensure_qapplication` (L22), `_to_duplex_mode` (L31), `_to_paper_source` (L39), `_to_q_orientation` (L81), `_to_q_page_size` (L85), `_set_page_layout` (L110), `_fitz_rect_to_qrectf` (L127), `_apply_printer_options` (L131), `_draw_page_image` (L149), `raster_print_pdf` (L170)
+**Functions:** `_ensure_qapplication` (L42), `_to_duplex_mode` (L51), `_to_paper_source` (L59), `_to_q_orientation` (L101), `_to_q_page_size` (L105), `_set_page_layout` (L135), `_fitz_rect_to_qrectf` (L152), `_apply_printer_options` (L156), `_draw_page_image` (L174), `raster_print_pdf` (L195)
 
 ### `src/printing/subprocess_runner.py`
 **Classes:** `PrintSubprocessRunner` (L22)
@@ -393,7 +413,7 @@
 **Functions:** `_wait_for_quality` (L35), `_cleanup_startup` (L52), `main` (L60)
 
 ### `test_scripts/conftest.py`
-**Functions:** `qapp` (L19)
+**Functions:** `qapp` (L19), `_ensure_test_file_1_pdf` (L26)
 
 ### `test_scripts/core_interaction_audit.py`
 **Classes:** `AuditFixture` (L14), `AuditScenario` (L21), `AuditPlan` (L37), `AuditScenarioResult` (L43), `AuditReport` (L50)
@@ -482,7 +502,7 @@
 **Functions:** `_make_pdf` (L16), `_find_block` (L25), `test_repeated_identical_edits_keep_y1_drift_under_half_point` (L33), `test_single_line_edit_preserves_anchor_and_does_not_push_neighbor` (L66)
 
 ### `test_scripts/test_edit_text_helpers.py`
-**Functions:** `model_with_pdf` (L21), `_find_block` (L41), `_first_span_id` (L48), `_resolve_target` (L54), `_resolve_for_apply` (L85), `_apply_insert` (L99), `test_mode_default_no_args` (L119), `test_classify_insert_path_fast_vs_htmlbox` (L135), `test_mode_explicit_span_id` (L179), `test_mode_new_rect_promotes` (L196), `test_mode_explicit_paragraph` (L215), `test_mode_run_auto_promotes` (L231), `test_mode_run_no_promote_subsection` (L247), `test_resolve_target_happy_path` (L263), `test_resolve_target_missing_block` (L280), `test_resolve_target_no_change` (L292), `test_resolve_target_by_span_id` (L310), `test_apply_insert_basic` (L329), `test_apply_insert_empty_deletes` (L338), `test_apply_insert_preserves_others` (L345), `test_verify_rebuild_passes` (L351), `test_verify_rebuild_rollback` (L373), `test_phase2_single_line_run_edit_preserves_anchor_without_drag` (L398), `test_phase2_edit_text_preserves_fractional_font_size` (L428), `_make_pdf_at_size` (L470), `_measure_span_at` (L481), `test_edit_preserves_font_size_pt_after_content_change` (L491), `test_edit_preserves_span_bbox_height_after_content_change` (L537), `test_single_line_edit_does_not_push_unedited_text` (L590), `test_render_width_for_edit_does_not_exceed_rect_width` (L656), `test_render_width_for_edit_signature_is_slimmed_to_page_and_rect` (L685), `test_repeated_edits_do_not_accumulate_size_drift` (L692), `_find_largest_font_span` (L747), `_find_any_editable_span` (L766), `_find_span_with_text` (L785), `_normalized_ws` (L804), `_page_contains_text` (L808), `test_build_insert_css_explicit_tight_line_height_not_clamped` (L813), `test_real_pdf_complexed_layout_edit_does_not_enlarge_span` (L837), `test_real_pdf_colored_background_edit_does_not_shrink_span` (L907), `test_classify_insert_path_empty_member_spans_routes_to_htmlbox` (L980)
+**Functions:** `model_with_pdf` (L21), `_find_block` (L41), `_first_span_id` (L48), `_resolve_target` (L54), `_resolve_for_apply` (L85), `_apply_insert` (L99), `test_mode_default_no_args` (L119), `test_classify_insert_path_fast_vs_htmlbox` (L135), `test_mode_explicit_span_id` (L179), `test_mode_new_rect_promotes` (L196), `test_mode_explicit_paragraph` (L215), `test_mode_run_auto_promotes` (L231), `test_mode_run_no_promote_subsection` (L247), `test_resolve_target_happy_path` (L263), `test_resolve_target_missing_block` (L280), `test_resolve_target_no_change` (L292), `test_resolve_target_by_span_id` (L310), `test_apply_insert_basic` (L329), `test_apply_insert_empty_deletes` (L338), `test_apply_insert_preserves_others` (L345), `test_verify_rebuild_passes` (L351), `test_verify_rebuild_rollback` (L373), `test_phase2_single_line_run_edit_preserves_anchor_without_drag` (L398), `test_phase2_edit_text_preserves_fractional_font_size` (L428), `_make_pdf_at_size` (L470), `_measure_span_at` (L481), `test_edit_preserves_font_size_pt_after_content_change` (L491), `test_edit_preserves_span_bbox_height_after_content_change` (L537), `test_single_line_edit_does_not_push_unedited_text` (L590), `test_prepush_growth_branch_does_not_raise_name_error` (L656), `test_render_width_for_edit_does_not_exceed_rect_width` (L711), `test_render_width_for_edit_signature_is_slimmed_to_page_and_rect` (L740), `test_repeated_edits_do_not_accumulate_size_drift` (L747), `_find_largest_font_span` (L802), `_find_any_editable_span` (L821), `_find_span_with_text` (L840), `_normalized_ws` (L859), `_page_contains_text` (L863), `test_build_insert_css_explicit_tight_line_height_not_clamped` (L868), `test_real_pdf_complexed_layout_edit_does_not_enlarge_span` (L892), `test_real_pdf_colored_background_edit_does_not_shrink_span` (L962), `test_classify_insert_path_empty_member_spans_routes_to_htmlbox` (L1035)
 
 ### `test_scripts/test_empty_text_edit.py`
 **Classes:** `_FakeCommandManager` (L46), `_FakeModel` (L54)
@@ -515,8 +535,8 @@
 
 ### `test_scripts/test_interaction_modes.py`
 **Classes:** `_FakeSignal` (L22), `_FakeEvent` (L30)
-**Functions:** `_make_object_hit` (L49), `_make_view` (L62), `test_objects_mode_blocks_browse_text_selection_start` (L111), `test_browse_mode_does_not_start_object_manipulation` (L122), `test_text_edit_mode_does_not_select_rect_or_image` (L133), `test_text_edit_mode_allows_textbox_object_select` (L144)
-**Methods (7):** `__init__`, `emit`, `__init__`, `position`, `pos`, `button`, `accept`
+**Functions:** `_make_object_hit` (L59), `_make_view` (L72), `test_objects_mode_blocks_browse_text_selection_start` (L121), `test_browse_mode_does_not_start_object_manipulation` (L132), `test_text_edit_mode_does_not_select_rect_or_image` (L143), `test_text_edit_mode_allows_textbox_object_select` (L154)
+**Methods (8):** `__init__`, `emit`, `__init__`, `position`, `pos`, `button`, `modifiers`, `accept`
 
 ### `test_scripts/test_iso27001_sop_update.py`
 **Functions:** `extract_texts` (L14), `iter_runs` (L25), `test_updated_iso27001_sop_deck_contains_new_encryption_section` (L32)
@@ -529,13 +549,19 @@
 ### `test_scripts/test_linux_driver_overrides.py`
 **Functions:** `test_to_cups_options_omits_hardware_defaults_when_not_overridden` (L16), `test_to_cups_options_includes_hardware_defaults_when_overridden` (L37), `test_submit_via_lp_omits_hardware_options_when_not_overridden` (L51), `test_submit_via_lp_includes_hardware_options_when_overridden` (L93), `test_print_pdf_keeps_direct_pdf_for_source_following_auto_layout` (L129), `test_print_pdf_forces_raster_when_user_overrides_layout` (L165)
 
+### `test_scripts/test_macos_menu.py`
+**Functions:** `_app` (L27), `_view_with_actions` (L34), `_titles` (L46), `_items` (L50), `test_build_macos_menu_bar_is_noop_off_darwin` (L57), `test_macos_menu_spec_has_expected_menus_and_actions` (L67), `test_macos_menu_uses_native_shortcuts` (L94), `test_build_macos_menu_bar_assembles_menus_on_darwin` (L112), `test_app_menu_actions_have_macos_roles` (L137)
+
 ### `test_scripts/test_main_startup_behavior.py`
 **Functions:** `_send_drop` (L25), `_make_pdf` (L35), `_cleanup_startup` (L52), `test_empty_launch_keeps_backend_detached_until_document_request` (L60), `test_cli_open_path_keeps_controller_attached_before_opening_documents` (L78), `test_pdf_view_emits_shell_ready_before_lazy_panel_hydration` (L99), `test_empty_launch_keeps_heavy_panels_lazy_until_pdf_open` (L136), `test_lazy_shell_hydrates_panels_when_user_opens_search_tab` (L165), `test_empty_launch_buffers_dropped_pdf_paths_until_controller_attaches` (L185), `test_empty_launch_buffers_multi_drop_pdf_paths_in_order_until_controller_attaches` (L217), `test_cli_open_builds_placeholder_geometry_before_background_rasterization` (L252), `test_cli_open_defers_annotation_and_watermark_sidebar_scans` (L269), `test_change_scale_does_not_rerender_every_page_in_continuous_mode` (L305), `test_reset_empty_ui_tolerates_lazy_shell_without_heavy_panels` (L334), `test_empty_launch_cancelled_password_prompt_returns_to_empty_shell` (L355), `test_panel_helpers_do_not_emit_sidebar_reload_signals` (L386), `test_watermark_mutations_reload_sidebar_once` (L405), `test_show_page_schedules_visible_render_once_in_continuous_mode` (L447), `test_rebuild_continuous_scene_schedules_visible_render_once` (L469), `test_render_active_session_prioritizes_visible_render_before_background_loading` (L491), `test_initial_high_quality_render_starts_background_loading_once` (L543), `test_schedule_visible_render_coalesces_pending_batches` (L573)
 
 ### `test_scripts/test_multi_tab_plan.py`
 **Classes:** `_FakeEvent` (L175)
-**Functions:** `_make_pdf` (L21), `_make_pdf_with_font` (L31), `_make_landscape_pdf` (L40), `_norm` (L50), `_pump_events` (L54), `_send_drop` (L63), `_trigger_fullscreen` (L73), `_assert_mode_checked` (L80), `_make_dirty` (L93), `_edit_first_run` (L99), `_open_inline_editor_for_first_run` (L120), `_load_pdf_and_open_inline_editor` (L139), `_click_outside_active_editor` (L157), `_active_shortcut_target` (L164), `qapp` (L188), `mvc` (L196), `test_01_open_two_and_switch_tabs` (L211), `test_02_duplicate_open_focus_existing` (L228), `test_drag_drop_opens_multiple_local_pdfs_in_order` (L238), `test_drag_drop_ignores_non_pdf_folder_and_remote_urls` (L258), `test_drag_drop_multiple_pdfs_never_calls_merge_paths` (L286), `test_03_edit_in_a_undo_in_b_isolated` (L316), `test_04_structural_undo_redo_isolated` (L334), `test_04b_structural_actions_schedule_stale_index_drain` (L355), `test_04c_structural_metadata_uses_actual_blank_insert_position` (L370), `test_04d_structural_metadata_uses_actual_import_insert_positions` (L381), `test_04e_structural_metadata_uses_actual_deleted_pages` (L393), `test_05_search_state_restored_per_tab` (L404), `test_06_rapid_switch_has_no_stale_async_render` (L424), `test_06a_thumbnail_list_enforces_single_column_layout` (L439), `test_06b_thumbnail_click_navigation_with_single_column` (L446), `test_06c_thumbnail_layout_fills_sidebar_width_and_has_spacing` (L460), `test_06d_thumbnail_list_auto_scrolls_with_page_scroll` (L472), `test_06e_landscape_thumbnail_does_not_create_tall_blank_cell` (L489), `test_06f_thumbnail_layout_caps_width_and_centers_in_wide_sidebar` (L501), `test_07_close_modified_tab_cancel_keeps_tab` (L519), `test_08_close_modified_tab_save_then_close` (L533), `test_09_app_close_cancel_and_save_all_paths` (L553), `test_10_save_as_path_collision_blocked` (L613), `test_10a_active_session_updates_view_save_as_default_path` (L630), `test_11_close_last_tab_resets_ui` (L649), `test_12_cli_style_multi_open_loop` (L662), `test_13_ctrl_tab_switches_to_right_tab` (L676), `test_14_ctrl_shift_tab_switches_to_left_tab` (L692), `test_15_ctrl_tab_on_toolbar_does_not_switch_toolbar_tabs` (L709), `test_16_ctrl_shift_tab_on_sidebar_does_not_switch_sidebar_tabs` (L728), `test_17_fit_to_view_syncs_zoom_state_to_current_page_fit_scale` (L748), `test_17b_zoom_combo_keeps_only_default_options` (L775), `test_18_mode_checked_state_sync_and_restore` (L791), `test_19_escape_with_editor_closes_editor_but_keeps_mode` (L811), `test_19a_inline_existing_text_escape_discards_changes` (L828), `test_19aa_inline_existing_text_ctrl_z_undoes_locally` (L846), `test_19aaa_inline_existing_text_ctrl_z_on_real_multicolor_pdf_keeps_document_undo_idle` (L869), `test_19ab_inline_existing_text_ctrl_z_after_commit_undoes_document` (L895), `test_19ac_inline_existing_text_cross_page_move_roundtrips_via_document_undo_redo` (L930), `test_19b_font_size_menu_keeps_editor_and_outside_focus_finalizes_editor` (L986), `test_19c_edit_font_change_commits_without_text_change` (L1027), `test_19d_text_apply_commits_and_cancel_discards` (L1074), `test_19e_cjk_font_change_commits_without_text_change` (L1156), `test_19f_convert_text_to_html_uses_cjk_companion_font` (L1202), `test_19f2_custom_cjk_font_generates_embedded_css` (L1210), `test_19g_add_text_cjk_font_selection_commits` (L1221), `test_19h_edit_existing_switch_to_dfkai_commits_font_token` (L1253), `test_19i_custom_windows_cjk_fonts_render_distinct_span_fonts` (L1296), `test_19j_font_popup_interaction_can_refocus_editor_without_finalize` (L1331), `test_20_escape_non_browse_switches_to_browse` (L1381), `test_21_escape_browse_fallback_keeps_existing_sidebar_behavior` (L1394), `test_22_sticky_highlight_mode_after_draw` (L1407), `test_23_sticky_add_annotation_mode_after_click` (L1432), `test_24_open_existing_file_keeps_current_mode` (L1453), `test_25_close_last_tab_keeps_mode_when_window_stays_open` (L1472), `test_26_fullscreen_no_document_is_noop` (L1491), `test_27_fullscreen_enter_and_escape_restore_chrome` (L1503), `test_28_fullscreen_restores_zoom_scroll_and_dirty_state` (L1535), `test_29_fullscreen_clears_search_and_cancels_editor` (L1570), `test_30_fullscreen_blocked_while_print_busy_or_modal` (L1602), `test_31_fullscreen_exit_button_stays_visible` (L1626), `test_32_fullscreen_tab_switch_restores_each_visited_tab_state` (L1650), `test_33_fullscreen_from_highlight_mode_cancels_partial_state_and_enters_browse` (L1703), `test_34_fullscreen_quick_button_sits_between_fit_and_undo_and_f5_toggles` (L1726), `test_34a_fullscreen_quick_button_has_12px_gap_from_fit_button` (L1745), `test_34b_fullscreen_context_menu_offers_exit_action_and_triggers_toggle` (L1758), `test_35_ctrl_alt_l_toggles_left_sidebar_with_focus_and_width_fallback` (L1787), `test_36_ctrl_f_reopens_hidden_left_sidebar_and_focuses_search` (L1814), `test_37_ctrl_alt_r_toggles_right_sidebar_with_focus_and_width_fallback` (L1835), `test_38_fullscreen_restores_user_hidden_sidebars` (L1864)
+**Functions:** `_make_pdf` (L21), `_make_pdf_with_font` (L31), `_make_landscape_pdf` (L40), `_norm` (L50), `_pump_events` (L54), `_send_drop` (L63), `_trigger_fullscreen` (L73), `_assert_mode_checked` (L80), `_make_dirty` (L93), `_edit_first_run` (L99), `_open_inline_editor_for_first_run` (L120), `_load_pdf_and_open_inline_editor` (L139), `_click_outside_active_editor` (L157), `_active_shortcut_target` (L164), `qapp` (L188), `mvc` (L196), `test_01_open_two_and_switch_tabs` (L211), `test_02_duplicate_open_focus_existing` (L228), `test_drag_drop_opens_multiple_local_pdfs_in_order` (L238), `test_drag_drop_ignores_non_pdf_folder_and_remote_urls` (L258), `test_drag_drop_multiple_pdfs_never_calls_merge_paths` (L286), `test_03_edit_in_a_undo_in_b_isolated` (L316), `test_04_structural_undo_redo_isolated` (L334), `test_04b_structural_actions_schedule_stale_index_drain` (L355), `test_04c_structural_metadata_uses_actual_blank_insert_position` (L370), `test_04d_structural_metadata_uses_actual_import_insert_positions` (L381), `test_04e_structural_metadata_uses_actual_deleted_pages` (L393), `test_05_search_state_restored_per_tab` (L404), `test_06_rapid_switch_has_no_stale_async_render` (L424), `test_06a_thumbnail_list_enforces_single_column_layout` (L439), `test_06b_thumbnail_click_navigation_with_single_column` (L446), `test_06c_thumbnail_layout_fills_sidebar_width_and_has_spacing` (L460), `test_06d_thumbnail_list_auto_scrolls_with_page_scroll` (L472), `test_06e_landscape_thumbnail_does_not_create_tall_blank_cell` (L489), `test_06f_thumbnail_layout_caps_width_and_centers_in_wide_sidebar` (L501), `test_07_close_modified_tab_cancel_keeps_tab` (L519), `test_08_close_modified_tab_save_then_close` (L533), `test_09_app_close_cancel_and_save_all_paths` (L553), `test_10_save_as_path_collision_blocked` (L613), `test_10a_active_session_updates_view_save_as_default_path` (L630), `test_11_close_last_tab_resets_ui` (L649), `test_12_cli_style_multi_open_loop` (L662), `test_13_ctrl_tab_switches_to_right_tab` (L676), `test_14_ctrl_shift_tab_switches_to_left_tab` (L692), `test_15_ctrl_tab_on_toolbar_does_not_switch_toolbar_tabs` (L709), `test_16_ctrl_shift_tab_on_sidebar_does_not_switch_sidebar_tabs` (L728), `test_17_fit_to_view_syncs_zoom_state_to_current_page_fit_scale` (L748), `test_17b_zoom_combo_keeps_only_default_options` (L775), `test_18_mode_checked_state_sync_and_restore` (L791), `test_19_escape_with_editor_closes_editor_but_keeps_mode` (L811), `test_19a_inline_existing_text_escape_discards_changes` (L828), `test_19aa_inline_existing_text_ctrl_z_undoes_locally` (L846), `test_19aaa_inline_existing_text_ctrl_z_on_real_multicolor_pdf_keeps_document_undo_idle` (L869), `test_19ab_inline_existing_text_ctrl_z_after_commit_undoes_document` (L895), `test_19ac_inline_existing_text_cross_page_move_roundtrips_via_document_undo_redo` (L930), `test_19b_font_size_menu_keeps_editor_and_outside_focus_finalizes_editor` (L986), `test_19c_edit_font_change_commits_without_text_change` (L1037), `test_19d_text_apply_commits_and_cancel_discards` (L1084), `test_19e_cjk_font_change_commits_without_text_change` (L1166), `test_19f_convert_text_to_html_uses_cjk_companion_font` (L1212), `test_19f2_custom_cjk_font_generates_embedded_css` (L1220), `test_19g_add_text_cjk_font_selection_commits` (L1231), `test_19h_edit_existing_switch_to_dfkai_commits_font_token` (L1263), `test_19i_custom_windows_cjk_fonts_render_distinct_span_fonts` (L1306), `test_19j_font_popup_interaction_can_refocus_editor_without_finalize` (L1341), `test_20_escape_non_browse_switches_to_browse` (L1391), `test_21_escape_browse_fallback_keeps_existing_sidebar_behavior` (L1404), `test_22_sticky_highlight_mode_after_draw` (L1417), `test_23_sticky_add_annotation_mode_after_click` (L1442), `test_24_open_existing_file_keeps_current_mode` (L1463), `test_25_close_last_tab_keeps_mode_when_window_stays_open` (L1482), `test_26_fullscreen_no_document_is_noop` (L1501), `test_27_fullscreen_enter_and_escape_restore_chrome` (L1513), `test_28_fullscreen_restores_zoom_scroll_and_dirty_state` (L1545), `test_29_fullscreen_clears_search_and_cancels_editor` (L1580), `test_30_fullscreen_blocked_while_print_busy_or_modal` (L1612), `test_31_fullscreen_exit_button_stays_visible` (L1636), `test_32_fullscreen_tab_switch_restores_each_visited_tab_state` (L1660), `test_33_fullscreen_from_highlight_mode_cancels_partial_state_and_enters_browse` (L1713), `test_34_fullscreen_quick_button_sits_between_fit_and_undo_and_f5_toggles` (L1736), `test_34a_fullscreen_quick_button_has_12px_gap_from_fit_button` (L1755), `test_34b_fullscreen_context_menu_offers_exit_action_and_triggers_toggle` (L1768), `test_35_ctrl_alt_l_toggles_left_sidebar_with_focus_and_width_fallback` (L1797), `test_36_ctrl_f_reopens_hidden_left_sidebar_and_focuses_search` (L1824), `test_37_ctrl_alt_r_toggles_right_sidebar_with_focus_and_width_fallback` (L1845), `test_38_fullscreen_restores_user_hidden_sidebars` (L1874)
 **Methods (3):** `__init__`, `accept`, `ignore`
+
+### `test_scripts/test_native_image_discovery.py`
+**Functions:** `_rects_close` (L36), `test_awareness_form_nested_image_is_discovered` (L46), `test_awareness_image_is_hit_testable` (L61), `test_awareness_image_can_be_moved` (L76), `test_awareness_image_can_be_resized` (L104), `test_awareness_image_can_be_deleted` (L129), `test_report_direct_images_still_discovered` (L146)
 
 ### `test_scripts/test_native_pdf_images_model.py`
 **Functions:** `_png_bytes` (L18), `_make_native_image_pdf` (L26), `_make_shared_native_image_pdf` (L35), `_make_outer_q_nested_sibling_pdf` (L48), `_make_cropped_native_image_pdf` (L71), `_make_native_image_no_cm_pdf` (L81), `_hit` (L92), `_image_names` (L96), `test_native_image_hit_detection_returns_native_kind` (L100), `test_native_image_hit_prefers_topmost_invocation` (L121), `test_move_native_image_updates_hit_location` (L139), `test_resize_native_image_updates_hit_location` (L170), `test_rotate_native_image_preserves_bbox_and_updates_rotation` (L199), `test_delete_native_image_removes_one_invocation_but_keeps_shared_resource` (L230), `test_delete_native_image_prunes_unused_resource_name` (L257), `test_delete_native_image_does_not_delete_nested_sibling_in_outer_q` (L283), `test_native_discovery_does_not_depend_on_get_image_info_order` (L311), `test_native_discovery_survives_missing_get_image_info` (L343), `test_native_bbox_matches_get_image_info_on_cropped_page` (L362), `test_native_discovery_survives_no_cm_invocation` (L380), `test_native_no_cm_invocation_rejects_move_and_rotate` (L399)
@@ -548,10 +574,18 @@
 **Functions:** `_make_controller` (L51), `test_controller_delegates_object_hit_info` (L61), `test_controller_records_snapshot_for_move_object` (L69), `test_controller_records_snapshot_for_batch_move_object` (L79), `test_controller_records_snapshot_for_rotate_and_delete_object` (L95), `test_controller_records_snapshot_for_batch_delete_object` (L108)
 **Methods (8):** `__init__`, `record`, `__init__`, `_capture_doc_snapshot`, `move_object`, `rotate_object`, `delete_object`, `get_object_info_at_point`
 
+### `test_scripts/test_object_free_rotation.py`
+**Functions:** `_png_bytes` (L21), `_make_image_pdf` (L29), `_center` (L37), `test_free_rotate_native_image_to_30_degrees` (L41), `test_moving_a_freely_rotated_image_preserves_its_angle` (L74), `test_resizing_a_rotated_image_does_not_inflate_geometry` (L123)
+
+### `test_scripts/test_object_free_rotation_gui.py`
+**Classes:** `_FakeSignal` (L58), `_FakeViewport` (L66), `_FakeGraphicsView` (L71), `_FakeEvent` (L84), `_RotatableItem` (L183)
+**Functions:** `test_screen_angle_is_clockwise_in_scene_coords` (L33), `test_absolute_rotation_from_drag_matches_clockwise_direction` (L40), `_make_view` (L107), `test_rotate_handle_drag_emits_absolute_rotation` (L149), `test_textbox_drag_rotate_does_not_emit_absolute_rotation` (L169), `test_apply_selection_rotation_turns_box_and_handles` (L195), `test_rotate_handle_click_without_drag_uses_90_step` (L214)
+**Methods (15):** `__init__`, `emit`, `mapFrom`, `__init__`, `viewport`, `mapToScene`, `__init__`, `position`, `pos`, `button`, `modifiers`, `accept`, `__init__`, `setRotation`, `setTransformOriginPoint`
+
 ### `test_scripts/test_object_manipulation_gui.py`
-**Classes:** `_FakeSignal` (L21), `_FakeViewport` (L29), `_FakeGraphicsView` (L41), `_FakeEvent` (L58), `_FakeKeyEvent` (L77)
-**Functions:** `_make_object_hit` (L96), `_make_view` (L109), `test_objects_mouse_press_selects_object_and_blocks_text_selection` (L151), `test_objects_mouse_press_selects_native_image` (L165), `test_event_scene_pos_normalizes_viewport_offset` (L180), `test_delete_selected_object_emits_request` (L186), `test_rotate_selected_object_emits_request` (L194), `test_delete_shortcut_works_in_objects_mode` (L202), `test_delete_shortcut_works_in_text_edit_mode` (L214), `test_browse_object_drag_threshold_starts_drag` (L226), `test_text_edit_mouse_press_on_rotate_handle_arms_rotation` (L244), `test_scene_context_menu_includes_object_actions` (L261), `test_objects_context_menu_exposes_image_insert_actions` (L297), `test_objects_mode_move_release_rebases_selected_object_info_immediately` (L335), `test_objects_mode_move_release_rebases_when_preview_rects_populated` (L383), `test_add_image_object_clears_stale_object_selection_in_view` (L444)
-**Methods (19):** `__init__`, `emit`, `__init__`, `setCursor`, `mapFrom`, `__init__`, `viewport`, `mapToGlobal`, `mapToScene`, `__init__`, `position`, `pos`, `button`, `accept`, `__init__`, `key`, `modifiers`, `matches`, `accept`
+**Classes:** `_FakeSignal` (L21), `_FakeViewport` (L29), `_FakeGraphicsView` (L41), `_FakeEvent` (L58), `_FakeKeyEvent` (L87)
+**Functions:** `_make_object_hit` (L106), `_make_view` (L119), `test_objects_mouse_press_selects_object_and_blocks_text_selection` (L161), `test_objects_mouse_press_selects_native_image` (L175), `test_event_scene_pos_normalizes_viewport_offset` (L190), `test_delete_selected_object_emits_request` (L196), `test_rotate_selected_object_emits_request` (L204), `test_delete_shortcut_works_in_objects_mode` (L212), `test_delete_shortcut_works_in_text_edit_mode` (L224), `test_browse_object_drag_threshold_starts_drag` (L236), `test_text_edit_mouse_press_on_rotate_handle_does_not_arm_free_rotation` (L254), `test_textbox_rotate_pending_release_uses_legacy_90_step` (L271), `test_scene_context_menu_includes_object_actions` (L291), `test_objects_context_menu_exposes_image_insert_actions` (L327), `test_objects_mode_move_release_rebases_selected_object_info_immediately` (L365), `test_objects_mode_move_release_rebases_when_preview_rects_populated` (L413), `test_add_image_object_clears_stale_object_selection_in_view` (L474)
+**Methods (20):** `__init__`, `emit`, `__init__`, `setCursor`, `mapFrom`, `__init__`, `viewport`, `mapToGlobal`, `mapToScene`, `__init__`, `position`, `pos`, `button`, `modifiers`, `accept`, `__init__`, `key`, `modifiers`, `matches`, `accept`
 
 ### `test_scripts/test_object_manipulation_model.py`
 **Functions:** `_make_pdf` (L18), `_object_hit` (L26), `test_add_textbox_creates_hidden_object_marker_and_hit_detection` (L30), `test_get_object_info_ignores_legacy_text_without_marker` (L61), `test_add_rect_creates_object_metadata_and_hit_detection` (L75), `test_move_rect_object_updates_hit_location` (L93), `test_delete_rect_object_removes_annotation` (L123), `test_rotate_textbox_object_updates_rotation_metadata` (L148), `test_delete_textbox_after_move_and_rotate_removes_all_markers` (L178)
@@ -566,7 +600,7 @@
 
 ### `test_scripts/test_object_resize.py`
 **Classes:** `_FakeSignal` (L22), `_FakeViewport` (L30), `_FakeGraphicsView` (L35), `_FakeRectItem` (L48), `_FakeEllipseItem` (L72), `_FakeScene` (L76), `_FakeEvent` (L95)
-**Functions:** `_make_object_hit` (L125), `_make_view` (L138), `test_single_select_creates_resize_handles_and_hit_outside_bbox` (L169), `test_resize_drag_emits_resize_request` (L185), `test_top_left_handle_drag_moves_x0_y0_preserves_x1_y1` (L204), `test_bottom_left_handle_drag_moves_x0_y1_preserves_x1_y0` (L229)
+**Functions:** `_make_object_hit` (L125), `_make_view` (L138), `test_single_select_creates_resize_handles_and_hit_outside_bbox` (L169), `test_resize_drag_emits_resize_request` (L185), `test_top_left_handle_drag_moves_x0_y0_preserves_x1_y1` (L204), `test_compute_resize_rect_free_form_changes_aspect_ratio` (L229), `test_compute_resize_rect_shift_locks_aspect_ratio` (L239), `test_compute_resize_rect_lock_keeps_opposite_corner_for_tl` (L250), `test_bottom_left_handle_drag_moves_x0_y1_preserves_x1_y0` (L259)
 **Methods (23):** `__init__`, `emit`, `mapFrom`, `__init__`, `viewport`, `mapToScene`, `__init__`, `rect`, `setRect`, `setPen`, `setBrush`, `setZValue`, `scene`, `__init__`, `addRect`, `addEllipse`, `removeItem`, `__init__`, `position`, `pos` …
 
 ### `test_scripts/test_ocr_controller_flow.py`
@@ -582,8 +616,16 @@
 ### `test_scripts/test_ocr_e2e.py`
 **Functions:** `_surya_available` (L23), `eng_model` (L38), `cjk_model` (L46), `test_ocr_availability_reports_available` (L57), `test_english_pdf_page1_returns_spans` (L73), `test_english_spans_have_valid_bboxes` (L87), `test_english_spans_have_text` (L102), `test_english_spans_confidence_range` (L113), `test_chinese_pdf_page1_returns_spans` (L129), `test_apply_ocr_spans_inserts_invisible_text` (L147), `test_apply_ocr_spans_page_marked_dirty` (L169)
 
+### `test_scripts/test_ocr_loading_status.py`
+**Classes:** `_FakeTool` (L26)
+**Functions:** `test_worker_emits_loading_status_before_first_page` (L31)
+**Methods (1):** `ocr_pages`
+
 ### `test_scripts/test_ocr_model_insert.py`
 **Functions:** `_pixmap_hash` (L12), `_pixmap_distance` (L17), `_scanlike_pdf` (L30), `model_with_scan` (L43), `test_apply_ocr_spans_inserts_searchable_text` (L50), `test_apply_ocr_spans_locates_text_via_search_for` (L62), `test_apply_ocr_spans_keeps_render_visually_unchanged` (L72), `test_apply_ocr_spans_handles_cjk_text` (L89), `test_apply_ocr_spans_handles_japanese_text` (L99), `test_apply_ocr_spans_skips_empty_text` (L109), `test_apply_ocr_spans_increments_edit_count` (L120), `test_apply_ocr_spans_rebuilds_block_index` (L129), `test_apply_ocr_spans_rejects_invalid_page` (L140), `test_apply_ocr_spans_without_doc_returns_zero` (L153), `test_pixmap_hash_helper` (L162)
+
+### `test_scripts/test_ocr_predictor_cache.py`
+**Functions:** `test_predictors_constructed_once_across_adapters` (L22)
 
 ### `test_scripts/test_ocr_tool_surya.py`
 **Classes:** `_FakePixmap` (L17), `_FakeAdapter` (L30), `_FakeDoc` (L50)
@@ -605,6 +647,18 @@
 
 ### `test_scripts/test_overlap_textbox_edit.py`
 **Functions:** `_norm` (L17), `_make_pdf_exact_overlap` (L21), `_make_pdf_partial_overlap` (L31), `_make_pdf_vertical_overlap` (L52), `_assert_contains` (L62), `_first_span_with` (L68), `_center` (L77), `test_exact_overlap_edit` (L81), `test_partial_overlap_edit` (L110), `test_overlap_undo_redo` (L140), `test_vertical_overlap_edit` (L188), `test_overlap_replay_with_unavailable_font_fallback` (L218)
+
+### `test_scripts/test_page_deskew.py`
+**Functions:** `_skewed_lines_pdf` (L27), `test_detect_page_skew_recovers_known_angle` (L50), `test_straighten_page_keeps_size_and_page_count` (L65), `test_straighten_page_auto_detects_when_angle_omitted` (L86)
+
+### `test_scripts/test_page_deskew_scope.py`
+**Functions:** `_make_view` (L25), `_capture` (L34), `test_scope_all_emits_every_page` (L40), `test_scope_current_emits_only_current_page` (L53), `test_scope_custom_parses_range` (L66), `test_scope_cancelled_emits_nothing` (L80), `_skewed_pdf` (L93), `test_controller_straightens_batch_as_single_undo` (L113)
+
+### `test_scripts/test_pdf_compliance.py`
+**Functions:** `_make_valid_pdf` (L21), `test_well_formed_pdf_reports_no_issues` (L29), `test_repository_sample_pdf_is_conformant` (L37), `test_damaged_xref_is_flagged` (L45), `test_unopenable_file_reports_issue` (L63), `test_encrypted_pdf_is_reported_not_silently_passed` (L71)
+
+### `test_scripts/test_pdf_content_ops_cm_format.py`
+**Functions:** `_contains_scientific_notation` (L12), `test_fitz_rect_to_stream_cm_avoids_scientific_notation` (L16), `test_form_rect_to_stream_cm_avoids_scientific_notation` (L27), `test_rotated_image_stream_cm_zero_angle_parity` (L38)
 
 ### `test_scripts/test_pdf_merge_workflow.py`
 **Functions:** `_make_pdf` (L19), `_pump_events` (L29), `_reorder_list_widget` (L38), `qapp` (L45), `mvc` (L53), `test_merge_session_keeps_current_entry_locked_and_appends_new_files` (L72), `test_start_merge_pdfs_seeds_dialog_with_current_document` (L93), `test_merge_ordered_sources_into_current_replaces_active_document_in_list_order` (L113), `test_merge_dialog_appends_picker_results_and_deletes_only_unlocked_rows` (L138), `test_save_ordered_sources_as_new_opens_merged_result_as_new_tab` (L182), `test_resolve_merge_file_retries_password_and_skips_on_cancel` (L208), `test_start_merge_pdfs_accepts_dialog_and_saves_new_file` (L235), `test_start_merge_pdfs_passes_controller_resolver_into_dialog` (L267), `test_merge_dialog_validates_selected_files_before_appending` (L296), `test_merge_dialog_updates_progress_while_processing_picker_batch` (L338), `test_merge_dialog_preserves_reordered_list_when_adding_files` (L384), `test_merge_dialog_preserves_reordered_list_when_removing_files` (L414)
@@ -631,6 +685,14 @@
 **Functions:** `_ensure_app` (L60), `_make_single_page_pdf` (L67), `test_properties_button_calls_dispatcher_when_supported` (L75), `test_properties_button_disabled_when_not_supported` (L100), `test_properties_button_syncs_dialog_fields_from_system_preferences` (L125), `test_properties_button_keeps_auto_paper_and_orientation_app_owned` (L172), `test_properties_tray_preferences_are_inherited_without_dialog_field` (L217), `test_user_changed_hardware_field_marks_only_that_override` (L244), `test_opening_properties_resets_touched_overrides` (L283), `test_properties_cancel_keeps_current_ui_and_touched_state` (L330), `test_driver_private_properties_use_system_color_state_in_ui` (L369), `test_switching_printers_resets_touched_overrides_and_loads_new_defaults` (L420), `test_preview_errors_are_handled_without_raising_from_ui_path` (L474), `test_preview_provider_supports_dialog_without_temp_pdf_path` (L506), `test_preview_page_info_label_uses_readable_page_summary` (L537)
 **Methods (6):** `__init__`, `get_default_printer`, `resolve_page_indices_for_count`, `supports_printer_properties_dialog`, `open_printer_properties`, `get_printer_preferences`
 
+### `test_scripts/test_print_layout.py`
+**Classes:** `_LayoutPrinter` (L133)
+**Functions:** `test_match_standard_paper_size_a3_portrait` (L42), `test_match_standard_paper_size_a3_landscape` (L46), `test_match_standard_paper_size_a4` (L51), `test_match_standard_paper_size_letter` (L55), `test_match_standard_paper_size_tabloid` (L59), `test_match_standard_paper_size_non_standard_returns_none` (L63), `test_match_standard_paper_size_tolerates_small_rounding` (L67), `test_to_q_page_size_auto_a3_source_returns_named_a3` (L77), `test_to_q_page_size_auto_a3_landscape_source_returns_named_a3` (L83), `test_to_q_page_size_auto_a4_source_returns_named_a4_not_custom` (L88), `test_to_q_page_size_auto_non_standard_falls_back_to_custom` (L94), `test_to_q_page_size_auto_non_standard_landscape_is_portrait_normalised` (L103), `test_to_q_page_size_explicit_a4_overrides_source` (L112), `test_to_q_page_size_explicit_a3_returns_named_a3` (L118), `test_to_q_page_size_explicit_tabloid_returns_named_tabloid` (L123), `test_set_page_layout_auto_landscape_source_sets_landscape` (L146), `test_set_page_layout_auto_portrait_source_sets_portrait` (L157), `test_set_page_layout_explicit_portrait_overrides_landscape_source` (L168), `test_set_page_layout_explicit_landscape_overrides_portrait_source` (L179), `test_print_dialog_paper_combo_offers_a3` (L195)
+**Methods (3):** `__init__`, `pageLayout`, `setPageLayout`
+
+### `test_scripts/test_print_speed.py`
+**Functions:** `_make_a4_pdf` (L28), `test_ten_page_a4_300dpi_spools_within_budget` (L37)
+
 ### `test_scripts/test_print_subprocess_helper.py`
 **Functions:** `_make_single_page_pdf` (L30), `test_run_print_helper_emits_success_events` (L38), `test_run_print_helper_emits_failed_event_on_dispatch_error` (L75), `test_run_print_helper_emits_heartbeat_during_long_submission` (L102)
 
@@ -651,11 +713,17 @@
 ### `test_scripts/test_qt_pixmap_colorspaces.py`
 **Functions:** `_make_single_page_pdf` (L12), `test_pixmap_to_qpixmap_bridges_gray_and_cmyk` (L20), `test_pdf_renderer_grayscale_output_matches_rgb_dimensions` (L43)
 
+### `test_scripts/test_render_clarity_dpr.py`
+**Functions:** `_make_pdf` (L25), `test_high_quality_render_uses_device_pixel_ratio` (L33)
+
 ### `test_scripts/test_render_colorspace.py`
 **Functions:** `_resolve_fixture_pdf` (L9), `test_tool_manager_render_page_pixmap_accepts_colorspace` (L22), `test_pdf_model_render_entry_points_forward_colorspace` (L45)
 
 ### `test_scripts/test_resolve_target_mode.py`
 **Functions:** `_model` (L9), `test_run_without_span_id_logs_warning` (L17), `test_run_with_span_id_does_not_promote` (L31)
+
+### `test_scripts/test_rotated_text_editor_preview.py`
+**Functions:** `_ink_dims` (L44), `test_preview_glyphs_stay_upright_for_proxy_rotation` (L60)
 
 ### `test_scripts/test_sample_pdfs.py`
 **Functions:** `test_pdf` (L27), `main` (L72)
@@ -701,6 +769,9 @@
 ### `test_scripts/test_text_normalization.py`
 **Functions:** `test_normalize_strips_whitespace` (L6), `test_normalize_lowercases` (L10), `test_normalize_expands_fi_ligature` (L14), `test_normalize_expands_ff_ligature` (L18), `test_normalize_empty` (L22), `test_similarity_identical` (L26), `test_similarity_one_empty` (L30), `test_similarity_substring` (L34), `test_token_coverage_full` (L38), `test_token_coverage_empty_source` (L42), `test_token_coverage_no_match` (L46)
 
+### `test_scripts/test_text_selection.py`
+**Functions:** `_make_text_pdf` (L20), `_first_run` (L28), `test_get_chars_in_run_returns_per_character_boxes` (L35), `test_same_run_drag_selects_only_character_range` (L53), `test_same_run_drag_is_order_independent` (L82), `test_cross_run_same_line_clips_both_boundaries` (L101), `test_multi_run_selection_fetches_rawdict_once` (L136), `test_multi_line_drag_partial_first_full_middle_partial_last` (L178)
+
 ### `test_scripts/test_thumbnail_context_menu.py`
 **Classes:** `_FakeSignal` (L20), `_FakeItem` (L28), `_FakeViewport` (L32), `_FakeThumbnailList` (L37)
 **Functions:** `_make_view` (L58), `test_thumbnail_context_menu_exposes_page_operations` (L69), `test_delete_rotate_and_insert_helpers_emit_page_specific_signals` (L118), `test_export_specific_pages_defaults_to_pdf_when_filter_is_pdf` (L130), `test_insert_pages_from_file_at_uses_given_position` (L143)
@@ -733,6 +804,9 @@
 **Classes:** `_FakeDevMode` (L17), `_FakeWin32Print` (L34), `_FakeWin32PrintLimitedPort` (L100), `_FakeWin32PrintUserDefaults` (L127), `_FakeWin32PrintCancel` (L192)
 **Functions:** `_clone_devmode` (L27), `test_open_printer_properties_ignores_setprinter_access_denied` (L82), `test_get_printer_preferences_prefers_richer_tray_list` (L114), `test_get_printer_preferences_prefers_user_defaults_for_color_mode` (L162), `test_open_printer_properties_reloads_user_defaults_after_color_change` (L176), `test_open_printer_properties_cancel_returns_none_without_persisting` (L199)
 **Methods (13):** `__init__`, `OpenPrinter`, `ClosePrinter`, `GetPrinter`, `DocumentProperties`, `SetPrinter`, `DeviceCapabilities`, `DeviceCapabilities`, `__init__`, `GetPrinter`, `DocumentProperties`, `SetPrinter`, `DocumentProperties`
+
+### `test_scripts/test_xref_repair.py`
+**Functions:** `_valid_pdf_bytes` (L24), `_corrupt_startxref` (L34), `test_repair_document_xref_produces_clean_copy` (L40)
 
 ### `test_scripts/validate_optimized_pdf.py`
 **Functions:** `_tail_has_eof` (L13), `_sample_page_indexes` (L20), `validate_pdf_integrity` (L27), `main` (L91)
@@ -783,13 +857,13 @@
 **Methods (4):** `__init__`, `_build_ui`, `_choose_color`, `get_values`
 
 ### `view/pdf_view.py`
-**Classes:** `_NoCtrlTabTabBar` (L113), `PDFView` (L147)
-**Functions:** `_ctrl_tab_direction` (L103)
-**Methods (230):** `event`, `keyPressEvent`, `__init__`, `ensure_heavy_panels_initialized`, `_emit_shell_ready_once`, `_configure_drop_targets`, `_extract_dropped_pdf_paths`, `_set_drag_drop_affordance`, `_queue_or_open_paths`, `drain_pending_open_paths`, `_handle_drag_drop_event`, `dragEnterEvent`, `dragMoveEvent`, `dragLeaveEvent`, `dropEvent`, `_build_fullscreen_exit_button`, `_update_fullscreen_exit_button_geometry`, `_set_fullscreen_exit_button_visible`, `_update_fullscreen_exit_hover`, `is_fullscreen_active` …
+**Classes:** `_NoCtrlTabTabBar` (L199), `PDFView` (L233)
+**Functions:** `_ctrl_tab_direction` (L104), `compute_object_resize_rect` (L114), `screen_angle_degrees` (L174), `absolute_rotation_from_drag` (L183)
+**Methods (243):** `event`, `keyPressEvent`, `__init__`, `ensure_heavy_panels_initialized`, `_emit_shell_ready_once`, `_configure_drop_targets`, `_extract_dropped_pdf_paths`, `_set_drag_drop_affordance`, `_queue_or_open_paths`, `drain_pending_open_paths`, `_handle_drag_drop_event`, `dragEnterEvent`, `dragMoveEvent`, `dragLeaveEvent`, `dropEvent`, `_build_fullscreen_exit_button`, `_update_fullscreen_exit_button_geometry`, `_set_fullscreen_exit_button_visible`, `_update_fullscreen_exit_hover`, `is_fullscreen_active` …
 
 ### `view/text_editing.py`
-**Classes:** `TextEditUIConstants` (L86), `TextEditGeometryConstants` (L98), `TextEditFinalizeReason` (L103), `TextEditOutcome` (L114), `TextEditReason` (L121), `TextEditDragState` (L125), `TextEditDelta` (L132), `TextEditFinalizeResult` (L144), `TextEditSession` (L154), `_EditorShortcutForwarder` (L170), `InlineTextEditor` (L235), `ViewportAnchor` (L260), `PreviewRenderer` (L596), `PreviewBackedInlineTextEditor` (L715), `TextEditManager` (L930)
-**Functions:** `_parse_font_size_str` (L35), `_format_font_size` (L43), `_readable_editor_mask_color` (L73), `_normalize_for_edit_compare` (L266), `_average_image_rect_color` (L275), `_contrast_ratio_rgb` (L282), `_qimage_mean_rgb` (L296), `_qimage_ring_mean_rgb` (L337), `_blend_patch_towards_rgb` (L390), `_mask_leak_ratio` (L428), `_make_fallback_mask_result` (L462), `_widget_logical_dpi` (L484), `_display_font_pt` (L495), `_measure_text_content_height_px` (L508), `_compute_editor_proxy_layout` (L529), `_viewport_editor_height_cap_px` (L558), `_alias_font_family` (L579), `_map_legacy_reason` (L1738), `finalize_text_edit_impl` (L1744)
+**Classes:** `TextEditUIConstants` (L86), `TextEditGeometryConstants` (L98), `TextEditFinalizeReason` (L103), `TextEditOutcome` (L114), `TextEditReason` (L121), `TextEditDragState` (L125), `TextEditDelta` (L132), `TextEditFinalizeResult` (L144), `TextEditSession` (L154), `_EditorShortcutForwarder` (L170), `InlineTextEditor` (L235), `ViewportAnchor` (L260), `PreviewRenderer` (L596), `PreviewBackedInlineTextEditor` (L720), `TextEditManager` (L943)
+**Functions:** `_parse_font_size_str` (L35), `_format_font_size` (L43), `_readable_editor_mask_color` (L73), `_normalize_for_edit_compare` (L266), `_average_image_rect_color` (L275), `_contrast_ratio_rgb` (L282), `_qimage_mean_rgb` (L296), `_qimage_ring_mean_rgb` (L337), `_blend_patch_towards_rgb` (L390), `_mask_leak_ratio` (L428), `_make_fallback_mask_result` (L462), `_widget_logical_dpi` (L484), `_display_font_pt` (L495), `_measure_text_content_height_px` (L508), `_compute_editor_proxy_layout` (L529), `_viewport_editor_height_cap_px` (L558), `_alias_font_family` (L579), `_map_legacy_reason` (L1751), `finalize_text_edit_impl` (L1757)
 **Methods (35):** `any_change`, `__init__`, `_trigger`, `_editor_widget`, `_handle_editor_undo`, `_handle_editor_redo`, `eventFilter`, `keyPressEvent`, `focusOutEvent`, `__init__`, `_pixel_dims`, `_to_qimage_dimensions`, `render`, `__init__`, `keyPressEvent`, `configure_render_context`, `_schedule_preview`, `_mutated_preview_has_visible_ink`, `_regenerate_preview`, `paintEvent` …
 
 ## Internal Import Graph
@@ -840,11 +914,15 @@
 - `test_scripts/test_interaction_modes.py` → `model/object_requests.py`, `view/pdf_view.py`
 - `test_scripts/test_large_scale.py` → `model/edit_commands.py`, `model/pdf_model.py`
 - `test_scripts/test_linux_driver_overrides.py` → `src/printing/base_driver.py`, `src/printing/platforms/linux_driver.py`
+- `test_scripts/test_macos_menu.py` → `view/pdf_view.py`
 - `test_scripts/test_main_startup_behavior.py` → `controller/pdf_controller.py`, `main.py`, `model/pdf_model.py`, `view/pdf_view.py`
-- `test_scripts/test_multi_tab_plan.py` → `controller/pdf_controller.py`, `model/pdf_model.py`, `view/pdf_view.py`
+- `test_scripts/test_multi_tab_plan.py` → `controller/pdf_controller.py`, `model/pdf_model.py`, `view/pdf_view.py`, `view/text_editing.py`
+- `test_scripts/test_native_image_discovery.py` → `model/object_requests.py`, `model/pdf_content_ops.py`, `model/pdf_model.py`
 - `test_scripts/test_native_pdf_images_model.py` → `model/object_requests.py`, `model/pdf_content_ops.py`, `model/pdf_model.py`
 - `test_scripts/test_no_jump_editor_geometry.py` → `controller/pdf_controller.py`, `model/pdf_model.py`, `view/pdf_view.py`, `view/text_editing.py`
 - `test_scripts/test_object_controller_flow.py` → `controller/pdf_controller.py`, `model/object_requests.py`
+- `test_scripts/test_object_free_rotation.py` → `model/object_requests.py`, `model/pdf_model.py`
+- `test_scripts/test_object_free_rotation_gui.py` → `model/object_requests.py`, `view/pdf_view.py`
 - `test_scripts/test_object_manipulation_gui.py` → `model/object_requests.py`, `view/pdf_view.py`
 - `test_scripts/test_object_manipulation_model.py` → `model/object_requests.py`, `model/pdf_model.py`
 - `test_scripts/test_object_multi_select.py` → `model/object_requests.py`, `view/pdf_view.py`
@@ -853,26 +931,36 @@
 - `test_scripts/test_ocr_controller_flow.py` → `controller/__init__.py`, `controller/pdf_controller.py`, `model/tools/ocr_types.py`
 - `test_scripts/test_ocr_dialog.py` → `model/tools/ocr_types.py`, `utils/preferences.py`, `view/dialogs/ocr.py`
 - `test_scripts/test_ocr_e2e.py` → `model/pdf_model.py`, `model/tools/ocr_tool.py`
+- `test_scripts/test_ocr_loading_status.py` → `controller/pdf_controller.py`
 - `test_scripts/test_ocr_model_insert.py` → `model/pdf_model.py`, `model/tools/ocr_types.py`
+- `test_scripts/test_ocr_predictor_cache.py` → `model/tools/__init__.py`
 - `test_scripts/test_ocr_tool_surya.py` → `model/tools/__init__.py`, `model/tools/ocr_tool.py`, `model/tools/ocr_types.py`
 - `test_scripts/test_ocr_types.py` → `model/tools/ocr_types.py`
 - `test_scripts/test_ocr_view_entry.py` → `model/tools/ocr_types.py`, `view/pdf_view.py`
 - `test_scripts/test_open_large_pdf.py` → `model/pdf_model.py`
 - `test_scripts/test_overlap_corpus_recursive.py` → `model/edit_commands.py`, `model/pdf_model.py`
 - `test_scripts/test_overlap_textbox_edit.py` → `model/edit_commands.py`, `model/pdf_model.py`
+- `test_scripts/test_page_deskew.py` → `model/pdf_model.py`
+- `test_scripts/test_page_deskew_scope.py` → `controller/pdf_controller.py`, `model/pdf_model.py`, `view/pdf_view.py`
+- `test_scripts/test_pdf_compliance.py` → `model/pdf_validator.py`
+- `test_scripts/test_pdf_content_ops_cm_format.py` → `model/pdf_content_ops.py`
 - `test_scripts/test_pdf_merge_workflow.py` → `controller/pdf_controller.py`, `model/merge_session.py`, `model/pdf_model.py`, `view/pdf_view.py`
 - `test_scripts/test_pdf_optimize_workflow.py` → `controller/pdf_controller.py`, `model/__init__.py`, `model/pdf_model.py`, `model/pdf_optimizer.py`, `test_scripts/validate_optimized_pdf.py`, `view/pdf_view.py`
 - `test_scripts/test_performance.py` → `model/pdf_model.py`
 - `test_scripts/test_print_colorspace.py` → `src/printing/base_driver.py`, `src/printing/errors.py`, `src/printing/qt_bridge.py`
 - `test_scripts/test_print_controller_flow.py` → `controller/pdf_controller.py`, `model/pdf_model.py`, `src/printing/base_driver.py`, `src/printing/errors.py`, `src/printing/messages.py`, `view/pdf_view.py`
 - `test_scripts/test_print_dialog_properties_button.py` → `src/printing/base_driver.py`, `src/printing/print_dialog.py`
+- `test_scripts/test_print_layout.py` → `src/printing/__init__.py`, `src/printing/base_driver.py`, `src/printing/layout.py`, `src/printing/print_dialog.py`
+- `test_scripts/test_print_speed.py` → `src/printing/base_driver.py`, `src/printing/qt_bridge.py`
 - `test_scripts/test_print_subprocess_helper.py` → `src/printing/base_driver.py`, `src/printing/errors.py`, `src/printing/helper_main.py`, `src/printing/helper_protocol.py`, `src/printing/messages.py`
 - `test_scripts/test_print_subprocess_runner.py` → `src/printing/base_driver.py`, `src/printing/errors.py`, `src/printing/helper_protocol.py`, `src/printing/subprocess_runner.py`
 - `test_scripts/test_printing_pipeline.py` → `src/printing/__init__.py`, `src/printing/pdf_renderer.py`
 - `test_scripts/test_qt_bridge_layout.py` → `src/printing/__init__.py`, `src/printing/base_driver.py`, `src/printing/layout.py`, `src/printing/page_selection.py`
 - `test_scripts/test_qt_pixmap_colorspaces.py` → `src/printing/pdf_renderer.py`, `utils/helpers.py`
+- `test_scripts/test_render_clarity_dpr.py` → `controller/pdf_controller.py`, `model/pdf_model.py`, `view/pdf_view.py`
 - `test_scripts/test_render_colorspace.py` → `model/pdf_model.py`
 - `test_scripts/test_resolve_target_mode.py` → `model/pdf_model.py`
+- `test_scripts/test_rotated_text_editor_preview.py` → `model/pdf_model.py`, `view/text_editing.py`
 - `test_scripts/test_sample_pdfs.py` → `model/pdf_model.py`
 - `test_scripts/test_scene_context_menu.py` → `view/pdf_view.py`
 - `test_scripts/test_short_term_safety.py` → `model/edit_commands.py`, `model/pdf_model.py`, `view/pdf_view.py`
@@ -885,6 +973,7 @@
 - `test_scripts/test_text_editing_gui_regressions.py` → `view/pdf_view.py`, `view/text_editing.py`
 - `test_scripts/test_text_extraction_line_joining.py` → `model/pdf_model.py`, `model/text_block.py`
 - `test_scripts/test_text_normalization.py` → `model/text_normalization.py`
+- `test_scripts/test_text_selection.py` → `model/pdf_model.py`
 - `test_scripts/test_thumbnail_context_menu.py` → `view/pdf_view.py`
 - `test_scripts/test_tool_extensions.py` → `model/__init__.py`, `model/pdf_model.py`
 - `test_scripts/test_track_ab_5scenarios.py` → `model/edit_commands.py`, `model/pdf_model.py`
@@ -894,6 +983,7 @@
 - `test_scripts/test_ux_signoff_agent.py` → `scripts/ux_signoff_agent.py`
 - `test_scripts/test_week1_model_regressions.py` → `model/pdf_model.py`, `model/text_block.py`
 - `test_scripts/test_win_driver_properties.py` → `src/printing/platforms/__init__.py`
+- `test_scripts/test_xref_repair.py` → `model/pdf_model.py`
 - `utils/preferences.py` → `model/tools/ocr_types.py`
 - `view/dialogs/audit.py` → `model/pdf_optimizer.py`
 - `view/dialogs/export.py` → `utils/helpers.py`
