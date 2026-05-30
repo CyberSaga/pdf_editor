@@ -1,5 +1,19 @@
 # TODOS
 
+## Done (2026-05-30) -- Clean re-implementation of the four-theme UI system
+
+- What: Restarted the theme switcher from clean base `24c9dba` (old work preserved on branch `backup/theme-switcher-b774a72`) and rebuilt it per `docs/plans/learn-from-ui-update-report-txt-ethereal-micali.md`, folding in every lesson from `ui-update-report.txt`.
+- Shipped:
+  - `view/theme.py` — four token dicts (added **glimmering-glacier**), `THEME_REGISTRY`, `build_qss` (app-level QSS, scoped ribbon/sidebar/doc-tab rules, dialog+menu+combo-popup themed), and `ThemeSwitcherWidget`/`_ThemeChip` (one square per mode).
+  - `view/icons.py` — 31-label→PNG map + `load_icon(label)`; Qt imports guarded for headless tests.
+  - `appearance_design/colors.css` — appended block 03 Glimmering Glacier.
+  - `utils/preferences.py` — `ui/theme` get/set with validation (`_VALID_THEME_IDS`), default `alpine-snow`.
+  - `view/pdf_view.py` — removed all inline color stylesheets; object names for panels/tabs; toolbar container 92px + text-beside-icon + 24px icons; status-bar switcher; `sig_theme_selected`.
+  - `controller/pdf_controller.py` — `set_theme` slot applies app-level QSS + persists + syncs switcher.
+  - Tests: `test_scripts/test_theme_and_icons.py` (rebuilt, 4 themes) + theme cases in `test_user_preferences.py`. 66 pass; RED confirmed before implementation.
+- Outcome: themed QSS applied once at `QApplication` level so context menus and dialogs re-theme too. No new ruff violations.
+- Follow-up: delete `backup/theme-switcher-b774a72` once the new branch is merged.
+
 ## Done (2026-05-19) -- Clean re-implementation of glyph-jump elimination
 
 - What: Re-derived the 5-layer no-jump text-editing fix from clean baseline `c091661f` on branch `rewrite/glyph-jump-v2` instead of carrying the 50-commit organic history.

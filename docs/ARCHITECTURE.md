@@ -141,6 +141,17 @@ Fullscreen UX is implemented in the view, but coordinated by controller state:
 - View owns chrome visibility, fullscreen enter/exit, top-edge exit affordance, and viewport anchor helpers.
 - Controller decides when fullscreen is allowed, normalizes mode/interaction state on entry, and restores per-tab layout on exit.
 
+### 2.5 Theming (`view/theme.py`, `view/icons.py`)
+
+The UI ships four selectable themes (`alpine-snow`, `meadow-lupine`, `ink-porcelain`, `glimmering-glacier`), translated from `appearance_design/colors.css`. `view/theme.py` is the single source of truth:
+- Per-theme token dicts (17 keys each) and a `THEME_REGISTRY` of frozen `ThemeMeta` (insertion order = on-screen order). Each chip's `swatch` is the theme's `bg`, so light modes that share an accent stay distinguishable.
+- `build_qss(theme_name)` returns the complete application QSS; unknown names fall back to `alpine-snow`. Ribbon, sidebar, and document-tab rules are object-name-scoped (`#ribbonTabs`, `#sidebarTabs`, `#documentTabBar`) so they never leak across tab widgets.
+- `ThemeSwitcherWidget` / `_ThemeChip` render one square per theme in the status-bar corner and emit `theme_selected(str)`.
+
+Key contract: the themed QSS is applied **once at the `QApplication` level** (in `PDFView.__init__` on startup, and in `PDFController.set_theme` on switch), not per-widget. This is deliberate — top-level `QMenu` context menus and modal `QDialog`s are not children of the main window and would otherwise miss a window-level stylesheet. No widget carries an inline `setStyleSheet` for colors. Flow: view emits `sig_theme_selected` → `PDFController.set_theme` validates against `THEME_REGISTRY`, persists via `UserPreferences.set_theme`, re-applies app QSS, and calls `view.update_theme_switcher(...)` to sync the active-chip ring.
+
+`utils/preferences.py` stores the choice under `ui/theme` and validates against a local `_VALID_THEME_IDS` frozenset that is kept in sync with `THEME_REGISTRY` by hand (utils must not import the view layer per §2). `view/icons.py` maps the 31 Traditional-Chinese ribbon action labels to PNG filenames in `appearance_design/function_icons/` and exposes `load_icon(label, size=24)` (null `QIcon` for unknown labels / missing files). Both modules guard their Qt imports with `try/except ImportError` so token/map-only tests run headless.
+
 ## 3. Runtime Flows
 
 ### 3.1 Open / Activate / Close

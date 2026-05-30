@@ -18,6 +18,15 @@ _OCR_LANGS_KEY = "ocr/languages"
 _OCR_DEVICE_DEFAULT = OcrDevice.AUTO.value
 _OCR_LANGS_DEFAULT = (OcrLanguage.ENGLISH.value,)
 
+_THEME_KEY = "ui/theme"
+_THEME_DEFAULT = "alpine-snow"
+# Keep in sync with view.theme.THEME_REGISTRY. Duplicated here as a plain
+# frozenset so utils/ never imports the view layer (which would be a layer
+# violation per CLAUDE.md §2).
+_VALID_THEME_IDS = frozenset(
+    {"alpine-snow", "meadow-lupine", "ink-porcelain", "glimmering-glacier"}
+)
+
 _ORG = "pdf_editor"
 _APP = "pdf_editor"
 
@@ -69,3 +78,16 @@ class UserPreferences:
         if not codes:
             raise ValueError("OCR 語言清單不可為空")
         self._store.setValue(_OCR_LANGS_KEY, codes)
+
+    def get_theme(self) -> str:
+        raw = self._store.value(_THEME_KEY, _THEME_DEFAULT)
+        if isinstance(raw, str) and raw in _VALID_THEME_IDS:
+            return raw
+        if raw != _THEME_DEFAULT:
+            logger.warning("Stored theme %r is invalid, using %s", raw, _THEME_DEFAULT)
+        return _THEME_DEFAULT
+
+    def set_theme(self, name: str) -> None:
+        if name not in _VALID_THEME_IDS:
+            raise ValueError(f"未知佈景主題：{name!r}")
+        self._store.setValue(_THEME_KEY, name)

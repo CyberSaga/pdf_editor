@@ -199,6 +199,67 @@
 
 
 /* -----------------------------------------------------------------------------
+   03 · 冰川微光　Glimmering Glacier　— 淺色 · 冰藍天青
+   冷調冰藍近白面板 + 深天青 accent + 冰川青焦點高光
+   ----------------------------------------------------------------------------- */
+:root[data-theme="glimmering-glacier"],
+.theme-glimmering-glacier {
+  color-scheme: light;
+
+  /* Surfaces — 冰藍近白，bg / surface / sunken / elev 四層分離 */
+  --color-bg:          #e8f4fb;   /* desktop / chrome */
+  --color-surface:     #f4fafd;   /* toolbars / panels */
+  --color-sunken:      #d6ecf5;   /* canvas well behind pages */
+  --color-elev:        #ffffff;   /* popovers / menus */
+
+  /* Borders */
+  --color-line:        #b8d9ee;
+  --color-line-strong: #7db9d8;
+  --color-line-soft:   #daeef7;
+
+  /* Text — 深海軍藍 ink */
+  --color-fg:          #0c1a2e;
+  --color-fg-muted:    #2d4a64;
+  --color-fg-subtle:   #5d7a8e;
+  --color-fg-faint:    #9bb2c2;
+
+  /* Accent — 深天青 cerulean */
+  --color-accent:        #0369a1;
+  --color-accent-fg:     #ffffff;
+  --color-accent-soft:   #cce6f7;
+  --color-accent-line:   #8ec8e6;
+
+  /* Status — 冰川青高光 */
+  --color-good:        #16a34a;
+  --color-good-soft:   #d6efe0;
+  --color-warn:        #b06f30;
+  --color-warn-soft:   #f3e3cf;
+  --color-danger:      #b35858;
+  --color-danger-soft: #efd5d5;
+  --color-highlight:   #67e8f9;   /* 螢光筆 */
+
+  /* Interaction — 天青傾向的 hover/press 疊色 */
+  --color-hover:        rgba(3, 105, 161, 0.06);
+  --color-hover-strong: rgba(3, 105, 161, 0.10);
+  --color-pressed:      rgba(3, 105, 161, 0.14);
+
+  /* Shadows — 微帶天青的柔影 */
+  --shadow-sm: 0 1px 2px rgba(12, 48, 82, 0.07);
+  --shadow-md: 0 4px 12px rgba(12, 48, 82, 0.12), 0 1px 2px rgba(12, 48, 82, 0.07);
+  --shadow-lg: 0 14px 36px rgba(12, 48, 82, 0.20), 0 2px 6px rgba(12, 48, 82, 0.09);
+
+  /* Paper — 文件本體永遠純白 */
+  --color-paper:       #ffffff;
+  --color-paper-edge:  rgba(12, 48, 82, 0.14);
+
+  /* Swatches（識別色票，可用於 picker 預覽） */
+  --swatch-1: #e8f4fb;
+  --swatch-2: #f4fafd;
+  --swatch-3: #0369a1;
+}
+
+
+/* -----------------------------------------------------------------------------
    建議用法（mapping 對照 — tokens.jsx 內部命名 vs CSS 變數）
    -----------------------------------------------------------------------------
      bg          → --color-bg            surface     → --color-surface

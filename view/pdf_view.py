@@ -79,6 +79,9 @@ from model.object_requests import (
     RotateObjectRequest,
 )
 from utils.helpers import parse_pages, show_error
+from utils.preferences import UserPreferences
+from view.icons import load_icon
+from view.theme import ThemeSwitcherWidget, build_qss
 from view.text_editing import (
     _DEFAULT_EDITOR_MASK_COLOR,
     _EditorShortcutForwarder,  # noqa: F401 — re-exported for tests and legacy imports
@@ -267,6 +270,7 @@ class PDFView(QMainWindow):
     sig_scale_changed = Signal(int, float)
     sig_viewport_changed = Signal()
     sig_toggle_fullscreen = Signal()
+    sig_theme_selected = Signal(str)  # theme id chosen via the status-bar switcher
 
     # --- New Annotation Signals ---
     sig_add_annotation = Signal(int, object, str)  # page_idx, doc_point (fitz.Point), text
@@ -298,6 +302,15 @@ class PDFView(QMainWindow):
 
     def __init__(self, defer_heavy_panels: bool = False):
         super().__init__()
+        # Apply the saved theme's global QSS at the QApplication level before any
+        # child widgets are built, so colours come from one place (view/theme.py)
+        # and reach even top-level QMenus and modal QDialogs (which are not
+        # children of this window and so miss a window-level stylesheet).
+        self._prefs = UserPreferences()
+        self._initial_theme = self._prefs.get_theme()
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(build_qss(self._initial_theme))
         self.setWindowTitle("視覺化 PDF 編輯器")
         self.setMinimumSize(1280, 800)
         self.setGeometry(100, 100, 1280, 800)
@@ -349,6 +362,7 @@ class PDFView(QMainWindow):
 
         # Left sidebar: 260px, QTabWidget (縮圖 / 搜尋 / 註解列表 / 浮水印列表)
         self.left_sidebar = QTabWidget()
+        self.left_sidebar.setObjectName("sidebarTabs")  # themed via QTabWidget#sidebarTabs
         self.left_sidebar.setTabBar(_NoCtrlTabTabBar(self.left_sidebar))
         self.left_sidebar.setMinimumWidth(200)
         self.left_sidebar.setMaximumWidth(400)
@@ -356,6 +370,7 @@ class PDFView(QMainWindow):
             self._setup_left_sidebar()
             self._heavy_panels_initialized = True
         self.left_sidebar_widget = QWidget()
+        self.left_sidebar_widget.setObjectName("leftPanel")
         self.left_sidebar_widget.setAcceptDrops(True)
         left_sidebar_layout = QVBoxLayout(self.left_sidebar_widget)
         left_sidebar_layout.setContentsMargins(0, 0, 0, 0)
@@ -371,6 +386,7 @@ class PDFView(QMainWindow):
 
         # Right sidebar: 280px, "屬性" dynamic inspector
         self.right_sidebar = QWidget()
+        self.right_sidebar.setObjectName("rightPanel")
         self.right_sidebar.setAcceptDrops(True)
         right_sidebar_layout = QVBoxLayout(self.right_sidebar)
         right_sidebar_layout.setContentsMargins(0, 0, 0, 0)
@@ -380,9 +396,7 @@ class PDFView(QMainWindow):
 
         self.color_profile_card = QWidget()
         self.color_profile_card.setObjectName("colorProfileCard")
-        self.color_profile_card.setStyleSheet(
-            "QWidget#colorProfileCard { border-top: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0; }"
-        )
+        # Border colour comes from the global theme QSS (QWidget#colorProfileCard).
         color_profile_layout = QVBoxLayout(self.color_profile_card)
         color_profile_layout.setContentsMargins(8, 8, 8, 8)
         color_profile_layout.setSpacing(6)
@@ -415,6 +429,11 @@ class PDFView(QMainWindow):
         self.setStatusBar(self.status_bar)
         self._status_bar_override_message: str | None = None
         self._build_fullscreen_exit_button()
+
+        # Persistent theme switcher: one square per mode, pinned bottom-right.
+        self._theme_switcher = ThemeSwitcherWidget(active_theme=self._initial_theme, parent=self)
+        self._theme_switcher.theme_selected.connect(self._on_theme_selected)
+        self.status_bar.addPermanentWidget(self._theme_switcher)
 
         # --- State Variables ---
         self.current_mode = 'browse'
@@ -550,15 +569,10 @@ class PDFView(QMainWindow):
         self.set_mode("browse")
         self._apply_scale()
         self._update_status_bar()
-        # Fluent-style: light background, rounded corners (spec §10)
-        self.setStyleSheet("""
-            QMainWindow { background: #F8FAFC; }
-            QGroupBox { border: 1px solid #E2E8F0; border-radius: 8px; margin-top: 8px; padding-top: 8px; }
-            QPushButton { border-radius: 6px; padding: 6px 12px; }
-            QLineEdit, QComboBox { border-radius: 6px; padding: 4px 8px; border: 1px solid #E2E8F0; }
-            QWidget#dropHost[dragActive="true"] { background: #EFF6FF; border: 2px dashed #0EA5E9; }
-        """)
-        self.graphics_view.setStyleSheet("QGraphicsView { background: #F1F5F9; border: none; }")
+        # The whole-window appearance (chrome, canvas well, drop affordance) is
+        # supplied once by the themed QSS applied at QApplication level in
+        # __init__ (view.theme.build_qss). Do NOT re-apply a hardcoded stylesheet
+        # here: it would overwrite the user's saved theme on startup.
 
     def ensure_heavy_panels_initialized(self) -> None:
         if self._heavy_panels_initialized:
@@ -864,33 +878,13 @@ class PDFView(QMainWindow):
     def _build_document_tabs_bar(self):
         """Document-level tab bar for multiple open PDFs."""
         self.document_tab_bar = QTabBar(self)
+        # Styled via the global theme QSS (QTabBar#documentTabBar).
+        self.document_tab_bar.setObjectName("documentTabBar")
         self.document_tab_bar.setExpanding(False)
         self.document_tab_bar.setMovable(False)
         self.document_tab_bar.setTabsClosable(True)
         self.document_tab_bar.setDocumentMode(True)
         self.document_tab_bar.setElideMode(Qt.ElideMiddle)
-        self.document_tab_bar.setStyleSheet("""
-            QTabBar {
-                background: #FFFFFF;
-                border-bottom: 1px solid #E2E8F0;
-                padding: 2px 6px;
-            }
-            QTabBar::tab {
-                min-width: 120px;
-                max-width: 280px;
-                padding: 6px 10px;
-                margin-right: 2px;
-                border: 1px solid #CBD5E1;
-                border-bottom: none;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                background: #EEF2F7;
-            }
-            QTabBar::tab:selected {
-                background: #FFFFFF;
-                color: #0F172A;
-            }
-        """)
         self.document_tab_bar.currentChanged.connect(self._on_document_tab_changed)
         self.document_tab_bar.tabCloseRequested.connect(self._on_document_tab_close_requested)
         self.document_tab_bar.setVisible(False)
@@ -986,40 +980,65 @@ class PDFView(QMainWindow):
         if index >= 0:
             self._on_document_tab_close_requested(index)
 
+    def _on_theme_selected(self, theme_id: str) -> None:
+        """Re-emit a switcher click as a view signal for the controller."""
+        self.sig_theme_selected.emit(theme_id)
+
+    def update_theme_switcher(self, theme_id: str) -> None:
+        """Sync the active-chip ring after the controller applies a theme."""
+        self._theme_switcher.set_active_theme(theme_id)
+
+    def _collect_toolbars(self) -> list[QToolBar]:
+        """Return the five ribbon QToolBars (file/common/edit/page/convert)."""
+        return list(getattr(self, "_ribbon_toolbars", []))
+
+    def _configure_tool_toolbar(self, toolbar: QToolBar) -> None:
+        """Per-widget layout for a ribbon toolbar; colours come from the global QSS.
+
+        Buttons show their label beside the icon (text-beside-icon) with 24px
+        icons, which is why the toolbar container must be tall enough (see
+        _build_toolbar_tabs).
+        """
+        toolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        toolbar.setIconSize(QSize(24, 24))
+
+    def _apply_toolbar_icons(self, toolbar: QToolBar) -> None:
+        """Assign each action's PNG icon based on its label text."""
+        for action in toolbar.actions():
+            icon = load_icon(action.text())
+            if not icon.isNull():
+                action.setIcon(icon)
+
     def _build_toolbar_tabs(self):
-        """Top toolbar: 高度依字型與內距計算 — 標籤列 ~26px + 工具列 ~26px + 邊距 8px ≈ 60px，避免過窄截斷或過高留白。"""
+        """Top toolbar (ribbon). 高度容納「圖示在左、文字在右」按鈕。
+
+        標籤列 (~26px) + 工具列按鈕 (圖示 24 + 文字 + 內距) + 容器上下邊距 ≈ 92px。
+        舊的固定 60px 會截斷文字旁的圖示。外觀（背景/邊框/標籤/按鈕）統一由全域
+        QSS 提供 (view.theme.build_qss)，scoped 到 QFrame#toolbar / QTabWidget#ribbonTabs。
+        """
         self._toolbar_container = QFrame()
-        # 約 9–10pt 字型行高 ~14–16px，標籤一行 ~26px、工具列一行 ~26px、上下邊距 8px → 60px
-        # 固定高度 60px，避免佈局依子元件 sizeHint 分配更多垂直空間導致頂端列過高
-        self._toolbar_container.setFixedHeight(60)
-        self._toolbar_container.setStyleSheet("QFrame { background: #F1F5F9; border-bottom: 1px solid #E2E8F0; }")
+        self._toolbar_container.setObjectName("toolbar")
+        # 固定高度避免佈局依子元件 sizeHint 過度分配垂直空間；92px 實測可容納
+        # 「圖示在左、文字在右」的按鈕。背景/邊框由全域 QSS (QFrame#toolbar) 提供。
+        self._toolbar_container.setFixedHeight(92)
         bar_layout = QHBoxLayout(self._toolbar_container)
         bar_layout.setContentsMargins(6, 4, 6, 4)
         bar_layout.setSpacing(6)
 
         self.toolbar_tabs = QTabWidget()
+        # Scoped object name so the ribbon's tab QSS does not leak onto the left
+        # sidebar's QTabWidget (see QTabWidget#ribbonTabs in view/theme.py).
+        self.toolbar_tabs.setObjectName("ribbonTabs")
         self.toolbar_tabs.setTabBar(_NoCtrlTabTabBar(self.toolbar_tabs))
         self.toolbar_tabs.setDocumentMode(True)
-        # 標籤：緊湊內距，不省略文字，最小寬度避免截斷
-        self.toolbar_tabs.setStyleSheet("""
-            QTabWidget::pane { border: none; background: transparent; top: 0px; }
-            QTabBar::tab { min-width: 52px; padding: 5px 10px; margin-right: 2px; background: transparent; }
-            QTabBar::tab:selected { background: #0078D4; color: white; border-radius: 4px; }
-        """)
+        # 標籤與工具列按鈕的外觀統一由全域 QSS 提供 (view/theme.py)。
         tab_bar = self.toolbar_tabs.tabBar()
         tab_bar.setElideMode(Qt.ElideNone)
         tab_bar.setMinimumHeight(26)
-        # 工具列按鈕：緊湊內距，仍保留 min-width 避免文字截斷
-        toolbar_style = (
-            "QToolBar { spacing: 4px; padding: 2px 0; } "
-            "QToolButton { min-width: 52px; padding: 4px 8px; } "
-            "QToolButton:checked { background: #0EA5E9; color: white; border-radius: 4px; }"
-        )
         # 檔案
         tab_file = QWidget()
         tb_file = QToolBar()
-        tb_file.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        tb_file.setStyleSheet(toolbar_style)
+        self._configure_tool_toolbar(tb_file)
         self._action_open = tb_file.addAction("開啟", self._open_file)
         self._action_open.setShortcut(QKeySequence("Ctrl+O"))
         self._action_print = tb_file.addAction("列印", self._print_document)
@@ -1037,8 +1056,7 @@ class PDFView(QMainWindow):
         # 常用
         tab_common = QWidget()
         tb_common = QToolBar()
-        tb_common.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        tb_common.setStyleSheet(toolbar_style)
+        self._configure_tool_toolbar(tb_common)
         self._action_browse = self._make_mode_action("瀏覽模式", "browse")
         tb_common.addAction(self._action_browse)
         self._action_objects = self._make_mode_action("操作物件", "objects")
@@ -1060,8 +1078,7 @@ class PDFView(QMainWindow):
         # 編輯
         tab_edit = QWidget()
         tb_edit = QToolBar()
-        tb_edit.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        tb_edit.setStyleSheet(toolbar_style)
+        self._configure_tool_toolbar(tb_edit)
         self._action_edit_text = self._make_mode_action("編輯文字", "edit_text")
         tb_edit.addAction(self._action_edit_text)
         self._action_edit_text.setShortcut(QKeySequence(Qt.Key_F2))
@@ -1092,8 +1109,7 @@ class PDFView(QMainWindow):
         # 頁面
         tab_page = QWidget()
         tb_page = QToolBar()
-        tb_page.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        tb_page.setStyleSheet(toolbar_style)
+        self._configure_tool_toolbar(tb_page)
         tb_page.addAction("刪除頁", self._delete_pages)
         tb_page.addAction("旋轉頁", self._rotate_pages)
         tb_page.addAction("拉正頁面", self._straighten_current_page)
@@ -1108,13 +1124,18 @@ class PDFView(QMainWindow):
         # 轉換
         tab_convert = QWidget()
         tb_convert = QToolBar()
-        tb_convert.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        tb_convert.setStyleSheet(toolbar_style)
+        self._configure_tool_toolbar(tb_convert)
         self.ocr_action = tb_convert.addAction("OCR（文字辨識）", self._ocr_pages)
         layout_convert = QVBoxLayout(tab_convert)
         layout_convert.setContentsMargins(4, 0, 0, 0)
         layout_convert.addWidget(tb_convert)
         self.toolbar_tabs.addTab(tab_convert, "轉換")
+
+        # Keep handles to the five ribbon toolbars and assign each action's PNG
+        # icon by its label text (unknown labels resolve to a null icon).
+        self._ribbon_toolbars = [tb_file, tb_common, tb_edit, tb_page, tb_convert]
+        for toolbar in self._ribbon_toolbars:
+            self._apply_toolbar_icons(toolbar)
 
         bar_layout.addWidget(self.toolbar_tabs, 1)  # 讓分頁區優先取得水平空間
         # Fixed right section: 頁 X / Y, Zoom, 適應畫面, 復原, 重做

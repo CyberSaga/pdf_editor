@@ -773,3 +773,17 @@
 **Cause:** `test_files/1.pdf` is a small-clean sample needed by these suites for predictable token distribution. It is gitignored and not committed.  
 **Fix:** Add a session-scoped autouse fixture in `conftest.py` that synthesizes `test_files/1.pdf` on-the-fly if it doesn't exist. The fixture generates a PDF with specific content (per-word runs "young"/"the"/"program"/"favorite" + a control line "run or not run") so reconstruction/audit tests find the expected tokens. Never overwrites an existing fixture.  
 **File:** `test_scripts/conftest.py` — `_ensure_test_file_1_pdf()`
+
+## Context menus and dialogs stay light when QSS is window-scoped
+**Area:** `view/theme.py`, `view/pdf_view.py`, `controller/pdf_controller.py`
+**Symptom:** After applying a theme via `QMainWindow.setStyleSheet(...)`, modal dialogs and right-click context menus kept the native light palette (white-on-white / dark-on-dark, unreadable under the dark theme).
+**Cause:** Top-level `QMenu`s and `QDialog`s are not children of the main window in the widget tree, so a window-level stylesheet never reaches them.
+**Fix:** Apply the themed QSS once at the `QApplication` level (`QApplication.instance().setStyleSheet(build_qss(name))`) on startup and on theme switch. Keep an explicit `QDialog`/`QMenu` rule in `build_qss`. Remove all per-widget color `setStyleSheet` calls so nothing overrides the global sheet.
+**File:** `view/pdf_view.py` (`__init__`), `controller/pdf_controller.py` (`set_theme`)
+
+## Ribbon tab QSS leaks onto the sidebar tab widget
+**Area:** `view/theme.py`
+**Symptom:** Styling the ribbon tabs also restyled the left sidebar tabs (縮圖/搜尋/註解列表/浮水印列表).
+**Cause:** Bare `QTabBar::tab` / `QTabWidget::pane` selectors match every tab widget in the app.
+**Fix:** Scope every tab rule by object name (`QTabWidget#ribbonTabs`, `QTabWidget#sidebarTabs`, `QTabBar#documentTabBar`) and assign those object names in the view. A test asserts no bare `QTabBar::tab` / `QTabWidget::pane` rule appears in the built QSS.
+**File:** `view/theme.py` (`build_qss`)

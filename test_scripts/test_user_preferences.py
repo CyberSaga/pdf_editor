@@ -67,3 +67,38 @@ def test_set_ocr_languages_rejects_empty_list():
     prefs = UserPreferences(store=_FakeStore())
     with pytest.raises(ValueError):
         prefs.set_ocr_languages([])
+
+
+# --------------------------------------------------------------------------- #
+# Theme preference
+# --------------------------------------------------------------------------- #
+_ALL_THEMES = ["alpine-snow", "meadow-lupine", "ink-porcelain", "glimmering-glacier"]
+
+
+def test_default_theme_is_alpine_snow():
+    prefs = UserPreferences(store=_FakeStore())
+    assert prefs.get_theme() == "alpine-snow"
+
+
+@pytest.mark.parametrize("theme_id", _ALL_THEMES)
+def test_set_then_get_theme_round_trips(theme_id):
+    prefs = UserPreferences(store=_FakeStore())
+    prefs.set_theme(theme_id)
+    assert prefs.get_theme() == theme_id
+
+
+def test_set_theme_persists_across_instances():
+    store = _FakeStore()
+    UserPreferences(store=store).set_theme("ink-porcelain")
+    assert UserPreferences(store=store).get_theme() == "ink-porcelain"
+
+
+def test_set_theme_rejects_unknown_value():
+    prefs = UserPreferences(store=_FakeStore())
+    with pytest.raises(ValueError):
+        prefs.set_theme("amber-night")
+
+
+def test_get_theme_recovers_from_corrupt_value():
+    prefs = UserPreferences(store=_FakeStore({"ui/theme": "garbage"}))
+    assert prefs.get_theme() == "alpine-snow"
