@@ -12,6 +12,10 @@
   - `controller/pdf_controller.py` — `set_theme` slot applies app-level QSS + persists + syncs switcher.
   - Tests: `test_scripts/test_theme_and_icons.py` (rebuilt, 4 themes) + theme cases in `test_user_preferences.py`. 66 pass; RED confirmed before implementation.
 - Outcome: themed QSS applied once at `QApplication` level so context menus and dialogs re-theme too. No new ruff violations.
+- Post-review fixes (3 findings from `/code-review`):
+  1. Switcher was inert on the empty shell (no controller yet). Theming is now **view-owned** (`PDFView.apply_theme`) since it never touches the model; works without a controller. Removed `PDFController.set_theme`.
+  2. Dual source of truth for valid ids → new leaf `utils/theme_ids.py` imported by both `utils/preferences.py` and `view/theme.py`; the registry raises at import on drift.
+  3. View constructor no longer mutates the global app stylesheet; `main.py` calls `view.apply_initial_theme()` at the composition root. Side benefit: this removed the global-QSS pollution that made `test_no_jump_editor_geometry` flake in the full suite — that file is deterministic again (377 passed alone).
 - Follow-up: delete `backup/theme-switcher-b774a72` once the new branch is merged.
 
 ## Done (2026-05-19) -- Clean re-implementation of glyph-jump elimination

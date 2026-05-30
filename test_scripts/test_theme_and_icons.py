@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import pytest
 
+from utils.preferences import UserPreferences
+from utils.theme_ids import VALID_THEME_IDS
 from view.theme import (
     ALPINE_SNOW,
     GLIMMERING_GLACIER,
@@ -55,6 +57,13 @@ def test_token_accent_values():
 def test_registry_ids_exact():
     # finding: wrong themes in registry.
     assert set(THEME_REGISTRY.keys()) == _EXPECTED_IDS
+
+
+def test_registry_matches_canonical_valid_ids():
+    # finding #2: the registry and the preference validator must share one
+    # source of truth (utils.theme_ids) so they can never drift. view.theme
+    # raises at import if this is violated; assert it here too.
+    assert set(THEME_REGISTRY.keys()) == set(VALID_THEME_IDS)
 
 
 def test_swatch_is_bg_color():
@@ -258,29 +267,65 @@ def test_set_active_theme_updates_chips(qapp):
 
 
 # --------------------------------------------------------------------------- #
-# PDFView startup guard (application-level QSS)
+# PDFView startup guard (application-level QSS, applied by the composition root)
 # --------------------------------------------------------------------------- #
-def test_startup_applies_saved_theme(qapp):
-    # finding: startup overwrote saved theme. The theme QSS is applied at the
-    # QApplication level so context menus and dialogs inherit it too.
+class _FakeStore:
+    def __init__(self, initial: dict | None = None) -> None:
+        self._data: dict[str, object] = dict(initial or {})
+
+    def value(self, key: str, default=None, type=None):  # noqa: A002 - QSettings API
+        return self._data.get(key, default)
+
+    def setValue(self, key: str, value) -> None:
+        self._data[key] = value
+
+
+def test_apply_initial_theme_sets_app_stylesheet(qapp):
+    # The saved theme's QSS is applied at the QApplication level (so context
+    # menus and dialogs inherit it) — but by apply_initial_theme(), not by the
+    # constructor.
     from view.pdf_view import PDFView
 
     view = PDFView()
     try:
+        view.apply_initial_theme()
         assert qapp.styleSheet() == build_qss(view._initial_theme)
+        assert "#F8FAFC" not in qapp.styleSheet()  # never the old hardcoded palette
     finally:
         view.deleteLater()
 
 
-def test_no_hardcoded_light_palette_on_startup(qapp):
-    # finding: hardcoded #F8FAFC block overwrote the theme.
+def test_construction_does_not_mutate_global_stylesheet(qapp):
+    # finding #3: building a view must not mutate the process-global app
+    # stylesheet as a side effect (that leaked UI state across the shared-qapp
+    # suite). Only an explicit apply_* call may touch it.
+    from view.pdf_view import PDFView
+
+    sentinel = "/* sentinel-theme-marker */"
+    qapp.setStyleSheet(sentinel)
+    view = PDFView()
+    try:
+        assert qapp.styleSheet() == sentinel
+    finally:
+        view.deleteLater()
+        qapp.setStyleSheet("")
+
+
+def test_switcher_applies_theme_without_a_controller(qapp):
+    # finding #1: the switcher must work on the empty shell, before any
+    # controller is activated — the view applies the theme itself.
     from view.pdf_view import PDFView
 
     view = PDFView()
+    view._prefs = UserPreferences(store=_FakeStore())  # avoid touching real QSettings
     try:
-        assert "#F8FAFC" not in qapp.styleSheet()
+        view._on_theme_selected("ink-porcelain")
+        assert qapp.styleSheet() == build_qss("ink-porcelain")
+        assert view._theme_switcher._chips["ink-porcelain"]._active is True
+        assert view._prefs.get_theme() == "ink-porcelain"  # persisted by the view
     finally:
         view.deleteLater()
+        qapp.setStyleSheet("")
 
 
 def test_graphics_view_no_inline_stylesheet(qapp):

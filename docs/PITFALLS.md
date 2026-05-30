@@ -787,3 +787,10 @@
 **Cause:** Bare `QTabBar::tab` / `QTabWidget::pane` selectors match every tab widget in the app.
 **Fix:** Scope every tab rule by object name (`QTabWidget#ribbonTabs`, `QTabWidget#sidebarTabs`, `QTabBar#documentTabBar`) and assign those object names in the view. A test asserts no bare `QTabBar::tab` / `QTabWidget::pane` rule appears in the built QSS.
 **File:** `view/theme.py` (`build_qss`)
+
+## Applying app-level QSS from a widget constructor pollutes the shared-qapp test suite
+**Area:** `view/pdf_view.py`, `main.py`
+**Symptom:** After theming moved to an application-level stylesheet, geometry-sensitive suites (e.g. `test_no_jump_editor_geometry.py`) failed intermittently in the full run but passed in isolation. The failure set shifted run-to-run.
+**Cause:** `PDFView.__init__` called `QApplication.instance().setStyleSheet(...)`. Because the test `qapp` fixture is session-scoped, merely *constructing* a view re-themed every widget for the rest of the session, adding global `QToolButton`/`QSpinBox` padding that shifted later geometry measurements.
+**Fix:** Keep view construction side-effect-free. Resolve the theme in `__init__` but apply it only via an explicit `view.apply_initial_theme()` call from the composition root (`main.py`). Runtime switches go through `PDFView.apply_theme(...)`. Constructing a view no longer mutates global app state, and the geometry suites became deterministic.
+**File:** `view/pdf_view.py` (`apply_theme`/`apply_initial_theme`), `main.py`

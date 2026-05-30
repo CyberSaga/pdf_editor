@@ -4,6 +4,7 @@ import logging
 from typing import Iterable, Protocol
 
 from model.tools.ocr_types import OcrDevice, OcrLanguage
+from utils.theme_ids import DEFAULT_THEME_ID, VALID_THEME_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +20,11 @@ _OCR_DEVICE_DEFAULT = OcrDevice.AUTO.value
 _OCR_LANGS_DEFAULT = (OcrLanguage.ENGLISH.value,)
 
 _THEME_KEY = "ui/theme"
-_THEME_DEFAULT = "alpine-snow"
-# Keep in sync with view.theme.THEME_REGISTRY. Duplicated here as a plain
-# frozenset so utils/ never imports the view layer (which would be a layer
-# violation per CLAUDE.md §2).
-_VALID_THEME_IDS = frozenset(
-    {"alpine-snow", "meadow-lupine", "ink-porcelain", "glimmering-glacier"}
-)
+# Valid ids and the default live in utils.theme_ids — the single source of truth
+# shared with view.theme.THEME_REGISTRY (which validates itself against it on
+# import). utils/ never imports the view layer (CLAUDE.md §2).
+_THEME_DEFAULT = DEFAULT_THEME_ID
+_VALID_THEME_IDS = VALID_THEME_IDS
 
 _ORG = "pdf_editor"
 _APP = "pdf_editor"

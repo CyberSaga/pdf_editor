@@ -81,7 +81,7 @@ from model.object_requests import (
 from utils.helpers import parse_pages, show_error
 from utils.preferences import UserPreferences
 from view.icons import load_icon
-from view.theme import ThemeSwitcherWidget, build_qss
+from view.theme import THEME_REGISTRY, ThemeSwitcherWidget, build_qss
 from view.text_editing import (
     _DEFAULT_EDITOR_MASK_COLOR,
     _EditorShortcutForwarder,  # noqa: F401 — re-exported for tests and legacy imports
@@ -302,15 +302,13 @@ class PDFView(QMainWindow):
 
     def __init__(self, defer_heavy_panels: bool = False):
         super().__init__()
-        # Apply the saved theme's global QSS at the QApplication level before any
-        # child widgets are built, so colours come from one place (view/theme.py)
-        # and reach even top-level QMenus and modal QDialogs (which are not
-        # children of this window and so miss a window-level stylesheet).
+        # Resolve the saved theme now (cheap) but do NOT mutate global app state
+        # from the constructor — the composition root (main.py) applies it once
+        # via apply_initial_theme() after the view is built. This keeps merely
+        # constructing a PDFView side-effect-free (important for the shared-qapp
+        # test suite, where one view would otherwise re-theme every other test).
         self._prefs = UserPreferences()
         self._initial_theme = self._prefs.get_theme()
-        app = QApplication.instance()
-        if app is not None:
-            app.setStyleSheet(build_qss(self._initial_theme))
         self.setWindowTitle("視覺化 PDF 編輯器")
         self.setMinimumSize(1280, 800)
         self.setGeometry(100, 100, 1280, 800)
@@ -981,12 +979,35 @@ class PDFView(QMainWindow):
             self._on_document_tab_close_requested(index)
 
     def _on_theme_selected(self, theme_id: str) -> None:
-        """Re-emit a switcher click as a view signal for the controller."""
+        """Apply a switcher click immediately, then notify external observers.
+
+        Theming is a pure presentation concern (it never touches the document
+        model), so the view applies it directly. This keeps the switcher live on
+        the empty-startup shell, before any controller has been activated.
+        """
+        self.apply_theme(theme_id)
         self.sig_theme_selected.emit(theme_id)
 
-    def update_theme_switcher(self, theme_id: str) -> None:
-        """Sync the active-chip ring after the controller applies a theme."""
+    def apply_theme(self, theme_id: str, *, persist: bool = True) -> None:
+        """Apply ``theme_id``'s QSS app-wide, sync the chip ring, and persist it.
+
+        Applied at the QApplication level so top-level QMenus and modal QDialogs
+        re-theme too, not just this window. Unknown ids are ignored; because the
+        registry shares its id set with the preference validator, a registry id
+        is always accepted by ``set_theme`` (no ValueError path here).
+        """
+        if theme_id not in THEME_REGISTRY:
+            return
+        if persist:
+            self._prefs.set_theme(theme_id)
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(build_qss(theme_id))
         self._theme_switcher.set_active_theme(theme_id)
+
+    def apply_initial_theme(self) -> None:
+        """Apply the saved theme once at startup (no re-persist of the same value)."""
+        self.apply_theme(self._initial_theme, persist=False)
 
     def _collect_toolbars(self) -> list[QToolBar]:
         """Return the five ribbon QToolBars (file/common/edit/page/convert)."""

@@ -47,6 +47,10 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
         app = QApplication([sys.argv[0], *cli_args])
 
     view = PDFView(defer_heavy_panels=not cli_args)
+    # Apply the saved theme once here, at the composition root, so the view
+    # constructor stays free of global side effects and the switcher is live
+    # even on the empty shell (before any controller exists).
+    view.apply_initial_theme()
     startup_ctx: dict[str, Any] = {
         "app": app,
         "model": None,

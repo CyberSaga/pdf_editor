@@ -426,8 +426,6 @@ class PDFController:
         self.view.sig_scale_changed.connect(self.change_scale)
         self.view.sig_viewport_changed.connect(self._on_viewport_changed)
         self.view.sig_toggle_fullscreen.connect(self.toggle_fullscreen)
-        if hasattr(self.view, "sig_theme_selected"):
-            self.view.sig_theme_selected.connect(self.set_theme)
         self.view.sig_text_target_mode_changed.connect(self.set_text_target_mode)
 
         # New annotation connections
@@ -959,25 +957,6 @@ class PDFController:
             self.exit_fullscreen()
             return
         self.enter_fullscreen()
-
-    @Slot(str)
-    def set_theme(self, name: str) -> None:
-        """Persist the chosen theme, reapply the global QSS, and sync the switcher.
-
-        The QSS is applied at the QApplication level so top-level context menus
-        and modal dialogs re-theme along with the main window.
-        """
-        from utils.preferences import UserPreferences
-        from view.theme import THEME_REGISTRY, build_qss
-
-        if name not in THEME_REGISTRY:
-            logger.warning("Ignoring unknown theme id %r", name)
-            return
-        UserPreferences().set_theme(name)
-        app = QApplication.instance()
-        if app is not None:
-            app.setStyleSheet(build_qss(name))
-        self.view.update_theme_switcher(name)
 
     def handle_fullscreen_view_resized(self) -> None:
         if self.view.is_fullscreen_active() and self.model.doc:

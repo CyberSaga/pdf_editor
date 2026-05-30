@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from utils.theme_ids import DEFAULT_THEME_ID, VALID_THEME_IDS
+
 # Token name -> hex/rgba value, translated from the alpine-snow block of
 # appearance_design/colors.css.
 ALPINE_SNOW: dict[str, str] = {
@@ -133,7 +135,18 @@ THEME_REGISTRY: dict[str, ThemeMeta] = {
     ),
 }
 
-_DEFAULT_THEME = "alpine-snow"
+# Fail fast on drift: the registry's ids must match the canonical valid-id set
+# that utils.preferences also validates against. Without this, adding a theme
+# here but not to utils.theme_ids (or vice-versa) would surface as a late
+# ValueError when a user selects the new theme.
+if set(THEME_REGISTRY) != VALID_THEME_IDS:
+    raise RuntimeError(
+        "THEME_REGISTRY ids "
+        f"{sorted(THEME_REGISTRY)} do not match utils.theme_ids.VALID_THEME_IDS "
+        f"{sorted(VALID_THEME_IDS)}"
+    )
+
+_DEFAULT_THEME = DEFAULT_THEME_ID
 
 
 def build_qss(theme_name: str = _DEFAULT_THEME) -> str:
