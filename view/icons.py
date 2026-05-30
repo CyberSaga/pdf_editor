@@ -1,6 +1,6 @@
 """Toolbar icon loading and the action-text -> PNG-filename mapping.
 
-Icons live in ``appearance_design/function_icons/`` as 31 numbered PNGs. The
+Icons live in ``appearance_design/function_icons/`` as numbered PNGs. The
 toolbar actions are created with Traditional-Chinese labels, so the mapping is
 keyed on that label text and :func:`load_icon` takes a label (not a filename).
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 ICON_DIR: Path = Path(__file__).resolve().parents[1] / "appearance_design" / "function_icons"
 
-# Action label text -> PNG filename (31 ribbon actions).
+# Action label text -> PNG filename (32 ribbon actions).
 ACTION_ICON_MAP: dict[str, str] = {
     "開啟": "01_開啟.png",
     "列印": "02_列印.png",
@@ -48,6 +48,8 @@ ACTION_ICON_MAP: dict[str, str] = {
     "從檔案插入頁": "29_從檔案插入頁.png",
     "合併PDF": "30_合併PDF.png",
     "OCR（文字辨識）": "31_OCR（文字辨識）.png",
+    # Key is the toolbar action label (拉正頁面); the asset is named 拉正PDF頁面.
+    "拉正頁面": "33_拉正PDF頁面.png",
 }
 
 

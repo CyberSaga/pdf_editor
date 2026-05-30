@@ -5,7 +5,7 @@
 - What: Restarted the theme switcher from clean base `24c9dba` (old work preserved on branch `backup/theme-switcher-b774a72`) and rebuilt it per `docs/plans/learn-from-ui-update-report-txt-ethereal-micali.md`, folding in every lesson from `ui-update-report.txt`.
 - Shipped:
   - `view/theme.py` — four token dicts (added **glimmering-glacier**), `THEME_REGISTRY`, `build_qss` (app-level QSS, scoped ribbon/sidebar/doc-tab rules, dialog+menu+combo-popup themed), and `ThemeSwitcherWidget`/`_ThemeChip` (one square per mode).
-  - `view/icons.py` — 31-label→PNG map + `load_icon(label)`; Qt imports guarded for headless tests.
+  - `view/icons.py` — 32-label→PNG map (incl. `拉正頁面` → `33_拉正PDF頁面.png`, wired to the existing straighten-page toolbar button) + `load_icon(label)`; Qt imports guarded for headless tests.
   - `appearance_design/colors.css` — appended block 03 Glimmering Glacier.
   - `utils/preferences.py` — `ui/theme` get/set with validation (`_VALID_THEME_IDS`), default `alpine-snow`.
   - `view/pdf_view.py` — removed all inline color stylesheets; object names for panels/tabs; toolbar container 92px + text-beside-icon + 24px icons; status-bar switcher; `sig_theme_selected`.

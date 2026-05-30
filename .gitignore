@@ -23,6 +23,7 @@ test_artifacts/
 .agents/
 .worktrees/
 .claude
+Claude-plans.lnk
 
 # 單一程式
 for_Linux/

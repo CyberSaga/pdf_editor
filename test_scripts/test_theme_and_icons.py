@@ -197,8 +197,8 @@ def test_dark_dialog_renders_dark(qapp):
 def test_action_icon_map_covers_core_actions():
     from view.icons import ACTION_ICON_MAP
 
-    assert len(ACTION_ICON_MAP) == 31
-    for label in ("開啟", "瀏覽模式", "OCR（文字辨識）"):
+    assert len(ACTION_ICON_MAP) == 32
+    for label in ("開啟", "瀏覽模式", "拉正頁面", "OCR（文字辨識）"):
         assert label in ACTION_ICON_MAP
         assert ACTION_ICON_MAP[label].endswith(".png")
 
@@ -213,6 +213,15 @@ def test_load_icon_known_label_returns_icon(qapp):
     from view.icons import load_icon
 
     icon = load_icon("開啟")
+    assert not icon.isNull()
+
+
+def test_load_icon_straighten_page(qapp):
+    # The 拉正頁面 toolbar action must resolve to its committed PNG so the button
+    # renders icon-beside-text rather than text-only.
+    from view.icons import load_icon
+
+    icon = load_icon("拉正頁面")
     assert not icon.isNull()
 
 
@@ -388,5 +397,24 @@ def test_toolbar_icon_size(qapp):
     try:
         for toolbar in view._collect_toolbars():
             assert toolbar.iconSize() == QSize(24, 24)
+    finally:
+        view.deleteLater()
+
+
+def test_straighten_action_has_icon(qapp):
+    # End-to-end wiring: the 拉正頁面 toolbar button must end up with a non-null
+    # icon. Guards against the action label and ACTION_ICON_MAP key drifting apart.
+    from view.pdf_view import PDFView
+
+    view = PDFView()
+    try:
+        actions = [
+            a
+            for tb in view._collect_toolbars()
+            for a in tb.actions()
+            if a.text() == "拉正頁面"
+        ]
+        assert actions, "no 拉正頁面 toolbar action found"
+        assert not actions[0].icon().isNull()
     finally:
         view.deleteLater()
