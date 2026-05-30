@@ -319,7 +319,8 @@ def test_switcher_applies_theme_without_a_controller(qapp):
     view = PDFView()
     view._prefs = UserPreferences(store=_FakeStore())  # avoid touching real QSettings
     try:
-        view._on_theme_selected("ink-porcelain")
+        # Simulate a switcher click: the switcher's signal is wired to apply_theme.
+        view._theme_switcher.theme_selected.emit("ink-porcelain")
         assert qapp.styleSheet() == build_qss("ink-porcelain")
         assert view._theme_switcher._chips["ink-porcelain"]._active is True
         assert view._prefs.get_theme() == "ink-porcelain"  # persisted by the view

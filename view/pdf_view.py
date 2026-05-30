@@ -270,7 +270,6 @@ class PDFView(QMainWindow):
     sig_scale_changed = Signal(int, float)
     sig_viewport_changed = Signal()
     sig_toggle_fullscreen = Signal()
-    sig_theme_selected = Signal(str)  # theme id chosen via the status-bar switcher
 
     # --- New Annotation Signals ---
     sig_add_annotation = Signal(int, object, str)  # page_idx, doc_point (fitz.Point), text
@@ -429,8 +428,10 @@ class PDFView(QMainWindow):
         self._build_fullscreen_exit_button()
 
         # Persistent theme switcher: one square per mode, pinned bottom-right.
+        # The view applies the theme itself (it never touches the document model),
+        # so the switcher works on the empty shell before any controller exists.
         self._theme_switcher = ThemeSwitcherWidget(active_theme=self._initial_theme, parent=self)
-        self._theme_switcher.theme_selected.connect(self._on_theme_selected)
+        self._theme_switcher.theme_selected.connect(self.apply_theme)
         self.status_bar.addPermanentWidget(self._theme_switcher)
 
         # --- State Variables ---
@@ -977,16 +978,6 @@ class PDFView(QMainWindow):
         index = bar.currentIndex()
         if index >= 0:
             self._on_document_tab_close_requested(index)
-
-    def _on_theme_selected(self, theme_id: str) -> None:
-        """Apply a switcher click immediately, then notify external observers.
-
-        Theming is a pure presentation concern (it never touches the document
-        model), so the view applies it directly. This keeps the switcher live on
-        the empty-startup shell, before any controller has been activated.
-        """
-        self.apply_theme(theme_id)
-        self.sig_theme_selected.emit(theme_id)
 
     def apply_theme(self, theme_id: str, *, persist: bool = True) -> None:
         """Apply ``theme_id``'s QSS app-wide, sync the chip ring, and persist it.
