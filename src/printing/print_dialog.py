@@ -74,6 +74,9 @@ class UnifiedPrintDialog(QDialog):
         self._touched_hardware_fields: set[str] = set()
         self._syncing_printer_preferences = False
         self._preview_page_provider = preview_page_provider
+        # DEVMODE captured from the native Properties dialog, applied job-scoped at
+        # submission only (P1). Printer-specific, so it is cleared on printer switch.
+        self._pending_devmode_buffer: str | None = None
 
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
@@ -327,6 +330,8 @@ class UnifiedPrintDialog(QDialog):
                 widget.toggled.connect(self._schedule_preview_refresh)
 
     def _on_printer_changed(self) -> None:
+        # A captured DEVMODE belongs to the previously selected printer.
+        self._pending_devmode_buffer = None
         name = self.printer_combo.currentData()
         if not name:
             self.printer_status_label.setText("-")
@@ -375,6 +380,10 @@ class UnifiedPrintDialog(QDialog):
             updated = open_fn(printer_name)
             if updated is None:
                 return
+            if isinstance(updated, dict):
+                buf = updated.pop("devmode_buffer", None)  # extract before applying prefs
+                if isinstance(buf, str) and buf:
+                    self._pending_devmode_buffer = buf
             self._touched_hardware_fields.clear()
             self._syncing_printer_preferences = True
             if isinstance(updated, dict) and updated:
@@ -514,7 +523,14 @@ class UnifiedPrintDialog(QDialog):
         return options.normalized()
 
     def _build_submission_options(self) -> PrintJobOptions:
-        return self._build_effective_options()
+        options = self._build_effective_options()
+        # Inject the captured DEVMODE here (not in _build_effective_options, which
+        # runs on every preview refresh) so it survives previews and is consumed
+        # exactly once at submission (P1).
+        if self._pending_devmode_buffer:
+            options.extra_options["devmode_buffer"] = self._pending_devmode_buffer
+            self._pending_devmode_buffer = None
+        return options
 
     def _sync_printer_capabilities(self, printer_name: str) -> None:
         info = None

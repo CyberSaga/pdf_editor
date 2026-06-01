@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import ctypes
+import dataclasses
 import logging
 import shutil
 import subprocess
@@ -10,10 +13,12 @@ import zlib
 from ctypes import wintypes
 from typing import Any
 
+import fitz
 from PySide6.QtPrintSupport import QPrinterInfo
 
 from ..base_driver import PrinterDevice, PrinterDriver, PrintJobOptions, PrintJobResult
 from ..errors import PrinterUnavailableError, PrintJobSubmissionError
+from ..layout import match_standard_paper_size, resolve_orientation
 from ..qt_bridge import raster_print_pdf
 
 try:
@@ -66,6 +71,11 @@ _DM_IN_BUFFER = 0x0008
 
 _CCHDEVICENAME = 32
 _CCHFORMNAME = 32
+
+# Windows rasterises every page to a full-resolution bitmap into the GDI/EMF
+# spool; at 300 DPI an A4 page is ~26 MB raw, which despools slowly. Cap the
+# effective raster DPI for the real spooler path (P4).
+_WIN_MAX_RASTER_DPI: int = 150
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +235,11 @@ def _buffer_private_crc32(buffer: ctypes.Array[ctypes.c_char]) -> str:
     return f"{zlib.crc32(private_bytes) & 0xFFFFFFFF:08x}"
 
 
+def _devmode_buffer_to_b64(buffer: ctypes.Array[ctypes.c_char]) -> str:
+    """Encode a raw DEVMODE buffer as base64 so it survives JSON serialization."""
+    return base64.b64encode(bytes(buffer)).decode("ascii")
+
+
 class WindowsPrinterDriver(PrinterDriver):
     """Windows bridge; rendering path uses Qt->Win32 spooler."""
 
@@ -303,7 +318,148 @@ class WindowsPrinterDriver(PrinterDriver):
         page_indices: list[int],
         options: PrintJobOptions,
     ) -> PrintJobResult:
-        return raster_print_pdf(pdf_path, page_indices, options)
+        normalized = options.normalized()
+        devmode_b64 = (normalized.extra_options or {}).get("devmode_buffer")
+        if (
+            isinstance(devmode_b64, str)
+            and devmode_b64
+            and normalized.printer_name
+            and not normalized.output_pdf_path
+            and win32print is not None
+        ):
+            try:
+                job_bytes = base64.b64decode(devmode_b64)
+            except (ValueError, binascii.Error):
+                job_bytes = b""
+            if job_bytes:
+                return self._print_with_scoped_devmode(
+                    pdf_path, page_indices, normalized, job_bytes
+                )
+        return self._raster_split_or_direct(pdf_path, page_indices, normalized)
+
+    def _raster_split_or_direct(
+        self,
+        pdf_path: str,
+        page_indices: list[int],
+        normalized: PrintJobOptions,
+    ) -> PrintJobResult:
+        # Virtual-printer PDF output: Qt's PDF writer honours per-page layout and
+        # there is no spooler bloat, so keep the original single-pass, full-DPI path.
+        if normalized.output_pdf_path:
+            return raster_print_pdf(pdf_path, page_indices, normalized)
+
+        # P4: cap effective raster DPI so the GDI/EMF spool stays small.
+        if normalized.dpi > _WIN_MAX_RASTER_DPI:
+            normalized = dataclasses.replace(normalized, dpi=_WIN_MAX_RASTER_DPI)
+
+        # A fixed paper + orientation prints as one job. "auto" on either axis means
+        # each page may need its own media, so split by layout group (P2/P3) because
+        # the GDI spooler does not honour mid-job setPageLayout changes.
+        if normalized.paper_size != "auto" and normalized.orientation != "auto":
+            return raster_print_pdf(pdf_path, page_indices, normalized)
+        return self._split_by_layout(pdf_path, page_indices, normalized)
+
+    def _split_by_layout(
+        self,
+        pdf_path: str,
+        page_indices: list[int],
+        normalized: PrintJobOptions,
+    ) -> PrintJobResult:
+        doc = fitz.open(pdf_path)
+        try:
+            groups: list[tuple[tuple[str, str], list[int]]] = []
+            cur_layout: tuple[str, str] | None = None
+            cur_pages: list[int] = []
+            for idx in page_indices:
+                rect = doc[idx].rect
+                width, height = float(rect.width), float(rect.height)
+                paper = match_standard_paper_size(width, height) or "auto"
+                orient = resolve_orientation(normalized.orientation, width, height)
+                layout = (paper, orient)
+                if layout != cur_layout:
+                    if cur_pages and cur_layout is not None:
+                        groups.append((cur_layout, cur_pages))
+                    cur_layout, cur_pages = layout, [idx]
+                else:
+                    cur_pages.append(idx)
+            if cur_pages and cur_layout is not None:
+                groups.append((cur_layout, cur_pages))
+        finally:
+            doc.close()
+
+        total = 0
+        for (paper, orient), pages in groups:
+            group_opts = dataclasses.replace(
+                normalized,
+                paper_size=paper,
+                orientation=orient,
+                override_fields=normalized.override_fields | {"paper_size", "orientation"},
+            )
+            result = raster_print_pdf(pdf_path, pages, group_opts)
+            if not result.success:
+                return result
+            total += len(pages)
+
+        return PrintJobResult(
+            success=True,
+            route="qt-raster->spooler",
+            message=f"Submitted {total} page(s) to printer.",
+        )
+
+    def _print_with_scoped_devmode(
+        self,
+        pdf_path: str,
+        page_indices: list[int],
+        normalized: PrintJobOptions,
+        job_bytes: bytes,
+    ) -> PrintJobResult:
+        """Apply the captured DEVMODE for this job only, then restore the previous one.
+
+        Qt exposes no API to inject a raw DEVMODE into a ``QPrinter``, so the job's
+        settings are applied by briefly writing the per-user default (level 9) and
+        restoring it afterwards. This keeps printing once from permanently mutating
+        the printer's defaults (P1).
+        """
+        if win32print is None or _DOCUMENT_PROPERTIES_W is None:
+            return self._raster_split_or_direct(pdf_path, page_indices, normalized)
+
+        printer_name = normalized.printer_name or ""
+        handle = None
+        original_buf: ctypes.Array[ctypes.c_char] | None = None
+        applied = False
+        try:
+            handle = win32print.OpenPrinter(printer_name)
+            size = int(_DOCUMENT_PROPERTIES_W(0, int(handle), printer_name, None, None, 0))
+            if size > 0:
+                original_buf = ctypes.create_string_buffer(size)
+                _DOCUMENT_PROPERTIES_W(
+                    0, int(handle), printer_name, original_buf, None, _DM_OUT_BUFFER
+                )
+            job_buf = ctypes.create_string_buffer(job_bytes, len(job_bytes))
+            self._persist_devmode_buffer_user_defaults(handle, job_buf, printer_name)
+            applied = True
+        except Exception as exc:
+            logger.info(
+                "Job-scoped DEVMODE setup failed for '%s'; printing with current defaults: %s",
+                printer_name,
+                exc,
+            )
+
+        try:
+            return self._raster_split_or_direct(pdf_path, page_indices, normalized)
+        finally:
+            if applied and original_buf is not None and handle is not None:
+                try:
+                    self._persist_devmode_buffer_user_defaults(
+                        handle, original_buf, printer_name
+                    )
+                except Exception:
+                    pass
+            if handle is not None:
+                try:
+                    win32print.ClosePrinter(handle)
+                except Exception:
+                    pass
 
     def _devmode_to_preferences(self, devmode: Any) -> dict[str, Any]:
         if devmode is None:
@@ -482,13 +638,15 @@ class WindowsPrinterDriver(PrinterDriver):
         if result != 1:
             return None
 
-        self._persist_devmode_buffer_user_defaults(handle, devmode_buffer, printer_name)
-
         after_public_prefs = _buffer_to_preferences(devmode_buffer)
         after_private_crc = _buffer_private_crc32(devmode_buffer)
         returned_prefs = dict(after_public_prefs)
         if after_private_crc != before_private_crc and after_public_prefs == before_public_prefs:
             returned_prefs["opaque_fields"] = ["color_mode", "paper_tray"]
+        # Job-scoped (P1): hand the captured DEVMODE back to the caller instead of
+        # writing it as the per-user default via SetPrinter(level=9). Base64 keeps it
+        # JSON-safe across the helper-subprocess job.json boundary.
+        returned_prefs["devmode_buffer"] = _devmode_buffer_to_b64(devmode_buffer)
         return returned_prefs
 
     def get_printer_preferences(self, printer_name: str) -> dict[str, Any]:
@@ -556,17 +714,18 @@ class WindowsPrinterDriver(PrinterDriver):
                     )
                 if int(result) != 1:
                     return None
-                try:
-                    win32print.SetPrinter(handle, 9, {"pDevMode": devmode}, 0)
-                except Exception as exc_set:
-                    logger.info(
-                        "SetPrinter(level=9) skipped/denied for '%s' after properties dialog (non-fatal): %s",
-                        normalized_name,
-                        exc_set,
-                    )
                 merged = self._collect_printer_preferences(handle, normalized_name)
                 for key, value in self._devmode_to_preferences(devmode).items():
                     merged.setdefault(key, value)
+                # Job-scoped (P1): do not persist as the per-user default. Best-effort
+                # hand the DEVMODE back as base64 so the job can apply it; omit the key
+                # if this PyDEVMODE cannot be converted to raw bytes.
+                try:
+                    raw_devmode = bytes(devmode)
+                except Exception:
+                    raw_devmode = b""
+                if raw_devmode:
+                    merged["devmode_buffer"] = base64.b64encode(raw_devmode).decode("ascii")
                 return merged
             except PrintJobSubmissionError:
                 raise

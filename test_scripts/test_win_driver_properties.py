@@ -79,7 +79,7 @@ class _FakeWin32Print:
         return []
 
 
-def test_open_printer_properties_ignores_setprinter_access_denied(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_open_printer_properties_returns_prefs_without_persisting(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeWin32Print()
     monkeypatch.setattr(win_mod, "win32print", fake)
 
@@ -94,7 +94,8 @@ def test_open_printer_properties_ignores_setprinter_access_denied(monkeypatch: p
     assert prefs.get("dpi") == 600
     assert isinstance(prefs.get("paper_tray_options"), list)
     assert len(prefs["paper_tray_options"]) >= 2
-    assert ("SetPrinter", 9) in fake._calls
+    # P1: opening the dialog must NOT write the per-user default (level 9).
+    assert ("SetPrinter", 9) not in fake._calls
 
 
 class _FakeWin32PrintLimitedPort(_FakeWin32Print):
@@ -173,20 +174,23 @@ def test_get_printer_preferences_prefers_user_defaults_for_color_mode(
     assert prefs.get("color_mode") == "grayscale"
 
 
-def test_open_printer_properties_reloads_user_defaults_after_color_change(
+def test_open_printer_properties_does_not_persist_user_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # P1: changing a setting in the native dialog must not be burned into the
+    # printer's per-user default (level 9). It is applied job-scoped instead.
     fake = _FakeWin32PrintUserDefaults()
     fake._global_devmode.Color = 2
-    fake._user_devmode.Color = 2
-    fake._document_color = None
-    fake._persisted_user_color = 1
+    fake._user_devmode.Color = 1
+    fake._document_color = 2  # the dialog "changes" color in the out buffer
     monkeypatch.setattr(win_mod, "win32print", fake)
 
     driver = win_mod.WindowsPrinterDriver()
     prefs = driver.open_printer_properties("Printer A")
 
-    assert prefs.get("color_mode") == "grayscale"
+    assert isinstance(prefs, dict)
+    assert ("SetPrinter", 9) not in fake._calls
+    assert fake._user_devmode.Color == 1  # user defaults left untouched
 
 
 class _FakeWin32PrintCancel(_FakeWin32Print):

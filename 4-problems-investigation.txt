@@ -1,0 +1,110 @@
+❯ /debug commit 2408f65051f405b21f43b5eeac07332c0ace0003~9fd7d76d009688b92d5186ff800ca0adeef6f08b asserted they fixed the
+problems 1. printing preferences would be forever mutated after one single print work. 2. cannot automatically choose to
+print each page as landscape or portrait according to page's orientation in original doc. 3. cannot automatically choose to
+print each page in different size according to page's size in original doc. 4. print work stuck in spool longer than
+expected. but problems actually not resolved. please investigate root causes
+
+  The "fix" commit 2408f65 only rewrote which named paper size the first page picks (_to_q_page_size). The verification
+  commit 9fd7d76 then measured a PDF-export path, not the real printer path. None of the four reported problems are actually
+  touched or validated against the Windows GDI spooler that real printing uses. Each "green" test is green because it
+  exercises a fake or a different code path.
+
+  ---
+  Problem 1 — Printer preferences permanently mutated after one job
+
+  Root cause: the app intentionally writes your changes as the global per-user default via SetPrinter level 9.
+
+  When you open Printer Properties (屬性) from the print dialog and click OK, this runs:
+
+  - win_driver.py:560 — win32print.SetPrinter(handle, 9, {"pDevMode": devmode}, 0)
+  - win_driver.py:421 / :485 — the ctypes twin, _SET_PRINTER_W(int(handle), 9, ...)
+
+  PRINTER_INFO_9 (level 9) is the per-user default DEVMODE. Writing it changes the printer's defaults for every future job
+  and every other application — "forever mutated." This is even documented as deliberate in docs/FEATURES.md:179 ("per-user
+  DEVMODE persistence is attempted via SetPrinter level 9 … can continue to apply to later jobs"). The fix commit never
+  touched this file, so the behavior is unchanged.
+
+  It's actually doubly wrong: after the dialog returns, print_dialog.py:416-422 forces paper and orientation back to auto
+  for the current job — so the settings you picked in the native dialog are not applied as a one-shot to the job in front of
+  you, yet they are burned into your global default.
+
+  Fix direction: capture the modified DEVMODE from the dialog and feed it to this job's QPrinter only (job-scoped), and stop
+  calling SetPrinter level 9. If global persistence is ever genuinely wanted, it must be an explicit, separate "Set as
+  default" action — not a side effect of printing once.
+
+  ---
+  Problems 2 & 3 — Per-page orientation / size not auto-selected from the source
+
+  Root cause: the per-page layout changes are applied after QPainter.begin(), which the Windows GDI spooler does not honor —
+  and the tests never exercise the real path.
+
+  In qt_bridge.py:228-241, only the first page's layout is set before painter.begin() (line 230). Every subsequent page
+  calls _set_page_layout() after begin (line 239). Mid-document setPageLayout/setOrientation changes are honored by Qt's PDF
+  writer but are unreliable-to-ignored on the Windows GDI printer DC — the media/orientation chosen at begin() (page 1)
+  tends to govern the whole job. So a mixed-orientation or mixed-size PDF comes out uniform.
+
+  The commit's fix was orthogonal: it made _to_q_page_size return a named QPageSize (A3/A4/…) instead of a custom QSizeF.
+  That helps a uniform document not get snapped to A4 — but does nothing for per-page variation, which is what problems 2
+  and 3 are about.
+
+  Why the tests pass anyway:
+  - test_print_layout.py:133 _LayoutPrinter is a fake that just stores a QPageLayout object — it proves _set_page_layout
+  computes the right orientation in memory, never that a real multi-page job prints it.
+  - Every assertion is on the pure helpers (match_standard_paper_size, _to_q_page_size) in isolation.
+  - No test drives raster_print_pdf across pages of differing size/orientation against a real QPrinter.
+
+  Fix direction: for true per-page media on Windows you generally need either one spooler job (newPage with a fresh DEVMODE
+  + ResetDC) per size-group, or to bypass the per-page Qt limitation. At minimum, add an integration test that prints a
+  mixed A4-portrait / A3-landscape PDF and inspects the output pages.
+
+  ---
+  Problem 4 — Jobs stuck in the spool too long
+
+  Root cause: Windows always rasterizes every page to a full-resolution bitmap, and the "20s" test measures PDF export
+  instead of the spooler.
+
+  - WindowsPrinterDriver.print_pdf (win_driver.py:300-306) unconditionally calls raster_print_pdf. It never overrides
+  supports_direct_pdf, so it stays False (base_driver.py:114) — unlike Linux, which has a real direct_pdf path
+  (linux_driver.py:226-240). Windows has no vector path at all.
+  - qt_bridge.py:208 opens QPrinter(QPrinter.HighResolution); _draw_page_image (:174-192) blits a full-page QImage rendered
+  at dpi (default 300, base_driver.py:39). An A4 page at 300 DPI is ~2480×3508 px ≈ 26 MB raw per page, in color, scaled up
+  to the device's high resolution in the GDI DC. That produces enormous EMF/DIB spool data → slow despooling. Acrobat sends
+  compact vector PDF, which is why it feels instant by comparison.
+
+  Why the "AC-9a" test is misleading: test_print_speed.py:43-48 sets output_pdf_path, so raster_print_pdf takes the
+  QPrinter.PdfFormat branch (qt_bridge.py:209-211) → route qt-raster->pdf. Writing a PDF container is fast and bears little
+  resemblance to GDI spooling to hardware. The test's own docstring even concedes AC-9b/9c are "covered structurally" —
+  i.e., not measured at all.
+
+  Fix direction: add a direct/vector submission path on Windows (send the PDF to a driver that interprets it, or render
+  vector via PDFium rather than a full-page bitmap), and/or cap effective raster DPI. Re-test against a real or Microsoft
+  Print to PDF/XPS spooler queue, not QPrinter.PdfFormat.
+
+  ---
+  Bottom line
+
+  ┌─────┬─────────────────┬────────────────┬───────────────────────────────────────────────────────────────────────────┐
+  │  #  │  Reported as    │   Actually     │                                  Why not                                  │
+  │     │    fixed by     │   addressed?   │                                                                           │
+  ├─────┼─────────────────┼────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ 1   │ n/a (untouched) │ ❌             │ SetPrinter level 9 persists job settings as global default                │
+  │     │                 │                │ (win_driver.py:560); by design per FEATURES.md:179                        │
+  ├─────┼─────────────────┼────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ 2/3 │ 2408f65         │ ❌             │ Only first-page size naming changed; per-page layout set after begin()    │
+  │     │                 │                │ isn't honored by GDI; tests use a fake printer                            │
+  ├─────┼─────────────────┼────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ 4   │ 9fd7d76         │ ❌             │ Windows always rasters full-page bitmaps; speed test measures PDF export, │
+  │     │                 │                │  not the spooler                                                          │
+  └─────┴─────────────────┴────────────────┴───────────────────────────────────────────────────────────────────────────┘
+
+  Per the harness's Red-Light rule, the honest next step is a failing integration test against the real spooler path for
+  each: (1) print once → assert printer default DEVMODE is unchanged; (2/3) print a mixed-size/orientation PDF → assert
+  per-page media; (4) spool to a real/XPS queue → assert size and time.
+
+  Want me to start by writing those three failing tests (so we confirm the breakage on the actual path before fixing), or go
+  straight to implementing one of the fixes — most likely #1, since it's the most clearly scoped (stop the level-9
+  SetPrinter, make the dialog job-scoped)?
+
+※ recap: Goal: fix four broken PDF print behaviors that commit 2408f65 claimed to resolve. I finished diagnosing all four
+  root causes. Next: write a failing integration test for problem 1 (printer defaults mutated by SetPrinter level 9), then
+  implement the job-scoped fix. (disable recaps in /config)
