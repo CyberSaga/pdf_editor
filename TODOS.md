@@ -1,5 +1,16 @@
 # TODOS
 
+## Done (2026-06-01) -- Four Windows printing defects + review-finding follow-ups
+
+- What: Fixed the four print bugs the earlier commits `2408f65`/`9fd7d76` only appeared to fix (their tests exercised fake/PDF-output paths, never the GDI spooler). Plan: `docs/plans/2026-06-01-plan-surgical-fixes-for-eager-biscuit.md`; investigation: `4-problems-investigation.txt`.
+- Shipped (commits `676002b`, `4833e84`, + findings follow-up):
+  - P1 — settings no longer permanently mutated: removed `SetPrinter(level=9)` persistence on opening `屬性`; the captured DEVMODE is carried base64 in `extra_options`, injected only at submission, and applied job-scoped (set → print → restore) in `win_driver._print_with_scoped_devmode`.
+  - P2/P3 — per-page media: `_split_by_layout`/`_print_layout_groups` split a mixed-size/orientation job into one spooler job per uniform-layout group (GDI ignores mid-job `setPageLayout`).
+  - P4 — slow spool: cap effective raster DPI at `_WIN_MAX_RASTER_DPI = 150` for the real printer path (PDF output keeps full DPI).
+  - Review findings #1–#14: explicit paper preserved across split (#1); document-order multi-copy split (#2, chosen behavior); page-range validated before DEVMODE consumed (#3); apply-only-on-confirmed-write + surfaced restore failure (#4); pywin32-fallback degrades to public fields with a log (#5); partial-output reporting on mid-split failure (#6); buffer-only props no longer revert dialog fields (#7); clarifying comments for #8/#9/#10; shared base64 encode/decode helpers (#11); dropped dead `override_fields` write (#12); single-normalize contract in `qt_bridge._apply_printer_options` (#13); DPI-ceiling comment ties to the `normalized()` floor (#14).
+  - Tests: `test_scripts/test_win_print_fixes.py` (real driver/dialog paths) + updated `test_win_driver_properties.py`. 45 print-suite tests pass; no new ruff violations. Docs updated: `FEATURES.md`, `PITFALLS.md`.
+- Follow-up (future work): Windows has no vector/direct-PDF submission path — a true vector path (send PDF to an interpreting driver, or render vector via PDFium) would beat the raster-DPI cap. Mixed-media multi-copy jobs are inherently non-atomic on GDI (one spool job per layout group).
+
 ## Done (2026-05-30) -- Clean re-implementation of the four-theme UI system
 
 - What: Restarted the theme switcher from clean base `24c9dba` (old work preserved on branch `backup/theme-switcher-b774a72`) and rebuilt it per `docs/plans/learn-from-ui-update-report-txt-ethereal-micali.md`, folding in every lesson from `ui-update-report.txt`.

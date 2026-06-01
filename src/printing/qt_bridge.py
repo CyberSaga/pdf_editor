@@ -154,18 +154,19 @@ def _fitz_rect_to_qrectf(page_rect) -> QRectF:
 
 
 def _apply_printer_options(printer: QPrinter, options: PrintJobOptions) -> None:
-    normalized = options.normalized()
-    printer.setDocName(normalized.job_name)
-    printer.setResolution(normalized.dpi)
-    printer.setCopyCount(normalized.copies)
-    printer.setCollateCopies(normalized.collate)
-    if "duplex" in normalized.override_fields:
-        printer.setDuplex(_to_duplex_mode(normalized.duplex))
+    # Contract: callers pass already-normalized options (raster_print_pdf normalizes
+    # at the public boundary), so this internal helper does not re-normalize.
+    printer.setDocName(options.job_name)
+    printer.setResolution(options.dpi)
+    printer.setCopyCount(options.copies)
+    printer.setCollateCopies(options.collate)
+    if "duplex" in options.override_fields:
+        printer.setDuplex(_to_duplex_mode(options.duplex))
     # Keep tray choice in system/native properties unless explicitly overridden.
-    if (normalized.paper_tray or "").strip().lower() not in ("", "auto"):
-        printer.setPaperSource(_to_paper_source(normalized.paper_tray))
-    if "color_mode" in normalized.override_fields:
-        if normalized.color_mode == "grayscale":
+    if (options.paper_tray or "").strip().lower() not in ("", "auto"):
+        printer.setPaperSource(_to_paper_source(options.paper_tray))
+    if "color_mode" in options.override_fields:
+        if options.color_mode == "grayscale":
             printer.setColorMode(QPrinter.GrayScale)
         else:
             printer.setColorMode(QPrinter.Color)
@@ -198,7 +199,17 @@ def raster_print_pdf(
     options: PrintJobOptions,
     renderer: PDFRenderer | None = None,
 ) -> PrintJobResult:
-    """Render PDF pages and draw them to QPrinter (OS spooler)."""
+    """Render PDF pages and draw them to QPrinter (OS spooler).
+
+    Public boundary: ``options`` may be raw — it is normalized here once and the
+    normalized copy is handed to the internal helpers.
+
+    Per-page ``_set_page_layout`` below is honoured by Qt's PDF writer (mixed-media
+    PDF export). On the Windows GDI spooler mid-job layout changes are ignored, so
+    callers that need cross-media variation pre-split into uniform groups (see
+    win_driver._raster_split_or_direct); within a single group these calls just
+    re-assert the one shared layout, which is harmless.
+    """
     if not page_indices:
         raise PrintJobSubmissionError("No pages selected for printing.")
 

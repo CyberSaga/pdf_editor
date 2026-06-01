@@ -794,3 +794,38 @@
 **Cause:** `PDFView.__init__` called `QApplication.instance().setStyleSheet(...)`. Because the test `qapp` fixture is session-scoped, merely *constructing* a view re-themed every widget for the rest of the session, adding global `QToolButton`/`QSpinBox` padding that shifted later geometry measurements.
 **Fix:** Keep view construction side-effect-free. Resolve the theme in `__init__` but apply it only via an explicit `view.apply_initial_theme()` call from the composition root (`main.py`). Runtime switches go through `PDFView.apply_theme(...)`. Constructing a view no longer mutates global app state, and the geometry suites became deterministic.
 **File:** `view/pdf_view.py` (`apply_theme`/`apply_initial_theme`), `main.py`
+
+## Printing once permanently mutated the printer's per-user defaults
+**Area:** `src/printing/platforms/win_driver.py`, `src/printing/print_dialog.py`
+**Symptom:** Adjusting anything in the native `屬性` dialog (or just printing once) changed the printer's defaults for every later job and every other app.
+**Cause:** `open_printer_properties` wrote the chosen DEVMODE as the per-user default via `SetPrinter`/`SetPrinterW` level 9. Level 9 = `PRINTER_INFO_9` = the persistent per-user default — that *is* the global mutation.
+**Fix:** Make settings job-scoped. The dialog hands the captured DEVMODE back as a base64 string (JSON-safe across the helper-subprocess `job.json` boundary), the dialog injects it only at submission, and `print_pdf` applies it for that job by writing level 9 then restoring the previous default in a `finally`. Treat the apply as "applied" only on a confirmed write, only after the original was captured (so a successful apply can always be undone), and log a failed restore loudly instead of swallowing it.
+**File:** `win_driver.py` (`_print_with_scoped_devmode`, `_persist_devmode_buffer_user_defaults`), `print_dialog.py` (`_build_submission_options`, `accept`)
+
+## extra_options must be JSON-serializable (no raw bytes)
+**Area:** `src/printing/helper_protocol.py`, `src/printing/platforms/win_driver.py`
+**Symptom:** Putting a raw DEVMODE `bytes` object into `PrintJobOptions.extra_options` crashes every Windows print job with `TypeError: bytes is not JSON serializable`.
+**Cause:** The real job is dispatched to an out-of-process helper; `PrintHelperJob.to_json_dict()` → `json.dumps(...)` serializes every option, including `extra_options`. Raw bytes have no JSON representation.
+**Fix:** Carry binary as a base64 ASCII string under `extra_options["devmode_buffer"]`; decode back to bytes only inside the helper process where the `QPrinter` is created. Keep `extra_options` typed `dict[str, str]`. Centralized in `_encode_devmode_b64` / `_decode_devmode_b64`.
+**File:** `win_driver.py` (`_encode_devmode_b64`, `_decode_devmode_b64`, `print_pdf`)
+
+## GDI ignores mid-job page-layout changes; mixed-media must be split
+**Area:** `src/printing/qt_bridge.py`, `src/printing/platforms/win_driver.py`
+**Symptom:** A PDF with mixed page sizes/orientations printed every page on the first page's media on a real Windows printer, even though per-page `setPageLayout` worked for PDF export.
+**Cause:** `QPainter.begin()` fixes the device media; subsequent `printer.setPageLayout(...)` + `newPage()` are honored by Qt's PDF writer but ignored by the Windows GDI printer DC.
+**Fix:** `qt_bridge.raster_print_pdf` keeps per-page layout (correct for PDF export and within one uniform group). For the GDI spooler, `win_driver._raster_split_or_direct` pre-splits the job into one spooler job per contiguous uniform-layout group. Multi-copy collated jobs loop the whole document in order across groups; uncollated jobs use one pass with `copies=N` per group. These jobs are not atomic (a separate spool job per group cannot be recalled) — a mid-job failure reports how many pages were already spooled.
+**File:** `win_driver.py` (`_split_by_layout`, `_print_layout_groups`)
+
+## Windows full-DPI raster spools are huge and slow
+**Area:** `src/printing/platforms/win_driver.py`, `src/printing/qt_bridge.py`
+**Symptom:** Jobs sat in the spooler far longer than Acrobat; a 10-page A4 doc produced an enormous EMF spool.
+**Cause:** Windows has no vector/direct-PDF path; every page is a full-resolution `QImage` blitted at `dpi` (default 300) onto a `QPrinter(HighResolution)` DC. An A4 page at 300 DPI is ~26 MB raw.
+**Fix:** Cap the effective raster DPI for the real spooler path (`_WIN_MAX_RASTER_DPI = 150`); PDF-output/virtual targets keep full DPI. The cap composes with the `normalized()` floor (72), so the Windows spooler range is [72, 150]. (A true vector path remains future work.)
+**File:** `win_driver.py` (`_raster_split_or_direct`, `_WIN_MAX_RASTER_DPI`)
+
+## Print speed/layout tests can pass while the real path stays broken
+**Area:** `test_scripts/test_print_speed.py`, `test_scripts/test_print_layout.py`, `test_scripts/test_win_print_fixes.py`
+**Symptom:** All print tests were green while the four user-visible print defects persisted.
+**Cause:** The speed test wrote to `output_pdf_path` (route `qt-raster->pdf`), not the GDI spooler; the layout tests used a fake `_LayoutPrinter` and pure helpers, never a real multi-page `QPrinter`. Neither exercised the path real printing uses.
+**Fix:** Test the driver paths the dispatcher actually calls: `WindowsPrinterDriver.print_pdf` routing (DEVMODE decode → scoped apply/restore), `_split_by_layout` grouping/copy-ordering, the DPI cap, and the dialog's submission/clear semantics. See `test_win_print_fixes.py`.
+**File:** `test_scripts/test_win_print_fixes.py`

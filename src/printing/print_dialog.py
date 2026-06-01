@@ -380,17 +380,24 @@ class UnifiedPrintDialog(QDialog):
             updated = open_fn(printer_name)
             if updated is None:
                 return
+            captured_buffer = False
+            public_prefs: dict[str, object] = {}
             if isinstance(updated, dict):
                 buf = updated.pop("devmode_buffer", None)  # extract before applying prefs
                 if isinstance(buf, str) and buf:
                     self._pending_devmode_buffer = buf
+                    captured_buffer = True
+                public_prefs = updated
             self._touched_hardware_fields.clear()
             self._syncing_printer_preferences = True
-            if isinstance(updated, dict) and updated:
-                self._apply_printer_preferences(updated)
-            else:
+            if public_prefs:
+                self._apply_printer_preferences(public_prefs)
+            elif not captured_buffer:
                 # Fallback: reload defaults in case driver persisted changes asynchronously.
                 self._apply_printer_preferences(self._load_printer_preferences(printer_name))
+            # else: a valid DEVMODE was captured but the dialog returned no separable
+            # public prefs (e.g. only opaque driver fields) — keep the current field
+            # values; reloading defaults here would revert the user's choices (#7).
             self._schedule_preview_refresh()
         except PrintingError as exc:
             QMessageBox.warning(self, "Printer", str(exc))

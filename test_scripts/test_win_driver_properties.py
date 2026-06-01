@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.printing.platforms import win_driver as win_mod
+from src.printing.platforms import win_driver as win_mod  # noqa: E402
 
 
 class _FakeDevMode:
@@ -96,6 +96,9 @@ def test_open_printer_properties_returns_prefs_without_persisting(monkeypatch: p
     assert len(prefs["paper_tray_options"]) >= 2
     # P1: opening the dialog must NOT write the per-user default (level 9).
     assert ("SetPrinter", 9) not in fake._calls
+    # Finding #5: the pywin32 fallback (non-Py handle) carries public DEVMODE fields
+    # via prefs but cannot serialise the PyDEVMODE, so it omits devmode_buffer.
+    assert "devmode_buffer" not in prefs
 
 
 class _FakeWin32PrintLimitedPort(_FakeWin32Print):

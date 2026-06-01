@@ -673,3 +673,136 @@ def test_finding4_denied_apply_skips_restore_and_still_prints(tmp_path, monkeypa
     assert len(persist_calls) == 1, (
         "a denied apply must not trigger a restore write (only the apply was attempted)"
     )
+
+
+def test_finding6_partial_failure_reports_already_spooled(tmp_path, monkeypatch) -> None:
+    """Finding #6: a mid-split failure must report the pages already spooled, not imply none."""
+    pdf = tmp_path / "mixed.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595.28, height=841.89)  # A4 portrait -> group 1 (succeeds)
+    doc.new_page(width=1190.55, height=841.89)  # A3 landscape -> group 2 (fails)
+    doc.save(pdf)
+    doc.close()
+
+    calls: list[list[int]] = []
+
+    def fake_raster(_pdf_path, pages, _opts):
+        calls.append(list(pages))
+        if len(calls) == 1:
+            return PrintJobResult(success=True, route="test", message="ok")
+        return PrintJobResult(success=False, route="test", message="printer offline")
+
+    monkeypatch.setattr(wd, "raster_print_pdf", fake_raster)
+
+    driver = wd.WindowsPrinterDriver()
+    options = PrintJobOptions(
+        printer_name="FakePrinter", paper_size="auto", orientation="auto"
+    )
+    result = driver.print_pdf(str(pdf), [0, 1], options)
+
+    assert result.success is False
+    assert len(calls) == 2, "must stop after the failing group"
+    assert "already been spooled" in result.message, "must disclose the partial output"
+    assert "printer offline" in result.message, "must preserve the underlying cause"
+
+
+def test_finding6_first_group_failure_returns_plain_result(tmp_path, monkeypatch) -> None:
+    """Finding #6: if the first group fails (nothing spooled), return the plain error."""
+    pdf = tmp_path / "mixed.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595.28, height=841.89)  # A4 portrait
+    doc.new_page(width=1190.55, height=841.89)  # A3 landscape
+    doc.save(pdf)
+    doc.close()
+
+    def fake_raster(_pdf_path, _pages, _opts):
+        return PrintJobResult(success=False, route="test", message="printer offline")
+
+    monkeypatch.setattr(wd, "raster_print_pdf", fake_raster)
+
+    driver = wd.WindowsPrinterDriver()
+    options = PrintJobOptions(
+        printer_name="FakePrinter", paper_size="auto", orientation="auto"
+    )
+    result = driver.print_pdf(str(pdf), [0, 1], options)
+
+    assert result.success is False
+    assert result.message == "printer offline", "no partial-output wrapper when nothing spooled"
+
+
+def test_finding11_malformed_devmode_b64_falls_through_to_split(tmp_path, monkeypatch) -> None:
+    """Finding #11: a malformed base64 DEVMODE decodes to b'' and is ignored, not crashed on."""
+    pdf = tmp_path / "a4.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595.28, height=841.89)
+    doc.save(pdf)
+    doc.close()
+
+    assert wd._decode_devmode_b64("not valid base64 !!!") == b""
+
+    scoped_calls: list[bool] = []
+    monkeypatch.setattr(
+        wd.WindowsPrinterDriver,
+        "_print_with_scoped_devmode",
+        lambda *a, **k: scoped_calls.append(True),
+    )
+
+    raster_calls: list[bool] = []
+
+    def fake_raster(_pdf_path, _pages, _opts):
+        raster_calls.append(True)
+        return PrintJobResult(success=True, route="test", message="ok")
+
+    monkeypatch.setattr(wd, "raster_print_pdf", fake_raster)
+
+    driver = wd.WindowsPrinterDriver()
+    options = PrintJobOptions(
+        printer_name="FakePrinter",
+        paper_size="a4",
+        orientation="portrait",
+        extra_options={"devmode_buffer": "not valid base64 !!!"},
+    )
+    result = driver.print_pdf(str(pdf), [0], options)
+
+    assert result.success
+    assert scoped_calls == [], "a malformed DEVMODE must not enter the scoped-apply path"
+    assert raster_calls == [True], "the job still prints via the normal raster path"
+
+
+def test_finding7_buffer_only_props_do_not_reload_defaults(tmp_path, monkeypatch) -> None:
+    """Finding #7: capturing a DEVMODE with no public prefs must not revert dialog fields."""
+    _ensure_app()
+    pdf = tmp_path / "s.pdf"
+    _make_single_page_pdf(pdf)
+    b64 = base64.b64encode(b"OPAQUE-DEVMODE\x00\x07").decode("ascii")
+
+    class _CountingDispatcher(_FakeDispatcher):
+        def __init__(self, props_result):
+            super().__init__(props_result)
+            self.prefs_reload_count = 0
+
+        def get_printer_preferences(self, printer_name):
+            self.prefs_reload_count += 1
+            return dict(self.printer_preferences)
+
+    # props returns ONLY the buffer (no separable public prefs).
+    dispatcher = _CountingDispatcher({"devmode_buffer": b64})
+    dialog = UnifiedPrintDialog(
+        parent=None,
+        dispatcher=dispatcher,
+        printers=[PrinterDevice(name="Printer A", is_default=True, status="ready")],
+        pdf_path=str(pdf),
+        total_pages=1,
+        current_page=1,
+        job_name="job",
+    )
+    try:
+        before = dispatcher.prefs_reload_count
+        dialog.printer_properties_btn.click()
+
+        assert dialog._pending_devmode_buffer == b64, "buffer must be captured"
+        assert dispatcher.prefs_reload_count == before, (
+            "a captured DEVMODE must not trigger a defaults reload that reverts fields"
+        )
+    finally:
+        dialog.close()

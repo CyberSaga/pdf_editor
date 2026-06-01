@@ -74,7 +74,9 @@ _CCHFORMNAME = 32
 
 # Windows rasterises every page to a full-resolution bitmap into the GDI/EMF
 # spool; at 300 DPI an A4 page is ~26 MB raw, which despools slowly. Cap the
-# effective raster DPI for the real spooler path (P4).
+# effective raster DPI for the real spooler path (P4). This ceiling composes with
+# the cross-platform floor in PrintJobOptions.normalized() (dpi = max(72, dpi)),
+# so the effective Windows spooler range is [72, _WIN_MAX_RASTER_DPI].
 _WIN_MAX_RASTER_DPI: int = 150
 
 logger = logging.getLogger(__name__)
@@ -235,9 +237,22 @@ def _buffer_private_crc32(buffer: ctypes.Array[ctypes.c_char]) -> str:
     return f"{zlib.crc32(private_bytes) & 0xFFFFFFFF:08x}"
 
 
+def _encode_devmode_b64(raw: bytes) -> str:
+    """Encode raw DEVMODE bytes as base64 so they survive JSON serialization."""
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _decode_devmode_b64(value: str) -> bytes:
+    """Decode a base64 DEVMODE string back to raw bytes; return b'' if malformed."""
+    try:
+        return base64.b64decode(value)
+    except (ValueError, binascii.Error):
+        return b""
+
+
 def _devmode_buffer_to_b64(buffer: ctypes.Array[ctypes.c_char]) -> str:
-    """Encode a raw DEVMODE buffer as base64 so it survives JSON serialization."""
-    return base64.b64encode(bytes(buffer)).decode("ascii")
+    """Encode a raw DEVMODE ctypes buffer as base64 (see _encode_devmode_b64)."""
+    return _encode_devmode_b64(bytes(buffer))
 
 
 class WindowsPrinterDriver(PrinterDriver):
@@ -318,6 +333,8 @@ class WindowsPrinterDriver(PrinterDriver):
         page_indices: list[int],
         options: PrintJobOptions,
     ) -> PrintJobResult:
+        # normalized() is idempotent and applied at each public boundary; raster
+        # helpers below receive an already-normalized copy and need not redo it.
         normalized = options.normalized()
         devmode_b64 = (normalized.extra_options or {}).get("devmode_buffer")
         if (
@@ -327,10 +344,7 @@ class WindowsPrinterDriver(PrinterDriver):
             and not normalized.output_pdf_path
             and win32print is not None
         ):
-            try:
-                job_bytes = base64.b64decode(devmode_b64)
-            except (ValueError, binascii.Error):
-                job_bytes = b""
+            job_bytes = _decode_devmode_b64(devmode_b64)
             if job_bytes:
                 return self._print_with_scoped_devmode(
                     pdf_path, page_indices, normalized, job_bytes
@@ -352,9 +366,14 @@ class WindowsPrinterDriver(PrinterDriver):
         if normalized.dpi > _WIN_MAX_RASTER_DPI:
             normalized = dataclasses.replace(normalized, dpi=_WIN_MAX_RASTER_DPI)
 
-        # A fixed paper + orientation prints as one job. "auto" on either axis means
-        # each page may need its own media, so split by layout group (P2/P3) because
-        # the GDI spooler does not honour mid-job setPageLayout changes.
+        # Division of responsibility (resolves the apparent qt_bridge/win_driver
+        # contradiction): qt_bridge.raster_print_pdf sets the page layout per page,
+        # which is honoured by Qt's PDF writer and is correct within a *single* media
+        # group. The GDI spooler, however, ignores mid-job setPageLayout changes, so
+        # cross-media variation is handled *here* by splitting into one spooler job
+        # per uniform layout group. A fixed paper + orientation is already uniform and
+        # prints as one job; "auto" on either axis means each page may need its own
+        # media, so we split (P2/P3).
         if normalized.paper_size != "auto" and normalized.orientation != "auto":
             return raster_print_pdf(pdf_path, page_indices, normalized)
         return self._split_by_layout(pdf_path, page_indices, normalized)
@@ -372,6 +391,10 @@ class WindowsPrinterDriver(PrinterDriver):
         explicit_paper = (
             normalized.paper_size if (normalized.paper_size or "auto") != "auto" else None
         )
+        # This is a lightweight geometry-only pass (fitz.open parses the xref, it does
+        # not render). The per-group renderer re-opens the document for rasterising;
+        # the two concerns are kept separate deliberately. Classifying every page up
+        # front also means a malformed PDF fails here, before anything is spooled.
         doc = fitz.open(pdf_path)
         try:
             groups: list[tuple[tuple[str, str], list[int]]] = []
@@ -423,6 +446,12 @@ class WindowsPrinterDriver(PrinterDriver):
             passes, per_group_copies, group_collate = 1, copies, False
 
         page_total = sum(len(pages) for _layout, pages in groups)
+        # Each group is a separate spooler job, so the overall job is NOT atomic: once
+        # a group is spooled it cannot be recalled. If a later group fails we surface
+        # how many pages were already spooled rather than implying nothing printed
+        # (finding #6). The up-front classification above keeps PDF-parse failures from
+        # ever reaching this loop.
+        spooled = 0
         for _ in range(passes):
             for (paper, orient), pages in groups:
                 group_opts = dataclasses.replace(
@@ -434,7 +463,18 @@ class WindowsPrinterDriver(PrinterDriver):
                 )
                 result = raster_print_pdf(pdf_path, pages, group_opts)
                 if not result.success:
+                    if spooled > 0:
+                        return PrintJobResult(
+                            success=False,
+                            route="qt-raster->spooler",
+                            message=(
+                                f"Print failed after {spooled} page(s) had already been "
+                                f"spooled as separate per-layout jobs (mixed-media jobs "
+                                f"cannot be rolled back): {result.message}"
+                            ),
+                        )
                     return result
+                spooled += len(pages)
 
         return PrintJobResult(
             success=True,
@@ -455,6 +495,12 @@ class WindowsPrinterDriver(PrinterDriver):
         settings are applied by briefly writing the per-user default (level 9) and
         restoring it afterwards. This keeps printing once from permanently mutating
         the printer's defaults (P1).
+
+        Note (finding #8): the DEVMODE also carries paper size / orientation, but the
+        app owns those — the layout split below sets them per page via QPrinter, which
+        overrides the DEVMODE's values. The DEVMODE is therefore the carrier for the
+        *other* dialog choices (colour, duplex, tray) and any opaque driver-private
+        fields; its paper/orientation are intentionally superseded.
         """
         if win32print is None or _DOCUMENT_PROPERTIES_W is None:
             return self._raster_split_or_direct(pdf_path, page_indices, normalized)
@@ -791,15 +837,20 @@ class WindowsPrinterDriver(PrinterDriver):
                 merged = self._collect_printer_preferences(handle, normalized_name)
                 for key, value in self._devmode_to_preferences(devmode).items():
                     merged.setdefault(key, value)
-                # Job-scoped (P1): do not persist as the per-user default. Best-effort
-                # hand the DEVMODE back as base64 so the job can apply it; omit the key
-                # if this PyDEVMODE cannot be converted to raw bytes.
-                try:
-                    raw_devmode = bytes(devmode)
-                except Exception:
-                    raw_devmode = b""
-                if raw_devmode:
-                    merged["devmode_buffer"] = base64.b64encode(raw_devmode).decode("ascii")
+                # Finding #5: on this pywin32-only fallback (reached when the ctypes
+                # winspool API is unavailable) the user's choices live in a PyDEVMODE,
+                # which has no buffer protocol — there is no reliable way to serialise
+                # it to raw bytes, and a fresh ctypes read would only return the
+                # unchanged stored default, not the dialog's edits. So we deliberately
+                # omit `devmode_buffer` here and carry the *public* fields (paper,
+                # orientation, duplex, colour, tray) via `merged`, which the dialog
+                # applies through the normal option combos. Only opaque driver-private
+                # settings are lost on this rare path; log it so it is not silent.
+                logger.info(
+                    "Printer properties for '%s' resolved via the pywin32 fallback; "
+                    "applying public DEVMODE fields only (opaque settings not job-scoped).",
+                    normalized_name,
+                )
                 return merged
             except PrintJobSubmissionError:
                 raise
