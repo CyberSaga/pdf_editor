@@ -365,6 +365,13 @@ class WindowsPrinterDriver(PrinterDriver):
         page_indices: list[int],
         normalized: PrintJobOptions,
     ) -> PrintJobResult:
+        # An explicitly chosen paper size must be honoured for every page; only the
+        # "auto" axis is derived per page. resolve_orientation already returns an
+        # explicit orientation choice unchanged, so leaving paper fixed here lets the
+        # user pin paper while still auto-rotating per page (finding #1).
+        explicit_paper = (
+            normalized.paper_size if (normalized.paper_size or "auto") != "auto" else None
+        )
         doc = fitz.open(pdf_path)
         try:
             groups: list[tuple[tuple[str, str], list[int]]] = []
@@ -373,7 +380,10 @@ class WindowsPrinterDriver(PrinterDriver):
             for idx in page_indices:
                 rect = doc[idx].rect
                 width, height = float(rect.width), float(rect.height)
-                paper = match_standard_paper_size(width, height) or "auto"
+                if explicit_paper is not None:
+                    paper = explicit_paper
+                else:
+                    paper = match_standard_paper_size(width, height) or "auto"
                 orient = resolve_orientation(normalized.orientation, width, height)
                 layout = (paper, orient)
                 if layout != cur_layout:
@@ -387,23 +397,49 @@ class WindowsPrinterDriver(PrinterDriver):
         finally:
             doc.close()
 
-        total = 0
-        for (paper, orient), pages in groups:
-            group_opts = dataclasses.replace(
-                normalized,
-                paper_size=paper,
-                orientation=orient,
-                override_fields=normalized.override_fields | {"paper_size", "orientation"},
-            )
-            result = raster_print_pdf(pdf_path, pages, group_opts)
-            if not result.success:
-                return result
-            total += len(pages)
+        return self._print_layout_groups(pdf_path, groups, normalized)
+
+    def _print_layout_groups(
+        self,
+        pdf_path: str,
+        groups: list[tuple[tuple[str, str], list[int]]],
+        normalized: PrintJobOptions,
+    ) -> PrintJobResult:
+        # Each layout group is necessarily its own spooler job (GDI cannot switch
+        # media mid-job), so multi-copy ordering must be coordinated here (finding #2):
+        #   * single group   -> one job; the driver collates copies natively.
+        #   * collated, N>1   -> loop whole-document copies, 1 copy per group, so the
+        #                        output is p0,p1,p0,p1,... (document copy ordering).
+        #   * uncollated, N>1 -> one pass, copies=N per group in document order, so the
+        #                        output is p0,p0,p1,p1,... (page-grouped copies).
+        # A single physically-collated set spanning paper sizes is not possible on GDI.
+        copies = max(1, int(normalized.copies))
+        collate = bool(normalized.collate)
+        if len(groups) <= 1 or copies == 1:
+            passes, per_group_copies, group_collate = 1, copies, collate
+        elif collate:
+            passes, per_group_copies, group_collate = copies, 1, False
+        else:
+            passes, per_group_copies, group_collate = 1, copies, False
+
+        page_total = sum(len(pages) for _layout, pages in groups)
+        for _ in range(passes):
+            for (paper, orient), pages in groups:
+                group_opts = dataclasses.replace(
+                    normalized,
+                    paper_size=paper,
+                    orientation=orient,
+                    copies=per_group_copies,
+                    collate=group_collate,
+                )
+                result = raster_print_pdf(pdf_path, pages, group_opts)
+                if not result.success:
+                    return result
 
         return PrintJobResult(
             success=True,
             route="qt-raster->spooler",
-            message=f"Submitted {total} page(s) to printer.",
+            message=f"Submitted {page_total} page(s) to printer.",
         )
 
     def _print_with_scoped_devmode(
@@ -431,14 +467,32 @@ class WindowsPrinterDriver(PrinterDriver):
             handle = win32print.OpenPrinter(printer_name)
             size = int(_DOCUMENT_PROPERTIES_W(0, int(handle), printer_name, None, None, 0))
             if size > 0:
+                # Capture the current default first: we only apply the job DEVMODE if
+                # we have something to restore, so a successful apply can always be
+                # undone (finding #4).
                 original_buf = ctypes.create_string_buffer(size)
                 _DOCUMENT_PROPERTIES_W(
                     0, int(handle), printer_name, original_buf, None, _DM_OUT_BUFFER
                 )
-            job_buf = ctypes.create_string_buffer(job_bytes, len(job_bytes))
-            self._persist_devmode_buffer_user_defaults(handle, job_buf, printer_name)
-            applied = True
+                job_buf = ctypes.create_string_buffer(job_bytes, len(job_bytes))
+                # applied is True only on a *confirmed* write: if SetPrinterW is denied
+                # the defaults are unchanged, so we must not attempt a restore.
+                applied = self._persist_devmode_buffer_user_defaults(
+                    handle, job_buf, printer_name
+                )
+                if not applied:
+                    logger.warning(
+                        "Job-scoped DEVMODE could not be applied for '%s'; "
+                        "printing with the printer's current defaults.",
+                        printer_name,
+                    )
+            else:
+                logger.info(
+                    "Could not read current DEVMODE for '%s'; printing with current defaults.",
+                    printer_name,
+                )
         except Exception as exc:
+            applied = False
             logger.info(
                 "Job-scoped DEVMODE setup failed for '%s'; printing with current defaults: %s",
                 printer_name,
@@ -449,12 +503,26 @@ class WindowsPrinterDriver(PrinterDriver):
             return self._raster_split_or_direct(pdf_path, page_indices, normalized)
         finally:
             if applied and original_buf is not None and handle is not None:
+                # Surface a failed restore instead of swallowing it: a silent failure
+                # leaves the captured DEVMODE as the persistent per-user default — the
+                # very P1 mutation this path exists to prevent (finding #4).
+                restored = False
                 try:
-                    self._persist_devmode_buffer_user_defaults(
+                    restored = self._persist_devmode_buffer_user_defaults(
                         handle, original_buf, printer_name
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "Error restoring printer default DEVMODE for '%s': %s",
+                        printer_name,
+                        exc,
+                    )
+                if not restored:
+                    logger.warning(
+                        "Printer default DEVMODE for '%s' may remain modified: the "
+                        "job-scoped restore did not confirm success.",
+                        printer_name,
+                    )
             if handle is not None:
                 try:
                     win32print.ClosePrinter(handle)
@@ -568,21 +636,27 @@ class WindowsPrinterDriver(PrinterDriver):
         handle: Any,
         devmode_buffer: ctypes.Array[ctypes.c_char],
         printer_name: str,
-    ) -> None:
+    ) -> bool:
+        """Write a DEVMODE as the level-9 default; return True only on a confirmed write.
+
+        Used solely inside the job-scoped save/restore block: the caller relies on the
+        boolean to decide whether a restore is owed and whether it succeeded (finding #4).
+        """
         if _SET_PRINTER_W is None:
-            return
+            return False
         info9 = _PRINTER_INFO_9(
             pDevMode=ctypes.cast(devmode_buffer, wintypes.LPVOID),
         )
         ok = bool(_SET_PRINTER_W(int(handle), 9, ctypes.byref(info9), 0))
         if ok:
-            return
+            return True
         err = ctypes.get_last_error()
         logger.info(
-            "SetPrinterW(level=9) skipped/denied for '%s' after properties dialog (non-fatal): %s",
+            "SetPrinterW(level=9) skipped/denied for '%s' (non-fatal): %s",
             printer_name,
             err,
         )
+        return False
 
     def _open_printer_properties_via_ctypes(
         self,

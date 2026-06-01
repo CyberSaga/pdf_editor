@@ -36,6 +36,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import src.printing.platforms.win_driver as wd  # noqa: E402
+import src.printing.print_dialog as pdlg  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from src.printing.base_driver import (  # noqa: E402
@@ -141,6 +142,7 @@ def test_print_pdf_applies_devmode_job_scoped_and_restores(monkeypatch, tmp_path
 
     def fake_persist(_self, _handle, devmode_buffer, _printer_name):
         events.append(("persist", bytes(devmode_buffer)))
+        return True  # confirmed write (finding #4)
 
     def fake_raster(_pdf_path, _pages, _opts):
         events.append(("raster", None))
@@ -406,3 +408,268 @@ class _FakeDispatcher:
     def get_printer_preferences(self, printer_name: str) -> dict[str, object]:
         _ = printer_name
         return dict(self.printer_preferences)
+
+
+# ---------------------------------------------------------------------------
+# Review findings — regression guards for the bugs found in the first patchset
+# ---------------------------------------------------------------------------
+
+
+def test_finding1_explicit_paper_preserved_when_orientation_auto(tmp_path, monkeypatch) -> None:
+    """Finding #1: a user-pinned paper size must survive the layout split.
+
+    Pages differ only in orientation; the user fixed paper to 'letter' but left
+    orientation 'auto'. Every group must keep 'letter', not the auto-detected size.
+    """
+    pdf = tmp_path / "mixed_orient.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595.28, height=841.89)  # portrait
+    doc.new_page(width=841.89, height=595.28)  # landscape
+    doc.save(pdf)
+    doc.close()
+
+    calls: list[tuple[list[int], str, str]] = []
+
+    def fake_raster(_pdf_path, pages, opts):
+        calls.append((list(pages), opts.paper_size, opts.orientation))
+        return PrintJobResult(success=True, route="test", message="ok")
+
+    monkeypatch.setattr(wd, "raster_print_pdf", fake_raster)
+
+    driver = wd.WindowsPrinterDriver()
+    options = PrintJobOptions(
+        printer_name="FakePrinter", paper_size="letter", orientation="auto"
+    )
+    result = driver.print_pdf(str(pdf), [0, 1], options)
+
+    assert result.success
+    assert [paper for _, paper, _ in calls] == ["letter", "letter"], (
+        "explicit paper must survive the split, not be overwritten by auto-detect"
+    )
+    assert [orient for _, _, orient in calls] == ["portrait", "landscape"], (
+        "orientation is still auto-resolved per page"
+    )
+
+
+def test_finding2_collated_multicopy_mixed_layout_uses_document_order(
+    tmp_path, monkeypatch
+) -> None:
+    """Finding #2 (Option A): collated copies loop the whole document in order.
+
+    output for copies=2 collated over [A4, A3] -> A4,A3,A4,A3, each spool job = 1 copy.
+    """
+    pdf = tmp_path / "mixed.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595.28, height=841.89)  # A4 portrait
+    doc.new_page(width=1190.55, height=841.89)  # A3 landscape
+    doc.save(pdf)
+    doc.close()
+
+    calls: list[tuple[list[int], str, str, int]] = []
+
+    def fake_raster(_pdf_path, pages, opts):
+        calls.append((list(pages), opts.paper_size, opts.orientation, opts.copies))
+        return PrintJobResult(success=True, route="test", message="ok")
+
+    monkeypatch.setattr(wd, "raster_print_pdf", fake_raster)
+
+    driver = wd.WindowsPrinterDriver()
+    options = PrintJobOptions(
+        printer_name="FakePrinter",
+        paper_size="auto",
+        orientation="auto",
+        copies=2,
+        collate=True,
+    )
+    result = driver.print_pdf(str(pdf), [0, 1], options)
+
+    assert result.success
+    assert calls == [
+        ([0], "a4", "portrait", 1),
+        ([1], "a3", "landscape", 1),
+        ([0], "a4", "portrait", 1),
+        ([1], "a3", "landscape", 1),
+    ], "collated multi-copy must repeat the document in order, 1 copy per group"
+
+
+def test_finding2_uncollated_multicopy_mixed_layout_groups_copies_per_page(
+    tmp_path, monkeypatch
+) -> None:
+    """Finding #2: uncollated copies stay page-grouped (one pass, copies=N per group)."""
+    pdf = tmp_path / "mixed.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595.28, height=841.89)  # A4 portrait
+    doc.new_page(width=1190.55, height=841.89)  # A3 landscape
+    doc.save(pdf)
+    doc.close()
+
+    calls: list[tuple[list[int], str, str, int, bool]] = []
+
+    def fake_raster(_pdf_path, pages, opts):
+        calls.append(
+            (list(pages), opts.paper_size, opts.orientation, opts.copies, opts.collate)
+        )
+        return PrintJobResult(success=True, route="test", message="ok")
+
+    monkeypatch.setattr(wd, "raster_print_pdf", fake_raster)
+
+    driver = wd.WindowsPrinterDriver()
+    options = PrintJobOptions(
+        printer_name="FakePrinter",
+        paper_size="auto",
+        orientation="auto",
+        copies=2,
+        collate=False,
+    )
+    result = driver.print_pdf(str(pdf), [0, 1], options)
+
+    assert result.success
+    assert calls == [
+        ([0], "a4", "portrait", 2, False),
+        ([1], "a3", "landscape", 2, False),
+    ], "uncollated multi-copy must group copies per page in document order"
+
+
+def test_finding2_uniform_layout_multicopy_stays_single_job(tmp_path, monkeypatch) -> None:
+    """Finding #2: a single layout group must stay one spooler job with copies=N.
+
+    The driver collates a single-media job natively; exploding it into N jobs would
+    be a regression (slower, N entries in the queue).
+    """
+    pdf = tmp_path / "uniform.pdf"
+    doc = fitz.open()
+    doc.new_page(width=595.28, height=841.89)
+    doc.new_page(width=595.28, height=841.89)
+    doc.save(pdf)
+    doc.close()
+
+    calls: list[tuple[list[int], int, bool]] = []
+
+    def fake_raster(_pdf_path, pages, opts):
+        calls.append((list(pages), opts.copies, opts.collate))
+        return PrintJobResult(success=True, route="test", message="ok")
+
+    monkeypatch.setattr(wd, "raster_print_pdf", fake_raster)
+
+    driver = wd.WindowsPrinterDriver()
+    options = PrintJobOptions(
+        printer_name="FakePrinter",
+        paper_size="auto",
+        orientation="auto",
+        copies=3,
+        collate=True,
+    )
+    result = driver.print_pdf(str(pdf), [0, 1], options)
+
+    assert result.success
+    assert calls == [([0, 1], 3, True)], "uniform layout must be one native multi-copy job"
+
+
+def test_finding3_pending_devmode_survives_recoverable_range_error(
+    tmp_path, monkeypatch
+) -> None:
+    """Finding #3: a recoverable page-range error must not drop the captured DEVMODE."""
+    _ensure_app()
+    pdf = tmp_path / "s.pdf"
+    _make_single_page_pdf(pdf)
+    b64 = base64.b64encode(b"DEVMODE-KEEP\x00\x11").decode("ascii")
+
+    class _RangeOnceDispatcher(_FakeDispatcher):
+        def __init__(self, props_result):
+            super().__init__(props_result)
+            self._raise_next = True
+
+        def resolve_page_indices_for_count(self, total_pages, options):
+            _ = (total_pages, options)
+            if self._raise_next:
+                self._raise_next = False
+                raise ValueError("頁面範圍無效")
+            return [0]
+
+    # Replace the module's QMessageBox name so the warning is a no-op in tests.
+    class _SilentMsgBox:
+        @staticmethod
+        def warning(*_a, **_k):
+            return None
+
+    monkeypatch.setattr(pdlg, "QMessageBox", _SilentMsgBox)
+
+    dispatcher = _RangeOnceDispatcher({"devmode_buffer": b64})
+    dialog = UnifiedPrintDialog(
+        parent=None,
+        dispatcher=dispatcher,
+        printers=[PrinterDevice(name="Printer A", is_default=True, status="ready")],
+        pdf_path=str(pdf),
+        total_pages=1,
+        current_page=1,
+        job_name="job",
+    )
+    try:
+        dialog.printer_properties_btn.click()
+        assert dialog._pending_devmode_buffer == b64
+
+        dialog.accept()  # first attempt: range raises -> warning -> return
+        assert dialog._pending_devmode_buffer == b64, (
+            "a recoverable range error must leave the captured DEVMODE intact"
+        )
+        assert dialog._result is None
+
+        dialog.accept()  # corrected attempt: resolves, buffer consumed exactly once
+        assert dialog._result is not None
+        assert dialog._result.options.extra_options.get("devmode_buffer") == b64
+        assert dialog._pending_devmode_buffer is None
+    finally:
+        dialog.close()
+
+
+def test_finding4_denied_apply_skips_restore_and_still_prints(tmp_path, monkeypatch) -> None:
+    """Finding #4: if the apply write is denied, no restore is attempted and the job prints."""
+    pdf = tmp_path / "one.pdf"
+    _make_single_page_pdf(pdf)
+    original = b"ORIGINAL" + bytes(80)
+    job_b64 = base64.b64encode(b"JOB" + bytes(40)).decode("ascii")
+
+    def fake_docprops(_hwnd, _handle, _name, out_buf, in_buf, mode):
+        if out_buf is None and in_buf is None:
+            return len(original)  # size query
+        if out_buf is not None and (mode & wd._DM_OUT_BUFFER):
+            ctypes.memmove(out_buf, original, len(original))
+        return 1
+
+    persist_calls: list[bytes] = []
+
+    def fake_persist(_self, _handle, devmode_buffer, _printer_name):
+        persist_calls.append(bytes(devmode_buffer))
+        return False  # SetPrinterW denied
+
+    raster_calls: list[bool] = []
+
+    def fake_raster(_pdf_path, _pages, _opts):
+        raster_calls.append(True)
+        return PrintJobResult(success=True, route="test", message="ok")
+
+    fake_win32 = types.SimpleNamespace(
+        OpenPrinter=lambda name: PyFakeHandle(3),
+        ClosePrinter=lambda handle: None,
+    )
+    monkeypatch.setattr(wd, "win32print", fake_win32)
+    monkeypatch.setattr(wd, "_DOCUMENT_PROPERTIES_W", fake_docprops)
+    monkeypatch.setattr(wd, "raster_print_pdf", fake_raster)
+    monkeypatch.setattr(
+        wd.WindowsPrinterDriver, "_persist_devmode_buffer_user_defaults", fake_persist
+    )
+
+    driver = wd.WindowsPrinterDriver()
+    options = PrintJobOptions(
+        printer_name="FakePrinter",
+        paper_size="a4",
+        orientation="portrait",
+        extra_options={"devmode_buffer": job_b64},
+    )
+    result = driver.print_pdf(str(pdf), [0], options)
+
+    assert result.success
+    assert raster_calls == [True], "the job must still print with the current defaults"
+    assert len(persist_calls) == 1, (
+        "a denied apply must not trigger a restore write (only the apply was attempted)"
+    )

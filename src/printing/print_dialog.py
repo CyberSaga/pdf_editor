@@ -762,13 +762,18 @@ class UnifiedPrintDialog(QDialog):
 
     def accept(self) -> None:
         try:
-            options = self._build_submission_options()
+            # Validate the page range using effective options, which do NOT consume the
+            # captured DEVMODE. A recoverable range error must leave the buffer intact so
+            # the user's corrected retry still carries it (finding #3).
+            effective = self._build_effective_options()
             page_indices = self.dispatcher.resolve_page_indices_for_count(
-                self.total_pages, options
+                self.total_pages, effective
             )
         except (ValueError, PrintingError) as exc:
             QMessageBox.warning(self, "列印設定錯誤", str(exc))
             return
 
+        # The job is valid: now consume the pending DEVMODE exactly once.
+        options = self._build_submission_options()
         self._result = UnifiedPrintDialogResult(options=options, page_indices=page_indices)
         super().accept()
