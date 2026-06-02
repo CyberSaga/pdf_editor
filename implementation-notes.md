@@ -53,6 +53,26 @@ Pre-existing failures to ignore as regressions:
 - test_no_jump_editor_geometry.py::test_click_to_edit_qtest_integration[colored/complexed/vertical]
 - test_no_jump_editor_geometry.py::test_reopen_same_textbox_cycles_do_not_cumulate_shrink[colored/complexed/vertical]
 
+## FINAL VERIFICATION (after all 9 commits)
+
+Full suite: `python -m pytest test_scripts/` → **8 failed, 1189 passed, 21 skipped**.
+- 7 failures = the recorded pre-existing baseline (`test_no_jump_editor_geometry.py`),
+  untouched by this work.
+- 1 failure = `test_print_subprocess_runner.py::test_runner_heartbeat_events_prevent_false_stall`,
+  which **passes in isolation** (re-ran alone → 1 passed). This is the timing-sensitive
+  flake already documented in TODOS.md line ~107 ("can fail during long pytest runs …
+  passes when run alone"); none of my patches touch `subprocess_runner.py`.
+- **Net: zero new persistent failures vs baseline.** All 34 new security tests pass.
+- `ruff check` clean on every touched source file and every new test file. The only
+  ruff hits in the repo are 2 pre-existing violations in `scripts/ux_signoff_agent.py`
+  (F401 @35, E401 @481) that predate and are outside my edits.
+
+Commits (atomic, one per patch + one regression fix), oldest→newest:
+P6 → P3 → P2 → P4 → P5 → P7 → P1 → (P1 OCR follow-up) → P8.
+Each got a `codex:review` (P1 also a `codex:adversarial-review`, verdict: approve/Ship).
+Codex verdicts were clean or inconclusive (sandbox flakiness, see note above); no codex
+finding required a change. The real correctness gate was the test suite + ruff.
+
 ## Decisions / deviations
 
 ### P8 — Raise Pillow floor (optional-requirements.txt) — DONE
