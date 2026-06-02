@@ -55,6 +55,21 @@ Pre-existing failures to ignore as regressions:
 
 ## Decisions / deviations
 
+### P2 — IPC socket user-isolation (single_instance.py) — DONE
+- `_listen_server`: `server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)`
+  before `listen()`. Verified the scoped enum + `socketOptions()` membership test on
+  PySide6 6.9.2 (`SocketOption.UserAccessOption` value 1).
+- Added `_forwarded_argv_is_acceptable(argv)` and gated the `on_message` call in
+  `_handle_socket_message` on it. Rejects (ack `0`) any message where an *absolute*
+  item is missing or not `.pdf`. Followed the spec's "absolute-only" rule rather than
+  the inline `write/return`, folding the reject into the existing single-ack path so
+  the disconnect flow stays intact.
+- Design note: validation lives in `_handle_socket_message` (the cross-process socket
+  boundary), NOT in `send_to_running_instance`'s in-process shortcut. That shortcut is
+  same-process (trusted) and is what the existing forwarding tests exercise — which is
+  why `test_single_instance_forwarding.py` (forwards relative `x.pdf`) still passes:
+  it never crosses the socket. The real untrusted peer always hits the validated path.
+
 ### P3 — Absolute subprocess binary paths — DONE (with one documented deviation)
 - **win_driver.py:** added `import os` + module constant
   `_RUNDLL32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "rundll32.exe")`,

@@ -25,6 +25,9 @@ def _remove_server(name: str) -> None:
 
 def _listen_server(name: str) -> QLocalServer | None:
     server = QLocalServer()
+    # Restrict the named pipe / unix socket to the current user so peers in
+    # other sessions cannot connect and forward open requests (CWE-306/CWE-668).
+    server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
     if server.listen(name):
         return server
     server.deleteLater()
@@ -90,6 +93,21 @@ def _normalize_forwarded_argv(argv: list[str]) -> list[str]:
     return [str(Path(item).resolve()) for item in argv]
 
 
+def _forwarded_argv_is_acceptable(argv: list[str]) -> bool:
+    """Reject a forwarded message if any *absolute* item is not an existing
+    ``.pdf`` file. Legitimate forwarded paths are normalized to absolute resolved
+    paths before sending, so this gates the untrusted socket peer without
+    affecting relative tokens."""
+    for item in argv:
+        try:
+            path = Path(item)
+        except (TypeError, ValueError):
+            return False
+        if path.is_absolute() and (not path.exists() or path.suffix.lower() != ".pdf"):
+            return False
+    return True
+
+
 def _handle_socket_message(
     socket: QLocalSocket,
     on_message: Callable[[list[str]], None],
@@ -110,7 +128,11 @@ def _handle_socket_message(
     try:
         payload = json.loads(line.decode("utf-8"))
         argv = payload.get("argv")
-        if isinstance(argv, list) and all(isinstance(item, str) for item in argv):
+        if (
+            isinstance(argv, list)
+            and all(isinstance(item, str) for item in argv)
+            and _forwarded_argv_is_acceptable(argv)
+        ):
             on_message(list(argv))
             ok = True
     except Exception:
