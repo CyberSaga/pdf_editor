@@ -82,6 +82,33 @@ PdfAuditItem = pdf_optimizer.PdfAuditItem
 PdfAuditReport = pdf_optimizer.PdfAuditReport
 PdfOptimizationResult = pdf_optimizer.PdfOptimizationResult
 
+# Resource guards for untrusted PDFs (CWE-400 uncontrolled resource consumption,
+# CWE-409 decompression bomb). A crafted document with an enormous file size,
+# page count, or page dimensions can otherwise OOM/hang the process during parse
+# or render. These cap the worst case; they do not affect any realistic document.
+_MAX_PDF_BYTES = 512 * 1024 * 1024  # 512 MB
+_MAX_PAGES = 5_000
+_MAX_PIXMAP_PX = 40_000_000  # ~40 MP per rendered page
+
+
+def _guard_before_open(path: Path) -> None:
+    """Reject an over-large file before handing its bytes to the native parser."""
+    if path.stat().st_size > _MAX_PDF_BYTES:
+        raise ValueError(f"PDF exceeds size limit ({_MAX_PDF_BYTES // 1_048_576} MB)")
+
+
+def _safe_render_scale(page: fitz.Page, scale: float) -> float:
+    """Clamp a render scale so a single page's pixmap stays under _MAX_PIXMAP_PX.
+
+    Normal-sized pages are returned unchanged; only pathologically large pages are
+    scaled down. A 0.1 floor is kept so the result is never a degenerate render —
+    note this means an extreme page (millions of points per side) can still exceed
+    the cap at 0.1, which is an accepted tradeoff (see implementation-notes.md)."""
+    w, h = page.rect.width, page.rect.height
+    if w * h * scale * scale > _MAX_PIXMAP_PX:
+        scale = (_MAX_PIXMAP_PX / max(1.0, w * h)) ** 0.5
+    return max(0.1, scale)
+
 
 def _install_rawdict_text_compat() -> None:
     """Backfill ``span['text']`` for fitz rawdict payloads that only expose chars.
@@ -640,6 +667,8 @@ class PDFModel:
             if not src_path.is_file():
                 logger.error(f"路徑不是有效檔案: {path}")
                 raise ValueError(f"路徑不是有效檔案: {path}")
+            # Reject an over-large file before parsing or touching existing sessions.
+            _guard_before_open(src_path)
             existing_id = self._path_to_session_id.get(canonical_path)
             if append and existing_id:
                 self.activate_session(existing_id)
@@ -664,6 +693,11 @@ class PDFModel:
                     f"PDF 密碼驗證成功 (auth_level={auth_result}，"
                     f"2=user/4=owner/6=both): {src_path}"
                 )
+
+            # Cap page count once the document is readable (after any auth).
+            if doc.page_count > _MAX_PAGES:
+                doc.close()
+                raise ValueError(f"PDF exceeds page limit ({_MAX_PAGES} pages)")
 
             # 部分壞損 PDF 可能被 MuPDF 接受但頁數為 0（無法進一步操作）。
             # 這裡以空白文件替代，避免後續流程崩潰。
@@ -1140,7 +1174,8 @@ class PDFModel:
                 if not (1 <= page_num <= len(self.doc)):
                     logger.warning(f"匯出影像時略過無效頁碼: {page_num}")
                     continue
-                pix = self.get_page_pixmap(page_num, scale=scale)
+                safe_scale = _safe_render_scale(self.doc[page_num - 1], scale)
+                pix = self.get_page_pixmap(page_num, scale=safe_scale)
                 # Persist resolution metadata so image "DPI" matches user selection.
                 pix.set_dpi(dpi_value, dpi_value)
                 if len(pages) == 1:
@@ -4774,6 +4809,7 @@ class PDFModel:
         rect = fitz.Rect(page.rect)
         longest = max(1.0, float(rect.width), float(rect.height))
         scale = max(0.1, min(float(max_dim) / longest, 4.0))
+        scale = _safe_render_scale(page, scale)
         pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), colorspace=fitz.csGRAY, alpha=False)
         return np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
 
@@ -4826,7 +4862,7 @@ class PDFModel:
 
         from PIL import Image
 
-        scale = 2.0
+        scale = _safe_render_scale(self.doc[idx], 2.0)
         pix = self.doc[idx].get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
         mode = "RGBA" if pix.alpha else "RGB"
         img = Image.frombytes(mode, (pix.width, pix.height), pix.samples).convert("RGB")

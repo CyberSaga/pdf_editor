@@ -55,6 +55,44 @@ Pre-existing failures to ignore as regressions:
 
 ## Decisions / deviations
 
+### P1 — PDF resource guards (pdf_model.py, ocr_tool.py) — DONE
+- Added module consts `_MAX_PDF_BYTES=512MB`, `_MAX_PAGES=5000`, `_MAX_PIXMAP_PX=40M`
+  and helpers `_guard_before_open(path)` / `_safe_render_scale(page, scale)` in
+  pdf_model.py (after the optimizer re-exports).
+- `open_pdf`: size guard `_guard_before_open(src_path)` placed right after the
+  `is_file()` check and BEFORE the append/`close_all_sessions` block, so an oversized
+  file is rejected without first tearing down the user's open sessions. Page-count
+  guard placed after the password-auth block and before the len==0 fallback; it
+  `doc.close()`es then raises.
+- **Exception-type note:** `open_pdf` wraps every non-`PermissionError` in
+  `RuntimeError("開啟PDF失敗: …")`. So although the guards raise `ValueError`, callers
+  of `open_pdf` see `RuntimeError` with the original message embedded. I deliberately
+  did NOT add an `except ValueError: raise` shortcut — that would also change the
+  long-standing wrapping of the existing line-642 `ValueError`/`FileNotFoundError`
+  paths and risk other callers. The new tests therefore assert on the message
+  substring ("size limit" / "page limit") rather than the exact type, and unit-test
+  the helpers directly for the clean `ValueError`/scale math.
+- Raster clamps applied at the spec's named sites only — export (`get_page_pixmap`
+  call), deskew gray-array (`_render_page_gray_array`), straighten (`straighten_page`),
+  and the OCR loop (`ocr_tool.ocr_pages`, via a local `from model.pdf_model import
+  _safe_render_scale` to dodge an import cycle). I did NOT clamp centrally inside
+  `get_page_pixmap`/`render_page_pixmap`, to avoid perturbing the ~30 render tests;
+  for normal pages `_safe_render_scale` is a no-op so behaviour is unchanged (verified
+  deskew/render/ocr/export/merge/optimize suites: 60 passed, 4 skipped).
+- **Did NOT add a recursion cap** to `_discover_form_nested_invocations` — the spec
+  and investigation-review.md both confirm it is depth-1 (not recursive), so the
+  CWE-674 sub-claim does not apply.
+- **0.1-floor tradeoff:** `_safe_render_scale` keeps a `max(0.1, scale)` floor per the
+  spec, so an extreme page (≈1e6 pt/side) still renders above the 40 MP cap at scale
+  0.1. Accepted: scaling below 0.1 yields a useless render, and such pages are
+  exotic. Documented in the helper's docstring and tested (`floors_at_min`).
+- **TDD-order slip (transparency):** for P1 I wrote the implementation before the
+  test file, then retroactively confirmed Red by `git stash`-ing only the two impl
+  files (the new test is untracked, so it stayed) — collection ERROR'd because the
+  helpers didn't exist — then `git stash pop` and confirmed Green (8 passed). The
+  Red→Green evidence is genuine; the authoring order just wasn't test-first for this
+  one patch.
+
 ### P7 — CUA agent action allowlist (ux_signoff_agent.py) — DONE
 - Added module `_ALLOWED_CUA_ACTIONS = frozenset({"click","double_click","scroll",
   "move","screenshot"})` and a guard at the top of `_execute_cua_action` that raises

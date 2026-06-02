@@ -253,14 +253,19 @@ class OcrTool(ToolExtension):
         if not ok:
             raise RuntimeError(reason or "Surya 未安裝；請先執行 pip install surya-ocr")
 
+        # Local import avoids a module-load cycle between pdf_model and the tools.
+        from model.pdf_model import _safe_render_scale
+
         adapter = _create_surya_adapter(device)
         render_scale = float(OCR_RENDER_SCALE)
         results: dict[int, list[OcrSpan]] = {}
         try:
             for done, page_num in enumerate(page_nums, start=1):
+                # Clamp the OCR raster so a giant page cannot exhaust memory.
+                page_scale = _safe_render_scale(self._model.doc[page_num - 1], render_scale)
                 pix = self._model.tools.render_page_pixmap(
                     page_num,
-                    scale=render_scale,
+                    scale=page_scale,
                     annots=False,
                     purpose="ocr",
                 )
