@@ -119,6 +119,10 @@
   - `test_scripts/test_feature_conflict.py`
   - `test_scripts/test_font_fix.py`
   - `test_scripts/test_fullscreen_transitions.py`
+  - `test_scripts/test_function_icons_2_first_three_assets.py`
+  - `test_scripts/test_function_icons_2_open_variants.py`
+  - `test_scripts/test_function_icons_2_samples.py`
+  - `test_scripts/test_function_icons_2_style.py`
   - `test_scripts/test_geometry.py`
   - `test_scripts/test_headless_merge.py`
   - `test_scripts/test_image_objects_gui.py`
@@ -198,6 +202,7 @@
   - `test_scripts/test_ux_signoff_agent.py`
   - `test_scripts/test_week1_model_regressions.py`
   - `test_scripts/test_win_driver_properties.py`
+  - `test_scripts/test_win_print_fixes.py`
   - `test_scripts/test_xref_repair.py`
   - `test_scripts/validate_optimized_pdf.py`
 
@@ -395,16 +400,16 @@
 **Methods (1):** `name`
 
 ### `src/printing/platforms/win_driver.py`
-**Classes:** `_POINTL` (L73), `_DEVMODE_STRUCT1` (L77), `_DEVMODE_UNION1` (L90), `_DEVMODE_UNION2` (L94), `_PUBLIC_DEVMODEW` (L98), `_PRINTER_INFO_9` (L130), `WindowsPrinterDriver` (L228)
-**Functions:** `_decode_capability_text` (L159), `_map_devmode_values_to_preferences` (L170), `_buffer_to_public_devmode` (L202), `_buffer_to_preferences` (L206), `_buffer_private_crc32` (L219)
-**Methods (15):** `name`, `supports_printer_properties_dialog`, `list_printers`, `get_default_printer`, `get_printer_status`, `print_pdf`, `_devmode_to_preferences`, `_list_paper_trays`, `_safe_get_printer_info`, `_collect_printer_preferences`, `_can_use_ctypes_document_properties`, `_persist_devmode_buffer_user_defaults`, `_open_printer_properties_via_ctypes`, `get_printer_preferences`, `open_printer_properties`
+**Classes:** `_POINTL` (L85), `_DEVMODE_STRUCT1` (L89), `_DEVMODE_UNION1` (L102), `_DEVMODE_UNION2` (L106), `_PUBLIC_DEVMODEW` (L110), `_PRINTER_INFO_9` (L142), `WindowsPrinterDriver` (L258)
+**Functions:** `_decode_capability_text` (L171), `_map_devmode_values_to_preferences` (L182), `_buffer_to_public_devmode` (L214), `_buffer_to_preferences` (L218), `_buffer_private_crc32` (L231), `_encode_devmode_b64` (L240), `_decode_devmode_b64` (L245), `_devmode_buffer_to_b64` (L253)
+**Methods (19):** `name`, `supports_printer_properties_dialog`, `list_printers`, `get_default_printer`, `get_printer_status`, `print_pdf`, `_raster_split_or_direct`, `_split_by_layout`, `_print_layout_groups`, `_print_with_scoped_devmode`, `_devmode_to_preferences`, `_list_paper_trays`, `_safe_get_printer_info`, `_collect_printer_preferences`, `_can_use_ctypes_document_properties`, `_persist_devmode_buffer_user_defaults`, `_open_printer_properties_via_ctypes`, `get_printer_preferences`, `open_printer_properties`
 
 ### `src/printing/print_dialog.py`
 **Classes:** `UnifiedPrintDialogResult` (L43), `UnifiedPrintDialog` (L48)
 **Methods (32):** `__init__`, `result_data`, `eventFilter`, `_build_ui`, `_load_printers`, `_wire_signals`, `_on_printer_changed`, `_on_hardware_field_changed`, `_sync_printer_properties_button`, `_open_printer_properties_dialog`, `_load_printer_preferences`, `_apply_printer_preferences`, `_update_inherited_property_fields`, `_current_hardware_values`, `_resolve_hardware_values`, `_build_effective_options`, `_build_submission_options`, `_sync_printer_capabilities`, `_on_range_mode_changed`, `_on_scale_mode_changed` …
 
 ### `src/printing/qt_bridge.py`
-**Functions:** `_ensure_qapplication` (L42), `_to_duplex_mode` (L51), `_to_paper_source` (L59), `_to_q_orientation` (L101), `_to_q_page_size` (L105), `_set_page_layout` (L135), `_fitz_rect_to_qrectf` (L152), `_apply_printer_options` (L156), `_draw_page_image` (L174), `raster_print_pdf` (L195)
+**Functions:** `_ensure_qapplication` (L42), `_to_duplex_mode` (L51), `_to_paper_source` (L59), `_to_q_orientation` (L101), `_to_q_page_size` (L105), `_set_page_layout` (L135), `_fitz_rect_to_qrectf` (L155), `_apply_printer_options` (L159), `_draw_page_image` (L178), `raster_print_pdf` (L199)
 
 ### `src/printing/subprocess_runner.py`
 **Classes:** `PrintSubprocessRunner` (L22)
@@ -522,6 +527,18 @@
 **Functions:** `test_html_conversion` (L19)
 
 ### `test_scripts/test_fullscreen_transitions.py`
+
+### `test_scripts/test_function_icons_2_first_three_assets.py`
+**Functions:** `test_button_list_first_three_names_are_current_utf8_names` (L38), `test_first_three_tool_dominant_chibi_svgs_exist_and_parse` (L48)
+
+### `test_scripts/test_function_icons_2_open_variants.py`
+**Functions:** `test_open_icon_has_six_lovely_folder_dominant_character_variants` (L38)
+
+### `test_scripts/test_function_icons_2_samples.py`
+**Functions:** `load_sample_generator` (L13), `test_sample_gate_is_limited_to_three_review_icons` (L21), `test_sample_svg_uses_review_gate_layers` (L31), `test_each_sample_has_function_specific_composition` (L55)
+
+### `test_scripts/test_function_icons_2_style.py`
+**Functions:** `load_generator` (L13), `test_svg_uses_character_first_reference_layers` (L21), `test_generated_asset_names_follow_current_button_list_without_xref` (L40)
 
 ### `test_scripts/test_geometry.py`
 **Functions:** `test_clamp_inside_page_unchanged` (L9), `test_clamp_overflow_right` (L14), `test_clamp_overflow_bottom` (L19), `test_clamp_degenerate_is_nonempty` (L24), `test_rect_from_points_basic` (L29), `test_rect_from_points_multiple` (L34), `test_rect_union_empty` (L40), `test_rect_union_single` (L44), `test_rect_union_two` (L49), `test_rect_union_three` (L54), `test_overlap_ratio_no_overlap` (L59), `test_overlap_ratio_full_contain` (L63), `test_overlap_ratio_partial` (L68), `test_overlap_ratio_empty_rect` (L74)
@@ -691,8 +708,8 @@
 
 ### `test_scripts/test_print_layout.py`
 **Classes:** `_LayoutPrinter` (L133)
-**Functions:** `test_match_standard_paper_size_a3_portrait` (L42), `test_match_standard_paper_size_a3_landscape` (L46), `test_match_standard_paper_size_a4` (L51), `test_match_standard_paper_size_letter` (L55), `test_match_standard_paper_size_tabloid` (L59), `test_match_standard_paper_size_non_standard_returns_none` (L63), `test_match_standard_paper_size_tolerates_small_rounding` (L67), `test_to_q_page_size_auto_a3_source_returns_named_a3` (L77), `test_to_q_page_size_auto_a3_landscape_source_returns_named_a3` (L83), `test_to_q_page_size_auto_a4_source_returns_named_a4_not_custom` (L88), `test_to_q_page_size_auto_non_standard_falls_back_to_custom` (L94), `test_to_q_page_size_auto_non_standard_landscape_is_portrait_normalised` (L103), `test_to_q_page_size_explicit_a4_overrides_source` (L112), `test_to_q_page_size_explicit_a3_returns_named_a3` (L118), `test_to_q_page_size_explicit_tabloid_returns_named_tabloid` (L123), `test_set_page_layout_auto_landscape_source_sets_landscape` (L146), `test_set_page_layout_auto_portrait_source_sets_portrait` (L157), `test_set_page_layout_explicit_portrait_overrides_landscape_source` (L168), `test_set_page_layout_explicit_landscape_overrides_portrait_source` (L179), `test_print_dialog_paper_combo_offers_a3` (L195)
-**Methods (3):** `__init__`, `pageLayout`, `setPageLayout`
+**Functions:** `test_match_standard_paper_size_a3_portrait` (L42), `test_match_standard_paper_size_a3_landscape` (L46), `test_match_standard_paper_size_a4` (L51), `test_match_standard_paper_size_letter` (L55), `test_match_standard_paper_size_tabloid` (L59), `test_match_standard_paper_size_non_standard_returns_none` (L63), `test_match_standard_paper_size_tolerates_small_rounding` (L67), `test_to_q_page_size_auto_a3_source_returns_named_a3` (L77), `test_to_q_page_size_auto_a3_landscape_source_returns_named_a3` (L83), `test_to_q_page_size_auto_a4_source_returns_named_a4_not_custom` (L88), `test_to_q_page_size_auto_non_standard_falls_back_to_custom` (L94), `test_to_q_page_size_auto_non_standard_landscape_is_portrait_normalised` (L103), `test_to_q_page_size_explicit_a4_overrides_source` (L112), `test_to_q_page_size_explicit_a3_returns_named_a3` (L118), `test_to_q_page_size_explicit_tabloid_returns_named_tabloid` (L123), `test_set_page_layout_auto_landscape_source_sets_landscape` (L162), `test_set_page_layout_auto_portrait_source_sets_portrait` (L173), `test_set_page_layout_explicit_portrait_overrides_landscape_source` (L184), `test_set_page_layout_explicit_landscape_overrides_portrait_source` (L195), `test_print_dialog_paper_combo_offers_a3` (L211)
+**Methods (5):** `__init__`, `pageLayout`, `setPageLayout`, `setPageSize`, `setPageOrientation`
 
 ### `test_scripts/test_print_speed.py`
 **Functions:** `_make_a4_pdf` (L28), `test_ten_page_a4_300dpi_spools_within_budget` (L37)
@@ -710,9 +727,9 @@
 **Functions:** `_normalize_text` (L44), `_build_sample_pdf` (L48), `_render_page_gray` (L84), `_page_similarity_score` (L96), `_text_similarity` (L106), `_benchmark_naive` (L126), `_benchmark_on_demand` (L146), `main` (L167)
 
 ### `test_scripts/test_qt_bridge_layout.py`
-**Classes:** `_FakePrinter` (L36), `_LayoutPrinter` (L64), `_FakePainter` (L77), `_UniformRenderer` (L86)
-**Functions:** `test_raster_print_per_page_layout_receives_correct_rects` (L103), `test_raster_print_single_auto_page_calls_layout_once` (L138), `test_set_page_layout_landscape_source_produces_landscape_layout` (L167), `test_set_page_layout_portrait_source_produces_portrait_layout` (L179), `test_set_page_layout_named_a4_portrait_uses_a4_dimensions` (L191), `test_apply_printer_options_skips_tray_when_auto` (L210), `test_apply_printer_options_hardware_setters_gated_by_override_fields` (L245), `test_resolve_page_indices_odd_subset_and_reverse` (L285), `test_compute_target_draw_rect_fit_actual_custom` (L297), `test_print_job_options_normalization_clamps_and_lowercases` (L311)
-**Methods (13):** `__init__`, `setOutputFormat`, `setOutputFileName`, `setPrinterName`, `pageLayout`, `setPageLayout`, `newPage`, `__init__`, `pageLayout`, `setPageLayout`, `begin`, `end`, `iter_page_images`
+**Classes:** `_FakePrinter` (L36), `_LayoutPrinter` (L64), `_FakePainter` (L92), `_UniformRenderer` (L101)
+**Functions:** `test_raster_print_per_page_layout_receives_correct_rects` (L118), `test_raster_print_single_auto_page_calls_layout_once` (L153), `test_set_page_layout_landscape_source_produces_landscape_layout` (L182), `test_set_page_layout_portrait_source_produces_portrait_layout` (L194), `test_set_page_layout_named_a4_portrait_uses_a4_dimensions` (L206), `test_apply_printer_options_skips_tray_when_auto` (L225), `test_apply_printer_options_hardware_setters_gated_by_override_fields` (L260), `test_resolve_page_indices_odd_subset_and_reverse` (L300), `test_compute_target_draw_rect_fit_actual_custom` (L312), `test_print_job_options_normalization_clamps_and_lowercases` (L326)
+**Methods (15):** `__init__`, `setOutputFormat`, `setOutputFileName`, `setPrinterName`, `pageLayout`, `setPageLayout`, `newPage`, `__init__`, `pageLayout`, `setPageLayout`, `setPageSize`, `setPageOrientation`, `begin`, `end`, `iter_page_images`
 
 ### `test_scripts/test_qt_pixmap_colorspaces.py`
 **Functions:** `_make_single_page_pdf` (L12), `test_pixmap_to_qpixmap_bridges_gray_and_cmyk` (L20), `test_pdf_renderer_grayscale_output_matches_rgb_dimensions` (L43)
@@ -810,9 +827,14 @@
 **Functions:** `_make_wrapped_paragraph_pdf` (L17), `_make_stacked_blocks_pdf` (L30), `_find_block` (L49), `test_fallback_hit_detection_space_joins_wrapped_lines` (L57), `test_build_paragraphs_space_joins_lines` (L83), `test_same_height_edit_does_not_push_neighbor_block_down` (L124), `test_longer_edit_keeps_original_top_anchor` (L156)
 
 ### `test_scripts/test_win_driver_properties.py`
-**Classes:** `_FakeDevMode` (L17), `_FakeWin32Print` (L34), `_FakeWin32PrintLimitedPort` (L100), `_FakeWin32PrintUserDefaults` (L127), `_FakeWin32PrintCancel` (L192)
-**Functions:** `_clone_devmode` (L27), `test_open_printer_properties_ignores_setprinter_access_denied` (L82), `test_get_printer_preferences_prefers_richer_tray_list` (L114), `test_get_printer_preferences_prefers_user_defaults_for_color_mode` (L162), `test_open_printer_properties_reloads_user_defaults_after_color_change` (L176), `test_open_printer_properties_cancel_returns_none_without_persisting` (L199)
+**Classes:** `_FakeDevMode` (L17), `_FakeWin32Print` (L34), `_FakeWin32PrintLimitedPort` (L104), `_FakeWin32PrintUserDefaults` (L131), `_FakeWin32PrintCancel` (L199)
+**Functions:** `_clone_devmode` (L27), `test_open_printer_properties_returns_prefs_without_persisting` (L82), `test_get_printer_preferences_prefers_richer_tray_list` (L118), `test_get_printer_preferences_prefers_user_defaults_for_color_mode` (L166), `test_open_printer_properties_does_not_persist_user_defaults` (L180), `test_open_printer_properties_cancel_returns_none_without_persisting` (L206)
 **Methods (13):** `__init__`, `OpenPrinter`, `ClosePrinter`, `GetPrinter`, `DocumentProperties`, `SetPrinter`, `DeviceCapabilities`, `DeviceCapabilities`, `__init__`, `GetPrinter`, `DocumentProperties`, `SetPrinter`, `DocumentProperties`
+
+### `test_scripts/test_win_print_fixes.py`
+**Classes:** `PyFakeHandle` (L57), `_FakeDispatcher` (L393), `_WindowsLikePrinter` (L823)
+**Functions:** `_ensure_app` (L61), `_make_single_page_pdf` (L68), `_ok_result` (L76), `_install_ctypes_dialog` (L85), `test_open_printer_properties_does_not_call_setprinter` (L109), `test_open_printer_properties_returns_base64_devmode` (L120), `test_print_pdf_applies_devmode_job_scoped_and_restores` (L132), `test_devmode_buffer_injected_at_submission_survives_preview_and_json` (L185), `test_devmode_buffer_cleared_when_printer_switches` (L230), `test_mixed_layout_pdf_splits_into_two_jobs` (L269), `test_uniform_layout_pdf_stays_single_job` (L297), `test_windows_caps_raster_dpi_at_150_but_keeps_lower` (L328), `test_pdf_output_path_is_not_split_or_capped` (L363), `test_finding1_explicit_paper_preserved_when_orientation_auto` (L424), `test_finding2_collated_multicopy_mixed_layout_uses_document_order` (L460), `test_finding2_uncollated_multicopy_mixed_layout_groups_copies_per_page` (L501), `test_finding2_uniform_layout_multicopy_stays_single_job` (L539), `test_finding3_pending_devmode_survives_recoverable_range_error` (L574), `test_finding4_denied_apply_skips_restore_and_still_prints` (L631), `test_finding6_partial_failure_reports_already_spooled` (L684), `test_finding6_first_group_failure_returns_plain_result` (L715), `test_finding11_malformed_devmode_b64_falls_through_to_split` (L739), `test_finding7_buffer_only_props_do_not_reload_defaults` (L778), `test_set_page_layout_actually_applies_page_size` (L852), `test_set_page_layout_applies_size_on_real_printer` (L871)
+**Methods (11):** `__init__`, `get_default_printer`, `resolve_page_indices_for_count`, `supports_printer_properties_dialog`, `open_printer_properties`, `get_printer_preferences`, `__init__`, `pageLayout`, `setPageLayout`, `setPageSize`, `setPageOrientation`
 
 ### `test_scripts/test_xref_repair.py`
 **Functions:** `_valid_pdf_bytes` (L24), `_corrupt_startxref` (L34), `test_repair_document_xref_produces_clean_copy` (L40)
@@ -1001,6 +1023,7 @@
 - `test_scripts/test_ux_signoff_agent.py` → `scripts/ux_signoff_agent.py`
 - `test_scripts/test_week1_model_regressions.py` → `model/pdf_model.py`, `model/text_block.py`
 - `test_scripts/test_win_driver_properties.py` → `src/printing/platforms/__init__.py`
+- `test_scripts/test_win_print_fixes.py` → `src/printing/base_driver.py`, `src/printing/helper_protocol.py`, `src/printing/platforms/win_driver.py`, `src/printing/print_dialog.py`, `src/printing/qt_bridge.py`
 - `test_scripts/test_xref_repair.py` → `model/pdf_model.py`
 - `utils/preferences.py` → `model/tools/ocr_types.py`, `utils/theme_ids.py`
 - `view/dialogs/audit.py` → `model/pdf_optimizer.py`
