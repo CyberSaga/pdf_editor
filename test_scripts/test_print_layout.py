@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 import fitz
-from PySide6.QtCore import QRectF
+from PySide6.QtCore import QMarginsF, QRectF
 from PySide6.QtGui import QPageLayout, QPageSize
 from PySide6.QtWidgets import QApplication
 
@@ -131,16 +131,32 @@ def test_to_q_page_size_explicit_tabloid_returns_named_tabloid() -> None:
 
 
 class _LayoutPrinter:
-    """QPrinter stand-in backed by a real QPageLayout for orientation checks."""
+    """QPrinter stand-in backed by a real QPageLayout for orientation/size checks.
+
+    Mirrors the QPrinter API the production code now uses: the dedicated
+    setPageSize()/setPageOrientation() setters (which, unlike setPageLayout(), apply
+    the page size on the Windows GDI device).
+    """
 
     def __init__(self) -> None:
-        self._layout = QPageLayout()
+        self._size = QPageSize(QPageSize.A4)
+        self._orientation = QPageLayout.Portrait
 
     def pageLayout(self):
-        return self._layout
+        return QPageLayout(self._size, self._orientation, QMarginsF())
 
-    def setPageLayout(self, layout) -> None:
-        self._layout = layout
+    def setPageLayout(self, layout) -> bool:
+        self._size = layout.pageSize()
+        self._orientation = layout.orientation()
+        return True
+
+    def setPageSize(self, size) -> bool:
+        self._size = size
+        return True
+
+    def setPageOrientation(self, orientation) -> bool:
+        self._orientation = orientation
+        return True
 
 
 def test_set_page_layout_auto_landscape_source_sets_landscape() -> None:

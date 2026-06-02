@@ -35,8 +35,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import pytest  # noqa: E402
+
 import src.printing.platforms.win_driver as wd  # noqa: E402
+import src.printing.qt_bridge as qtb  # noqa: E402
 import src.printing.print_dialog as pdlg  # noqa: E402
+from PySide6.QtCore import QMarginsF, QRectF  # noqa: E402
+from PySide6.QtGui import QPageLayout, QPageSize  # noqa: E402
+from PySide6.QtPrintSupport import QPrinter, QPrinterInfo  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from src.printing.base_driver import (  # noqa: E402
@@ -806,3 +812,87 @@ def test_finding7_buffer_only_props_do_not_reload_defaults(tmp_path, monkeypatch
         )
     finally:
         dialog.close()
+
+
+# ---------------------------------------------------------------------------
+# Per-page SIZE actually reaching the device (the P3 regression that mocked
+# raster_print_pdf could never catch)
+# ---------------------------------------------------------------------------
+
+
+class _WindowsLikePrinter:
+    """Mimics the real Windows QPrinter quirk verified against a live driver:
+    ``setPageLayout(pageLayout()-copy)`` applies the orientation but silently
+    leaves the page SIZE at the printer default; only the dedicated
+    ``setPageSize()`` / ``setPageOrientation()`` setters change the media.
+    """
+
+    def __init__(self) -> None:
+        self._size = QPageSize(QPageSize.A3)  # printer default (e.g. an A3 device)
+        self._orientation = QPageLayout.Orientation.Portrait
+        self.size_setter_used = False
+
+    def pageLayout(self) -> QPageLayout:
+        return QPageLayout(self._size, self._orientation, QMarginsF())
+
+    def setPageLayout(self, layout: QPageLayout) -> bool:
+        self._orientation = layout.orientation()  # size deliberately NOT applied
+        return True
+
+    def setPageSize(self, size: QPageSize) -> bool:
+        self._size = size
+        self.size_setter_used = True
+        return True
+
+    def setPageOrientation(self, orientation) -> bool:
+        self._orientation = orientation
+        return True
+
+
+def test_set_page_layout_actually_applies_page_size() -> None:
+    """_set_page_layout must apply the page SIZE via a setter that works on Windows.
+
+    The setPageLayout(pageLayout()-copy) idiom leaves the size at the printer default
+    on the real GDI device (orientation switches, size does not) — so a per-page A4
+    silently prints on the default A3.
+    """
+    printer = _WindowsLikePrinter()
+    qtb._set_page_layout(
+        printer,
+        QRectF(0, 0, 595.28, 841.89),
+        PrintJobOptions(paper_size="a4", orientation="portrait"),
+    )
+    assert printer.pageLayout().pageSize().id() == QPageSize.A4, (
+        "requested A4 media must actually be applied, not left at the default"
+    )
+    assert printer.size_setter_used, "must use the dedicated page-size setter"
+
+
+def test_set_page_layout_applies_size_on_real_printer() -> None:
+    """Faithful regression on the real GDI path (skipped without a Windows printer)."""
+    if sys.platform != "win32":
+        pytest.skip("Windows GDI page-size behaviour")
+    _ensure_app()
+    infos = [i for i in QPrinterInfo.availablePrinters() if not i.isNull()]
+    if not infos:
+        pytest.skip("no printers available")
+    target = next((i for i in infos if i.isDefault()), infos[0])
+    printer = QPrinter(QPrinter.HighResolution)
+    printer.setPrinterName(target.printerName())
+    supported = {s.id() for s in QPrinterInfo(printer).supportedPageSizes()}
+    if QPageSize.A4 not in supported or QPageSize.A3 not in supported:
+        pytest.skip("printer does not offer both A4 and A3")
+
+    qtb._set_page_layout(
+        printer,
+        QRectF(0, 0, 595.28, 841.89),
+        PrintJobOptions(paper_size="a4", orientation="portrait"),
+    )
+    assert printer.pageLayout().pageSize().id() == QPageSize.A4
+
+    qtb._set_page_layout(
+        printer,
+        QRectF(0, 0, 841.89, 1190.55),
+        PrintJobOptions(paper_size="a3", orientation="portrait"),
+    )
+    assert printer.pageLayout().pageSize().id() == QPageSize.A3

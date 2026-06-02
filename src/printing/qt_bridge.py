@@ -143,10 +143,13 @@ def _set_page_layout(
         page_rect.height(),
     )
     page_size = _to_q_page_size(options.paper_size, page_rect)
-    layout = printer.pageLayout()
-    layout.setOrientation(_to_q_orientation(resolved_orientation))
-    layout.setPageSize(page_size)
-    printer.setPageLayout(layout)
+    # Use the dedicated setters, NOT setPageLayout(pageLayout()-copy): on the Windows
+    # GDI spooler the latter silently fails to apply the page SIZE (orientation still
+    # takes effect), so every page printed on the printer's default media — the A4
+    # page of a mixed A3/A4 job came out on A3. setPageSize()/setPageOrientation()
+    # both reach the device. See docs/PITFALLS.md and test_win_print_fixes.py.
+    printer.setPageSize(page_size)
+    printer.setPageOrientation(_to_q_orientation(resolved_orientation))
 
 
 def _fitz_rect_to_qrectf(page_rect) -> QRectF:

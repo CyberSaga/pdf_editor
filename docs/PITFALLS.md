@@ -829,3 +829,10 @@
 **Cause:** The speed test wrote to `output_pdf_path` (route `qt-raster->pdf`), not the GDI spooler; the layout tests used a fake `_LayoutPrinter` and pure helpers, never a real multi-page `QPrinter`. Neither exercised the path real printing uses.
 **Fix:** Test the driver paths the dispatcher actually calls: `WindowsPrinterDriver.print_pdf` routing (DEVMODE decode → scoped apply/restore), `_split_by_layout` grouping/copy-ordering, the DPI cap, and the dialog's submission/clear semantics. See `test_win_print_fixes.py`.
 **File:** `test_scripts/test_win_print_fixes.py`
+
+## QPrinter.setPageLayout() silently drops the page SIZE on the Windows GDI spooler
+**Area:** `src/printing/qt_bridge.py`
+**Symptom:** Per-page size still failed after the layout-split fix: a mixed A3/A4 job printed every page on the printer's default media (e.g. 2× A3), even though orientation switched per page and PDF export was correct. The split classified pages correctly (`a3`/`a4`) and Qt's PDF writer honoured it — only the real GDI device ignored the size.
+**Cause:** `_set_page_layout` did `layout = printer.pageLayout(); layout.setPageSize(...); printer.setPageLayout(layout)`. On Windows, `QPrinter.setPageLayout()` applies the orientation but **silently fails to apply the page size** to the device — `printer.pageLayout().pageSize()` stays at the printer default. (Confirmed live: after `setPageLayout` an A4 request read back as A3; `printer.setPageSize(QPageSize(A4))` read back as A4.) That is exactly why orientation looked fixed while size never changed.
+**Fix:** Use the dedicated setters: `printer.setPageSize(page_size)` + `printer.setPageOrientation(orientation)`. Both reach the GDI device (verified on a real A3/A4 printer) and work for PDF output too. Regression-guarded by `test_set_page_layout_actually_applies_page_size` (models the Windows quirk) and `test_set_page_layout_applies_size_on_real_printer` (live printer, skipped if none).
+**File:** `qt_bridge.py` (`_set_page_layout`)
