@@ -55,10 +55,11 @@ class LinuxPrinterDriver(PrinterDriver):
                 )
             return devices
 
-        if shutil.which("lpstat"):
+        lpstat_path = shutil.which("lpstat")
+        if lpstat_path:
             try:
                 proc = subprocess.run(
-                    ["lpstat", "-a"],
+                    [lpstat_path, "-a"],
                     capture_output=True,
                     text=True,
                     check=True,
@@ -98,10 +99,11 @@ class LinuxPrinterDriver(PrinterDriver):
             except Exception:
                 return None
 
-        if shutil.which("lpstat"):
+        lpstat_path = shutil.which("lpstat")
+        if lpstat_path:
             try:
                 proc = subprocess.run(
-                    ["lpstat", "-d"],
+                    [lpstat_path, "-d"],
                     capture_output=True,
                     text=True,
                     check=True,

@@ -7,6 +7,7 @@ import binascii
 import ctypes
 import dataclasses
 import logging
+import os
 import shutil
 import subprocess
 import zlib
@@ -68,6 +69,12 @@ _DMBIN_LABELS: dict[int, str] = {
 _DM_OUT_BUFFER = 0x0002
 _DM_IN_PROMPT = 0x0004
 _DM_IN_BUFFER = 0x0008
+
+# Launch system tools by absolute path so a planted ``rundll32.exe`` earlier on
+# the process search order cannot be executed instead (CWE-426/CWE-427).
+_RUNDLL32 = os.path.join(
+    os.environ.get("SystemRoot", r"C:\Windows"), "System32", "rundll32.exe"
+)
 
 _CCHDEVICENAME = 32
 _CCHFORMNAME = 32
@@ -860,7 +867,7 @@ class WindowsPrinterDriver(PrinterDriver):
 
         try:
             subprocess.Popen(
-                ["rundll32.exe", "printui.dll,PrintUIEntry", "/e", "/n", normalized_name],
+                [_RUNDLL32, "printui.dll,PrintUIEntry", "/e", "/n", normalized_name],
             )
             return self.get_printer_preferences(normalized_name)
         except Exception as exc:
