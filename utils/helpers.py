@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import fitz  # PyMuPDF
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QColorDialog, QMessageBox
+from PySide6.QtWidgets import QMessageBox
 
 
 def parse_pages(input_str: str, total_pages: int) -> list[int]:
@@ -22,12 +21,6 @@ def parse_pages(input_str: str, total_pages: int) -> list[int]:
             if 1 <= page <= total_pages:
                 pages.add(page)
     return sorted(pages)
-
-
-def choose_color(parent) -> QColor:
-    """Select a color via a QColorDialog."""
-    color = QColorDialog.getColor(parent=parent)
-    return color if color.isValid() else QColor(255, 255, 0, 128)
 
 
 def show_error(parent, message: str) -> None:

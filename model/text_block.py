@@ -11,17 +11,9 @@ from dataclasses import dataclass, field
 
 import fitz
 
+from model.text_normalization import _LIGATURE_MAP
+
 _RE_WS_STRIP = re.compile(r"\s+")
-# Unicode ligature → decomposed chars — mirrors pdf_model._LIGATURE_MAP
-_LIGATURE_MAP = {
-    '\ufb00': 'ff',   # ﬀ
-    '\ufb01': 'fi',   # ﬁ
-    '\ufb02': 'fl',   # ﬂ
-    '\ufb03': 'ffi',  # ﬃ
-    '\ufb04': 'ffl',  # ﬄ
-    '\ufb05': 'st',   # ﬅ (long s + t)
-    '\ufb06': 'st',   # ﬆ
-}
 logger = logging.getLogger(__name__)
 _BULLET_PREFIXES = ("- ", "* ", "\u2022 ", "\u25aa ", "\u25cf ")
 

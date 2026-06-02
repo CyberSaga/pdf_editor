@@ -15,7 +15,7 @@ from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QProgressDialog
 
-from model.color_profile import ColorProfile, to_fitz_colorspace
+from model.color_profile import ColorProfile, safe_to_fitz_colorspace
 from model.edit_commands import AddTextboxCommand, EditTextCommand, EditTextResult, SnapshotCommand
 from model.object_requests import (
     BatchDeleteObjectsRequest,
@@ -546,10 +546,7 @@ class PDFController:
             return ColorProfile.SRGB.value
 
     def _fitz_colorspace_for_profile(self, profile: str) -> fitz.Colorspace:
-        try:
-            return to_fitz_colorspace(profile)
-        except ValueError:
-            return fitz.csRGB
+        return safe_to_fitz_colorspace(profile)
 
     def _fitz_colorspace_for_session(self, session_id: str) -> fitz.Colorspace:
         return self._fitz_colorspace_for_profile(self._color_profile_for_session(session_id))

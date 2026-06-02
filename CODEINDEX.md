@@ -119,16 +119,11 @@
   - `test_scripts/test_feature_conflict.py`
   - `test_scripts/test_font_fix.py`
   - `test_scripts/test_fullscreen_transitions.py`
-  - `test_scripts/test_function_icons_2_first_three_assets.py`
-  - `test_scripts/test_function_icons_2_open_variants.py`
-  - `test_scripts/test_function_icons_2_samples.py`
-  - `test_scripts/test_function_icons_2_style.py`
   - `test_scripts/test_geometry.py`
   - `test_scripts/test_headless_merge.py`
   - `test_scripts/test_image_objects_gui.py`
   - `test_scripts/test_image_objects_model.py`
   - `test_scripts/test_interaction_modes.py`
-  - `test_scripts/test_iso27001_sop_update.py`
   - `test_scripts/test_large_scale.py`
   - `test_scripts/test_linux_driver_overrides.py`
   - `test_scripts/test_macos_menu.py`
@@ -288,8 +283,8 @@
 **Functions:** `check_pdf_conformance` (L15), `is_pdf_conformant` (L92)
 
 ### `model/text_block.py`
-**Classes:** `TextBlock` (L107), `EditableSpan` (L125), `EditableParagraph` (L142), `TextBlockManager` (L158)
-**Functions:** `rotation_degrees_from_dir` (L29), `_norm_dir_vec` (L40), `_rect_axis_projection` (L50), `_char_kind` (L62), `_kind_compatible` (L85), `_starts_bullet_item` (L97)
+**Classes:** `TextBlock` (L99), `EditableSpan` (L117), `EditableParagraph` (L134), `TextBlockManager` (L150)
+**Functions:** `rotation_degrees_from_dir` (L21), `_norm_dir_vec` (L32), `_rect_axis_projection` (L42), `_char_kind` (L54), `_kind_compatible` (L77), `_starts_bullet_item` (L89)
 **Methods (38):** `__post_init__`, `__init__`, `build_index`, `rebuild_page`, `page_state`, `list_stale_pages`, `shift_after_insert`, `shift_after_delete`, `_build_page_index`, `get_blocks`, `get_spans`, `get_runs`, `get_paragraphs`, `find_by_id`, `find_span_by_id`, `find_run_by_id`, `find_paragraph_by_id`, `find_paragraph_for_run`, `find_overlapping_spans`, `find_overlapping_runs` …
 
 ### `model/text_normalization.py`
@@ -528,18 +523,6 @@
 
 ### `test_scripts/test_fullscreen_transitions.py`
 
-### `test_scripts/test_function_icons_2_first_three_assets.py`
-**Functions:** `test_button_list_first_three_names_are_current_utf8_names` (L38), `test_first_three_tool_dominant_chibi_svgs_exist_and_parse` (L48)
-
-### `test_scripts/test_function_icons_2_open_variants.py`
-**Functions:** `test_open_icon_has_six_lovely_folder_dominant_character_variants` (L38)
-
-### `test_scripts/test_function_icons_2_samples.py`
-**Functions:** `load_sample_generator` (L13), `test_sample_gate_is_limited_to_three_review_icons` (L21), `test_sample_svg_uses_review_gate_layers` (L31), `test_each_sample_has_function_specific_composition` (L55)
-
-### `test_scripts/test_function_icons_2_style.py`
-**Functions:** `load_generator` (L13), `test_svg_uses_character_first_reference_layers` (L21), `test_generated_asset_names_follow_current_button_list_without_xref` (L40)
-
 ### `test_scripts/test_geometry.py`
 **Functions:** `test_clamp_inside_page_unchanged` (L9), `test_clamp_overflow_right` (L14), `test_clamp_overflow_bottom` (L19), `test_clamp_degenerate_is_nonempty` (L24), `test_rect_from_points_basic` (L29), `test_rect_from_points_multiple` (L34), `test_rect_union_empty` (L40), `test_rect_union_single` (L44), `test_rect_union_two` (L49), `test_rect_union_three` (L54), `test_overlap_ratio_no_overlap` (L59), `test_overlap_ratio_full_contain` (L63), `test_overlap_ratio_partial` (L68), `test_overlap_ratio_empty_rect` (L74)
 
@@ -558,9 +541,6 @@
 **Classes:** `_FakeSignal` (L22), `_FakeEvent` (L30)
 **Functions:** `_make_object_hit` (L59), `_make_view` (L72), `test_objects_mode_blocks_browse_text_selection_start` (L121), `test_browse_mode_does_not_start_object_manipulation` (L132), `test_text_edit_mode_does_not_select_rect_or_image` (L143), `test_text_edit_mode_allows_textbox_object_select` (L154)
 **Methods (8):** `__init__`, `emit`, `__init__`, `position`, `pos`, `button`, `modifiers`, `accept`
-
-### `test_scripts/test_iso27001_sop_update.py`
-**Functions:** `extract_texts` (L14), `iter_runs` (L25), `test_updated_iso27001_sop_deck_contains_new_encryption_section` (L32)
 
 ### `test_scripts/test_large_scale.py`
 **Classes:** `Metrics` (L117)
@@ -845,7 +825,7 @@
 ### `utils/__init__.py`
 
 ### `utils/helpers.py`
-**Functions:** `parse_pages` (L8), `choose_color` (L27), `show_error` (L33), `pixmap_to_qimage` (L38), `pixmap_to_qpixmap` (L49)
+**Functions:** `parse_pages` (L7), `show_error` (L26), `pixmap_to_qimage` (L31), `pixmap_to_qpixmap` (L42)
 
 ### `utils/preferences.py`
 **Classes:** `_SettingsLike` (L12), `UserPreferences` (L39)
@@ -912,6 +892,7 @@
 - `model/pdf_content_ops.py` → `model/geometry.py`
 - `model/pdf_model.py` → `model/__init__.py`, `model/edit_commands.py`, `model/geometry.py`, `model/object_requests.py`, `model/pdf_content_ops.py`, `model/text_block.py`, `model/text_normalization.py`, `model/tools/__init__.py`
 - `model/pdf_optimizer.py` → `model/pdf_model.py`
+- `model/text_block.py` → `model/text_normalization.py`
 - `model/tools/annotation_tool.py` → `model/pdf_model.py`
 - `model/tools/manager.py` → `model/pdf_model.py`
 - `model/tools/ocr_tool.py` → `model/pdf_model.py`
