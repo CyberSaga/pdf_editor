@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import platform
 import tempfile
 from pathlib import Path
@@ -14,6 +15,8 @@ from .pdf_renderer import PDFRenderer
 from .platforms.linux_driver import LinuxPrinterDriver
 from .platforms.mac_driver import MacPrinterDriver
 from .platforms.win_driver import WindowsPrinterDriver
+
+logger = logging.getLogger(__name__)
 
 
 def get_printer_driver() -> PrinterDriver:
@@ -110,5 +113,5 @@ class PrintDispatcher:
         finally:
             try:
                 Path(temp_path).unlink(missing_ok=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to remove print temp file %s: %s", temp_path, exc)

@@ -55,6 +55,25 @@ Pre-existing failures to ignore as regressions:
 
 ## Decisions / deviations
 
+### P5 — Temp-unlink error visibility (dispatcher.py) — DONE
+- Added module `logger`; the `print_pdf_bytes` finally-block `except Exception: pass`
+  now logs at debug (`logger.debug("Failed to remove print temp file %s: %s", ...)`).
+  Still catches broadly so cleanup failure never masks the print result.
+- Test note: the test patches `Path.unlink` to raise `PermissionError`, asserts the
+  result still returns and a debug record is emitted, then deletes the leaked temp
+  file via `os.unlink` (the real unlink, not the patched one) so no junk is left in
+  the system temp dir.
+
+### Codex review reliability (environment note)
+- The codex companion review runs codex in a sandbox that shells out to PowerShell;
+  on this Windows box those git/PowerShell sandbox commands intermittently fail
+  ("Command failed/declined", and once "sandbox failed to start"). P6/P3/P2 returned
+  clean verdicts anyway; P4's review was inconclusive ("couldn't reliably inspect the
+  diff"). Treating codex verdicts as a secondary signal — the primary gate is the new
+  + existing pytest suite (compared against the recorded 7-failure baseline) plus
+  `ruff check`. I run a codex review per commit regardless and will push for a solid
+  adversarial review on the largest patch (P1).
+
 ### P4 — Watermark JSON coercion on load (watermark_tool.py) — DONE (schema-adapted)
 - Added module-level `_WM_TEXT_MAX=5000`, `_WM_PAGES_MAX=10000`, and `_coerce_wm(wm)`;
   rewrote the `_load_watermarks_from_doc` append loop to drop non-dicts and run each
