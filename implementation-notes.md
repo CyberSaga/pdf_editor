@@ -104,6 +104,21 @@ Pre-existing failures to ignore as regressions:
   Red→Green evidence is genuine; the authoring order just wasn't test-first for this
   one patch.
 
+### P1 follow-up — OCR clamp regression fix
+- The full-suite run after P1 surfaced **8 new failures**, all in
+  `test_ocr_tool_surya.py::test_ocr_pages_*`. Cause: the OCR clamp did
+  `self._model.doc[page_num - 1]`, but that test's `_FakeDoc` implements only
+  `__len__`/`__bool__`, not `__getitem__` → `TypeError: not subscriptable`. A real
+  fitz document is always subscriptable, so this only affected the mock.
+- Fix (could not edit the test — boundary): wrapped the page lookup in
+  `try/except (TypeError, IndexError, AttributeError)` and fall back to the requested
+  `render_scale` when geometry can't be introspected. Real attacker PDFs still hit
+  the clamp; mocks degrade cleanly. Re-ran: `test_ocr_tool_surya.py` +
+  `test_security_pdf_resource_guards.py` = 28 passed.
+- Lesson logged: a guard that introspects the live document object must tolerate the
+  test doubles already in the suite. I should have run the OCR suite (not just the
+  guard + render/deskew suites) before committing P1.
+
 ### P7 — CUA agent action allowlist (ux_signoff_agent.py) — DONE
 - Added module `_ALLOWED_CUA_ACTIONS = frozenset({"click","double_click","scroll",
   "move","screenshot"})` and a guard at the top of `_execute_cua_action` that raises

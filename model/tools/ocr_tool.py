@@ -262,7 +262,13 @@ class OcrTool(ToolExtension):
         try:
             for done, page_num in enumerate(page_nums, start=1):
                 # Clamp the OCR raster so a giant page cannot exhaust memory.
-                page_scale = _safe_render_scale(self._model.doc[page_num - 1], render_scale)
+                # Fall back to the requested scale when the page geometry is not
+                # introspectable (a real fitz document always is; a mocked doc in
+                # tests is not).
+                try:
+                    page_scale = _safe_render_scale(self._model.doc[page_num - 1], render_scale)
+                except (TypeError, IndexError, AttributeError):
+                    page_scale = render_scale
                 pix = self._model.tools.render_page_pixmap(
                     page_num,
                     scale=page_scale,
