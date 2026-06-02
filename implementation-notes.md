@@ -55,6 +55,24 @@ Pre-existing failures to ignore as regressions:
 
 ## Decisions / deviations
 
+### P4 — Watermark JSON coercion on load (watermark_tool.py) — DONE (schema-adapted)
+- Added module-level `_WM_TEXT_MAX=5000`, `_WM_PAGES_MAX=10000`, and `_coerce_wm(wm)`;
+  rewrote the `_load_watermarks_from_doc` append loop to drop non-dicts and run each
+  entry through `_coerce_wm`.
+- **Deviation from spec snippet:** the spec's `_coerce_wm` carried a `font_color_name`
+  key and defaulted `font` to `""`. The real watermark schema (from `add_watermark`)
+  has NO `font_color_name`, and the renderer (`watermark_rendering.py`) never reads it;
+  it reads text/angle/opacity/font_size/color/font/offset_x/offset_y/line_spacing/pages.
+  So I adapted coercion to the actual schema: dropped `font_color_name`, defaulted
+  `font` to `"helv"` (matching `add_watermark`), and preserved `offset_x/offset_y/
+  line_spacing` (float) and `color` (tuple) when present. This keeps full round-trip
+  fidelity — verified `test_feature_conflict.py`'s save→reopen→get_watermarks C6 case
+  still passes.
+- Kept the `isinstance(wm, dict)` guard before coercion: `_coerce_wm` uses `wm.get(...)`,
+  which would raise `AttributeError` (uncaught inside the helper) on a list/str entry
+  and abort the whole load via the outer except. The guard makes bad entries skip
+  cleanly.
+
 ### P2 — IPC socket user-isolation (single_instance.py) — DONE
 - `_listen_server`: `server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)`
   before `listen()`. Verified the scoped enum + `socketOptions()` membership test on

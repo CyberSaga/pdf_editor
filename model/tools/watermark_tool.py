@@ -20,6 +20,39 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_WM_TEXT_MAX = 5_000
+_WM_PAGES_MAX = 10_000
+
+
+def _coerce_wm(wm: dict) -> dict | None:
+    """Validate and clamp a watermark dict loaded from untrusted embedded JSON.
+
+    Returns a sanitized dict matching the schema produced by
+    ``WatermarkTool.add_watermark``, or ``None`` if the entry is structurally
+    invalid (missing or wrong-typed ``id``/``pages``). Numeric fields are clamped
+    to safe ranges and text length is capped so a crafted embedded blob cannot
+    drive degenerate or oversized rendering (CWE-20). It is JSON, not pickle, so
+    there is no code-execution risk — this is robustness hardening only.
+    """
+    try:
+        result: dict = {
+            "id": str(wm["id"]),
+            "pages": [int(p) for p in wm["pages"]][:_WM_PAGES_MAX],
+            "text": str(wm.get("text", ""))[:_WM_TEXT_MAX],
+            "font": str(wm.get("font", "helv")),
+            "angle": float(wm.get("angle", 0)) % 360,
+            "font_size": max(1.0, min(float(wm.get("font_size", 48)), 1000.0)),
+            "opacity": max(0.0, min(float(wm.get("opacity", 0.5)), 1.0)),
+        }
+        for key in ("offset_x", "offset_y", "line_spacing"):
+            if key in wm:
+                result[key] = float(wm[key])
+        if "color" in wm:
+            result["color"] = tuple(wm["color"])
+        return result
+    except (KeyError, TypeError, ValueError):
+        return None
+
 
 class WatermarkTool(ToolExtension):
     WATERMARK_EMBED_NAME = "__pdf_editor_watermarks"
@@ -187,11 +220,11 @@ class WatermarkTool(ToolExtension):
             if not isinstance(data, list):
                 return loaded
             for wm in data:
-                if not isinstance(wm, dict) or "id" not in wm or "pages" not in wm:
+                if not isinstance(wm, dict):
                     continue
-                if "color" in wm and isinstance(wm["color"], list):
-                    wm["color"] = tuple(wm["color"])
-                loaded.append(wm)
+                coerced = _coerce_wm(wm)
+                if coerced is not None:
+                    loaded.append(coerced)
             logger.debug("已從 PDF 還原 %s 個浮水印", len(loaded))
         except Exception as exc:
             logger.warning("還原浮水印元數據失敗: %s", exc)
