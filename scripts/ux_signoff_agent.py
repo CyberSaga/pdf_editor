@@ -195,10 +195,20 @@ def _screenshot_b64() -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+_ALLOWED_CUA_ACTIONS: frozenset[str] = frozenset(
+    {"click", "double_click", "scroll", "move", "screenshot"}
+)
+
+
 def _execute_cua_action(action: object) -> None:
     """Execute one computer_call action against the real desktop."""
     # action is an object; use getattr for safety
     atype = getattr(action, "type", None)
+    # Refuse any action type outside the allowlist. The agent's input includes
+    # rendered PDF/screen content, so an injected `type`/`key` action could
+    # otherwise drive the keyboard (OWASP-LLM06 Excessive Agency).
+    if atype not in _ALLOWED_CUA_ACTIONS:
+        raise PermissionError(f"blocked CUA action type: {atype!r}")
     if atype == "click":
         btn = getattr(action, "button", "left") or "left"
         pyautogui.click(action.x, action.y, button=btn)

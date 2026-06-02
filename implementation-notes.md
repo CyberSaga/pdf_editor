@@ -55,6 +55,23 @@ Pre-existing failures to ignore as regressions:
 
 ## Decisions / deviations
 
+### P7 — CUA agent action allowlist (ux_signoff_agent.py) — DONE
+- Added module `_ALLOWED_CUA_ACTIONS = frozenset({"click","double_click","scroll",
+  "move","screenshot"})` and a guard at the top of `_execute_cua_action` that raises
+  `PermissionError` for any other type. This makes the existing `type`/`key` branches
+  unreachable by design (that is the F3 fix — block keyboard-driving actions).
+- No existing test calls `_execute_cua_action` (they mock `_run_agent_on_pdf`), so
+  blocking `type`/`key` breaks nothing. `test_ux_signoff_agent.py` still passes.
+- Pre-existing ruff violations in this file (F401 `PIL.Image` unused @ line 35, E401
+  multiple imports @ line 481) are untouched by my edit (~line 198) and are part of
+  the repo's tracked existing-violation set; my added lines are ruff-clean. Did NOT
+  fix them — out of scope for the security patch, keeps the commit focused.
+- I did NOT add the optional window-bounds geometry check from the F3 remediation
+  example (`window_rect.contains(...)`). The spec's P7 scope is the action-type
+  allowlist only; bounds-checking needs a window-rect plumbed into the call, which is
+  a larger dev-harness change beyond the agreed patch. Allowlist alone closes the
+  keyboard-injection vector, which is the material risk.
+
 ### P5 — Temp-unlink error visibility (dispatcher.py) — DONE
 - Added module `logger`; the `print_pdf_bytes` finally-block `except Exception: pass`
   now logs at debug (`logger.debug("Failed to remove print temp file %s: %s", ...)`).
