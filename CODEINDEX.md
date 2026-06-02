@@ -400,8 +400,8 @@
 **Methods (1):** `name`
 
 ### `src/printing/platforms/win_driver.py`
-**Classes:** `_POINTL` (L85), `_DEVMODE_STRUCT1` (L89), `_DEVMODE_UNION1` (L102), `_DEVMODE_UNION2` (L106), `_PUBLIC_DEVMODEW` (L110), `_PRINTER_INFO_9` (L142), `WindowsPrinterDriver` (L258)
-**Functions:** `_decode_capability_text` (L171), `_map_devmode_values_to_preferences` (L182), `_buffer_to_public_devmode` (L214), `_buffer_to_preferences` (L218), `_buffer_private_crc32` (L231), `_encode_devmode_b64` (L240), `_decode_devmode_b64` (L245), `_devmode_buffer_to_b64` (L253)
+**Classes:** `_POINTL` (L85), `_DEVMODE_STRUCT1` (L89), `_DEVMODE_UNION1` (L102), `_DEVMODE_UNION2` (L106), `_PUBLIC_DEVMODEW` (L110), `_PRINTER_INFO_9` (L142), `WindowsPrinterDriver` (L253)
+**Functions:** `_decode_capability_text` (L171), `_map_devmode_values_to_preferences` (L182), `_buffer_to_public_devmode` (L214), `_buffer_to_preferences` (L218), `_buffer_private_crc32` (L231), `_decode_devmode_b64` (L240), `_devmode_buffer_to_b64` (L248)
 **Methods (19):** `name`, `supports_printer_properties_dialog`, `list_printers`, `get_default_printer`, `get_printer_status`, `print_pdf`, `_raster_split_or_direct`, `_split_by_layout`, `_print_layout_groups`, `_print_with_scoped_devmode`, `_devmode_to_preferences`, `_list_paper_trays`, `_safe_get_printer_info`, `_collect_printer_preferences`, `_can_use_ctypes_document_properties`, `_persist_devmode_buffer_user_defaults`, `_open_printer_properties_via_ctypes`, `get_printer_preferences`, `open_printer_properties`
 
 ### `src/printing/print_dialog.py`

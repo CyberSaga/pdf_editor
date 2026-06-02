@@ -237,11 +237,6 @@ def _buffer_private_crc32(buffer: ctypes.Array[ctypes.c_char]) -> str:
     return f"{zlib.crc32(private_bytes) & 0xFFFFFFFF:08x}"
 
 
-def _encode_devmode_b64(raw: bytes) -> str:
-    """Encode raw DEVMODE bytes as base64 so they survive JSON serialization."""
-    return base64.b64encode(raw).decode("ascii")
-
-
 def _decode_devmode_b64(value: str) -> bytes:
     """Decode a base64 DEVMODE string back to raw bytes; return b'' if malformed."""
     try:
@@ -251,8 +246,8 @@ def _decode_devmode_b64(value: str) -> bytes:
 
 
 def _devmode_buffer_to_b64(buffer: ctypes.Array[ctypes.c_char]) -> str:
-    """Encode a raw DEVMODE ctypes buffer as base64 (see _encode_devmode_b64)."""
-    return _encode_devmode_b64(bytes(buffer))
+    """Encode a raw DEVMODE ctypes buffer as base64 so it survives JSON serialization."""
+    return base64.b64encode(bytes(buffer)).decode("ascii")
 
 
 class WindowsPrinterDriver(PrinterDriver):
@@ -388,9 +383,7 @@ class WindowsPrinterDriver(PrinterDriver):
         # "auto" axis is derived per page. resolve_orientation already returns an
         # explicit orientation choice unchanged, so leaving paper fixed here lets the
         # user pin paper while still auto-rotating per page (finding #1).
-        explicit_paper = (
-            normalized.paper_size if (normalized.paper_size or "auto") != "auto" else None
-        )
+        explicit_paper = normalized.paper_size if normalized.paper_size != "auto" else None
         # This is a lightweight geometry-only pass (fitz.open parses the xref, it does
         # not render). The per-group renderer re-opens the document for rasterising;
         # the two concerns are kept separate deliberately. Classifying every page up
