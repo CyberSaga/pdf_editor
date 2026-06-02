@@ -1,5 +1,22 @@
 # TODOS
 
+## Open -- Security dependency hygiene (from F2/F9 patch work, 2026-06-03)
+
+Shipped in the security patch series: `Pillow>=12.1.1` floor (closes 5 image-parser
+CVEs); see `implementation-notes.md` for the full F1–F9 patch log. Remaining open
+items deliberately deferred:
+
+- [ ] **Raise the `surya-ocr` floor to pull a patched `transformers`.** pip-audit
+  flagged 2 CVEs in `transformers 4.57.6` (pulled transitively by `surya-ocr`); the
+  fix is `transformers>=5.0.0rc3`. Do NOT bump blindly — first confirm which
+  `surya-ocr` release pins `transformers>=5.0.0rc3` and that it keeps the
+  predictor/`TaskNames` API the OCR adapter relies on (`model/tools/ocr_tool.py`).
+- [ ] **Add a `pip-audit` CI gate.** Run
+  `pip-audit -r requirements.txt -r optional-requirements.txt` and fail on advisories.
+  (Not set up here — no CI infra in-repo; this is a process/infra task.)
+- [ ] **F9 — pin/verify OCR model weights.** Surya fetches weights from a hub at
+  first run with no pinned revision/hash; add an offline/bundled, hash-verified path.
+
 ## Done (2026-06-01) -- Four Windows printing defects + review-finding follow-ups
 
 - What: Fixed the four print bugs the earlier commits `2408f65`/`9fd7d76` only appeared to fix (their tests exercised fake/PDF-output paths, never the GDI spooler). Plan: `docs/plans/2026-06-01-plan-surgical-fixes-for-eager-biscuit.md`; investigation: `4-problems-investigation.txt`.

@@ -3,7 +3,11 @@
 
 # OCR feature (model/tools/ocr_tool.py)
 # Surya delivers modern, multilingual OCR; prefers GPU via torch when available.
-Pillow>=9.0
+# Pillow floor raised to close 5 image-parser CVEs reachable from untrusted
+# image/OCR input (pip-audit, finding F2); fixed in 12.1.1.
+# Run: pip-audit -r requirements.txt -r optional-requirements.txt
+# to verify no known vulnerabilities in the resolved set.
+Pillow>=12.1.1
 surya-ocr>=0.6
 torch>=2.1  # optional but strongly recommended for GPU acceleration
 

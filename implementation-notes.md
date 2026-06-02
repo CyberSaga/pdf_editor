@@ -55,6 +55,17 @@ Pre-existing failures to ignore as regressions:
 
 ## Decisions / deviations
 
+### P8 — Raise Pillow floor (optional-requirements.txt) — DONE
+- `Pillow>=9.0` → `Pillow>=12.1.1` with the pip-audit comment block.
+- Did NOT touch `surya-ocr`/`torch` floors — per spec, the transformers CVE fix needs
+  confirming which surya release pins `transformers>=5.0.0rc3` without breaking the
+  OCR adapter API. Logged as an open item in TODOS.md along with the pip-audit CI gate
+  and F9 (pin/verify OCR weights).
+- Added a new locking test (`test_security_pillow_floor.py`) that parses
+  optional-requirements.txt and asserts the Pillow floor ≥ 12.1.1, so the floor can't
+  be silently lowered later. (Runtime Pillow here is already 12.1.1, so this is a
+  spec/floor regression guard, not a runtime check.)
+
 ### P1 — PDF resource guards (pdf_model.py, ocr_tool.py) — DONE
 - Added module consts `_MAX_PDF_BYTES=512MB`, `_MAX_PAGES=5000`, `_MAX_PIXMAP_PX=40M`
   and helpers `_guard_before_open(path)` / `_safe_render_scale(page, scale)` in
