@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from typing import Any
 
 
 def _configure_logging() -> logging.Logger:
-    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+    # Default to WARNING for shipped builds so absolute file paths and full
+    # tracebacks are not emitted to the console; opt into DEBUG via the
+    # PDF_EDITOR_DEBUG environment variable (any non-empty value).
+    level = logging.DEBUG if os.environ.get("PDF_EDITOR_DEBUG") else logging.WARNING
+    logging.basicConfig(level=level, format="%(asctime)s - %(levelname)s - %(message)s")
     return logging.getLogger(__name__)
 
 
