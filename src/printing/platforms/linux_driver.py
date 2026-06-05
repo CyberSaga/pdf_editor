@@ -182,10 +182,13 @@ class LinuxPrinterDriver(PrinterDriver):
         )
 
     def _submit_via_lp(self, pdf_path: str, options: PrintJobOptions) -> PrintJobResult:
-        if shutil.which("lp") is None:
+        # Resolve the lp binary to an absolute path rather than launching the bare
+        # image name through the OS search order (CWE-426/427 binary planting, F4).
+        lp_path = shutil.which("lp")
+        if lp_path is None:
             raise PrintJobSubmissionError("lp command unavailable.")
 
-        cmd = ["lp", "-n", str(options.copies)]
+        cmd = [lp_path, "-n", str(options.copies)]
         printer_name = options.printer_name or self.get_default_printer()
         if printer_name:
             cmd.extend(["-d", printer_name])

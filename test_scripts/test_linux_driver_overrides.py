@@ -82,7 +82,9 @@ def test_submit_via_lp_omits_hardware_options_when_not_overridden(monkeypatch, t
     )
 
     assert result.success is True
-    assert captured_cmd[:5] == ["lp", "-n", "3", "-d", "Printer A"]
+    # F4 hardening: lp is launched via its absolute path (shutil.which), not the
+    # bare "lp" token. The fake which() above resolves "lp" to "/usr/bin/lp".
+    assert captured_cmd[:5] == ["/usr/bin/lp", "-n", "3", "-d", "Printer A"]
     assert "-P" in captured_cmd
     assert "-o" in captured_cmd
     assert "fit-to-page" in captured_cmd

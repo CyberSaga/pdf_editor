@@ -231,6 +231,33 @@ finding required a change. The real correctness gate was the test suite + ruff.
   existing test must be amended (out of my boundary), so flag it and I'll do it.**
 - There is no `lpoptions` call in the codebase (spec mentioned one "if present").
 
+## Follow-up task series (user-requested, after the P1–P8 series)
+
+A second batch of six tasks was requested after the initial F1–F9 patch series, to
+close residual gaps and add CI/deployment hardening. Same workflow: new tests only
+(with ONE explicitly authorized exception — see Task 1), atomic commit per task,
+codex review per commit (record inconclusive if the sandbox fails), pytest+ruff as
+the real gate.
+
+### Task 1 — `_submit_via_lp` absolute-path hardening (F4) — DONE
+- The earlier P3 work left `_submit_via_lp` on the bare `"lp"` token because the
+  existing `test_linux_driver_overrides.py::test_submit_via_lp_omits_hardware_options_when_not_overridden`
+  pinned `captured_cmd[:5] == ["lp", ...]` and the boundary forbade editing tests.
+- The user **explicitly authorized this one test edit** as the exception. Changes:
+  - `linux_driver._submit_via_lp` now does `lp_path = shutil.which("lp")` and uses
+    `cmd = [lp_path, ...]` (absolute path; the pre-existing `None`→unavailable guard
+    is preserved, just reworded to capture the path).
+  - Updated the pinned assertion to expect `["/usr/bin/lp", "-n", "3", "-d", "Printer A"]`
+    (the fake `which` resolves `"lp"`→`/usr/bin/lp`). This is the only existing-test
+    edit in the whole engagement, and it was authorized.
+  - Added `test_security_subprocess_paths.py::test_linux_submit_via_lp_uses_absolute_lp_path`
+    locking argv[0] to an absolute path, and updated that file's scope-note docstring
+    (all three subprocess sites are now covered).
+- Verified: `test_linux_driver_overrides` + `test_security_subprocess_paths` = 10 passed;
+  the full print/subprocess slice (`-k "print or linux_driver or win_driver or dispatcher
+  or subprocess"`) = 90 passed. ruff clean on changed lines (the 2 E402 in
+  test_linux_driver_overrides.py pre-date this work — confirmed via `git stash`).
+
 ### P6 — Release logging level (main.py) — DONE
 - Implemented exactly per spec: `level = DEBUG if os.environ.get("PDF_EDITOR_DEBUG") else WARNING`.
 - Test note: `logging.basicConfig` is a no-op when the root logger already has
