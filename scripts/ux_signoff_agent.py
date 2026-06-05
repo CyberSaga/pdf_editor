@@ -31,8 +31,9 @@ except ImportError:
     OpenAI = None
 
 try:
+    # pyautogui pulls in Pillow transitively (used for its screenshot backend),
+    # so a successful import also confirms Pillow is available.
     import pyautogui
-    from PIL import Image as _PILImage
 except ImportError:
     print("ERROR: pip install pyautogui pillow")
     sys.exit(1)
@@ -572,7 +573,8 @@ def _validate_signoff_report(
     reported click coordinates do not match any real click in the independent
     execution trace.
     """
-    import re as _re, json as _json
+    import json as _json
+    import re as _re
 
     if "WRONG_PDF:" in raw:
         print("[signoff] ERROR: agent reported wrong PDF loaded")
