@@ -73,6 +73,28 @@ Each got a `codex:review` (P1 also a `codex:adversarial-review`, verdict: approv
 Codex verdicts were clean or inconclusive (sandbox flakiness, see note above); no codex
 finding required a change. The real correctness gate was the test suite + ruff.
 
+## FINAL VERIFICATION — follow-up task series (Tasks 1–6, 2026-06-05)
+
+Full suite after all six follow-up commits:
+`python -m pytest test_scripts/` -> **7 failed, 1212 passed, 21 skipped** (182 s).
+- The 7 failures are EXACTLY the recorded pre-existing baseline (all in
+  `test_no_jump_editor_geometry.py`: click-to-edit geometry + reopen-shrink). Untouched
+  by this work and outside the F1–F9 scope.
+- The timing-flaky `test_print_subprocess_runner.py::...heartbeat...` (the 8th failure in
+  the earlier series' run) **passed** this run — confirming it is a flake, not a regression.
+- **Net: zero new persistent failures vs. baseline.** 1212 passed is up from the prior
+  series' 1189 — the difference is the ~23 new security tests added across Tasks 1–6
+  (lp-absolute-path, OCR-requirements split, F9 weight verification, CUA bounds).
+- ruff: zero NEW violations on any file touched. The only ruff hits remain the 2
+  pre-existing ones in `scripts/ux_signoff_agent.py` (F401 @35, E401) — verified
+  unchanged via `git stash` (2 before, 2 after my edits).
+- Codex review was run per commit; all six returned **inconclusive** (Windows sandbox
+  spawn error — the documented flake). The real gate was pytest + ruff throughout.
+
+Follow-up commits (atomic, oldest->newest): 4bf981d (T1 lp), a39c751 (T2 transformers
+block + OCR split), ef21a90 (T3 F9 weights), 633e1c3 (T4 CI), 6540827 (T5 CUA bounds),
+8a2fe97 (T6 .venv audit).
+
 ## Decisions / deviations
 
 ### P8 — Raise Pillow floor (optional-requirements.txt) — DONE
