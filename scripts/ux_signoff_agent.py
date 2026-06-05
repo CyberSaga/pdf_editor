@@ -199,9 +199,30 @@ _ALLOWED_CUA_ACTIONS: frozenset[str] = frozenset(
     {"click", "double_click", "scroll", "move", "screenshot"}
 )
 
+# Action types that carry an (x, y) the agent wants the pointer driven to. These
+# are the ones subject to the window-bounds check below.
+_COORD_CUA_ACTIONS: frozenset[str] = frozenset(
+    {"click", "double_click", "scroll", "move"}
+)
 
-def _execute_cua_action(action: object) -> None:
-    """Execute one computer_call action against the real desktop."""
+
+def _point_in_rect(x: int, y: int, rect: tuple[int, int, int, int]) -> bool:
+    """True if (x, y) is inside the inclusive rect (left, top, right, bottom)."""
+    left, top, right, bottom = rect
+    return left <= x <= right and top <= y <= bottom
+
+
+def _execute_cua_action(
+    action: object, window_rect: tuple[int, int, int, int] | None = None
+) -> None:
+    """Execute one computer_call action against the real desktop.
+
+    ``window_rect`` is the app window's (left, top, right, bottom) screen bounds.
+    When provided, coordinate-bearing actions outside it are refused so injected
+    screen content cannot steer the pointer to arbitrary desktop locations
+    (OWASP-LLM06 Excessive Agency). When ``None`` (window-rect detection failed),
+    bounds are not enforced but the action-type allowlist still applies.
+    """
     # action is an object; use getattr for safety
     atype = getattr(action, "type", None)
     # Refuse any action type outside the allowlist. The agent's input includes
@@ -209,6 +230,14 @@ def _execute_cua_action(action: object) -> None:
     # otherwise drive the keyboard (OWASP-LLM06 Excessive Agency).
     if atype not in _ALLOWED_CUA_ACTIONS:
         raise PermissionError(f"blocked CUA action type: {atype!r}")
+    # Refuse coordinate actions that land outside the app window.
+    if window_rect is not None and atype in _COORD_CUA_ACTIONS:
+        x = getattr(action, "x", None)
+        y = getattr(action, "y", None)
+        if x is None or y is None or not _point_in_rect(int(x), int(y), window_rect):
+            raise PermissionError(
+                f"blocked out-of-window CUA {atype} at ({x}, {y}); window={window_rect}"
+            )
     if atype == "click":
         btn = getattr(action, "button", "left") or "left"
         pyautogui.click(action.x, action.y, button=btn)
@@ -287,6 +316,62 @@ def _assert_app_window_shows_pdf(pid: int, expected_filename: str) -> None:
     )
 
 
+# main() records the launched app's PID here so _run_agent_on_pdf can resolve the
+# window bounds for the CUA bounds-check without changing its (externally mocked)
+# call signature. A 1-element list is a mutable holder; the test that mocks
+# _run_agent_on_pdf never reads it.
+_active_app_pid: list[int | None] = [None]
+
+
+def _get_window_rect(pid: int | None) -> tuple[int, int, int, int] | None:
+    """Return the (left, top, right, bottom) screen bounds of the process's main
+    window, or ``None`` if it cannot be determined.
+
+    Uses user32 ``GetWindowRect`` on the process MainWindowHandle via PowerShell —
+    no third-party dependency. Non-Windows hosts (or an unknown pid) return
+    ``None`` (bounds checking is then skipped; the action-type allowlist still
+    applies).
+    """
+    if pid is None or sys.platform != "win32":
+        return None
+    script = (
+        "$p = Get-Process -Id %d -ErrorAction SilentlyContinue; "
+        "if (-not $p) { exit }; "
+        "$h = $p.MainWindowHandle; if ($h -eq 0) { exit }; "
+        "Add-Type @'\n"
+        "using System;\n"
+        "using System.Runtime.InteropServices;\n"
+        "public struct RECT { public int Left, Top, Right, Bottom; }\n"
+        "public class Win32 {\n"
+        "  [DllImport(\"user32.dll\")]\n"
+        "  public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);\n"
+        "}\n"
+        "'@; "
+        "$r = New-Object RECT; "
+        "[void][Win32]::GetWindowRect($h, [ref]$r); "
+        "Write-Output \"$($r.Left) $($r.Top) $($r.Right) $($r.Bottom)\""
+    ) % pid
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    parts = proc.stdout.strip().split()
+    if len(parts) != 4:
+        return None
+    try:
+        left, top, right, bottom = (int(v) for v in parts)
+    except ValueError:
+        return None
+    if right <= left or bottom <= top:
+        return None
+    return (left, top, right, bottom)
+
+
 def _run_agent_on_pdf(
     client: OpenAI, pdf_path: str, pdf_evidence_dir: Path
 ) -> tuple[str, list[dict], list[dict]]:
@@ -312,6 +397,15 @@ def _run_agent_on_pdf(
     Fails fast if the model outputs WRONG_PDF (title bar mismatch).
     """
     pdf_evidence_dir.mkdir(parents=True, exist_ok=True)
+    # F3: resolve the app window bounds so every CUA pointer action is constrained
+    # to it. main() records the pid; if bounds can't be read, bounds-checking is
+    # skipped (the action-type allowlist still applies).
+    window_rect = _get_window_rect(_active_app_pid[0])
+    if window_rect is None:
+        print("[signoff] WARNING: window bounds unavailable; CUA coordinate "
+              "bounds-check disabled (allowlist still enforced)")
+    else:
+        print(f"[signoff] CUA pointer actions bounded to window {window_rect}")
     pdf_name = Path(pdf_path).name
     prompt = (
         f"The PDF editor should be displaying: {pdf_name}  (full path: {pdf_path})\n\n"
@@ -358,7 +452,7 @@ def _run_agent_on_pdf(
         # Execute every action, record clicks in the independent trace
         for call in computer_calls:
             action = getattr(call, "action", None) or call
-            _execute_cua_action(action)
+            _execute_cua_action(action, window_rect)
             atype = getattr(action, "type", None)
             if atype in ("click", "double_click"):
                 entry = {
@@ -604,6 +698,9 @@ def main() -> int:
             )
             try:
                 _assert_app_window_shows_pdf(app_proc.pid, Path(pdf_path).name)
+                # Record the validated app pid so _run_agent_on_pdf can bound CUA
+                # pointer actions to this window (F3).
+                _active_app_pid[0] = app_proc.pid
                 print(f"[signoff] Running CUA checklist for {pdf_path} ...")
                 raw, trace, screenshot_pairs = _run_agent_on_pdf(client, pdf_path, pdf_evidence_dir)
                 print(f"[signoff] Execution trace: {len(trace)} click(s), "

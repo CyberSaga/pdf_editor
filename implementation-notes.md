@@ -340,6 +340,34 @@ the real gate.
   pyautogui) and runs locally, surfaced here as an advisory step. Installs the Qt
   offscreen libs (libegl1/libgl1/libxkbcommon0) + core deps.
 
+### Task 5 — F3 CUA window-bounds check (ux_signoff_agent.py) — DONE
+- Added a coordinate bounds check to `_execute_cua_action(action, window_rect=None)`:
+  coordinate-bearing actions (`click`/`double_click`/`scroll`/`move`) outside the app
+  window's `(left, top, right, bottom)` raise `PermissionError`. `window_rect=None`
+  (detection failed) skips bounds but keeps the action-type allowlist — documented
+  fail-open so a flaky rect probe can't brick the signoff.
+- `_get_window_rect(pid)`: reads the app window's bounds via user32 `GetWindowRect`
+  on the MainWindowHandle through PowerShell (no new dependency); returns `None` on
+  non-Windows / unknown pid / probe failure.
+- **Plumbing constraint (important):** the existing `test_ux_signoff_agent.py` (which
+  I must NOT edit) mocks `_run_agent_on_pdf` with a fixed 3-arg signature AND globally
+  patches `subprocess.Popen`. So I could neither add a param to `_run_agent_on_pdf`
+  nor call `subprocess` in `main()`'s real path (its internal Popen would hit the fake
+  with unexpected kwargs). Resolution: `main()` records the validated pid in a
+  module-level holder `_active_app_pid`; `_run_agent_on_pdf` (fully mocked in that
+  test, so never run there) resolves the rect from it. This keeps both the existing
+  test and the new bounds tests green. Red-Light first: 4 new bounds tests failed
+  (no `window_rect` param) → implemented → 11 passed.
+- **Packaging exclusion (Task 5 sub-item) — RECORDED, nothing to exclude:** the repo
+  has **no app packaging manifest** at all — no `setup.py`/`setup.cfg`/`pyproject.toml`/
+  `MANIFEST.in` and no PyInstaller `.spec` (the only `.spec` is PySide6's library
+  `default.spec` under `.venv`, not ours). So `scripts/ux_signoff_agent.py` is not
+  bundled by anything today. Recorded a TODO: when packaging is introduced, exclude
+  `scripts/` (the dev-only CUA harness) from the shipped artifact.
+- Pre-existing ruff hits in this file (F401 unused `PIL.Image` @35, E401 multi-import)
+  are unchanged by my edit (verified via `git stash`: 2 before, 2 after) and remain in
+  the tracked legacy-violation set.
+
 ### P6 — Release logging level (main.py) — DONE
 - Implemented exactly per spec: `level = DEBUG if os.environ.get("PDF_EDITOR_DEBUG") else WARNING`.
 - Test note: `logging.basicConfig` is a no-op when the root logger already has

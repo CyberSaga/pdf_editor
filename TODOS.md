@@ -52,6 +52,15 @@ is documented as carrying the vulnerable Pillow 10.x line + the transformers CVE
 an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
 `test_security_ocr_requirements.py`.
 
+### Packaging hygiene (recorded during F3 / Task 5)
+
+- [ ] **Exclude `scripts/` from any future packaged artifact.** There is currently no
+  app packaging manifest in the repo (no `setup.py`/`setup.cfg`/`pyproject.toml`/
+  `MANIFEST.in`, no PyInstaller `.spec`), so the dev-only CUA harness
+  `scripts/ux_signoff_agent.py` is not shipped by anything. When packaging is added,
+  exclude `scripts/` (it drives the real keyboard/mouse and must never ride along in a
+  release build).
+
 ### Remaining open items
 
 - [ ] **Revisit the OCR stack when surya-ocr relaxes its pins.** When a surya release
