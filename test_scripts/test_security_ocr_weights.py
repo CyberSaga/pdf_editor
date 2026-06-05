@@ -25,19 +25,6 @@ from model.tools.ocr_weights import (
 _REL = "text_recognition/model.safetensors"
 
 
-@pytest.fixture(autouse=True)
-def _isolate_environ():
-    """Snapshot and restore os.environ; enforce_weights_policy mutates it."""
-    import os
-
-    saved = dict(os.environ)
-    try:
-        yield
-    finally:
-        os.environ.clear()
-        os.environ.update(saved)
-
-
 def _make_bundle(tmp_path, payload: bytes = b"weights-bytes") -> tuple[str, str]:
     """Create a bundle dir with one weight file; return (dir, sha256)."""
     weight = tmp_path / _REL
@@ -105,15 +92,22 @@ def test_verify_weights_dir_missing_directory(tmp_path) -> None:
 
 
 def test_enforce_policy_no_bundle_pins_revisions_online() -> None:
+    env: dict[str, str] = {}
+    applied = enforce_weights_policy(env)
+    assert applied["RECOGNITION_MODEL_CHECKPOINT"].startswith("s3://")
+    # Revision pins are written into the PASSED env (not os.environ) for surya.
+    assert env["RECOGNITION_MODEL_CHECKPOINT"].startswith("s3://")
+    # Online path: offline flags are NOT forced.
+    assert env.get("HF_HUB_OFFLINE") in (None, "0", "")
+
+
+def test_enforce_policy_does_not_mutate_os_environ() -> None:
+    """Passing a synthetic env must not touch the real process environment."""
     import os
 
-    os.environ.pop("PDF_EDITOR_OCR_WEIGHTS_DIR", None)
-    applied = enforce_weights_policy({})
-    assert applied["RECOGNITION_MODEL_CHECKPOINT"].startswith("s3://")
-    # Revision pins are pushed to the environment for surya to read.
-    assert os.environ["RECOGNITION_MODEL_CHECKPOINT"].startswith("s3://")
-    # Online path: offline flags are NOT forced.
-    assert os.environ.get("HF_HUB_OFFLINE") in (None, "0", "")
+    before = dict(os.environ)
+    enforce_weights_policy({})
+    assert dict(os.environ) == before
 
 
 def test_enforce_policy_bundle_mismatch_refuses(tmp_path, monkeypatch) -> None:
@@ -124,17 +118,16 @@ def test_enforce_policy_bundle_mismatch_refuses(tmp_path, monkeypatch) -> None:
 
 
 def test_enforce_policy_bundle_match_allows_offline(tmp_path, monkeypatch) -> None:
-    import os
-
     bundle_dir, sha = _make_bundle(tmp_path)
     monkeypatch.setattr(ocr_weights, "WEIGHTS_MANIFEST", {_REL: sha})
-    applied = enforce_weights_policy({"PDF_EDITOR_OCR_WEIGHTS_DIR": bundle_dir})
+    env = {"PDF_EDITOR_OCR_WEIGHTS_DIR": bundle_dir}
+    applied = enforce_weights_policy(env)
     # Checkpoints now point inside the local bundle (no s3://).
     assert applied["RECOGNITION_MODEL_CHECKPOINT"].endswith("text_recognition")
     assert bundle_dir in applied["RECOGNITION_MODEL_CHECKPOINT"]
     # Offline loading is forced so no network fetch can happen.
-    assert os.environ.get("HF_HUB_OFFLINE") == "1"
-    assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
+    assert env.get("HF_HUB_OFFLINE") == "1"
+    assert env.get("TRANSFORMERS_OFFLINE") == "1"
 
 
 def test_adapter_refuses_load_on_weight_failure(monkeypatch) -> None:

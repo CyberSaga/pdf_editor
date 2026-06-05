@@ -142,8 +142,15 @@ def verify_weights_dir(
     logger.info("Verified %d OCR weight file(s) under %s", len(manifest), base)
 
 
-def _apply_settings(checkpoints: dict[str, str], *, offline: bool) -> None:
-    """Push checkpoint values into the environment and any live surya settings.
+def _apply_settings(
+    checkpoints: dict[str, str], environ: dict[str, str], *, offline: bool
+) -> None:
+    """Push checkpoint values into ``environ`` and any live surya settings.
+
+    ``environ`` is the same mapping passed to :func:`enforce_weights_policy` — the
+    real ``os.environ`` in production, or a synthetic dict in tests. Writing to it
+    (rather than always to ``os.environ``) means a test that passes its own dict
+    does not mutate the process environment.
 
     surya's ``settings`` is a pydantic ``BaseSettings`` instantiated at first import
     of ``surya.settings``. Setting the env vars before that import is enough in the
@@ -151,10 +158,10 @@ def _apply_settings(checkpoints: dict[str, str], *, offline: bool) -> None:
     settings object defensively in case something imported it earlier.
     """
     for field, value in checkpoints.items():
-        os.environ[field] = value
+        environ[field] = value
     if offline:
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
-        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+        environ.setdefault("HF_HUB_OFFLINE", "1")
+        environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
     settings_mod = sys.modules.get("surya.settings")
     live = getattr(settings_mod, "settings", None) if settings_mod else None
@@ -180,7 +187,7 @@ def enforce_weights_policy(env: dict[str, str] | None = None) -> dict[str, str]:
     weights_dir = resolve_weights_dir(environ)
 
     if weights_dir is None:
-        _apply_settings(checkpoints, offline=False)
+        _apply_settings(checkpoints, environ, offline=False)
         logger.debug("OCR weights: revision-pinned online load (no bundle configured)")
         return checkpoints
 
@@ -189,6 +196,6 @@ def enforce_weights_policy(env: dict[str, str] | None = None) -> dict[str, str]:
         field: str(weights_dir / subdir)
         for field, subdir in _BUNDLE_SUBDIRS.items()
     }
-    _apply_settings(local, offline=True)
+    _apply_settings(local, environ, offline=True)
     logger.info("OCR weights: verified offline bundle load from %s", weights_dir)
     return local
