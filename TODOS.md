@@ -57,7 +57,12 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
 - [ ] **Revisit the OCR stack when surya-ocr relaxes its pins.** When a surya release
   ships `pillow>=12.2` support and a transformers floor in the 5.x line, merge
   `ocr-requirements.txt` back and drop the residual-risk note. Track upstream surya.
-- [ ] **`pip-audit` CI gate** — to be added in `.github/workflows/` (Task 4).
+- [x] **`pip-audit` CI gate** — DONE (Task 4): `.github/workflows/ci.yml` runs
+  `pip-audit -r requirements.txt -r optional-requirements.txt` as a BLOCKING matrix job
+  (ubuntu + windows, so both platform-gated print backends resolve) and fails on any
+  advisory. Verified locally: the core+optional set is clean. The OCR extra is audited
+  as an advisory (non-blocking) step. ruff + a security-regression pytest subset are
+  wired in too (ruff advisory due to the 113-violation backlog).
 - [x] **F9 — pin/verify OCR model weights** — DONE (Task 3): `model/tools/ocr_weights.py`
   pins the surya checkpoint revisions, supports offline loading from a local bundle
   (`PDF_EDITOR_OCR_WEIGHTS_DIR`), and SHA256-verifies bundle files before load (refuses

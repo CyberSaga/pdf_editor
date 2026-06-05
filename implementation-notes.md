@@ -318,6 +318,28 @@ the real gate.
   raising). A full end-to-end model load with real weights is infeasible in CI, so the
   test asserts the policy permits the load rather than running inference.
 
+### Task 4 — pip-audit CI gate (.github/workflows/ci.yml) — DONE
+- No `.github/` existed; created `.github/workflows/ci.yml` from scratch.
+- **dependency-audit (BLOCKING)**: `pip-audit -r requirements.txt -r optional-requirements.txt`
+  on an ubuntu+windows matrix (so pycups on Linux and pywin32 on Windows are each
+  resolved/audited). Installs `libcups2-dev` on Linux so the pycups sdist can resolve.
+  **Verified the gate is green** locally: "No known vulnerabilities found" for the
+  core+optional set (the OCR stack's CVEs are confined to the separate
+  ocr-requirements.txt, audited as a non-blocking advisory step).
+- **Encoding gotcha (fixed):** pip-audit's requirements parser uses the locale codec;
+  on this cp950 Windows box it crashed (`UnicodeDecodeError`) on the em-dashes I'd put
+  in the requirement-file comments. Rewrote optional-requirements.txt + ocr-requirements.txt
+  to **pure ASCII** so the audit works under any locale (and re-verified green).
+- **ruff = advisory** (`continue-on-error`): a blocking full-repo `ruff check` would be
+  red-on-arrival because of the 113 tracked legacy violations (CLAUDE.md s3.1). New code
+  is held to zero in review; the CI surfaces issues as GitHub annotations without
+  false-failing.
+- **test job:** blocks on the import-light dependency/F9 security suite
+  (pillow_floor + ocr_requirements + ocr_weights = 18 tests, green locally); the full
+  pytest run needs the heavy optional/platform stack (surya/torch, win32print,
+  pyautogui) and runs locally, surfaced here as an advisory step. Installs the Qt
+  offscreen libs (libegl1/libgl1/libxkbcommon0) + core deps.
+
 ### P6 — Release logging level (main.py) — DONE
 - Implemented exactly per spec: `level = DEBUG if os.environ.get("PDF_EDITOR_DEBUG") else WARNING`.
 - Test note: `logging.basicConfig` is a no-op when the root logger already has

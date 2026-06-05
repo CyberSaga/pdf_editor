@@ -6,11 +6,11 @@
 # with the secured Pillow floor below (surya caps Pillow two majors lower) and the
 # resolved transformers carries CVEs that no surya-ocr release can currently avoid.
 # OCR therefore lives in a SEPARATE, mutually-exclusive file: ocr-requirements.txt.
-# Do NOT install both into one environment — pip cannot resolve Pillow.
+# Do NOT install both into one environment - pip cannot resolve Pillow.
 # See TODOS.md "Security dependency hygiene" for the full version matrix.
 
 # Image processing for core deskew / straighten / optimize features
-# (model/pdf_model.py, model/pdf_optimizer.py — imported lazily, app still launches
+# (model/pdf_model.py, model/pdf_optimizer.py - imported lazily, app still launches
 # without it). Floor raised to 12.2.0 to close the image-parser CVEs
 # (CVE-2026-40192 / 42309 / 42310 / 42311, PYSEC-2026-165) fixed in Pillow 12.2.0.
 # Run: pip-audit -r requirements.txt -r optional-requirements.txt

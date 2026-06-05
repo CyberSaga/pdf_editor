@@ -1,0 +1,94 @@
+name: CI
+
+# Continuous integration for the PDF editor.
+#
+# The headline gate (Task 4 / finding F2) is `dependency-audit`: it runs pip-audit
+# over the declared requirement files and FAILS the build on any known advisory.
+# `lint` and `test` are wired in too, but their blocking scope is deliberately
+# scoped to what is green today:
+#   * ruff is advisory because the repo still carries 113 tracked legacy violations
+#     (CLAUDE.md s3.1) that are being cleaned up gradually; new code is held to zero
+#     in review.
+#   * the test job blocks on the import-light dependency/F9 security regression suite;
+#     the full pytest run needs the heavy optional + platform-specific stack
+#     (surya/torch, win32print, pyautogui) and is run locally, surfaced here as an
+#     advisory step.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-audit:
+    name: Dependency vulnerability audit (pip-audit)
+    # Matrix so both platform-gated print backends are resolved+audited:
+    # pycups (Linux/Darwin marker) on ubuntu, pywin32 (Windows marker) on windows.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install CUPS headers (so pycups can resolve on Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libcups2-dev
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip pip-audit
+      - name: Audit core + optional requirements (BLOCKING)
+        # Exits non-zero on any known advisory -> fails the build.
+        run: pip-audit -r requirements.txt -r optional-requirements.txt --progress-spinner off
+      - name: Audit OCR extra (advisory; documented upstream-blocked residuals)
+        # surya-ocr transitively pins a vulnerable Pillow/transformers that no release
+        # can currently avoid (see ocr-requirements.txt + TODOS.md). Surfaced, not gated.
+        continue-on-error: true
+        timeout-minutes: 15
+        run: pip-audit -r ocr-requirements.txt --progress-spinner off
+
+  lint:
+    name: ruff (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install ruff
+        run: python -m pip install --upgrade pip ruff
+      - name: ruff check (advisory until the 113-violation legacy backlog is cleared)
+        continue-on-error: true
+        run: ruff check . --output-format=github
+
+  test:
+    name: Security regression tests
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install Qt offscreen runtime libs
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0
+      - name: Install core + test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pytest packaging "Pillow>=12.2.0"
+      - name: Dependency + OCR-weight security regression suite (BLOCKING)
+        run: |
+          pytest -q \
+            test_scripts/test_security_pillow_floor.py \
+            test_scripts/test_security_ocr_requirements.py \
+            test_scripts/test_security_ocr_weights.py
+      - name: Full security suite (advisory; needs the heavy optional/platform stack)
+        continue-on-error: true
+        run: pytest -q test_scripts/test_security_*.py
