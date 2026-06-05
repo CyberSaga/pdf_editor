@@ -61,6 +61,18 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
   exclude `scripts/` (it drives the real keyboard/mouse and must never ride along in a
   release build).
 
+### Deployment env remediation (recorded during Task 6 audit, 2026-06-05)
+
+- [ ] **Upgrade the build-env (`.venv`) Pillow to >=12.2.0 and rebuild.** The PyInstaller
+  build env still has Pillow 12.1.1 (5 image-parser CVEs, fixed in 12.2.0). The declared
+  floor (optional-requirements.txt) is already 12.2.0 for fresh installs; the existing
+  `.venv` needs `python -m pip install -U "Pillow>=12.2.0"` + a PyInstaller rebuild so the
+  shipped artifact drops the vulnerable Pillow. (Deployment audit otherwise clean:
+  PyMuPDF/PySide6/pytesseract OK; no transformers/surya/torch in the deployment, so the
+  OCR-stack CVEs do not apply to the shipped product.)
+- [ ] **Refresh build tooling** (`pip 21.2.3`, `setuptools 57.4.0`) in the `.venv` — old
+  but not bundled into the exe, so low risk; update for build hygiene.
+
 ### Remaining open items
 
 - [ ] **Revisit the OCR stack when surya-ocr relaxes its pins.** When a surya release

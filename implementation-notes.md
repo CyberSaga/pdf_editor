@@ -368,6 +368,43 @@ the real gate.
   are unchanged by my edit (verified via `git stash`: 2 before, 2 after) and remain in
   the tracked legacy-violation set.
 
+### Task 6 — Deployment-env (.venv) pip-audit verification — DONE
+
+Re-ran the audit against the **actual deployment env** (`.venv`, Python 3.10.0),
+not the global kitchen-sink Python the earlier scans used. The `.venv` turns out to
+be the **PyInstaller build environment** (pyinstaller 6.19.0 + hooks-contrib + pefile
++ pywin32-ctypes; a gitignored `build/main/` exists). Audited via
+`.venv/Scripts/python -m pip freeze | pip-audit -r -`.
+
+**Result — only ONE vulnerable package in the deployment env:**
+
+| package      | .venv version | status                                            |
+|--------------|---------------|---------------------------------------------------|
+| **pillow**   | **12.1.1**    | **5 CVEs** (PYSEC-2026-165, CVE-2026-40192/42309/42310/42311) — all fixed in **12.2.0** |
+| PyMuPDF      | 1.27.1        | clean                                             |
+| PySide6 (+Addons/Essentials/shiboken6) | 6.10.2 | clean                          |
+| pytesseract  | 0.3.13        | clean                                             |
+| vtracer / svgwrite / pefile / altgraph / pyinstaller / hooks-contrib | — | clean |
+
+**Differences vs. the global-Python scan:**
+- The global env flagged pillow **and** transformers 4.57.6 (+ dozens of unrelated
+  transitive CVEs in aiohttp/flask/pypdf/etc.). The deployment `.venv` has **none of
+  the OCR stack** — no `transformers`, no `surya-ocr`, no `torch`. So the transformers
+  CVEs (CVE-2026-1839, PYSEC-2025-217) and the surya pillow<11 conflict **do not apply
+  to the shipped product**. This independently validates the Task 2 decision to isolate
+  the OCR stack into a separate `ocr-requirements.txt`: the default deployment simply
+  doesn't carry it. (Surya OCR would be reported unavailable at runtime in this build;
+  the F9 weight-verification layer only activates if surya is later installed.)
+- `pillow` is the one real overlap and the one real deployment gap: the `.venv` still
+  has **12.1.1**, one patch behind the **12.2.0** floor I set in optional-requirements.txt
+  (Task 2). The declared floor protects *fresh* installs; the existing build env needs
+  an explicit upgrade.
+
+**Suggestions (recorded in TODOS.md):**
+1. **Upgrade the build env Pillow and rebuild:** `.venv\Scripts\python -m pip install -U "Pillow>=12.2.0"` then re-run the PyInstaller build so the shipped artifact no longer bundles a vulnerable Pillow.
+2. **Build-tooling hygiene (low risk, not shipped):** the `.venv` also carries old `pip 21.2.3` and `setuptools 57.4.0` (setuptools 57.x is affected by PYSEC-2025-49). These are build-time tools, not bundled into the exe, but worth updating (`python -m pip install -U pip setuptools`).
+3. **No PyInstaller `.spec` is committed** and the build does not reference `scripts/`, so the CUA harness is not bundled today — but when a spec is committed, formalize the `scripts/` exclusion (see the Task 5 packaging TODO).
+
 ### P6 — Release logging level (main.py) — DONE
 - Implemented exactly per spec: `level = DEBUG if os.environ.get("PDF_EDITOR_DEBUG") else WARNING`.
 - Test note: `logging.basicConfig` is a no-op when the root logger already has
