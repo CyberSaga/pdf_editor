@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Implementation Notes</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+</style>
+  <style type="text/css">:root {
+--bg: #f6f3eb;
+--paper: #fffdf7;
+--ink: #1d2528;
+--muted: #68747a;
+--line: #ded8ca;
+--accent: #0f6f68;
+--accent-soft: #dcefed;
+--warn: #9a5a00;
+--warn-soft: #fff1d6;
+--code-bg: #eef0eb;
+--shadow: 0 18px 48px rgba(38, 31, 18, 0.13);
+color-scheme: light;
+}
+html {
+background:
+radial-gradient(circle at 8% 8%, rgba(15, 111, 104, 0.12), transparent 28rem),
+radial-gradient(circle at 90% 0%, rgba(154, 90, 0, 0.12), transparent 24rem),
+var(--bg);
+color: var(--ink);
+font-family: "Aptos", "Segoe UI", sans-serif;
+font-size: 17px;
+line-height: 1.65;
+}
+body {
+margin: 0 auto;
+max-width: 1120px;
+padding: 48px 28px 72px;
+}
+body > header,
+body > nav,
+body > main {
+box-sizing: border-box;
+}
+body > main,
+body > article {
+background: var(--paper);
+border: 1px solid var(--line);
+border-radius: 22px;
+box-shadow: var(--shadow);
+padding: 44px 56px;
+}
+h1,
+h2,
+h3,
+h4 {
+color: #132629;
+font-family: "Cambria", "Georgia", serif;
+line-height: 1.16;
+margin: 1.45em 0 0.55em;
+}
+h1 {
+border-bottom: 3px solid var(--accent);
+font-size: clamp(2rem, 5vw, 3.2rem);
+letter-spacing: -0.04em;
+margin-top: 0;
+padding-bottom: 0.22em;
+}
+h2 {
+border-top: 1px solid var(--line);
+font-size: 1.75rem;
+padding-top: 1.1em;
+}
+h3 {
+color: var(--accent);
+font-size: 1.28rem;
+}
+p,
+ul,
+ol,
+table,
+pre {
+margin-bottom: 1.05em;
+}
+a {
+color: var(--accent);
+font-weight: 650;
+text-decoration-thickness: 0.09em;
+text-underline-offset: 0.18em;
+}
+strong {
+color: #10191b;
+font-weight: 750;
+}
+code {
+background: var(--code-bg);
+border: 1px solid #d8ddd6;
+border-radius: 0.35em;
+font-family: "Cascadia Code", "Consolas", monospace;
+font-size: 0.88em;
+padding: 0.08em 0.32em;
+}
+pre {
+background: #172326;
+border-radius: 16px;
+color: #f4f0e7;
+overflow-x: auto;
+padding: 18px 20px;
+}
+pre code {
+background: transparent;
+border: 0;
+color: inherit;
+padding: 0;
+}
+blockquote {
+background: var(--warn-soft);
+border-left: 6px solid var(--warn);
+border-radius: 0 14px 14px 0;
+color: #4d3a16;
+margin: 1.4em 0;
+padding: 14px 20px;
+}
+table {
+border-collapse: collapse;
+display: block;
+overflow-x: auto;
+width: 100%;
+}
+th,
+td {
+border-bottom: 1px solid var(--line);
+padding: 10px 12px;
+text-align: left;
+vertical-align: top;
+}
+th {
+background: var(--accent-soft);
+color: #123c39;
+font-size: 0.9em;
+letter-spacing: 0.03em;
+text-transform: uppercase;
+}
+li {
+margin: 0.32em 0;
+}
+input[type="checkbox"] {
+accent-color: var(--accent);
+margin-right: 0.45em;
+transform: translateY(0.08em) scale(1.08);
+}
+#TOC {
+background: rgba(255, 253, 247, 0.86);
+border: 1px solid var(--line);
+border-radius: 18px;
+box-shadow: 0 10px 28px rgba(38, 31, 18, 0.08);
+margin-bottom: 28px;
+padding: 18px 24px;
+}
+#TOC::before {
+color: var(--muted);
+content: "Contents";
+display: block;
+font-size: 0.82rem;
+font-weight: 800;
+letter-spacing: 0.12em;
+margin-bottom: 8px;
+text-transform: uppercase;
+}
+#TOC ul {
+margin: 0;
+padding-left: 1.2em;
+}
+hr {
+border: 0;
+border-top: 1px solid var(--line);
+margin: 2em 0;
+}
+@media (max-width: 760px) {
+body {
+padding: 22px 12px 44px;
+}
+body > main,
+body > article {
+border-radius: 16px;
+padding: 26px 20px;
+}
+}
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Implementation Notes</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#implementation-notes--security-patch-work" id="toc-implementation-notes--security-patch-work">Implementation Notes
+— Security Patch Work</a>
+<ul>
+<li><a href="#environment-facts-discovered-not-in-spec" id="toc-environment-facts-discovered-not-in-spec">Environment facts
+(discovered, not in spec)</a></li>
+<li><a href="#workflow-per-patch-claudemd-51-red-light-first" id="toc-workflow-per-patch-claudemd-51-red-light-first">Workflow per
+patch (CLAUDE.md §5.1 Red-Light first)</a></li>
+<li><a href="#execution-order-from-spec" id="toc-execution-order-from-spec">Execution order (from spec)</a></li>
+<li><a href="#baseline-test-run-before-any-patch-global-python" id="toc-baseline-test-run-before-any-patch-global-python">Baseline test
+run (BEFORE any patch, global Python)</a></li>
+<li><a href="#final-verification-after-all-9-commits" id="toc-final-verification-after-all-9-commits">FINAL VERIFICATION
+(after all 9 commits)</a></li>
+<li><a href="#decisions--deviations" id="toc-decisions--deviations">Decisions / deviations</a>
+<ul>
+<li><a href="#p8--raise-pillow-floor-optional-requirementstxt--done" id="toc-p8--raise-pillow-floor-optional-requirementstxt--done">P8 —
+Raise Pillow floor (optional-requirements.txt) — DONE</a></li>
+<li><a href="#p1--pdf-resource-guards-pdf_modelpy-ocr_toolpy--done" id="toc-p1--pdf-resource-guards-pdf_modelpy-ocr_toolpy--done">P1 — PDF
+resource guards (pdf_model.py, ocr_tool.py) — DONE</a></li>
+<li><a href="#p1-follow-up--ocr-clamp-regression-fix" id="toc-p1-follow-up--ocr-clamp-regression-fix">P1 follow-up — OCR clamp
+regression fix</a></li>
+<li><a href="#p7--cua-agent-action-allowlist-ux_signoff_agentpy--done" id="toc-p7--cua-agent-action-allowlist-ux_signoff_agentpy--done">P7 —
+CUA agent action allowlist (ux_signoff_agent.py) — DONE</a></li>
+<li><a href="#p5--temp-unlink-error-visibility-dispatcherpy--done" id="toc-p5--temp-unlink-error-visibility-dispatcherpy--done">P5 —
+Temp-unlink error visibility (dispatcher.py) — DONE</a></li>
+<li><a href="#codex-review-reliability-environment-note" id="toc-codex-review-reliability-environment-note">Codex review
+reliability (environment note)</a></li>
+<li><a href="#p4--watermark-json-coercion-on-load-watermark_toolpy--done-schema-adapted" id="toc-p4--watermark-json-coercion-on-load-watermark_toolpy--done-schema-adapted">P4
+— Watermark JSON coercion on load (watermark_tool.py) — DONE
+(schema-adapted)</a></li>
+<li><a href="#p2--ipc-socket-user-isolation-single_instancepy--done" id="toc-p2--ipc-socket-user-isolation-single_instancepy--done">P2 — IPC
+socket user-isolation (single_instance.py) — DONE</a></li>
+<li><a href="#p3--absolute-subprocess-binary-paths--done-with-one-documented-deviation" id="toc-p3--absolute-subprocess-binary-paths--done-with-one-documented-deviation">P3
+— Absolute subprocess binary paths — DONE (with one documented
+deviation)</a></li>
+<li><a href="#p6--release-logging-level-mainpy--done" id="toc-p6--release-logging-level-mainpy--done">P6 — Release logging
+level (main.py) — DONE</a></li>
+</ul></li>
+</ul></li>
+</ul>
+</nav>
+<h1 id="implementation-notes--security-patch-work">Implementation Notes
+— Security Patch Work</h1>
+<p>Running log of decisions, deviations from the spec, and tradeoffs
+while patching the F1–F9 findings per
+<code>patch-weaknesses-found-in-immutable-knuth.md</code>.</p>
+<h2 id="environment-facts-discovered-not-in-spec">Environment facts
+(discovered, not in spec)</h2>
+<ul>
+<li><strong>There is no <code>pyproject.toml</code></strong> in the
+repo, despite CLAUDE.md §3.1 referencing one. No
+<code>pytest.ini</code>/<code>setup.cfg</code>/<code>tox.ini</code>
+either. Tests run from the repo root via
+<code>python -m pytest test_scripts/</code>;
+<code>test_scripts/conftest.py</code> handles <code>sys.path</code> and
+forces <code>QT_QPA_PLATFORM=offscreen</code>. So &quot;ruff config in
+pyproject.toml&quot; does not exist — I run <code>python -m ruff check</code>
+with defaults.</li>
+<li><strong>Two Python environments.</strong> The project
+<code>.venv</code> (Python 3.10.0) has only the core stack (PyMuPDF
+1.27.1, PySide6) and is missing <code>pytest</code>, <code>surya</code>,
+<code>torch</code>, <code>pywin32</code>. The <strong>global</strong>
+Python 3.10.0
+(<code>C:\Users\jiang\AppData\Local\Programs\Python\Python310</code>)
+has the full stack: pytest, fitz (PyMuPDF 1.25.5), PySide6 6.9.2, Pillow
+12.1.1, surya, torch, transformers 4.57.6, win32print. <strong>The test
+suite runs under the global Python</strong>, so all commands below use
+bare <code>python -m pytest</code> (global), not the venv.</li>
+<li>Global Pillow is already 12.1.1, so the P8 floor bump
+(<code>Pillow&gt;=12.1.1</code>) is already satisfied at runtime here —
+the patch only raises the declared floor.</li>
+<li>1184 tests collected under <code>test_scripts/</code>.</li>
+<li>ruff 0.15.9 available in global Python; used as
+<code>python -m ruff check</code>.</li>
+</ul>
+<h2 id="workflow-per-patch-claudemd-51-red-light-first">Workflow per
+patch (CLAUDE.md §5.1 Red-Light first)</h2>
+<ol type="1">
+<li>Write new failing test(s) in <code>test_scripts/</code> (never edit
+existing tests — boundary).</li>
+<li>Run new test, confirm Red.</li>
+<li>Implement patch.</li>
+<li>Run new test + relevant existing tests, confirm Green.</li>
+<li><code>ruff check</code> on touched files.</li>
+<li>Atomic commit.</li>
+<li>Run <code>codex:review</code> (and/or
+<code>codex:adversarial-review</code>) on the commit; record the verdict
+here; select the next step from it.</li>
+</ol>
+<h2 id="execution-order-from-spec">Execution order (from spec)</h2>
+<p>P6 → P3 → P2 → P4 → P5 → P7 → P1 → P8</p>
+<h2 id="baseline-test-run-before-any-patch-global-python">Baseline test
+run (BEFORE any patch, global Python)</h2>
+<p><code>python -m pytest test_scripts/</code> → <strong>7 failed, 1156
+passed, 21 skipped</strong> (184 s).</p>
+<p>The 7 failures are ALL pre-existing and unrelated to the security
+work — every one is in
+<code>test_scripts/test_no_jump_editor_geometry.py</code> (click-to-edit
+geometry / textbox-reopen-shrink pipeline). They fail on the pristine
+tree before I touched anything. I do not edit these (boundary: new tests
+only), and they are not in the F1–F9 scope. The success criterion I hold
+myself to: <strong>no new failures beyond these 7</strong>, and the
+security-relevant suites stay green.</p>
+<p>Pre-existing failures to ignore as regressions:</p>
+<ul>
+<li>test_no_jump_editor_geometry.py::test_click_to_edit_real_geometry_pipeline</li>
+<li>test_no_jump_editor_geometry.py::test_click_to_edit_qtest_integration[colored/complexed/vertical]</li>
+<li>test_no_jump_editor_geometry.py::test_reopen_same_textbox_cycles_do_not_cumulate_shrink[colored/complexed/vertical]</li>
+</ul>
+<h2 id="final-verification-after-all-9-commits">FINAL VERIFICATION
+(after all 9 commits)</h2>
+<p>Full suite: <code>python -m pytest test_scripts/</code> → <strong>8
+failed, 1189 passed, 21 skipped</strong>.</p>
+<ul>
+<li>7 failures = the recorded pre-existing baseline
+(<code>test_no_jump_editor_geometry.py</code>), untouched by this
+work.</li>
+<li>1 failure =
+<code>test_print_subprocess_runner.py::test_runner_heartbeat_events_prevent_false_stall</code>,
+which <strong>passes in isolation</strong> (re-ran alone → 1 passed).
+This is the timing-sensitive flake already documented in TODOS.md line
+~107 (&quot;can fail during long pytest runs … passes when run alone&quot;); none
+of my patches touch <code>subprocess_runner.py</code>.</li>
+<li><strong>Net: zero new persistent failures vs baseline.</strong> All
+34 new security tests pass.</li>
+<li><code>ruff check</code> clean on every touched source file and every
+new test file. The only ruff hits in the repo are 2 pre-existing
+violations in <code>scripts/ux_signoff_agent.py</code> (F401 @35, E401
+@481) that predate and are outside my edits.</li>
+</ul>
+<p>Commits (atomic, one per patch + one regression fix), oldest→newest:
+P6 → P3 → P2 → P4 → P5 → P7 → P1 → (P1 OCR follow-up) → P8. Each got a
+<code>codex:review</code> (P1 also a
+<code>codex:adversarial-review</code>, verdict: approve/Ship). Codex
+verdicts were clean or inconclusive (sandbox flakiness, see note above);
+no codex finding required a change. The real correctness gate was the
+test suite + ruff.</p>
+<h2 id="decisions--deviations">Decisions / deviations</h2>
+<h3 id="p8--raise-pillow-floor-optional-requirementstxt--done">P8 —
+Raise Pillow floor (optional-requirements.txt) — DONE</h3>
+<ul>
+<li><code>Pillow&gt;=9.0</code> → <code>Pillow&gt;=12.1.1</code> with
+the pip-audit comment block.</li>
+<li>Did NOT touch <code>surya-ocr</code>/<code>torch</code> floors — per
+spec, the transformers CVE fix needs confirming which surya release pins
+<code>transformers&gt;=5.0.0rc3</code> without breaking the OCR adapter
+API. Logged as an open item in TODOS.md along with the pip-audit CI gate
+and F9 (pin/verify OCR weights).</li>
+<li>Added a new locking test
+(<code>test_security_pillow_floor.py</code>) that parses
+optional-requirements.txt and asserts the Pillow floor ≥ 12.1.1, so the
+floor can&#39;t be silently lowered later. (Runtime Pillow here is already
+12.1.1, so this is a spec/floor regression guard, not a runtime
+check.)</li>
+</ul>
+<h3 id="p1--pdf-resource-guards-pdf_modelpy-ocr_toolpy--done">P1 — PDF
+resource guards (pdf_model.py, ocr_tool.py) — DONE</h3>
+<ul>
+<li>Added module consts <code>_MAX_PDF_BYTES=512MB</code>,
+<code>_MAX_PAGES=5000</code>, <code>_MAX_PIXMAP_PX=40M</code> and
+helpers <code>_guard_before_open(path)</code> /
+<code>_safe_render_scale(page, scale)</code> in pdf_model.py (after the
+optimizer re-exports).</li>
+<li><code>open_pdf</code>: size guard
+<code>_guard_before_open(src_path)</code> placed right after the
+<code>is_file()</code> check and BEFORE the
+append/<code>close_all_sessions</code> block, so an oversized file is
+rejected without first tearing down the user&#39;s open sessions. Page-count
+guard placed after the password-auth block and before the len==0
+fallback; it <code>doc.close()</code>es then raises.</li>
+<li><strong>Exception-type note:</strong> <code>open_pdf</code> wraps
+every non-<code>PermissionError</code> in
+<code>RuntimeError(&quot;開啟PDF失敗: …&quot;)</code>. So although the guards
+raise <code>ValueError</code>, callers of <code>open_pdf</code> see
+<code>RuntimeError</code> with the original message embedded. I
+deliberately did NOT add an <code>except ValueError: raise</code>
+shortcut — that would also change the long-standing wrapping of the
+existing line-642 <code>ValueError</code>/<code>FileNotFoundError</code>
+paths and risk other callers. The new tests therefore assert on the
+message substring (&quot;size limit&quot; / &quot;page limit&quot;) rather than the exact
+type, and unit-test the helpers directly for the clean
+<code>ValueError</code>/scale math.</li>
+<li>Raster clamps applied at the spec&#39;s named sites only — export
+(<code>get_page_pixmap</code> call), deskew gray-array
+(<code>_render_page_gray_array</code>), straighten
+(<code>straighten_page</code>), and the OCR loop
+(<code>ocr_tool.ocr_pages</code>, via a local
+<code>from model.pdf_model import _safe_render_scale</code> to dodge an
+import cycle). I did NOT clamp centrally inside
+<code>get_page_pixmap</code>/<code>render_page_pixmap</code>, to avoid
+perturbing the ~30 render tests; for normal pages
+<code>_safe_render_scale</code> is a no-op so behaviour is unchanged
+(verified deskew/render/ocr/export/merge/optimize suites: 60 passed, 4
+skipped).</li>
+<li><strong>Did NOT add a recursion cap</strong> to
+<code>_discover_form_nested_invocations</code> — the spec and
+investigation-review.md both confirm it is depth-1 (not recursive), so
+the CWE-674 sub-claim does not apply.</li>
+<li><strong>0.1-floor tradeoff:</strong> <code>_safe_render_scale</code>
+keeps a <code>max(0.1, scale)</code> floor per the spec, so an extreme
+page (≈1e6 pt/side) still renders above the 40 MP cap at scale 0.1.
+Accepted: scaling below 0.1 yields a useless render, and such pages are
+exotic. Documented in the helper&#39;s docstring and tested
+(<code>floors_at_min</code>).</li>
+<li><strong>TDD-order slip (transparency):</strong> for P1 I wrote the
+implementation before the test file, then retroactively confirmed Red by
+<code>git stash</code>-ing only the two impl files (the new test is
+untracked, so it stayed) — collection ERROR&#39;d because the helpers didn&#39;t
+exist — then <code>git stash pop</code> and confirmed Green (8 passed).
+The Red→Green evidence is genuine; the authoring order just wasn&#39;t
+test-first for this one patch.</li>
+</ul>
+<h3 id="p1-follow-up--ocr-clamp-regression-fix">P1 follow-up — OCR clamp
+regression fix</h3>
+<ul>
+<li>The full-suite run after P1 surfaced <strong>8 new
+failures</strong>, all in
+<code>test_ocr_tool_surya.py::test_ocr_pages_*</code>. Cause: the OCR
+clamp did <code>self._model.doc[page_num - 1]</code>, but that test&#39;s
+<code>_FakeDoc</code> implements only
+<code>__len__</code>/<code>__bool__</code>, not <code>__getitem__</code>
+→ <code>TypeError: not subscriptable</code>. A real fitz document is
+always subscriptable, so this only affected the mock.</li>
+<li>Fix (could not edit the test — boundary): wrapped the page lookup in
+<code>try/except (TypeError, IndexError, AttributeError)</code> and fall
+back to the requested <code>render_scale</code> when geometry can&#39;t be
+introspected. Real attacker PDFs still hit the clamp; mocks degrade
+cleanly. Re-ran: <code>test_ocr_tool_surya.py</code> +
+<code>test_security_pdf_resource_guards.py</code> = 28 passed.</li>
+<li>Lesson logged: a guard that introspects the live document object
+must tolerate the test doubles already in the suite. I should have run
+the OCR suite (not just the guard + render/deskew suites) before
+committing P1.</li>
+</ul>
+<h3 id="p7--cua-agent-action-allowlist-ux_signoff_agentpy--done">P7 —
+CUA agent action allowlist (ux_signoff_agent.py) — DONE</h3>
+<ul>
+<li>Added module
+<code>_ALLOWED_CUA_ACTIONS = frozenset({&quot;click&quot;,&quot;double_click&quot;,&quot;scroll&quot;, &quot;move&quot;,&quot;screenshot&quot;})</code>
+and a guard at the top of <code>_execute_cua_action</code> that raises
+<code>PermissionError</code> for any other type. This makes the existing
+<code>type</code>/<code>key</code> branches unreachable by design (that
+is the F3 fix — block keyboard-driving actions).</li>
+<li>No existing test calls <code>_execute_cua_action</code> (they mock
+<code>_run_agent_on_pdf</code>), so blocking
+<code>type</code>/<code>key</code> breaks nothing.
+<code>test_ux_signoff_agent.py</code> still passes.</li>
+<li>Pre-existing ruff violations in this file (F401
+<code>PIL.Image</code> unused @ line 35, E401 multiple imports @ line
+481) are untouched by my edit (~line 198) and are part of the repo&#39;s
+tracked existing-violation set; my added lines are ruff-clean. Did NOT
+fix them — out of scope for the security patch, keeps the commit
+focused.</li>
+<li>I did NOT add the optional window-bounds geometry check from the F3
+remediation example (<code>window_rect.contains(...)</code>). The spec&#39;s
+P7 scope is the action-type allowlist only; bounds-checking needs a
+window-rect plumbed into the call, which is a larger dev-harness change
+beyond the agreed patch. Allowlist alone closes the keyboard-injection
+vector, which is the material risk.</li>
+</ul>
+<h3 id="p5--temp-unlink-error-visibility-dispatcherpy--done">P5 —
+Temp-unlink error visibility (dispatcher.py) — DONE</h3>
+<ul>
+<li>Added module <code>logger</code>; the <code>print_pdf_bytes</code>
+finally-block <code>except Exception: pass</code> now logs at debug
+(<code>logger.debug(&quot;Failed to remove print temp file %s: %s&quot;, ...)</code>).
+Still catches broadly so cleanup failure never masks the print
+result.</li>
+<li>Test note: the test patches <code>Path.unlink</code> to raise
+<code>PermissionError</code>, asserts the result still returns and a
+debug record is emitted, then deletes the leaked temp file via
+<code>os.unlink</code> (the real unlink, not the patched one) so no junk
+is left in the system temp dir.</li>
+</ul>
+<h3 id="codex-review-reliability-environment-note">Codex review
+reliability (environment note)</h3>
+<ul>
+<li>The codex companion review runs codex in a sandbox that shells out
+to PowerShell; on this Windows box those git/PowerShell sandbox commands
+intermittently fail (&quot;Command failed/declined&quot;, and once &quot;sandbox failed
+to start&quot;). P6/P3/P2 returned clean verdicts anyway; P4&#39;s review was
+inconclusive (&quot;couldn&#39;t reliably inspect the diff&quot;). Treating codex
+verdicts as a secondary signal — the primary gate is the new
+<ul>
+<li>existing pytest suite (compared against the recorded 7-failure
+baseline) plus <code>ruff check</code>. I run a codex review per commit
+regardless and will push for a solid adversarial review on the largest
+patch (P1).</li>
+</ul></li>
+</ul>
+<h3 id="p4--watermark-json-coercion-on-load-watermark_toolpy--done-schema-adapted">P4
+— Watermark JSON coercion on load (watermark_tool.py) — DONE
+(schema-adapted)</h3>
+<ul>
+<li>Added module-level <code>_WM_TEXT_MAX=5000</code>,
+<code>_WM_PAGES_MAX=10000</code>, and <code>_coerce_wm(wm)</code>;
+rewrote the <code>_load_watermarks_from_doc</code> append loop to drop
+non-dicts and run each entry through <code>_coerce_wm</code>.</li>
+<li><strong>Deviation from spec snippet:</strong> the spec&#39;s
+<code>_coerce_wm</code> carried a <code>font_color_name</code> key and
+defaulted <code>font</code> to <code>&quot;&quot;</code>. The real watermark
+schema (from <code>add_watermark</code>) has NO
+<code>font_color_name</code>, and the renderer
+(<code>watermark_rendering.py</code>) never reads it; it reads
+text/angle/opacity/font_size/color/font/offset_x/offset_y/line_spacing/pages.
+So I adapted coercion to the actual schema: dropped
+<code>font_color_name</code>, defaulted <code>font</code> to
+<code>&quot;helv&quot;</code> (matching <code>add_watermark</code>), and preserved
+<code>offset_x/offset_y/ line_spacing</code> (float) and
+<code>color</code> (tuple) when present. This keeps full round-trip
+fidelity — verified <code>test_feature_conflict.py</code>&#39;s
+save→reopen→get_watermarks C6 case still passes.</li>
+<li>Kept the <code>isinstance(wm, dict)</code> guard before coercion:
+<code>_coerce_wm</code> uses <code>wm.get(...)</code>, which would raise
+<code>AttributeError</code> (uncaught inside the helper) on a list/str
+entry and abort the whole load via the outer except. The guard makes bad
+entries skip cleanly.</li>
+</ul>
+<h3 id="p2--ipc-socket-user-isolation-single_instancepy--done">P2 — IPC
+socket user-isolation (single_instance.py) — DONE</h3>
+<ul>
+<li><code>_listen_server</code>:
+<code>server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)</code>
+before <code>listen()</code>. Verified the scoped enum +
+<code>socketOptions()</code> membership test on PySide6 6.9.2
+(<code>SocketOption.UserAccessOption</code> value 1).</li>
+<li>Added <code>_forwarded_argv_is_acceptable(argv)</code> and gated the
+<code>on_message</code> call in <code>_handle_socket_message</code> on
+it. Rejects (ack <code>0</code>) any message where an <em>absolute</em>
+item is missing or not <code>.pdf</code>. Followed the spec&#39;s
+&quot;absolute-only&quot; rule rather than the inline <code>write/return</code>,
+folding the reject into the existing single-ack path so the disconnect
+flow stays intact.</li>
+<li>Design note: validation lives in <code>_handle_socket_message</code>
+(the cross-process socket boundary), NOT in
+<code>send_to_running_instance</code>&#39;s in-process shortcut. That
+shortcut is same-process (trusted) and is what the existing forwarding
+tests exercise — which is why
+<code>test_single_instance_forwarding.py</code> (forwards relative
+<code>x.pdf</code>) still passes: it never crosses the socket. The real
+untrusted peer always hits the validated path.</li>
+</ul>
+<h3 id="p3--absolute-subprocess-binary-paths--done-with-one-documented-deviation">P3
+— Absolute subprocess binary paths — DONE (with one documented
+deviation)</h3>
+<ul>
+<li><strong>win_driver.py:</strong> added <code>import os</code> +
+module constant
+<code>_RUNDLL32 = os.path.join(os.environ.get(&quot;SystemRoot&quot;, r&quot;C:\Windows&quot;), &quot;System32&quot;, &quot;rundll32.exe&quot;)</code>,
+evaluated once at import; the <code>open_printer_properties</code>
+fallback now launches <code>[_RUNDLL32, ...]</code>. Full fix per
+spec.</li>
+<li><strong>linux_driver.py:</strong> the two <code>lpstat</code> sites
+(<code>list_printers</code>, <code>get_default_printer</code>) now
+capture <code>lpstat_path = shutil.which(&quot;lpstat&quot;)</code> and pass it to
+<code>subprocess.run</code>.</li>
+<li><strong>DEVIATION (important):</strong> the spec also wanted
+<code>_submit_via_lp</code> changed to use the absolute
+<code>shutil.which(&quot;lp&quot;)</code> path. I did <strong>NOT</strong> make
+that change. The existing test
+<code>test_linux_driver_overrides.py::test_submit_via_lp_omits_hardware_options_when_not_overridden</code>
+asserts
+<code>captured_cmd[:5] == [&quot;lp&quot;, &quot;-n&quot;, &quot;3&quot;, &quot;-d&quot;, &quot;Printer A&quot;]</code> —
+it pins the bare <code>&quot;lp&quot;</code> token, and its fake
+<code>which</code> returns <code>/usr/bin/lp</code>. Switching the call
+site to the absolute path makes <code>cmd[0] == &quot;/usr/bin/lp&quot;</code>,
+which would break that test. The boundary forbids editing current tests,
+and &quot;all current tests pass&quot; is a hard requirement, so the two
+constraints make the <code>_submit_via_lp</code> fix impossible without
+violating one of them. <strong>Tradeoff:</strong>
+<code>_submit_via_lp</code> keeps bare <code>&quot;lp&quot;</code>. Residual risk
+is Low (per investigation-review.md: <code>/usr/bin</code> is not
+user-writable by default and CWD is not on <code>$PATH</code>, so Linux
+<code>execvp</code> planting is not a practical vector). The
+<code>lpstat</code> sites and the Windows <code>rundll32</code> site —
+the higher-value surfaces — are fully fixed. <strong>If you want
+<code>_submit_via_lp</code> hardened too, the existing test must be
+amended (out of my boundary), so flag it and I&#39;ll do it.</strong></li>
+<li>There is no <code>lpoptions</code> call in the codebase (spec
+mentioned one &quot;if present&quot;).</li>
+</ul>
+<h3 id="p6--release-logging-level-mainpy--done">P6 — Release logging
+level (main.py) — DONE</h3>
+<ul>
+<li>Implemented exactly per spec:
+<code>level = DEBUG if os.environ.get(&quot;PDF_EDITOR_DEBUG&quot;) else WARNING</code>.</li>
+<li>Test note: <code>logging.basicConfig</code> is a no-op when the root
+logger already has handlers, and pytest installs its own. The new test
+(<code>test_security_logging_level.py</code>) detaches root handlers in
+a context manager, calls <code>_configure_logging()</code>, asserts
+<code>root.level</code>, then restores the saved handlers/level so
+pytest&#39;s log capture for other tests is unaffected.</li>
+<li>Dropped the usual <code>sys.path.insert</code> boilerplate from the
+new test — <code>conftest.py</code> already puts the repo root on
+<code>sys.path</code>, and keeping the manual block tripped ruff E402.
+New test passes <code>ruff check</code> clean.</li>
+<li>Commit staging policy: each patch commit includes only its
+source/test files plus this notes file. The untracked planning docs
+(<code>*.md</code>) and scan artifacts (<code>bandit-report.json</code>,
+<code>semgrep-report.json</code>, <code>baseline_test_run.log</code>)
+are left unstaged — they are inputs/artifacts, not part of the
+patch.</li>
+</ul>
+</body>
+</html>
