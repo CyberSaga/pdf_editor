@@ -11,6 +11,7 @@ from .ocr_types import (
     OcrLanguage,
     OcrSpan,
 )
+from .ocr_weights import enforce_weights_policy
 
 if TYPE_CHECKING:
     from model.pdf_model import PDFModel
@@ -131,6 +132,11 @@ class _SuryaAdapter:
             self._detector, self._recognizer = cached
             self._resolved_device = torch_device
             return
+        # F9 (CWE-494): pin the weight revision and, when a local bundle is
+        # configured, SHA256-verify it and force offline loading — all BEFORE any
+        # surya import constructs a predictor that would fetch unverified weights.
+        # OcrWeightsError propagates and refuses the load on a hash mismatch.
+        enforce_weights_policy()
         logger.info("Initializing Surya predictors on device=%s", torch_device)
         try:
             detection_mod = importlib.import_module("surya.detection")

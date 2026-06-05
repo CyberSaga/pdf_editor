@@ -287,6 +287,37 @@ the real gate.
     gate fail on optional-requirements.txt. The split confines the unavoidable OCR
     residual to an opt-in file while keeping the audited core set clean.
 
+### Task 3 — F9 OCR weight revision pin + SHA256 verification — DONE
+- New module `model/tools/ocr_weights.py` (model layer, no Qt). Read surya's loader
+  to design it correctly: surya checkpoints are env-configurable pydantic
+  `BaseSettings` fields (`DETECTOR_MODEL_CHECKPOINT`, `FOUNDATION_MODEL_CHECKPOINT`,
+  `RECOGNITION_MODEL_CHECKPOINT`), the download path (`surya.common.s3`) does **no**
+  hash check, and a non-`s3://` checkpoint string loads from a **local dir** via
+  `super().from_pretrained`. `surya/__init__.py` is empty and importing `surya` does
+  not import `surya.settings`, so setting env vars before the lazy surya import (in
+  `_ensure_loaded`) is sufficient; I also patch a live settings object defensively.
+- `enforce_weights_policy()`:
+  - No bundle: pins the checkpoint revisions (online but revision-locked).
+  - Bundle (`PDF_EDITOR_OCR_WEIGHTS_DIR`): `verify_weights_dir` SHA256-checks every
+    file in `WEIGHTS_MANIFEST`, redirects checkpoints to the bundle's local subdirs,
+    and forces `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE`. **Fails closed**: missing file,
+    hash mismatch, or empty manifest → `OcrWeightsError` (load refused).
+- Wired into `_SuryaAdapter._ensure_loaded` right after the predictor-cache check and
+  **before** the surya import, so unverified weights are never constructed.
+- **Red-Light first:** wrote `test_security_ocr_weights.py` (13 tests) first; the
+  adapter-wiring test failed Red (`ocr_tool` had no `enforce_weights_policy`), the 12
+  pure tests passed; then added the import + call → 33 passed (incl. all existing
+  `test_ocr_tool_surya.py`). ruff clean.
+- **Scope decision (matches the task's fallback):** the verification *layer* + revision
+  *pin* are implemented and tested. The actual weights **bundle artifact** is not
+  shipped (large binaries, needs a vetted offline build), so `WEIGHTS_MANIFEST` is empty
+  and a configured-but-unmanifested bundle fails closed. Recorded as the open "F9 bundle
+  distribution" TODO; update process documented in `docs/ocr-weights-verification.md`.
+- **Interpretation note:** "hash matches → loading allowed" is asserted at the policy
+  layer (`enforce_weights_policy` returns local checkpoints + offline flags without
+  raising). A full end-to-end model load with real weights is infeasible in CI, so the
+  test asserts the policy permits the load rather than running inference.
+
 ### P6 — Release logging level (main.py) — DONE
 - Implemented exactly per spec: `level = DEBUG if os.environ.get("PDF_EDITOR_DEBUG") else WARNING`.
 - Test note: `logging.basicConfig` is a no-op when the root logger already has

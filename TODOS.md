@@ -58,9 +58,15 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
   ships `pillow>=12.2` support and a transformers floor in the 5.x line, merge
   `ocr-requirements.txt` back and drop the residual-risk note. Track upstream surya.
 - [ ] **`pip-audit` CI gate** — to be added in `.github/workflows/` (Task 4).
-- [ ] **F9 — pin/verify OCR model weights** — revision pin + SHA256 verification layer
-  (Task 3); offline `/bundled` directory loading. Bundle *distribution* infra (shipping
-  the weights file with a published hash) remains a packaging TODO.
+- [x] **F9 — pin/verify OCR model weights** — DONE (Task 3): `model/tools/ocr_weights.py`
+  pins the surya checkpoint revisions, supports offline loading from a local bundle
+  (`PDF_EDITOR_OCR_WEIGHTS_DIR`), and SHA256-verifies bundle files before load (refuses
+  on mismatch, fails closed on an empty manifest). Wired into `_SuryaAdapter._ensure_loaded`.
+  Process documented in `docs/ocr-weights-verification.md`.
+- [ ] **F9 bundle distribution** — ship a vetted weights bundle and populate
+  `WEIGHTS_MANIFEST` with its published SHA256 digests so `PDF_EDITOR_OCR_WEIGHTS_DIR`
+  works out of the box (the verification layer is ready; only the bundled artifact +
+  digests are missing). See `docs/ocr-weights-verification.md` for the update process.
 
 ## Done (2026-06-01) -- Four Windows printing defects + review-finding follow-ups
 
