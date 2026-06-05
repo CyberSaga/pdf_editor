@@ -258,6 +258,35 @@ the real gate.
   or subprocess"`) = 90 passed. ruff clean on changed lines (the 2 E402 in
   test_linux_driver_overrides.py pre-date this work — confirmed via `git stash`).
 
+### Task 2 — surya-ocr / transformers floor — BLOCKED (do not bump) + Pillow reconcile
+- **Investigated, then BLOCKED the transformers 5.x bump.** Pulled every relevant
+  surya-ocr release's `requires_dist` from PyPI. No surya-ocr release (through latest
+  0.20.0) *requires* `transformers>=5.0.0rc3`; the newest only allow it via unbounded
+  `>=4.56.1`, and releases ≤0.16 actively excluded 5.x. pip-audit confirms the two
+  transformers CVEs: `CVE-2026-1839` (fix only in 5.0.0rc3+) and `PYSEC-2025-217`
+  (**no fix exists**). Bumping would be an untested surya×transformers-5 combination
+  and still wouldn't close PYSEC-2025-217. Full matrix + reasoning recorded in TODOS.md
+  per the task's "if incompatible/unconfirmable → don't change, record matrix" branch.
+- **Discovered + fixed a P8 regression:** the P8 `Pillow>=12.1.1` floor was placed in
+  optional-requirements.txt *next to* surya-ocr, but every surya release caps
+  `pillow<11` → the file was **unsatisfiable** (`pip install -r optional-requirements.txt`
+  could not resolve). pip-audit also shows Pillow 12.1.1 now has CVEs fixed in 12.2.0.
+  - **Reconciliation (deviation from the original single-file layout):** split the OCR
+    extra into a new mutually-exclusive `ocr-requirements.txt` (surya-ocr + torch, with
+    a security header documenting the pillow<11 + transformers-CVE residual). Raised the
+    *core* image-feature Pillow floor to `>=12.2.0` in optional-requirements.txt
+    (deskew/straighten/optimize use Pillow directly, independent of OCR). This makes
+    each file individually satisfiable and lets non-OCR users get a secured Pillow.
+  - Updated my own P8 test `test_security_pillow_floor.py` (floor→12.2.0 + a separation
+    assertion that surya-ocr is NOT in optional-requirements.txt) and added
+    `test_security_ocr_requirements.py` (surya-ocr present in the OCR file; transformers
+    not pinned ≥5). 5 passed, ruff clean. No existing tests edited.
+  - **Why a file split rather than just lowering the floor:** keeping surya + a secured
+    Pillow in one file is mathematically impossible (`<11` vs `>=12.2`). Lowering Pillow
+    back below 11 would reintroduce the image-parser CVEs *and* make the Task 4 pip-audit
+    gate fail on optional-requirements.txt. The split confines the unavoidable OCR
+    residual to an opt-in file while keeping the audited core set clean.
+
 ### P6 — Release logging level (main.py) — DONE
 - Implemented exactly per spec: `level = DEBUG if os.environ.get("PDF_EDITOR_DEBUG") else WARNING`.
 - Test note: `logging.basicConfig` is a no-op when the root logger already has

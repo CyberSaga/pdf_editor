@@ -1,0 +1,27 @@
+# OCR feature dependencies (model/tools/ocr_tool.py) — OPTIONAL and SEPARATE.
+# Install with: pip install -r ocr-requirements.txt
+#
+# ⚠ SECURITY TRADEOFF (finding F2 / F9, pip-audit). surya-ocr transitively forces:
+#
+#   * pillow<11,>=10.2.0  — every published surya-ocr release (0.1 … 0.20.0) caps
+#     Pillow below 11. It therefore CANNOT take the secured Pillow>=12.2.0 floor in
+#     optional-requirements.txt; an OCR install resolves Pillow to the 10.x line,
+#     which still carries the image-parser CVEs (no fix exists in the 10.x series).
+#
+#   * transformers>=4.56.1 (unbounded upper) — resolves to 4.57.x, which carries:
+#       - CVE-2026-1839     fixed only in transformers 5.0.0rc3+. NO surya-ocr
+#                           release requires or has been validated against 5.x
+#                           (latest 0.20.0 still declares >=4.56.1, and releases
+#                           up to 0.16 actively excluded 5.x via `<5.0.0`).
+#       - PYSEC-2025-217    NO fixed version available upstream at all.
+#     A blind bump to transformers>=5.0.0rc3 would be an untested major-version
+#     combination with surya and is intentionally NOT done. See Task 2 / TODOS.md.
+#
+# Installing this file (a) downgrades Pillow into a vulnerable range and (b) pulls a
+# transformers with known, upstream-blocked CVEs. Install ONLY in an isolated /
+# offline OCR environment, NOT alongside optional-requirements.txt. Revisit when
+# surya-ocr relaxes its pillow cap and validates transformers 5.x (tracking item in
+# TODOS.md "Security dependency hygiene").
+
+surya-ocr>=0.6
+torch>=2.1  # optional but strongly recommended for GPU acceleration

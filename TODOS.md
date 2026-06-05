@@ -1,21 +1,66 @@
 # TODOS
 
-## Open -- Security dependency hygiene (from F2/F9 patch work, 2026-06-03)
+## Open -- Security dependency hygiene (from F2/F9 patch work; updated 2026-06-05)
 
-Shipped in the security patch series: `Pillow>=12.1.1` floor (closes 5 image-parser
-CVEs); see `implementation-notes.md` for the full F1–F9 patch log. Remaining open
-items deliberately deferred:
+See `implementation-notes.md` for the full F1–F9 patch log. Status of the follow-up
+investigation (Task 2 of the follow-up series):
 
-- [ ] **Raise the `surya-ocr` floor to pull a patched `transformers`.** pip-audit
-  flagged 2 CVEs in `transformers 4.57.6` (pulled transitively by `surya-ocr`); the
-  fix is `transformers>=5.0.0rc3`. Do NOT bump blindly — first confirm which
-  `surya-ocr` release pins `transformers>=5.0.0rc3` and that it keeps the
-  predictor/`TaskNames` API the OCR adapter relies on (`model/tools/ocr_tool.py`).
-- [ ] **Add a `pip-audit` CI gate.** Run
-  `pip-audit -r requirements.txt -r optional-requirements.txt` and fail on advisories.
-  (Not set up here — no CI infra in-repo; this is a process/infra task.)
-- [ ] **F9 — pin/verify OCR model weights.** Surya fetches weights from a hub at
-  first run with no pinned revision/hash; add an offline/bundled, hash-verified path.
+### BLOCKED — transformers CVE cannot be fixed via a surya-ocr bump (investigated 2026-06-05)
+
+pip-audit on the global env flags two advisories in `transformers 4.57.6`:
+
+| advisory          | fixed in        | notes                                        |
+|-------------------|-----------------|----------------------------------------------|
+| CVE-2026-1839     | `5.0.0rc3`      | fix lives only in the transformers 5.x line  |
+| PYSEC-2025-217    | *(none)*        | **no fixed version exists upstream**         |
+
+`transformers` is pulled **transitively by `surya-ocr`**. I checked every relevant
+surya-ocr release's declared constraints (PyPI `requires_dist`):
+
+| surya-ocr | pillow              | transformers                |
+|-----------|---------------------|-----------------------------|
+| 0.20.0 (latest) | `<11,>=10.2.0`| `>=4.56.1` (unbounded upper)|
+| 0.17.1 (installed) | `<11,>=10.2.0` | `>=4.56.1` (unbounded upper)|
+| 0.16.0    | `<11,>=10.2.0`      | `<4.54.0,>=4.51.2`          |
+| 0.13.0 … 0.5.0 | `<11,>=10.2.0` | `<5.0.0,>=4.41.0`           |
+| 0.4.0     | `<11,>=10.2.0`      | `==4.36.2`                  |
+
+**Conclusion: do NOT bump.** Reasons:
+1. **No surya-ocr release requires `transformers>=5.0.0rc3`.** The newest (0.17.1,
+   0.20.0) only *allow* it via an unbounded `>=4.56.1`; every release ≤0.16 actively
+   *excluded* 5.x (`<5.0.0` / `<4.54.0`). There is no surya release that pins or has
+   been validated against transformers 5.x.
+2. Forcing `transformers>=5.0.0rc3` onto surya 0.17.1 is an **untested major-version
+   combination** (transformers 5.0 is a breaking release; surya predates it). The OCR
+   adapter's own surface — `DetectionPredictor` / `RecognitionPredictor` /
+   `FoundationPredictor` / `TaskNames.ocr_without_boxes` — is a *surya* API and is
+   unaffected by the transformers version, but surya calls transformers internally,
+   so a 5.x break would surface as a runtime failure inside recognition.
+3. `PYSEC-2025-217` has **no fix at all**, so even a successful bump leaves one CVE open.
+
+### Pillow floor vs. surya-ocr — unsatisfiable; reconciled via file split (2026-06-05)
+
+The P8 patch set `Pillow>=12.1.1` in `optional-requirements.txt` **next to**
+`surya-ocr>=0.6`. But every surya-ocr release caps `pillow<11`, so that file was
+**unsatisfiable** — `pip install -r optional-requirements.txt` could not resolve.
+pip-audit also shows `Pillow 12.1.1` itself now has CVEs fixed in `12.2.0`.
+
+Reconciled: `surya-ocr` (+ `torch`) moved to a new mutually-exclusive
+**`ocr-requirements.txt`**; `optional-requirements.txt` now floors the *core* image
+features (deskew/straighten/optimize) at `Pillow>=12.2.0` (secured). The OCR extra
+is documented as carrying the vulnerable Pillow 10.x line + the transformers CVEs as
+an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
+`test_security_ocr_requirements.py`.
+
+### Remaining open items
+
+- [ ] **Revisit the OCR stack when surya-ocr relaxes its pins.** When a surya release
+  ships `pillow>=12.2` support and a transformers floor in the 5.x line, merge
+  `ocr-requirements.txt` back and drop the residual-risk note. Track upstream surya.
+- [ ] **`pip-audit` CI gate** — to be added in `.github/workflows/` (Task 4).
+- [ ] **F9 — pin/verify OCR model weights** — revision pin + SHA256 verification layer
+  (Task 3); offline `/bundled` directory loading. Bundle *distribution* infra (shipping
+  the weights file with a published hash) remains a packaging TODO.
 
 ## Done (2026-06-01) -- Four Windows printing defects + review-finding follow-ups
 
