@@ -1,3 +1,28 @@
+# Normalize all text files to LF in the repository (platform-native in the working
+# tree). This stops the CRLF<->LF "flip" churn that otherwise buries real changes
+# in whole-file diffs and wrecks `git blame`. Run a one-time `git add --renormalize .`
+# after changing this file.
+* text=auto
+
+# Binary files: never apply EOL conversion (would corrupt them).
+*.db    binary
+*.pdf   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.zip   binary
+*.gz    binary
+*.exe   binary
+*.dll   binary
+*.pyd   binary
+*.so    binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
+
 # Gate trust chain: byte-for-byte hash-pinned files MUST be LF on every OS.
 # completion_gate.py / gate_anchor.py read these with raw read_bytes(); a
 # Windows autocrlf CRLF checkout would change the bytes and break every pin.

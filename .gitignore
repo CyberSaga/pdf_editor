@@ -36,7 +36,21 @@ docs/prompts.md
 memory
 最佳化的PDF/
 
- 
+
 # Local Claude settings and generated vision outputs
 .claude/settings.local.json
 reflow/_vision_output/
+
+# Security scan outputs (regenerate via the scanner; not source)
+bandit-report.json
+semgrep-report.json
+security-scan-review.txt
+
+# Generated HTML/CSS renderings of the markdown docs (keep only the .md sources)
+TODOS.html
+implementation-notes.html
+weakness_patch*.html
+docs/readable-markdown.css
+
+# macOS
+.DS_Store
