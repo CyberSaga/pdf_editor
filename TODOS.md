@@ -73,6 +73,19 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
 - [ ] **Refresh build tooling** (`pip 21.2.3`, `setuptools 57.4.0`) in the `.venv` — old
   but not bundled into the exe, so low risk; update for build hygiene.
 
+### Repo governance / hygiene (recorded during code-review follow-up, 2026-06-05)
+
+- [ ] **Refresh the completion-gate hash pins + decide on settings.json.** The
+  `_PINNED_HASHES` entry for `scripts/ux_signoff_agent.py` in `completion_gate.py` is
+  stale (predates the F3/P7 edits) and the gate also fails because `.claude/settings.json`
+  is gitignored/untracked. If the gate is still in use, run `python scripts/completion_gate.py`
+  to regenerate pins and decide whether to track settings.json.
+- [ ] **(Optional) Consolidate authored security docs under `docs/`.** weakness_patch*.md,
+  investigation-review.md, security-investigate.md, patch-weaknesses-found-in-immutable-knuth.md
+  are authored reports left at repo root; consider moving them under `docs/`.
+- [ ] **(Optional) Reconcile CLAUDE.md s3.1 with reality.** It promises a `pyproject.toml`
+  + `pip install -e ".[dev]"` that doesn't exist; either add the pyproject or correct s3.1.
+
 ### Remaining open items
 
 - [ ] **Revisit the OCR stack when surya-ocr relaxes its pins.** When a surya release

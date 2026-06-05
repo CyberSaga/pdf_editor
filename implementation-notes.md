@@ -95,6 +95,54 @@ Follow-up commits (atomic, oldest->newest): 4bf981d (T1 lp), a39c751 (T2 transfo
 block + OCR split), ef21a90 (T3 F9 weights), 633e1c3 (T4 CI), 6540827 (T5 CUA bounds),
 8a2fe97 (T6 .venv audit).
 
+## Code-review follow-up patches (2026-06-05)
+
+Addressed the branch code-review findings (reviewability/hygiene + 2 low code points).
+Chores kept separate from functional changes per the review.
+
+- **EOL hygiene (Medium).** `core.autocrlf=true` + a partial `.gitattributes` left the
+  repo mixed-EOL (210 files CRLF-in-index); `19e4ccc` had flipped a couple to LF,
+  burying real changes. Fix: expanded `.gitattributes` to `* text=auto` + explicit
+  `binary` rules, preserving the existing completion-gate `eol=lf` pins; then a single
+  isolated `git add --renormalize .` commit (75 files, verified EOL-only via
+  `git diff --ignore-all-space` == empty, no binaries, none of the 8 hash-pinned gate
+  files touched).
+- **Artifact bloat (Medium).** `.gitignore`d + `git rm --cached` the tracked generated
+  outputs (bandit/semgrep JSON, security-scan-review.txt, the *.html renderings,
+  docs/readable-markdown.css) + added `.DS_Store`. **Kept** `.codegraph/graph.db`
+  tracked: CLAUDE.md s10 documents it as a committed, use-before-reading index, which
+  overrides the bloat concern. Left the authored analysis/spec `.md` docs tracked
+  (didn't author them; surfacing consolidation as an option rather than moving them).
+- **enforce_weights_policy env side effect (Low).** `_apply_settings` now writes into
+  the env mapping passed to `enforce_weights_policy` (os.environ in prod, a synthetic
+  dict in tests) instead of always `os.environ`. Added a regression test asserting
+  os.environ is untouched when a synthetic env is passed.
+- **requirements "better way" (Low).** The secured Pillow floor lived only in
+  optional-requirements.txt and numpy was undeclared, yet both back core image features
+  (deskew/straighten/optimize/rotated-preview, lazy-imported) and the build bundles
+  them. Moved `Pillow>=12.2.0` + `numpy>=1.21` into requirements.txt (the accurate
+  shipped manifest); optional-requirements.txt is now print backends + pytest. CI gate
+  re-verified clean with numpy added. This also closes the deployment gap where the
+  `.venv` lacked numpy.
+- **ruff nits (Low).** Cleared the 2 long-standing violations in ux_signoff_agent.py
+  (F401 unused `PIL.Image`, E401 combined import) -> file now ruff-clean.
+- **Completion-gate pin (surfaced, NOT changed).** ux_signoff_agent.py is in the
+  completion-gate hash-pin chain. Its pin in `completion_gate.py` was **already stale
+  before this work** (it matched neither the P7 nor the current bytes), and the gate
+  separately fails because `.claude/settings.json` is gitignored/untracked. Refreshing
+  the pins (`python scripts/completion_gate.py`) and deciding whether to track
+  settings.json is pre-existing gate maintenance, left to the repo owner. Recorded in
+  TODOS.md. My ruff-nit edit changes the (already-stale) hash further but introduces no
+  new breakage.
+- **Not done (out of scope / pre-existing, noted for the owner):** CLAUDE.md s3.1's
+  promised `pyproject.toml` still doesn't exist (CI uses requirements.txt instead);
+  codex review remained sandbox-inconclusive so no independent automated reviewer ran;
+  the authored security `.md` reports could be consolidated under docs/.
+
+Follow-up-review commits (oldest->newest): e0477b3 (.gitattributes+.gitignore+untrack),
+6b9c0b4 (EOL renormalize), f00e594 (env threading), d6ecf80 (ruff nits), e6e9be4
+(requirements restructure).
+
 ## Decisions / deviations
 
 ### P8 — Raise Pillow floor (optional-requirements.txt) — DONE
