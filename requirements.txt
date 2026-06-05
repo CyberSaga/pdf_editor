@@ -1,5 +1,15 @@
-# Core runtime dependencies (required to launch the app).
-# Python 3.9+
+# Core runtime dependencies (required to launch and run the editor's standard
+# features). Python 3.9+.
 
 PySide6>=6.4
 PyMuPDF>=1.23
+
+# Image processing for deskew / straighten / optimize / rotated-text preview
+# (model/pdf_model.py, model/pdf_optimizer.py, view/text_editing.py). These are
+# imported lazily -- the app still launches without them -- but those features
+# require them and the shipped build bundles them, so they are declared here
+# rather than treated as optional. Pillow is floored at 12.2.0 to close the
+# image-parser CVEs (CVE-2026-40192 / 42309 / 42310 / 42311, PYSEC-2026-165);
+# covered by the CI pip-audit gate.
+Pillow>=12.2.0
+numpy>=1.21
