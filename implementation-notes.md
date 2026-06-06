@@ -1,7 +1,7 @@
 # Implementation Notes — Security Patch Work
 
 Running log of decisions, deviations from the spec, and tradeoffs while patching
-the F1–F9 findings per `patch-weaknesses-found-in-immutable-knuth.md`.
+the F1–F9 findings per `docs/security/patch-weaknesses-found-in-immutable-knuth.md`.
 
 ## Environment facts (discovered, not in spec)
 
@@ -111,8 +111,8 @@ Chores kept separate from functional changes per the review.
   outputs (bandit/semgrep JSON, security-scan-review.txt, the *.html renderings,
   docs/readable-markdown.css) + added `.DS_Store`. **Kept** `.codegraph/graph.db`
   tracked: CLAUDE.md s10 documents it as a committed, use-before-reading index, which
-  overrides the bloat concern. Left the authored analysis/spec `.md` docs tracked
-  (didn't author them; surfacing consolidation as an option rather than moving them).
+  overrides the bloat concern. The five authored security analysis/spec `.md` reports
+  were later consolidated under `docs/security/` (round-2 follow-up; see below).
 - **enforce_weights_policy env side effect (Low).** `_apply_settings` now writes into
   the env mapping passed to `enforce_weights_policy` (os.environ in prod, a synthetic
   dict in tests) instead of always `os.environ`. Added a regression test asserting
@@ -136,8 +136,21 @@ Chores kept separate from functional changes per the review.
   new breakage.
 - **Not done (out of scope / pre-existing, noted for the owner):** CLAUDE.md s3.1's
   promised `pyproject.toml` still doesn't exist (CI uses requirements.txt instead);
-  codex review remained sandbox-inconclusive so no independent automated reviewer ran;
-  the authored security `.md` reports could be consolidated under docs/.
+  codex review remained sandbox-inconclusive so no independent automated reviewer ran.
+
+### Round-2 follow-up (2026-06-06)
+- **Consolidated docs:** `git mv`'d the five tracked security reports
+  (investigation-review, security-investigate, weakness_patch, weakness_patch_organized,
+  patch-weaknesses-found-in-immutable-knuth) from the repo root to `docs/security/`
+  (history preserved); updated their path references in TODOS.md + this file. The
+  untracked CJK scan doc is left as local scratch.
+- **`.gitignore` settings.json un-ignore (corrected):** the reviewer's snippet
+  `.claude` + `!.claude/settings.json` does NOT work — git cannot re-include a child of
+  an excluded directory. Used `.claude/*` + `!.claude/settings.json` instead, verified
+  with `git check-ignore` (settings.json trackable; settings.local.json, .DS_Store,
+  locks, skills/, worktrees/ still ignored). The file itself is NOT committed here —
+  doing so would activate the shared Stop hook while the gate's pins are still stale;
+  that remains an explicit owner step.
 
 Follow-up-review commits (oldest->newest): e0477b3 (.gitattributes+.gitignore+untrack),
 6b9c0b4 (EOL renormalize), f00e594 (env threading), d6ecf80 (ruff nits), e6e9be4
@@ -181,7 +194,7 @@ Follow-up-review commits (oldest->newest): e0477b3 (.gitattributes+.gitignore+un
   for normal pages `_safe_render_scale` is a no-op so behaviour is unchanged (verified
   deskew/render/ocr/export/merge/optimize suites: 60 passed, 4 skipped).
 - **Did NOT add a recursion cap** to `_discover_form_nested_invocations` — the spec
-  and investigation-review.md both confirm it is depth-1 (not recursive), so the
+  and docs/security/investigation-review.md both confirm it is depth-1 (not recursive), so the
   CWE-674 sub-claim does not apply.
 - **0.1-floor tradeoff:** `_safe_render_scale` keeps a `max(0.1, scale)` floor per the
   spec, so an extreme page (≈1e6 pt/side) still renders above the 40 MP cap at scale
@@ -294,7 +307,7 @@ Follow-up-review commits (oldest->newest): e0477b3 (.gitattributes+.gitignore+un
   test. The boundary forbids editing current tests, and "all current tests pass" is a
   hard requirement, so the two constraints make the `_submit_via_lp` fix impossible
   without violating one of them. **Tradeoff:** `_submit_via_lp` keeps bare `"lp"`.
-  Residual risk is Low (per investigation-review.md: `/usr/bin` is not user-writable
+  Residual risk is Low (per docs/security/investigation-review.md: `/usr/bin` is not user-writable
   by default and CWD is not on `$PATH`, so Linux `execvp` planting is not a practical
   vector). The `lpstat` sites and the Windows `rundll32` site — the higher-value
   surfaces — are fully fixed. **If you want `_submit_via_lp` hardened too, the

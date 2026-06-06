@@ -80,9 +80,11 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
   stale (predates the F3/P7 edits) and the gate also fails because `.claude/settings.json`
   is gitignored/untracked. If the gate is still in use, run `python scripts/completion_gate.py`
   to regenerate pins and decide whether to track settings.json.
-- [ ] **(Optional) Consolidate authored security docs under `docs/`.** weakness_patch*.md,
-  investigation-review.md, security-investigate.md, patch-weaknesses-found-in-immutable-knuth.md
-  are authored reports left at repo root; consider moving them under `docs/`.
+- [x] **Consolidate authored security docs under `docs/`.** Moved the five tracked
+  reports (investigation-review.md, security-investigate.md, weakness_patch.md,
+  weakness_patch_organized.md, patch-weaknesses-found-in-immutable-knuth.md) to
+  `docs/security/` via `git mv` (history preserved). The untracked CJK scan doc
+  (`資安掃瞄.md`) is left in place as local scratch.
 - [ ] **(Optional) Reconcile CLAUDE.md s3.1 with reality.** It promises a `pyproject.toml`
   + `pip install -e ".[dev]"` that doesn't exist; either add the pyproject or correct s3.1.
 
