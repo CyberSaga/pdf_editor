@@ -138,6 +138,25 @@ Chores kept separate from functional changes per the review.
   promised `pyproject.toml` still doesn't exist (CI uses requirements.txt instead);
   codex review remained sandbox-inconclusive so no independent automated reviewer ran.
 
+### Round-3 follow-up — activate completion gate (2026-06-06)
+- Committed `.claude/settings.json` (now trackable via the round-2 `.gitignore` change)
+  and refreshed the 3 stale `_PINNED_HASHES` to their LF-blob hashes. Verified each
+  against `git cat-file blob HEAD:<path>`; only the 3 stale entries changed, the other 5
+  were left untouched (per the gate's own "only update what changed" rule).
+- **verify_no_jump.py was CRLF on disk** (stale working copy) while its blob is LF; I
+  `rm`+`git checkout`-ed it so the gate's `read_bytes()` matches the LF-blob pin — pinning
+  the CRLF disk bytes would have broken every fresh clone (the gate file is `eol=lf`).
+- Confirmed via a real gate run (`--skip-signoff`): all four static checks pass
+  (`Confirmed 11 gate files tracked`, `Confirmed 8 pinned-hash files match`, hook
+  registered + content verified). The gate still exits non-zero downstream because
+  `verify_no_jump.py` = `6/9 gates failed` (artifact gaps + the 7 pre-existing geometry
+  failures) — that acceptance work is separate and pre-existing, not gate maintenance.
+- Vetted before re-pinning the threshold test: 066261c only added `EDITOR_CHROME_INSET_PX
+  = 3` to exclude the new focus-border chrome from the pixel compare; the core 0.5px /
+  1% / 1px acceptance thresholds are unchanged, so accepting it is legitimate.
+- **Caveat surfaced:** committing settings.json activates the Stop hook for everyone
+  working in the repo with Claude Code.
+
 ### Round-2 follow-up (2026-06-06)
 - **Consolidated docs:** `git mv`'d all six tracked security reports
   (investigation-review, security-investigate, weakness_patch, weakness_patch_organized,

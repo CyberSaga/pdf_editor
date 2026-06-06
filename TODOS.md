@@ -75,11 +75,18 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
 
 ### Repo governance / hygiene (recorded during code-review follow-up, 2026-06-05)
 
-- [ ] **Refresh the completion-gate hash pins + decide on settings.json.** The
-  `_PINNED_HASHES` entry for `scripts/ux_signoff_agent.py` in `completion_gate.py` is
-  stale (predates the F3/P7 edits) and the gate also fails because `.claude/settings.json`
-  is gitignored/untracked. If the gate is still in use, run `python scripts/completion_gate.py`
-  to regenerate pins and decide whether to track settings.json.
+- [x] **Refresh completion-gate pins + commit settings.json — DONE (2026-06-06).**
+  Committed `.claude/settings.json` (activates the Stop hook repo-wide) and refreshed the
+  three stale `_PINNED_HASHES` to their LF-blob hashes: ux_signoff_agent.py `bf4d1034`,
+  test_no_jump_editor_geometry.py `407a95fc` (accepts 066261c's chrome-inset edit; core
+  thresholds unchanged), verify_no_jump.py `9f591f9e` (LF blob; the stale CRLF working
+  copy was re-checked-out so the gate's raw read matches a fresh clone). The gate's
+  static checks now all pass (`11 tracked`, `8 pins match`, hook registered + content
+  verified). **Still NOT fully green:** `verify_no_jump.py` reports `6/9 gates failed`
+  (artifact gaps + the 7 pre-existing geometry test failures). Making the acceptance
+  suite itself pass is the separate, pre-existing no-jump work, not gate maintenance.
+  Note: committing settings.json means the Stop hook now runs for anyone working in the
+  repo with Claude Code.
 - [x] **Consolidate authored security docs under `docs/`.** Moved all six tracked
   reports (investigation-review.md, security-investigate.md, weakness_patch.md,
   weakness_patch_organized.md, patch-weaknesses-found-in-immutable-knuth.md, and the
