@@ -98,11 +98,10 @@ def _forwarded_argv_is_acceptable(argv: list[str]) -> bool:
     ``.pdf`` file. Legitimate forwarded paths are normalized to absolute resolved
     paths before sending, so this gates the untrusted socket peer without
     affecting relative tokens."""
+    # The caller (_handle_socket_message) guarantees every item is a str, and
+    # Path(str) cannot raise, so no per-item type guard is needed here.
     for item in argv:
-        try:
-            path = Path(item)
-        except (TypeError, ValueError):
-            return False
+        path = Path(item)
         if path.is_absolute() and (not path.exists() or path.suffix.lower() != ".pdf"):
             return False
     return True

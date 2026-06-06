@@ -13,11 +13,23 @@ was updated in lockstep to expect the absolute path.
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 from src.printing.base_driver import PrintJobOptions
 from src.printing.platforms import linux_driver, win_driver
 from src.printing.platforms.linux_driver import LinuxPrinterDriver
 from src.printing.platforms.win_driver import WindowsPrinterDriver
+
+
+def _make_fake_run(stdout: str, captured: list[list[str]]):
+    """Build a ``subprocess.run`` fake that records argv and returns ``stdout``."""
+
+    def _fake_run(cmd, capture_output, text, check):
+        _ = (capture_output, text, check)
+        captured.append(list(cmd))
+        return SimpleNamespace(stdout=stdout)
+
+    return _fake_run
 
 
 def test_win_rundll32_uses_absolute_system32_path(monkeypatch) -> None:
@@ -59,16 +71,11 @@ def test_linux_get_default_printer_uses_absolute_lpstat_path(monkeypatch) -> Non
         lambda name: "/usr/bin/lpstat" if name == "lpstat" else None,
     )
 
-    def _fake_run(cmd, capture_output, text, check):
-        _ = (capture_output, text, check)
-        captured.append(list(cmd))
-
-        class _Result:
-            stdout = "system default destination: HP_LaserJet"
-
-        return _Result()
-
-    monkeypatch.setattr(linux_driver.subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        linux_driver.subprocess,
+        "run",
+        _make_fake_run("system default destination: HP_LaserJet", captured),
+    )
 
     result = driver.get_default_printer()
 
@@ -88,16 +95,13 @@ def test_linux_list_printers_uses_absolute_lpstat_path(monkeypatch) -> None:
         lambda name: "/usr/bin/lpstat" if name == "lpstat" else None,
     )
 
-    def _fake_run(cmd, capture_output, text, check):
-        _ = (capture_output, text, check)
-        captured.append(list(cmd))
-
-        class _Result:
-            stdout = "printerA accepting requests\nprinterB accepting requests"
-
-        return _Result()
-
-    monkeypatch.setattr(linux_driver.subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        linux_driver.subprocess,
+        "run",
+        _make_fake_run(
+            "printerA accepting requests\nprinterB accepting requests", captured
+        ),
+    )
 
     devices = driver.list_printers()
 
@@ -115,16 +119,11 @@ def test_linux_submit_via_lp_uses_absolute_lp_path(monkeypatch, tmp_path) -> Non
         lambda name: "/usr/bin/lp" if name == "lp" else None,
     )
 
-    def _fake_run(cmd, capture_output, text, check):
-        _ = (capture_output, text, check)
-        captured.append(list(cmd))
-
-        class _Result:
-            stdout = "request id is printer-789"
-
-        return _Result()
-
-    monkeypatch.setattr(linux_driver.subprocess, "run", _fake_run)
+    monkeypatch.setattr(
+        linux_driver.subprocess,
+        "run",
+        _make_fake_run("request id is printer-789", captured),
+    )
 
     pdf_path = tmp_path / "sample.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\n%%EOF\n")
