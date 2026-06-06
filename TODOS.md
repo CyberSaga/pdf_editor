@@ -149,8 +149,10 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
 - Large-file cost: the round-trip uses `tobytes(garbage=1)` **without** `deflate=True`.
   deflate re-compresses every stream (~20 ms/MB) but shrinks nothing on the
   image-heavy content of real large PDFs, so it was the whole reason a 235 MB file
-  took ~4.9 s. Dropped → ≈2.5 ms/MB (235 MB: 0.59 s; ~1.3 s worst case at the 512 MB
-  open cap). Same output size/memory; compression deferred to explicit save.
+  took ~4.9 s. Dropped → ≈2.5–5 ms/MB (~1.3–2.6 s worst case at the 512 MB open cap).
+  Validated on a real damaged copy of `test_files/test-large-file.pdf` (47 MB,
+  402 pages): repaired on open in 240 ms, content byte-identical to the healthy file.
+  Same output size/memory; compression deferred to explicit save.
 - Tests: `test_scripts/test_xref_repair.py` rewritten to cover auto-repair-on-open
   (damaged → repaired/memory-backed, content intact; healthy → untouched/file-backed).
 - Plan: `docs/plans/archive/auto-xref-repair-on-open.md`. Two pitfalls recorded in

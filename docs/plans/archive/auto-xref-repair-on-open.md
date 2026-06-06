@@ -72,12 +72,24 @@ dominates large PDFs. Measured on random-noise (incompressible) image PDFs:
 `is_repaired` still clears either way. `deflate=False` copies existing streams
 as-is (does not decompress), so output size and memory are unchanged.
 
-**Decision:** use `tobytes(garbage=1)` (no deflate). A 200 MB damaged file repairs
-in ~0.5 s, ~1.3 s worst case at the 512 MB cap — acceptable for a one-time,
-damaged-file-only op. `garbage=1` (vs `garbage=0`) is ~free here and gives object
-compaction; full duplicate-pruning + stream compression happen on an explicit save.
-Text-heavy PDFs are object-count-bound rather than stream-bound (deflate ~neutral),
-but real 200 MB+ files are image-heavy — exactly where the win lands.
+**Real-file validation.** Damaged copy of `test_files/test-large-file.pdf`
+(47 MB, 402 pages — corrupt the *last* `startxref` offset so MuPDF must rebuild):
+
+| file              | open    | is_repaired | pages | backed-by |
+|-------------------|---------|-------------|-------|-----------|
+| healthy (orig)    | 2.8 ms  | False       | 402   | file      |
+| damaged (repaired)| 240.6 ms| False       | 402   | memory    |
+
+→ +238 ms (5.1 ms/MB, mixed content), `is_repaired` cleared, page count and
+mid-page text **byte-identical** to the healthy file (no data loss).
+
+**Decision:** use `tobytes(garbage=1)` (no deflate). At ~2.5 ms/MB (image) to
+~5 ms/MB (mixed), a 200 MB damaged file repairs in ~0.5–1.0 s, ~1.3–2.6 s worst
+case at the 512 MB cap — acceptable for a one-time, damaged-file-only op.
+`garbage=1` (vs `garbage=0`) is ~free here and gives object compaction; full
+duplicate-pruning + stream compression happen on an explicit save. Text-heavy PDFs
+are object-count-bound rather than stream-bound (deflate ~neutral), but real
+200 MB+ files are image-heavy — exactly where the win lands.
 
 ## Open questions (resolved)
 

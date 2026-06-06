@@ -667,8 +667,9 @@ class PDFModel:
         Deliberately **not** ``deflate=True``: re-compressing every stream is the
         dominant cost on large files (≈20 ms/MB) yet adds nothing to a clean-xref
         repair — on already-compressed/image-heavy PDFs it shrinks nothing. Skipping
-        it keeps the repair at ≈2.5 ms/MB (~1.3 s worst case at the 512 MB open cap
-        vs ~10 s with deflate). Stream compression belongs on an explicit save.
+        it keeps the repair at ≈2.5–5 ms/MB (~1.3–2.6 s worst case at the 512 MB open
+        cap vs ~10 s with deflate; a real damaged 47 MB / 402-page file repairs in
+        ~240 ms). Stream compression belongs on an explicit save.
 
         On failure the original (already MuPDF-repaired) doc is returned unchanged
         so opening still succeeds.
