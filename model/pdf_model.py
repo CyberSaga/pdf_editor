@@ -662,11 +662,19 @@ class PDFModel:
         a fresh, internally-consistent xref so later saves don't inherit the
         damage. ``garbage=1`` rebuilds the xref and compacts objects without the
         heavier duplicate-pruning of ``garbage=4`` — full pruning still happens on
-        an explicit full save. On failure the original (already MuPDF-repaired)
-        doc is returned unchanged so opening still succeeds.
+        an explicit full save.
+
+        Deliberately **not** ``deflate=True``: re-compressing every stream is the
+        dominant cost on large files (≈20 ms/MB) yet adds nothing to a clean-xref
+        repair — on already-compressed/image-heavy PDFs it shrinks nothing. Skipping
+        it keeps the repair at ≈2.5 ms/MB (~1.3 s worst case at the 512 MB open cap
+        vs ~10 s with deflate). Stream compression belongs on an explicit save.
+
+        On failure the original (already MuPDF-repaired) doc is returned unchanged
+        so opening still succeeds.
         """
         try:
-            repaired_bytes = doc.tobytes(garbage=1, deflate=True)
+            repaired_bytes = doc.tobytes(garbage=1)
             repaired = fitz.open("pdf", repaired_bytes)
         except Exception as exc:  # noqa: BLE001 - never let auto-repair break open
             logger.warning(

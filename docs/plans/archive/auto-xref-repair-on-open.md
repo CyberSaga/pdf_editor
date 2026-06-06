@@ -53,16 +53,37 @@ Benchmark: text-heavy PDFs, median of 7 opens via `PDFModel.open_pdf`.
   boolean read (`doc.is_repaired`) on a flag MuPDF already sets during the
   `fitz.open()` that runs regardless. Median open held ~1 ms across 10–200 pages,
   identical to before — healthy files never enter the repair branch.
-- **Damaged files only: a one-time in-memory rebuild** that scales with content
-  (~0.1 ms per KB here; a large scanned PDF could be a second or two). It is paid
-  once, on open, and only for files MuPDF had to repair — which previously could
-  not be saved incrementally at all.
+- **Damaged files only: a one-time in-memory rebuild.** Paid once, on open, only
+  for files MuPDF had to repair — which previously could not be saved incrementally
+  at all.
 
-Decision: `garbage=1` chosen (fast xref rebuild + compaction); full
-duplicate-pruning still happens on an explicit full save.
+### Large-file follow-up (the "200 MB → 20 s?" question)
 
-## Open questions
+The first cut used `tobytes(garbage=1, deflate=True)`, whose cost is ~20 ms/MB on
+image-heavy content → ~10 s at the 512 MB open cap. `deflate=True` re-compresses
+every stream, which is wasted on the already-compressed/incompressible data that
+dominates large PDFs. Measured on random-noise (incompressible) image PDFs:
 
-- Keep `garbage=1` (fast, compacts + rebuilds xref) vs `garbage=4` (heavier,
-  prunes duplicates)? Decision: `garbage=1` on open for speed; full pruning still
-  happens on an explicit full save.
+| size    | `garbage=1, deflate=True` | `garbage=1` (no deflate) | output size |
+|---------|---------------------------|--------------------------|-------------|
+| 117.6 MB| 2386 ms (20.3 ms/MB)      | 261 ms (2.2 ms/MB)       | unchanged   |
+| 235.2 MB| 4910 ms (20.9 ms/MB)      | 592 ms (2.5 ms/MB)       | unchanged   |
+
+`is_repaired` still clears either way. `deflate=False` copies existing streams
+as-is (does not decompress), so output size and memory are unchanged.
+
+**Decision:** use `tobytes(garbage=1)` (no deflate). A 200 MB damaged file repairs
+in ~0.5 s, ~1.3 s worst case at the 512 MB cap — acceptable for a one-time,
+damaged-file-only op. `garbage=1` (vs `garbage=0`) is ~free here and gives object
+compaction; full duplicate-pruning + stream compression happen on an explicit save.
+Text-heavy PDFs are object-count-bound rather than stream-bound (deflate ~neutral),
+but real 200 MB+ files are image-heavy — exactly where the win lands.
+
+## Open questions (resolved)
+
+- `garbage=1` vs `garbage=4`? → `garbage=1` on open for speed; full pruning on save.
+- `deflate=True`? → No. It was the dominant large-file cost and added nothing to a
+  clean-xref repair. Dropped (~9× faster on large files).
+- Async/background repair? → Not needed: bounded at ~1.3 s worst case by the 512 MB
+  open cap, and a background doc-swap would fight PyMuPDF thread-safety + the
+  batched-index design for marginal benefit.

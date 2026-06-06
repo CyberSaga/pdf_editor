@@ -579,9 +579,12 @@ silently passing.
 XREF repair is automatic on open: `PDFModel.open_pdf()` checks `doc.is_repaired`
 (the flag PyMuPDF sets when it rebuilds a damaged cross-reference table) and, if
 set, round-trips the document in memory (`_repair_doc_xref_in_memory`,
-`tobytes(garbage=1, deflate=True)` → reopen) so the active document carries a
-clean, consistent xref. Healthy files pay only a single flag read; the round-trip
-runs only for damaged files. `check_pdf_conformance()` then confirms restoration
-(the issue clears). There is no longer a manual "repair xref" toolbar action.
+`tobytes(garbage=1)` → reopen) so the active document carries a clean, consistent
+xref. It deliberately skips `deflate=True`: re-compressing streams is the dominant
+cost on large/image-heavy files (≈20 ms/MB) and adds nothing to a clean-xref repair,
+so the round-trip stays at ≈2.5 ms/MB (~1.3 s worst case at the 512 MB open cap).
+Healthy files pay only a single flag read; the round-trip runs only for damaged
+files. `check_pdf_conformance()` then confirms restoration (the issue clears).
+There is no longer a manual "repair xref" toolbar action.
 
 See `docs/pdf_compliance.md` for scope, limitations, and test coverage.

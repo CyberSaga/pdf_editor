@@ -46,8 +46,11 @@ exactly this, transparently on open (there is no manual action):
 
 - PyMuPDF rebuilds a damaged xref when it opens the file and flags it via
   `doc.is_repaired`. `PDFModel.open_pdf` detects that flag and round-trips the
-  document in memory (`doc.tobytes(garbage=1, deflate=True)` → reopen) so the
-  active document carries a fresh, internally-consistent xref before any edit.
+  document in memory (`doc.tobytes(garbage=1)` → reopen) so the active document
+  carries a fresh, internally-consistent xref before any edit. It skips
+  `deflate=True` on purpose — stream re-compression is the dominant cost on large
+  files (≈20 ms/MB) and buys nothing for a clean-xref repair, so the round-trip
+  stays at ≈2.5 ms/MB (~1.3 s worst case at the 512 MB open cap).
 - Reading `doc.is_repaired` is free (the flag is set during the `fitz.open()`
   that runs regardless), so healthy files pay nothing; the round-trip cost is
   incurred only for files that were actually damaged.

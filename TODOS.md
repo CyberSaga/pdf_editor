@@ -143,12 +143,18 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
   document is round-tripped in memory (`_repair_doc_xref_in_memory`) so the active
   doc carries a clean, consistent xref.
 - Startup impact: healthy files pay only one boolean flag read (median open held at
-  ~1 ms for 10–200 page docs); the round-trip (~0.1 ms per KB of content; ~200 ms
-  for a 1.7 MB text PDF) runs once and only for files MuPDF actually had to repair —
-  files that previously could not be saved incrementally anyway.
+  ~1 ms for 10–200 page docs); the round-trip runs once and only for files MuPDF
+  actually had to repair — files that previously could not be saved incrementally
+  anyway.
+- Large-file cost: the round-trip uses `tobytes(garbage=1)` **without** `deflate=True`.
+  deflate re-compresses every stream (~20 ms/MB) but shrinks nothing on the
+  image-heavy content of real large PDFs, so it was the whole reason a 235 MB file
+  took ~4.9 s. Dropped → ≈2.5 ms/MB (235 MB: 0.59 s; ~1.3 s worst case at the 512 MB
+  open cap). Same output size/memory; compression deferred to explicit save.
 - Tests: `test_scripts/test_xref_repair.py` rewritten to cover auto-repair-on-open
   (damaged → repaired/memory-backed, content intact; healthy → untouched/file-backed).
-- Plan: `docs/plans/auto-xref-repair-on-open.md`. Pitfall recorded in `docs/PITFALLS.md`.
+- Plan: `docs/plans/archive/auto-xref-repair-on-open.md`. Two pitfalls recorded in
+  `docs/PITFALLS.md` (memory-backed-after-repair; no-deflate-on-open).
 
 ## Done (2026-06-01) -- Four Windows printing defects + review-finding follow-ups
 
