@@ -43,6 +43,7 @@
   - `model/tools/manager.py`
   - `model/tools/ocr_tool.py`
   - `model/tools/ocr_types.py`
+  - `model/tools/ocr_weights.py`
   - `model/tools/search_tool.py`
   - `model/tools/watermark_rendering.py`
   - `model/tools/watermark_tool.py`
@@ -176,6 +177,16 @@
   - `test_scripts/test_rotated_text_editor_preview.py`
   - `test_scripts/test_sample_pdfs.py`
   - `test_scripts/test_scene_context_menu.py`
+  - `test_scripts/test_security_cua_allowlist.py`
+  - `test_scripts/test_security_dispatcher_temp_cleanup.py`
+  - `test_scripts/test_security_logging_level.py`
+  - `test_scripts/test_security_ocr_requirements.py`
+  - `test_scripts/test_security_ocr_weights.py`
+  - `test_scripts/test_security_pdf_resource_guards.py`
+  - `test_scripts/test_security_pillow_floor.py`
+  - `test_scripts/test_security_single_instance_isolation.py`
+  - `test_scripts/test_security_subprocess_paths.py`
+  - `test_scripts/test_security_watermark_coercion.py`
   - `test_scripts/test_short_term_safety.py`
   - `test_scripts/test_single_instance_forwarding.py`
   - `test_scripts/test_snapshot_restore.py`
@@ -233,10 +244,10 @@
 
 ### `controller/pdf_controller.py`
 **Classes:** `SessionUIState` (L91), `FullscreenSessionSnapshot` (L101), `PrintJobRequest` (L108), `OptimizePdfCopyRequest` (L117), `_PrintSubmissionWorker` (L122), `_PrintWorkerBridge` (L152), `_OptimizePdfCopyWorker` (L177), `_OptimizeWorkerBridge` (L200), `_OcrWorker` (L218), `_OcrBridge` (L270), `PDFController` (L298)
-**Methods (184):** `__init__`, `run`, `forward_progress`, `forward_prepared`, `forward_failed`, `notify_thread_finished`, `__init__`, `run`, `forward_succeeded`, `forward_failed`, `notify_thread_finished`, `__init__`, `request_cancel`, `run`, `forward_progress`, `forward_status`, `forward_page_done`, `forward_failed`, `notify_thread_finished`, `__init__` …
+**Methods (183):** `__init__`, `run`, `forward_progress`, `forward_prepared`, `forward_failed`, `notify_thread_finished`, `__init__`, `run`, `forward_succeeded`, `forward_failed`, `notify_thread_finished`, `__init__`, `request_cancel`, `run`, `forward_progress`, `forward_status`, `forward_page_done`, `forward_failed`, `notify_thread_finished`, `__init__` …
 
 ### `main.py`
-**Functions:** `_configure_logging` (L9), `parse_cli` (L14), `run_merge_and_exit` (L25), `run` (L32)
+**Functions:** `_configure_logging` (L10), `parse_cli` (L19), `run_merge_and_exit` (L30), `run` (L37)
 
 ### `model/__init__.py`
 
@@ -271,9 +282,9 @@
 **Functions:** `_is_whitespace` (L57), `_is_delimiter` (L61), `tokenize_content_stream` (L65), `parse_operators` (L131), `_rotation_from_cm` (L156), `format_cm_value` (L170), `decompose_image_cm` (L183), `rotated_image_stream_cm` (L201), `_cm_values_from_operands` (L233), `_bbox_from_stream_cm` (L243), `_q_bounds_by_operator_index` (L266), `discover_native_image_invocations` (L284), `_discover_form_nested_invocations` (L381), `replace_operator_operands` (L488), `remove_operator_range` (L496), `serialize_tokens` (L501), `fitz_rect_to_stream_cm` (L507), `form_rect_to_stream_cm` (L531)
 
 ### `model/pdf_model.py`
-**Classes:** `TextHit` (L128), `_EditTextResolveResult` (L162), `DocumentSession` (L231), `PDFModel` (L245)
-**Functions:** `_install_rawdict_text_compat` (L86), `_classify_insert_path` (L178)
-**Methods (173):** `_legacy`, `__getitem__`, `__iter__`, `__len__`, `__init__`, `_canonicalize_path`, `_safe_exc_message`, `_active_session`, `_activate_temporarily`, `session_ids`, `list_sessions`, `get_session_id_by_index`, `get_active_session_id`, `get_active_session_index`, `find_session_by_path`, `activate_session`, `activate_session_by_index`, `session_has_unsaved_changes`, `has_any_unsaved_changes`, `get_dirty_session_ids` …
+**Classes:** `TextHit` (L155), `_EditTextResolveResult` (L189), `DocumentSession` (L258), `PDFModel` (L272)
+**Functions:** `_guard_before_open` (L94), `_safe_render_scale` (L100), `_install_rawdict_text_compat` (L113), `_classify_insert_path` (L205)
+**Methods (174):** `_legacy`, `__getitem__`, `__iter__`, `__len__`, `__init__`, `_canonicalize_path`, `_safe_exc_message`, `_active_session`, `_activate_temporarily`, `session_ids`, `list_sessions`, `get_session_id_by_index`, `get_active_session_id`, `get_active_session_index`, `find_session_by_path`, `activate_session`, `activate_session_by_index`, `session_has_unsaved_changes`, `has_any_unsaved_changes`, `get_dirty_session_ids` …
 
 ### `model/pdf_optimizer.py`
 **Classes:** `PdfOptimizeOptions` (L55), `PdfAuditItem` (L79), `PdfAuditReport` (L87), `PdfOptimizationResult` (L95), `PdfOptimizeExecutionProfile` (L106)
@@ -305,14 +316,18 @@
 **Methods (9):** `__init__`, `on_session_open`, `on_session_close`, `on_session_saved`, `has_unsaved_changes`, `_active_session_id`, `render_page_pixmap`, `build_print_snapshot`, `prepare_doc_for_save`
 
 ### `model/tools/ocr_tool.py`
-**Classes:** `_SuryaAdapter` (L112), `OcrTool` (L212)
-**Functions:** `_check_surya_import` (L33), `is_device_available` (L41), `_empty_torch_cache` (L60), `_resolve_torch_device` (L83), `_create_surya_adapter` (L194), `_pixmap_to_image` (L198)
+**Classes:** `_SuryaAdapter` (L113), `OcrTool` (L218)
+**Functions:** `_check_surya_import` (L34), `is_device_available` (L42), `_empty_torch_cache` (L61), `_resolve_torch_device` (L84), `_create_surya_adapter` (L200), `_pixmap_to_image` (L204)
 **Methods (7):** `__init__`, `device`, `_ensure_loaded`, `ocr`, `__init__`, `availability`, `ocr_pages`
 
 ### `model/tools/ocr_types.py`
 **Classes:** `OcrSpan` (L8), `OcrLanguage` (L14), `OcrDevice` (L29), `OcrAvailability` (L45), `OcrRequest` (L52)
 **Functions:** `parse_page_range` (L58)
 **Methods (2):** `from_code`, `from_code`
+
+### `model/tools/ocr_weights.py`
+**Classes:** `OcrWeightsError` (L81)
+**Functions:** `sha256_file` (L85), `resolve_weights_dir` (L94), `pinned_checkpoints` (L101), `verify_weights_dir` (L114), `_apply_settings` (L145), `enforce_weights_policy` (L176)
 
 ### `model/tools/search_tool.py`
 **Classes:** `SearchTool` (L11)
@@ -322,7 +337,8 @@
 **Functions:** `needs_cjk_font` (L9), `resolve_watermark_font` (L13), `apply_watermarks_to_page` (L20), `apply_watermarks_to_document` (L78)
 
 ### `model/tools/watermark_tool.py`
-**Classes:** `WatermarkTool` (L24)
+**Classes:** `WatermarkTool` (L57)
+**Functions:** `_coerce_wm` (L27)
 **Methods (22):** `__init__`, `on_session_open`, `on_session_close`, `on_session_saved`, `has_unsaved_changes`, `needs_page_overlay`, `apply_page_overlay`, `prepare_doc_for_save`, `_active_session_id`, `_active_watermark_list`, `_mark_modified`, `add_watermark`, `get_watermarks`, `remove_watermark`, `update_watermark`, `_load_watermarks_from_doc`, `_write_watermarks_embed`, `_get_watermarks_for_page`, `_needs_cjk_font`, `_get_watermark_font` …
 
 ### `scripts/__init__.py`
@@ -345,7 +361,7 @@
 **Functions:** `_process_events` (L27), `_first_non_empty_span` (L34), `_editor_viewport_rect` (L45), `_crop` (L63), `_changed_pixel_pct` (L75), `_diff_image` (L96), `_capture_editor_crop` (L116), `run` (L122), `main` (L244)
 
 ### `scripts/ux_signoff_agent.py`
-**Functions:** `_sha256` (L67), `_git_head` (L71), `_has_image_artifacts` (L96), `_collect_artifact_hashes` (L101), `_screenshot_b64` (L190), `_execute_cua_action` (L198), `_extract_text` (L220), `_b64_to_png` (L237), `_assert_app_window_shows_pdf` (L244), `_run_agent_on_pdf` (L280), `_validate_trace_vs_checklist` (L405), `_validate_signoff_report` (L457), `main` (L565)
+**Functions:** `_sha256` (L68), `_git_head` (L72), `_has_image_artifacts` (L97), `_collect_artifact_hashes` (L102), `_screenshot_b64` (L191), `_point_in_rect` (L210), `_execute_cua_action` (L216), `_extract_text` (L260), `_b64_to_png` (L277), `_assert_app_window_shows_pdf` (L284), `_get_window_rect` (L327), `_run_agent_on_pdf` (L376), `_validate_trace_vs_checklist` (L510), `_validate_signoff_report` (L562), `main` (L671)
 
 ### `scripts/verify_no_jump.py`
 **Functions:** `_sha256` (L48), `_git_head` (L54), `_expected_case_ids` (L142), `_assert_clean_worktree` (L190), `_clear_and_prepare` (L229), `_clean_pytest_env` (L245), `_run_pytest` (L263), `_check_artifacts` (L294), `_check_manifests_match` (L430), `_check_signoff_checklist` (L447), `_check_signoff` (L637), `_run_full_suite` (L771), `_reverify_artifact_hashes` (L803), `_run_lint` (L851), `main` (L873)
@@ -357,8 +373,8 @@
 **Methods (10):** `normalized`, `name`, `supports_direct_pdf`, `supports_printer_properties_dialog`, `list_printers`, `get_default_printer`, `get_printer_status`, `print_pdf`, `open_printer_properties`, `get_printer_preferences`
 
 ### `src/printing/dispatcher.py`
-**Classes:** `PrintDispatcher` (L29)
-**Functions:** `get_printer_driver` (L19)
+**Classes:** `PrintDispatcher` (L32)
+**Functions:** `get_printer_driver` (L22)
 **Methods (11):** `__init__`, `list_printers`, `get_default_printer`, `get_printer_status`, `supports_printer_properties_dialog`, `open_printer_properties`, `get_printer_preferences`, `resolve_page_indices_for_count`, `resolve_page_indices_for_file`, `print_pdf_file`, `print_pdf_bytes`
 
 ### `src/printing/errors.py`
@@ -395,8 +411,8 @@
 **Methods (1):** `name`
 
 ### `src/printing/platforms/win_driver.py`
-**Classes:** `_POINTL` (L85), `_DEVMODE_STRUCT1` (L89), `_DEVMODE_UNION1` (L102), `_DEVMODE_UNION2` (L106), `_PUBLIC_DEVMODEW` (L110), `_PRINTER_INFO_9` (L142), `WindowsPrinterDriver` (L253)
-**Functions:** `_decode_capability_text` (L171), `_map_devmode_values_to_preferences` (L182), `_buffer_to_public_devmode` (L214), `_buffer_to_preferences` (L218), `_buffer_private_crc32` (L231), `_decode_devmode_b64` (L240), `_devmode_buffer_to_b64` (L248)
+**Classes:** `_POINTL` (L92), `_DEVMODE_STRUCT1` (L96), `_DEVMODE_UNION1` (L109), `_DEVMODE_UNION2` (L113), `_PUBLIC_DEVMODEW` (L117), `_PRINTER_INFO_9` (L149), `WindowsPrinterDriver` (L260)
+**Functions:** `_decode_capability_text` (L178), `_map_devmode_values_to_preferences` (L189), `_buffer_to_public_devmode` (L221), `_buffer_to_preferences` (L225), `_buffer_private_crc32` (L238), `_decode_devmode_b64` (L247), `_devmode_buffer_to_b64` (L255)
 **Methods (19):** `name`, `supports_printer_properties_dialog`, `list_printers`, `get_default_printer`, `get_printer_status`, `print_pdf`, `_raster_split_or_direct`, `_split_by_layout`, `_print_layout_groups`, `_print_with_scoped_devmode`, `_devmode_to_preferences`, `_list_paper_trays`, `_safe_get_printer_info`, `_collect_printer_preferences`, `_can_use_ctypes_document_properties`, `_persist_devmode_buffer_user_defaults`, `_open_printer_properties_via_ctypes`, `get_printer_preferences`, `open_printer_properties`
 
 ### `src/printing/print_dialog.py`
@@ -548,7 +564,7 @@
 **Methods (9):** `__init__`, `attempts`, `success_count`, `error_rate`, `avg_ms`, `max_ms`, `min_ms`, `slow_count`, `report`
 
 ### `test_scripts/test_linux_driver_overrides.py`
-**Functions:** `test_to_cups_options_omits_hardware_defaults_when_not_overridden` (L16), `test_to_cups_options_includes_hardware_defaults_when_overridden` (L37), `test_submit_via_lp_omits_hardware_options_when_not_overridden` (L51), `test_submit_via_lp_includes_hardware_options_when_overridden` (L93), `test_print_pdf_keeps_direct_pdf_for_source_following_auto_layout` (L129), `test_print_pdf_forces_raster_when_user_overrides_layout` (L165)
+**Functions:** `test_to_cups_options_omits_hardware_defaults_when_not_overridden` (L16), `test_to_cups_options_includes_hardware_defaults_when_overridden` (L37), `test_submit_via_lp_omits_hardware_options_when_not_overridden` (L51), `test_submit_via_lp_includes_hardware_options_when_overridden` (L95), `test_print_pdf_keeps_direct_pdf_for_source_following_auto_layout` (L131), `test_print_pdf_forces_raster_when_user_overrides_layout` (L167)
 
 ### `test_scripts/test_macos_menu.py`
 **Functions:** `_app` (L27), `_view_with_actions` (L34), `_titles` (L46), `_items` (L50), `test_build_macos_menu_bar_is_noop_off_darwin` (L57), `test_macos_menu_spec_has_expected_menus_and_actions` (L67), `test_macos_menu_uses_native_shortcuts` (L94), `test_build_macos_menu_bar_assembles_menus_on_darwin` (L112), `test_app_menu_actions_have_macos_roles` (L137)
@@ -734,6 +750,42 @@
 **Functions:** `_make_view` (L39), `test_scene_context_menu_includes_richer_browse_actions` (L55), `test_scene_context_menu_page_actions_reuse_page_specific_helpers` (L107)
 **Methods (5):** `__init__`, `setCursor`, `__init__`, `viewport`, `mapToGlobal`
 
+### `test_scripts/test_security_cua_allowlist.py`
+**Classes:** `_Action` (L18), `_FakePyAutoGui` (L23)
+**Functions:** `test_execute_cua_action_blocks_type` (L49), `test_execute_cua_action_blocks_key` (L55), `test_execute_cua_action_blocks_unknown` (L61), `test_execute_cua_action_allows_click` (L67), `test_execute_cua_action_allows_screenshot` (L74), `test_execute_cua_action_rejects_out_of_window_click` (L87), `test_execute_cua_action_rejects_out_of_window_move` (L97), `test_execute_cua_action_allows_in_window_click` (L104), `test_execute_cua_action_no_rect_skips_bounds` (L113)
+**Methods (8):** `__init__`, `__init__`, `click`, `doubleClick`, `scroll`, `typewrite`, `hotkey`, `moveTo`
+
+### `test_scripts/test_security_dispatcher_temp_cleanup.py`
+**Functions:** `test_print_pdf_bytes_logs_unlink_failure_at_debug` (L19)
+
+### `test_scripts/test_security_logging_level.py`
+**Functions:** `_isolated_root_logging` (L23), `test_configure_logging_defaults_to_warning` (L41), `test_configure_logging_debug_env_enables_debug` (L48), `test_configure_logging_empty_env_value_is_not_debug` (L55)
+
+### `test_scripts/test_security_ocr_requirements.py`
+**Functions:** `_requirements` (L22), `test_ocr_requirements_file_exists` (L32), `test_surya_ocr_is_declared_in_ocr_file` (L36), `test_transformers_not_pinned_to_unvalidated_5x` (L41)
+
+### `test_scripts/test_security_ocr_weights.py`
+**Functions:** `_make_bundle` (L28), `test_sha256_file_matches_hashlib` (L36), `test_resolve_weights_dir_from_env` (L42), `test_pinned_checkpoints_default_pins_three_models` (L48), `test_pinned_checkpoints_revision_override_targets_ocr_only` (L58), `test_verify_weights_dir_accepts_matching_hash` (L66), `test_verify_weights_dir_rejects_mismatched_hash` (L71), `test_verify_weights_dir_rejects_missing_file` (L77), `test_verify_weights_dir_empty_manifest_fails_closed` (L83), `test_verify_weights_dir_missing_directory` (L89), `test_enforce_policy_no_bundle_pins_revisions_online` (L94), `test_enforce_policy_does_not_mutate_os_environ` (L104), `test_enforce_policy_bundle_mismatch_refuses` (L113), `test_enforce_policy_bundle_match_allows_offline` (L120), `test_adapter_refuses_load_on_weight_failure` (L133)
+
+### `test_scripts/test_security_pdf_resource_guards.py`
+**Classes:** `_FakeStat` (L23), `_FakePath` (L28), `_FakeRect` (L48), `_FakePage` (L54)
+**Functions:** `test_guard_before_open_rejects_oversize` (L36), `test_guard_before_open_allows_normal_size` (L41), `test_safe_render_scale_clamps_huge_page` (L59), `test_safe_render_scale_leaves_normal_page_untouched` (L68), `test_safe_render_scale_floors_at_min` (L73), `_make_pdf` (L80), `test_open_pdf_rejects_oversize_before_parsing` (L89), `test_open_pdf_rejects_excess_page_count` (L114), `test_open_pdf_allows_normal_document` (L128), `test_render_page_pixmap_clamps_oversized_scale` (L163)
+**Methods (5):** `__init__`, `__init__`, `stat`, `__init__`, `__init__`
+
+### `test_scripts/test_security_pillow_floor.py`
+**Functions:** `_pillow_floor` (L28), `_has_surya` (L40), `test_pillow_floor_is_at_least_12_2_0` (L47), `test_surya_ocr_not_in_core_requirements` (L51), `test_surya_ocr_not_in_optional_requirements` (L59)
+
+### `test_scripts/test_security_single_instance_isolation.py`
+**Classes:** `_FakeSocket` (L34)
+**Functions:** `test_listen_server_enables_user_access_option` (L21), `_run_message` (L66), `test_handle_socket_message_rejects_nonexistent_path` (L74), `test_handle_socket_message_rejects_non_pdf_path` (L81), `test_handle_socket_message_accepts_existing_pdf` (L89)
+**Methods (8):** `__init__`, `property`, `setProperty`, `readAll`, `write`, `flush`, `waitForBytesWritten`, `disconnectFromServer`
+
+### `test_scripts/test_security_subprocess_paths.py`
+**Functions:** `_make_fake_run` (L24), `test_win_rundll32_uses_absolute_system32_path` (L35), `test_linux_get_default_printer_uses_absolute_lpstat_path` (L63), `test_linux_list_printers_uses_absolute_lpstat_path` (L86), `test_linux_submit_via_lp_uses_absolute_lp_path` (L112)
+
+### `test_scripts/test_security_watermark_coercion.py`
+**Functions:** `test_coerce_clamps_oversized_font_size` (L19), `test_coerce_floors_tiny_font_size` (L25), `test_coerce_truncates_long_text` (L31), `test_coerce_caps_page_count` (L37), `test_coerce_clamps_opacity_and_wraps_angle` (L43), `test_coerce_drops_wrong_type_pages` (L50), `test_coerce_drops_missing_required_keys` (L54), `test_coerce_preserves_valid_watermark_fields` (L59), `test_load_watermarks_drops_bad_entries_and_clamps_good` (L88)
+
 ### `test_scripts/test_short_term_safety.py`
 **Classes:** `_NamedCommand` (L26), `_UndoBoomCommand` (L43)
 **Functions:** `qapp` (L49), `_make_pdf` (L56), `_find_block` (L64), `test_inline_text_editor_emits_focus_out_signal_without_monkeypatch` (L72), `test_command_manager_undo_keeps_command_on_failure` (L87), `test_command_manager_evicts_oldest_entries_at_max_limit` (L100), `test_edit_text_reports_rollback_failures` (L111), `test_restore_page_from_snapshot_does_not_delete_live_page_when_insert_fails` (L142), `test_restore_page_from_snapshot_inserts_replacement_before_deleting_original` (L177)
@@ -817,7 +869,7 @@
 **Methods (11):** `__init__`, `get_default_printer`, `resolve_page_indices_for_count`, `supports_printer_properties_dialog`, `open_printer_properties`, `get_printer_preferences`, `__init__`, `pageLayout`, `setPageLayout`, `setPageSize`, `setPageOrientation`
 
 ### `test_scripts/test_xref_repair.py`
-**Functions:** `_valid_pdf_bytes` (L24), `_corrupt_startxref` (L34), `test_repair_document_xref_produces_clean_copy` (L40)
+**Functions:** `_valid_pdf_bytes` (L25), `_corrupt_startxref` (L35), `test_open_damaged_pdf_auto_repairs_in_memory` (L41), `test_open_healthy_pdf_is_left_file_backed` (L75)
 
 ### `test_scripts/validate_optimized_pdf.py`
 **Functions:** `_tail_has_eof` (L13), `_sample_page_indexes` (L20), `validate_pdf_integrity` (L27), `main` (L91)
@@ -833,7 +885,7 @@
 **Methods (9):** `value`, `setValue`, `__init__`, `get_ocr_device`, `set_ocr_device`, `get_ocr_languages`, `set_ocr_languages`, `get_theme`, `set_theme`
 
 ### `utils/single_instance.py`
-**Functions:** `_build_server_name` (L16), `_remove_server` (L22), `_listen_server` (L26), `_probe_live_server` (L34), `_make_lock` (L44), `_try_acquire_lock` (L50), `_process_events` (L54), `_wait_for_ready_read` (L60), `_service_local_server` (L71), `_normalize_forwarded_argv` (L89), `_handle_socket_message` (L93), `try_become_server` (L125), `send_to_running_instance` (L175)
+**Functions:** `_build_server_name` (L16), `_remove_server` (L22), `_listen_server` (L26), `_probe_live_server` (L37), `_make_lock` (L47), `_try_acquire_lock` (L53), `_process_events` (L57), `_wait_for_ready_read` (L63), `_service_local_server` (L74), `_normalize_forwarded_argv` (L92), `_forwarded_argv_is_acceptable` (L96), `_handle_socket_message` (L110), `try_become_server` (L146), `send_to_running_instance` (L196)
 
 ### `utils/theme_ids.py`
 
@@ -874,7 +926,7 @@
 ### `view/pdf_view.py`
 **Classes:** `_NoCtrlTabTabBar` (L202), `PDFView` (L236)
 **Functions:** `_ctrl_tab_direction` (L107), `compute_object_resize_rect` (L117), `screen_angle_degrees` (L177), `absolute_rotation_from_drag` (L186)
-**Methods (248):** `event`, `keyPressEvent`, `__init__`, `ensure_heavy_panels_initialized`, `_emit_shell_ready_once`, `_configure_drop_targets`, `_extract_dropped_pdf_paths`, `_set_drag_drop_affordance`, `_queue_or_open_paths`, `drain_pending_open_paths`, `_handle_drag_drop_event`, `dragEnterEvent`, `dragMoveEvent`, `dragLeaveEvent`, `dropEvent`, `_build_fullscreen_exit_button`, `_update_fullscreen_exit_button_geometry`, `_set_fullscreen_exit_button_visible`, `_update_fullscreen_exit_hover`, `is_fullscreen_active` …
+**Methods (247):** `event`, `keyPressEvent`, `__init__`, `ensure_heavy_panels_initialized`, `_emit_shell_ready_once`, `_configure_drop_targets`, `_extract_dropped_pdf_paths`, `_set_drag_drop_affordance`, `_queue_or_open_paths`, `drain_pending_open_paths`, `_handle_drag_drop_event`, `dragEnterEvent`, `dragMoveEvent`, `dragLeaveEvent`, `dropEvent`, `_build_fullscreen_exit_button`, `_update_fullscreen_exit_button_geometry`, `_set_fullscreen_exit_button_visible`, `_update_fullscreen_exit_hover`, `is_fullscreen_active` …
 
 ### `view/text_editing.py`
 **Classes:** `TextEditUIConstants` (L86), `TextEditGeometryConstants` (L98), `TextEditFinalizeReason` (L103), `TextEditOutcome` (L114), `TextEditReason` (L121), `TextEditDragState` (L125), `TextEditDelta` (L132), `TextEditFinalizeResult` (L144), `TextEditSession` (L154), `_EditorShortcutForwarder` (L170), `InlineTextEditor` (L235), `ViewportAnchor` (L260), `PreviewRenderer` (L596), `PreviewBackedInlineTextEditor` (L720), `TextEditManager` (L943)
@@ -983,6 +1035,14 @@
 - `test_scripts/test_rotated_text_editor_preview.py` → `model/pdf_model.py`, `view/text_editing.py`
 - `test_scripts/test_sample_pdfs.py` → `model/pdf_model.py`
 - `test_scripts/test_scene_context_menu.py` → `view/pdf_view.py`
+- `test_scripts/test_security_cua_allowlist.py` → `scripts/ux_signoff_agent.py`
+- `test_scripts/test_security_dispatcher_temp_cleanup.py` → `src/printing/base_driver.py`, `src/printing/dispatcher.py`
+- `test_scripts/test_security_logging_level.py` → `main.py`
+- `test_scripts/test_security_ocr_weights.py` → `model/tools/__init__.py`, `model/tools/ocr_weights.py`
+- `test_scripts/test_security_pdf_resource_guards.py` → `model/pdf_model.py`
+- `test_scripts/test_security_single_instance_isolation.py` → `utils/__init__.py`
+- `test_scripts/test_security_subprocess_paths.py` → `src/printing/base_driver.py`, `src/printing/platforms/__init__.py`, `src/printing/platforms/linux_driver.py`, `src/printing/platforms/win_driver.py`
+- `test_scripts/test_security_watermark_coercion.py` → `model/tools/watermark_tool.py`
 - `test_scripts/test_short_term_safety.py` → `model/edit_commands.py`, `model/pdf_model.py`, `view/pdf_view.py`
 - `test_scripts/test_single_instance_forwarding.py` → `controller/pdf_controller.py`, `main.py`, `utils/__init__.py`
 - `test_scripts/test_snapshot_restore.py` → `model/pdf_model.py`

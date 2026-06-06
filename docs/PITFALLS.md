@@ -836,3 +836,10 @@
 **Cause:** `_set_page_layout` did `layout = printer.pageLayout(); layout.setPageSize(...); printer.setPageLayout(layout)`. On Windows, `QPrinter.setPageLayout()` applies the orientation but **silently fails to apply the page size** to the device — `printer.pageLayout().pageSize()` stays at the printer default. (Confirmed live: after `setPageLayout` an A4 request read back as A3; `printer.setPageSize(QPageSize(A4))` read back as A4.) That is exactly why orientation looked fixed while size never changed.
 **Fix:** Use the dedicated setters: `printer.setPageSize(page_size)` + `printer.setPageOrientation(orientation)`. Both reach the GDI device (verified on a real A3/A4 printer) and work for PDF output too. Regression-guarded by `test_set_page_layout_actually_applies_page_size` (models the Windows quirk) and `test_set_page_layout_applies_size_on_real_printer` (live printer, skipped if none).
 **File:** `qt_bridge.py` (`_set_page_layout`)
+
+## Auto XREF repair on open makes the document memory-backed
+**Area:** `model/pdf_model.py` (`open_pdf`, `_repair_doc_xref_in_memory`)
+**Symptom:** After opening a PDF whose xref MuPDF had to rebuild, the active `doc.name` is `""` and save-to-original takes the full-rewrite path instead of an incremental update.
+**Cause:** When PyMuPDF flags `doc.is_repaired`, `open_pdf` round-trips the document through `tobytes(...)` and reopens it from bytes, so the doc is no longer file-backed (`doc.name` is empty). `save_as`/`_full_save_to_path` key "save back to original" off `doc.name == original_path`, which no longer holds.
+**Fix:** Intended, not a bug — a repaired document **cannot** be saved incrementally (`can_save_incrementally()` is False on it), so a full rewrite to the original path is the correct, safe outcome. Guard auto-repair so it runs only when `is_repaired` is set, keeping healthy files file-backed (and incremental-save-capable). Reading `is_repaired` is free; the round-trip cost (≈0.1 ms per KB of content) is paid once, only for damaged files.
+**File:** `model/pdf_model.py` (`open_pdf`, `_doc_needs_xref_repair`, `_repair_doc_xref_in_memory`)

@@ -644,6 +644,43 @@ class PDFModel:
         except AttributeError:
             pass
 
+    @staticmethod
+    def _doc_needs_xref_repair(doc: fitz.Document) -> bool:
+        """True when MuPDF had to rebuild a damaged cross-reference table on open.
+
+        ``is_repaired`` is set during ``fitz.open()`` itself, so reading it is a
+        free flag check — no extra parsing for healthy files.
+        """
+        return bool(getattr(doc, "is_repaired", False))
+
+    def _repair_doc_xref_in_memory(self, doc: fitz.Document) -> fitz.Document:
+        """Return a clean in-memory copy of a doc whose xref MuPDF rebuilt on open.
+
+        The in-memory document MuPDF hands back is already usable, but its xref is
+        not yet persisted cleanly (and a repaired doc cannot be saved
+        incrementally). Round-tripping the bytes with garbage collection produces
+        a fresh, internally-consistent xref so later saves don't inherit the
+        damage. ``garbage=1`` rebuilds the xref and compacts objects without the
+        heavier duplicate-pruning of ``garbage=4`` — full pruning still happens on
+        an explicit full save. On failure the original (already MuPDF-repaired)
+        doc is returned unchanged so opening still succeeds.
+        """
+        try:
+            repaired_bytes = doc.tobytes(garbage=1, deflate=True)
+            repaired = fitz.open("pdf", repaired_bytes)
+        except Exception as exc:  # noqa: BLE001 - never let auto-repair break open
+            logger.warning(
+                "開檔自動修復 XREF 失敗，沿用 MuPDF 載入的文件: %s",
+                self._safe_exc_message(exc),
+            )
+            return doc
+        try:
+            doc.close()
+        except Exception:
+            pass
+        logger.info("開檔偵測到損毀的 XREF 表，已自動於記憶體中重建乾淨的 xref")
+        return repaired
+
     def open_pdf(self, path: str, password: str | None = None, append: bool = False) -> str:
         """
         開啟 PDF 檔案並建立文字塊索引。
@@ -710,6 +747,12 @@ class PDFModel:
                 except Exception:
                     pass
                 doc = fallback
+
+            # 自動修復：MuPDF 開檔時會重建損毀的 XREF 表並標記 is_repaired。
+            # 此處於記憶體中以 garbage collection round-trip 重建乾淨的 xref，
+            # 讓後續儲存不會沿用損毀結構。健康檔案僅讀取一個旗標、不受影響。
+            if self._doc_needs_xref_repair(doc):
+                doc = self._repair_doc_xref_in_memory(doc)
 
             logger.debug(f"成功開啟PDF: {src_path}")
             session_id = str(uuid.uuid4())
@@ -4749,57 +4792,6 @@ class PDFModel:
             logger.debug(f"已透過暫存檔覆寫原檔: {path}")
         else:
             self.doc.save(path, garbage=0)
-
-    def repair_document_xref(self, output_path: str) -> dict:
-        """Write a repaired copy of the active document with a rebuilt xref table.
-
-        PyMuPDF rebuilds a damaged cross-reference table when it opens a broken
-        PDF (``doc.is_repaired``). Saving with full garbage collection then writes
-        a fresh, consistent xref. The output is written atomically via a temp file
-        in the target directory and then replaced into ``output_path``. Returns a
-        report describing the repair.
-        """
-        if not self.doc:
-            raise ValueError("沒有開啟的文件可供修復")
-
-        was_repaired = bool(getattr(self.doc, "is_repaired", False))
-        try:
-            xref_before = int(self.doc.xref_length())
-        except Exception:
-            xref_before = 0
-
-        target = Path(output_path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_name = tempfile.mkstemp(suffix=".pdf", dir=str(target.parent))
-        os.close(tmp_fd)
-        try:
-            # garbage=4 prunes unused/duplicate objects and rebuilds the xref;
-            # clean sanitizes content streams; deflate compresses the result.
-            self.doc.save(tmp_name, garbage=4, clean=True, deflate=True)
-            os.replace(tmp_name, str(target))
-        except Exception:
-            try:
-                os.unlink(tmp_name)
-            except OSError:
-                pass
-            raise
-
-        saved = fitz.open(str(target))
-        try:
-            xref_after = int(saved.xref_length())
-            clean_after_save = not bool(getattr(saved, "is_repaired", False))
-            page_count = int(saved.page_count)
-        finally:
-            saved.close()
-
-        return {
-            "was_repaired_on_open": was_repaired,
-            "xref_objects_before": xref_before,
-            "xref_objects_after": xref_after,
-            "page_count": page_count,
-            "clean_after_save": clean_after_save,
-            "output_path": str(target),
-        }
 
     def _render_page_gray_array(self, page_num: int, max_dim: int = 1000):
         """Render a page to a downscaled grayscale numpy array for skew analysis."""

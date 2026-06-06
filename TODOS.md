@@ -133,6 +133,23 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
   works out of the box (the verification layer is ready; only the bundled artifact +
   digests are missing). See `docs/ocr-weights-verification.md` for the update process.
 
+## Done (2026-06-06) -- Auto XREF repair on open (replaces manual toolbar action)
+
+- What: Removed the file-tab **"修復 XREF 表"** toolbar action and its view/controller
+  plumbing (`sig_repair_xref_requested`, `PDFView._repair_document_xref`,
+  `PDFController.repair_document_xref`) plus the now-dead on-disk
+  `PDFModel.repair_document_xref(output_path)`. Replaced with an automatic
+  check-and-repair in `PDFModel.open_pdf`: when MuPDF flags `doc.is_repaired`, the
+  document is round-tripped in memory (`_repair_doc_xref_in_memory`) so the active
+  doc carries a clean, consistent xref.
+- Startup impact: healthy files pay only one boolean flag read (median open held at
+  ~1 ms for 10–200 page docs); the round-trip (~0.1 ms per KB of content; ~200 ms
+  for a 1.7 MB text PDF) runs once and only for files MuPDF actually had to repair —
+  files that previously could not be saved incrementally anyway.
+- Tests: `test_scripts/test_xref_repair.py` rewritten to cover auto-repair-on-open
+  (damaged → repaired/memory-backed, content intact; healthy → untouched/file-backed).
+- Plan: `docs/plans/auto-xref-repair-on-open.md`. Pitfall recorded in `docs/PITFALLS.md`.
+
 ## Done (2026-06-01) -- Four Windows printing defects + review-finding follow-ups
 
 - What: Fixed the four print bugs the earlier commits `2408f65`/`9fd7d76` only appeared to fix (their tests exercised fake/PDF-output paths, never the GDI spooler). Plan: `docs/plans/2026-06-01-plan-surgical-fixes-for-eager-biscuit.md`; investigation: `4-problems-investigation.txt`.

@@ -289,7 +289,6 @@ class PDFView(QMainWindow):
     sig_insert_pages_from_file = Signal(str, list, int)  # source_file, source_pages, position
     sig_merge_pdfs_requested = Signal()
     sig_optimize_pdf_copy_requested = Signal()
-    sig_repair_xref_requested = Signal()
     sig_backend_bootstrap_requested = Signal()
 
     # --- 浮水印 Signals ---
@@ -1060,7 +1059,6 @@ class PDFView(QMainWindow):
         self._action_save_as = tb_file.addAction("另存新檔", self._save_as)
         self._action_save_as.setShortcut(QKeySequence("Ctrl+Shift+S"))
         self._action_optimize_copy = tb_file.addAction("另存為最佳化的副本", self._optimize_pdf_copy)
-        self._action_repair_xref = tb_file.addAction("修復 XREF 表", self._repair_document_xref)
         layout_file = QVBoxLayout(tab_file)
         layout_file.setContentsMargins(4, 0, 0, 0)
         layout_file.addWidget(tb_file)
@@ -4525,11 +4523,6 @@ class PDFView(QMainWindow):
             return
         self.sig_optimize_pdf_copy_requested.emit()
 
-    def _repair_document_xref(self):
-        if self.total_pages == 0:
-            show_error(self, "沒有可修復的 PDF")
-            return
-        self.sig_repair_xref_requested.emit()
     def _delete_pages(self):
         pages, ok = QInputDialog.getText(self, "刪除頁面", "輸入頁碼 (如 1,3-5):")
         if ok and pages:

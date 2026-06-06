@@ -576,8 +576,12 @@ warnings.
 Encrypted/un-authenticated PDFs are reported as unable to validate rather than
 silently passing.
 
-The XREF-repair feature (`PDFModel.repair_document_xref()`, wired to file-tab
-UI) rebuilds a damaged xref on save (`garbage=4, clean=True`), then
-`check_pdf_conformance()` confirms restoration (the issue clears).
+XREF repair is automatic on open: `PDFModel.open_pdf()` checks `doc.is_repaired`
+(the flag PyMuPDF sets when it rebuilds a damaged cross-reference table) and, if
+set, round-trips the document in memory (`_repair_doc_xref_in_memory`,
+`tobytes(garbage=1, deflate=True)` → reopen) so the active document carries a
+clean, consistent xref. Healthy files pay only a single flag read; the round-trip
+runs only for damaged files. `check_pdf_conformance()` then confirms restoration
+(the issue clears). There is no longer a manual "repair xref" toolbar action.
 
 See `docs/pdf_compliance.md` for scope, limitations, and test coverage.

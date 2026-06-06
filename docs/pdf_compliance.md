@@ -41,16 +41,21 @@ boolean convenience wrapper.
 
 The most common way a PDF becomes non-conformant in practice is a damaged
 **cross-reference table** (truncated downloads, broken `startxref` offsets,
-incremental-update corruption). The editor's **XREF repair** feature
-(`PDFModel.repair_document_xref`, wired to the file-tab "repair xref" action)
-addresses exactly this:
+incremental-update corruption). The editor's **automatic XREF repair** addresses
+exactly this, transparently on open (there is no manual action):
 
-- PyMuPDF rebuilds a damaged xref when it opens the file; saving with
-  `garbage=4, clean=True` then writes a fresh, internally-consistent xref table
-  and prunes unused/duplicate objects.
-- After repair, `check_pdf_conformance` reports a clean result on the output
+- PyMuPDF rebuilds a damaged xref when it opens the file and flags it via
+  `doc.is_repaired`. `PDFModel.open_pdf` detects that flag and round-trips the
+  document in memory (`doc.tobytes(garbage=1, deflate=True)` → reopen) so the
+  active document carries a fresh, internally-consistent xref before any edit.
+- Reading `doc.is_repaired` is free (the flag is set during the `fitz.open()`
+  that runs regardless), so healthy files pay nothing; the round-trip cost is
+  incurred only for files that were actually damaged.
+- After the in-memory repair, `check_pdf_conformance` reports a clean result
   (the "cross-reference table is damaged" issue clears), which is the verifiable
-  evidence that the repair restored structural conformance.
+  evidence that the repair restored structural conformance. A subsequent full
+  save writes the clean structure to disk (a previously-damaged document cannot
+  be saved incrementally, so it falls back to a full rewrite automatically).
 
 ## How to verify
 
