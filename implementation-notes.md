@@ -139,11 +139,11 @@ Chores kept separate from functional changes per the review.
   codex review remained sandbox-inconclusive so no independent automated reviewer ran.
 
 ### Round-2 follow-up (2026-06-06)
-- **Consolidated docs:** `git mv`'d the five tracked security reports
+- **Consolidated docs:** `git mv`'d all six tracked security reports
   (investigation-review, security-investigate, weakness_patch, weakness_patch_organized,
-  patch-weaknesses-found-in-immutable-knuth) from the repo root to `docs/security/`
-  (history preserved); updated their path references in TODOS.md + this file. The
-  untracked CJK scan doc is left as local scratch.
+  patch-weaknesses-found-in-immutable-knuth, and the CJK scan report 資安掃瞄.md) from
+  the repo root to `docs/security/` (history preserved); updated their path references
+  in TODOS.md + this file. (The CJK doc turned out to be tracked, not scratch.)
 - **`.gitignore` settings.json un-ignore (corrected):** the reviewer's snippet
   `.claude` + `!.claude/settings.json` does NOT work — git cannot re-include a child of
   an excluded directory. Used `.claude/*` + `!.claude/settings.json` instead, verified
