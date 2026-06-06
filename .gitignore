@@ -22,7 +22,12 @@ test_artifacts/
 .cursor/
 .agents/
 .worktrees/
-.claude
+# Ignore everything under .claude/ EXCEPT the shared project settings.json (the
+# completion-gate Stop hook). settings.local.json + scratch stay ignored. Note:
+# must use `.claude/*` not `.claude` — git cannot re-include a child of an
+# excluded *directory*.
+.claude/*
+!.claude/settings.json
 Claude-plans.lnk
 
 # 單一程式
