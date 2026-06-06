@@ -136,3 +136,58 @@ def test_open_pdf_allows_normal_document(tmp_path) -> None:
         assert len(model.doc) == 3
     finally:
         model.close()
+
+
+# --- render_page_pixmap central-clamp gap (F1 follow-up, xfail) -------------
+#
+# RED-LIGHT (xfail, strict): _safe_render_scale is applied only at the four leaf
+# render sites (image export, deskew, straighten, OCR). The central raster
+# chokepoint, ToolManager.render_page_pixmap, builds fitz.Matrix(scale, scale)
+# and renders with the raw scale -- so the interactive zoom path
+# (set_scale -> PDFModel.get_page_pixmap -> render_page_pixmap) is unguarded
+# against a page that clears the open-time size/page guards but carries an
+# outsized MediaBox. This test asserts the chokepoint clamps an oversized scale;
+# it is expected to FAIL until the clamp moves into render_page_pixmap. When that
+# fix lands the test XPASSes -- which strict=True turns into a hard failure, the
+# signal to remove this marker. Tracked in TODOS.md. get_pixmap is mocked so the
+# effective scale is captured WITHOUT allocating the pixmap the unclamped path
+# would build.
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="F1 follow-up: render_page_pixmap does not clamp scale centrally "
+    "(only the four leaf render sites do). Remove this marker when the clamp "
+    "moves into ToolManager.render_page_pixmap. Tracked in TODOS.md.",
+)
+def test_render_page_pixmap_clamps_oversized_scale(tmp_path, monkeypatch) -> None:
+    big = tmp_path / "huge_page.pdf"
+    doc = fitz.open()
+    doc.new_page(width=10_000, height=10_000)  # 1e8 px at scale 1.0, well over 40 MP
+    doc.save(str(big))
+    doc.close()
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(big))
+        rect = model.doc[0].rect
+        w, h = rect.width, rect.height
+        # Sanity: the page really is oversized at the requested scale.
+        assert w * h * 2.0 * 2.0 > pdf_model._MAX_PIXMAP_PX
+
+        captured: dict[str, float | None] = {}
+
+        def _capture_get_pixmap(self, *args, matrix=None, **kwargs):
+            captured["scale"] = matrix.a if matrix is not None else None
+            return object()  # dummy; the return value is not under test
+
+        monkeypatch.setattr(fitz.Page, "get_pixmap", _capture_get_pixmap)
+
+        model.tools.render_page_pixmap(1, scale=2.0)
+
+        eff = captured["scale"]
+        assert eff is not None, "render_page_pixmap did not reach get_pixmap"
+        # The chokepoint must clamp so the rendered pixmap stays under the cap.
+        assert w * h * eff * eff <= pdf_model._MAX_PIXMAP_PX * 1.01
+    finally:
+        model.close()

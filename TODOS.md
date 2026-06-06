@@ -73,6 +73,24 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
 - [ ] **Refresh build tooling** (`pip 21.2.3`, `setuptools 57.4.0`) in the `.venv` — old
   but not bundled into the exe, so low risk; update for build hygiene.
 
+### F1 follow-up — central render-scale clamp gap (recorded during /simplify code-review, 2026-06-06)
+
+- [ ] **Push `_safe_render_scale` into the central raster chokepoint.** The F1 patch applies
+  the 40 MP pixmap clamp only at four *leaf* render sites (image export, deskew, straighten,
+  OCR). `ToolManager.render_page_pixmap` (`model/tools/manager.py:71`) — which every render
+  flows through, including the interactive zoom path (`PDFController.set_scale` →
+  `PDFModel.get_page_pixmap` → `render_page_pixmap`) — builds `fitz.Matrix(scale, scale)` from
+  the raw scale with no clamp. A page that clears the open-time size/page guards but carries an
+  outsized MediaBox can therefore still OOM on zoom (CWE-400). `implementation-notes.md` records
+  that the central clamp was skipped to avoid perturbing ~30 render tests — test-churn avoidance,
+  not an architectural reason. **Fix:** clamp `scale` via `_safe_render_scale(page, scale)` inside
+  `render_page_pixmap` (both the no-overlay and overlay branches) so every raster path is bounded
+  by construction. **Red-light already in place:** `test_security_pdf_resource_guards.py::
+  test_render_page_pixmap_clamps_oversized_scale` is an `xfail(strict=True)` asserting the
+  chokepoint clamps an oversized scale — it flips to XPASS (a hard failure under `strict`) the
+  moment the clamp lands, prompting removal of the marker. This is the one genuine residual
+  security gap surfaced by the round-5 /simplify review.
+
 ### Repo governance / hygiene (recorded during code-review follow-up, 2026-06-05)
 
 - [x] **Refresh completion-gate pins + commit settings.json — DONE (2026-06-06).**
