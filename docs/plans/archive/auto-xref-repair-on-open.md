@@ -108,14 +108,25 @@ Detection is subtle — verified empirically (PyMuPDF 1.25.5):
 
 Both flags flip to False after `authenticate()`, and owner-only PDFs open with
 both already False — only the **trailer encryption string** in `doc.metadata`
-survives. Fix: gate the round-trip on `not _doc_is_encrypted(doc)` where
-`_doc_is_encrypted` reads `(doc.metadata or {}).get("encryption")`. The
-encrypted+damaged doc keeps MuPDF's in-memory-repaired (still encrypted,
-file-backed) document; a later full save (`encryption=KEEP`) writes a clean xref
-**and** preserves the password — verified end-to-end (saved-back file: `needs_pass=1`,
-`authenticate('usr')→2`, `is_repaired=False`, text intact). Covered by
-`test_open_damaged_encrypted_pdf_keeps_encryption` /
-`test_open_damaged_owner_only_pdf_keeps_encryption`.
+survives. The fix is **two parts** (a second review pass caught that the first cut
+fixed only the in-memory half):
+
+1. Gate the round-trip on `not _doc_is_encrypted(doc)` where `_doc_is_encrypted`
+   reads `(doc.metadata or {}).get("encryption")` — keeps the live doc encrypted.
+2. **Pass `encryption=fitz.PDF_ENCRYPT_KEEP` on every full-save-to-disk call.**
+   `Document.save()`'s `encryption` default is `PDF_ENCRYPT_NONE` (1), *not* KEEP
+   (0) — so `save(path, garbage=0)` with no explicit arg actively decrypts. A
+   repaired doc can't save incrementally, so it always takes the full-rewrite path
+   (`_full_save_to_path` / `save_as` full-save branch); without KEEP the password
+   was still stripped *on disk* even though the live doc stayed encrypted.
+
+Verified end-to-end through the real `model.save_as` (saved-back file:
+`needs_pass=1`, `authenticate('usr')→2`, `is_repaired=False`, text intact).
+Covered by `test_open_damaged_encrypted_pdf_keeps_encryption` /
+`test_open_damaged_owner_only_pdf_keeps_encryption`, both of which now
+`save_as` → reopen → assert the password survives (the in-memory-only assertions
+gave false confidence in the first cut). Residual: undo/redo still round-trips
+through a decrypted snapshot (separate pre-existing limitation).
 
 ## Follow-up: peak memory (code-review finding)
 

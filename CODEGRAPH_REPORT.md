@@ -15,9 +15,9 @@
 | Called (name seen in a call site) | 1791 |
 | **Never-called** | **1068** |
 | Never-called % | 37.4% |
-| Total edges | 21872 |
+| Total edges | 21878 |
 |   — defines | 3110 |
-|   — calls | 18403 |
+|   — calls | 18409 |
 |   — imports | 284 |
 |   — inherits | 75 |
 
@@ -1301,8 +1301,8 @@
 | function | `test_scripts/test_win_print_fixes.py` | 871 | `test_set_page_layout_applies_size_on_real_printer` |
 | function | `test_scripts/test_xref_repair.py` | 57 | `test_open_damaged_pdf_auto_repairs_in_memory` |
 | function | `test_scripts/test_xref_repair.py` | 91 | `test_open_damaged_encrypted_pdf_keeps_encryption` |
-| function | `test_scripts/test_xref_repair.py` | 129 | `test_open_damaged_owner_only_pdf_keeps_encryption` |
-| function | `test_scripts/test_xref_repair.py` | 159 | `test_open_healthy_pdf_is_left_file_backed` |
+| function | `test_scripts/test_xref_repair.py` | 146 | `test_open_damaged_owner_only_pdf_keeps_encryption` |
+| function | `test_scripts/test_xref_repair.py` | 189 | `test_open_healthy_pdf_is_left_file_backed` |
 | method | `view/dialogs/audit.py` | 119 | `PdfAuditReportDialog._on_stacked_bar_hovered` |
 | method | `view/dialogs/export.py` | 94 | `ExportPagesDialog._on_scope_changed` |
 | method | `view/dialogs/merge.py` | 141 | `MergePdfDialog._create_progress_dialog` |

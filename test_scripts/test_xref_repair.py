@@ -111,7 +111,7 @@ def test_open_damaged_encrypted_pdf_keeps_encryption() -> None:
             model.open_pdf(str(broken), password="user-pw")
 
             assert model.doc is not None
-            # Encryption must survive the open (this is the regression).
+            # Encryption must survive the open (in-memory half of the guarantee).
             assert _is_encrypted(model.doc), (
                 "auto-repair stripped encryption from a damaged encrypted PDF"
             )
@@ -122,8 +122,25 @@ def test_open_damaged_encrypted_pdf_keeps_encryption() -> None:
             )
             assert model.doc.page_count == 2
             assert "secret-page-0" in model.doc[0].get_text("text")
+
+            # The real, end-to-end guarantee: saving back to disk must NOT strip
+            # the password. A repaired doc full-rewrites (no incremental save), so
+            # the full-save path must pass encryption=KEEP.
+            model.save_as(str(broken))
         finally:
             model.close()
+
+        reopened = fitz.open(str(broken))
+        try:
+            assert reopened.needs_pass, "save-back stripped the user password"
+            assert reopened.authenticate("user-pw") in (2, 4, 6), (
+                "saved file no longer accepts the original password"
+            )
+            # And the rewrite produced a clean xref with content intact.
+            assert bool(getattr(reopened, "is_repaired", False)) is False
+            assert "secret-page-0" in reopened[0].get_text("text")
+        finally:
+            reopened.close()
 
 
 def test_open_damaged_owner_only_pdf_keeps_encryption() -> None:
@@ -152,8 +169,21 @@ def test_open_damaged_owner_only_pdf_keeps_encryption() -> None:
                 "owner-encrypted document must not be round-tripped to memory"
             )
             assert model.doc.page_count == 2
+
+            # Save-back must preserve the owner encryption (no password to enter,
+            # but the encryption dict / restrictions must survive the rewrite).
+            model.save_as(str(broken))
         finally:
             model.close()
+
+        reopened = fitz.open(str(broken))
+        try:
+            assert _is_encrypted(reopened), (
+                "save-back stripped owner-only encryption"
+            )
+            assert bool(getattr(reopened, "is_repaired", False)) is False
+        finally:
+            reopened.close()
 
 
 def test_open_healthy_pdf_is_left_file_backed() -> None:

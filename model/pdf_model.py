@@ -4809,7 +4809,10 @@ class PDFModel:
         if saving_over_open_file:
             # 先寫入暫存檔，關閉 doc 後再覆蓋原檔，最後重新開啟
             temp_save = Path(self.temp_dir.name) / f"save_{uuid.uuid4()}.pdf"
-            self.doc.save(str(temp_save), garbage=0)
+            # encryption=KEEP 保留來源加密：save() 的 encryption 預設為 NONE(1)，
+            # 會主動解密；加密又損毀的檔案無法增量儲存，一律走這條完整重寫路徑，
+            # 若不指定 KEEP 會默默移除密碼/權限。KEEP 對未加密文件為無動作。
+            self.doc.save(str(temp_save), garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)
             self.doc.close()
             try:
                 shutil.copy2(str(temp_save), path)
@@ -4821,7 +4824,7 @@ class PDFModel:
             self.doc = fitz.open(path)
             logger.debug(f"已透過暫存檔覆寫原檔: {path}")
         else:
-            self.doc.save(path, garbage=0)
+            self.doc.save(path, garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)
 
     def _render_page_gray_array(self, page_num: int, max_dim: int = 1000):
         """Render a page to a downscaled grayscale numpy array for skew analysis."""
@@ -4958,7 +4961,8 @@ class PDFModel:
                 # 若目標路徑為目前開啟的檔案，先寫暫存再覆蓋，避免 Windows Permission denied
                 if doc_name_resolved is not None and new_path_resolved == doc_name_resolved:
                     temp_save = Path(self.temp_dir.name) / f"save_{uuid.uuid4()}.pdf"
-                    doc_to_save.save(str(temp_save), garbage=0)
+                    # encryption=KEEP: 預設為 NONE(1) 會解密；保留來源加密。
+                    doc_to_save.save(str(temp_save), garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)
                     self.doc.close()
                     try:
                         shutil.copy2(str(temp_save), new_path)
@@ -4969,7 +4973,7 @@ class PDFModel:
                             pass
                     self.doc = fitz.open(new_path)
                 else:
-                    doc_to_save.save(new_path, garbage=0)
+                    doc_to_save.save(new_path, garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)
         finally:
             if prepared_doc is not None:
                 prepared_doc.close()

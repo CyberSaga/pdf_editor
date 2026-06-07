@@ -156,17 +156,22 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
 - Tests: `test_scripts/test_xref_repair.py` rewritten to cover auto-repair-on-open
   (damaged → repaired/memory-backed, content intact; healthy → untouched/file-backed).
 - Code-review follow-up (2026-06-07): auto-repair was silently **stripping
-  encryption** from a damaged+encrypted PDF — `tobytes()` emits a decrypted PDF, so
-  a save-back dropped the password (and could emit broken streams). Fixed: skip the
-  round-trip when `_doc_is_encrypted(doc)` (trailer encryption string in
-  `doc.metadata` — survives auth, covers owner-only). MuPDF's repaired-but-encrypted
-  doc is kept; full save with `encryption=KEEP` preserves protection + clean xref
-  (verified end-to-end). Added two red-light tests (user-pw + owner-only). Also
-  measured peak memory = ~1.15× file size (one serialization buffer, not ~2×) — no
-  change needed. Two new pitfalls recorded (encryption-skip; memory profile).
+  encryption** from a damaged+encrypted PDF. Two-part fix (a second review pass
+  caught that the first cut fixed only the in-memory half):
+  (1) skip the round-trip when `_doc_is_encrypted(doc)` (trailer encryption string
+  in `doc.metadata` — survives auth, covers owner-only); and
+  (2) pass `encryption=fitz.PDF_ENCRYPT_KEEP` on every full-save-to-disk call
+  (`_full_save_to_path`, `save_as` full-save branch) — `Document.save()`'s
+  `encryption` default is NONE(1) and **actively decrypts**, so a repaired doc's
+  forced full-rewrite still stripped the password *on disk* without it.
+  Verified end-to-end via real `save_as` → reopen (`needs_pass=1`, `auth=2`,
+  `is_repaired=False`). Tests now `save_as`→reopen→assert password survives (the
+  in-memory-only asserts gave false confidence). Also measured peak memory =
+  ~1.15× file size (one serialization buffer, not ~2×) — no change needed.
+  Residual: undo/redo still decrypts via snapshot round-trip (separate, pre-existing).
 - Plan: `docs/plans/archive/auto-xref-repair-on-open.md`. Pitfalls recorded in
   `docs/PITFALLS.md` (memory-backed-after-repair; no-deflate-on-open;
-  no-roundtrip-when-encrypted; peak-memory-~1.15×).
+  no-roundtrip-when-encrypted; save()-defaults-to-decrypt; peak-memory-~1.15×).
 
 ## Done (2026-06-01) -- Four Windows printing defects + review-finding follow-ups
 
