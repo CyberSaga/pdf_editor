@@ -260,6 +260,51 @@ def test_encrypted_doc_survives_in_memory_repair() -> None:
             model.close()
 
 
+def test_encrypted_doc_survives_doc_level_snapshot_restore() -> None:
+    # Doc-level snapshots (_capture_doc_snapshot / _restore_doc_from_snapshot) back
+    # the undo/redo of structural ops. Restore *replaces* self.doc with
+    # fitz.open(snapshot_bytes); if the snapshot was captured decrypted (save
+    # defaults to encryption=NONE) the live doc becomes decrypted after an undo,
+    # dropping the password on the next save. The capture must serialize with
+    # encryption=KEEP and the restore must re-authenticate the reopened handle.
+    # (Page-level snapshots mutate the still-encrypted live doc in place and are
+    # tracked separately — they do not replace the live handle.)
+    with tempfile.TemporaryDirectory() as tmp:
+        enc = Path(tmp) / "enc.pdf"
+        enc.write_bytes(_encrypted_pdf_bytes(user_pw="user-pw"))
+
+        model = PDFModel()
+        try:
+            model.open_pdf(str(enc), password="user-pw")
+            assert _is_encrypted(model.doc)
+
+            # Simulate a SnapshotCommand undo: capture the whole doc, then restore.
+            snapshot = model._capture_doc_snapshot()
+            model.replace_active_document_from_snapshot(snapshot, affected_pages=[1])
+
+            assert _is_encrypted(model.doc), (
+                "doc-level snapshot restore silently stripped encryption from the "
+                "live document"
+            )
+            assert not model.doc.is_encrypted  # re-authenticated, still usable
+            assert "secret-page-0" in model.doc[0].get_text("text")
+
+            # End-to-end: a save after the undo must keep the password.
+            model.save_as(str(enc))
+        finally:
+            model.close()
+
+        reopened = fitz.open(str(enc))
+        try:
+            assert reopened.needs_pass, "save after a doc-level undo stripped the password"
+            assert reopened.authenticate("user-pw") in (2, 4, 6), (
+                "saved file no longer accepts the original password"
+            )
+            assert "secret-page-0" in reopened[0].get_text("text")
+        finally:
+            reopened.close()
+
+
 def test_live_doc_tobytes_calls_preserve_encryption() -> None:
     """Structural guard: every ``self.doc.tobytes(...)`` round-trips the LIVE
     document, so it must pass ``encryption=`` (KEEP). ``tobytes`` defaults to

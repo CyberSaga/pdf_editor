@@ -187,8 +187,19 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
   (`test_live_doc_tobytes_calls_preserve_encryption`) that fails on any
   `self.doc.tobytes(...)` lacking `encryption=`. Behavioral tests:
   `test_encrypted_doc_survives_periodic_gc`, `test_encrypted_doc_survives_in_memory_repair`.
-  Residual: undo/redo still decrypts via snapshot round-trip (intentional — snapshots
-  reopen without a password; separate, pre-existing).
+- Doc-level snapshot decrypt closed (2026-06-07): the last instance of the invariant.
+  `_restore_doc_from_snapshot` *replaces* the live handle (`self.doc = fitz.open(snapshot_bytes)`),
+  so a structural-edit undo on an encrypted doc decrypted the live doc and the next save
+  lost the password. Fix: `_capture_doc_snapshot` serializes with `encryption=KEEP`;
+  `_restore_doc_from_snapshot` re-authenticates via `_reauthenticate_if_needed`. Test:
+  `test_encrypted_doc_survives_doc_level_snapshot_restore` (red→green, save-back `needs_pass=1`).
+  Verified the symmetric page-level path (`_restore_page_from_snapshot`) does **not** lose the
+  password — it mutates the still-encrypted live doc in place, so the saved file stays encrypted
+  (correcting the earlier "page-level needs re-encryption logic" framing).
+  Residual (deferred, NOT a password bug): page-level snapshot *bytes* in the undo history are
+  plaintext in memory — same exposure as the already-decrypted live doc, never on disk. Encrypting
+  them at rest needs real re-encryption (method+permissions+keys, session holds only one password);
+  spin up as a separate task.
 - Plan: `docs/plans/archive/auto-xref-repair-on-open.md`. Pitfalls recorded in
   `docs/PITFALLS.md` (memory-backed-after-repair; no-deflate-on-open;
   no-roundtrip-when-encrypted; save()+tobytes()-default-to-decrypt [structural:

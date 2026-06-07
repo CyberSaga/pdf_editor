@@ -3127,9 +3127,16 @@ class PDFModel:
     # ──────────────────────────────────────────────────────────────────────────
 
     def _capture_doc_snapshot(self) -> bytes:
-        """擷取整份文件的 bytes 快照（SnapshotCommand before/after 用）。"""
+        """擷取整份文件的 bytes 快照（SnapshotCommand before/after 用）。
+
+        encryption=KEEP：save() 的 encryption 預設為 NONE(1) 會解密。doc-level 快照
+        在還原時會「整份取代」live doc（_restore_doc_from_snapshot 重新 fitz.open），
+        若快照已解密，undo 後 live doc 即失去加密，下次存檔便遺失密碼。保留來源加密，
+        還原端再以 session 密碼重新驗證即可。（page-level 快照為原地插頁、不取代
+        live handle，加密狀態不受影響，另案追蹤。）
+        """
         stream = io.BytesIO()
-        self.doc.save(stream, garbage=0)
+        self.doc.save(stream, garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)
         return stream.getvalue()
 
     @staticmethod
@@ -3263,9 +3270,14 @@ class PDFModel:
         return pdf_optimizer.save_optimized_copy(self, new_path, options)
 
     def _restore_doc_from_snapshot(self, snapshot_bytes: bytes) -> None:
-        """用 bytes 快照替換整份文件（SnapshotCommand undo/redo 時呼叫）。"""
+        """用 bytes 快照替換整份文件（SnapshotCommand undo/redo 時呼叫）。
+
+        快照以 encryption=KEEP 擷取，故為加密檔案時重新開啟的 handle 會是鎖定狀態；
+        以 session 保存的密碼重新驗證後 live session 才能繼續算繪/編輯。未加密文件
+        為 no-op。
+        """
         self.doc.close()
-        self.doc = fitz.open("pdf", snapshot_bytes)
+        self.doc = self._reauthenticate_if_needed(fitz.open("pdf", snapshot_bytes))
         logger.debug(f"_restore_doc_from_snapshot: 已還原文件（{len(snapshot_bytes)} bytes）")
 
     def replace_active_document_from_snapshot(self, snapshot_bytes: bytes, affected_pages: list[int] | None = None) -> None:
