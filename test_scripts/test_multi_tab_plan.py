@@ -1794,6 +1794,29 @@ def test_34b_fullscreen_context_menu_offers_exit_action_and_triggers_toggle(mvc,
     assert not view.isFullScreen()
 
 
+def test_34c_fullscreen_lives_only_on_right_quick_button_with_icon(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "fullscreen_single_button.pdf", ["single button"])
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(320)
+
+    # 全螢幕 must no longer appear as a ribbon toolbar button...
+    ribbon_labels = [
+        action.text()
+        for toolbar in view._ribbon_toolbars
+        for action in toolbar.actions()
+    ]
+    assert "全螢幕" not in ribbon_labels
+
+    # ...only the right-side quick button remains, and it now carries the icon.
+    assert view.fullscreen_quick_btn.text() == "全螢幕"
+    assert not view.fullscreen_quick_btn.icon().isNull()
+
+    # The action itself stays alive for the F5 shortcut and the macOS View menu.
+    assert view._action_fullscreen.shortcut().toString() == "F5"
+
+
 def test_35_ctrl_alt_l_toggles_left_sidebar_with_focus_and_width_fallback(mvc, tmp_path):
     _, view, controller = mvc
     path = _make_pdf(tmp_path / "left_sidebar_toggle.pdf", ["page 1"])

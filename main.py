@@ -34,6 +34,21 @@ def run_merge_and_exit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _set_windows_app_user_model_id() -> None:
+    """Give Windows an explicit AppUserModelID so the taskbar uses the app's own
+    window icon and grouping instead of inheriting the host python(w).exe
+    identity. No-op off Windows. Must run before the first window is shown.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CyberSaga.PDFEditor")
+    except (OSError, AttributeError):  # pragma: no cover - Windows-only shell call
+        pass
+
+
 def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | dict[str, Any]:
     args = parse_cli(argv)
     cli_args = list(args.files)
@@ -43,13 +58,18 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
     if args.merge_output:
         return run_merge_and_exit(args)
 
+    _set_windows_app_user_model_id()
+
     from PySide6.QtWidgets import QApplication
 
+    from view.icons import load_app_icon
     from view.pdf_view import PDFView
 
     app = QApplication.instance()
     if app is None:
         app = QApplication([sys.argv[0], *cli_args])
+    # App-wide default icon so dialogs/secondary windows inherit it too.
+    app.setWindowIcon(load_app_icon())
 
     view = PDFView(defer_heavy_panels=not cli_args)
     # Apply the saved theme once here, at the composition root, so the view

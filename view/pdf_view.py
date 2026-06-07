@@ -754,6 +754,9 @@ class PDFView(QMainWindow):
         action = getattr(self, "_action_fullscreen", None)
         if action is not None:
             action.setEnabled(enabled)
+        btn = getattr(self, "fullscreen_quick_btn", None)
+        if btn is not None:
+            btn.setEnabled(enabled)
 
     def current_screen_name(self) -> str:
         handle = self.windowHandle()
@@ -1077,7 +1080,10 @@ class PDFView(QMainWindow):
         self._action_redo.setShortcut(QKeySequence("Ctrl+Y"))
         self._redo_mac_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
         self._redo_mac_shortcut.activated.connect(self.sig_redo.emit)
-        self._action_fullscreen = tb_common.addAction("全螢幕", self.sig_toggle_fullscreen.emit)
+        # 全螢幕 lives only on the right-side quick button now; keep the QAction
+        # off the ribbon but alive for the F5 shortcut and the macOS View menu.
+        self._action_fullscreen = QAction("全螢幕", self)
+        self._action_fullscreen.triggered.connect(self.sig_toggle_fullscreen.emit)
         tb_common.addAction("縮圖", self._show_thumbnails_tab)
         tb_common.addAction("搜尋", self._show_search_tab)
         tb_common.addAction("快照", self._snapshot_page)
@@ -1165,6 +1171,8 @@ class PDFView(QMainWindow):
         self.fit_view_btn = QPushButton("適應畫面")
         self.fit_view_btn.clicked.connect(self._fit_to_view)
         self.fullscreen_quick_btn = QPushButton("全螢幕")
+        self.fullscreen_quick_btn.setIcon(load_icon("全螢幕"))
+        self.fullscreen_quick_btn.setIconSize(QSize(24, 24))
         self.fullscreen_quick_btn.clicked.connect(self.sig_toggle_fullscreen.emit)
         self._action_undo_right = QAction("↺ 復原", self)
         self._action_undo_right.triggered.connect(self.sig_undo.emit)
@@ -1211,6 +1219,7 @@ class PDFView(QMainWindow):
             self.addAction(action)
         self._action_undo.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self._action_redo.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self._action_fullscreen.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self._action_fullscreen.setShortcut(QKeySequence(Qt.Key_F5))
 
     def _macos_menu_spec(self) -> list[tuple[str, list]]:

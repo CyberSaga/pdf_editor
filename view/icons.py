@@ -15,6 +15,10 @@ from pathlib import Path
 
 ICON_DIR: Path = Path(__file__).resolve().parents[1] / "appearance_design" / "function_icons"
 
+# Application/window icon (title bar, taskbar). A multi-resolution .ico so Qt
+# can pick the right size per DPI.
+APP_ICON_PATH: Path = Path(__file__).resolve().parents[1] / "appearance_design" / "app_icon.ico"
+
 # Action label text -> PNG filename (32 ribbon actions).
 ACTION_ICON_MAP: dict[str, str] = {
     "開啟": "01_開啟.png",
@@ -85,3 +89,14 @@ else:
             Qt.TransformationMode.SmoothTransformation,
         )
         return QIcon(scaled)
+
+    def load_app_icon() -> QIcon:
+        """Return the application/window :class:`QIcon` from :data:`APP_ICON_PATH`.
+
+        Loads the multi-resolution ``.ico`` directly (Qt selects the per-DPI
+        size). Returns a null :class:`QIcon` when the asset is missing so callers
+        can assign the result unconditionally.
+        """
+        if not APP_ICON_PATH.is_file():
+            return QIcon()
+        return QIcon(str(APP_ICON_PATH))
