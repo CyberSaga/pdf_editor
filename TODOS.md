@@ -165,13 +165,29 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
   `encryption` default is NONE(1) and **actively decrypts**, so a repaired doc's
   forced full-rewrite still stripped the password *on disk* without it.
   Verified end-to-end via real `save_as` → reopen (`needs_pass=1`, `auth=2`,
-  `is_repaired=False`). Tests now `save_as`→reopen→assert password survives (the
-  in-memory-only asserts gave false confidence). Also measured peak memory =
-  ~1.15× file size (one serialization buffer, not ~2×) — no change needed.
-  Residual: undo/redo still decrypts via snapshot round-trip (separate, pre-existing).
+  `is_repaired=False`). Also measured peak memory = ~1.15× file size (one
+  serialization buffer, not ~2×) — no change needed.
+- Third review pass (2026-06-07): preserving encryption surfaced a **new** regression
+  — the reopen-after-save handle was locked and never re-authenticated, so the live
+  editing session went dead (`get_text` raised "document closed or encrypted") after
+  an encrypted save-back. Fix: persist the open-time password on
+  `DocumentSession.password` (in-memory only) and re-authenticate via
+  `_reopen_doc_after_save` at both reopen points. Stress-verified 170/170 encrypted
+  save-backs keep content (live+disk) and the live doc usable. Test gotcha:
+  `needs_pass` stays 1 after a successful `authenticate()` — assert `not is_encrypted`
+  / `get_text()` works, not `needs_pass == 0`. Tests now assert in-memory + on-disk +
+  live-session survival (each prior cut's narrower asserts gave false confidence).
+- Same-root-cause sweep (2026-06-07): the live-editing GC (`_maybe_garbage_collect`,
+  every 20 edits) round-trips via `tobytes()` (also defaults `encryption=NONE`), so an
+  encrypted doc was silently decrypted in-memory mid-edit (`metadata.encryption`→None).
+  Fixed with `encryption=KEEP` + `_reauthenticate_if_needed` on the GC reopen. Covered
+  by `test_encrypted_doc_survives_periodic_gc`. Residual: undo/redo still decrypts via
+  snapshot round-trip (intentional — snapshots reopen without a password; separate,
+  pre-existing).
 - Plan: `docs/plans/archive/auto-xref-repair-on-open.md`. Pitfalls recorded in
   `docs/PITFALLS.md` (memory-backed-after-repair; no-deflate-on-open;
-  no-roundtrip-when-encrypted; save()-defaults-to-decrypt; peak-memory-~1.15×).
+  no-roundtrip-when-encrypted; save()+tobytes()-default-to-decrypt;
+  reopen-must-reauthenticate; peak-memory-~1.15×).
 
 ## Done (2026-06-01) -- Four Windows printing defects + review-finding follow-ups
 

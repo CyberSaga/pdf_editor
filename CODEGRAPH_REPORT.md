@@ -9,15 +9,15 @@
 | ------------------------------ | ---------- |
 | Python files indexed | 200 |
 | Classes | 251 |
-| Functions | 1497 |
-| Methods | 1362 |
-| Total callable symbols | 2859 |
-| Called (name seen in a call site) | 1791 |
-| **Never-called** | **1068** |
+| Functions | 1498 |
+| Methods | 1365 |
+| Total callable symbols | 2863 |
+| Called (name seen in a call site) | 1793 |
+| **Never-called** | **1070** |
 | Never-called % | 37.4% |
-| Total edges | 21878 |
-|   — defines | 3110 |
-|   — calls | 18409 |
+| Total edges | 21900 |
+|   — defines | 3114 |
+|   — calls | 18427 |
 |   — imports | 284 |
 |   — inherits | 75 |
 
@@ -27,19 +27,19 @@
 | -------------------- | ------- | --------- | ----------- | --------- |
 | `view/` | 13 | 26 | 25 | 333 |
 | `controller/` | 2 | 11 | 0 | 183 |
-| `model/` | 24 | 49 | 89 | 301 |
+| `model/` | 24 | 49 | 89 | 304 |
 | `utils/` | 5 | 2 | 19 | 9 |
 | `src/` | 17 | 27 | 34 | 106 |
 | `scripts/` | 9 | 0 | 53 | 0 |
-| `test_scripts/` | 123 | 132 | 1245 | 406 |
+| `test_scripts/` | 123 | 132 | 1246 | 406 |
 
 ## 3. Heaviest Classes (by method count)
 
 | Class | Methods |
 | -------------------------------------------------- | --------- |
 | `PDFView` | 245 |
+| `PDFModel` | 165 |
 | `PDFController` | 164 |
-| `PDFModel` | 162 |
 | `_FakeEvent` | 38 |
 | `TextBlockManager` | 37 |
 | `UnifiedPrintDialog` | 32 |
@@ -161,8 +161,8 @@
 | `controller/pdf_controller.py` | 23 |
 | `test_scripts/test_ocr_tool_surya.py` | 23 |
 | `test_scripts/test_text_editing_fidelity_suite.py` | 23 |
+| `model/pdf_model.py` | 21 |
 | `test_scripts/test_print_layout.py` | 21 |
-| `model/pdf_model.py` | 20 |
 | `test_scripts/test_completion_proof_hook.py` | 20 |
 | `test_scripts/test_ocr_types.py` | 20 |
 | `test_scripts/test_main_startup_behavior.py` | 19 |
@@ -216,6 +216,7 @@
 | `test_scripts/test_page_deskew_scope.py` | 5 |
 | `test_scripts/test_pdf_compliance.py` | 5 |
 | `test_scripts/test_print_controller_flow.py` | 5 |
+| `test_scripts/test_xref_repair.py` | 5 |
 | `test_scripts/live_acrobat_parity_run.py` | 4 |
 | `test_scripts/test_cli_argparse.py` | 4 |
 | `test_scripts/test_color_profile_controller.py` | 4 |
@@ -229,7 +230,6 @@
 | `test_scripts/test_single_instance_forwarding.py` | 4 |
 | `test_scripts/test_thumbnail_context_menu.py` | 4 |
 | `test_scripts/test_week1_model_regressions.py` | 4 |
-| `test_scripts/test_xref_repair.py` | 4 |
 | `model/pdf_optimizer.py` | 3 |
 | `test_scripts/test_browse_selection_gui_regressions.py` | 3 |
 | `test_scripts/test_color_profile_enum.py` | 3 |
@@ -339,23 +339,24 @@
 | method | `model/pdf_model.py` | 178 | `TextHit.__getitem__` |
 | method | `model/pdf_model.py` | 181 | `TextHit.__iter__` |
 | method | `model/pdf_model.py` | 184 | `TextHit.__len__` |
-| method | `model/pdf_model.py` | 337 | `PDFModel.session_ids` |
-| method | `model/pdf_model.py` | 379 | `PDFModel.activate_session_by_index` |
-| method | `model/pdf_model.py` | 391 | `PDFModel.has_any_unsaved_changes` |
-| method | `model/pdf_model.py` | 447 | `PDFModel.doc` |
-| method | `model/pdf_model.py` | 460 | `PDFModel.original_path` |
-| method | `model/pdf_model.py` | 473 | `PDFModel.saved_path` |
-| method | `model/pdf_model.py` | 486 | `PDFModel.block_manager` |
-| method | `model/pdf_model.py` | 499 | `PDFModel.command_manager` |
-| method | `model/pdf_model.py` | 512 | `PDFModel.edit_count` |
-| method | `model/pdf_model.py` | 525 | `PDFModel.pending_edits` |
-| method | `model/pdf_model.py` | 545 | `PDFModel.run_reopen_anchors` |
-| method | `model/pdf_model.py` | 558 | `PDFModel.run_reopen_anchor_sizes` |
-| method | `model/pdf_model.py` | 934 | `PDFModel._y_overlaps` |
-| method | `model/pdf_model.py` | 937 | `PDFModel._shift_rect_left` |
-| method | `model/pdf_model.py` | 950 | `PDFModel._shift_rect_right` |
-| method | `model/pdf_model.py` | 1513 | `PDFModel.capture_print_input_pdf_bytes` |
-| method | `model/pdf_model.py` | 2156 | `PDFModel._iter_page_annots` |
+| method | `model/pdf_model.py` | 342 | `PDFModel.session_ids` |
+| method | `model/pdf_model.py` | 384 | `PDFModel.activate_session_by_index` |
+| method | `model/pdf_model.py` | 396 | `PDFModel.has_any_unsaved_changes` |
+| method | `model/pdf_model.py` | 452 | `PDFModel.doc` |
+| method | `model/pdf_model.py` | 465 | `PDFModel.original_path` |
+| method | `model/pdf_model.py` | 478 | `PDFModel.saved_path` |
+| method | `model/pdf_model.py` | 491 | `PDFModel.password` |
+| method | `model/pdf_model.py` | 504 | `PDFModel.block_manager` |
+| method | `model/pdf_model.py` | 517 | `PDFModel.command_manager` |
+| method | `model/pdf_model.py` | 530 | `PDFModel.edit_count` |
+| method | `model/pdf_model.py` | 543 | `PDFModel.pending_edits` |
+| method | `model/pdf_model.py` | 563 | `PDFModel.run_reopen_anchors` |
+| method | `model/pdf_model.py` | 576 | `PDFModel.run_reopen_anchor_sizes` |
+| method | `model/pdf_model.py` | 955 | `PDFModel._y_overlaps` |
+| method | `model/pdf_model.py` | 958 | `PDFModel._shift_rect_left` |
+| method | `model/pdf_model.py` | 971 | `PDFModel._shift_rect_right` |
+| method | `model/pdf_model.py` | 1534 | `PDFModel.capture_print_input_pdf_bytes` |
+| method | `model/pdf_model.py` | 2177 | `PDFModel._iter_page_annots` |
 | function | `model/pdf_optimizer.py` | 112 | `_init_image_rewrite_worker` |
 | function | `model/pdf_optimizer.py` | 175 | `_rewrite_source_image_task` |
 | function | `model/pdf_optimizer.py` | 188 | `_rewrite_extracted_image_task` |
@@ -1301,8 +1302,9 @@
 | function | `test_scripts/test_win_print_fixes.py` | 871 | `test_set_page_layout_applies_size_on_real_printer` |
 | function | `test_scripts/test_xref_repair.py` | 57 | `test_open_damaged_pdf_auto_repairs_in_memory` |
 | function | `test_scripts/test_xref_repair.py` | 91 | `test_open_damaged_encrypted_pdf_keeps_encryption` |
-| function | `test_scripts/test_xref_repair.py` | 146 | `test_open_damaged_owner_only_pdf_keeps_encryption` |
-| function | `test_scripts/test_xref_repair.py` | 189 | `test_open_healthy_pdf_is_left_file_backed` |
+| function | `test_scripts/test_xref_repair.py` | 162 | `test_open_damaged_owner_only_pdf_keeps_encryption` |
+| function | `test_scripts/test_xref_repair.py` | 210 | `test_encrypted_doc_survives_periodic_gc` |
+| function | `test_scripts/test_xref_repair.py` | 239 | `test_open_healthy_pdf_is_left_file_backed` |
 | method | `view/dialogs/audit.py` | 119 | `PdfAuditReportDialog._on_stacked_bar_hovered` |
 | method | `view/dialogs/export.py` | 94 | `ExportPagesDialog._on_scope_changed` |
 | method | `view/dialogs/merge.py` | 141 | `MergePdfDialog._create_progress_dialog` |
@@ -1448,7 +1450,7 @@
 ### `model/pdf_model.py`
 **Classes:** `TextHit`, `_EditTextResolveResult`, `DocumentSession`, `PDFModel`
 **Functions:** `_guard_before_open`, `_safe_render_scale`, `_install_rawdict_text_compat`, `_classify_insert_path`
-**Methods:** 166 total, 20 never-called
+**Methods:** 169 total, 21 never-called
 
 ### `model/pdf_optimizer.py`
 **Classes:** `PdfOptimizeOptions`, `PdfAuditItem`, `PdfAuditReport`, `PdfOptimizationResult`, `PdfOptimizeExecutionProfile`
@@ -2121,7 +2123,7 @@
 
 ### `test_scripts/test_xref_repair.py`
 *Auto-repair of a damaged XREF table when a PDF is opened.  Mission: 開檔自動修復 XREF 表. PyMuPDF rebuilds a broken cross-refer*
-**Functions:** `_valid_pdf_bytes`, `_corrupt_startxref`, `_encrypted_pdf_bytes`, `_is_encrypted`, `test_open_damaged_pdf_auto_repairs_in_memory`⚠, `test_open_damaged_encrypted_pdf_keeps_encryption`⚠, `test_open_damaged_owner_only_pdf_keeps_encryption`⚠, `test_open_healthy_pdf_is_left_file_backed`⚠
+**Functions:** `_valid_pdf_bytes`, `_corrupt_startxref`, `_encrypted_pdf_bytes`, `_is_encrypted`, `test_open_damaged_pdf_auto_repairs_in_memory`⚠, `test_open_damaged_encrypted_pdf_keeps_encryption`⚠, `test_open_damaged_owner_only_pdf_keeps_encryption`⚠, `test_encrypted_doc_survives_periodic_gc`⚠, `test_open_healthy_pdf_is_left_file_backed`⚠
 
 ### `test_scripts/validate_optimized_pdf.py`
 **Functions:** `_tail_has_eof`, `_sample_page_indexes`, `validate_pdf_integrity`, `main`

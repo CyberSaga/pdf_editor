@@ -127,6 +127,22 @@ def test_open_damaged_encrypted_pdf_keeps_encryption() -> None:
             # the password. A repaired doc full-rewrites (no incremental save), so
             # the full-save path must pass encryption=KEEP.
             model.save_as(str(broken))
+
+            # ...and the LIVE editing session must survive that save. Preserving
+            # encryption means the reopen-after-save handle is locked until it is
+            # re-authenticated with the session password; without that, the
+            # in-editor document goes dead (no render/extract/edit).
+            #
+            # NB: needs_pass stays 1 on an encrypted file even after a successful
+            # authenticate() — it reports "this file has a password", not "locked
+            # right now". The live-authenticated signal is is_encrypted flipping
+            # to False; the real guarantee is that content is readable again.
+            assert not model.doc.is_encrypted, (
+                "live document not re-authenticated after encrypted save-back"
+            )
+            assert "secret-page-0" in model.doc[0].get_text("text"), (
+                "live document unusable after encrypted save-back"
+            )
         finally:
             model.close()
 
@@ -173,6 +189,11 @@ def test_open_damaged_owner_only_pdf_keeps_encryption() -> None:
             # Save-back must preserve the owner encryption (no password to enter,
             # but the encryption dict / restrictions must survive the rewrite).
             model.save_as(str(broken))
+
+            # Owner-only PDFs reopen without a password, so the live session
+            # stays usable — assert it explicitly so this path is covered too.
+            assert model.doc.page_count == 2
+            assert model.doc[0].get_text("text") is not None
         finally:
             model.close()
 
@@ -184,6 +205,35 @@ def test_open_damaged_owner_only_pdf_keeps_encryption() -> None:
             assert bool(getattr(reopened, "is_repaired", False)) is False
         finally:
             reopened.close()
+
+
+def test_encrypted_doc_survives_periodic_gc() -> None:
+    # Same root cause as the save paths: the live-editing GC
+    # (_maybe_garbage_collect, every 20 edits) round-trips the doc through
+    # tobytes(), whose encryption default is NONE(1) — without encryption=KEEP it
+    # silently decrypts the *live* document in memory, so a later save would drop
+    # the password even though the save paths themselves preserve it. Uses a
+    # healthy (undamaged) encrypted file: this bug is independent of xref repair.
+    with tempfile.TemporaryDirectory() as tmp:
+        enc = Path(tmp) / "enc.pdf"
+        enc.write_bytes(_encrypted_pdf_bytes(user_pw="user-pw"))
+
+        model = PDFModel()
+        try:
+            model.open_pdf(str(enc), password="user-pw")
+            assert _is_encrypted(model.doc)
+
+            model.edit_count = 20  # trigger the full-GC round-trip branch
+            model._maybe_garbage_collect()
+
+            assert _is_encrypted(model.doc), (
+                "periodic GC silently stripped encryption from the live document"
+            )
+            # Still authenticated and usable after the round-trip.
+            assert not model.doc.is_encrypted
+            assert "secret-page-0" in model.doc[0].get_text("text")
+        finally:
+            model.close()
 
 
 def test_open_healthy_pdf_is_left_file_backed() -> None:

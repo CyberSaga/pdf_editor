@@ -593,7 +593,11 @@ round-trip would silently strip the password/permissions on the next save.
 `open_pdf` skips the round-trip when `_doc_is_encrypted(doc)` (trailer encryption
 string in `doc.metadata`, which survives auth and covers owner-only files);
 MuPDF's repaired-but-encrypted doc is kept and a later full save with
-`encryption=KEEP` writes a clean xref while preserving the encryption.
+`encryption=KEEP` writes a clean xref while preserving the encryption. Because the
+save-over-open-file path closes and reopens the doc (to release the Windows lock),
+the session keeps the open-time password (`DocumentSession.password`, in-memory)
+and re-authenticates the reopened handle via `_reopen_doc_after_save` — otherwise
+the live editing session would be left locked after an encrypted save-back.
 There is no longer a manual "repair xref" toolbar action.
 
 See `docs/pdf_compliance.md` for scope, limitations, and test coverage.

@@ -122,11 +122,40 @@ fixed only the in-memory half):
 
 Verified end-to-end through the real `model.save_as` (saved-back file:
 `needs_pass=1`, `authenticate('usr')→2`, `is_repaired=False`, text intact).
+
+**Part 3 (third review pass): re-authenticate the reopen-after-save handle.**
+Preserving encryption surfaced a *new* regression: the save-over-open-file paths
+close the live doc (to release the Windows lock) and `fitz.open(path)` again — but
+that reopened handle is now locked (`needs_pass`) and nothing re-authenticated it,
+so the live editing session went dead (`get_text()` raised "document closed or
+encrypted"). `DocumentSession` did not persist the password. Fix: store the
+open-time password on `DocumentSession.password` (in-memory only) and route both
+reopen points through `_reopen_doc_after_save`, which re-authenticates when the
+reopened doc `needs_pass`. Stress-verified: 170/170 encrypted save-backs preserve
+content (live + disk) and keep the live doc usable.
+
+Test gotcha learned: `needs_pass` stays 1 on an encrypted file even after a
+successful `authenticate()` — assert `not is_encrypted` / that `get_text()` works,
+not `needs_pass == 0`. Benign-but-noisy `aes padding out of range` warnings appear
+when re-serializing a repaired encrypted doc (content verified byte-correct).
+
 Covered by `test_open_damaged_encrypted_pdf_keeps_encryption` /
-`test_open_damaged_owner_only_pdf_keeps_encryption`, both of which now
-`save_as` → reopen → assert the password survives (the in-memory-only assertions
-gave false confidence in the first cut). Residual: undo/redo still round-trips
-through a decrypted snapshot (separate pre-existing limitation).
+`test_open_damaged_owner_only_pdf_keeps_encryption`, which now `save_as` → reopen
+→ assert the password survives **and** the live doc stays usable (the in-memory-only
+assertions gave false confidence in the first cut; the on-disk-only assertions gave
+false confidence in the second).
+
+**Part 4: the same root cause hit live editing too.** `_maybe_garbage_collect()`
+round-trips the doc every 20 edits via `tobytes(garbage=4, deflate=True)` —
+`tobytes`'s encryption default is also NONE(1), so an encrypted doc being edited
+was silently decrypted *in memory* after 20 edits (`metadata.encryption` →
+`None`), and the next save dropped the password even with the save paths fixed.
+Fixed: `encryption=fitz.PDF_ENCRYPT_KEEP` on the GC round-trip + re-authenticate
+the reopened handle (shared `_reauthenticate_if_needed`). Covered by
+`test_encrypted_doc_survives_periodic_gc` (healthy encrypted file; independent of
+xref repair). Residual: undo/redo still round-trips through a *decrypted* snapshot
+(intentional — snapshots are reopened without a password — and not re-encryptable
+without re-authentication; separate pre-existing limitation).
 
 ## Follow-up: peak memory (code-review finding)
 

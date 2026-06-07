@@ -262,6 +262,10 @@ class DocumentSession:
     original_path: str
     doc: fitz.Document
     saved_path: str | None = None
+    # Password captured at open (in-memory only), used to re-authenticate the
+    # reopen-after-save handle when a full save preserves encryption. Never
+    # logged or persisted to disk; the decrypted content already lives in RAM.
+    password: str | None = None
     block_manager: TextBlockManager = field(default_factory=TextBlockManager)
     command_manager: CommandManager = field(default_factory=CommandManager)
     pending_edits: list = field(default_factory=list)
@@ -278,6 +282,7 @@ class PDFModel:
         self._legacy_doc: fitz.Document | None = None
         self._legacy_original_path: str | None = None
         self._legacy_saved_path: str | None = None
+        self._legacy_password: str | None = None
         self._legacy_block_manager: TextBlockManager = TextBlockManager()
         self._legacy_command_manager: CommandManager = CommandManager()
         self._legacy_edit_count: int = 0
@@ -481,6 +486,19 @@ class PDFModel:
             session.saved_path = value
         else:
             self._legacy_saved_path = value
+
+    @property
+    def password(self) -> str | None:
+        session = self._active_session()
+        return session.password if session else self._legacy_password
+
+    @password.setter
+    def password(self, value: str | None) -> None:
+        session = self._active_session()
+        if session:
+            session.password = value
+        else:
+            self._legacy_password = value
 
     @property
     def block_manager(self) -> TextBlockManager:
@@ -792,6 +810,9 @@ class PDFModel:
                 display_name=src_path.name,
                 original_path=str(src_path),
                 doc=doc,
+                # Kept in-memory so a save that preserves encryption can
+                # re-authenticate the reopened handle (see _reopen_doc_after_save).
+                password=password,
             )
             self._sessions_by_id[session_id] = session
             self._session_ids.append(session_id)
@@ -3492,9 +3513,14 @@ class PDFModel:
         # 完整層：每 20 次重建文件以清孤立物件
         if self.edit_count % 20 == 0:
             try:
-                data = self.doc.tobytes(garbage=4, deflate=True)
+                # encryption=KEEP：tobytes 的 encryption 預設為 NONE(1) 會解密；
+                # 不指定會讓加密文件在編輯途中被默默解密（記憶體中），之後存檔即遺失
+                # 密碼。重新開啟後若仍需密碼，以 session 保存的密碼重新驗證。
+                data = self.doc.tobytes(
+                    garbage=4, deflate=True, encryption=fitz.PDF_ENCRYPT_KEEP
+                )
                 self.doc.close()
-                self.doc = fitz.open("pdf", data)
+                self.doc = self._reauthenticate_if_needed(fitz.open("pdf", data))
                 self.block_manager.build_index(self.doc)
                 logger.info(
                     f"完整 GC 完成（第 {self.edit_count} 次編輯後），已重新載入文件"
@@ -4797,6 +4823,34 @@ class PDFModel:
 
     # _save_state() 已於 Phase 6 移除，所有 undo/redo 由 CommandManager 統一管理。
 
+    def _reauthenticate_if_needed(self, doc: fitz.Document) -> fitz.Document:
+        """Re-authenticate a freshly (re)opened encrypted handle in place.
+
+        Any time an encrypted doc is round-tripped (``tobytes``/save+reopen) the
+        new handle comes back locked (``needs_pass``); until it is re-authenticated
+        with the password captured at open, the live session can't render, extract
+        text, or edit. No-op for unencrypted docs (``needs_pass`` is 0), so it is
+        safe to call on every reopen/round-trip path.
+        """
+        if doc.needs_pass:
+            pw = self.password
+            if pw is None:
+                logger.warning("重新開啟文件仍加密但未保存密碼，無法自動解鎖")
+            elif doc.authenticate(pw) == 0:
+                logger.warning("文件密碼重新驗證失敗，維持鎖定")
+        return doc
+
+    def _reopen_doc_after_save(self, path: str) -> fitz.Document:
+        """Reopen a just-saved file, re-authenticating if it kept encryption.
+
+        Saving with ``encryption=KEEP`` produces an encrypted file, so the
+        reopened handle is locked until re-authenticated. Without this, the live
+        editing session would go dead (no render / text extraction / edits) after
+        an encrypted save-back — the save paths close the in-memory authenticated
+        doc to release the Windows file lock, then reopen from disk.
+        """
+        return self._reauthenticate_if_needed(fitz.open(path))
+
     def _full_save_to_path(self, path: str):
         """
         完整儲存到指定路徑。若目標路徑與目前開啟的檔案相同（doc.name），
@@ -4821,7 +4875,7 @@ class PDFModel:
                     os.unlink(temp_save)
                 except OSError as e:
                     logger.warning(f"無法刪除暫存檔 {temp_save}: {e}")
-            self.doc = fitz.open(path)
+            self.doc = self._reopen_doc_after_save(path)
             logger.debug(f"已透過暫存檔覆寫原檔: {path}")
         else:
             self.doc.save(path, garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)
@@ -4971,7 +5025,7 @@ class PDFModel:
                             os.unlink(temp_save)
                         except OSError:
                             pass
-                    self.doc = fitz.open(new_path)
+                    self.doc = self._reopen_doc_after_save(new_path)
                 else:
                     doc_to_save.save(new_path, garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)
         finally:
