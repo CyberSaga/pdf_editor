@@ -584,9 +584,16 @@ xref. It deliberately skips `deflate=True`: re-compressing streams is the domina
 cost on large/image-heavy files (≈20 ms/MB) and adds nothing to a clean-xref repair,
 so the round-trip stays at ≈2.5–5 ms/MB (~1.3–2.6 s worst case at the 512 MB open
 cap; a real damaged 47 MB / 402-page file repaired on open in ~240 ms with content
-byte-identical to the healthy file). Healthy files pay only a single flag read; the
-round-trip runs only for damaged files. `check_pdf_conformance()` then confirms
-restoration (the issue clears).
+byte-identical to the healthy file). Peak memory is ~1.15× file size (one
+serialization buffer; the source streams lazily). Healthy files pay only a single
+flag read; the round-trip runs only for damaged files. `check_pdf_conformance()`
+then confirms restoration (the issue clears).
+**Encrypted documents are exempt:** `tobytes()` emits a decrypted PDF, so a
+round-trip would silently strip the password/permissions on the next save.
+`open_pdf` skips the round-trip when `_doc_is_encrypted(doc)` (trailer encryption
+string in `doc.metadata`, which survives auth and covers owner-only files);
+MuPDF's repaired-but-encrypted doc is kept and a later full save with
+`encryption=KEEP` writes a clean xref while preserving the encryption.
 There is no longer a manual "repair xref" toolbar action.
 
 See `docs/pdf_compliance.md` for scope, limitations, and test coverage.

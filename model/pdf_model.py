@@ -653,6 +653,22 @@ class PDFModel:
         """
         return bool(getattr(doc, "is_repaired", False))
 
+    @staticmethod
+    def _doc_is_encrypted(doc: fitz.Document) -> bool:
+        """True when the *source* document is encrypted (any scheme).
+
+        The ``needs_pass`` / ``is_encrypted`` flags both flip to False once the
+        document is authenticated (and an owner-password-only PDF opens with both
+        already False), so neither survives to the repair branch. The trailer's
+        encryption string in ``doc.metadata`` does survive — it stays populated
+        after authentication and is set even for owner-only encryption — so it is
+        the reliable signal for "this file was encrypted on disk".
+
+        Reading ``metadata`` is cheap, and this is only consulted on the damaged
+        path (gated behind ``is_repaired``), so healthy files never touch it.
+        """
+        return bool((doc.metadata or {}).get("encryption"))
+
     def _repair_doc_xref_in_memory(self, doc: fitz.Document) -> fitz.Document:
         """Return a clean in-memory copy of a doc whose xref MuPDF rebuilt on open.
 
@@ -760,7 +776,12 @@ class PDFModel:
             # 自動修復：MuPDF 開檔時會重建損毀的 XREF 表並標記 is_repaired。
             # 此處於記憶體中以 garbage collection round-trip 重建乾淨的 xref，
             # 讓後續儲存不會沿用損毀結構。健康檔案僅讀取一個旗標、不受影響。
-            if self._doc_needs_xref_repair(doc):
+            #
+            # 但加密檔案除外：tobytes() 會輸出「已解密」的內容，round-trip 會默默
+            # 移除密碼/權限保護。加密又損毀的檔案維持 MuPDF 修復後的（仍加密的）
+            # 文件即可——之後的完整儲存（encryption=KEEP）會寫出乾淨的 xref 並保留
+            # 加密。偵測訊號用 metadata 的加密字串（驗證後仍存在，且涵蓋 owner-only）。
+            if self._doc_needs_xref_repair(doc) and not self._doc_is_encrypted(doc):
                 doc = self._repair_doc_xref_in_memory(doc)
 
             logger.debug(f"成功開啟PDF: {src_path}")

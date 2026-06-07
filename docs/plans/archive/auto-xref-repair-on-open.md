@@ -91,6 +91,41 @@ duplicate-pruning + stream compression happen on an explicit save. Text-heavy PD
 are object-count-bound rather than stream-bound (deflate ~neutral), but real
 200 MB+ files are image-heavy — exactly where the win lands.
 
+## Follow-up: encrypted documents must skip the round-trip (code-review finding)
+
+A post-merge review found a silent regression: `doc.tobytes()` on an
+authenticated encrypted doc emits a **decrypted** PDF, so round-tripping a file
+that is *both encrypted and damaged* dropped its password/permissions on the next
+save (and could emit broken streams — `MuPDF error: aes padding out of range`).
+
+Detection is subtle — verified empirically (PyMuPDF 1.25.5):
+
+| case | `needs_pass` | `is_encrypted` | `metadata['encryption']` |
+|------|-------------|----------------|--------------------------|
+| user-pw (after auth) | 1→0 on roundtrip | True→**False** | None → `'Standard V5 R6 256-bit AES'` |
+| owner-only (empty user pw) | 0 | **False** | `'Standard V5 R6 256-bit AES'` |
+| plain | 0 | False | None |
+
+Both flags flip to False after `authenticate()`, and owner-only PDFs open with
+both already False — only the **trailer encryption string** in `doc.metadata`
+survives. Fix: gate the round-trip on `not _doc_is_encrypted(doc)` where
+`_doc_is_encrypted` reads `(doc.metadata or {}).get("encryption")`. The
+encrypted+damaged doc keeps MuPDF's in-memory-repaired (still encrypted,
+file-backed) document; a later full save (`encryption=KEEP`) writes a clean xref
+**and** preserves the password — verified end-to-end (saved-back file: `needs_pass=1`,
+`authenticate('usr')→2`, `is_repaired=False`, text intact). Covered by
+`test_open_damaged_encrypted_pdf_keeps_encryption` /
+`test_open_damaged_owner_only_pdf_keeps_encryption`.
+
+## Follow-up: peak memory (code-review finding)
+
+Measured on the real 47 MB damaged file (psutil RSS): original file-backed doc
++4.7 MB after open (lazy streaming), `tobytes` buffer ~1× (47.6 MB), reopen from
+that same buffer +0. **Peak ≈ +54 MB ≈ 1.15× file size** — one serialization
+buffer, not the ~2× the review estimated. No code change: the buffer is inherent
+to in-memory round-trip; a temp-file approach would cut it but break the
+memory-backed contract. Bounded to ~590 MB above baseline at the 512 MB cap.
+
 ## Open questions (resolved)
 
 - `garbage=1` vs `garbage=4`? → `garbage=1` on open for speed; full pruning on save.
@@ -99,3 +134,5 @@ are object-count-bound rather than stream-bound (deflate ~neutral), but real
 - Async/background repair? → Not needed: bounded at ~1.3 s worst case by the 512 MB
   open cap, and a background doc-swap would fight PyMuPDF thread-safety + the
   batched-index design for marginal benefit.
+- Encrypted docs? → Skip the round-trip (would strip encryption); keep MuPDF's
+  repaired-but-encrypted doc and let the full save preserve protection.

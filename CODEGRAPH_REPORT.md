@@ -1,45 +1,45 @@
 # CODEGRAPH_REPORT — pdf_editor
 
-> Generated 2026-06-02 by `.codegraph/report_gen.py`  
+> Generated 2026-06-07 by `.codegraph/report_gen.py`  
 > Source: `.codegraph/graph.db` — re-run after structural changes.
 
 ## 1. Summary
 
 | Metric | Count |
 | ------------------------------ | ---------- |
-| Python files indexed | 189 |
-| Classes | 243 |
-| Functions | 1413 |
-| Methods | 1341 |
-| Total callable symbols | 2754 |
-| Called (name seen in a call site) | 1747 |
-| **Never-called** | **1007** |
-| Never-called % | 36.6% |
-| Total edges | 21365 |
-|   — defines | 2997 |
-|   — calls | 18023 |
-|   — imports | 271 |
-|   — inherits | 74 |
+| Python files indexed | 200 |
+| Classes | 251 |
+| Functions | 1497 |
+| Methods | 1362 |
+| Total callable symbols | 2859 |
+| Called (name seen in a call site) | 1791 |
+| **Never-called** | **1068** |
+| Never-called % | 37.4% |
+| Total edges | 21872 |
+|   — defines | 3110 |
+|   — calls | 18403 |
+|   — imports | 284 |
+|   — inherits | 75 |
 
 ## 2. Layer Breakdown
 
 | Layer | Files | Classes | Functions | Methods |
 | -------------------- | ------- | --------- | ----------- | --------- |
-| `view/` | 13 | 26 | 25 | 334 |
-| `controller/` | 2 | 11 | 0 | 184 |
-| `model/` | 23 | 48 | 80 | 299 |
-| `utils/` | 5 | 2 | 18 | 9 |
+| `view/` | 13 | 26 | 25 | 333 |
+| `controller/` | 2 | 11 | 0 | 183 |
+| `model/` | 24 | 49 | 89 | 301 |
+| `utils/` | 5 | 2 | 19 | 9 |
 | `src/` | 17 | 27 | 34 | 106 |
-| `scripts/` | 9 | 0 | 51 | 0 |
-| `test_scripts/` | 113 | 125 | 1173 | 385 |
+| `scripts/` | 9 | 0 | 53 | 0 |
+| `test_scripts/` | 123 | 132 | 1245 | 406 |
 
 ## 3. Heaviest Classes (by method count)
 
 | Class | Methods |
 | -------------------------------------------------- | --------- |
-| `PDFView` | 246 |
-| `PDFController` | 165 |
-| `PDFModel` | 160 |
+| `PDFView` | 245 |
+| `PDFController` | 164 |
+| `PDFModel` | 162 |
 | `_FakeEvent` | 38 |
 | `TextBlockManager` | 37 |
 | `UnifiedPrintDialog` | 32 |
@@ -59,21 +59,21 @@
 
 | Module | Imported by N files |
 | ------------------------------------------------------- | -------------------- |
-| `model/pdf_model.py` | 63 |
+| `model/pdf_model.py` | 64 |
 | `view/pdf_view.py` | 29 |
 | `controller/pdf_controller.py` | 18 |
 | `model/edit_commands.py` | 18 |
 | `model/object_requests.py` | 15 |
-| `src/printing/base_driver.py` | 10 |
+| `src/printing/base_driver.py` | 12 |
 | `view/text_editing.py` | 8 |
 | `model/tools/ocr_types.py` | 8 |
 | `utils/helpers.py` | 7 |
 | `model/pdf_content_ops.py` | 5 |
+| `main.py` | 5 |
 | `utils/preferences.py` | 5 |
 | `src/printing/__init__.py` | 4 |
 | `src/printing/helper_protocol.py` | 4 |
 | `src/printing/print_dialog.py` | 4 |
-| `model/text_block.py` | 4 |
 
 ## 5. Inheritance Relationships
 
@@ -100,6 +100,7 @@
 | `OcrDevice` | `Enum` |
 | `OcrLanguage` | `str` |
 | `OcrLanguage` | `Enum` |
+| `OcrWeightsError` | `RuntimeError` |
 | `SearchTool` | `ToolExtension` |
 | `WatermarkTool` | `ToolExtension` |
 | `PrinterDriver` | `ABC` |
@@ -138,8 +139,7 @@
 | `MergePdfDialog` | `QDialog` |
 | `OcrDialog` | `QDialog` |
 | `OptimizePdfDialog` | `QDialog` |
-| `PDFPasswordDialog` | `QDialog` |
-*… 14 more inheritance edges not shown.*
+*… 15 more inheritance edges not shown.*
 
 ## 6. Never-Called Symbols
 
@@ -153,7 +153,7 @@
 | ------------------------------------------------------- | ------------------ |
 | `test_scripts/test_multi_tab_plan.py` | 72 |
 | `test_scripts/test_text_editing_gui_regressions.py` | 55 |
-| `view/pdf_view.py` | 51 |
+| `view/pdf_view.py` | 50 |
 | `test_scripts/test_theme_and_icons.py` | 38 |
 | `test_scripts/test_edit_text_helpers.py` | 32 |
 | `test_scripts/test_pdf_optimize_workflow.py` | 28 |
@@ -172,6 +172,7 @@
 | `test_scripts/test_geometry.py` | 14 |
 | `test_scripts/test_pdf_merge_workflow.py` | 14 |
 | `test_scripts/test_print_dialog_properties_button.py` | 14 |
+| `test_scripts/test_security_ocr_weights.py` | 14 |
 | `test_scripts/test_user_preferences.py` | 14 |
 | `test_scripts/test_native_pdf_images_model.py` | 13 |
 | `test_scripts/test_ocr_model_insert.py` | 12 |
@@ -185,6 +186,9 @@
 | `test_scripts/test_dialogs_package.py` | 9 |
 | `test_scripts/test_drag_move.py` | 9 |
 | `test_scripts/test_ocr_controller_flow.py` | 9 |
+| `test_scripts/test_security_cua_allowlist.py` | 9 |
+| `test_scripts/test_security_pdf_resource_guards.py` | 9 |
+| `test_scripts/test_security_watermark_coercion.py` | 9 |
 | `model/edit_commands.py` | 8 |
 | `test_scripts/test_autopan.py` | 8 |
 | `test_scripts/test_image_objects_model.py` | 8 |
@@ -220,9 +224,12 @@
 | `test_scripts/test_image_objects_gui.py` | 4 |
 | `test_scripts/test_interaction_modes.py` | 4 |
 | `test_scripts/test_object_multi_select.py` | 4 |
+| `test_scripts/test_security_single_instance_isolation.py` | 4 |
+| `test_scripts/test_security_subprocess_paths.py` | 4 |
 | `test_scripts/test_single_instance_forwarding.py` | 4 |
 | `test_scripts/test_thumbnail_context_menu.py` | 4 |
 | `test_scripts/test_week1_model_regressions.py` | 4 |
+| `test_scripts/test_xref_repair.py` | 4 |
 | `model/pdf_optimizer.py` | 3 |
 | `test_scripts/test_browse_selection_gui_regressions.py` | 3 |
 | `test_scripts/test_color_profile_enum.py` | 3 |
@@ -232,6 +239,9 @@
 | `test_scripts/test_page_deskew.py` | 3 |
 | `test_scripts/test_pdf_content_ops_cm_format.py` | 3 |
 | `test_scripts/test_print_subprocess_helper.py` | 3 |
+| `test_scripts/test_security_logging_level.py` | 3 |
+| `test_scripts/test_security_ocr_requirements.py` | 3 |
+| `test_scripts/test_security_pillow_floor.py` | 3 |
 | `test_scripts/test_snapshot_restore.py` | 3 |
 | `test_scripts/test_track_ab_model_regressions.py` | 3 |
 | `view/dialogs/optimize.py` | 3 |
@@ -274,7 +284,7 @@
 | `test_scripts/test_print_speed.py` | 1 |
 | `test_scripts/test_render_clarity_dpr.py` | 1 |
 | `test_scripts/test_rotated_text_editor_preview.py` | 1 |
-| `test_scripts/test_xref_repair.py` | 1 |
+| `test_scripts/test_security_dispatcher_temp_cleanup.py` | 1 |
 | `view/theme.py` | 1 |
 | `view/dialogs/audit.py` | 1 |
 | `view/dialogs/export.py` | 1 |
@@ -297,25 +307,25 @@
 | method | `controller/pdf_controller.py` | 206 | `_OptimizeWorkerBridge.forward_succeeded` |
 | method | `controller/pdf_controller.py` | 282 | `_OcrBridge.forward_status` |
 | method | `controller/pdf_controller.py` | 341 | `PDFController.is_active` |
-| method | `controller/pdf_controller.py` | 599 | `PDFController._on_color_profile_changed` |
-| method | `controller/pdf_controller.py` | 952 | `PDFController.toggle_fullscreen` |
-| method | `controller/pdf_controller.py` | 962 | `PDFController._on_viewport_changed` |
-| method | `controller/pdf_controller.py` | 1356 | `PDFController._on_optimize_copy_succeeded` |
-| method | `controller/pdf_controller.py` | 1373 | `PDFController._on_optimize_copy_failed` |
-| method | `controller/pdf_controller.py` | 1378 | `PDFController._on_optimize_thread_finished` |
-| method | `controller/pdf_controller.py` | 1499 | `PDFController._render_print_preview_image` |
-| method | `controller/pdf_controller.py` | 1619 | `PDFController._on_print_job_prepared` |
-| method | `controller/pdf_controller.py` | 1677 | `PDFController._on_print_thread_finished` |
-| method | `controller/pdf_controller.py` | 2560 | `PDFController._on_ocr_progress` |
-| method | `controller/pdf_controller.py` | 2569 | `PDFController._on_ocr_status` |
-| method | `controller/pdf_controller.py` | 2576 | `PDFController._on_ocr_page_done` |
-| method | `controller/pdf_controller.py` | 2583 | `PDFController._on_ocr_failed` |
-| method | `controller/pdf_controller.py` | 2588 | `PDFController._on_ocr_thread_finished` |
-| method | `controller/pdf_controller.py` | 2766 | `PDFController._on_request_rerender` |
-| method | `controller/pdf_controller.py` | 2861 | `PDFController._update_mode` |
-| method | `controller/pdf_controller.py` | 2905 | `PDFController.jump_to_annotation` |
-| method | `controller/pdf_controller.py` | 2924 | `PDFController.snapshot_page` |
-| method | `controller/pdf_controller.py` | 3122 | `PDFController.save_and_close` |
+| method | `controller/pdf_controller.py` | 597 | `PDFController._on_color_profile_changed` |
+| method | `controller/pdf_controller.py` | 950 | `PDFController.toggle_fullscreen` |
+| method | `controller/pdf_controller.py` | 960 | `PDFController._on_viewport_changed` |
+| method | `controller/pdf_controller.py` | 1305 | `PDFController._on_optimize_copy_succeeded` |
+| method | `controller/pdf_controller.py` | 1322 | `PDFController._on_optimize_copy_failed` |
+| method | `controller/pdf_controller.py` | 1327 | `PDFController._on_optimize_thread_finished` |
+| method | `controller/pdf_controller.py` | 1448 | `PDFController._render_print_preview_image` |
+| method | `controller/pdf_controller.py` | 1568 | `PDFController._on_print_job_prepared` |
+| method | `controller/pdf_controller.py` | 1626 | `PDFController._on_print_thread_finished` |
+| method | `controller/pdf_controller.py` | 2509 | `PDFController._on_ocr_progress` |
+| method | `controller/pdf_controller.py` | 2518 | `PDFController._on_ocr_status` |
+| method | `controller/pdf_controller.py` | 2525 | `PDFController._on_ocr_page_done` |
+| method | `controller/pdf_controller.py` | 2532 | `PDFController._on_ocr_failed` |
+| method | `controller/pdf_controller.py` | 2537 | `PDFController._on_ocr_thread_finished` |
+| method | `controller/pdf_controller.py` | 2715 | `PDFController._on_request_rerender` |
+| method | `controller/pdf_controller.py` | 2810 | `PDFController._update_mode` |
+| method | `controller/pdf_controller.py` | 2854 | `PDFController.jump_to_annotation` |
+| method | `controller/pdf_controller.py` | 2873 | `PDFController.snapshot_page` |
+| method | `controller/pdf_controller.py` | 3071 | `PDFController.save_and_close` |
 | method | `model/edit_commands.py` | 51 | `EditCommand.description` |
 | method | `model/edit_commands.py` | 148 | `EditTextCommand.description` |
 | method | `model/edit_commands.py` | 249 | `AddTextboxCommand.description` |
@@ -326,39 +336,39 @@
 | method | `model/edit_commands.py` | 577 | `CommandManager.redo_count` |
 | method | `model/edit_requests.py` | 22 | `EditTextRequest.to_legacy_args` |
 | method | `model/merge_session.py` | 96 | `MergeSessionModel.can_confirm` |
-| method | `model/pdf_model.py` | 151 | `TextHit.__getitem__` |
-| method | `model/pdf_model.py` | 154 | `TextHit.__iter__` |
-| method | `model/pdf_model.py` | 157 | `TextHit.__len__` |
-| method | `model/pdf_model.py` | 310 | `PDFModel.session_ids` |
-| method | `model/pdf_model.py` | 352 | `PDFModel.activate_session_by_index` |
-| method | `model/pdf_model.py` | 364 | `PDFModel.has_any_unsaved_changes` |
-| method | `model/pdf_model.py` | 420 | `PDFModel.doc` |
-| method | `model/pdf_model.py` | 433 | `PDFModel.original_path` |
-| method | `model/pdf_model.py` | 446 | `PDFModel.saved_path` |
-| method | `model/pdf_model.py` | 459 | `PDFModel.block_manager` |
-| method | `model/pdf_model.py` | 472 | `PDFModel.command_manager` |
-| method | `model/pdf_model.py` | 485 | `PDFModel.edit_count` |
-| method | `model/pdf_model.py` | 498 | `PDFModel.pending_edits` |
-| method | `model/pdf_model.py` | 518 | `PDFModel.run_reopen_anchors` |
-| method | `model/pdf_model.py` | 531 | `PDFModel.run_reopen_anchor_sizes` |
-| method | `model/pdf_model.py` | 827 | `PDFModel._y_overlaps` |
-| method | `model/pdf_model.py` | 830 | `PDFModel._shift_rect_left` |
-| method | `model/pdf_model.py` | 843 | `PDFModel._shift_rect_right` |
-| method | `model/pdf_model.py` | 1405 | `PDFModel.capture_print_input_pdf_bytes` |
-| method | `model/pdf_model.py` | 2048 | `PDFModel._iter_page_annots` |
+| method | `model/pdf_model.py` | 178 | `TextHit.__getitem__` |
+| method | `model/pdf_model.py` | 181 | `TextHit.__iter__` |
+| method | `model/pdf_model.py` | 184 | `TextHit.__len__` |
+| method | `model/pdf_model.py` | 337 | `PDFModel.session_ids` |
+| method | `model/pdf_model.py` | 379 | `PDFModel.activate_session_by_index` |
+| method | `model/pdf_model.py` | 391 | `PDFModel.has_any_unsaved_changes` |
+| method | `model/pdf_model.py` | 447 | `PDFModel.doc` |
+| method | `model/pdf_model.py` | 460 | `PDFModel.original_path` |
+| method | `model/pdf_model.py` | 473 | `PDFModel.saved_path` |
+| method | `model/pdf_model.py` | 486 | `PDFModel.block_manager` |
+| method | `model/pdf_model.py` | 499 | `PDFModel.command_manager` |
+| method | `model/pdf_model.py` | 512 | `PDFModel.edit_count` |
+| method | `model/pdf_model.py` | 525 | `PDFModel.pending_edits` |
+| method | `model/pdf_model.py` | 545 | `PDFModel.run_reopen_anchors` |
+| method | `model/pdf_model.py` | 558 | `PDFModel.run_reopen_anchor_sizes` |
+| method | `model/pdf_model.py` | 934 | `PDFModel._y_overlaps` |
+| method | `model/pdf_model.py` | 937 | `PDFModel._shift_rect_left` |
+| method | `model/pdf_model.py` | 950 | `PDFModel._shift_rect_right` |
+| method | `model/pdf_model.py` | 1513 | `PDFModel.capture_print_input_pdf_bytes` |
+| method | `model/pdf_model.py` | 2156 | `PDFModel._iter_page_annots` |
 | function | `model/pdf_optimizer.py` | 112 | `_init_image_rewrite_worker` |
 | function | `model/pdf_optimizer.py` | 175 | `_rewrite_source_image_task` |
 | function | `model/pdf_optimizer.py` | 188 | `_rewrite_extracted_image_task` |
 | method | `model/text_block.py` | 112 | `TextBlock.__post_init__` |
 | method | `model/text_block.py` | 340 | `TextBlockManager.find_overlapping_paragraphs` |
-| method | `model/tools/ocr_tool.py` | 122 | `_SuryaAdapter.device` |
-| method | `model/tools/watermark_tool.py` | 224 | `WatermarkTool._get_watermark_font` |
+| method | `model/tools/ocr_tool.py` | 123 | `_SuryaAdapter.device` |
+| method | `model/tools/watermark_tool.py` | 257 | `WatermarkTool._get_watermark_font` |
 | method | `src/printing/base_driver.py` | 114 | `PrinterDriver.supports_direct_pdf` |
 | method | `src/printing/base_driver.py` | 119 | `PrinterDriver.supports_printer_properties_dialog` |
-| method | `src/printing/dispatcher.py` | 49 | `PrintDispatcher.supports_printer_properties_dialog` |
+| method | `src/printing/dispatcher.py` | 52 | `PrintDispatcher.supports_printer_properties_dialog` |
 | function | `src/printing/helper_main.py` | 40 | `_stdout_emit` |
 | method | `src/printing/platforms/linux_driver.py` | 28 | `LinuxPrinterDriver.supports_direct_pdf` |
-| method | `src/printing/platforms/win_driver.py` | 261 | `WindowsPrinterDriver.supports_printer_properties_dialog` |
+| method | `src/printing/platforms/win_driver.py` | 268 | `WindowsPrinterDriver.supports_printer_properties_dialog` |
 | method | `src/printing/print_dialog.py` | 370 | `UnifiedPrintDialog._open_printer_properties_dialog` |
 | method | `src/printing/print_dialog.py` | 458 | `UnifiedPrintDialog._update_inherited_property_fields` |
 | method | `src/printing/print_dialog.py` | 590 | `UnifiedPrintDialog._on_range_mode_changed` |
@@ -556,9 +566,9 @@
 | function | `test_scripts/test_linux_driver_overrides.py` | 16 | `test_to_cups_options_omits_hardware_defaults_when_not_overridden` |
 | function | `test_scripts/test_linux_driver_overrides.py` | 37 | `test_to_cups_options_includes_hardware_defaults_when_overridden` |
 | function | `test_scripts/test_linux_driver_overrides.py` | 51 | `test_submit_via_lp_omits_hardware_options_when_not_overridden` |
-| function | `test_scripts/test_linux_driver_overrides.py` | 93 | `test_submit_via_lp_includes_hardware_options_when_overridden` |
-| function | `test_scripts/test_linux_driver_overrides.py` | 129 | `test_print_pdf_keeps_direct_pdf_for_source_following_auto_layout` |
-| function | `test_scripts/test_linux_driver_overrides.py` | 165 | `test_print_pdf_forces_raster_when_user_overrides_layout` |
+| function | `test_scripts/test_linux_driver_overrides.py` | 95 | `test_submit_via_lp_includes_hardware_options_when_overridden` |
+| function | `test_scripts/test_linux_driver_overrides.py` | 131 | `test_print_pdf_keeps_direct_pdf_for_source_following_auto_layout` |
+| function | `test_scripts/test_linux_driver_overrides.py` | 167 | `test_print_pdf_forces_raster_when_user_overrides_layout` |
 | function | `test_scripts/test_macos_menu.py` | 57 | `test_build_macos_menu_bar_is_noop_off_darwin` |
 | function | `test_scripts/test_macos_menu.py` | 67 | `test_macos_menu_spec_has_expected_menus_and_actions` |
 | function | `test_scripts/test_macos_menu.py` | 94 | `test_macos_menu_uses_native_shortcuts` |
@@ -969,6 +979,65 @@
 | function | `test_scripts/test_rotated_text_editor_preview.py` | 60 | `test_preview_glyphs_stay_upright_for_proxy_rotation` |
 | function | `test_scripts/test_scene_context_menu.py` | 55 | `test_scene_context_menu_includes_richer_browse_actions` |
 | function | `test_scripts/test_scene_context_menu.py` | 107 | `test_scene_context_menu_page_actions_reuse_page_specific_helpers` |
+| function | `test_scripts/test_security_cua_allowlist.py` | 49 | `test_execute_cua_action_blocks_type` |
+| function | `test_scripts/test_security_cua_allowlist.py` | 55 | `test_execute_cua_action_blocks_key` |
+| function | `test_scripts/test_security_cua_allowlist.py` | 61 | `test_execute_cua_action_blocks_unknown` |
+| function | `test_scripts/test_security_cua_allowlist.py` | 67 | `test_execute_cua_action_allows_click` |
+| function | `test_scripts/test_security_cua_allowlist.py` | 74 | `test_execute_cua_action_allows_screenshot` |
+| function | `test_scripts/test_security_cua_allowlist.py` | 87 | `test_execute_cua_action_rejects_out_of_window_click` |
+| function | `test_scripts/test_security_cua_allowlist.py` | 97 | `test_execute_cua_action_rejects_out_of_window_move` |
+| function | `test_scripts/test_security_cua_allowlist.py` | 104 | `test_execute_cua_action_allows_in_window_click` |
+| function | `test_scripts/test_security_cua_allowlist.py` | 113 | `test_execute_cua_action_no_rect_skips_bounds` |
+| function | `test_scripts/test_security_dispatcher_temp_cleanup.py` | 19 | `test_print_pdf_bytes_logs_unlink_failure_at_debug` |
+| function | `test_scripts/test_security_logging_level.py` | 41 | `test_configure_logging_defaults_to_warning` |
+| function | `test_scripts/test_security_logging_level.py` | 48 | `test_configure_logging_debug_env_enables_debug` |
+| function | `test_scripts/test_security_logging_level.py` | 55 | `test_configure_logging_empty_env_value_is_not_debug` |
+| function | `test_scripts/test_security_ocr_requirements.py` | 32 | `test_ocr_requirements_file_exists` |
+| function | `test_scripts/test_security_ocr_requirements.py` | 36 | `test_surya_ocr_is_declared_in_ocr_file` |
+| function | `test_scripts/test_security_ocr_requirements.py` | 41 | `test_transformers_not_pinned_to_unvalidated_5x` |
+| function | `test_scripts/test_security_ocr_weights.py` | 36 | `test_sha256_file_matches_hashlib` |
+| function | `test_scripts/test_security_ocr_weights.py` | 42 | `test_resolve_weights_dir_from_env` |
+| function | `test_scripts/test_security_ocr_weights.py` | 48 | `test_pinned_checkpoints_default_pins_three_models` |
+| function | `test_scripts/test_security_ocr_weights.py` | 58 | `test_pinned_checkpoints_revision_override_targets_ocr_only` |
+| function | `test_scripts/test_security_ocr_weights.py` | 66 | `test_verify_weights_dir_accepts_matching_hash` |
+| function | `test_scripts/test_security_ocr_weights.py` | 71 | `test_verify_weights_dir_rejects_mismatched_hash` |
+| function | `test_scripts/test_security_ocr_weights.py` | 77 | `test_verify_weights_dir_rejects_missing_file` |
+| function | `test_scripts/test_security_ocr_weights.py` | 83 | `test_verify_weights_dir_empty_manifest_fails_closed` |
+| function | `test_scripts/test_security_ocr_weights.py` | 89 | `test_verify_weights_dir_missing_directory` |
+| function | `test_scripts/test_security_ocr_weights.py` | 94 | `test_enforce_policy_no_bundle_pins_revisions_online` |
+| function | `test_scripts/test_security_ocr_weights.py` | 104 | `test_enforce_policy_does_not_mutate_os_environ` |
+| function | `test_scripts/test_security_ocr_weights.py` | 113 | `test_enforce_policy_bundle_mismatch_refuses` |
+| function | `test_scripts/test_security_ocr_weights.py` | 120 | `test_enforce_policy_bundle_match_allows_offline` |
+| function | `test_scripts/test_security_ocr_weights.py` | 133 | `test_adapter_refuses_load_on_weight_failure` |
+| function | `test_scripts/test_security_pdf_resource_guards.py` | 36 | `test_guard_before_open_rejects_oversize` |
+| function | `test_scripts/test_security_pdf_resource_guards.py` | 41 | `test_guard_before_open_allows_normal_size` |
+| function | `test_scripts/test_security_pdf_resource_guards.py` | 59 | `test_safe_render_scale_clamps_huge_page` |
+| function | `test_scripts/test_security_pdf_resource_guards.py` | 68 | `test_safe_render_scale_leaves_normal_page_untouched` |
+| function | `test_scripts/test_security_pdf_resource_guards.py` | 73 | `test_safe_render_scale_floors_at_min` |
+| function | `test_scripts/test_security_pdf_resource_guards.py` | 89 | `test_open_pdf_rejects_oversize_before_parsing` |
+| function | `test_scripts/test_security_pdf_resource_guards.py` | 114 | `test_open_pdf_rejects_excess_page_count` |
+| function | `test_scripts/test_security_pdf_resource_guards.py` | 128 | `test_open_pdf_allows_normal_document` |
+| function | `test_scripts/test_security_pdf_resource_guards.py` | 163 | `test_render_page_pixmap_clamps_oversized_scale` |
+| function | `test_scripts/test_security_pillow_floor.py` | 47 | `test_pillow_floor_is_at_least_12_2_0` |
+| function | `test_scripts/test_security_pillow_floor.py` | 51 | `test_surya_ocr_not_in_core_requirements` |
+| function | `test_scripts/test_security_pillow_floor.py` | 59 | `test_surya_ocr_not_in_optional_requirements` |
+| function | `test_scripts/test_security_single_instance_isolation.py` | 21 | `test_listen_server_enables_user_access_option` |
+| function | `test_scripts/test_security_single_instance_isolation.py` | 74 | `test_handle_socket_message_rejects_nonexistent_path` |
+| function | `test_scripts/test_security_single_instance_isolation.py` | 81 | `test_handle_socket_message_rejects_non_pdf_path` |
+| function | `test_scripts/test_security_single_instance_isolation.py` | 89 | `test_handle_socket_message_accepts_existing_pdf` |
+| function | `test_scripts/test_security_subprocess_paths.py` | 35 | `test_win_rundll32_uses_absolute_system32_path` |
+| function | `test_scripts/test_security_subprocess_paths.py` | 63 | `test_linux_get_default_printer_uses_absolute_lpstat_path` |
+| function | `test_scripts/test_security_subprocess_paths.py` | 86 | `test_linux_list_printers_uses_absolute_lpstat_path` |
+| function | `test_scripts/test_security_subprocess_paths.py` | 112 | `test_linux_submit_via_lp_uses_absolute_lp_path` |
+| function | `test_scripts/test_security_watermark_coercion.py` | 19 | `test_coerce_clamps_oversized_font_size` |
+| function | `test_scripts/test_security_watermark_coercion.py` | 25 | `test_coerce_floors_tiny_font_size` |
+| function | `test_scripts/test_security_watermark_coercion.py` | 31 | `test_coerce_truncates_long_text` |
+| function | `test_scripts/test_security_watermark_coercion.py` | 37 | `test_coerce_caps_page_count` |
+| function | `test_scripts/test_security_watermark_coercion.py` | 43 | `test_coerce_clamps_opacity_and_wraps_angle` |
+| function | `test_scripts/test_security_watermark_coercion.py` | 50 | `test_coerce_drops_wrong_type_pages` |
+| function | `test_scripts/test_security_watermark_coercion.py` | 54 | `test_coerce_drops_missing_required_keys` |
+| function | `test_scripts/test_security_watermark_coercion.py` | 59 | `test_coerce_preserves_valid_watermark_fields` |
+| function | `test_scripts/test_security_watermark_coercion.py` | 88 | `test_load_watermarks_drops_bad_entries_and_clamps_good` |
 | method | `test_scripts/test_short_term_safety.py` | 33 | `_NamedCommand.description` |
 | function | `test_scripts/test_short_term_safety.py` | 49 | `qapp` |
 | function | `test_scripts/test_short_term_safety.py` | 72 | `test_inline_text_editor_emits_focus_out_signal_without_monkeypatch` |
@@ -1230,7 +1299,10 @@
 | method | `test_scripts/test_win_print_fixes.py` | 838 | `_WindowsLikePrinter.setPageLayout` |
 | function | `test_scripts/test_win_print_fixes.py` | 852 | `test_set_page_layout_actually_applies_page_size` |
 | function | `test_scripts/test_win_print_fixes.py` | 871 | `test_set_page_layout_applies_size_on_real_printer` |
-| function | `test_scripts/test_xref_repair.py` | 40 | `test_repair_document_xref_produces_clean_copy` |
+| function | `test_scripts/test_xref_repair.py` | 57 | `test_open_damaged_pdf_auto_repairs_in_memory` |
+| function | `test_scripts/test_xref_repair.py` | 91 | `test_open_damaged_encrypted_pdf_keeps_encryption` |
+| function | `test_scripts/test_xref_repair.py` | 129 | `test_open_damaged_owner_only_pdf_keeps_encryption` |
+| function | `test_scripts/test_xref_repair.py` | 159 | `test_open_healthy_pdf_is_left_file_backed` |
 | method | `view/dialogs/audit.py` | 119 | `PdfAuditReportDialog._on_stacked_bar_hovered` |
 | method | `view/dialogs/export.py` | 94 | `ExportPagesDialog._on_scope_changed` |
 | method | `view/dialogs/merge.py` | 141 | `MergePdfDialog._create_progress_dialog` |
@@ -1240,57 +1312,56 @@
 | method | `view/dialogs/optimize.py` | 229 | `OptimizePdfDialog._mark_custom` |
 | method | `view/dialogs/password.py` | 45 | `PDFPasswordDialog._on_show_hide_toggled` |
 | method | `view/dialogs/watermark.py` | 123 | `WatermarkDialog._choose_color` |
-| method | `view/pdf_view.py` | 861 | `PDFView._complete_deferred_shell_startup` |
-| method | `view/pdf_view.py` | 961 | `PDFView._on_document_tab_changed` |
-| method | `view/pdf_view.py` | 973 | `PDFView._close_current_document_tab` |
-| method | `view/pdf_view.py` | 1326 | `PDFView._on_color_profile_combo_changed` |
-| method | `view/pdf_view.py` | 1329 | `PDFView._on_zoom_combo_changed` |
-| method | `view/pdf_view.py` | 1396 | `PDFView.toggle_left_sidebar` |
-| method | `view/pdf_view.py` | 1411 | `PDFView.toggle_right_sidebar` |
-| method | `view/pdf_view.py` | 1426 | `PDFView._show_thumbnails_tab` |
-| method | `view/pdf_view.py` | 1609 | `PDFView._choose_rect_color` |
-| method | `view/pdf_view.py` | 1620 | `PDFView._choose_highlight_color` |
-| method | `view/pdf_view.py` | 1639 | `PDFView._on_text_apply_clicked` |
-| method | `view/pdf_view.py` | 1644 | `PDFView._on_text_cancel_clicked` |
-| method | `view/pdf_view.py` | 1875 | `PDFView._on_escape_shortcut` |
-| method | `view/pdf_view.py` | 1999 | `PDFView._finalize_if_focus_outside_edit_context` |
-| method | `view/pdf_view.py` | 2018 | `PDFView._on_app_focus_changed` |
-| method | `view/pdf_view.py` | 2026 | `PDFView._on_editor_focus_out` |
-| method | `view/pdf_view.py` | 2280 | `PDFView._on_scroll_changed` |
-| method | `view/pdf_view.py` | 2315 | `PDFView._iter_outline_targets` |
-| method | `view/pdf_view.py` | 2350 | `PDFView._current_text_editor_scene_rect` |
-| method | `view/pdf_view.py` | 2353 | `PDFView._sample_page_mask_color` |
-| method | `view/pdf_view.py` | 2621 | `PDFView._on_search_result_clicked` |
-| method | `view/pdf_view.py` | 2629 | `PDFView._on_annotation_selected` |
-| method | `view/pdf_view.py` | 2634 | `PDFView._navigate_search_previous` |
-| method | `view/pdf_view.py` | 2640 | `PDFView._navigate_search_next` |
-| method | `view/pdf_view.py` | 2653 | `PDFView._wheel_event` |
-| method | `view/pdf_view.py` | 2667 | `PDFView._on_zoom_debounce` |
-| method | `view/pdf_view.py` | 3204 | `PDFView._scene_rect_to_doc_rect` |
-| method | `view/pdf_view.py` | 3520 | `PDFView._select_all_text_on_current_page` |
-| method | `view/pdf_view.py` | 4031 | `PDFView._schedule_outline_redraw` |
-| method | `view/pdf_view.py` | 4393 | `PDFView._on_edit_font_family_changed` |
-| method | `view/pdf_view.py` | 4396 | `PDFView._on_edit_font_size_changed` |
-| method | `view/pdf_view.py` | 4490 | `PDFView._open_file` |
-| method | `view/pdf_view.py` | 4495 | `PDFView._print_document` |
-| method | `view/pdf_view.py` | 4522 | `PDFView._optimize_pdf_copy` |
-| method | `view/pdf_view.py` | 4528 | `PDFView._repair_document_xref` |
-| method | `view/pdf_view.py` | 4533 | `PDFView._delete_pages` |
-| method | `view/pdf_view.py` | 4550 | `PDFView._rotate_pages` |
-| method | `view/pdf_view.py` | 4629 | `PDFView._export_pages` |
-| method | `view/pdf_view.py` | 4686 | `PDFView._show_search_panel` |
-| method | `view/pdf_view.py` | 4692 | `PDFView._show_thumbnails` |
-| method | `view/pdf_view.py` | 4707 | `PDFView._show_add_watermark_dialog` |
-| method | `view/pdf_view.py` | 4719 | `PDFView._on_watermark_selected` |
-| method | `view/pdf_view.py` | 4722 | `PDFView._edit_selected_watermark` |
-| method | `view/pdf_view.py` | 4738 | `PDFView._remove_selected_watermark` |
-| method | `view/pdf_view.py` | 4759 | `PDFView._trigger_search` |
-| method | `view/pdf_view.py` | 4825 | `PDFView.add_annotation_to_list` |
-| method | `view/pdf_view.py` | 4858 | `PDFView._snapshot_page` |
-| method | `view/pdf_view.py` | 4865 | `PDFView._insert_blank_page` |
-| method | `view/pdf_view.py` | 4892 | `PDFView._insert_pages_from_file` |
-| method | `view/pdf_view.py` | 5092 | `PDFView._resize_event` |
-| method | `view/pdf_view.py` | 5116 | `PDFView.closeEvent` |
+| method | `view/pdf_view.py` | 860 | `PDFView._complete_deferred_shell_startup` |
+| method | `view/pdf_view.py` | 960 | `PDFView._on_document_tab_changed` |
+| method | `view/pdf_view.py` | 972 | `PDFView._close_current_document_tab` |
+| method | `view/pdf_view.py` | 1324 | `PDFView._on_color_profile_combo_changed` |
+| method | `view/pdf_view.py` | 1327 | `PDFView._on_zoom_combo_changed` |
+| method | `view/pdf_view.py` | 1394 | `PDFView.toggle_left_sidebar` |
+| method | `view/pdf_view.py` | 1409 | `PDFView.toggle_right_sidebar` |
+| method | `view/pdf_view.py` | 1424 | `PDFView._show_thumbnails_tab` |
+| method | `view/pdf_view.py` | 1607 | `PDFView._choose_rect_color` |
+| method | `view/pdf_view.py` | 1618 | `PDFView._choose_highlight_color` |
+| method | `view/pdf_view.py` | 1637 | `PDFView._on_text_apply_clicked` |
+| method | `view/pdf_view.py` | 1642 | `PDFView._on_text_cancel_clicked` |
+| method | `view/pdf_view.py` | 1873 | `PDFView._on_escape_shortcut` |
+| method | `view/pdf_view.py` | 1997 | `PDFView._finalize_if_focus_outside_edit_context` |
+| method | `view/pdf_view.py` | 2016 | `PDFView._on_app_focus_changed` |
+| method | `view/pdf_view.py` | 2024 | `PDFView._on_editor_focus_out` |
+| method | `view/pdf_view.py` | 2278 | `PDFView._on_scroll_changed` |
+| method | `view/pdf_view.py` | 2313 | `PDFView._iter_outline_targets` |
+| method | `view/pdf_view.py` | 2348 | `PDFView._current_text_editor_scene_rect` |
+| method | `view/pdf_view.py` | 2351 | `PDFView._sample_page_mask_color` |
+| method | `view/pdf_view.py` | 2619 | `PDFView._on_search_result_clicked` |
+| method | `view/pdf_view.py` | 2627 | `PDFView._on_annotation_selected` |
+| method | `view/pdf_view.py` | 2632 | `PDFView._navigate_search_previous` |
+| method | `view/pdf_view.py` | 2638 | `PDFView._navigate_search_next` |
+| method | `view/pdf_view.py` | 2651 | `PDFView._wheel_event` |
+| method | `view/pdf_view.py` | 2665 | `PDFView._on_zoom_debounce` |
+| method | `view/pdf_view.py` | 3202 | `PDFView._scene_rect_to_doc_rect` |
+| method | `view/pdf_view.py` | 3518 | `PDFView._select_all_text_on_current_page` |
+| method | `view/pdf_view.py` | 4029 | `PDFView._schedule_outline_redraw` |
+| method | `view/pdf_view.py` | 4391 | `PDFView._on_edit_font_family_changed` |
+| method | `view/pdf_view.py` | 4394 | `PDFView._on_edit_font_size_changed` |
+| method | `view/pdf_view.py` | 4488 | `PDFView._open_file` |
+| method | `view/pdf_view.py` | 4493 | `PDFView._print_document` |
+| method | `view/pdf_view.py` | 4520 | `PDFView._optimize_pdf_copy` |
+| method | `view/pdf_view.py` | 4526 | `PDFView._delete_pages` |
+| method | `view/pdf_view.py` | 4543 | `PDFView._rotate_pages` |
+| method | `view/pdf_view.py` | 4622 | `PDFView._export_pages` |
+| method | `view/pdf_view.py` | 4679 | `PDFView._show_search_panel` |
+| method | `view/pdf_view.py` | 4685 | `PDFView._show_thumbnails` |
+| method | `view/pdf_view.py` | 4700 | `PDFView._show_add_watermark_dialog` |
+| method | `view/pdf_view.py` | 4712 | `PDFView._on_watermark_selected` |
+| method | `view/pdf_view.py` | 4715 | `PDFView._edit_selected_watermark` |
+| method | `view/pdf_view.py` | 4731 | `PDFView._remove_selected_watermark` |
+| method | `view/pdf_view.py` | 4752 | `PDFView._trigger_search` |
+| method | `view/pdf_view.py` | 4818 | `PDFView.add_annotation_to_list` |
+| method | `view/pdf_view.py` | 4851 | `PDFView._snapshot_page` |
+| method | `view/pdf_view.py` | 4858 | `PDFView._insert_blank_page` |
+| method | `view/pdf_view.py` | 4885 | `PDFView._insert_pages_from_file` |
+| method | `view/pdf_view.py` | 5085 | `PDFView._resize_event` |
+| method | `view/pdf_view.py` | 5109 | `PDFView.closeEvent` |
 | method | `view/text_editing.py` | 139 | `TextEditDelta.any_change` |
 | method | `view/text_editing.py` | 801 | `PreviewBackedInlineTextEditor._schedule_preview` |
 | function | `view/theme.py` | 122 | `_meta` |
@@ -1336,7 +1407,7 @@
 
 ### `controller/pdf_controller.py`
 **Classes:** `SessionUIState`, `FullscreenSessionSnapshot`, `PrintJobRequest`, `OptimizePdfCopyRequest`, `_PrintSubmissionWorker`, `_PrintWorkerBridge`, `_OptimizePdfCopyWorker`, `_OptimizeWorkerBridge`, `_OcrWorker`, `_OcrBridge`, `PDFController`
-**Methods:** 184 total, 23 never-called
+**Methods:** 183 total, 23 never-called
 
 ### `main.py`
 **Functions:** `_configure_logging`, `parse_cli`, `run_merge_and_exit`, `run`
@@ -1376,8 +1447,8 @@
 
 ### `model/pdf_model.py`
 **Classes:** `TextHit`, `_EditTextResolveResult`, `DocumentSession`, `PDFModel`
-**Functions:** `_install_rawdict_text_compat`, `_classify_insert_path`
-**Methods:** 164 total, 20 never-called
+**Functions:** `_guard_before_open`, `_safe_render_scale`, `_install_rawdict_text_compat`, `_classify_insert_path`
+**Methods:** 166 total, 20 never-called
 
 ### `model/pdf_optimizer.py`
 **Classes:** `PdfOptimizeOptions`, `PdfAuditItem`, `PdfAuditReport`, `PdfOptimizationResult`, `PdfOptimizeExecutionProfile`
@@ -1419,6 +1490,11 @@
 **Functions:** `parse_page_range`
 **Methods:** 2 total, 0 never-called
 
+### `model/tools/ocr_weights.py`
+*OCR model-weight integrity policy (finding F9, CWE-494).  Surya fetches its detection/recognition weights from datalab's*
+**Classes:** `OcrWeightsError`
+**Functions:** `sha256_file`, `resolve_weights_dir`, `pinned_checkpoints`, `verify_weights_dir`, `_apply_settings`, `enforce_weights_policy`
+
 ### `model/tools/search_tool.py`
 **Classes:** `SearchTool`
 **Methods:** 2 total, 0 never-called
@@ -1428,6 +1504,7 @@
 
 ### `model/tools/watermark_tool.py`
 **Classes:** `WatermarkTool`
+**Functions:** `_coerce_wm`
 **Methods:** 22 total, 1 never-called
 
 ### `scripts/__init__.py`
@@ -1456,7 +1533,7 @@
 
 ### `scripts/ux_signoff_agent.py`
 *GPT-5.4/5.5 computer-use UX signoff for AC 6.  Normally invoked by scripts/verify_no_jump.py after both pytest runs comp*
-**Functions:** `_sha256`, `_git_head`, `_has_image_artifacts`, `_collect_artifact_hashes`, `_screenshot_b64`, `_execute_cua_action`, `_extract_text`, `_b64_to_png`, `_assert_app_window_shows_pdf`, `_run_agent_on_pdf`, `_validate_trace_vs_checklist`, `_validate_signoff_report`, `main`
+**Functions:** `_sha256`, `_git_head`, `_has_image_artifacts`, `_collect_artifact_hashes`, `_screenshot_b64`, `_point_in_rect`, `_execute_cua_action`, `_extract_text`, `_b64_to_png`, `_assert_app_window_shows_pdf`, `_get_window_rect`, `_run_agent_on_pdf`, `_validate_trace_vs_checklist`, `_validate_signoff_report`, `main`
 
 ### `scripts/verify_no_jump.py`
 *Tamper-evident, run-isolated completion gate for the no-jump acceptance suite.  Run:  python scripts/verify_no_jump.py E*
@@ -1907,6 +1984,52 @@
 **Functions:** `_make_view`, `test_scene_context_menu_includes_richer_browse_actions`⚠, `test_scene_context_menu_page_actions_reuse_page_specific_helpers`⚠
 **Methods:** 5 total, 0 never-called
 
+### `test_scripts/test_security_cua_allowlist.py`
+*Security patch P7 + Task 5 (finding F3): CUA agent action allowlist + bounds.  ``scripts/ux_signoff_agent.py`` is a dev-*
+**Classes:** `_Action`, `_FakePyAutoGui`
+**Functions:** `test_execute_cua_action_blocks_type`⚠, `test_execute_cua_action_blocks_key`⚠, `test_execute_cua_action_blocks_unknown`⚠, `test_execute_cua_action_allows_click`⚠, `test_execute_cua_action_allows_screenshot`⚠, `test_execute_cua_action_rejects_out_of_window_click`⚠, `test_execute_cua_action_rejects_out_of_window_move`⚠, `test_execute_cua_action_allows_in_window_click`⚠, `test_execute_cua_action_no_rect_skips_bounds`⚠
+**Methods:** 8 total, 0 never-called
+
+### `test_scripts/test_security_dispatcher_temp_cleanup.py`
+*Security patch P5 (finding F5 / bandit B110): temp-unlink error visibility.  ``PrintDispatcher.print_pdf_bytes`` writes *
+**Functions:** `test_print_pdf_bytes_logs_unlink_failure_at_debug`⚠
+
+### `test_scripts/test_security_logging_level.py`
+*Security patch P6 (finding F7): release logging level.  `main._configure_logging` must default the root logger to WARNIN*
+**Functions:** `_isolated_root_logging`, `test_configure_logging_defaults_to_warning`⚠, `test_configure_logging_debug_env_enables_debug`⚠, `test_configure_logging_empty_env_value_is_not_debug`⚠
+
+### `test_scripts/test_security_ocr_requirements.py`
+*Task 2 (finding F2): lock the OCR-extra dependency file's documented decisions.  surya-ocr transitively constrains pillo*
+**Functions:** `_requirements`, `test_ocr_requirements_file_exists`⚠, `test_surya_ocr_is_declared_in_ocr_file`⚠, `test_transformers_not_pinned_to_unvalidated_5x`⚠
+
+### `test_scripts/test_security_ocr_weights.py`
+*Security finding F9 (CWE-494): OCR weight revision pin + SHA256 verification.  surya downloads detection/recognition wei*
+**Functions:** `_make_bundle`, `test_sha256_file_matches_hashlib`⚠, `test_resolve_weights_dir_from_env`⚠, `test_pinned_checkpoints_default_pins_three_models`⚠, `test_pinned_checkpoints_revision_override_targets_ocr_only`⚠, `test_verify_weights_dir_accepts_matching_hash`⚠, `test_verify_weights_dir_rejects_mismatched_hash`⚠, `test_verify_weights_dir_rejects_missing_file`⚠, `test_verify_weights_dir_empty_manifest_fails_closed`⚠, `test_verify_weights_dir_missing_directory`⚠, `test_enforce_policy_no_bundle_pins_revisions_online`⚠, `test_enforce_policy_does_not_mutate_os_environ`⚠, `test_enforce_policy_bundle_mismatch_refuses`⚠, `test_enforce_policy_bundle_match_allows_offline`⚠, `test_adapter_refuses_load_on_weight_failure`⚠
+
+### `test_scripts/test_security_pdf_resource_guards.py`
+*Security patch P1 (finding F1): PDF resource guards.  Untrusted PDFs are parsed/rasterized with no bound on file size, p*
+**Classes:** `_FakeStat`, `_FakePath`, `_FakeRect`, `_FakePage`
+**Functions:** `test_guard_before_open_rejects_oversize`⚠, `test_guard_before_open_allows_normal_size`⚠, `test_safe_render_scale_clamps_huge_page`⚠, `test_safe_render_scale_leaves_normal_page_untouched`⚠, `test_safe_render_scale_floors_at_min`⚠, `_make_pdf`, `test_open_pdf_rejects_oversize_before_parsing`⚠, `test_open_pdf_rejects_excess_page_count`⚠, `test_open_pdf_allows_normal_document`⚠, `test_render_page_pixmap_clamps_oversized_scale`⚠
+**Methods:** 5 total, 0 never-called
+
+### `test_scripts/test_security_pillow_floor.py`
+*Security patch P8 + Task 2 (finding F2): Pillow dependency floor & OCR split.  `Pillow>=9.0` resolves to releases carryi*
+**Functions:** `_pillow_floor`, `_has_surya`, `test_pillow_floor_is_at_least_12_2_0`⚠, `test_surya_ocr_not_in_core_requirements`⚠, `test_surya_ocr_not_in_optional_requirements`⚠
+
+### `test_scripts/test_security_single_instance_isolation.py`
+*Security patch P2 (finding F6): single-instance IPC user-isolation.  Two hardening measures:   1. The QLocalServer is cr*
+**Classes:** `_FakeSocket`
+**Functions:** `test_listen_server_enables_user_access_option`⚠, `_run_message`, `test_handle_socket_message_rejects_nonexistent_path`⚠, `test_handle_socket_message_rejects_non_pdf_path`⚠, `test_handle_socket_message_accepts_existing_pdf`⚠
+**Methods:** 8 total, 0 never-called
+
+### `test_scripts/test_security_subprocess_paths.py`
+*Security patch P3 (finding F4 + Linux lp/lpstat): absolute subprocess paths.  External binaries must be launched via an *
+**Functions:** `_make_fake_run`, `test_win_rundll32_uses_absolute_system32_path`⚠, `test_linux_get_default_printer_uses_absolute_lpstat_path`⚠, `test_linux_list_printers_uses_absolute_lpstat_path`⚠, `test_linux_submit_via_lp_uses_absolute_lp_path`⚠
+
+### `test_scripts/test_security_watermark_coercion.py`
+*Security patch P4 (finding F8): watermark JSON coercion on load.  Embedded watermark metadata comes from untrusted PDF b*
+**Functions:** `test_coerce_clamps_oversized_font_size`⚠, `test_coerce_floors_tiny_font_size`⚠, `test_coerce_truncates_long_text`⚠, `test_coerce_caps_page_count`⚠, `test_coerce_clamps_opacity_and_wraps_angle`⚠, `test_coerce_drops_wrong_type_pages`⚠, `test_coerce_drops_missing_required_keys`⚠, `test_coerce_preserves_valid_watermark_fields`⚠, `test_load_watermarks_drops_bad_entries_and_clamps_good`⚠
+
 ### `test_scripts/test_short_term_safety.py`
 **Classes:** `_NamedCommand`, `_UndoBoomCommand`
 **Functions:** `qapp`⚠, `_make_pdf`, `_find_block`, `test_inline_text_editor_emits_focus_out_signal_without_monkeypatch`⚠, `test_command_manager_undo_keeps_command_on_failure`⚠, `test_command_manager_evicts_oldest_entries_at_max_limit`⚠, `test_edit_text_reports_rollback_failures`⚠, `test_restore_page_from_snapshot_does_not_delete_live_page_when_insert_fails`⚠, `test_restore_page_from_snapshot_inserts_replacement_before_deleting_original`⚠
@@ -1997,8 +2120,8 @@
 **Methods:** 11 total, 2 never-called
 
 ### `test_scripts/test_xref_repair.py`
-*XREF table repair: rewrite a damaged PDF with a clean, rebuilt xref.  Mission: 修復 XREF 表. PyMuPDF auto-repairs a broken *
-**Functions:** `_valid_pdf_bytes`, `_corrupt_startxref`, `test_repair_document_xref_produces_clean_copy`⚠
+*Auto-repair of a damaged XREF table when a PDF is opened.  Mission: 開檔自動修復 XREF 表. PyMuPDF rebuilds a broken cross-refer*
+**Functions:** `_valid_pdf_bytes`, `_corrupt_startxref`, `_encrypted_pdf_bytes`, `_is_encrypted`, `test_open_damaged_pdf_auto_repairs_in_memory`⚠, `test_open_damaged_encrypted_pdf_keeps_encryption`⚠, `test_open_damaged_owner_only_pdf_keeps_encryption`⚠, `test_open_healthy_pdf_is_left_file_backed`⚠
 
 ### `test_scripts/validate_optimized_pdf.py`
 **Functions:** `_tail_has_eof`, `_sample_page_indexes`, `validate_pdf_integrity`, `main`
@@ -2015,7 +2138,7 @@
 **Methods:** 9 total, 0 never-called
 
 ### `utils/single_instance.py`
-**Functions:** `_build_server_name`, `_remove_server`, `_listen_server`, `_probe_live_server`, `_make_lock`, `_try_acquire_lock`, `_process_events`, `_wait_for_ready_read`, `_service_local_server`, `_normalize_forwarded_argv`, `_handle_socket_message`, `try_become_server`, `send_to_running_instance`
+**Functions:** `_build_server_name`, `_remove_server`, `_listen_server`, `_probe_live_server`, `_make_lock`, `_try_acquire_lock`, `_process_events`, `_wait_for_ready_read`, `_service_local_server`, `_normalize_forwarded_argv`, `_forwarded_argv_is_acceptable`, `_handle_socket_message`, `try_become_server`, `send_to_running_instance`
 
 ### `utils/theme_ids.py`
 *Canonical theme identifiers — the single source of truth for valid themes.  This is a dependency-free leaf module so bot*
@@ -2059,7 +2182,7 @@
 ### `view/pdf_view.py`
 **Classes:** `_NoCtrlTabTabBar`, `PDFView`
 **Functions:** `_ctrl_tab_direction`, `compute_object_resize_rect`, `screen_angle_degrees`, `absolute_rotation_from_drag`
-**Methods:** 248 total, 51 never-called
+**Methods:** 247 total, 50 never-called
 
 ### `view/text_editing.py`
 **Classes:** `TextEditUIConstants`, `TextEditGeometryConstants`, `TextEditFinalizeReason`, `TextEditOutcome`, `TextEditReason`, `TextEditDragState`, `TextEditDelta`, `TextEditFinalizeResult`, `TextEditSession`, `_EditorShortcutForwarder`, `InlineTextEditor`, `ViewportAnchor`, `PreviewRenderer`, `PreviewBackedInlineTextEditor`, `TextEditManager`

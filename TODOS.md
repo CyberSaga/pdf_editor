@@ -155,8 +155,18 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
   Same output size/memory; compression deferred to explicit save.
 - Tests: `test_scripts/test_xref_repair.py` rewritten to cover auto-repair-on-open
   (damaged → repaired/memory-backed, content intact; healthy → untouched/file-backed).
-- Plan: `docs/plans/archive/auto-xref-repair-on-open.md`. Two pitfalls recorded in
-  `docs/PITFALLS.md` (memory-backed-after-repair; no-deflate-on-open).
+- Code-review follow-up (2026-06-07): auto-repair was silently **stripping
+  encryption** from a damaged+encrypted PDF — `tobytes()` emits a decrypted PDF, so
+  a save-back dropped the password (and could emit broken streams). Fixed: skip the
+  round-trip when `_doc_is_encrypted(doc)` (trailer encryption string in
+  `doc.metadata` — survives auth, covers owner-only). MuPDF's repaired-but-encrypted
+  doc is kept; full save with `encryption=KEEP` preserves protection + clean xref
+  (verified end-to-end). Added two red-light tests (user-pw + owner-only). Also
+  measured peak memory = ~1.15× file size (one serialization buffer, not ~2×) — no
+  change needed. Two new pitfalls recorded (encryption-skip; memory profile).
+- Plan: `docs/plans/archive/auto-xref-repair-on-open.md`. Pitfalls recorded in
+  `docs/PITFALLS.md` (memory-backed-after-repair; no-deflate-on-open;
+  no-roundtrip-when-encrypted; peak-memory-~1.15×).
 
 ## Done (2026-06-01) -- Four Windows printing defects + review-finding follow-ups
 

@@ -38,6 +38,22 @@ def _corrupt_startxref(data: bytes) -> bytes:
     return re.sub(rb"startxref\s+\d+", b"startxref\n9999999", data, count=1)
 
 
+def _encrypted_pdf_bytes(*, user_pw: str, owner_pw: str = "owner-secret") -> bytes:
+    doc = fitz.open()
+    for i in range(2):
+        page = doc.new_page(width=300, height=200)
+        page.insert_text((40, 60), f"secret-page-{i}", fontsize=14, fontname="helv")
+    data = doc.tobytes(
+        encryption=fitz.PDF_ENCRYPT_AES_256, owner_pw=owner_pw, user_pw=user_pw
+    )
+    doc.close()
+    return data
+
+
+def _is_encrypted(doc: fitz.Document) -> bool:
+    return bool((doc.metadata or {}).get("encryption"))
+
+
 def test_open_damaged_pdf_auto_repairs_in_memory() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         broken = Path(tmp) / "broken.pdf"
@@ -68,6 +84,74 @@ def test_open_damaged_pdf_auto_repairs_in_memory() -> None:
             # Content and structure are preserved through the repair.
             assert model.doc.page_count == 2
             assert "xref-repair-page-0" in model.doc[0].get_text("text")
+        finally:
+            model.close()
+
+
+def test_open_damaged_encrypted_pdf_keeps_encryption() -> None:
+    # Regression guard: auto-repair must NOT strip encryption. Round-tripping an
+    # authenticated encrypted doc through tobytes() emits a *decrypted* PDF, so a
+    # later save-back would silently drop the password. A damaged+encrypted file
+    # must skip the in-memory round-trip and stay encrypted (MuPDF's repaired doc
+    # is still usable; a later full save with encryption=KEEP preserves it).
+    with tempfile.TemporaryDirectory() as tmp:
+        broken = Path(tmp) / "broken-encrypted.pdf"
+        broken.write_bytes(_corrupt_startxref(_encrypted_pdf_bytes(user_pw="user-pw")))
+
+        # Sanity: the fixture is both encrypted and triggers MuPDF's repair path.
+        probe = fitz.open(str(broken))
+        assert probe.needs_pass  # int 1 from PyMuPDF
+        assert bool(getattr(probe, "is_repaired", False)) is True, (
+            "test fixture did not produce a repairable xref"
+        )
+        probe.close()
+
+        model = PDFModel()
+        try:
+            model.open_pdf(str(broken), password="user-pw")
+
+            assert model.doc is not None
+            # Encryption must survive the open (this is the regression).
+            assert _is_encrypted(model.doc), (
+                "auto-repair stripped encryption from a damaged encrypted PDF"
+            )
+            # Encrypted docs skip the in-memory round-trip, so the handle stays
+            # file-backed; a later full save (encryption=KEEP) keeps the password.
+            assert model.doc.name != "", (
+                "encrypted document must not be round-tripped to a memory handle"
+            )
+            assert model.doc.page_count == 2
+            assert "secret-page-0" in model.doc[0].get_text("text")
+        finally:
+            model.close()
+
+
+def test_open_damaged_owner_only_pdf_keeps_encryption() -> None:
+    # Owner-password-only PDFs open without a password (needs_pass / is_encrypted
+    # are both False), so the flag-based checks miss them; only the metadata
+    # encryption string survives. The round-trip would still strip the owner
+    # restrictions, so this case must also be skipped.
+    with tempfile.TemporaryDirectory() as tmp:
+        broken = Path(tmp) / "broken-owner-only.pdf"
+        broken.write_bytes(_corrupt_startxref(_encrypted_pdf_bytes(user_pw="")))
+
+        probe = fitz.open(str(broken))
+        assert not probe.needs_pass  # empty user password → opens freely
+        assert bool(getattr(probe, "is_repaired", False)) is True
+        probe.close()
+
+        model = PDFModel()
+        try:
+            model.open_pdf(str(broken))
+
+            assert model.doc is not None
+            assert _is_encrypted(model.doc), (
+                "auto-repair stripped owner-only encryption from a damaged PDF"
+            )
+            assert model.doc.name != "", (
+                "owner-encrypted document must not be round-tripped to memory"
+            )
+            assert model.doc.page_count == 2
         finally:
             model.close()
 

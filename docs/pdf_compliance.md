@@ -51,7 +51,15 @@ exactly this, transparently on open (there is no manual action):
   `deflate=True` on purpose — stream re-compression is the dominant cost on large
   files (≈20 ms/MB) and buys nothing for a clean-xref repair, so the round-trip
   stays at ≈2.5–5 ms/MB (~1.3–2.6 s worst case at the 512 MB open cap; a real
-  damaged 47 MB / 402-page file repaired on open in ~240 ms).
+  damaged 47 MB / 402-page file repaired on open in ~240 ms). Peak memory is
+  ~1.15× file size (a single serialization buffer; the source doc streams lazily).
+- **Encrypted documents are the one exception.** `doc.tobytes()` emits a
+  *decrypted* PDF, so round-tripping an encrypted+damaged file would silently
+  strip its password/permissions on the next save. `open_pdf` skips the round-trip
+  when `(doc.metadata or {}).get("encryption")` is set (the reliable signal — it
+  survives authentication and covers owner-password-only files). MuPDF's
+  in-memory-repaired but still-encrypted document is kept; a later full save
+  (`encryption=KEEP`) writes a clean xref **and** preserves the encryption.
 - Reading `doc.is_repaired` is free (the flag is set during the `fitz.open()`
   that runs regardless), so healthy files pay nothing; the round-trip cost is
   incurred only for files that were actually damaged.

@@ -284,7 +284,7 @@
 ### `model/pdf_model.py`
 **Classes:** `TextHit` (L155), `_EditTextResolveResult` (L189), `DocumentSession` (L258), `PDFModel` (L272)
 **Functions:** `_guard_before_open` (L94), `_safe_render_scale` (L100), `_install_rawdict_text_compat` (L113), `_classify_insert_path` (L205)
-**Methods (174):** `_legacy`, `__getitem__`, `__iter__`, `__len__`, `__init__`, `_canonicalize_path`, `_safe_exc_message`, `_active_session`, `_activate_temporarily`, `session_ids`, `list_sessions`, `get_session_id_by_index`, `get_active_session_id`, `get_active_session_index`, `find_session_by_path`, `activate_session`, `activate_session_by_index`, `session_has_unsaved_changes`, `has_any_unsaved_changes`, `get_dirty_session_ids` …
+**Methods (175):** `_legacy`, `__getitem__`, `__iter__`, `__len__`, `__init__`, `_canonicalize_path`, `_safe_exc_message`, `_active_session`, `_activate_temporarily`, `session_ids`, `list_sessions`, `get_session_id_by_index`, `get_active_session_id`, `get_active_session_index`, `find_session_by_path`, `activate_session`, `activate_session_by_index`, `session_has_unsaved_changes`, `has_any_unsaved_changes`, `get_dirty_session_ids` …
 
 ### `model/pdf_optimizer.py`
 **Classes:** `PdfOptimizeOptions` (L55), `PdfAuditItem` (L79), `PdfAuditReport` (L87), `PdfOptimizationResult` (L95), `PdfOptimizeExecutionProfile` (L106)
@@ -869,7 +869,7 @@
 **Methods (11):** `__init__`, `get_default_printer`, `resolve_page_indices_for_count`, `supports_printer_properties_dialog`, `open_printer_properties`, `get_printer_preferences`, `__init__`, `pageLayout`, `setPageLayout`, `setPageSize`, `setPageOrientation`
 
 ### `test_scripts/test_xref_repair.py`
-**Functions:** `_valid_pdf_bytes` (L25), `_corrupt_startxref` (L35), `test_open_damaged_pdf_auto_repairs_in_memory` (L41), `test_open_healthy_pdf_is_left_file_backed` (L75)
+**Functions:** `_valid_pdf_bytes` (L25), `_corrupt_startxref` (L35), `_encrypted_pdf_bytes` (L41), `_is_encrypted` (L53), `test_open_damaged_pdf_auto_repairs_in_memory` (L57), `test_open_damaged_encrypted_pdf_keeps_encryption` (L91), `test_open_damaged_owner_only_pdf_keeps_encryption` (L129), `test_open_healthy_pdf_is_left_file_backed` (L159)
 
 ### `test_scripts/validate_optimized_pdf.py`
 **Functions:** `_tail_has_eof` (L13), `_sample_page_indexes` (L20), `validate_pdf_integrity` (L27), `main` (L91)
