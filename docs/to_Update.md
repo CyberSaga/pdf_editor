@@ -5,6 +5,7 @@
 ## 做法修改：
 * 點選旋轉鈕是將物件轉動到 90°、180°、270°、360°
 * 旋轉頁面要轉多少角度應該是用選單
+* 將全螢幕從"常用"中取消，只要留右邊快速選項的"全螢幕"就夠了
 -> 提出建議新做法並實作
 
 ## 功能新增：
@@ -14,3 +15,4 @@
 
 -> 提出建議的實現方法並實作
 
+the .venv build env still has Pillow 12.1.1 and now-also-needed numpy isn't installed there — so before the next PyInstaller build, run .venv\Scripts\python -m pip install -U "Pillow>=12.2.0" numpy and rebuild, so the shipped artifact matches the secured requirements.txt.
