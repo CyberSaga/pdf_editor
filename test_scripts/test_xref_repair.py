@@ -54,6 +54,44 @@ def _is_encrypted(doc: fitz.Document) -> bool:
     return bool((doc.metadata or {}).get("encryption"))
 
 
+def _assert_live_doc_encrypted_and_usable(
+    model: PDFModel, *, context: str, canary: str = "secret-page-0"
+) -> None:
+    """The live doc kept its encryption (in memory) and is still authenticated +
+    readable after ``context`` (e.g. "periodic GC"). ``is_encrypted`` flips to
+    False once the round-tripped handle is re-authenticated, which is the
+    live-usable signal."""
+    assert _is_encrypted(model.doc), (
+        f"{context} silently stripped encryption from the live document"
+    )
+    assert not model.doc.is_encrypted  # re-authenticated, still usable
+    assert canary in model.doc[0].get_text("text")
+
+
+def _assert_disk_pdf_keeps_password(
+    path: str,
+    *,
+    needs_pass_msg: str,
+    pw: str = "user-pw",
+    canary: str = "secret-page-0",
+    expect_repaired: bool | None = None,
+) -> None:
+    """Reopen a saved file from disk and assert the password survived: it still
+    needs a password, accepts the original one, content is intact, and
+    (optionally) the xref was rewritten clean (``expect_repaired``)."""
+    reopened = fitz.open(str(path))
+    try:
+        assert reopened.needs_pass, needs_pass_msg
+        assert reopened.authenticate(pw) in (2, 4, 6), (
+            "saved file no longer accepts the original password"
+        )
+        if expect_repaired is not None:
+            assert bool(getattr(reopened, "is_repaired", False)) is expect_repaired
+        assert canary in reopened[0].get_text("text")
+    finally:
+        reopened.close()
+
+
 def test_open_damaged_pdf_auto_repairs_in_memory() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         broken = Path(tmp) / "broken.pdf"
@@ -146,17 +184,12 @@ def test_open_damaged_encrypted_pdf_keeps_encryption() -> None:
         finally:
             model.close()
 
-        reopened = fitz.open(str(broken))
-        try:
-            assert reopened.needs_pass, "save-back stripped the user password"
-            assert reopened.authenticate("user-pw") in (2, 4, 6), (
-                "saved file no longer accepts the original password"
-            )
-            # And the rewrite produced a clean xref with content intact.
-            assert bool(getattr(reopened, "is_repaired", False)) is False
-            assert "secret-page-0" in reopened[0].get_text("text")
-        finally:
-            reopened.close()
+        # Password survived the save-back, and the rewrite produced a clean xref.
+        _assert_disk_pdf_keeps_password(
+            str(broken),
+            needs_pass_msg="save-back stripped the user password",
+            expect_repaired=False,
+        )
 
 
 def test_open_damaged_owner_only_pdf_keeps_encryption() -> None:
@@ -226,12 +259,7 @@ def test_encrypted_doc_survives_periodic_gc() -> None:
             model.edit_count = 20  # trigger the full-GC round-trip branch
             model._maybe_garbage_collect()
 
-            assert _is_encrypted(model.doc), (
-                "periodic GC silently stripped encryption from the live document"
-            )
-            # Still authenticated and usable after the round-trip.
-            assert not model.doc.is_encrypted
-            assert "secret-page-0" in model.doc[0].get_text("text")
+            _assert_live_doc_encrypted_and_usable(model, context="periodic GC")
         finally:
             model.close()
 
@@ -251,11 +279,7 @@ def test_encrypted_doc_survives_in_memory_repair() -> None:
             assert _is_encrypted(model.doc)
 
             assert model._repair_active_doc_in_memory() is True
-            assert _is_encrypted(model.doc), (
-                "in-memory repair silently stripped encryption from the live document"
-            )
-            assert not model.doc.is_encrypted  # still authenticated/usable
-            assert "secret-page-0" in model.doc[0].get_text("text")
+            _assert_live_doc_encrypted_and_usable(model, context="in-memory repair")
         finally:
             model.close()
 
@@ -282,27 +306,19 @@ def test_encrypted_doc_survives_doc_level_snapshot_restore() -> None:
             snapshot = model._capture_doc_snapshot()
             model.replace_active_document_from_snapshot(snapshot, affected_pages=[1])
 
-            assert _is_encrypted(model.doc), (
-                "doc-level snapshot restore silently stripped encryption from the "
-                "live document"
+            _assert_live_doc_encrypted_and_usable(
+                model, context="doc-level snapshot restore"
             )
-            assert not model.doc.is_encrypted  # re-authenticated, still usable
-            assert "secret-page-0" in model.doc[0].get_text("text")
 
             # End-to-end: a save after the undo must keep the password.
             model.save_as(str(enc))
         finally:
             model.close()
 
-        reopened = fitz.open(str(enc))
-        try:
-            assert reopened.needs_pass, "save after a doc-level undo stripped the password"
-            assert reopened.authenticate("user-pw") in (2, 4, 6), (
-                "saved file no longer accepts the original password"
-            )
-            assert "secret-page-0" in reopened[0].get_text("text")
-        finally:
-            reopened.close()
+        _assert_disk_pdf_keeps_password(
+            str(enc),
+            needs_pass_msg="save after a doc-level undo stripped the password",
+        )
 
 
 def test_live_doc_roundtrips_preserve_encryption() -> None:
@@ -312,14 +328,16 @@ def test_live_doc_roundtrips_preserve_encryption() -> None:
     ``tobytes`` strips the password in memory; ``save`` (full or incremental)
     drops it on disk — and an incremental save with the default even *raises*
     ("Can't do incremental writes when changing encryption"), silently degrading
-    every encrypted save-back to a full rewrite. All live-doc round-trips should
-    go through ``_roundtrip_live_doc``; this AST scan catches the next stray
-    instance before it ships.
+    every encrypted save-back to a full rewrite. Live-doc round-trips funnel
+    through ``_roundtrip_live_doc`` and disk/stream saves through ``_save_doc``
+    (both inject ``encryption=KEEP``); this AST scan is the backstop that catches
+    the next *direct* ``self.doc.save``/``tobytes`` that bypasses those funnels.
 
-    Scope note: only ``self.doc`` is checked. Page-level snapshot captures
-    serialize a *fresh* ``tmp_doc`` (not ``self.doc``) and stay decrypted by
-    design; the doc-level ``self.doc.save(stream)`` capture carries
-    ``encryption=KEEP`` and re-authenticates on restore, so it passes this scan.
+    Scope note: only ``self.doc`` is checked. The funnels themselves serialize a
+    generic ``doc`` receiver, so they don't trip this scan — ``_roundtrip_live_doc``
+    still appears here via its own ``self.doc.tobytes(..., encryption=KEEP)`` and
+    passes. Page-level snapshot captures serialize a *fresh* ``tmp_doc`` (not
+    ``self.doc``) and stay decrypted by design.
     """
     import ast
 
@@ -401,15 +419,10 @@ def test_healthy_encrypted_save_back_uses_incremental_and_keeps_password() -> No
             model.close()
 
         # On-disk: the password survived the incremental save-back.
-        reopened = fitz.open(str(enc))
-        try:
-            assert reopened.needs_pass, "incremental save-back stripped the password"
-            assert reopened.authenticate("user-pw") in (2, 4, 6), (
-                "saved file no longer accepts the original password"
-            )
-            assert "secret-page-0" in reopened[0].get_text("text")
-        finally:
-            reopened.close()
+        _assert_disk_pdf_keeps_password(
+            str(enc),
+            needs_pass_msg="incremental save-back stripped the password",
+        )
 
 
 def test_open_healthy_pdf_is_left_file_backed() -> None:

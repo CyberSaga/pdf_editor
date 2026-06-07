@@ -3136,7 +3136,7 @@ class PDFModel:
         live handle，加密狀態不受影響，另案追蹤。）
         """
         stream = io.BytesIO()
-        self.doc.save(stream, garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)
+        self._save_doc(self.doc, stream)
         return stream.getvalue()
 
     @staticmethod
@@ -3333,6 +3333,27 @@ class PDFModel:
             old.close()
         except Exception:
             pass
+
+    @staticmethod
+    def _save_doc(
+        doc: fitz.Document,
+        target: str | io.BytesIO,
+        *,
+        garbage: int = 0,
+        incremental: bool = False,
+    ) -> None:
+        """Single chokepoint for writing a document out to a path/stream.
+
+        Always passes ``encryption=fitz.PDF_ENCRYPT_KEEP``. ``save()`` defaults to
+        ``encryption=NONE(1)``, which actively *decrypts*: a full rewrite drops the
+        password/permissions, and an incremental save even *raises* ("Can't do
+        incremental writes when changing encryption"). KEEP is a no-op for
+        unencrypted docs and preserves the source encryption otherwise. Sibling to
+        ``_roundtrip_live_doc`` (the funnel for the serialize-and-replace variant).
+        """
+        doc.save(
+            target, garbage=garbage, incremental=incremental, encryption=fitz.PDF_ENCRYPT_KEEP
+        )
 
     def _repair_active_doc_in_memory(self, garbage: int = 1) -> bool:
         """Try to repair current doc by round-tripping bytes and reopen in memory."""
@@ -4887,10 +4908,7 @@ class PDFModel:
         if saving_over_open_file:
             # 先寫入暫存檔，關閉 doc 後再覆蓋原檔，最後重新開啟
             temp_save = Path(self.temp_dir.name) / f"save_{uuid.uuid4()}.pdf"
-            # encryption=KEEP 保留來源加密：save() 的 encryption 預設為 NONE(1)，
-            # 會主動解密；加密又損毀的檔案無法增量儲存，一律走這條完整重寫路徑，
-            # 若不指定 KEEP 會默默移除密碼/權限。KEEP 對未加密文件為無動作。
-            self.doc.save(str(temp_save), garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)
+            self._save_doc(self.doc, str(temp_save))
             self.doc.close()
             try:
                 shutil.copy2(str(temp_save), path)
@@ -4902,7 +4920,7 @@ class PDFModel:
             self.doc = self._reopen_doc_after_save(path)
             logger.debug(f"已透過暫存檔覆寫原檔: {path}")
         else:
-            self.doc.save(path, garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)
+            self._save_doc(self.doc, path)
 
     def _render_page_gray_array(self, page_num: int, max_dim: int = 1000):
         """Render a page to a downscaled grayscale numpy array for skew analysis."""
@@ -5028,13 +5046,7 @@ class PDFModel:
                 # 增量更新時使用與 doc.name 一致的路徑格式，避免 PyMuPDF 判定為非原檔
                 try:
                     save_target = self.doc.name if self.doc.name else new_path
-                    # encryption=KEEP：incremental 不能變更加密，預設 NONE(1) 會與
-                    # 增量寫入衝突而拋錯（"Can't do incremental writes when changing
-                    # encryption"），導致每次加密檔存回都退回完整重寫。KEEP 對未加密
-                    # 文件為無動作，對加密檔則維持原加密、走真正的增量更新。
-                    self.doc.save(
-                        save_target, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP
-                    )
+                    self._save_doc(self.doc, save_target, incremental=True)
                     logger.debug(f"已使用增量更新儲存: {new_path}")
                 except Exception as e:
                     logger.warning(f"增量更新儲存失敗，改為完整儲存: {e}")
@@ -5045,8 +5057,7 @@ class PDFModel:
                 # 若目標路徑為目前開啟的檔案，先寫暫存再覆蓋，避免 Windows Permission denied
                 if doc_name_resolved is not None and new_path_resolved == doc_name_resolved:
                     temp_save = Path(self.temp_dir.name) / f"save_{uuid.uuid4()}.pdf"
-                    # encryption=KEEP: 預設為 NONE(1) 會解密；保留來源加密。
-                    doc_to_save.save(str(temp_save), garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)
+                    self._save_doc(doc_to_save, str(temp_save))
                     self.doc.close()
                     try:
                         shutil.copy2(str(temp_save), new_path)
@@ -5057,7 +5068,7 @@ class PDFModel:
                             pass
                     self.doc = self._reopen_doc_after_save(new_path)
                 else:
-                    doc_to_save.save(new_path, garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)
+                    self._save_doc(doc_to_save, new_path)
         finally:
             if prepared_doc is not None:
                 prepared_doc.close()
