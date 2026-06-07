@@ -9,15 +9,15 @@
 | ------------------------------ | ---------- |
 | Python files indexed | 200 |
 | Classes | 251 |
-| Functions | 1498 |
-| Methods | 1365 |
-| Total callable symbols | 2863 |
-| Called (name seen in a call site) | 1793 |
-| **Never-called** | **1070** |
+| Functions | 1500 |
+| Methods | 1366 |
+| Total callable symbols | 2866 |
+| Called (name seen in a call site) | 1794 |
+| **Never-called** | **1072** |
 | Never-called % | 37.4% |
-| Total edges | 21900 |
-|   — defines | 3114 |
-|   — calls | 18427 |
+| Total edges | 21919 |
+|   — defines | 3117 |
+|   — calls | 18443 |
 |   — imports | 284 |
 |   — inherits | 75 |
 
@@ -27,18 +27,18 @@
 | -------------------- | ------- | --------- | ----------- | --------- |
 | `view/` | 13 | 26 | 25 | 333 |
 | `controller/` | 2 | 11 | 0 | 183 |
-| `model/` | 24 | 49 | 89 | 304 |
+| `model/` | 24 | 49 | 89 | 305 |
 | `utils/` | 5 | 2 | 19 | 9 |
 | `src/` | 17 | 27 | 34 | 106 |
 | `scripts/` | 9 | 0 | 53 | 0 |
-| `test_scripts/` | 123 | 132 | 1246 | 406 |
+| `test_scripts/` | 123 | 132 | 1248 | 406 |
 
 ## 3. Heaviest Classes (by method count)
 
 | Class | Methods |
 | -------------------------------------------------- | --------- |
 | `PDFView` | 245 |
-| `PDFModel` | 165 |
+| `PDFModel` | 166 |
 | `PDFController` | 164 |
 | `_FakeEvent` | 38 |
 | `TextBlockManager` | 37 |
@@ -200,6 +200,7 @@
 | `test_scripts/test_object_resize.py` | 7 |
 | `test_scripts/test_structural_indexing.py` | 7 |
 | `test_scripts/test_win_driver_properties.py` | 7 |
+| `test_scripts/test_xref_repair.py` | 7 |
 | `test_scripts/test_deep.py` | 6 |
 | `test_scripts/test_linux_driver_overrides.py` | 6 |
 | `test_scripts/test_native_image_discovery.py` | 6 |
@@ -216,7 +217,6 @@
 | `test_scripts/test_page_deskew_scope.py` | 5 |
 | `test_scripts/test_pdf_compliance.py` | 5 |
 | `test_scripts/test_print_controller_flow.py` | 5 |
-| `test_scripts/test_xref_repair.py` | 5 |
 | `test_scripts/live_acrobat_parity_run.py` | 4 |
 | `test_scripts/test_cli_argparse.py` | 4 |
 | `test_scripts/test_color_profile_controller.py` | 4 |
@@ -1304,7 +1304,9 @@
 | function | `test_scripts/test_xref_repair.py` | 91 | `test_open_damaged_encrypted_pdf_keeps_encryption` |
 | function | `test_scripts/test_xref_repair.py` | 162 | `test_open_damaged_owner_only_pdf_keeps_encryption` |
 | function | `test_scripts/test_xref_repair.py` | 210 | `test_encrypted_doc_survives_periodic_gc` |
-| function | `test_scripts/test_xref_repair.py` | 239 | `test_open_healthy_pdf_is_left_file_backed` |
+| function | `test_scripts/test_xref_repair.py` | 239 | `test_encrypted_doc_survives_in_memory_repair` |
+| function | `test_scripts/test_xref_repair.py` | 263 | `test_live_doc_tobytes_calls_preserve_encryption` |
+| function | `test_scripts/test_xref_repair.py` | 300 | `test_open_healthy_pdf_is_left_file_backed` |
 | method | `view/dialogs/audit.py` | 119 | `PdfAuditReportDialog._on_stacked_bar_hovered` |
 | method | `view/dialogs/export.py` | 94 | `ExportPagesDialog._on_scope_changed` |
 | method | `view/dialogs/merge.py` | 141 | `MergePdfDialog._create_progress_dialog` |
@@ -1450,7 +1452,7 @@
 ### `model/pdf_model.py`
 **Classes:** `TextHit`, `_EditTextResolveResult`, `DocumentSession`, `PDFModel`
 **Functions:** `_guard_before_open`, `_safe_render_scale`, `_install_rawdict_text_compat`, `_classify_insert_path`
-**Methods:** 169 total, 21 never-called
+**Methods:** 170 total, 21 never-called
 
 ### `model/pdf_optimizer.py`
 **Classes:** `PdfOptimizeOptions`, `PdfAuditItem`, `PdfAuditReport`, `PdfOptimizationResult`, `PdfOptimizeExecutionProfile`
@@ -2123,7 +2125,7 @@
 
 ### `test_scripts/test_xref_repair.py`
 *Auto-repair of a damaged XREF table when a PDF is opened.  Mission: 開檔自動修復 XREF 表. PyMuPDF rebuilds a broken cross-refer*
-**Functions:** `_valid_pdf_bytes`, `_corrupt_startxref`, `_encrypted_pdf_bytes`, `_is_encrypted`, `test_open_damaged_pdf_auto_repairs_in_memory`⚠, `test_open_damaged_encrypted_pdf_keeps_encryption`⚠, `test_open_damaged_owner_only_pdf_keeps_encryption`⚠, `test_encrypted_doc_survives_periodic_gc`⚠, `test_open_healthy_pdf_is_left_file_backed`⚠
+**Functions:** `_valid_pdf_bytes`, `_corrupt_startxref`, `_encrypted_pdf_bytes`, `_is_encrypted`, `test_open_damaged_pdf_auto_repairs_in_memory`⚠, `test_open_damaged_encrypted_pdf_keeps_encryption`⚠, `test_open_damaged_owner_only_pdf_keeps_encryption`⚠, `test_encrypted_doc_survives_periodic_gc`⚠, `test_encrypted_doc_survives_in_memory_repair`⚠, `test_live_doc_tobytes_calls_preserve_encryption`⚠, `test_open_healthy_pdf_is_left_file_backed`⚠
 
 ### `test_scripts/validate_optimized_pdf.py`
 **Functions:** `_tail_has_eof`, `_sample_page_indexes`, `validate_pdf_integrity`, `main`

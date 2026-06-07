@@ -177,17 +177,22 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
   `needs_pass` stays 1 after a successful `authenticate()` — assert `not is_encrypted`
   / `get_text()` works, not `needs_pass == 0`. Tests now assert in-memory + on-disk +
   live-session survival (each prior cut's narrower asserts gave false confidence).
-- Same-root-cause sweep (2026-06-07): the live-editing GC (`_maybe_garbage_collect`,
-  every 20 edits) round-trips via `tobytes()` (also defaults `encryption=NONE`), so an
-  encrypted doc was silently decrypted in-memory mid-edit (`metadata.encryption`→None).
-  Fixed with `encryption=KEEP` + `_reauthenticate_if_needed` on the GC reopen. Covered
-  by `test_encrypted_doc_survives_periodic_gc`. Residual: undo/redo still decrypts via
-  snapshot round-trip (intentional — snapshots reopen without a password; separate,
-  pre-existing).
+- Same-root-cause sweep, made structural (2026-06-07): `tobytes()` also defaults
+  `encryption=NONE`, so any live-doc round-trip (`self.doc = fitz.open(self.doc.tobytes(...))`)
+  silently decrypts in-memory. Two instances surfaced one-per-review —
+  `_maybe_garbage_collect` (every 20 edits) and `_repair_active_doc_in_memory`
+  (damaged-doc recovery fallback). Instead of patching each, added a single chokepoint
+  `_roundtrip_live_doc(garbage=, deflate=)` (always `encryption=KEEP` + re-auth, opens
+  before closing) and routed both through it; plus an AST guard test
+  (`test_live_doc_tobytes_calls_preserve_encryption`) that fails on any
+  `self.doc.tobytes(...)` lacking `encryption=`. Behavioral tests:
+  `test_encrypted_doc_survives_periodic_gc`, `test_encrypted_doc_survives_in_memory_repair`.
+  Residual: undo/redo still decrypts via snapshot round-trip (intentional — snapshots
+  reopen without a password; separate, pre-existing).
 - Plan: `docs/plans/archive/auto-xref-repair-on-open.md`. Pitfalls recorded in
   `docs/PITFALLS.md` (memory-backed-after-repair; no-deflate-on-open;
-  no-roundtrip-when-encrypted; save()+tobytes()-default-to-decrypt;
-  reopen-must-reauthenticate; peak-memory-~1.15×).
+  no-roundtrip-when-encrypted; save()+tobytes()-default-to-decrypt [structural:
+  _roundtrip_live_doc + AST guard]; reopen-must-reauthenticate; peak-memory-~1.15×).
 
 ## Done (2026-06-01) -- Four Windows printing defects + review-finding follow-ups
 

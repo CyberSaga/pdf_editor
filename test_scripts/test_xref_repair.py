@@ -236,6 +236,67 @@ def test_encrypted_doc_survives_periodic_gc() -> None:
             model.close()
 
 
+def test_encrypted_doc_survives_in_memory_repair() -> None:
+    # _repair_active_doc_in_memory is an error-recovery fallback (failed textbox
+    # edit / snapshot capture on a damaged doc). It round-trips the live doc
+    # through tobytes() and must preserve encryption like the GC path, or an
+    # encrypted+damaged doc loses its password on the next save during recovery.
+    with tempfile.TemporaryDirectory() as tmp:
+        enc = Path(tmp) / "enc.pdf"
+        enc.write_bytes(_encrypted_pdf_bytes(user_pw="user-pw"))
+
+        model = PDFModel()
+        try:
+            model.open_pdf(str(enc), password="user-pw")
+            assert _is_encrypted(model.doc)
+
+            assert model._repair_active_doc_in_memory() is True
+            assert _is_encrypted(model.doc), (
+                "in-memory repair silently stripped encryption from the live document"
+            )
+            assert not model.doc.is_encrypted  # still authenticated/usable
+            assert "secret-page-0" in model.doc[0].get_text("text")
+        finally:
+            model.close()
+
+
+def test_live_doc_tobytes_calls_preserve_encryption() -> None:
+    """Structural guard: every ``self.doc.tobytes(...)`` round-trips the LIVE
+    document, so it must pass ``encryption=`` (KEEP). ``tobytes`` defaults to
+    ``encryption=NONE``, which silently decrypts the live doc in memory and drops
+    the password on the next save. All live-doc round-trips should go through
+    ``_roundtrip_live_doc``; this AST scan catches the next stray instance before
+    it ships (snapshot captures use ``self.doc.save(stream)`` and are exempt by
+    design — they are reopened without a password for undo/redo).
+    """
+    import ast
+
+    # utf-8-sig: the module carries a UTF-8 BOM; plain utf-8 leaves U+FEFF in the
+    # text and ast.parse would raise instead of scanning.
+    src = (REPO_ROOT / "model" / "pdf_model.py").read_text(encoding="utf-8-sig")
+    offenders: list[int] = []
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        is_self_doc_tobytes = (
+            isinstance(f, ast.Attribute)
+            and f.attr == "tobytes"
+            and isinstance(f.value, ast.Attribute)
+            and f.value.attr == "doc"
+            and isinstance(f.value.value, ast.Name)
+            and f.value.value.id == "self"
+        )
+        if is_self_doc_tobytes and not any(k.arg == "encryption" for k in node.keywords):
+            offenders.append(node.lineno)
+
+    assert not offenders, (
+        f"self.doc.tobytes(...) missing encryption= at line(s) {offenders}: a "
+        "live-doc round-trip will silently decrypt. Route it through "
+        "_roundtrip_live_doc (passes encryption=fitz.PDF_ENCRYPT_KEEP + re-auth)."
+    )
+
+
 def test_open_healthy_pdf_is_left_file_backed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         healthy = Path(tmp) / "healthy.pdf"

@@ -3298,19 +3298,36 @@ class PDFModel:
         finally:
             tmp_doc.close()
 
+    def _roundtrip_live_doc(self, *, garbage: int, deflate: bool) -> None:
+        """Round-trip the live document through its own bytes, then make the fresh
+        handle the active doc — preserving encryption and re-authenticating it.
+
+        Single chokepoint for the invariant *a live-doc round-trip must not
+        decrypt*: ``tobytes``/``save`` default to ``encryption=NONE``, which
+        silently strips the password in memory and drops it on the next save. Every
+        ``self.doc = fitz.open(self.doc.tobytes(...))`` (in-memory GC, in-memory
+        repair, …) must go through here. Undo/redo *snapshots* deliberately do NOT
+        — they are reopened without a password and stay decrypted by design.
+
+        Opens the new handle *before* closing the old one, so if serialization or
+        reopen fails the live doc is left intact for the caller to keep using.
+        """
+        data = self.doc.tobytes(
+            garbage=garbage, deflate=deflate, encryption=fitz.PDF_ENCRYPT_KEEP
+        )
+        old = self.doc
+        self.doc = self._reauthenticate_if_needed(fitz.open("pdf", data))
+        try:
+            old.close()
+        except Exception:
+            pass
+
     def _repair_active_doc_in_memory(self, garbage: int = 1) -> bool:
         """Try to repair current doc by round-tripping bytes and reopen in memory."""
         if not self.doc:
             return False
         try:
-            repaired_bytes = self.doc.tobytes(garbage=max(1, int(garbage)), deflate=True)
-            repaired_doc = fitz.open("pdf", repaired_bytes)
-            old_doc = self.doc
-            self.doc = repaired_doc
-            try:
-                old_doc.close()
-            except Exception:
-                pass
+            self._roundtrip_live_doc(garbage=max(1, int(garbage)), deflate=True)
             self.block_manager.build_index(self.doc)
             logger.warning("已以 in-memory roundtrip 修復目前文件（garbage=%s）", max(1, int(garbage)))
             return True
@@ -3513,14 +3530,9 @@ class PDFModel:
         # 完整層：每 20 次重建文件以清孤立物件
         if self.edit_count % 20 == 0:
             try:
-                # encryption=KEEP：tobytes 的 encryption 預設為 NONE(1) 會解密；
-                # 不指定會讓加密文件在編輯途中被默默解密（記憶體中），之後存檔即遺失
-                # 密碼。重新開啟後若仍需密碼，以 session 保存的密碼重新驗證。
-                data = self.doc.tobytes(
-                    garbage=4, deflate=True, encryption=fitz.PDF_ENCRYPT_KEEP
-                )
-                self.doc.close()
-                self.doc = self._reauthenticate_if_needed(fitz.open("pdf", data))
+                # 經 _roundtrip_live_doc 統一保留加密並重新驗證（tobytes 的
+                # encryption 預設為 NONE(1)，否則會在編輯途中默默解密記憶體中的文件）。
+                self._roundtrip_live_doc(garbage=4, deflate=True)
                 self.block_manager.build_index(self.doc)
                 logger.info(
                     f"完整 GC 完成（第 {self.edit_count} 次編輯後），已重新載入文件"

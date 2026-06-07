@@ -145,17 +145,27 @@ Covered by `test_open_damaged_encrypted_pdf_keeps_encryption` /
 assertions gave false confidence in the first cut; the on-disk-only assertions gave
 false confidence in the second).
 
-**Part 4: the same root cause hit live editing too.** `_maybe_garbage_collect()`
-round-trips the doc every 20 edits via `tobytes(garbage=4, deflate=True)` —
-`tobytes`'s encryption default is also NONE(1), so an encrypted doc being edited
-was silently decrypted *in memory* after 20 edits (`metadata.encryption` →
-`None`), and the next save dropped the password even with the save paths fixed.
-Fixed: `encryption=fitz.PDF_ENCRYPT_KEEP` on the GC round-trip + re-authenticate
-the reopened handle (shared `_reauthenticate_if_needed`). Covered by
-`test_encrypted_doc_survives_periodic_gc` (healthy encrypted file; independent of
-xref repair). Residual: undo/redo still round-trips through a *decrypted* snapshot
-(intentional — snapshots are reopened without a password — and not re-encryptable
-without re-authentication; separate pre-existing limitation).
+**Part 4: the same root cause hit every live-doc round-trip — made structural.**
+`tobytes`'s encryption default is also NONE(1), so any `self.doc =
+fitz.open(self.doc.tobytes(...))` silently decrypts the live doc in memory. Two
+instances surfaced one-per-review: `_maybe_garbage_collect()` (every 20 edits) and
+`_repair_active_doc_in_memory()` (error-recovery fallback for damaged docs — the
+exact domain of this feature), each dropping the password on the next save even
+with the save paths fixed (`metadata.encryption` → `None`).
+
+Rather than keep patching call sites, the invariant is now **structural**: a
+single chokepoint `_roundtrip_live_doc(garbage=, deflate=)` always serializes with
+`encryption=KEEP` and re-authenticates the reopened handle
+(`_reauthenticate_if_needed`, in-memory `DocumentSession.password`); it also opens
+before closing so a failed round-trip leaves the live doc intact. Both GC and
+in-memory repair route through it. A guard test (`test_live_doc_tobytes_calls_
+preserve_encryption`) AST-scans the module and fails on any `self.doc.tobytes(...)`
+without `encryption=`, so the next instance can't ship. Behavioral coverage:
+`test_encrypted_doc_survives_periodic_gc`, `test_encrypted_doc_survives_in_memory_repair`.
+
+Residual: undo/redo still round-trips through a *decrypted* snapshot
+(`_restore_doc_from_snapshot`) — intentional (snapshots reopen without a password)
+and not re-encryptable without re-authentication; separate, pre-existing.
 
 ## Follow-up: peak memory (code-review finding)
 
