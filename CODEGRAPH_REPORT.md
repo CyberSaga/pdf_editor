@@ -9,15 +9,15 @@
 | ------------------------------ | ---------- |
 | Python files indexed | 200 |
 | Classes | 251 |
-| Functions | 1500 |
+| Functions | 1502 |
 | Methods | 1366 |
-| Total callable symbols | 2866 |
+| Total callable symbols | 2868 |
 | Called (name seen in a call site) | 1794 |
-| **Never-called** | **1072** |
+| **Never-called** | **1074** |
 | Never-called % | 37.4% |
-| Total edges | 21919 |
-|   — defines | 3117 |
-|   — calls | 18443 |
+| Total edges | 21957 |
+|   — defines | 3119 |
+|   — calls | 18479 |
 |   — imports | 284 |
 |   — inherits | 75 |
 
@@ -31,7 +31,7 @@
 | `utils/` | 5 | 2 | 19 | 9 |
 | `src/` | 17 | 27 | 34 | 106 |
 | `scripts/` | 9 | 0 | 53 | 0 |
-| `test_scripts/` | 123 | 132 | 1248 | 406 |
+| `test_scripts/` | 123 | 132 | 1250 | 406 |
 
 ## 3. Heaviest Classes (by method count)
 
@@ -189,6 +189,7 @@
 | `test_scripts/test_security_cua_allowlist.py` | 9 |
 | `test_scripts/test_security_pdf_resource_guards.py` | 9 |
 | `test_scripts/test_security_watermark_coercion.py` | 9 |
+| `test_scripts/test_xref_repair.py` | 9 |
 | `model/edit_commands.py` | 8 |
 | `test_scripts/test_autopan.py` | 8 |
 | `test_scripts/test_image_objects_model.py` | 8 |
@@ -200,7 +201,6 @@
 | `test_scripts/test_object_resize.py` | 7 |
 | `test_scripts/test_structural_indexing.py` | 7 |
 | `test_scripts/test_win_driver_properties.py` | 7 |
-| `test_scripts/test_xref_repair.py` | 7 |
 | `test_scripts/test_deep.py` | 6 |
 | `test_scripts/test_linux_driver_overrides.py` | 6 |
 | `test_scripts/test_native_image_discovery.py` | 6 |
@@ -1305,8 +1305,10 @@
 | function | `test_scripts/test_xref_repair.py` | 162 | `test_open_damaged_owner_only_pdf_keeps_encryption` |
 | function | `test_scripts/test_xref_repair.py` | 210 | `test_encrypted_doc_survives_periodic_gc` |
 | function | `test_scripts/test_xref_repair.py` | 239 | `test_encrypted_doc_survives_in_memory_repair` |
-| function | `test_scripts/test_xref_repair.py` | 263 | `test_live_doc_tobytes_calls_preserve_encryption` |
-| function | `test_scripts/test_xref_repair.py` | 300 | `test_open_healthy_pdf_is_left_file_backed` |
+| function | `test_scripts/test_xref_repair.py` | 263 | `test_encrypted_doc_survives_doc_level_snapshot_restore` |
+| function | `test_scripts/test_xref_repair.py` | 308 | `test_live_doc_roundtrips_preserve_encryption` |
+| function | `test_scripts/test_xref_repair.py` | 353 | `test_healthy_encrypted_save_back_uses_incremental_and_keeps_password` |
+| function | `test_scripts/test_xref_repair.py` | 415 | `test_open_healthy_pdf_is_left_file_backed` |
 | method | `view/dialogs/audit.py` | 119 | `PdfAuditReportDialog._on_stacked_bar_hovered` |
 | method | `view/dialogs/export.py` | 94 | `ExportPagesDialog._on_scope_changed` |
 | method | `view/dialogs/merge.py` | 141 | `MergePdfDialog._create_progress_dialog` |
@@ -2125,7 +2127,7 @@
 
 ### `test_scripts/test_xref_repair.py`
 *Auto-repair of a damaged XREF table when a PDF is opened.  Mission: 開檔自動修復 XREF 表. PyMuPDF rebuilds a broken cross-refer*
-**Functions:** `_valid_pdf_bytes`, `_corrupt_startxref`, `_encrypted_pdf_bytes`, `_is_encrypted`, `test_open_damaged_pdf_auto_repairs_in_memory`⚠, `test_open_damaged_encrypted_pdf_keeps_encryption`⚠, `test_open_damaged_owner_only_pdf_keeps_encryption`⚠, `test_encrypted_doc_survives_periodic_gc`⚠, `test_encrypted_doc_survives_in_memory_repair`⚠, `test_live_doc_tobytes_calls_preserve_encryption`⚠, `test_open_healthy_pdf_is_left_file_backed`⚠
+**Functions:** `_valid_pdf_bytes`, `_corrupt_startxref`, `_encrypted_pdf_bytes`, `_is_encrypted`, `test_open_damaged_pdf_auto_repairs_in_memory`⚠, `test_open_damaged_encrypted_pdf_keeps_encryption`⚠, `test_open_damaged_owner_only_pdf_keeps_encryption`⚠, `test_encrypted_doc_survives_periodic_gc`⚠, `test_encrypted_doc_survives_in_memory_repair`⚠, `test_encrypted_doc_survives_doc_level_snapshot_restore`⚠, `test_live_doc_roundtrips_preserve_encryption`⚠, `test_healthy_encrypted_save_back_uses_incremental_and_keeps_password`⚠, `test_open_healthy_pdf_is_left_file_backed`⚠
 
 ### `test_scripts/validate_optimized_pdf.py`
 **Functions:** `_tail_has_eof`, `_sample_page_indexes`, `validate_pdf_integrity`, `main`

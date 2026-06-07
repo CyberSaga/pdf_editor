@@ -184,8 +184,8 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
   (damaged-doc recovery fallback). Instead of patching each, added a single chokepoint
   `_roundtrip_live_doc(garbage=, deflate=)` (always `encryption=KEEP` + re-auth, opens
   before closing) and routed both through it; plus an AST guard test
-  (`test_live_doc_tobytes_calls_preserve_encryption`) that fails on any
-  `self.doc.tobytes(...)` lacking `encryption=`. Behavioral tests:
+  (`test_live_doc_roundtrips_preserve_encryption`) that fails on any
+  `self.doc.tobytes(...)` **or** `self.doc.save(...)` lacking `encryption=`. Behavioral tests:
   `test_encrypted_doc_survives_periodic_gc`, `test_encrypted_doc_survives_in_memory_repair`.
 - Doc-level snapshot decrypt closed (2026-06-07): the last instance of the invariant.
   `_restore_doc_from_snapshot` *replaces* the live handle (`self.doc = fitz.open(snapshot_bytes)`),
@@ -200,10 +200,22 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
   plaintext in memory — same exposure as the already-decrypted live doc, never on disk. Encrypting
   them at rest needs real re-encryption (method+permissions+keys, session holds only one password);
   spin up as a separate task.
+- Incremental-save gap closed (2026-06-07): the `encryption=KEEP` sweep missed the one
+  *incremental* save (`save_as`'s `self.doc.save(save_target, incremental=True)`). With the
+  default `encryption=NONE` PyMuPDF **raises** ("Can't do incremental writes when changing
+  encryption"), so every healthy-encrypted save-back logged a WARNING and silently fell back
+  to a full rewrite — password survived (fallback uses KEEP) but incremental was defeated for
+  all encrypted files. Fix: pass `encryption=KEEP` on the incremental call (no-op for
+  unencrypted; true incremental append for encrypted). AST guard widened to `self.doc.save(...)`.
+  Behavioral test `test_healthy_encrypted_save_back_uses_incremental_and_keeps_password` spies
+  on `_full_save_to_path` and asserts no fallback (a "password survives" assert alone passed
+  even with the bug). Lesson logged: audit all call sites of a library-default footgun + build
+  the chokepoint/guard FIRST, then fix once — this gap was the one site the per-commit sweep skipped.
 - Plan: `docs/plans/archive/auto-xref-repair-on-open.md`. Pitfalls recorded in
   `docs/PITFALLS.md` (memory-backed-after-repair; no-deflate-on-open;
   no-roundtrip-when-encrypted; save()+tobytes()-default-to-decrypt [structural:
-  _roundtrip_live_doc + AST guard]; reopen-must-reauthenticate; peak-memory-~1.15×).
+  _roundtrip_live_doc + AST guard]; incremental-save-needs-KEEP-or-raises;
+  reopen-must-reauthenticate; peak-memory-~1.15×).
 
 ## Done (2026-06-01) -- Four Windows printing defects + review-finding follow-ups
 

@@ -5028,7 +5028,13 @@ class PDFModel:
                 # 增量更新時使用與 doc.name 一致的路徑格式，避免 PyMuPDF 判定為非原檔
                 try:
                     save_target = self.doc.name if self.doc.name else new_path
-                    self.doc.save(save_target, incremental=True)
+                    # encryption=KEEP：incremental 不能變更加密，預設 NONE(1) 會與
+                    # 增量寫入衝突而拋錯（"Can't do incremental writes when changing
+                    # encryption"），導致每次加密檔存回都退回完整重寫。KEEP 對未加密
+                    # 文件為無動作，對加密檔則維持原加密、走真正的增量更新。
+                    self.doc.save(
+                        save_target, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP
+                    )
                     logger.debug(f"已使用增量更新儲存: {new_path}")
                 except Exception as e:
                     logger.warning(f"增量更新儲存失敗，改為完整儲存: {e}")

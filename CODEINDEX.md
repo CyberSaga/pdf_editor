@@ -869,7 +869,7 @@
 **Methods (11):** `__init__`, `get_default_printer`, `resolve_page_indices_for_count`, `supports_printer_properties_dialog`, `open_printer_properties`, `get_printer_preferences`, `__init__`, `pageLayout`, `setPageLayout`, `setPageSize`, `setPageOrientation`
 
 ### `test_scripts/test_xref_repair.py`
-**Functions:** `_valid_pdf_bytes` (L25), `_corrupt_startxref` (L35), `_encrypted_pdf_bytes` (L41), `_is_encrypted` (L53), `test_open_damaged_pdf_auto_repairs_in_memory` (L57), `test_open_damaged_encrypted_pdf_keeps_encryption` (L91), `test_open_damaged_owner_only_pdf_keeps_encryption` (L162), `test_encrypted_doc_survives_periodic_gc` (L210), `test_encrypted_doc_survives_in_memory_repair` (L239), `test_live_doc_tobytes_calls_preserve_encryption` (L263), `test_open_healthy_pdf_is_left_file_backed` (L300)
+**Functions:** `_valid_pdf_bytes` (L25), `_corrupt_startxref` (L35), `_encrypted_pdf_bytes` (L41), `_is_encrypted` (L53), `test_open_damaged_pdf_auto_repairs_in_memory` (L57), `test_open_damaged_encrypted_pdf_keeps_encryption` (L91), `test_open_damaged_owner_only_pdf_keeps_encryption` (L162), `test_encrypted_doc_survives_periodic_gc` (L210), `test_encrypted_doc_survives_in_memory_repair` (L239), `test_encrypted_doc_survives_doc_level_snapshot_restore` (L263), `test_live_doc_roundtrips_preserve_encryption` (L308), `test_healthy_encrypted_save_back_uses_incremental_and_keeps_password` (L353), `test_open_healthy_pdf_is_left_file_backed` (L415)
 
 ### `test_scripts/validate_optimized_pdf.py`
 **Functions:** `_tail_has_eof` (L13), `_sample_page_indexes` (L20), `validate_pdf_integrity` (L27), `main` (L91)

@@ -305,41 +305,111 @@ def test_encrypted_doc_survives_doc_level_snapshot_restore() -> None:
             reopened.close()
 
 
-def test_live_doc_tobytes_calls_preserve_encryption() -> None:
-    """Structural guard: every ``self.doc.tobytes(...)`` round-trips the LIVE
-    document, so it must pass ``encryption=`` (KEEP). ``tobytes`` defaults to
-    ``encryption=NONE``, which silently decrypts the live doc in memory and drops
-    the password on the next save. All live-doc round-trips should go through
-    ``_roundtrip_live_doc``; this AST scan catches the next stray instance before
-    it ships (snapshot captures use ``self.doc.save(stream)`` and are exempt by
-    design — they are reopened without a password for undo/redo).
+def test_live_doc_roundtrips_preserve_encryption() -> None:
+    """Structural guard: every ``self.doc.tobytes(...)`` AND ``self.doc.save(...)``
+    round-trips/serializes the LIVE document, so it must pass ``encryption=``
+    (KEEP). Both default to ``encryption=NONE``, which silently decrypts:
+    ``tobytes`` strips the password in memory; ``save`` (full or incremental)
+    drops it on disk — and an incremental save with the default even *raises*
+    ("Can't do incremental writes when changing encryption"), silently degrading
+    every encrypted save-back to a full rewrite. All live-doc round-trips should
+    go through ``_roundtrip_live_doc``; this AST scan catches the next stray
+    instance before it ships.
+
+    Scope note: only ``self.doc`` is checked. Page-level snapshot captures
+    serialize a *fresh* ``tmp_doc`` (not ``self.doc``) and stay decrypted by
+    design; the doc-level ``self.doc.save(stream)`` capture carries
+    ``encryption=KEEP`` and re-authenticates on restore, so it passes this scan.
     """
     import ast
 
     # utf-8-sig: the module carries a UTF-8 BOM; plain utf-8 leaves U+FEFF in the
     # text and ast.parse would raise instead of scanning.
     src = (REPO_ROOT / "model" / "pdf_model.py").read_text(encoding="utf-8-sig")
-    offenders: list[int] = []
+    offenders: list[tuple[str, int]] = []
     for node in ast.walk(ast.parse(src)):
         if not isinstance(node, ast.Call):
             continue
         f = node.func
-        is_self_doc_tobytes = (
+        is_self_doc_roundtrip = (
             isinstance(f, ast.Attribute)
-            and f.attr == "tobytes"
+            and f.attr in {"tobytes", "save"}
             and isinstance(f.value, ast.Attribute)
             and f.value.attr == "doc"
             and isinstance(f.value.value, ast.Name)
             and f.value.value.id == "self"
         )
-        if is_self_doc_tobytes and not any(k.arg == "encryption" for k in node.keywords):
-            offenders.append(node.lineno)
+        if is_self_doc_roundtrip and not any(k.arg == "encryption" for k in node.keywords):
+            offenders.append((f.attr, node.lineno))
 
     assert not offenders, (
-        f"self.doc.tobytes(...) missing encryption= at line(s) {offenders}: a "
-        "live-doc round-trip will silently decrypt. Route it through "
-        "_roundtrip_live_doc (passes encryption=fitz.PDF_ENCRYPT_KEEP + re-auth)."
+        f"self.doc.<tobytes|save>(...) missing encryption= at {offenders}: a "
+        "live-doc round-trip will silently decrypt (and an incremental save will "
+        "raise). Pass encryption=fitz.PDF_ENCRYPT_KEEP — route round-trips "
+        "through _roundtrip_live_doc."
     )
+
+
+def test_healthy_encrypted_save_back_uses_incremental_and_keeps_password() -> None:
+    # The common real-world path the encryption=KEEP sweep originally missed:
+    # open a *healthy* (undamaged) encrypted PDF, edit nothing, save back to the
+    # same path. can_save_incrementally() is True, so save_as takes the
+    # incremental branch — which must pass encryption=KEEP. Without it PyMuPDF
+    # raises "Can't do incremental writes when changing encryption" (default
+    # encryption=NONE), the editor catches it and falls back to a full rewrite
+    # (slow + a misleading WARNING on every encrypted save), even though the
+    # password still survives via that fallback. This test asserts the incremental
+    # path actually succeeds (no fallback) AND the password survives end-to-end.
+    with tempfile.TemporaryDirectory() as tmp:
+        enc = Path(tmp) / "enc.pdf"
+        enc.write_bytes(_encrypted_pdf_bytes(user_pw="user-pw"))
+
+        model = PDFModel()
+        try:
+            model.open_pdf(str(enc), password="user-pw")
+            assert _is_encrypted(model.doc)
+            # Precondition: this file CAN save incrementally, so the branch under
+            # test is exercised rather than skipped.
+            assert model.doc.can_save_incrementally(), (
+                "fixture cannot save incrementally; test would not cover the branch"
+            )
+
+            # Spy: a true incremental save must NOT fall back to a full rewrite.
+            fell_back: list[str] = []
+            original_full_save = model._full_save_to_path
+
+            def _spy(path: str):
+                fell_back.append(path)
+                return original_full_save(path)
+
+            model._full_save_to_path = _spy  # type: ignore[method-assign]
+
+            model.save_as(str(enc))
+
+            assert fell_back == [], (
+                "healthy encrypted save-back fell back to a full rewrite instead "
+                "of a true incremental save (incremental branch missing "
+                "encryption=KEEP)"
+            )
+            # Live session stays usable; incremental keeps the same authenticated
+            # handle (no close/reopen), so is_encrypted stays False.
+            assert not model.doc.is_encrypted, (
+                "live document unusable after incremental encrypted save-back"
+            )
+            assert "secret-page-0" in model.doc[0].get_text("text")
+        finally:
+            model.close()
+
+        # On-disk: the password survived the incremental save-back.
+        reopened = fitz.open(str(enc))
+        try:
+            assert reopened.needs_pass, "incremental save-back stripped the password"
+            assert reopened.authenticate("user-pw") in (2, 4, 6), (
+                "saved file no longer accepts the original password"
+            )
+            assert "secret-page-0" in reopened[0].get_text("text")
+        finally:
+            reopened.close()
 
 
 def test_open_healthy_pdf_is_left_file_backed() -> None:
