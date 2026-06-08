@@ -4846,7 +4846,8 @@ class PDFView(QMainWindow):
             show_error(self, tooltip or "Surya OCR 未安裝\npip install surya-ocr")
             return
         current = max(1, int(self.current_page) + 1)
-        from view.dialogs.ocr import OcrDialog
+        import sys
+        OcrDialog = sys.modules[__name__].OcrDialog
         dialog = OcrDialog(
             parent=self,
             total_pages=max(1, int(self.total_pages)),
