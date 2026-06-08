@@ -39,7 +39,7 @@ def _pil_image():
     try:
         from PIL import Image
         return Image
-    except Exception:
+    except ImportError:
         return None
 
 
@@ -47,7 +47,7 @@ def _pikepdf():
     try:
         import pikepdf
         return pikepdf
-    except Exception:
+    except ImportError:
         return None
 
 

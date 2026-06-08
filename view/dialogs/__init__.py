@@ -22,7 +22,10 @@ def __getattr__(name: str) -> object:
             mod = importlib.import_module(submodule)
         except ImportError as exc:
             raise ImportError(f"dialog {name!r} could not be loaded from {submodule!r}: {exc}") from exc
-        obj = getattr(mod, name)
+        try:
+            obj = getattr(mod, name)
+        except AttributeError as exc:
+            raise AttributeError(f"{name!r} not found in {submodule!r}: {exc}") from exc
         globals()[name] = obj
         return obj
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

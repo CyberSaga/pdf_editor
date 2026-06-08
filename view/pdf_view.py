@@ -244,7 +244,12 @@ def __getattr__(name: str) -> object:
             raise ImportError(
                 f"dialog {name!r} could not be loaded from {_DIALOG_EXPORTS[name]!r}: {exc}"
             ) from exc
-        obj = getattr(mod, name)
+        try:
+            obj = getattr(mod, name)
+        except AttributeError as exc:
+            raise AttributeError(
+                f"{name!r} not found in {_DIALOG_EXPORTS[name]!r}: {exc}"
+            ) from exc
         globals()[name] = obj  # cache so __getattr__ is only called once per name
         return obj
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

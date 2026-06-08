@@ -291,7 +291,7 @@ def _contrast_ratio_rgb(foreground: tuple[float, float, float], background: tupl
 def _qimage_mean_rgb(image: QImage, rect: QRect) -> tuple[float, float, float] | None:
     try:
         import numpy as np
-    except ImportError:
+    except Exception:
         np = None
     bounded = rect.intersected(image.rect())
     if bounded.isEmpty():
@@ -338,7 +338,7 @@ def _qimage_ring_mean_rgb(image: QImage, inner_rect: QRect, ring_px: int) -> tup
         return _qimage_mean_rgb(image, inner_rect)
     try:
         import numpy as np
-    except ImportError:
+    except Exception:
         np = None
     outer = inner_rect.adjusted(-ring_px, -ring_px, ring_px, ring_px).intersected(image.rect())
     inner = inner_rect.intersected(outer)
@@ -397,7 +397,7 @@ def _blend_patch_towards_rgb(
 ) -> None:
     try:
         import numpy as np
-    except ImportError:
+    except Exception:
         np = None
     strength = max(0.0, min(1.0, float(blend_strength)))
     if patch.isNull() or strength <= 0.0:
@@ -435,7 +435,7 @@ def _blend_patch_towards_rgb(
 def _mask_leak_ratio(patch: QImage, reference_rgb: tuple[float, float, float], threshold: float = 16.0) -> float:
     try:
         import numpy as np
-    except ImportError:
+    except Exception:
         np = None
     if patch.isNull():
         return 1.0
