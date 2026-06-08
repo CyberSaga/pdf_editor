@@ -1213,7 +1213,7 @@ class PDFController:
         source_stem = Path(source_path).stem or "optimized"
         suggested_name = f"{source_stem}.optimized.pdf"
 
-        from view.dialogs.optimize import OptimizePdfDialog
+        from view.pdf_view import OptimizePdfDialog
         dialog = OptimizePdfDialog(self.view, audit_provider=self.model.build_pdf_audit_report)
         if dialog.exec() != QDialog.Accepted:
             return

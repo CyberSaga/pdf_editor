@@ -334,12 +334,12 @@ def _qimage_mean_rgb(image: QImage, rect: QRect) -> tuple[float, float, float] |
 
 
 def _qimage_ring_mean_rgb(image: QImage, inner_rect: QRect, ring_px: int) -> tuple[float, float, float] | None:
+    if ring_px <= 0:
+        return _qimage_mean_rgb(image, inner_rect)
     try:
         import numpy as np
     except ImportError:
         np = None
-    if ring_px <= 0:
-        return _qimage_mean_rgb(image, inner_rect)
     outer = inner_rect.adjusted(-ring_px, -ring_px, ring_px, ring_px).intersected(image.rect())
     inner = inner_rect.intersected(outer)
     if outer.isEmpty():

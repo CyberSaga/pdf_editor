@@ -37,7 +37,7 @@ def test_view_ocr_action_when_unavailable_shows_error_and_does_not_open_dialog(q
     view.current_page = 1
     view.update_ocr_availability(False, "Surya 未安裝\npip install surya-ocr")
 
-    with patch("view.pdf_view.show_error") as show_error, patch("view.pdf_view.OcrDialog") as DialogCls:
+    with patch("view.pdf_view.show_error") as show_error, patch("view.dialogs.ocr.OcrDialog") as DialogCls:
         view._ocr_pages()
 
     DialogCls.assert_not_called()
@@ -57,7 +57,7 @@ def test_view_ocr_action_opens_dialog_and_emits_request(qapp):
     # Prepare a dialog stub that returns a canned request instead of showing UI.
     canned = OcrRequest(page_indices=(1,), languages=("en",), device="auto")
 
-    with patch("view.pdf_view.OcrDialog") as DialogCls:
+    with patch("view.dialogs.ocr.OcrDialog") as DialogCls:
         instance = DialogCls.return_value
         instance.exec.return_value = True
         instance.get_request.return_value = canned
@@ -75,7 +75,7 @@ def test_view_ocr_action_cancel_does_not_emit(qapp):
     captured: list = []
     view.sig_start_ocr.connect(lambda req: captured.append(req))
 
-    with patch("view.pdf_view.OcrDialog") as DialogCls:
+    with patch("view.dialogs.ocr.OcrDialog") as DialogCls:
         instance = DialogCls.return_value
         instance.exec.return_value = False
         instance.get_request.return_value = None

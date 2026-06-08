@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import importlib
 import logging
 import math
 import sys
@@ -237,12 +238,12 @@ _DIALOG_EXPORTS: dict[str, str] = {
 
 def __getattr__(name: str) -> object:
     if name in _DIALOG_EXPORTS:
-        import importlib
         mod = importlib.import_module(_DIALOG_EXPORTS[name])
         obj = getattr(mod, name)
         globals()[name] = obj  # cache so __getattr__ is only called once per name
         return obj
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 class PDFView(QMainWindow):
     _VALID_MODES = {"browse", "edit_text", "text_edit", "objects", "add_text", "rect", "highlight", "add_annotation"}
@@ -765,6 +766,9 @@ class PDFView(QMainWindow):
         action = getattr(self, "_action_fullscreen", None)
         if action is not None:
             action.setEnabled(enabled)
+        btn = getattr(self, "fullscreen_quick_btn", None)
+        if btn is not None:
+            btn.setEnabled(enabled)
 
     def current_screen_name(self) -> str:
         handle = self.windowHandle()
@@ -4846,7 +4850,7 @@ class PDFView(QMainWindow):
             show_error(self, tooltip or "Surya OCR 未安裝\npip install surya-ocr")
             return
         current = max(1, int(self.current_page) + 1)
-        OcrDialog = sys.modules[__name__].OcrDialog
+        from view.dialogs.ocr import OcrDialog
         dialog = OcrDialog(
             parent=self,
             total_pages=max(1, int(self.total_pages)),

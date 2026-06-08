@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("PIL").setLevel(logging.INFO)
 logging.getLogger("PIL.PngImagePlugin").setLevel(logging.INFO)
 
+
 def _pil_image():
     try:
         from PIL import Image
@@ -134,8 +135,11 @@ def _transcode_image_payload(
     max_dpi: float,
     settings: dict[str, int | bool],
 ) -> bytes | None:
+    if not image_bytes:
+        return None
     Image = _pil_image()
-    if not image_bytes or Image is None:
+    if Image is None:
+        logger.warning("PIL not available; image rewrite skipped for this payload")
         return None
     image = Image.open(io.BytesIO(image_bytes))
     try:

@@ -1,20 +1,24 @@
 from __future__ import annotations
 
-from .audit import AuditStackedBar, PdfAuditReportDialog
-from .export import ExportPagesDialog
-from .merge import MergePdfDialog
-from .ocr import OcrDialog
-from .optimize import OptimizePdfDialog
-from .password import PDFPasswordDialog
-from .watermark import WatermarkDialog
+_EXPORTS: dict[str, str] = {
+    "AuditStackedBar": "audit",
+    "ExportPagesDialog": "export",
+    "MergePdfDialog": "merge",
+    "OcrDialog": "ocr",
+    "OptimizePdfDialog": "optimize",
+    "PDFPasswordDialog": "password",
+    "PdfAuditReportDialog": "audit",
+    "WatermarkDialog": "watermark",
+}
 
-__all__ = [
-    "AuditStackedBar",
-    "ExportPagesDialog",
-    "MergePdfDialog",
-    "OcrDialog",
-    "OptimizePdfDialog",
-    "PDFPasswordDialog",
-    "PdfAuditReportDialog",
-    "WatermarkDialog",
-]
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str) -> object:
+    if name in _EXPORTS:
+        import importlib
+        mod = importlib.import_module(f"view.dialogs.{_EXPORTS[name]}")
+        obj = getattr(mod, name)
+        globals()[name] = obj
+        return obj
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

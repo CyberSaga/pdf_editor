@@ -7,7 +7,6 @@ DLLs must remain deferred until first actual use.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -24,15 +23,21 @@ print(json.dumps(sorted(heavy)))
 """.format(root=str(ROOT).replace("\\", "\\\\"))
 
 
+_PROBE_RESULT: list[str] | None = None
+
+
 def _run_probe() -> list[str]:
-    result = subprocess.run(
-        [sys.executable, "-c", _PROBE],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert result.returncode == 0, f"Probe failed:\n{result.stderr}"
-    return json.loads(result.stdout.strip())
+    global _PROBE_RESULT
+    if _PROBE_RESULT is None:
+        result = subprocess.run(
+            [sys.executable, "-c", _PROBE],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, f"Probe failed:\n{result.stderr}"
+        _PROBE_RESULT = json.loads(result.stdout.strip())
+    return _PROBE_RESULT
 
 
 def test_numpy_not_loaded_at_pdf_view_import():
