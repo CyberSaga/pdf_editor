@@ -28,7 +28,7 @@ from model.object_requests import (
 )
 from model.pdf_model import PDFModel
 from utils.helpers import pixmap_to_qimage, pixmap_to_qpixmap, show_error
-from view.pdf_view import EditTextRequest, MoveTextRequest, OptimizePdfDialog, PDFView, ViewportAnchor
+from view.pdf_view import EditTextRequest, MoveTextRequest, PDFView, ViewportAnchor
 
 THUMB_BATCH_SIZE = 10
 THUMB_BATCH_INTERVAL_MS = 30
@@ -1213,6 +1213,7 @@ class PDFController:
         source_stem = Path(source_path).stem or "optimized"
         suggested_name = f"{source_stem}.optimized.pdf"
 
+        from view.dialogs.optimize import OptimizePdfDialog
         dialog = OptimizePdfDialog(self.view, audit_provider=self.model.build_pdf_audit_report)
         if dialog.exec() != QDialog.Accepted:
             return

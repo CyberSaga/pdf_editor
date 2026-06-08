@@ -27,16 +27,6 @@ from typing import TYPE_CHECKING
 
 import fitz
 
-try:
-    from PIL import Image
-except ImportError:  # pragma: no cover - optional dependency
-    Image = None
-
-try:
-    import pikepdf
-except ImportError:  # pragma: no cover - optional dependency
-    pikepdf = None
-
 if TYPE_CHECKING:
     from model.pdf_model import PDFModel
 
@@ -128,6 +118,10 @@ def _transcode_image_payload(
     max_dpi: float,
     settings: dict[str, int | bool],
 ) -> bytes | None:
+    try:
+        from PIL import Image
+    except ImportError:
+        Image = None
     if not image_bytes:
         return None
     image = Image.open(io.BytesIO(image_bytes))
@@ -673,6 +667,10 @@ def rewrite_images_with_pillow(
     image_usage: dict[int, dict[str, float | int]] | None = None,
     allow_extracted_parallel_fallback: bool = True,
 ) -> None:
+    try:
+        from PIL import Image
+    except ImportError:
+        Image = None
     if Image is None:
         raise RuntimeError("圖像最佳化需要 Pillow，請先安裝 optional-requirements.txt。")
 
@@ -723,6 +721,10 @@ def postprocess_optimized_pdf_with_pikepdf(
     source_path: Path,
     options: PdfOptimizeOptions,
 ) -> None:
+    try:
+        import pikepdf
+    except ImportError:
+        pikepdf = None
     if pikepdf is None:
         raise RuntimeError("目前環境缺少 pikepdf，無法套用 linearize / object streams。")
     repacked_path = source_path.with_name(f"{source_path.stem}_packed_{uuid.uuid4().hex}.pdf")
@@ -754,6 +756,10 @@ def save_optimized_working_doc(
     temp_save: Path,
     options: PdfOptimizeOptions,
 ) -> None:
+    try:
+        import pikepdf
+    except ImportError:
+        pikepdf = None
     if model._requires_post_save_packaging(options) and pikepdf is None:
         working_doc.save(
             str(temp_save),
