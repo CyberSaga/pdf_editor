@@ -220,18 +220,29 @@ class _NoCtrlTabTabBar(QTabBar):
         super().keyPressEvent(event)
 
 
-# Dialog classes have been extracted to view/dialogs/ for maintainability.
-# Re-exported here so all existing `from view.pdf_view import ...` call sites continue to work.
-from view.dialogs import (  # noqa: E402, F401
-    AuditStackedBar,
-    ExportPagesDialog,
-    MergePdfDialog,
-    OcrDialog,
-    OptimizePdfDialog,
-    PDFPasswordDialog,
-    PdfAuditReportDialog,
-    WatermarkDialog,
-)
+# Dialog classes are loaded lazily (PEP 562 module __getattr__) so PIL/pikepdf/lxml
+# don't load at startup. Both attribute access and `from view.pdf_view import Name`
+# trigger __getattr__ on first use; the result is cached in globals() afterwards.
+_DIALOG_EXPORTS: dict[str, str] = {
+    "AuditStackedBar": "view.dialogs.audit",
+    "ExportPagesDialog": "view.dialogs.export",
+    "MergePdfDialog": "view.dialogs.merge",
+    "OcrDialog": "view.dialogs.ocr",
+    "OptimizePdfDialog": "view.dialogs.optimize",
+    "PDFPasswordDialog": "view.dialogs.password",
+    "PdfAuditReportDialog": "view.dialogs.audit",
+    "WatermarkDialog": "view.dialogs.watermark",
+}
+
+
+def __getattr__(name: str) -> object:
+    if name in _DIALOG_EXPORTS:
+        import importlib
+        mod = importlib.import_module(_DIALOG_EXPORTS[name])
+        obj = getattr(mod, name)
+        globals()[name] = obj  # cache so __getattr__ is only called once per name
+        return obj
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 class PDFView(QMainWindow):
     _VALID_MODES = {"browse", "edit_text", "text_edit", "objects", "add_text", "rect", "highlight", "add_annotation"}
@@ -289,6 +300,7 @@ class PDFView(QMainWindow):
     sig_insert_pages_from_file = Signal(str, list, int)  # source_file, source_pages, position
     sig_merge_pdfs_requested = Signal()
     sig_optimize_pdf_copy_requested = Signal()
+    sig_repair_xref_requested = Signal()
     sig_backend_bootstrap_requested = Signal()
 
     # --- 浮水印 Signals ---
@@ -751,7 +763,9 @@ class PDFView(QMainWindow):
         return self._fullscreen_active
 
     def set_fullscreen_action_enabled(self, enabled: bool) -> None:
-        self._action_fullscreen.setEnabled(enabled)
+        action = getattr(self, "_action_fullscreen", None)
+        if action is not None:
+            action.setEnabled(enabled)
 
     def current_screen_name(self) -> str:
         handle = self.windowHandle()
@@ -1057,6 +1071,7 @@ class PDFView(QMainWindow):
         self._action_save_as = tb_file.addAction("另存新檔", self._save_as)
         self._action_save_as.setShortcut(QKeySequence("Ctrl+Shift+S"))
         self._action_optimize_copy = tb_file.addAction("另存為最佳化的副本", self._optimize_pdf_copy)
+        self._action_repair_xref = tb_file.addAction("修復 XREF 表", self._repair_document_xref)
         layout_file = QVBoxLayout(tab_file)
         layout_file.setContentsMargins(4, 0, 0, 0)
         layout_file.addWidget(tb_file)
@@ -1075,12 +1090,7 @@ class PDFView(QMainWindow):
         self._action_redo.setShortcut(QKeySequence("Ctrl+Y"))
         self._redo_mac_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
         self._redo_mac_shortcut.activated.connect(self.sig_redo.emit)
-        # 全螢幕 lives only on the right-side quick button now; keep the QAction
-        # off the ribbon but alive for the F5 shortcut and the macOS View menu.
-        _fullscreen_icon = load_icon("全螢幕")
-        self._action_fullscreen = QAction("全螢幕", self)
-        self._action_fullscreen.setIcon(_fullscreen_icon)
-        self._action_fullscreen.triggered.connect(self.sig_toggle_fullscreen.emit)
+        self._action_fullscreen = tb_common.addAction("全螢幕", self.sig_toggle_fullscreen.emit)
         tb_common.addAction("縮圖", self._show_thumbnails_tab)
         tb_common.addAction("搜尋", self._show_search_tab)
         tb_common.addAction("快照", self._snapshot_page)
@@ -1168,10 +1178,7 @@ class PDFView(QMainWindow):
         self.fit_view_btn = QPushButton("適應畫面")
         self.fit_view_btn.clicked.connect(self._fit_to_view)
         self.fullscreen_quick_btn = QPushButton("全螢幕")
-        self.fullscreen_quick_btn.setIcon(_fullscreen_icon)
-        self.fullscreen_quick_btn.setIconSize(QSize(24, 24))
-        self.fullscreen_quick_btn.clicked.connect(self._action_fullscreen.trigger)
-        self._action_fullscreen.enabledChanged.connect(self.fullscreen_quick_btn.setEnabled)
+        self.fullscreen_quick_btn.clicked.connect(self.sig_toggle_fullscreen.emit)
         self._action_undo_right = QAction("↺ 復原", self)
         self._action_undo_right.triggered.connect(self.sig_undo.emit)
         self._action_redo_right = QAction("↻ 重做", self)
@@ -1207,14 +1214,16 @@ class PDFView(QMainWindow):
             self._action_print,
             self._action_save,
             self._action_save_as,
+            self._action_undo,
+            self._action_redo,
             self._action_edit_text,
             self._action_objects,
+            self._action_fullscreen,
         ):
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             self.addAction(action)
-        for action in (self._action_undo, self._action_redo, self._action_fullscreen):
-            action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
-            self.addAction(action)
+        self._action_undo.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self._action_redo.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self._action_fullscreen.setShortcut(QKeySequence(Qt.Key_F5))
 
     def _macos_menu_spec(self) -> list[tuple[str, list]]:
@@ -4502,6 +4511,7 @@ class PDFView(QMainWindow):
 
     def ask_pdf_password(self, path: str) -> str | None:
         """開啟加密 PDF 時彈出密碼輸入框，回傳使用者輸入的密碼；若取消則回傳 None。"""
+        from view.dialogs.password import PDFPasswordDialog
         dlg = PDFPasswordDialog(self, file_path=path)
         if dlg.exec() == QDialog.Accepted:
             return dlg.get_password() or None
@@ -4527,6 +4537,11 @@ class PDFView(QMainWindow):
             return
         self.sig_optimize_pdf_copy_requested.emit()
 
+    def _repair_document_xref(self):
+        if self.total_pages == 0:
+            show_error(self, "沒有可修復的 PDF")
+            return
+        self.sig_repair_xref_requested.emit()
     def _delete_pages(self):
         pages, ok = QInputDialog.getText(self, "刪除頁面", "輸入頁碼 (如 1,3-5):")
         if ok and pages:
@@ -4628,6 +4643,7 @@ class PDFView(QMainWindow):
             show_error(self, "沒有可匯出的 PDF")
             return
 
+        from view.dialogs.export import ExportPagesDialog
         dlg = ExportPagesDialog(self, self.total_pages, self.current_page + 1)
         if dlg.exec() != QDialog.Accepted:
             return
@@ -4705,6 +4721,7 @@ class PDFView(QMainWindow):
         if self.total_pages == 0:
             show_error(self, "請先開啟 PDF 文件")
             return
+        from view.dialogs.watermark import WatermarkDialog
         dlg = WatermarkDialog(self, self.total_pages)
         if dlg.exec() == QDialog.Accepted:
             pages, text, angle, opacity, font_size, color, font, offset_x, offset_y, line_spacing = dlg.get_values()
@@ -4727,6 +4744,7 @@ class PDFView(QMainWindow):
         edit_wm = next((w for w in watermarks if w.get("id") == wm_id), None)
         if not edit_wm:
             return
+        from view.dialogs.watermark import WatermarkDialog
         dlg = WatermarkDialog(self, self.total_pages, edit_data=edit_wm)
         if dlg.exec() == QDialog.Accepted:
             pages, text, angle, opacity, font_size, color, font, offset_x, offset_y, line_spacing = dlg.get_values()
@@ -4833,6 +4851,7 @@ class PDFView(QMainWindow):
             show_error(self, tooltip or "Surya OCR 未安裝\npip install surya-ocr")
             return
         current = max(1, int(self.current_page) + 1)
+        from view.dialogs.ocr import OcrDialog
         dialog = OcrDialog(
             parent=self,
             total_pages=max(1, int(self.total_pages)),

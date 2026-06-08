@@ -5,11 +5,6 @@ import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 
-try:
-    import numpy as np
-except ImportError:
-    np = None
-
 import fitz
 from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -294,6 +289,10 @@ def _contrast_ratio_rgb(foreground: tuple[float, float, float], background: tupl
 
 
 def _qimage_mean_rgb(image: QImage, rect: QRect) -> tuple[float, float, float] | None:
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
     bounded = rect.intersected(image.rect())
     if bounded.isEmpty():
         return None
@@ -335,6 +334,10 @@ def _qimage_mean_rgb(image: QImage, rect: QRect) -> tuple[float, float, float] |
 
 
 def _qimage_ring_mean_rgb(image: QImage, inner_rect: QRect, ring_px: int) -> tuple[float, float, float] | None:
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
     if ring_px <= 0:
         return _qimage_mean_rgb(image, inner_rect)
     outer = inner_rect.adjusted(-ring_px, -ring_px, ring_px, ring_px).intersected(image.rect())
@@ -392,6 +395,10 @@ def _blend_patch_towards_rgb(
     target_rgb: tuple[float, float, float],
     blend_strength: float,
 ) -> None:
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
     strength = max(0.0, min(1.0, float(blend_strength)))
     if patch.isNull() or strength <= 0.0:
         return
@@ -426,6 +433,10 @@ def _blend_patch_towards_rgb(
 
 
 def _mask_leak_ratio(patch: QImage, reference_rgb: tuple[float, float, float], threshold: float = 16.0) -> float:
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
     if patch.isNull():
         return 1.0
     if patch.format() != QImage.Format_RGBA8888:
@@ -824,6 +835,10 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
         self.viewport().update()
 
     def _mutated_preview_has_visible_ink(self, image: QImage | None) -> bool:
+        try:
+            import numpy as np
+        except ImportError:
+            np = None
         # The only consumer compares coverage against a tiny fraction, so we
         # just need "are there at least N visible alpha bytes?" — scan and stop
         # as soon as the count crosses the threshold instead of summing every

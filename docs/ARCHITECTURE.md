@@ -141,6 +141,8 @@ Fullscreen UX is implemented in the view, but coordinated by controller state:
 - View owns chrome visibility, fullscreen enter/exit, top-edge exit affordance, and viewport anchor helpers.
 - Controller decides when fullscreen is allowed, normalizes mode/interaction state on entry, and restores per-tab layout on exit.
 
+**Deferred heavy imports:** `view/text_editing.py` defers `import numpy` to the first call of each numpy-using helper (function-body import, same pattern as `model/pdf_model.py:_render_page_gray_array`). `view/pdf_view.py` re-exports dialog classes via a PEP 562 module `__getattr__` so PIL/pikepdf/lxml (31 MB) only load when a dialog is first opened — after `view.show()`. Both ensure cold-boot DLL reads stay under 30 MB.
+
 ### 2.5 Theming (`view/theme.py`, `view/icons.py`)
 
 The UI ships four selectable themes (`alpine-snow`, `meadow-lupine`, `ink-porcelain`, `glimmering-glacier`), translated from `appearance_design/colors.css`. `view/theme.py` is the single source of truth:

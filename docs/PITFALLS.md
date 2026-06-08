@@ -898,3 +898,16 @@
 **Cause:** Measured on the real 47 MB damaged file (psutil RSS): the **original** file-backed doc adds only ~4.7 MB after open (MuPDF streams object data lazily from disk even after repairing the xref), the `tobytes(garbage=1)` buffer is ~1× file size (47.6 MB), and `fitz.open("pdf", buf)` reads lazily from that **same** buffer — reopening adds nothing measurable. Peak ≈ **+54 MB ≈ 1.15× file size**, dominated by the single unavoidable serialization buffer.
 **Fix:** No code change needed. The ~1× buffer is inherent to any in-memory round-trip; closing the original doc before reopen saves only ~4.7 MB (not worth giving up the "open never fails" fallback ordering), and a temp-file round-trip would cut the buffer but break the documented/tested memory-backed contract and add temp-file lifecycle risk. At the 512 MB open cap the transient is ~590 MB above baseline — bounded and acceptable for a one-time, damaged-file-only op.
 **File:** `model/pdf_model.py` (`_repair_doc_xref_in_memory`)
+
+---
+
+## Eager module-level imports of optional native deps block cold-boot startup
+
+**Area:** `view/text_editing.py`, `view/pdf_view.py`
+**Symptom:** First launch after reboot took 15+ seconds; subsequent launches were fast (2-3 s).
+**Cause:** Two module-level import chains loaded 55 MB of native DLLs before the window appeared:
+1. `view/text_editing.py` had `try: import numpy as np` at module top -- ran the 24 MB numpy load the moment any code imported the module, even before any text editing.
+2. `view/pdf_view.py` had `from view.dialogs import (...)` at module level -- chained through `model.pdf_optimizer` -> PIL + pikepdf (which pulls lxml), 31 MB total.
+**Fix:** Moved the `try: import numpy as np / except ImportError: np = None` block inside each of the 5 numpy-using functions. Replaced the eager dialog re-export block in `view/pdf_view.py` with a PEP 562 module-level `__getattr__` that imports from `view.dialogs` on first access and caches names into `globals()`. Internal uses of dialog classes within `pdf_view.py` itself use function-local imports.
+**File:** `view/text_editing.py`, `view/pdf_view.py`
+**Tests:** `test_scripts/test_startup_heavy_imports.py`
