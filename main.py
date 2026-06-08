@@ -34,6 +34,9 @@ def run_merge_and_exit(args: argparse.Namespace) -> int:
     return 0
 
 
+APP_USER_MODEL_ID = "CyberSaga.PDFEditor"
+
+
 def _set_windows_app_user_model_id() -> None:
     """Give Windows an explicit AppUserModelID so the taskbar uses the app's own
     window icon and grouping instead of inheriting the host python(w).exe
@@ -44,7 +47,7 @@ def _set_windows_app_user_model_id() -> None:
     try:
         import ctypes
 
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CyberSaga.PDFEditor")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
     except (OSError, AttributeError):  # pragma: no cover - Windows-only shell call
         pass
 

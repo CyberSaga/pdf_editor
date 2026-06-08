@@ -13,11 +13,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-ICON_DIR: Path = Path(__file__).resolve().parents[1] / "appearance_design" / "function_icons"
+_APPEARANCE_DIR: Path = Path(__file__).resolve().parents[1] / "appearance_design"
+
+ICON_DIR: Path = _APPEARANCE_DIR / "function_icons"
 
 # Application/window icon (title bar, taskbar). A multi-resolution .ico so Qt
 # can pick the right size per DPI.
-APP_ICON_PATH: Path = Path(__file__).resolve().parents[1] / "appearance_design" / "app_icon.ico"
+APP_ICON_PATH: Path = _APPEARANCE_DIR / "app_icon.ico"
 
 # Action label text -> PNG filename (32 ribbon actions).
 ACTION_ICON_MAP: dict[str, str] = {
@@ -99,4 +101,7 @@ else:
         """
         if not APP_ICON_PATH.is_file():
             return QIcon()
-        return QIcon(str(APP_ICON_PATH))
+        icon = QIcon(str(APP_ICON_PATH))
+        if icon.isNull():
+            return QIcon()
+        return icon

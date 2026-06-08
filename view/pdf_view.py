@@ -751,12 +751,7 @@ class PDFView(QMainWindow):
         return self._fullscreen_active
 
     def set_fullscreen_action_enabled(self, enabled: bool) -> None:
-        action = getattr(self, "_action_fullscreen", None)
-        if action is not None:
-            action.setEnabled(enabled)
-        btn = getattr(self, "fullscreen_quick_btn", None)
-        if btn is not None:
-            btn.setEnabled(enabled)
+        self._action_fullscreen.setEnabled(enabled)
 
     def current_screen_name(self) -> str:
         handle = self.windowHandle()
@@ -1082,7 +1077,9 @@ class PDFView(QMainWindow):
         self._redo_mac_shortcut.activated.connect(self.sig_redo.emit)
         # 全螢幕 lives only on the right-side quick button now; keep the QAction
         # off the ribbon but alive for the F5 shortcut and the macOS View menu.
+        _fullscreen_icon = load_icon("全螢幕")
         self._action_fullscreen = QAction("全螢幕", self)
+        self._action_fullscreen.setIcon(_fullscreen_icon)
         self._action_fullscreen.triggered.connect(self.sig_toggle_fullscreen.emit)
         tb_common.addAction("縮圖", self._show_thumbnails_tab)
         tb_common.addAction("搜尋", self._show_search_tab)
@@ -1171,9 +1168,10 @@ class PDFView(QMainWindow):
         self.fit_view_btn = QPushButton("適應畫面")
         self.fit_view_btn.clicked.connect(self._fit_to_view)
         self.fullscreen_quick_btn = QPushButton("全螢幕")
-        self.fullscreen_quick_btn.setIcon(load_icon("全螢幕"))
+        self.fullscreen_quick_btn.setIcon(_fullscreen_icon)
         self.fullscreen_quick_btn.setIconSize(QSize(24, 24))
-        self.fullscreen_quick_btn.clicked.connect(self.sig_toggle_fullscreen.emit)
+        self.fullscreen_quick_btn.clicked.connect(self._action_fullscreen.trigger)
+        self._action_fullscreen.enabledChanged.connect(self.fullscreen_quick_btn.setEnabled)
         self._action_undo_right = QAction("↺ 復原", self)
         self._action_undo_right.triggered.connect(self.sig_undo.emit)
         self._action_redo_right = QAction("↻ 重做", self)
@@ -1209,17 +1207,14 @@ class PDFView(QMainWindow):
             self._action_print,
             self._action_save,
             self._action_save_as,
-            self._action_undo,
-            self._action_redo,
             self._action_edit_text,
             self._action_objects,
-            self._action_fullscreen,
         ):
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             self.addAction(action)
-        self._action_undo.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
-        self._action_redo.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
-        self._action_fullscreen.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        for action in (self._action_undo, self._action_redo, self._action_fullscreen):
+            action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+            self.addAction(action)
         self._action_fullscreen.setShortcut(QKeySequence(Qt.Key_F5))
 
     def _macos_menu_spec(self) -> list[tuple[str, list]]:

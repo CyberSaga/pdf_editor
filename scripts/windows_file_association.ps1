@@ -290,17 +290,17 @@ function Remove-Backup($snap) {
 }
 
 function New-Launcher {
-    # Atomic swap: copy pythonw.exe to a temp sibling, verify the copy is whole
-    # (same byte length), then rename over the target. The existing launcher is
-    # only replaced once a complete copy exists, so a failed/locked copy leaves
-    # the old launcher intact.
-    $srcLen = (Get-Item $Pythonw).Length
-    $tmp    = "$Launcher.new"
+    # Atomic swap: copy pythonw.exe to a temp sibling, verify the copy via
+    # SHA-256 hash, then rename over the target. The existing launcher is only
+    # replaced once a verified copy exists, so a failed/locked copy leaves the
+    # old launcher intact.
+    $srcHash = (Get-FileHash -Path $Pythonw -Algorithm SHA256).Hash
+    $tmp     = "$Launcher.new"
     Copy-Item -Path $Pythonw -Destination $tmp -Force
-    $dst = Get-Item $tmp -ErrorAction SilentlyContinue
-    if ($null -eq $dst -or $dst.Length -ne $srcLen) {
+    $tmpHash = (Get-FileHash -Path $tmp -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+    if ($tmpHash -ne $srcHash) {
         Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue
-        throw "Launcher copy failed or is truncated: $Launcher"
+        throw "Launcher copy failed or is corrupt: $Launcher"
     }
     Move-Item -Path $tmp -Destination $Launcher -Force
 }
