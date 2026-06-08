@@ -34,6 +34,22 @@ logger = logging.getLogger(__name__)
 logging.getLogger("PIL").setLevel(logging.INFO)
 logging.getLogger("PIL.PngImagePlugin").setLevel(logging.INFO)
 
+def _pil_image():
+    try:
+        from PIL import Image
+        return Image
+    except ImportError:
+        return None
+
+
+def _pikepdf():
+    try:
+        import pikepdf
+        return pikepdf
+    except ImportError:
+        return None
+
+
 _IMAGE_REWRITE_WORKER_DOC: fitz.Document | None = None
 _MIN_PARALLEL_IMAGE_REWRITES = 4
 _MAX_PARALLEL_IMAGE_WORKERS = 4
@@ -118,11 +134,8 @@ def _transcode_image_payload(
     max_dpi: float,
     settings: dict[str, int | bool],
 ) -> bytes | None:
-    try:
-        from PIL import Image
-    except ImportError:
-        Image = None
-    if not image_bytes:
+    Image = _pil_image()
+    if not image_bytes or Image is None:
         return None
     image = Image.open(io.BytesIO(image_bytes))
     try:
@@ -667,10 +680,7 @@ def rewrite_images_with_pillow(
     image_usage: dict[int, dict[str, float | int]] | None = None,
     allow_extracted_parallel_fallback: bool = True,
 ) -> None:
-    try:
-        from PIL import Image
-    except ImportError:
-        Image = None
+    Image = _pil_image()
     if Image is None:
         raise RuntimeError("圖像最佳化需要 Pillow，請先安裝 optional-requirements.txt。")
 
@@ -721,10 +731,7 @@ def postprocess_optimized_pdf_with_pikepdf(
     source_path: Path,
     options: PdfOptimizeOptions,
 ) -> None:
-    try:
-        import pikepdf
-    except ImportError:
-        pikepdf = None
+    pikepdf = _pikepdf()
     if pikepdf is None:
         raise RuntimeError("目前環境缺少 pikepdf，無法套用 linearize / object streams。")
     repacked_path = source_path.with_name(f"{source_path.stem}_packed_{uuid.uuid4().hex}.pdf")
@@ -756,10 +763,7 @@ def save_optimized_working_doc(
     temp_save: Path,
     options: PdfOptimizeOptions,
 ) -> None:
-    try:
-        import pikepdf
-    except ImportError:
-        pikepdf = None
+    pikepdf = _pikepdf()
     if model._requires_post_save_packaging(options) and pikepdf is None:
         working_doc.save(
             str(temp_save),
