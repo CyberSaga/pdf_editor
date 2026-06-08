@@ -238,7 +238,12 @@ _DIALOG_EXPORTS: dict[str, str] = {
 
 def __getattr__(name: str) -> object:
     if name in _DIALOG_EXPORTS:
-        mod = importlib.import_module(_DIALOG_EXPORTS[name])
+        try:
+            mod = importlib.import_module(_DIALOG_EXPORTS[name])
+        except ImportError as exc:
+            raise ImportError(
+                f"dialog {name!r} could not be loaded from {_DIALOG_EXPORTS[name]!r}: {exc}"
+            ) from exc
         obj = getattr(mod, name)
         globals()[name] = obj  # cache so __getattr__ is only called once per name
         return obj

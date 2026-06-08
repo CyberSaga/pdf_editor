@@ -39,7 +39,7 @@ def _pil_image():
     try:
         from PIL import Image
         return Image
-    except ImportError:
+    except Exception:
         return None
 
 
@@ -47,7 +47,7 @@ def _pikepdf():
     try:
         import pikepdf
         return pikepdf
-    except ImportError:
+    except Exception:
         return None
 
 
@@ -139,8 +139,7 @@ def _transcode_image_payload(
         return None
     Image = _pil_image()
     if Image is None:
-        logger.warning("PIL not available; image rewrite skipped for this payload")
-        return None
+        raise RuntimeError("PIL not available in image rewrite worker; install Pillow")
     image = Image.open(io.BytesIO(image_bytes))
     try:
         image.load()
@@ -767,8 +766,7 @@ def save_optimized_working_doc(
     temp_save: Path,
     options: PdfOptimizeOptions,
 ) -> None:
-    pikepdf = _pikepdf()
-    if model._requires_post_save_packaging(options) and pikepdf is None:
+    if model._requires_post_save_packaging(options) and _pikepdf() is None:
         working_doc.save(
             str(temp_save),
             garbage=max(0, int(options.garbage_level)),

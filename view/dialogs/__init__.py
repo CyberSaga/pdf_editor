@@ -17,7 +17,11 @@ __all__ = list(_EXPORTS)
 def __getattr__(name: str) -> object:
     if name in _EXPORTS:
         import importlib
-        mod = importlib.import_module(f"view.dialogs.{_EXPORTS[name]}")
+        submodule = f"view.dialogs.{_EXPORTS[name]}"
+        try:
+            mod = importlib.import_module(submodule)
+        except ImportError as exc:
+            raise ImportError(f"dialog {name!r} could not be loaded from {submodule!r}: {exc}") from exc
         obj = getattr(mod, name)
         globals()[name] = obj
         return obj
