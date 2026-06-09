@@ -16,6 +16,12 @@ _ACTIVE_SERVERS: dict[str, QLocalServer] = {}
 def _build_server_name() -> str:
     user = getpass.getuser().strip() or "default"
     safe_user = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in user)
+    return f"cybersagapdf_singleinstance_{safe_user}"
+
+
+def _build_legacy_server_name() -> str:
+    user = getpass.getuser().strip() or "default"
+    safe_user = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in user)
     return f"pdf_editor_singleinstance_{safe_user}"
 
 
@@ -149,6 +155,8 @@ def try_become_server(
     server_name: str | None = None,
 ) -> QLocalServer | None:
     name = server_name or _build_server_name()
+    if server_name is None and _probe_live_server(_build_legacy_server_name()):
+        return None
     lock = _make_lock(name)
     if not _try_acquire_lock(lock):
         if hasattr(lock, "removeStaleLockFile") and not _probe_live_server(name):
@@ -212,7 +220,14 @@ def send_to_running_instance(
     try:
         socket.connectToServer(name)
         if not socket.waitForConnected(timeout_ms):
-            return False
+            if server_name is None:
+                legacy = _build_legacy_server_name()
+                socket.abort()
+                socket.connectToServer(legacy)
+                if not socket.waitForConnected(timeout_ms):
+                    return False
+            else:
+                return False
         _service_local_server(name)
         payload = json.dumps({"argv": normalized_argv}, ensure_ascii=False).encode("utf-8") + b"\n"
         socket.write(payload)

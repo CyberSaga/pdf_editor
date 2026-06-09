@@ -26,8 +26,13 @@ _THEME_KEY = "ui/theme"
 _THEME_DEFAULT = DEFAULT_THEME_ID
 _VALID_THEME_IDS = VALID_THEME_IDS
 
-_ORG = "pdf_editor"
-_APP = "pdf_editor"
+_ORG = "CyberSaga"
+_APP = "CyberSagaPDF"
+
+_LEGACY_ORG = "pdf_editor"
+_LEGACY_APP = "pdf_editor"
+
+_MIGRATE_KEYS = (_OCR_DEVICE_KEY, _OCR_LANGS_KEY, _THEME_KEY)
 
 
 def _make_default_store() -> _SettingsLike:
@@ -36,11 +41,31 @@ def _make_default_store() -> _SettingsLike:
     return QSettings(_ORG, _APP)
 
 
+def _migrate_legacy_settings(store: _SettingsLike) -> None:
+    from PySide6.QtCore import QSettings
+
+    for key in _MIGRATE_KEYS:
+        if store.value(key) is not None:
+            return
+    legacy = QSettings(_LEGACY_ORG, _LEGACY_APP)
+    migrated = False
+    for key in _MIGRATE_KEYS:
+        val = legacy.value(key)
+        if val is not None:
+            store.setValue(key, val)
+            migrated = True
+    if migrated:
+        logger.info("Migrated preferences from %s/%s", _LEGACY_ORG, _LEGACY_APP)
+
+
 class UserPreferences:
     """Thin facade over a QSettings-compatible store for app-wide preferences."""
 
     def __init__(self, store: _SettingsLike | None = None) -> None:
+        is_default = store is None
         self._store = store if store is not None else _make_default_store()
+        if is_default:
+            _migrate_legacy_settings(self._store)
 
     def get_ocr_device(self) -> str:
         raw = self._store.value(_OCR_DEVICE_KEY, _OCR_DEVICE_DEFAULT)

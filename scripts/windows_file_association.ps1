@@ -1,20 +1,20 @@
 <#
 .SYNOPSIS
-    Register (or unregister) this PDF Editor as a handler for .pdf files on
+    Register (or unregister) CyberSagaPDF as a handler for .pdf files on
     Windows, under the current user only (HKCU - no admin required).
 
 .DESCRIPTION
     The "Open with" list takes an app's name and icon from the EXECUTABLE, not
     from the file-type ProgID. Our real interpreter is pythonw.exe, which would
-    show up as "Python". To get a recognizable "PDF Editor (reiya)" entry with
+    show up as "Python". To get a recognizable "CyberSagaPDF" entry with
     our own icon, we copy pythonw.exe to a uniquely-named launcher
 
-        .venv\Scripts\pdf_editor.exe
+        .venv\Scripts\cybersaga_pdf.exe
 
-    and register it under HKCU\Software\Classes\Applications\pdf_editor.exe with
+    and register it under HKCU\Software\Classes\Applications\cybersaga_pdf.exe with
     a FriendlyAppName, DefaultIcon, open command, and SupportedTypes(.pdf).
 
-    A ProgID (PDFEditor.Document) + Capabilities are also registered so the app
+    A ProgID (CyberSagaPDF.Document) + Capabilities are also registered so the app
     appears in Settings > Apps > Default apps and carries the file icon once it
     becomes the default.
 
@@ -60,13 +60,13 @@ $ErrorActionPreference = 'Stop'
 $ProjectDir = Split-Path -Parent $PSScriptRoot
 $ScriptsDir = Join-Path $ProjectDir '.venv\Scripts'
 $Pythonw    = Join-Path $ScriptsDir 'pythonw.exe'
-$Launcher   = Join-Path $ScriptsDir 'pdf_editor.exe'   # uniquely-named copy
+$Launcher   = Join-Path $ScriptsDir 'cybersaga_pdf.exe'   # uniquely-named copy
 $MainPy     = Join-Path $ProjectDir 'main.py'
 
-$ProgId     = 'PDFEditor.Document'
-$AppExe     = 'pdf_editor.exe'                          # Applications\<this>
-$AppName    = 'PDF Editor (reiya)'
-$AppRegName = 'PDFEditorReiya'                          # key under HKCU\Software
+$ProgId     = 'CyberSagaPDF.Document'
+$AppExe     = 'cybersaga_pdf.exe'                         # Applications\<this>
+$AppName    = 'CyberSagaPDF'
+$AppRegName = 'CyberSagaPDF'                              # key under HKCU\Software
 
 $AppsKey    = "HKCU:\Software\Classes\Applications\$AppExe"
 $ProgIdKey  = "HKCU:\Software\Classes\$ProgId"
@@ -102,9 +102,52 @@ function ConvertTo-RegPath([string]$psPath) {
     return ($psPath -replace '^HKCU:\\', 'HKCU\')
 }
 
+function Test-LegacyIsActiveDefault {
+    # Return $true when UserChoice for .pdf still references any legacy identity
+    # (ProgID or Applications\<exe> form).
+    $ucKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.pdf\UserChoice'
+    if (-not (Test-Path $ucKey)) { return $false }
+    try {
+        $prog = (Get-ItemProperty -LiteralPath $ucKey -Name 'ProgId' -ErrorAction Stop).ProgId
+        return ($prog -eq 'PDFEditor.Document' -or $prog -eq 'Applications\pdf_editor.exe')
+    } catch { return $false }
+}
+
+function Remove-LegacyManaged {
+    # Best-effort removal of the pre-rename identifiers (pdf_editor.exe,
+    # PDFEditor.Document, PDFEditorReiya, "PDF Editor (reiya)").
+    # Skipped when the legacy ProgID is still the active default — removing it
+    # would strand UserChoice on a deleted handler.
+    param([switch]$Force)
+
+    if (-not $Force -and (Test-LegacyIsActiveDefault)) {
+        Write-Warning ("Legacy ProgID 'PDFEditor.Document' is still the active .pdf default. " +
+                       "Keeping legacy registration so PDFs keep opening. " +
+                       "Change your default to '$AppName', then re-run to clean up, or use -Unregister.")
+        return
+    }
+
+    $legacyApps = 'HKCU:\Software\Classes\Applications\pdf_editor.exe'
+    $legacyProg = 'HKCU:\Software\Classes\PDFEditor.Document'
+    $legacyReg  = 'HKCU:\Software\PDFEditorReiya'
+    $legacyLauncher = Join-Path $ScriptsDir 'pdf_editor.exe'
+
+    if (Test-Path $legacyApps) { Remove-Item -Path $legacyApps -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $legacyProg) { Remove-Item -Path $legacyProg -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $PdfProgids) {
+        Remove-ItemProperty -Path $PdfProgids -Name 'PDFEditor.Document' -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $legacyReg) { Remove-Item -Path $legacyReg -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $RegAppsKey) {
+        Remove-ItemProperty -Path $RegAppsKey -Name 'PDF Editor (reiya)' -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $legacyLauncher) { Remove-Item -Path $legacyLauncher -Force -ErrorAction SilentlyContinue }
+}
+
 function Remove-Managed {
     # Best-effort removal of every key/file this script manages. Used only by
     # -Unregister (NOT by rollback), so it must never itself throw.
+    Remove-LegacyManaged -Force
     if (Test-Path $AppsKey)   { Remove-Item -Path $AppsKey -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path $ProgIdKey) { Remove-Item -Path $ProgIdKey -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path $PdfProgids) {
@@ -200,7 +243,7 @@ function Backup-State {
         $snap.SharedValues['RegisteredApp']   = Get-RegValueSnapshot $RegAppsKey $AppName
 
         if ($snap.LauncherExisted) {
-            $snap.LauncherBackup = Join-Path $dir 'pdf_editor.exe.bak'
+            $snap.LauncherBackup = Join-Path $dir 'cybersaga_pdf.exe.bak'
             Copy-Item -Path $Launcher -Destination $snap.LauncherBackup -Force
         }
 
@@ -317,7 +360,7 @@ function Register-Association {
         #    points at a missing/partial file.
         New-Launcher
 
-        # 1) Applications\pdf_editor.exe -> the "Open with" entry (name + icon)
+        # 1) Applications\cybersaga_pdf.exe -> the "Open with" entry (name + icon)
         New-Item -Path $AppsKey -Force | Out-Null
         Set-ItemProperty -Path $AppsKey -Name 'FriendlyAppName' -Value $AppName
         New-Item -Path "$AppsKey\DefaultIcon" -Force | Out-Null
@@ -364,6 +407,7 @@ function Register-Association {
     }
 
     Remove-Backup $snap
+    Remove-LegacyManaged   # safe now: new registration succeeded, legacy state is redundant
     Invoke-ShellAssocRefresh
 
     Write-Host ''
