@@ -837,7 +837,7 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
     def _mutated_preview_has_visible_ink(self, image: QImage | None) -> bool:
         try:
             import numpy as np
-        except ImportError:
+        except Exception:
             np = None
         # The only consumer compares coverage against a tiny fraction, so we
         # just need "are there at least N visible alpha bytes?" — scan and stop

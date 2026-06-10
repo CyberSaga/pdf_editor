@@ -44,12 +44,12 @@ def _make_default_store() -> _SettingsLike:
 def _migrate_legacy_settings(store: _SettingsLike) -> None:
     from PySide6.QtCore import QSettings
 
-    for key in _MIGRATE_KEYS:
-        if store.value(key) is not None:
-            return
+    missing = [k for k in _MIGRATE_KEYS if store.value(k) is None]
+    if not missing:
+        return
     legacy = QSettings(_LEGACY_ORG, _LEGACY_APP)
     migrated = False
-    for key in _MIGRATE_KEYS:
+    for key in missing:
         val = legacy.value(key)
         if val is not None:
             store.setValue(key, val)

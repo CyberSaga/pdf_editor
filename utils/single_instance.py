@@ -13,16 +13,17 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 _ACTIVE_SERVERS: dict[str, QLocalServer] = {}
 
 
-def _build_server_name() -> str:
+def _safe_username() -> str:
     user = getpass.getuser().strip() or "default"
-    safe_user = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in user)
-    return f"cybersagapdf_singleinstance_{safe_user}"
+    return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in user)
+
+
+def _build_server_name() -> str:
+    return f"cybersagapdf_singleinstance_{_safe_username()}"
 
 
 def _build_legacy_server_name() -> str:
-    user = getpass.getuser().strip() or "default"
-    safe_user = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in user)
-    return f"pdf_editor_singleinstance_{safe_user}"
+    return f"pdf_editor_singleinstance_{_safe_username()}"
 
 
 def _remove_server(name: str) -> None:

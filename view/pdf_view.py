@@ -224,15 +224,9 @@ class _NoCtrlTabTabBar(QTabBar):
 # Dialog classes are loaded lazily (PEP 562 module __getattr__) so PIL/pikepdf/lxml
 # don't load at startup. Both attribute access and `from view.pdf_view import Name`
 # trigger __getattr__ on first use; the result is cached in globals() afterwards.
+_DIALOG_SUBMODULES = importlib.import_module("view.dialogs")._EXPORTS
 _DIALOG_EXPORTS: dict[str, str] = {
-    "AuditStackedBar": "view.dialogs.audit",
-    "ExportPagesDialog": "view.dialogs.export",
-    "MergePdfDialog": "view.dialogs.merge",
-    "OcrDialog": "view.dialogs.ocr",
-    "OptimizePdfDialog": "view.dialogs.optimize",
-    "PDFPasswordDialog": "view.dialogs.password",
-    "PdfAuditReportDialog": "view.dialogs.audit",
-    "WatermarkDialog": "view.dialogs.watermark",
+    name: f"view.dialogs.{submodule}" for name, submodule in _DIALOG_SUBMODULES.items()
 }
 
 

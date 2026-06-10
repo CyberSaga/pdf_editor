@@ -1,5 +1,23 @@
 # TODOS
 
+## Open -- App identity single source of truth (from /code-review of claude/simplify, 2026-06-10)
+
+- [ ] **Consolidate app-identity strings into one canonical module.** The CyberSagaPDF
+  rename touched 5+ independent hardcoded sites with no shared constant: `main.py:21`
+  (`prog="cybersaga_pdf"`), `main.py:37` (`APP_USER_MODEL_ID = "CyberSaga.CyberSagaPDF"`),
+  `utils/preferences.py:29-30` (`_ORG`/`_APP` for QSettings), `utils/single_instance.py:22`
+  (IPC server name prefix `cybersagapdf_singleinstance_`), and
+  `scripts/windows_file_association.ps1:63-69` (`$Launcher`, `$ProgId`, `$AppExe`,
+  `$AppName`, `$AppRegName`). A future rename that misses one site produces no error at
+  rename time but silently breaks settings migration, single-instance forwarding, or .pdf
+  associations for existing users later. **Fix:** add a leaf `utils/app_identity.py`
+  (pattern: `utils/theme_ids.py` from the theme work) exporting ORG/APP/prog/server-prefix
+  and import it from main.py, preferences.py, single_instance.py; the PowerShell script
+  can't import Python, so parameterize its identity values (`param(...)` with current
+  defaults) and note in the script header that defaults must track `utils/app_identity.py`.
+  Confirmed by the 2026-06-10 review verifier: 5-6 independent definition sites, none
+  derived from a shared source.
+
 ## Open -- Security dependency hygiene (from F2/F9 patch work; updated 2026-06-05)
 
 See `implementation-notes.md` for the full F1–F9 patch log. Status of the follow-up
