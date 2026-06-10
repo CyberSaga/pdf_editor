@@ -216,13 +216,12 @@ def test_print_document_defers_snapshot_until_user_accepts(monkeypatch) -> None:
 
         snapshot_called = False
 
-        def _unexpected_snapshot(*_args, **_kwargs) -> bytes:
+        def _unexpected_snapshot(*_args, **_kwargs) -> None:
             nonlocal snapshot_called
             snapshot_called = True
             raise AssertionError("print snapshot capture should not run before the user accepts printing")
 
         monkeypatch.setattr(model, "build_print_snapshot", _unexpected_snapshot)
-        monkeypatch.setattr(model, "capture_print_input_pdf_bytes", _unexpected_snapshot, raising=False)
         monkeypatch.setattr(pdf_controller_module, "UnifiedPrintDialog", _CancelDialog)
 
         try:
@@ -290,15 +289,15 @@ def test_print_document_runs_in_background_and_defers_close_until_helper_finishe
             def terminate(self) -> None:
                 self.terminated = True
 
-        def _blocking_capture_print_input_pdf_bytes() -> bytes:
+        def _blocking_build_print_snapshot(dest: Path) -> None:
             capture_started.set()
             assert threading.get_ident() != main_thread_id
             assert allow_capture_finish.wait(2.0), "worker thread never received release for PDF capture"
-            return b"%PDF-1.4 captured input"
+            Path(dest).write_bytes(b"%PDF-1.4 captured input")
 
         try:
             controller.print_dispatcher = _FakePrintDispatcher()
-            monkeypatch.setattr(model, "capture_print_input_pdf_bytes", _blocking_capture_print_input_pdf_bytes)
+            monkeypatch.setattr(model, "build_print_snapshot", _blocking_build_print_snapshot)
             monkeypatch.setattr(pdf_controller_module, "UnifiedPrintDialog", _AcceptDialog)
             monkeypatch.setattr(pdf_controller_module, "QProgressDialog", _FakeProgressDialog, raising=False)
             monkeypatch.setattr(pdf_controller_module, "PrintSubprocessRunner", _FakeRunner, raising=False)

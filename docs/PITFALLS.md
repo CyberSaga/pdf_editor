@@ -963,3 +963,30 @@
 **Fix:** `_forwarded_argv_is_acceptable` now `Path(item).resolve()`s every non-flag token and requires an existing `.pdf`; anything else rejects the whole message (ack `0`). Double-resolve of legitimate already-resolved paths is idempotent. Validate what the peer SENT, not what a well-behaved sender would have sent.
 **File:** `utils/single_instance.py` (`_forwarded_argv_is_acceptable`)
 **Tests:** `test_scripts/test_security_single_instance_isolation.py`
+
+## Byte-budget eviction must decrement _saved_stack_size or has_pending_changes drifts
+
+**Area:** `model/edit_commands.py` (`CommandManager._trim_undo_stack_if_needed`)
+**Symptom:** After the 512 MiB undo byte budget evicts oldest commands, `has_pending_changes()` can report False with unsaved edits on the stack (or True right after a save), because the saved-depth marker still points at pre-eviction stack indices.
+**Cause:** `_saved_stack_size` is an absolute depth into `_undo_stack`. Removing N entries from the FRONT shifts every remaining index down by N; any eviction pass (count cap OR byte budget) that does not subtract N desynchronizes the marker.
+**Fix:** Both trim passes decrement `_saved_stack_size` by the number of evicted entries and clamp at 0 (`max(0, saved - evicted)`). Any future eviction path added to `CommandManager` must do the same.
+**File:** `model/edit_commands.py` (`_trim_undo_stack_if_needed`)
+**Tests:** `test_scripts/test_undo_memory_budget.py::test_byte_budget_evicts_oldest_snapshot_commands`
+
+## Adjacent-snapshot dedup is only safe for SnapshotCommand pairs
+
+**Area:** `model/edit_commands.py` (`CommandManager._dedup_top_snapshot_pair`)
+**Symptom:** Naively extending the boundary-snapshot dedup ("op N after_bytes is op N+1 before_bytes") to page-level commands corrupts undo: page snapshots from different commands can be byte-equal while belonging to DIFFERENT pages, and `_after_page_snapshot_bytes` is captured lazily (still None at push time).
+**Cause:** Only `SnapshotCommand` holds full-document serializations where "equal bytes" implies "identical document state". The dedup relies on `bytes` immutability plus `_restore_doc_from_snapshot` copying internally via `fitz.open("pdf", ...)`; sharing is a pure memory optimization with no aliasing hazard — but only under those invariants.
+**Fix:** `_dedup_top_snapshot_pair()` double-`isinstance`-checks `SnapshotCommand`, short-circuits on identity (`is`) before paying the `==` comparison, and only assigns `curr._before_bytes = prev._after_bytes`. Do not widen it to `EditTextCommand`/`AddTextboxCommand`.
+**File:** `model/edit_commands.py` (`_dedup_top_snapshot_pair`)
+**Tests:** `test_scripts/test_undo_memory_budget.py` (`test_adjacent_dedup_shares_bytes_object`, `test_dedup_does_not_corrupt_undo_redo`)
+
+## build_print_snapshot signature changed: () -> bytes became (dest: Path) -> None
+
+**Area:** `model/tools/manager.py`, `model/pdf_model.py`, `controller/pdf_controller.py`
+**Symptom:** Code (or test monkeypatches) written against the old `build_print_snapshot() -> bytes` contract raises `TypeError` or silently writes nothing: the method now takes a destination path and returns None.
+**Cause:** The print path serialized the whole document into RAM (`io.BytesIO` -> bytes -> `write_bytes`) just to immediately write it to a temp file. The fix writes straight to disk (`doc.save(str(dest), garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)` on the fast path; `tmp_doc.save(...)` on the overlay path), which required the signature change all the way up: `PrintJobRequest.capture_pdf_bytes` was renamed to `write_pdf_to: Callable[[Path], None]` and `PDFModel.capture_print_input_pdf_bytes()` was deleted (the submission worker was its only caller).
+**Fix:** Call `model.build_print_snapshot(dest)` with a `Path`; the fast path must keep `encryption=fitz.PDF_ENCRYPT_KEEP` (plain `save()` defaults to NONE and decrypts protected documents — same chokepoint rationale as `PDFModel._save_doc`).
+**File:** `model/tools/manager.py` (`ToolManager.build_print_snapshot`), `controller/pdf_controller.py` (`PrintJobRequest`, `_PrintSubmissionWorker.run`)
+**Tests:** `test_scripts/test_print_snapshot_path.py`, `test_scripts/test_print_controller_flow.py`

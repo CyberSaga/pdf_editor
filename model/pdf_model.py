@@ -1561,11 +1561,9 @@ class PDFModel:
     def get_thumbnail(self, page_num: int, colorspace: fitz.Colorspace | None = None) -> fitz.Pixmap:
         return self.get_page_pixmap(page_num, scale=0.2, colorspace=colorspace)
 
-    def build_print_snapshot(self) -> bytes:
-        return self.tools.build_print_snapshot()
-
-    def capture_print_input_pdf_bytes(self) -> bytes:
-        return self._capture_doc_snapshot()
+    def build_print_snapshot(self, dest: Path) -> None:
+        """Write the print-input PDF directly to ``dest`` (avoids a full in-memory copy)."""
+        self.tools.build_print_snapshot(dest)
 
     def get_print_watermarks(self) -> list[dict]:
         return json.loads(json.dumps(self.tools.watermark.get_watermarks(), ensure_ascii=False))

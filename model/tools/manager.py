@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
-import io
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import fitz
@@ -96,7 +96,8 @@ class ToolManager:
         finally:
             tmp_doc.close()
 
-    def build_print_snapshot(self) -> bytes:
+    def build_print_snapshot(self, dest: Path) -> None:
+        """Write the print-input snapshot directly to ``dest`` (no in-memory copy)."""
         if not self._model.doc:
             raise RuntimeError("沒有開啟的 PDF 文件")
 
@@ -108,7 +109,10 @@ class ToolManager:
             for page_num in range(page_count)
         )
         if not has_overlay:
-            return self._model._capture_doc_snapshot()
+            # encryption=KEEP mirrors PDFModel._save_doc: save() defaults to
+            # NONE(1), which would silently decrypt protected documents.
+            self._model.doc.save(str(dest), garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)
+            return
 
         tmp_doc = fitz.open()
         try:
@@ -118,9 +122,7 @@ class ToolManager:
                 for ext in self._extensions:
                     if ext.needs_page_overlay(session_id, page_num, "print"):
                         ext.apply_page_overlay(session_id, page_num, tmp_doc[page_idx], "print")
-            stream = io.BytesIO()
-            tmp_doc.save(stream, garbage=0)
-            return stream.getvalue()
+            tmp_doc.save(str(dest), garbage=0)
         finally:
             tmp_doc.close()
 

@@ -52,6 +52,10 @@ class EditCommand(ABC):
         """操作的人類可讀描述，供 UI 顯示（如「復原: 編輯文字『…』」）。預設回傳類別名。"""
         return self.__class__.__name__
 
+    def _byte_size(self) -> int:
+        """回傳此指令持有的快照位元組數（byte-budget 修剪用）。預設 0。"""
+        return 0
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # EditTextCommand
@@ -153,6 +157,9 @@ class EditTextCommand(EditCommand):
         )
         return f"編輯文字「{preview}」（頁面 {self._page_num}）"
 
+    def _byte_size(self) -> int:
+        return len(self._page_snapshot_bytes)
+
     def execute(self) -> bool:
         """
         執行文字編輯：直接委派給 model.edit_text()。
@@ -249,6 +256,10 @@ class AddTextboxCommand(EditCommand):
     def description(self) -> str:
         preview = (self._text[:20] + "...") if len(self._text) > 20 else self._text
         return f"新增文字框 '{preview}'（頁 {self._page_num}）"
+
+    def _byte_size(self) -> int:
+        after = self._after_page_snapshot_bytes
+        return len(self._before_page_snapshot_bytes) + (len(after) if after is not None else 0)
 
     def execute(self) -> None:
         page_idx = self._page_num - 1
@@ -352,6 +363,9 @@ class SnapshotCommand(EditCommand):
     def affected_pages(self) -> list:
         return self._affected_pages
 
+    def _byte_size(self) -> int:
+        return len(self._before_bytes) + len(self._after_bytes)
+
     def execute(self) -> None:
         """redo：從 after_bytes 還原文件，並重建 TextBlock 索引。"""
         self._model._restore_doc_from_snapshot(self._after_bytes)
@@ -394,6 +408,7 @@ class CommandManager:
     """
 
     MAX_UNDO_STACK_SIZE = 100
+    MAX_UNDO_STACK_BYTES = 512 * 1024 * 1024  # 512 MiB
 
     def __init__(self):
         self._undo_stack: list[EditCommand] = []
@@ -422,6 +437,7 @@ class CommandManager:
             )
             return
         self._undo_stack.append(cmd)
+        self._dedup_top_snapshot_pair()
         self._trim_undo_stack_if_needed()
 
         # 新操作使原 redo 歷史失效
@@ -451,6 +467,7 @@ class CommandManager:
             cmd: 已執行完的 EditCommand 物件（SnapshotCommand 等）。
         """
         self._undo_stack.append(cmd)
+        self._dedup_top_snapshot_pair()
         self._trim_undo_stack_if_needed()
         if self._redo_stack:
             logger.debug(
@@ -506,6 +523,7 @@ class CommandManager:
             return False
         self._redo_stack.pop()
         self._undo_stack.append(cmd)
+        self._dedup_top_snapshot_pair()
         self._trim_undo_stack_if_needed()
 
         logger.debug(
@@ -548,17 +566,56 @@ class CommandManager:
     # 狀態查詢
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _dedup_top_snapshot_pair(self) -> None:
+        """堆疊頂端相鄰兩筆 SnapshotCommand 邊界快照相同時，共用同一 bytes 物件。
+
+        典型情境：操作 N 的 after_bytes 與操作 N+1 的 before_bytes 內容相同
+        （兩次 _capture_doc_snapshot 之間文件未變動）。bytes 不可變、還原端
+        （fitz.open("pdf", ...)）內部複製，共用安全；可省下一份整文件快照。
+        僅對 SnapshotCommand（整文件快照）做此最佳化。
+        """
+        if len(self._undo_stack) < 2:
+            return
+        prev = self._undo_stack[-2]
+        curr = self._undo_stack[-1]
+        if not isinstance(prev, SnapshotCommand) or not isinstance(curr, SnapshotCommand):
+            return
+        if prev._after_bytes is curr._before_bytes:
+            return
+        if prev._after_bytes == curr._before_bytes:
+            curr._before_bytes = prev._after_bytes
+            logger.debug(
+                "CommandManager: deduplicated adjacent snapshot boundary (%s bytes shared)",
+                len(prev._after_bytes),
+            )
+
     def _trim_undo_stack_if_needed(self) -> None:
         overflow = len(self._undo_stack) - self.MAX_UNDO_STACK_SIZE
-        if overflow <= 0:
+        if overflow > 0:
+            del self._undo_stack[:overflow]
+            self._saved_stack_size = max(0, self._saved_stack_size - overflow)
+            logger.debug(
+                "CommandManager: evicted %s oldest undo commands to enforce max=%s",
+                overflow,
+                self.MAX_UNDO_STACK_SIZE,
+            )
+
+        total_bytes = sum(cmd._byte_size() for cmd in self._undo_stack)
+        if total_bytes <= self.MAX_UNDO_STACK_BYTES:
             return
-        del self._undo_stack[:overflow]
-        self._saved_stack_size = max(0, self._saved_stack_size - overflow)
-        logger.debug(
-            "CommandManager: evicted %s oldest undo commands to enforce max=%s",
-            overflow,
-            self.MAX_UNDO_STACK_SIZE,
-        )
+        evicted = 0
+        while self._undo_stack and total_bytes > self.MAX_UNDO_STACK_BYTES:
+            removed = self._undo_stack.pop(0)
+            total_bytes -= removed._byte_size()
+            evicted += 1
+        if evicted:
+            self._saved_stack_size = max(0, self._saved_stack_size - evicted)
+            logger.debug(
+                "CommandManager: evicted %s oldest undo commands to enforce byte budget=%s (remaining=%s bytes)",
+                evicted,
+                self.MAX_UNDO_STACK_BYTES,
+                total_bytes,
+            )
 
     def can_undo(self) -> bool:
         """是否有可撤銷的操作（供 UI 啟用/停用 Undo 按鈕）。"""

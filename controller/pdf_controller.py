@@ -106,7 +106,7 @@ class FullscreenSessionSnapshot:
 
 @dataclass(frozen=True)
 class PrintJobRequest:
-    capture_pdf_bytes: Callable[[], bytes]
+    write_pdf_to: Callable[[Path], None]
     watermarks: list[dict]
     options: object
     job_id: str
@@ -132,9 +132,8 @@ class _PrintSubmissionWorker(QObject):
     def run(self) -> None:
         try:
             self.progress.emit(PRINT_PREPARING_MESSAGE)
-            pdf_bytes = self._request.capture_pdf_bytes()
             input_pdf_path = Path(self._request.work_dir) / "input.pdf"
-            input_pdf_path.write_bytes(pdf_bytes)
+            self._request.write_pdf_to(input_pdf_path)
             self.prepared.emit(
                 PrintHelperJob(
                     job_id=self._request.job_id,
@@ -1546,7 +1545,7 @@ class PDFController:
             normalized_options = dataclass_replace(normalized_options, extra_options=extra)
 
         request = PrintJobRequest(
-            capture_pdf_bytes=self.model.capture_print_input_pdf_bytes,
+            write_pdf_to=self.model.build_print_snapshot,
             watermarks=self.model.get_print_watermarks(),
             options=normalized_options,
             job_id=str(uuid.uuid4()),
