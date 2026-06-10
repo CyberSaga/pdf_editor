@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import uuid
 from typing import TYPE_CHECKING
 
@@ -24,31 +25,51 @@ _WM_TEXT_MAX = 5_000
 _WM_PAGES_MAX = 10_000
 
 
-def _coerce_wm(wm: dict) -> dict | None:
-    """Validate and clamp a watermark dict loaded from untrusted embedded JSON.
+def _finite(v: float, lo: float, hi: float, default: float) -> float:
+    """Clamp *v* to [lo, hi]; NaN (unorderable by min/max) falls back to *default*.
 
-    Returns a sanitized dict matching the schema produced by
-    ``WatermarkTool.add_watermark``, or ``None`` if the entry is structurally
-    invalid (missing or wrong-typed ``id``/``pages``). Numeric fields are clamped
-    to safe ranges and text length is capped so a crafted embedded blob cannot
-    drive degenerate or oversized rendering (CWE-20). It is JSON, not pickle, so
-    there is no code-execution risk — this is robustness hardening only.
+    Python's ``min``/``max`` are argument-order sensitive with NaN
+    (``min(nan, x) -> nan`` but ``min(x, nan) -> x``), so NaN must be screened
+    out explicitly. ±inf compares normally and clamps to the nearest bound.
+    """
+    if math.isnan(v):
+        return default
+    return max(lo, min(hi, v))
+
+
+def _coerce_wm(wm: dict) -> dict | None:
+    """Validate and clamp a watermark dict from any untrusted/unchecked source.
+
+    This is the single sanitization chokepoint: embedded-JSON load,
+    ``add_watermark`` and ``update_watermark`` all funnel through it. Returns a
+    sanitized dict matching the stored watermark schema, or ``None`` if the
+    entry is structurally invalid (missing or wrong-typed ``id``/``pages``).
+    Numeric fields are NaN/inf-safe and clamped to finite ranges, text length is
+    capped, and ``color`` is always present as an exact-3 finite tuple in
+    [0, 1] so a crafted blob cannot drive degenerate or oversized rendering
+    (CWE-20). It is JSON, not pickle, so there is no code-execution risk — this
+    is robustness hardening only.
     """
     try:
+        raw_angle = float(wm.get("angle", 0))
+        color = tuple(float(c) for c in wm.get("color", (0.7, 0.7, 0.7)))
+        if len(color) != 3:
+            color = (0.7, 0.7, 0.7)
         result: dict = {
             "id": str(wm["id"]),
             "pages": [int(p) for p in wm["pages"]][:_WM_PAGES_MAX],
             "text": str(wm.get("text", ""))[:_WM_TEXT_MAX],
             "font": str(wm.get("font", "helv")),
-            "angle": float(wm.get("angle", 0)) % 360,
-            "font_size": max(1.0, min(float(wm.get("font_size", 48)), 1000.0)),
-            "opacity": max(0.0, min(float(wm.get("opacity", 0.5)), 1.0)),
+            "angle": (raw_angle % 360) if math.isfinite(raw_angle) else 0.0,
+            "font_size": _finite(float(wm.get("font_size", 48)), 1.0, 1000.0, 48.0),
+            "opacity": _finite(float(wm.get("opacity", 0.5)), 0.0, 1.0, 0.5),
+            "color": tuple(_finite(c, 0.0, 1.0, 0.7) for c in color),
         }
-        for key in ("offset_x", "offset_y", "line_spacing"):
+        for key in ("offset_x", "offset_y"):
             if key in wm:
-                result[key] = float(wm[key])
-        if "color" in wm:
-            result["color"] = tuple(wm["color"])
+                result[key] = _finite(float(wm[key]), -10000.0, 10000.0, 0.0)
+        if "line_spacing" in wm:
+            result["line_spacing"] = _finite(float(wm["line_spacing"]), 0.8, 3.0, 1.3)
         return result
     except (KeyError, TypeError, ValueError):
         return None
@@ -128,9 +149,9 @@ class WatermarkTool(ToolExtension):
 
         sid = self._active_session_id()
         wm_id = str(uuid.uuid4())
-        wm = {
+        candidate = {
             "id": wm_id,
-            "pages": [p for p in pages if 1 <= p <= len(self._model.doc)],
+            "pages": pages,
             "text": text.strip(),
             "angle": angle,
             "opacity": opacity,
@@ -139,8 +160,13 @@ class WatermarkTool(ToolExtension):
             "font": font,
             "offset_x": offset_x,
             "offset_y": offset_y,
-            "line_spacing": max(0.8, min(3.0, line_spacing)),
+            "line_spacing": line_spacing,
         }
+        wm = _coerce_wm(candidate)
+        if wm is None:
+            raise ValueError("無效的浮水印參數（強制校驗失敗）")
+        # Re-filter pages AFTER coercion so the stored list only holds valid ints.
+        wm["pages"] = [p for p in wm["pages"] if 1 <= p <= len(self._model.doc)]
         self._active_watermark_list().append(wm)
         self._mark_modified(sid)
         logger.debug("新增浮水印: %s, 頁面 %s", wm_id, wm["pages"])
@@ -179,29 +205,29 @@ class WatermarkTool(ToolExtension):
     ) -> bool:
         sid = self._active_session_id()
         watermarks = self._active_watermark_list()
-        for wm in watermarks:
+        for index, wm in enumerate(watermarks):
             if wm.get("id") != watermark_id:
                 continue
-            if text is not None:
-                wm["text"] = text.strip()
-            if pages is not None:
-                wm["pages"] = [p for p in pages if 1 <= p <= len(self._model.doc)]
-            if angle is not None:
-                wm["angle"] = angle
-            if opacity is not None:
-                wm["opacity"] = max(0.0, min(1.0, opacity))
-            if font_size is not None:
-                wm["font_size"] = font_size
-            if color is not None:
-                wm["color"] = color
-            if font is not None:
-                wm["font"] = font
-            if offset_x is not None:
-                wm["offset_x"] = offset_x
-            if offset_y is not None:
-                wm["offset_y"] = offset_y
-            if line_spacing is not None:
-                wm["line_spacing"] = max(0.8, min(3.0, line_spacing))
+            candidate = dict(wm)
+            overrides = {
+                "text": text.strip() if text is not None else None,
+                "pages": pages,
+                "angle": angle,
+                "opacity": opacity,
+                "font_size": font_size,
+                "color": color,
+                "font": font,
+                "offset_x": offset_x,
+                "offset_y": offset_y,
+                "line_spacing": line_spacing,
+            }
+            candidate.update({key: value for key, value in overrides.items() if value is not None})
+            coerced = _coerce_wm(candidate)
+            if coerced is None:
+                return False
+            page_count = len(self._model.doc) if self._model.doc else 0
+            coerced["pages"] = [p for p in coerced["pages"] if 1 <= p <= page_count]
+            watermarks[index] = coerced
             self._mark_modified(sid)
             logger.debug("已更新浮水印: %s", watermark_id)
             return True

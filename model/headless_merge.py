@@ -4,6 +4,8 @@ from pathlib import Path
 
 import fitz
 
+from model.pdf_model import _guard_foreign_doc
+
 
 def headless_merge(inputs: list[str], output: str) -> None:
     if not inputs:
@@ -21,7 +23,8 @@ def headless_merge(inputs: list[str], output: str) -> None:
     merged = fitz.open()
     try:
         for input_path in resolved_inputs:
-            src = fitz.open(input_path)
+            # Inputs are foreign PDFs: apply the size/page/encryption guards.
+            src = _guard_foreign_doc(input_path)
             try:
                 merged.insert_pdf(src)
             finally:

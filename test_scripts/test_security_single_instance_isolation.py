@@ -92,3 +92,28 @@ def test_handle_socket_message_accepts_existing_pdf(tmp_path) -> None:
     received, ack = _run_message([str(pdf)])
     assert received == [[str(pdf)]]
     assert ack == b"1\n"
+
+
+def test_forwarded_argv_rejects_relative_non_pdf() -> None:
+    # Phase 2.6: relative tokens must be resolved and validated too, not
+    # skipped — a crafted peer can send relative paths to bypass the filter.
+    received, ack = _run_message(["not_a_pdf.txt"])
+    assert received == []
+    assert ack == b"0\n"
+
+
+def test_forwarded_argv_rejects_path_traversal() -> None:
+    received, ack = _run_message(["..\\..\\..\\etc\\passwd"])
+    assert received == []
+    assert ack == b"0\n"
+
+
+def test_forwarded_argv_accepts_relative_pdf_that_exists(tmp_path, monkeypatch) -> None:
+    # Documented tradeoff: a relative token that resolves (against the server
+    # process cwd) to an existing .pdf is still accepted.
+    pdf = tmp_path / "rel.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    monkeypatch.chdir(tmp_path)
+    received, ack = _run_message(["rel.pdf"])
+    assert received == [["rel.pdf"]]
+    assert ack == b"1\n"

@@ -27,8 +27,20 @@ class AnnotationTool(ToolExtension):
     def __init__(self, model: PDFModel) -> None:
         self._model = model
 
+    def _require_page(self, page_num: int) -> fitz.Page:
+        """Return the fitz.Page for *page_num* (1-based) or raise ValueError.
+
+        Guards both the no-doc case and out-of-range page numbers, preventing
+        page 0 from silently resolving to doc[-1] (last page).
+        """
+        if not self._model.doc:
+            raise ValueError("沒有開啟的 PDF 文件")
+        if page_num < 1 or page_num > len(self._model.doc):
+            raise ValueError(f"無效的頁碼: {page_num}")
+        return self._model.doc[page_num - 1]
+
     def add_highlight(self, page_num: int, rect: fitz.Rect, color: tuple[float, float, float, float]) -> None:
-        page = self._model.doc[page_num - 1]
+        page = self._require_page(page_num)
         annot = page.add_highlight_annot(rect)
         annot.set_colors(stroke=color[:3], fill=color[:3])
         annot.set_opacity(color[3])
@@ -44,7 +56,7 @@ class AnnotationTool(ToolExtension):
         return precise_rect
 
     def add_rect(self, page_num: int, rect: fitz.Rect, color: tuple[float, float, float, float], fill: bool) -> None:
-        page = self._model.doc[page_num - 1]
+        page = self._require_page(page_num)
         annot = page.add_rect_annot(rect)
         annot.set_colors(stroke=color[:3], fill=color[:3] if fill else None)
         annot.set_border(width=5 if not fill else 0)
@@ -65,10 +77,7 @@ class AnnotationTool(ToolExtension):
         logger.debug("新增矩形: 頁面 %s, 矩形 %s, 顏色 %s, 填滿=%s", page_num, rect, color, fill)
 
     def add_annotation(self, page_num: int, point: fitz.Point, text: str) -> int:
-        if not self._model.doc or page_num < 1 or page_num > len(self._model.doc):
-            raise ValueError("無效的頁碼")
-
-        page = self._model.doc[page_num - 1]
+        page = self._require_page(page_num)
         fixed_width = 200
         font_size = 10.5
         rect = fitz.Rect(point.x, point.y, point.x + fixed_width, point.y + 50)

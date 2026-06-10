@@ -85,6 +85,33 @@ def test_coerce_preserves_valid_watermark_fields() -> None:
     assert out["line_spacing"] == 1.3
 
 
+def test_coerce_nan_angle_replaced_with_default() -> None:
+    # Phase 2.5: NaN survives `% 360` (nan % 360 == nan) and poisons rotation
+    # math downstream; it must be replaced with the finite default.
+    out = _coerce_wm({"id": "a", "pages": [1], "angle": float("nan")})
+    assert out is not None
+    assert out["angle"] == 0.0
+
+
+def test_coerce_inf_offset_clamped() -> None:
+    out = _coerce_wm({"id": "a", "pages": [1], "offset_x": float("inf"), "offset_y": float("-inf")})
+    assert out is not None
+    assert out["offset_x"] == 10000.0
+    assert out["offset_y"] == -10000.0
+
+
+def test_coerce_color_with_nan_component_replaced() -> None:
+    out = _coerce_wm({"id": "a", "pages": [1], "color": [float("nan"), 0.5, 0.5]})
+    assert out is not None
+    assert out["color"] == (0.7, 0.5, 0.5)
+
+
+def test_coerce_color_wrong_length_replaced_with_default() -> None:
+    out = _coerce_wm({"id": "a", "pages": [1], "color": [0.5, 0.5]})
+    assert out is not None
+    assert out["color"] == (0.7, 0.7, 0.7)
+
+
 def test_load_watermarks_drops_bad_entries_and_clamps_good(tmp_path) -> None:
     doc = fitz.open()
     doc.new_page(width=200, height=200)

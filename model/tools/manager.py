@@ -68,6 +68,14 @@ class ToolManager:
         session_id = self._active_session_id()
         page = self._model.doc[page_num - 1]
         needs_overlay = any(ext.needs_page_overlay(session_id, page_num, purpose) for ext in self._extensions)
+        # Local import avoids a module-load cycle between pdf_model and the tools package.
+        from model.pdf_model import _safe_render_scale  # noqa: PLC0415
+
+        # Central chokepoint clamp: every raster path flows through here, so an
+        # outsized MediaBox cannot OOM the process regardless of the caller.
+        # Clamping on the original page is correct for the overlay branch too
+        # (the tmp page copies the same rect).
+        scale = _safe_render_scale(page, scale)
         matrix = fitz.Matrix(scale, scale)
 
         if not needs_overlay:

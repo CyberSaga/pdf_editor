@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import fitz
 import pytest
 
@@ -44,6 +46,38 @@ def test_ocr_no_doc_returns_empty():
 def test_ocr_invalid_page_raises(model_with_text_pdf):
     with pytest.raises((ValueError, RuntimeError)):
         model_with_text_pdf.tools.ocr.ocr_pages([999])
+
+
+def test_add_highlight_rejects_page_zero(model_with_text_pdf):
+    # Phase 2.4: page 0 must raise, not silently resolve doc[-1] (last page).
+    rect = fitz.Rect(10, 10, 50, 30)
+    with pytest.raises(ValueError):
+        model_with_text_pdf.tools.annotation.add_highlight(0, rect, (1.0, 1.0, 0.0, 0.5))
+    assert len(list(model_with_text_pdf.doc[0].annots())) == 0  # no silent annotation
+
+
+def test_add_rect_rejects_page_zero(model_with_text_pdf):
+    rect = fitz.Rect(10, 10, 50, 30)
+    with pytest.raises(ValueError):
+        model_with_text_pdf.tools.annotation.add_rect(0, rect, (1.0, 0.0, 0.0, 0.5), fill=False)
+    assert len(list(model_with_text_pdf.doc[0].annots())) == 0
+
+
+def test_add_highlight_rejects_out_of_range(model_with_text_pdf):
+    rect = fitz.Rect(10, 10, 50, 30)
+    with pytest.raises(ValueError):
+        model_with_text_pdf.tools.annotation.add_highlight(999, rect, (1.0, 1.0, 0.0, 0.5))
+
+
+def test_add_watermark_nan_angle_sanitized(model_with_text_pdf):
+    # Phase 2.5: add_watermark must funnel through _coerce_wm so a NaN angle is
+    # stored as the finite default instead of poisoning later rendering math.
+    wm_id = model_with_text_pdf.tools.watermark.add_watermark([1], "DRAFT", angle=float("nan"))
+    stored = next(
+        wm for wm in model_with_text_pdf.tools.watermark.get_watermarks() if wm["id"] == wm_id
+    )
+    assert math.isfinite(stored["angle"])
+    assert stored["angle"] == 0.0
 
 
 def test_rawdict_text_compat_backfills_keyword_option(monkeypatch):

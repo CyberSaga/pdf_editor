@@ -10,6 +10,7 @@ if str(REPO_ROOT) not in sys.path:
 import fitz  # noqa: E402
 import pytest  # noqa: E402
 
+import model.pdf_model as pdf_model  # noqa: E402
 from model.headless_merge import headless_merge  # noqa: E402
 
 
@@ -48,6 +49,19 @@ def test_headless_merge_rejects_empty_inputs(tmp_path: Path) -> None:
 def test_headless_merge_rejects_missing_input(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         headless_merge([str(tmp_path / "missing.pdf")], str(tmp_path / "merged.pdf"))
+
+
+def test_headless_merge_rejects_oversize_input(tmp_path: Path, monkeypatch) -> None:
+    # Phase 2.3: headless merge inputs are foreign PDFs and must pass the same
+    # resource guards (_guard_foreign_doc) as every other open path.
+    first = tmp_path / "a.pdf"
+    merged = tmp_path / "merged.pdf"
+    _make_pdf(first, "alpha")
+    monkeypatch.setattr(pdf_model, "_MAX_PDF_BYTES", 0)
+
+    with pytest.raises(ValueError):
+        headless_merge([str(first)], str(merged))
+    assert not merged.exists()
 
 
 def test_headless_merge_rejects_missing_output_directory(tmp_path: Path) -> None:

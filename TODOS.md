@@ -4,7 +4,7 @@
 
 - [x] **Phase 0 — Restore the Gate:** polluter = stylesheet leak in `test_main_startup_behavior.py`; fixed via cleanup + widget QSS override + conftest fixture (7 order-dependent failures in `test_no_jump_editor_geometry.py` eliminated).
 - [x] **Phase 1 — Linearize Capability Gate + Error Wrapping:** dead PyMuPDF `linear=1` fallback deleted (fail-fast `PdfOptimizeError`); `optimize_capabilities()` runtime probe gates the dialog's linearize/object-streams checkboxes; double 「最佳化 PDF 失敗:」 prefix fixed; `pikepdf>=8.0` in optional-requirements.txt and installed into `.venv`.
-- [ ] **Phase 2 — Chokepoint Guards (OOM / Logic-Bypass)**
+- [x] **Phase 2 — Chokepoint Guards (OOM / Logic-Bypass):** all six items landed (2026-06-10): central `_safe_render_scale` clamp in `ToolManager.render_page_pixmap` (strict-xfail red-light flipped green, marker removed); shared `_MIN/_MAX_VIEW_ZOOM` constants across wheel/pinch/combo; `_guard_foreign_doc` chokepoint (size/pages/encryption) routing `insert_pages_from_file` + `headless_merge`, with post-merge `_MAX_PAGES` invariant and contiguous-run insert batching; `AnnotationTool._require_page` (page 0 no longer silently annotates `doc[-1]`); NaN/inf-safe watermark `_coerce_wm` chokepoint funneling `add_watermark`/`update_watermark`; single-instance argv filter now resolves every non-flag token. Plan: `docs/plans/phase-2-chokepoint-guards.md`.
 - [ ] **Phase 3 — Memory Budgets**
 - [ ] **Phase 4 — UI-Thread Responsiveness**
 - [ ] **Phase 5 — Hygiene / Documentation**
@@ -102,7 +102,8 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
 
 ### F1 follow-up — central render-scale clamp gap (recorded during /simplify code-review, 2026-06-06)
 
-- [ ] **Push `_safe_render_scale` into the central raster chokepoint.** The F1 patch applies
+- [x] **DONE (2026-06-10, Phase 2.1).** Clamp landed in `ToolManager.render_page_pixmap` (local import of `_safe_render_scale` to avoid the pdf_model↔tools cycle); the strict-xfail red-light test flipped green and its marker was removed. Original item kept below for history.
+- ~~[ ]~~ **Push `_safe_render_scale` into the central raster chokepoint.** The F1 patch applies
   the 40 MP pixmap clamp only at four *leaf* render sites (image export, deskew, straighten,
   OCR). `ToolManager.render_page_pixmap` (`model/tools/manager.py:71`) — which every render
   flows through, including the interactive zoom path (`PDFController.set_scale` →

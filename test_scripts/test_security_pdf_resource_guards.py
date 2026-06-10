@@ -138,28 +138,94 @@ def test_open_pdf_allows_normal_document(tmp_path) -> None:
         model.close()
 
 
-# --- render_page_pixmap central-clamp gap (F1 follow-up, xfail) -------------
+# --- _guard_foreign_doc (Phase 2.3 chokepoint) -------------------------------
 #
-# RED-LIGHT (xfail, strict): _safe_render_scale is applied only at the four leaf
-# render sites (image export, deskew, straighten, OCR). The central raster
-# chokepoint, ToolManager.render_page_pixmap, builds fitz.Matrix(scale, scale)
-# and renders with the raw scale -- so the interactive zoom path
-# (set_scale -> PDFModel.get_page_pixmap -> render_page_pixmap) is unguarded
-# against a page that clears the open-time size/page guards but carries an
-# outsized MediaBox. This test asserts the chokepoint clamps an oversized scale;
-# it is expected to FAIL until the clamp moves into render_page_pixmap. When that
-# fix lands the test XPASSes -- which strict=True turns into a hard failure, the
-# signal to remove this marker. Tracked in TODOS.md. get_pixmap is mocked so the
-# effective scale is captured WITHOUT allocating the pixmap the unclamped path
-# would build.
+# Foreign PDFs (merge/insert sources) must pass the same resource guards as the
+# primary open path: size limit, page limit, and an encryption check. Accessed
+# via the module attribute so these tests fail (AttributeError) until the
+# helper exists — that is the red-light signal.
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F1 follow-up: render_page_pixmap does not clamp scale centrally "
-    "(only the four leaf render sites do). Remove this marker when the clamp "
-    "moves into ToolManager.render_page_pixmap. Tracked in TODOS.md.",
-)
+def test_guard_foreign_doc_rejects_oversize(tmp_path, monkeypatch) -> None:
+    pdf = _make_pdf(tmp_path / "src.pdf")
+    monkeypatch.setattr(pdf_model, "_MAX_PDF_BYTES", 0)
+    with pytest.raises(ValueError) as exc:
+        pdf_model._guard_foreign_doc(pdf)
+    assert "size limit" in str(exc.value)
+
+
+def test_guard_foreign_doc_rejects_excess_pages(tmp_path, monkeypatch) -> None:
+    pdf = _make_pdf(tmp_path / "src.pdf", pages=2)
+    monkeypatch.setattr(pdf_model, "_MAX_PAGES", 0)
+    with pytest.raises(ValueError) as exc:
+        pdf_model._guard_foreign_doc(pdf)
+    assert "page limit" in str(exc.value)
+
+
+def test_guard_foreign_doc_allows_normal_pdf(tmp_path) -> None:
+    pdf = _make_pdf(tmp_path / "src.pdf", pages=2)
+    doc = pdf_model._guard_foreign_doc(pdf)
+    try:
+        assert doc.page_count == 2
+    finally:
+        doc.close()
+
+
+def test_insert_pages_from_file_rejects_oversize_source(tmp_path, monkeypatch) -> None:
+    base = _make_pdf(tmp_path / "base.pdf", pages=2)
+    src = _make_pdf(tmp_path / "src.pdf", pages=1)
+    model = PDFModel()
+    try:
+        model.open_pdf(str(base))
+        monkeypatch.setattr(pdf_model, "_MAX_PDF_BYTES", 0)
+        with pytest.raises((ValueError, RuntimeError)) as exc:
+            model.insert_pages_from_file(str(src), [1], 1)
+        assert "size limit" in str(exc.value)
+        assert len(model.doc) == 2  # base document untouched
+    finally:
+        model.close()
+
+
+def test_insert_pages_from_file_respects_post_merge_invariant(tmp_path, monkeypatch) -> None:
+    base = _make_pdf(tmp_path / "base.pdf", pages=3)
+    src = _make_pdf(tmp_path / "src.pdf", pages=3)
+    model = PDFModel()
+    try:
+        model.open_pdf(str(base))
+        monkeypatch.setattr(pdf_model, "_MAX_PAGES", 4)  # 3 existing + 3 source > 4
+        with pytest.raises((ValueError, RuntimeError)) as exc:
+            model.insert_pages_from_file(str(src), [1, 2, 3], 1)
+        assert "page limit" in str(exc.value)
+        assert len(model.doc) == 3  # nothing was inserted
+    finally:
+        model.close()
+
+
+def test_insert_pages_from_file_returns_contiguous_positions(tmp_path) -> None:
+    # Regression guard for the batched insert: non-contiguous source pages
+    # still land as one contiguous run at the insert position.
+    base = _make_pdf(tmp_path / "base.pdf", pages=2)
+    src = _make_pdf(tmp_path / "src.pdf", pages=5)
+    model = PDFModel()
+    try:
+        model.open_pdf(str(base))
+        inserted = model.insert_pages_from_file(str(src), [1, 2, 4], 2)
+        assert inserted == [2, 3, 4]
+        assert len(model.doc) == 5
+    finally:
+        model.close()
+
+
+# --- render_page_pixmap central clamp (F1 follow-up, fixed Phase 2.1) --------
+#
+# ToolManager.render_page_pixmap is the central raster chokepoint; it now clamps
+# the requested scale via _safe_render_scale so the interactive zoom path
+# (set_scale -> PDFModel.get_page_pixmap -> render_page_pixmap) is bounded even
+# for a page that clears the open-time size/page guards but carries an outsized
+# MediaBox. get_pixmap is mocked so the effective scale is captured WITHOUT
+# allocating the pixmap an unclamped path would build.
+
+
 def test_render_page_pixmap_clamps_oversized_scale(tmp_path, monkeypatch) -> None:
     big = tmp_path / "huge_page.pdf"
     doc = fitz.open()

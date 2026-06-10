@@ -97,6 +97,23 @@ def _guard_before_open(path: Path) -> None:
         raise ValueError(f"PDF exceeds size limit ({_MAX_PDF_BYTES // 1_048_576} MB)")
 
 
+def _guard_foreign_doc(path: Path) -> fitz.Document:
+    """Open a foreign PDF with all resource guards applied.
+
+    Size limit (_MAX_PDF_BYTES), open, page limit (_MAX_PAGES), encryption.
+    Returns the opened document; caller closes it.
+    """
+    _guard_before_open(path)
+    doc = fitz.open(str(path))
+    if doc.needs_pass:
+        doc.close()
+        raise ValueError(f"Foreign PDF is encrypted and cannot be opened without a password: {path}")
+    if doc.page_count > _MAX_PAGES:
+        doc.close()
+        raise ValueError(f"Foreign PDF exceeds page limit ({_MAX_PAGES} pages): {path}")
+    return doc
+
+
 def _safe_render_scale(page: fitz.Page, scale: float) -> float:
     """Clamp a render scale so a single page's pixmap stays under _MAX_PIXMAP_PX.
 
@@ -1379,8 +1396,8 @@ class PDFModel:
             except (TypeError, ValueError):
                 pos_value = 1
 
-            # 開啟來源PDF
-            source_doc = fitz.open(str(source_path))
+            # 開啟來源PDF（套用 foreign-doc 資源防護：大小/頁數/加密）
+            source_doc = _guard_foreign_doc(source_path)
 
             # 轉換為 0-based 索引
             insert_at = min(pos_value - 1, len(self.doc))
@@ -1404,19 +1421,35 @@ class PDFModel:
             # Sort and de-dup BEFORE insertion so invalid pages do not distort positional offsets.
             actual_source_pages = sorted(set(normalized_source))
 
+            # Post-merge invariant: the combined document must stay under _MAX_PAGES.
+            if len(self.doc) + len(actual_source_pages) > _MAX_PAGES:
+                source_doc.close()
+                raise ValueError(f"Merged document would exceed page limit ({_MAX_PAGES} pages)")
+
+            # Group the sorted/deduped pages into contiguous runs so each run is
+            # one insert_pdf call instead of one call per page.
+            runs: list[list[int]] = []
+            for page_num in actual_source_pages:
+                if runs and page_num == runs[-1][1] + 1:
+                    runs[-1][1] = page_num
+                else:
+                    runs.append([page_num, page_num])
+
             inserted_positions: list[int] = []
             try:
-                # 插入指定的頁面
-                for i, page_num in enumerate(actual_source_pages):
-                    # 使用 insert_pdf 方法插入單頁
+                offset = 0
+                for from_pg, to_pg in runs:
                     self.doc.insert_pdf(
                         source_doc,
-                        from_page=page_num - 1,
-                        to_page=page_num - 1,
-                        start_at=insert_at + i
+                        from_page=from_pg - 1,
+                        to_page=to_pg - 1,
+                        start_at=insert_at + offset,
                     )
-                    logger.debug(f"從 {source_file} 插入頁面 {page_num} 到位置 {insert_at + i + 1}")
-                    inserted_positions.append(insert_at + i + 1)
+                    logger.debug(
+                        f"從 {source_file} 插入頁面 {from_pg}-{to_pg} 到位置 {insert_at + offset + 1}"
+                    )
+                    offset += to_pg - from_pg + 1
+                inserted_positions = list(range(insert_at + 1, insert_at + len(actual_source_pages) + 1))
             finally:
                 source_doc.close()
 

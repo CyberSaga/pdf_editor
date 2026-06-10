@@ -927,3 +927,39 @@
 **Fix:** Deleted the dead fallback — `save_optimized_working_doc` now fails fast with `PdfOptimizeError` (actionable Chinese message) when packaging is requested without pikepdf. `optimize_capabilities()` probes the runtime; the controller passes it to `OptimizePdfDialog(capabilities=...)`, which disables + unchecks the gated checkboxes *before* applying presets (preset writes are guarded with `isEnabled()`, and the gate's `setChecked` calls are wrapped in `_applying_preset` so `_mark_custom` doesn't flip the combo to 自訂 — `setChecked` works on disabled widgets, so the guard is mandatory). `save_optimized_copy` re-raises `PdfOptimizeError` bare and wraps only unexpected exceptions once; the controller shows `str(exc)` without re-prefixing. `pikepdf>=8.0` added to `optional-requirements.txt` and installed into `.venv`.
 **File:** `model/pdf_optimizer.py`, `model/pdf_model.py`, `view/dialogs/optimize.py`, `controller/pdf_controller.py`
 **Tests:** `test_scripts/test_pdf_optimize_workflow.py` (capability gate / domain error / no-double-prefix; always monkeypatch `_pikepdf` to simulate absence — the test env has pikepdf installed)
+
+## Foreign-PDF opens need the full resource-guard set, not just the primary open path
+
+**Area:** `model/pdf_model.py`, `model/headless_merge.py`
+**Symptom:** A merge/insert source PDF that would be rejected by `open_pdf` (oversize file, excess pages, encrypted) was opened with a bare `fitz.open(...)` in `insert_pages_from_file` and `headless_merge`, so a crafted "foreign" document could OOM/hang the process through a side door the primary path already guards (CWE-400).
+**Cause:** The F1 guards (`_guard_before_open`, `_MAX_PAGES` check) were wired only into `PDFModel.open_pdf`; every other `fitz.open` call site on user-supplied paths was added independently and never picked them up.
+**Fix:** Single chokepoint `_guard_foreign_doc(path)` in `model/pdf_model.py` (size limit → open → encryption check → page limit; caller closes). All non-primary opens of user-supplied PDFs route through it. `insert_pages_from_file` additionally enforces the post-merge invariant `len(self.doc) + len(inserted) <= _MAX_PAGES` BEFORE inserting. Any future `fitz.open` on a path the user picked must go through `_guard_foreign_doc`, never bare `fitz.open`.
+**File:** `model/pdf_model.py` (`_guard_foreign_doc`, `insert_pages_from_file`), `model/headless_merge.py`
+**Tests:** `test_scripts/test_security_pdf_resource_guards.py`, `test_scripts/test_headless_merge.py`
+
+## Python negative indexing turns page 0 into a silent doc[-1] mutation
+
+**Area:** `model/tools/annotation_tool.py` (pattern applies to every `doc[page_num - 1]` site)
+**Symptom:** Calling `add_highlight`/`add_rect` with `page_num=0` did not fail — it silently annotated the LAST page (`doc[0 - 1]` == `doc[-1]`), a wrong-page document mutation with no error signal.
+**Cause:** The 1-based→0-based conversion `doc[page_num - 1]` hits Python's negative-index semantics for `page_num=0` (and PyMuPDF accepts negative page indexes), so the out-of-range input maps to a valid page instead of raising.
+**Fix:** `AnnotationTool._require_page(page_num)` validates the no-doc case and `1 <= page_num <= len(doc)` before indexing, raising `ValueError`(「無效的頁碼: N」). All AnnotationTool page lookups go through it. When adding new 1-based page APIs, never index `doc[n - 1]` without a lower-bound check.
+**File:** `model/tools/annotation_tool.py`
+**Tests:** `test_scripts/test_tool_extensions.py` (`test_add_highlight_rejects_page_zero`, `test_add_rect_rejects_page_zero`, `test_add_highlight_rejects_out_of_range`)
+
+## min/max do NOT sanitize NaN — they are argument-order sensitive
+
+**Area:** `model/tools/watermark_tool.py` (pattern applies to any numeric clamp on untrusted input)
+**Symptom:** `max(0.0, min(1.0, nan))` and friends can return NaN, so "clamped" watermark fields (angle, opacity, offsets) could still carry NaN/±inf into rendering math (`nan % 360 == nan`; `json.loads` accepts `NaN`/`Infinity` literals, and Python callers can pass them directly).
+**Cause:** Python's `min`/`max` compare with `<`/`>`, and every comparison with NaN is False — so the result depends on argument ORDER (`min(nan, x) → nan`, `min(x, nan) → x`). A clamp built only from `min`/`max` silently passes NaN through on one ordering.
+**Fix:** `_finite(v, lo, hi, default)` helper: explicit `math.isnan` screen (NaN → default) before `max(lo, min(hi, v))`; ±inf compares normally and clamps to the bounds. All watermark numeric fields go through `_finite` inside `_coerce_wm`, and `add_watermark`/`update_watermark` now funnel through `_coerce_wm` too, so there is exactly one sanitization chokepoint. Never "sanitize" untrusted floats with bare `min`/`max`.
+**File:** `model/tools/watermark_tool.py` (`_finite`, `_coerce_wm`)
+**Tests:** `test_scripts/test_security_watermark_coercion.py`, `test_scripts/test_tool_extensions.py::test_add_watermark_nan_angle_sanitized`
+
+## IPC argv filters must resolve EVERY token — skipping relative paths is a bypass
+
+**Area:** `utils/single_instance.py`
+**Symptom:** The single-instance forwarded-argv filter validated only *absolute* tokens (exists + `.pdf` suffix) and let relative tokens through unchecked, so a local socket peer could smuggle arbitrary paths (e.g. `..\..\etc\passwd`-style traversal) past the filter into `on_message`.
+**Cause:** The filter assumed sender-side normalization (`_normalize_forwarded_argv` resolves to absolute), but the untrusted peer is not bound by the sender's code — "legitimate input is always absolute" is not a property of hostile input.
+**Fix:** `_forwarded_argv_is_acceptable` now `Path(item).resolve()`s every non-flag token and requires an existing `.pdf`; anything else rejects the whole message (ack `0`). Double-resolve of legitimate already-resolved paths is idempotent. Validate what the peer SENT, not what a well-behaved sender would have sent.
+**File:** `utils/single_instance.py` (`_forwarded_argv_is_acceptable`)
+**Tests:** `test_scripts/test_security_single_instance_isolation.py`

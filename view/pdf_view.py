@@ -104,6 +104,10 @@ from view.text_editing import (
 
 logger = logging.getLogger(__name__)
 
+# Zoom limits shared by all three zoom entry points (wheel, pinch, combo).
+_MAX_VIEW_ZOOM = 4.0   # 400%
+_MIN_VIEW_ZOOM = 0.1   # 10%
+
 
 def _ctrl_tab_direction(key: int, modifiers: Qt.KeyboardModifiers) -> int:
     if not (modifiers & Qt.ControlModifier):
@@ -1348,8 +1352,9 @@ class PDFView(QMainWindow):
     def _on_zoom_combo_changed(self, text: str):
         try:
             pct = float(str(text).replace("%", "").strip())
-            if 10 <= pct <= 400:
-                self.sig_scale_changed.emit(self.current_page, pct / 100.0)
+            scale_val = pct / 100.0
+            if _MIN_VIEW_ZOOM <= scale_val <= _MAX_VIEW_ZOOM:
+                self.sig_scale_changed.emit(self.current_page, scale_val)
         except ValueError:
             pass
 
@@ -2674,7 +2679,7 @@ class PDFView(QMainWindow):
             if self.text_editor:
                 self._finalize_text_edit()
             factor = 1.1 if event.angleDelta().y() > 0 else 0.9
-            self.scale *= factor
+            self.scale = max(_MIN_VIEW_ZOOM, min(_MAX_VIEW_ZOOM, self.scale * factor))
             # 即時套用 view transform，提供流暢的視覺縮放預覽（此時 pixmap 尚未重渲，畫面模糊屬正常）
             self.graphics_view.setTransform(self.graphics_view.transform().scale(factor, factor))
             # debounce：wheel 停止後 300ms 再重渲，避免連續滾動時每幀都重渲
@@ -3598,7 +3603,7 @@ class PDFView(QMainWindow):
             new_scale = float(self.scale) * float(factor)
         except (TypeError, ValueError):
             return
-        new_scale = max(0.1, min(4.0, new_scale))
+        new_scale = max(_MIN_VIEW_ZOOM, min(_MAX_VIEW_ZOOM, new_scale))
         self.sig_scale_changed.emit(self.current_page, new_scale)
 
     def _start_text_edit_from_hit(self, page_idx: int, info) -> bool:
