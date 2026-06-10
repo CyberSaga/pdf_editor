@@ -133,7 +133,7 @@ For tasks larger than a single function change:
 
 ## 10. Code Intelligence
 
-`.codegraph/graph.db` is a pre-indexed semantic knowledge graph (2874 nodes, 19097 edges). Use it before reading source files.
+`.codegraph/graph.db` is a pre-indexed semantic knowledge graph (3338 nodes, 22043 edges). Use it before reading source files.
 
 **Quick lookup (CLI):**
 ```
@@ -147,7 +147,7 @@ python .codegraph/query.py explore <symbol> [N]  # BFS traversal to depth N (def
 All commands output compact JSON.
 
 **Full inventory (one read):**
-Read `CODEINDEX.md` — complete symbol map + import graph for all 167 source files.
+Read `CODEINDEX.md` — complete symbol map + import graph for all 202 source files.
 
 **Re-index after structural changes:**
 ```

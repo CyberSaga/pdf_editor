@@ -1,6 +1,8 @@
-﻿# PDF Editor (PySide6 + PyMuPDF)
+﻿# CyberSagaPDF (PySide6 + PyMuPDF)
 
-Desktop PDF editor written in Python with a Qt UI.
+Desktop PDF editor written in Python with a Qt UI. The app identity is
+**CyberSagaPDF** (taskbar name/icon, settings namespace); preferences from the
+older `pdf_editor` namespace migrate automatically on first run.
 
 ## 1. Core Capabilities
 
@@ -65,6 +67,13 @@ OCR note: The OCR feature uses Surya and requires `surya-ocr` and (optionally) `
 
 ```text
 python main.py
+```
+
+Optional Windows `.pdf` association (current user only, no admin; safe
+re-registration with snapshot/rollback; `-Unregister` to remove):
+
+```text
+powershell -ExecutionPolicy Bypass -File scripts\windows_file_association.ps1
 ```
 
 ## 6. Package (Windows)

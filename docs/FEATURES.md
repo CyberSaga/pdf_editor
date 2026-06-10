@@ -13,6 +13,16 @@ Document intake now supports both explicit open and drag-and-drop:
 - Non-PDF files, folders, and remote URLs are ignored silently.
 - On empty startup, an early drop is not lost: the shell can queue dropped PDF paths until the deferred controller attach finishes, then open them normally.
 
+## 1.1 App Identity and Windows Shell Integration
+
+The app is branded **CyberSagaPDF**:
+- Window/taskbar identity: `main.py` sets AppUserModelID `CyberSaga.CyberSagaPDF` and the application icon (`appearance_design/app_icon.ico`), so the taskbar shows the app's own name/icon instead of a generic Python entry.
+- Preferences live under the `CyberSaga/CyberSagaPDF` QSettings namespace. On first run after upgrading from the old `pdf_editor` namespace, each known preference key (theme, OCR device/languages) that is missing in the new namespace is migrated from the legacy store; keys the user has already set in the new namespace are never overwritten.
+- Single-instance forwarding works across the rename: a second launch first tries the current per-user server name, then falls back to the legacy `pdf_editor` server name, so opening a file from the shell still lands in an already-running older instance instead of spawning a duplicate window.
+- Optional `.pdf` file association on Windows: `scripts/windows_file_association.ps1` registers a current-user-only (HKCU, no admin) "CyberSagaPDF" handler with its own launcher copy and icon, validates required assets before touching anything, snapshots prior managed keys and restores them on any failure, and never modifies the OS-protected UserChoice default (the user confirms the default with one click). `-Unregister` removes everything the script created.
+
+Key functions/files include `main.py` (AUMID + icon), `view/icons.py:load_app_icon`, `utils/preferences.py:_migrate_legacy_settings`, `utils/single_instance.py:_build_legacy_server_name`, and `scripts/windows_file_association.ps1`.
+
 ## 2. Modes and Interaction Rules
 
 The supported modes are `browse`, `edit_text`, `add_text`, `rect`, `highlight`, and `add_annotation`. In `edit_text` mode, clicking existing text enters edit on that target while clicking blank area does not create a new textbox; all text block boundaries are shown as persistent outlines so editable zones are always visible, and the cursor shows IBeam over text blocks. Switching away from `edit_text` with an open editor auto-commits the pending edit (same as CLICK_AWAY) and briefly shows a toast notification — edits are never silently discarded on mode switch. In `add_text` mode, click behavior is dedicated to insertion: if an editor is already open, clicking blank space commits and closes it; if no editor is active, clicking creates a new textbox editor. `rect`, `highlight`, and `add_annotation` are sticky modes: after each operation they remain active for repeated actions. Empty add-new commit is a no-op and does not create history. Mode toolbar buttons are checkable and synchronized to the active mode. Key functions include `set_mode(...)`, `_mouse_press(...)`, `_mouse_release(...)`, `_create_add_text_editor_at_scene(...)`, `_draw_all_block_outlines(...)`, `_clear_all_block_outlines(...)`, and `_finalize_text_edit(...)`.
