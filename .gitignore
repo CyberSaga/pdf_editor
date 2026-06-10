@@ -60,3 +60,7 @@ docs/readable-markdown.css
 
 # macOS
 .DS_Store
+
+# Packaging artifacts (editable install creates cybersaga_pdf.egg-info/)
+*.egg-info/
+dist/

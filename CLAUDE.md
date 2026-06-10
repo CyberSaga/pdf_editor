@@ -45,7 +45,13 @@ mypy model/ utils/            # type-check (gradual — strict on new modules)
 pytest                        # test suite
 ```
 
-New code must pass `ruff check` with zero violations. Existing violations (113 remaining) are tracked for gradual cleanup.
+New code must pass `ruff check` with zero violations. Existing violations (240 remaining — measured 2026-06-11 with ruff 0.15.9 default rules; E501 not selected) are tracked for gradual cleanup.
+
+> **mypy on this machine:** a stray `__init__.py` in the PARENT directory
+> (`C:\Users\jiang\Documents\python programs\__init__.py`) makes mypy walk above the
+> repo and fail with "not a valid Python package name". `[tool.mypy]` in
+> `pyproject.toml` sets `explicit_package_bases = true` to anchor module names at the
+> repo root; invoke mypy via the project venv: `.venv\Scripts\python.exe -m mypy model/ utils/`.
 
 ## 4. Context Loading Protocol
 

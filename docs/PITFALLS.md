@@ -1008,3 +1008,10 @@
 **Fix:** `_cancel_search()` (cancel flag + `thread.quit()` + bounded `thread.wait(2000)`; the per-page cancel check makes `run()` return within one page) at the top of every doc-mutating controller method AND at session-lifecycle boundaries (`_switch_to_session_id`, `on_tab_close_requested`, `open_pdf`). Two thread-lifecycle gotchas found empirically: (1) controller refs to the `QThread` wrapper must be released on `thread.finished` (identity-checked `_release_search_thread`), NOT on `worker.finished` — dropping the wrapper while the thread still runs lets Python GC destroy the C++ QThread and hard-crash the process with no traceback; (2) queued cross-thread signals already posted before a cancel are still delivered afterwards, so every worker signal carries the `_search_gen` generation token and handlers drop stale generations.
 **File:** `controller/pdf_controller.py` (`_cancel_search`, `_on_search_finished`, `_release_search_thread`)
 **Tests:** `test_scripts/test_search_worker_flow.py`
+
+## Cooperative OCR cancellation: per-page only
+**Area:** controller/pdf_controller.py _OcrWorker
+**Symptom:** Cancel appears to hang during a long page
+**Cause:** request_cancel() is checked between pages, not inside a single fitz call
+**Fix:** Accepted design. A slow page completes before cancel takes effect.
+**File:** controller/pdf_controller.py:217-266 (`_OcrWorker`; `request_cancel` at 240, per-page check at 251-253)

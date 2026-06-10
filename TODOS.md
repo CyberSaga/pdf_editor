@@ -8,7 +8,7 @@
 - [x] **Phase 3 — Memory Budgets** (landed 2026-06-10): `CommandManager` now enforces `MAX_UNDO_STACK_BYTES = 512 MiB` over per-command `_byte_size()` (oldest-first eviction, `_saved_stack_size` decremented per eviction) and dedups adjacent `SnapshotCommand` boundary snapshots (`prev._after_bytes` shared into `curr._before_bytes` when equal) at all three push sites; `build_print_snapshot` writes the print-input PDF directly to a dest `Path` (fast path `doc.save(..., encryption=KEEP)`, overlay path `tmp_doc.save`), `PrintJobRequest.capture_pdf_bytes` → `write_pdf_to`, and dead `PDFModel.capture_print_input_pdf_bytes` removed. Plan: `docs/plans/phase-3-memory-budgets.md`. Tests: `test_scripts/test_undo_memory_budget.py`, `test_scripts/test_print_snapshot_path.py`.
 - [x] **Phase 4 — UI-Thread Responsiveness** (landed 2026-06-10): 4.1 async thumbnails — structural call sites (delete/rotate/straighten/insert ×2/merge, structural undo/redo) now use `_invalidate_thumbnails(affected)` (synchronous `set_thumbnail_placeholders` first, then load-gen bump + `_schedule_thumbnail_batch` next tick); cross-page text moves no longer touch thumbnails; `_update_thumbnails` kept only as a deprecated test shim. 4.2 search worker — `SearchTool.search_page(page_num, query)` + `_SearchWorker`/`_SearchBridge` (gen-tokened signals), incremental accumulate into `display_search_results`, search_state persisted on worker finish; `_cancel_search()` guards all doc-mutating methods + tab switch/close/open. Plan: `docs/plans/phase-4-ui-responsiveness.md`. Tests: `test_scripts/test_thumbnail_async.py`, `test_scripts/test_search_worker_flow.py`.
 - [ ] **Phase 4.3 (deferred) — Overlay render cache.** Deferred from Phase 4: caching the overlay raster (watermark/annotation overlays composited during page render) requires revision counters on BOTH `WatermarkTool` and `AnnotationTool` plus cache state on the currently stateless `ToolManager`; the overlay path is only active when overlays exist, so the win is conditional. Non-blocking per the audit master plan — design the revision-counter invalidation before implementing.
-- [ ] **Phase 5 — Hygiene / Documentation**
+- [x] **Phase 5 — Hygiene / Documentation** (landed 2026-06-11): `pyproject.toml` added (name=`cybersaga-pdf`, setuptools backend with explicit flat-layout package discovery incl. the `src.printing` namespace package; deps mirror requirements.txt; `dev` extra = ruff/mypy/pytest; `[tool.ruff]` encodes the default rule set so the 240-violation baseline is stable; `[tool.mypy]` gradual + `explicit_package_bases` for the parent-dir `__init__.py` gotcha; `[tool.pytest.ini_options] testpaths=["test_scripts"]`). `pip install -e ".[dev]"` now works (`.venv` pip upgraded 21.2.3 → 26.1.2 for PEP 660). PITFALLS: cooperative OCR cancellation entry. CLAUDE.md §3.1 violation count reconciled (113 → 240). Plan: `docs/plans/phase-5-hygiene.md`.
 
 ## Open -- App identity single source of truth (from /code-review of claude/simplify, 2026-06-10)
 
@@ -138,8 +138,9 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
   reports (investigation-review.md, security-investigate.md, weakness_patch.md,
   weakness_patch_organized.md, patch-weaknesses-found-in-immutable-knuth.md, and the
   CJK scan report 資安掃瞄.md) to `docs/security/` via `git mv` (history preserved).
-- [ ] **(Optional) Reconcile CLAUDE.md s3.1 with reality.** It promises a `pyproject.toml`
-  + `pip install -e ".[dev]"` that doesn't exist; either add the pyproject or correct s3.1.
+- [x] **(Optional) Reconcile CLAUDE.md s3.1 with reality — DONE (2026-06-11, Phase 5).**
+  `pyproject.toml` added; `pip install -e ".[dev]"` works; s3.1's stale 113-violation
+  count updated to the measured 240 (ruff 0.15.9 default rules).
 
 ### Remaining open items
 

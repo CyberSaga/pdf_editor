@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cybersaga-pdf"
+version = "0.1.0"
+description = "CyberSagaPDF - desktop PDF editor (PySide6 + PyMuPDF, Acrobat-level UX parity)"
+requires-python = ">=3.9"
+# Mirrors requirements.txt (the canonical runtime list with rationale comments).
+dependencies = [
+    "PySide6>=6.4",
+    "PyMuPDF>=1.23",
+    # Pillow/numpy are imported lazily (the app launches without them) but the
+    # shipped build bundles them. Pillow is floored at 12.2.0 to close the
+    # image-parser CVEs (CVE-2026-40192 / 42309 / 42310 / 42311, PYSEC-2026-165).
+    "Pillow>=12.2.0",
+    "numpy>=1.21",
+]
+
+[project.optional-dependencies]
+# Dev tooling only. Platform/feature extras (e.g. pikepdf) stay in
+# optional-requirements.txt; OCR extras stay in ocr-requirements.txt.
+dev = ["ruff", "mypy", "pytest"]
+
+[tool.setuptools]
+# Flat top-level layout: explicit discovery so editable install works without
+# restructuring and never packages test_scripts/docs/scripts/build etc.
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+# `src` here is the namespace parent of the production package src.printing
+# (it has no __init__.py by design), hence namespaces = true.
+include = ["controller*", "model*", "utils*", "view*", "src*"]
+namespaces = true
+
+[tool.ruff]
+target-version = "py39"
+
+[tool.ruff.lint]
+# Explicitly encodes ruff's DEFAULT rule set (E4/E7/E9 + F) so the lint
+# baseline stays stable across ruff upgrades. Baseline: 240 violations
+# (ruff 0.15.9, measured 2026-06-11). E501 is intentionally NOT selected.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+# Gradual typing: permissive global config; strictness is opted into per-module.
+ignore_missing_imports = true
+# A stray __init__.py in the PARENT directory ("python programs") otherwise
+# makes mypy walk above the repo and fail with "not a valid Python package
+# name". explicit_package_bases anchors module names at the repo root.
+namespace_packages = true
+explicit_package_bases = true
+
+[tool.pytest.ini_options]
+testpaths = ["test_scripts"]
