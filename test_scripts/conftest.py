@@ -23,6 +23,23 @@ def qapp() -> QApplication:
     return app
 
 
+@pytest.fixture(autouse=True)
+def _reset_app_stylesheet():
+    """Restore QApplication stylesheet to its pre-test state after each test.
+
+    Tests that call view.apply_initial_theme() / app.setStyleSheet(...) leave a
+    global stylesheet active; leaked QSS gives QTextEdit subclasses padding that
+    shifts pixel-diff comparisons in later rendering tests.
+    """
+    app = QApplication.instance()
+    before_stylesheet = app.styleSheet() if app is not None else ""
+    yield
+    if app is not None:
+        current_app = QApplication.instance()
+        if current_app is not None and current_app.styleSheet() != before_stylesheet:
+            current_app.setStyleSheet(before_stylesheet)
+
+
 def _ensure_test_file_1_pdf() -> None:
     """Provide a synthetic ``test_files/1.pdf`` when the real fixture is absent.
 

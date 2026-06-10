@@ -54,6 +54,9 @@ def _cleanup_startup(startup: dict) -> None:
     model = startup.get("model")
     if model is not None:
         model.close()
+    # Clear the app-level stylesheet set by apply_initial_theme() so it
+    # does not leak into later tests that create QTextEdit-derived widgets.
+    startup["app"].setStyleSheet("")
     startup["app"].quit()
 
 

@@ -746,6 +746,10 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
         self.setFrameStyle(0)
         self.setViewportMargins(0, 0, 0, 0)
         self.setContentsMargins(0, 0, 0, 0)
+        # Override any QApplication-level QSS that adds padding or borders to
+        # QTextEdit (e.g. the theme stylesheet from view/theme.py). The inline
+        # editor must always render flush to the PDF page.
+        self.setStyleSheet("QTextEdit { padding: 0px; border: 0px; margin: 0px; }")
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setCursorWidth(0)

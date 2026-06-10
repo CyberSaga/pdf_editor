@@ -911,3 +911,11 @@
 **Fix:** Moved the `try: import numpy as np / except ImportError: np = None` block inside each of the 5 numpy-using functions. Replaced the eager dialog re-export block in `view/pdf_view.py` with a PEP 562 module-level `__getattr__` that imports from `view.dialogs` on first access and caches names into `globals()`. Internal uses of dialog classes within `pdf_view.py` itself use function-local imports.
 **File:** `view/text_editing.py`, `view/pdf_view.py`
 **Tests:** `test_scripts/test_startup_heavy_imports.py`
+
+## QApplication-level QSS leaks across tests and shifts inline-editor pixels
+**Area:** test_scripts (process-wide Qt state), view/text_editing.py
+**Symptom:** 7 order-dependent failures in `test_no_jump_editor_geometry.py` when the full suite runs (~57.86% pixel diff vs the 1% threshold); the same tests pass in isolation (377 passed).
+**Cause:** Every test in `test_main_startup_behavior.py` runs `main_module.run(...)`, which calls `view.apply_initial_theme()` -> `app.setStyleSheet(build_qss(theme_id))`. The QApplication is a session-wide singleton, and `_cleanup_startup()` never cleared the stylesheet, so the theme QSS (`QTextEdit { padding: 4px 8px; ... }`) stayed active for every later test. When Qt polishes a freshly shown `PreviewBackedInlineTextEditor`, the app QSS padding overrides the constructor's `setViewportMargins(0,0,0,0)`, shifting the editor text relative to the PDF rendering in pixel-diff comparisons.
+**Fix:** Three layers: (1) `_cleanup_startup()` now calls `app.setStyleSheet("")` before `app.quit()`; (2) `PreviewBackedInlineTextEditor.__init__` sets a widget-level QSS override (`QTextEdit { padding: 0px; border: 0px; margin: 0px; }`) -- widget QSS beats app QSS, so the inline editor stays flush to the page even in a themed production app; (3) a function-scoped autouse fixture in `test_scripts/conftest.py` snapshots `app.styleSheet()` before each test and restores it after, so no future test can leak app-level QSS.
+**Gotcha:** `setViewportMargins()`/`setContentsMargins()` are NOT a defense against stylesheets -- app-level QSS padding is applied at polish time (first `show()`), after the constructor runs, and silently wins.
+**File:** `test_scripts/test_main_startup_behavior.py`, `view/text_editing.py`, `test_scripts/conftest.py`

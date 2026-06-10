@@ -1,5 +1,14 @@
 # TODOS
 
+## Audit remediation (2026-06-10 two-round audit)
+
+- [x] **Phase 0 — Restore the Gate:** polluter = stylesheet leak in `test_main_startup_behavior.py`; fixed via cleanup + widget QSS override + conftest fixture (7 order-dependent failures in `test_no_jump_editor_geometry.py` eliminated).
+- [ ] **Phase 1 — Linearize Capability Gate + Error Wrapping**
+- [ ] **Phase 2 — Chokepoint Guards (OOM / Logic-Bypass)**
+- [ ] **Phase 3 — Memory Budgets**
+- [ ] **Phase 4 — UI-Thread Responsiveness**
+- [ ] **Phase 5 — Hygiene / Documentation**
+
 ## Open -- App identity single source of truth (from /code-review of claude/simplify, 2026-06-10)
 
 - [ ] **Consolidate app-identity strings into one canonical module.** The CyberSagaPDF
