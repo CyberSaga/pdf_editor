@@ -240,7 +240,9 @@ def test_cross_page_move_add_failure_restores_before_snapshot_and_refreshes_ui(
             assert _norm(model.doc[0].get_text("text")) == before_page1
             assert _norm(model.doc[1].get_text("text")) == before_page2
             assert invalidate_calls
-            assert thumb_calls
+            # Phase 4.1: text moves never change page count/geometry, so the
+            # restore path no longer rebuilds thumbnails.
+            assert not thumb_calls
             assert shown_pages == [0]
             assert tooltip_calls
             assert errors

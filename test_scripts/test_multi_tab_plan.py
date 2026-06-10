@@ -401,6 +401,15 @@ def test_04e_structural_metadata_uses_actual_deleted_pages(mvc, tmp_path):
     assert cmd.affected_pages == [2]
 
 
+def _pump_until_search_results(view, timeout_ms: int = 3000) -> None:
+    """Phase 4.2: search runs on a worker thread; pump until results land."""
+    deadline = time.time() + timeout_ms / 1000.0
+    while time.time() < deadline:
+        if view.current_search_results:
+            return
+        _pump_events(20)
+
+
 def test_05_search_state_restored_per_tab(mvc, tmp_path):
     model, view, controller = mvc
     a = _make_pdf(tmp_path / "A.pdf", ["alpha-key"])
@@ -408,11 +417,13 @@ def test_05_search_state_restored_per_tab(mvc, tmp_path):
     controller.open_pdf(str(a))
     controller.search_text("alpha")
     assert view.search_input.text() == ""
+    _pump_until_search_results(view)
     view.search_input.setText("alpha")
     controller.on_tab_changed(0)
     controller.open_pdf(str(b))
     view.search_input.setText("beta")
     controller.search_text("beta")
+    _pump_until_search_results(view)
     controller.on_tab_changed(0)  # A
     assert view.search_input.text() == "alpha"
     assert any("alpha" in (ctx or "").lower() for _, ctx, _ in view.current_search_results)

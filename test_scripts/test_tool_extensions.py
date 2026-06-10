@@ -39,6 +39,24 @@ def test_search_no_doc_returns_empty():
     assert PDFModel().tools.search.search_text("anything") == []
 
 
+def test_search_tool_search_page(model_with_text_pdf):
+    search = model_with_text_pdf.tools.search
+    # Hit: same (page_num, context, rect) tuple shape as search_text.
+    results = search.search_page(1, "hello")
+    assert len(results) >= 1
+    page_num, context, rect = results[0]
+    assert page_num == 1
+    assert "hello" in context.lower()
+    assert results == search.search_text("hello")
+    # No match on an existing page.
+    assert search.search_page(1, "xyzzy_no_match") == []
+    # Out-of-bounds pages return empty instead of raising.
+    assert search.search_page(0, "hello") == []
+    assert search.search_page(999, "hello") == []
+    # No document open.
+    assert PDFModel().tools.search.search_page(1, "hello") == []
+
+
 def test_ocr_no_doc_returns_empty():
     assert PDFModel().tools.ocr.ocr_pages([1]) == {}
 

@@ -990,3 +990,21 @@
 **Fix:** Call `model.build_print_snapshot(dest)` with a `Path`; the fast path must keep `encryption=fitz.PDF_ENCRYPT_KEEP` (plain `save()` defaults to NONE and decrypts protected documents — same chokepoint rationale as `PDFModel._save_doc`).
 **File:** `model/tools/manager.py` (`ToolManager.build_print_snapshot`), `controller/pdf_controller.py` (`PrintJobRequest`, `_PrintSubmissionWorker.run`)
 **Tests:** `test_scripts/test_print_snapshot_path.py`, `test_scripts/test_print_controller_flow.py`
+
+## Thumbnail batch scheduler silently drops pages when the widget item count is stale
+
+**Area:** `controller/pdf_controller.py` (`_invalidate_thumbnails`, `_schedule_thumbnail_batch`), `view/pdf_view.py` (`update_thumbnail_batch`)
+**Symptom:** After insert/delete, async thumbnail batches stop short (missing/blank thumbnails at the tail) with no error: `update_thumbnail_batch` updates icons by row index and silently `break`s on the first out-of-range row.
+**Cause:** The batch scheduler assumes the `QListWidget` already has one item per document page; structural operations change `len(doc)` but the widget still holds the OLD count when the first batch lands.
+**Fix:** `_invalidate_thumbnails` calls `view.set_thumbnail_placeholders(len(doc))` synchronously BEFORE bumping the load generation and scheduling `_schedule_thumbnail_batch` via `QTimer.singleShot(0, ...)`. Any new batch path must pre-set the item count the same way. The load-gen bump is the cancellation token (same mechanism as document open) — older chains exit at their gen check.
+**File:** `controller/pdf_controller.py` (`_invalidate_thumbnails`)
+**Tests:** `test_scripts/test_thumbnail_async.py`
+
+## Search worker must be cancelled (and waited for) before any document mutation
+
+**Area:** `controller/pdf_controller.py` (`_SearchWorker`, `_cancel_search`), `model/tools/search_tool.py`
+**Symptom:** Random crashes/corruption when deleting/rotating/inserting pages, undo/redo, switching or closing tabs while a search is running: the worker thread reads the live fitz document while the GUI thread mutates (or closes) it.
+**Cause:** PyMuPDF documents are not safe for concurrent read-during-mutation, and the worker resolves `model.doc` dynamically — a tab switch silently swaps the document under it mid-search.
+**Fix:** `_cancel_search()` (cancel flag + `thread.quit()` + bounded `thread.wait(2000)`; the per-page cancel check makes `run()` return within one page) at the top of every doc-mutating controller method AND at session-lifecycle boundaries (`_switch_to_session_id`, `on_tab_close_requested`, `open_pdf`). Two thread-lifecycle gotchas found empirically: (1) controller refs to the `QThread` wrapper must be released on `thread.finished` (identity-checked `_release_search_thread`), NOT on `worker.finished` — dropping the wrapper while the thread still runs lets Python GC destroy the C++ QThread and hard-crash the process with no traceback; (2) queued cross-thread signals already posted before a cancel are still delivered afterwards, so every worker signal carries the `_search_gen` generation token and handlers drop stale generations.
+**File:** `controller/pdf_controller.py` (`_cancel_search`, `_on_search_finished`, `_release_search_thread`)
+**Tests:** `test_scripts/test_search_worker_flow.py`

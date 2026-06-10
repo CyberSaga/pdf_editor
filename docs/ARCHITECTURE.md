@@ -98,6 +98,8 @@ Controller activation is now explicit. `PDFController.__init__()` keeps startup 
 
 For performance on large PDFs, controller schedules heavy work in small batches (thumbnail rasterization, visible-page rendering, and text indexing). Continuous mode now uses a placeholder-first pipeline: the view allocates full-document scene geometry immediately from lightweight placeholders, then the controller progressively renders only the viewport window (plus a small prefetch margin) so the UI stays interactive even on 1000+ page PDFs. Open-time priority is now explicit: the initial visible page is allowed to reach high quality before background thumbnail batches and sidebar scans start, with a short fallback timer so background work still resumes if that high-quality upgrade never arrives. After structural operations or snapshot restore, controller also drains stale page indices in the background (`_schedule_stale_index_drain`), while the active/visible pages remain immediately usable via the model's `ensure_page_index_built(...)` contract.
 
+Thumbnail refresh after structural operations (Phase 4.1) is asynchronous: structural call sites (delete/rotate/straighten/insert/merge and structural undo/redo) no longer call the synchronous full rebuild (`_update_thumbnails`, kept only as a deprecated test shim). They call `_invalidate_thumbnails(affected: list[int] | None)`, which (1) synchronously calls `view.set_thumbnail_placeholders(len(doc))` so the list widget's item count matches the resized document **before** any batch lands, (2) computes the batch start index as one page before the first affected page (`max(0, min(affected) - 2)`, or 0 for a full rebuild), (3) bumps the session load generation via `_next_load_gen(sid)` — the same cancellation token used by document open — so any in-flight batch chain exits at its gen check, and (4) schedules `_schedule_thumbnail_batch` on the next event-loop tick via `QTimer.singleShot(0, ...)`. Cross-page text moves no longer touch thumbnails at all (page count/geometry unchanged).
+
 ### 2.4 View (`view/pdf_view.py`)
 
 View owns widgets, scene interactions, and signal emission. It does not mutate model business state directly.
@@ -325,6 +327,17 @@ The OCR tool (`model/tools/ocr_tool.py`) uses Surya (`surya-ocr`) as its recogni
 Threading: OCR runs on a `QThread` driven by `_OcrWorker` (`controller/pdf_controller.py`). The worker emits `progress`, `page_done`, `failed`, `finished` via a `_OcrBridge` parented on the GUI thread. Writes (`apply_ocr_spans`) always happen on the GUI thread via `page_done`, so Surya I/O never touches Qt objects directly. Per-page commit makes cancel safe — cancellation before a page finishes just drops that page's not-yet-returned spans.
 
 View entry: `PDFView.ocr_action` (menu/toolbar under 轉換) launches `view/dialogs/ocr.py::OcrDialog` (page scope + languages + device) and emits `sig_start_ocr(OcrRequest)`. Controller `activate()` calls `_refresh_ocr_availability()` to reflect Surya install state in the action tooltip and enabled flag.
+
+### 5.2 Search Tool (async worker, Phase 4.2)
+
+`SearchTool` (`model/tools/search_tool.py`) exposes `search_page(page_num, query) -> list[tuple[int, str, rect]]` — a bounds-checked single-page search (out-of-range pages and missing documents return `[]` instead of raising) sharing the exact hit-tuple shape `(page_num, context, rect)` with the legacy full-document `search_text` (which now simply iterates `search_page`).
+
+Threading mirrors the OCR pattern: `PDFController.search_text(query)` cancels any previous search, then runs `_SearchWorker` (`controller/pdf_controller.py`) on a `QThread`, calling `search_page` per page and emitting `hits_found`/`failed`/`finished` through `_SearchBridge` (parented on the GUI thread, wired in `activate()`). Two deliberate deviations from the OCR lifecycle:
+
+- **Generation token in every worker signal** (`_search_gen`): searches are cancel-and-restart (typing a new query), and queued cross-thread emissions already posted to the GUI event queue are still delivered after a disconnect — the gen guard in the controller handlers drops them.
+- **Controller refs are released on `thread.finished`** (`_release_search_thread`, identity-checked), never on `worker.finished` — dropping the Python `QThread` wrapper while the thread still runs lets GC destroy the C++ object and hard-crash the process.
+
+Hits accumulate incrementally in `_search_accumulated_hits` and each per-page batch re-renders `view.display_search_results(list(accumulated))` (the view rebuilds its result list per call, so accumulate-and-replace is safe); on finish the controller persists `search_state = {"query", "results", "index": -1}` into the session UI state, preserving per-tab restore and next/prev navigation. `_cancel_search()` (cancel flag + `thread.quit()` + bounded `wait(2000)`) runs at the top of every document-mutating controller method (delete/rotate/straighten/insert ×2/merge/undo/redo) and at session-lifecycle boundaries (tab switch, tab close, new open), because a live fitz document is not safe for concurrent read-during-mutation.
 
 ## 6. Printing Subsystem
 

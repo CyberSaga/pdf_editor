@@ -294,6 +294,63 @@ class _OcrBridge(QObject):
         self.thread_finished.emit()
 
 
+class _SearchWorker(QObject):
+    """Runs SearchTool.search_page page-by-page on a background thread.
+
+    Every signal carries the search generation token so the controller can
+    drop late queued emissions from a cancelled search (queued events posted
+    before a disconnect would otherwise still be delivered).
+    """
+
+    hits_found = Signal(int, int, list)  # gen, page_num, page hits
+    failed = Signal(int, object)  # gen, exception
+    finished = Signal(int)  # gen
+
+    def __init__(self, tool, query: str, total_pages: int, gen: int) -> None:
+        super().__init__()
+        self._tool = tool
+        self._query = query
+        self._total_pages = int(total_pages)
+        self._gen = gen
+        self._cancel_requested = False
+
+    def request_cancel(self) -> None:
+        self._cancel_requested = True
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            for page_num in range(1, self._total_pages + 1):
+                if self._cancel_requested:
+                    break
+                hits = self._tool.search_page(page_num, self._query)
+                if hits:
+                    self.hits_found.emit(self._gen, page_num, list(hits))
+        except Exception as exc:
+            logger.exception("Search worker failed")
+            self.failed.emit(self._gen, exc)
+        finally:
+            self.finished.emit(self._gen)
+
+
+class _SearchBridge(QObject):
+    hits_found = Signal(int, int, list)
+    failed = Signal(int, object)
+    finished = Signal(int)
+
+    @Slot(int, int, list)
+    def forward_hits_found(self, gen: int, page_num: int, hits) -> None:
+        self.hits_found.emit(gen, page_num, hits)
+
+    @Slot(int, object)
+    def forward_failed(self, gen: int, exc) -> None:
+        self.failed.emit(gen, exc)
+
+    @Slot(int)
+    def forward_finished(self, gen: int) -> None:
+        self.finished.emit(gen)
+
+
 class PDFController:
     _VALID_MODES = {"browse", "edit_text", "add_text", "rect", "highlight", "add_annotation"}
     def __init__(self, model: PDFModel, view: PDFView):
@@ -318,6 +375,13 @@ class PDFController:
         self._ocr_thread: QThread | None = None
         self._ocr_worker: _OcrWorker | None = None
         self._ocr_worker_bridge: _OcrBridge | None = None
+        self._search_thread: QThread | None = None
+        self._search_worker: _SearchWorker | None = None
+        self._search_worker_bridge: _SearchBridge | None = None
+        self._search_accumulated_hits: list[tuple[int, str, object]] = []
+        self._search_gen = 0
+        self._search_query = ""
+        self._search_session_id: str | None = None
         self._load_gen_by_session: dict[str, int] = {}
         self._render_gen_by_session: dict[str, int] = {}
         self._stale_index_gen_by_session: dict[str, int] = {}
@@ -361,6 +425,11 @@ class PDFController:
             self._ocr_worker_bridge.page_done.connect(self._on_ocr_page_done)
             self._ocr_worker_bridge.failed.connect(self._on_ocr_failed)
             self._ocr_worker_bridge.thread_finished.connect(self._on_ocr_thread_finished)
+        if self._search_worker_bridge is None:
+            self._search_worker_bridge = _SearchBridge(self.view)
+            self._search_worker_bridge.hits_found.connect(self._on_search_hits_found)
+            self._search_worker_bridge.failed.connect(self._on_search_failed)
+            self._search_worker_bridge.finished.connect(self._on_search_finished)
         if self.print_dispatcher is None:
             self.print_dispatcher = PrintDispatcher()
         if not self._signals_connected:
@@ -1012,6 +1081,8 @@ class PDFController:
         if active == session_id:
             self._refresh_document_tabs()
             return
+        # An in-flight search reads the active session's doc — stop it before switching.
+        self._cancel_search()
         self._capture_current_ui_state()
         if self.view.text_editor:
             self.view._finalize_text_edit()
@@ -1027,6 +1098,8 @@ class PDFController:
             self._switch_to_session_id(existing_sid)
             return
 
+        # Opening appends + activates a new session; stop any search on the old doc.
+        self._cancel_search()
         self._capture_current_ui_state()
         password = None
         while True:
@@ -1132,6 +1205,7 @@ class PDFController:
         if not self.model.doc:
             raise ValueError("沒有開啟的PDF文件")
 
+        self._cancel_search()
         before = self.model._capture_doc_snapshot()
         merged_doc = self.model.compose_merged_document(ordered_sources)
         try:
@@ -1151,7 +1225,7 @@ class PDFController:
             description="合併 PDF",
         )
         self.model.command_manager.record(cmd)
-        self._update_thumbnails()
+        self._invalidate_thumbnails()
         self._rebuild_continuous_scene(0)
         self._schedule_stale_index_drain()
         self._update_undo_redo_tooltips()
@@ -1408,6 +1482,8 @@ class PDFController:
             self.view._finalize_text_edit()
         if not self._confirm_close_session(sid):
             return
+        # The search worker may still be reading the doc that is about to close.
+        self._cancel_search()
         if sid == self.model.get_active_session_id():
             self._capture_current_ui_state()
         self.model.close_session(sid)
@@ -1713,6 +1789,7 @@ class PDFController:
             self._print_dialog = None
 
     def delete_pages(self, pages: list[int]):
+        self._cancel_search()
         before = self.model._capture_doc_snapshot()
         # Model is the source of truth: it sanitizes dirty input and returns the actual deleted pages.
         actual_deleted_pages = self.model.delete_pages(pages)
@@ -1730,12 +1807,13 @@ class PDFController:
             description=f"刪除頁面 {actual_deleted_pages}",
         )
         self.model.command_manager.record(cmd)
-        self._update_thumbnails()
+        self._invalidate_thumbnails(actual_deleted_pages)
         self._rebuild_continuous_scene(min(self.view.current_page, len(self.model.doc) - 1))
         self._schedule_stale_index_drain()
         self._update_undo_redo_tooltips()
 
     def rotate_pages(self, pages: list[int], degrees: int):
+        self._cancel_search()
         before = self.model._capture_doc_snapshot()
         # Model sanitizes and returns the actual rotated pages for metadata correctness.
         actual_rotated_pages = self.model.rotate_pages(pages, degrees)
@@ -1752,13 +1830,14 @@ class PDFController:
             description=f"旋轉頁面 {actual_rotated_pages} {degrees}°",
         )
         self.model.command_manager.record(cmd)
-        self._update_thumbnails()
+        self._invalidate_thumbnails(actual_rotated_pages)
         self._rebuild_continuous_scene(self.view.current_page)
         self._update_undo_redo_tooltips()
 
     def straighten_pages(self, pages: list[int], angle_degrees: float | None = None) -> None:
         if not self.model.doc:
             return
+        self._cancel_search()
         page_count = len(self.model.doc)
         targets = sorted({int(p) for p in pages if 1 <= int(p) <= page_count})
         if not targets:
@@ -1790,7 +1869,7 @@ class PDFController:
             description=description,
         )
         self.model.command_manager.record(cmd)
-        self._update_thumbnails()
+        self._invalidate_thumbnails(straightened)
         self._rebuild_continuous_scene(self.view.current_page)
         self._update_undo_redo_tooltips()
 
@@ -2311,7 +2390,7 @@ class PDFController:
             )
             self.model.command_manager.record(cmd)
             self._invalidate_active_render_state()
-            self._update_thumbnails()
+            # Text moves never change page count/geometry — thumbnails stay valid.
             self.show_page(destination_page - 1)
             self._update_undo_redo_tooltips()
         except Exception as e:
@@ -2323,7 +2402,6 @@ class PDFController:
                         affected_pages=sorted({source_page, destination_page}),
                     )
                     self._invalidate_active_render_state()
-                    self._update_thumbnails()
                     self.show_page(source_page - 1)
                     self._update_undo_redo_tooltips()
                 except Exception as restore_error:
@@ -2415,12 +2493,99 @@ class PDFController:
         self.model.set_text_target_mode(mode)
 
     def search_text(self, query: str):
-        results = self.model.tools.search.search_text(query)
-        self.view.display_search_results(results)
+        """非同步搜尋：工作執行緒逐頁搜尋，GUI 執行緒增量累積並顯示結果。
+
+        每次呼叫先取消前一次搜尋（generation token 會丟棄遲到的佇列訊號），
+        worker 結束時把完整結果寫回 session 的 search_state。
+        """
+        self._cancel_search()
+        query = query or ""
         sid = self.model.get_active_session_id()
+        self._search_accumulated_hits = []
+        self._search_query = query
+        self._search_session_id = sid
+        if not query or not self.model.doc or not sid:
+            self.view.display_search_results([])
+            if sid:
+                self._get_ui_state(sid).search_state = {"query": query, "results": [], "index": -1}
+            return
+
+        gen = self._search_gen  # already bumped by _cancel_search
+        thread = QThread()
+        worker = _SearchWorker(self.model.tools.search, query, len(self.model.doc), gen)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        if self._search_worker_bridge is not None:
+            worker.hits_found.connect(self._search_worker_bridge.forward_hits_found)
+            worker.failed.connect(self._search_worker_bridge.forward_failed)
+            worker.finished.connect(self._search_worker_bridge.forward_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        # Drop controller refs only once the THREAD has finished (not the worker):
+        # releasing the Python QThread wrapper while the thread still runs lets GC
+        # destroy the C++ object and hard-crash the process.
+        thread.finished.connect(lambda t=thread: self._release_search_thread(t))
+
+        self._search_thread = thread
+        self._search_worker = worker
+        thread.start()
+
+    def _release_search_thread(self, thread) -> None:
+        if self._search_thread is thread:
+            self._search_thread = None
+            self._search_worker = None
+
+    def _cancel_search(self) -> None:
+        """Cancel any in-flight search and wait for its worker to stop.
+
+        Must be called before any document mutation: the worker reads the live
+        fitz document, which is not safe for concurrent read-during-mutation.
+        Bumping ``_search_gen`` makes the handlers drop late queued signals.
+        """
+        self._search_gen += 1
+        worker = self._search_worker
+        thread = self._search_thread
+        self._search_worker = None
+        self._search_thread = None
+        if worker is not None:
+            worker.request_cancel()
+        if thread is not None and thread.isRunning():
+            # quit() is thread-safe; the per-page cancel check makes run()
+            # return quickly, after which the thread's event loop exits.
+            thread.quit()
+            if not thread.wait(2000):
+                logger.warning("Search worker did not stop within 2s")
+
+    @Slot(int, int, list)
+    def _on_search_hits_found(self, gen: int, page_num: int, hits) -> None:
+        if gen != self._search_gen:
+            return
+        self._search_accumulated_hits.extend(hits)
+        self.view.display_search_results(list(self._search_accumulated_hits))
+
+    @Slot(int, object)
+    def _on_search_failed(self, gen: int, exc) -> None:
+        if gen != self._search_gen:
+            return
+        logger.error("搜尋失敗: %s", exc)
+        show_error(self.view, f"搜尋失敗: {exc}")
+
+    @Slot(int)
+    def _on_search_finished(self, gen: int) -> None:
+        if gen != self._search_gen:
+            return
+        if not self._search_accumulated_hits:
+            # No hits: refresh the result list/status from "搜尋中...".
+            self.view.display_search_results([])
+        sid = self._search_session_id
         if sid:
             state = self._get_ui_state(sid)
-            state.search_state = {"query": query, "results": list(results), "index": -1}
+            state.search_state = {
+                "query": self._search_query,
+                "results": list(self._search_accumulated_hits),
+                "index": -1,
+            }
 
     def jump_to_result(self, page_num: int, rect: fitz.Rect):
         scale = self.view.scale
@@ -2556,6 +2721,7 @@ class PDFController:
         """
         if not self.model.command_manager.can_undo():
             return
+        self._cancel_search()
         last_cmd = self.model.command_manager._undo_stack[-1]
         self.model.command_manager.undo()
         self._invalidate_active_render_state(clear_page_sizes=getattr(last_cmd, "is_structural", False))
@@ -2566,6 +2732,7 @@ class PDFController:
         """Phase 6: 統一使用 CommandManager。"""
         if not self.model.command_manager.can_redo():
             return
+        self._cancel_search()
         next_cmd = self.model.command_manager._redo_stack[-1]
         self.model.command_manager.redo()
         self._invalidate_active_render_state(clear_page_sizes=getattr(next_cmd, "is_structural", False))
@@ -2580,7 +2747,7 @@ class PDFController:
         is_structural = getattr(cmd, 'is_structural', False)
         if is_structural:
             page_idx = min(self.view.current_page, len(self.model.doc) - 1)
-            self._update_thumbnails()
+            self._invalidate_thumbnails(getattr(cmd, "affected_pages", None) or None)
             self._rebuild_continuous_scene(page_idx)
             self.load_annotations()
             self._schedule_stale_index_drain()
@@ -2634,10 +2801,35 @@ class PDFController:
             self.view._update_status_bar()
 
     def _update_thumbnails(self):
+        """Deprecated synchronous full rebuild — no longer called by production code.
+
+        Kept because tests stub it by name (test_cross_page_text_move.py).
+        Use :meth:`_invalidate_thumbnails` instead: it pre-sets the widget item
+        count and reuses the async batch scheduler.
+        """
         sid = self.model.get_active_session_id()
         colorspace = self._fitz_colorspace_for_session(sid) if sid else fitz.csRGB
         thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i + 1, colorspace=colorspace)) for i in range(len(self.model.doc))]
         self.view.update_thumbnails(thumbs)
+
+    def _invalidate_thumbnails(self, affected: list[int] | None = None) -> None:
+        """Schedule an async thumbnail batch from the earliest affected page.
+
+        ``affected`` holds 1-based page numbers; ``None`` means a full rebuild.
+        ``set_thumbnail_placeholders`` must run synchronously FIRST so the list
+        widget's item count matches the (possibly resized) document before any
+        batch lands — ``update_thumbnail_batch`` silently breaks on
+        out-of-range rows.
+        """
+        sid = self.model.get_active_session_id()
+        if not sid or not self.model.doc:
+            return
+        n = len(self.model.doc)
+        # Resize widget item count BEFORE batching (insert/delete changed it).
+        self.view.set_thumbnail_placeholders(n)
+        start = max(0, min(affected) - 2) if affected else 0  # one page before first affected
+        gen = self._next_load_gen(sid)  # cancels any in-flight batch chain
+        QTimer.singleShot(0, lambda s=sid, g=gen, st=start: self._schedule_thumbnail_batch(st, s, g))
 
     def _schedule_thumbnail_batch(self, start: int, session_id: str, gen: int):
         if (
@@ -2914,6 +3106,7 @@ class PDFController:
             return
 
         try:
+            self._cancel_search()
             before = self.model._capture_doc_snapshot()
             # Model clamps/sanitizes position and returns the actual inserted page number.
             actual_inserted_pages = self.model.insert_blank_page(position)
@@ -2931,7 +3124,7 @@ class PDFController:
                 description=f"插入空白頁（位置 {actual_inserted_pages[0]}）",
             )
             self.model.command_manager.record(cmd)
-            self._update_thumbnails()
+            self._invalidate_thumbnails(actual_inserted_pages)
             new_page_idx = min(actual_inserted_pages[0] - 1, len(self.model.doc) - 1)
             self._rebuild_continuous_scene(new_page_idx)
             self._schedule_stale_index_drain()
@@ -2948,6 +3141,7 @@ class PDFController:
             return
 
         try:
+            self._cancel_search()
             before = self.model._capture_doc_snapshot()
             # Model validates source pages and returns the actual inserted target positions.
             actual_inserted_pages = self.model.insert_pages_from_file(source_file, source_pages, position)
@@ -2965,7 +3159,7 @@ class PDFController:
                 description=f"從 {Path(source_file).name} 插入 {len(actual_inserted_pages)} 頁（位置 {actual_inserted_pages[0]}）",
             )
             self.model.command_manager.record(cmd)
-            self._update_thumbnails()
+            self._invalidate_thumbnails(actual_inserted_pages)
             new_page_idx = min(actual_inserted_pages[0] - 1, len(self.model.doc) - 1)
             self._rebuild_continuous_scene(new_page_idx)
             # Immediate page is ready now; the shifted suffix is drained asynchronously.
