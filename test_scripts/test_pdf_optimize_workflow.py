@@ -838,3 +838,138 @@ def test_large_file_optimized_copy_passes_integrity_validation(tmp_path: Path, s
     assert integrity["fitz"]["ok"] is True
     assert integrity["pikepdf"]["ok"] is True
     assert integrity["pypdf"]["ok"] is True
+
+
+def test_save_optimized_working_doc_raises_domain_error_when_no_pikepdf_and_linearize(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from model import pdf_optimizer
+    from model.pdf_model import PDFModel, PdfOptimizeOptions
+
+    monkeypatch.setattr(pdf_optimizer, "_pikepdf", lambda: None)
+
+    model = PDFModel()
+    working_doc = fitz.open()
+    working_doc.new_page()
+    temp_save = tmp_path / "gated-working.pdf"
+    try:
+        with pytest.raises(RuntimeError) as excinfo:
+            model._save_optimized_working_doc(working_doc, temp_save, PdfOptimizeOptions(linearize=True))
+
+        err_cls = getattr(pdf_optimizer, "PdfOptimizeError", None)
+        assert err_cls is not None
+        assert isinstance(excinfo.value, err_cls)
+        assert "pikepdf" in str(excinfo.value)
+        assert temp_save.exists() is False
+    finally:
+        working_doc.close()
+        model.close()
+
+
+def test_optimize_capabilities_reflect_pikepdf_availability(monkeypatch) -> None:
+    from model import pdf_optimizer
+    from model.pdf_model import PDFModel
+
+    monkeypatch.setattr(pdf_optimizer, "_pikepdf", lambda: None)
+    caps_absent = pdf_optimizer.optimize_capabilities()
+
+    assert caps_absent == {"linearize": False, "object_streams": False}
+    assert PDFModel.optimize_capabilities() == caps_absent
+
+    fake_pikepdf = object()
+    monkeypatch.setattr(pdf_optimizer, "_pikepdf", lambda: fake_pikepdf)
+    caps_present = pdf_optimizer.optimize_capabilities()
+
+    assert caps_present == {"linearize": True, "object_streams": True}
+    assert PDFModel.optimize_capabilities() == caps_present
+
+
+def test_optimize_copy_error_is_not_double_prefixed(tmp_path: Path, monkeypatch) -> None:
+    from model import pdf_optimizer
+    from model.pdf_model import PDFModel, PdfOptimizeOptions
+
+    monkeypatch.setattr(pdf_optimizer, "_pikepdf", lambda: None)
+    source = _make_pdf(tmp_path / "noprefix-source.pdf", ["double prefix probe"])
+    output = tmp_path / "noprefix-output.pdf"
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source))
+        with pytest.raises(RuntimeError) as excinfo:
+            model.save_optimized_copy(str(output), PdfOptimizeOptions(optimize_images=False, linearize=True))
+
+        message = str(excinfo.value)
+        assert not message.startswith("最佳化 PDF 失敗: 最佳化 PDF 失敗:")
+        err_cls = getattr(pdf_optimizer, "PdfOptimizeError", None)
+        assert err_cls is not None
+        assert isinstance(excinfo.value, err_cls)
+        assert "pikepdf" in message
+        assert output.exists() is False
+    finally:
+        model.close()
+
+
+def test_optimize_dialog_capability_gate_disables_and_unchecks(qapp) -> None:
+    from view.pdf_view import OptimizePdfDialog
+
+    dialog = OptimizePdfDialog(capabilities={"linearize": False, "object_streams": False})
+
+    assert dialog.linearize_checkbox.isEnabled() is False
+    assert dialog.linearize_checkbox.isChecked() is False
+    assert dialog.object_streams_checkbox.isEnabled() is False
+    assert dialog.object_streams_checkbox.isChecked() is False
+    assert "pikepdf" in dialog.linearize_checkbox.toolTip()
+    assert "pikepdf" in dialog.object_streams_checkbox.toolTip()
+    # The capability gate must not flip the preset combo to 自訂.
+    assert dialog.preset_combo.currentText() == "平衡"
+
+    options = dialog.get_options()
+    assert options.linearize is False
+    assert options.use_object_streams is False
+
+
+def test_optimize_dialog_preset_cannot_recheck_gated_checkbox(qapp) -> None:
+    from view.pdf_view import OptimizePdfDialog
+
+    dialog = OptimizePdfDialog(capabilities={"linearize": False, "object_streams": False})
+
+    dialog.preset_combo.setCurrentText("極致壓縮")
+
+    assert dialog.preset_combo.currentText() == "極致壓縮"
+    assert dialog.linearize_checkbox.isChecked() is False
+    assert dialog.object_streams_checkbox.isChecked() is False
+    assert dialog.get_options().linearize is False
+    assert dialog.get_options().use_object_streams is False
+
+
+def test_optimize_dialog_without_capabilities_keeps_packaging_controls_enabled(qapp) -> None:
+    from view.pdf_view import OptimizePdfDialog
+
+    dialog = OptimizePdfDialog()
+
+    assert dialog.linearize_checkbox.isEnabled() is True
+    assert dialog.object_streams_checkbox.isEnabled() is True
+    assert dialog.preset_combo.currentText() == "平衡"
+
+
+def test_save_optimized_copy_with_linearize_succeeds_when_pikepdf_present(tmp_path: Path) -> None:
+    from model import pdf_optimizer
+    from model.pdf_model import PDFModel, PdfOptimizeOptions
+
+    if pdf_optimizer._pikepdf() is None:
+        pytest.skip("pikepdf not installed in this environment")
+
+    source = _make_pdf_with_image(tmp_path / "linearize-source.pdf")
+    output = tmp_path / "linearize-output.pdf"
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source))
+        result = model.save_optimized_copy(str(output), PdfOptimizeOptions(linearize=True))
+
+        assert output.exists() is True
+        assert result.optimized_bytes > 0
+        with fitz.open(str(output)) as optimized_doc:
+            assert len(optimized_doc) == 1
+    finally:
+        model.close()

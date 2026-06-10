@@ -3,7 +3,7 @@
 ## Audit remediation (2026-06-10 two-round audit)
 
 - [x] **Phase 0 — Restore the Gate:** polluter = stylesheet leak in `test_main_startup_behavior.py`; fixed via cleanup + widget QSS override + conftest fixture (7 order-dependent failures in `test_no_jump_editor_geometry.py` eliminated).
-- [ ] **Phase 1 — Linearize Capability Gate + Error Wrapping**
+- [x] **Phase 1 — Linearize Capability Gate + Error Wrapping:** dead PyMuPDF `linear=1` fallback deleted (fail-fast `PdfOptimizeError`); `optimize_capabilities()` runtime probe gates the dialog's linearize/object-streams checkboxes; double 「最佳化 PDF 失敗:」 prefix fixed; `pikepdf>=8.0` in optional-requirements.txt and installed into `.venv`.
 - [ ] **Phase 2 — Chokepoint Guards (OOM / Logic-Bypass)**
 - [ ] **Phase 3 — Memory Budgets**
 - [ ] **Phase 4 — UI-Thread Responsiveness**

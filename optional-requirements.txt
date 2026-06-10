@@ -13,5 +13,10 @@
 pywin32>=306; platform_system == "Windows"
 pycups>=2.0.4; platform_system == "Linux" or platform_system == "Darwin"
 
+# Post-save PDF packaging (linearize / object-stream repack for optimize-copy).
+# PyMuPDF 1.24+ removed linearization; without pikepdf the optimize dialog
+# disables 「最佳化快速網頁檢視」 and 「使用物件串流」.
+pikepdf>=8.0
+
 # Test runner (only needed when running test_scripts/*pytest*).
 pytest>=7.0

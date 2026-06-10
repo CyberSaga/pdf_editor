@@ -116,6 +116,15 @@ class PdfOptimizeExecutionProfile:
     allow_extracted_parallel_fallback: bool
 
 
+class PdfOptimizeError(RuntimeError):
+    """User-facing domain error from the PDF optimize pipeline.
+
+    Raised when a requested optimization capability is unavailable (e.g. linearize
+    without pikepdf) or when a fatal pipeline failure occurs. The message string is
+    already user-readable Chinese text; callers should not re-wrap it.
+    """
+
+
 def _init_image_rewrite_worker(source_path: str) -> None:
     global _IMAGE_REWRITE_WORKER_DOC
     _IMAGE_REWRITE_WORKER_DOC = fitz.open(source_path)
@@ -245,6 +254,20 @@ def normalize_optimize_options(options: PdfOptimizeOptions) -> PdfOptimizeOption
 
 def is_large_optimize_job(original_bytes: int, image_usage: dict[int, dict[str, float | int]]) -> bool:
     return int(original_bytes) >= _LARGE_OPTIMIZE_BYTES or len(image_usage) >= _LARGE_OPTIMIZE_IMAGE_COUNT
+
+
+def optimize_capabilities() -> dict[str, bool]:
+    """Return a capability dict reflecting the current runtime environment.
+
+    PyMuPDF 1.24+ removed linearization (`linear=1` raises), so linearize and
+    object-stream packaging are only available via the optional pikepdf
+    post-save repack step.
+    """
+    has_pikepdf = _pikepdf() is not None
+    return {
+        "linearize": has_pikepdf,
+        "object_streams": has_pikepdf,
+    }
 
 
 def resolve_optimize_execution_profile(
@@ -736,7 +759,7 @@ def postprocess_optimized_pdf_with_pikepdf(
 ) -> None:
     pikepdf = _pikepdf()
     if pikepdf is None:
-        raise RuntimeError("目前環境缺少 pikepdf，無法套用 linearize / object streams。")
+        raise PdfOptimizeError("目前環境缺少 pikepdf，無法套用 linearize / object streams。")
     repacked_path = source_path.with_name(f"{source_path.stem}_packed_{uuid.uuid4().hex}.pdf")
     try:
         with pikepdf.open(str(source_path)) as pdf:
@@ -767,18 +790,12 @@ def save_optimized_working_doc(
     options: PdfOptimizeOptions,
 ) -> None:
     if model._requires_post_save_packaging(options) and _pikepdf() is None:
-        working_doc.save(
-            str(temp_save),
-            garbage=max(0, int(options.garbage_level)),
-            clean=0,
-            deflate=int(bool(options.deflate_streams)),
-            deflate_images=int(bool(options.deflate_images)),
-            deflate_fonts=int(bool(options.deflate_fonts)),
-            linear=int(bool(options.linearize)),
-            use_objstms=int(bool(options.use_object_streams)),
-            compression_effort=max(0, int(options.compression_effort)),
+        # PyMuPDF 1.24+ removed linearization (`linear=1` raises); fail fast with an
+        # actionable message instead of silently producing an unpackaged file.
+        raise PdfOptimizeError(
+            "目前環境缺少 pikepdf，無法套用 linearize / object streams 後處理。"
+            "請執行 pip install pikepdf 後重試，或取消勾選「最佳化快速網頁檢視」和「使用物件串流」。"
         )
-        return
     working_doc.save(str(temp_save), **model._fast_save_kwargs(options))
     if model._requires_post_save_packaging(options):
         model._postprocess_optimized_pdf_with_pikepdf(temp_save, options)
@@ -835,13 +852,21 @@ def save_optimized_copy(
             applied_preset=resolved_options.preset,
             applied_summary=summary,
         )
+    except PdfOptimizeError:
+        if temp_save.exists():
+            try:
+                temp_save.unlink()
+            except OSError:
+                pass
+        # Already a complete user-facing message; re-wrapping would double the prefix.
+        raise
     except Exception as exc:
         if temp_save.exists():
             try:
                 temp_save.unlink()
             except OSError:
                 pass
-        raise RuntimeError(f"最佳化 PDF 失敗: {model._safe_exc_message(exc)}") from exc
+        raise PdfOptimizeError(f"最佳化 PDF 失敗: {model._safe_exc_message(exc)}") from exc
     finally:
         working_doc.close()
 
@@ -850,6 +875,7 @@ __all__ = [
     "PdfAuditItem",
     "PdfAuditReport",
     "PdfOptimizationResult",
+    "PdfOptimizeError",
     "PdfOptimizeOptions",
     "apply_optimize_options",
     "blank_metadata_dict",
@@ -862,6 +888,7 @@ __all__ = [
     "image_rewrite_settings",
     "make_active_audit_cache_key",
     "normalize_optimize_options",
+    "optimize_capabilities",
     "parallel_image_worker_count",
     "postprocess_optimized_pdf_with_pikepdf",
     "preset_optimize_options",

@@ -23,13 +23,17 @@ from .audit import PdfAuditReportDialog
 
 
 class OptimizePdfDialog(QDialog):
-    def __init__(self, parent=None, audit_provider=None):
+    def __init__(self, parent=None, audit_provider=None, capabilities: dict[str, bool] | None = None):
         super().__init__(parent)
         self.audit_provider = audit_provider
+        self._capabilities = capabilities or {}
         self._applying_preset = False
         self.setWindowTitle("優化 PDF")
         self.resize(560, 680)
         self._build_ui()
+        # Gate capability-dependent controls BEFORE applying the default preset so
+        # the preset cannot re-check a feature this runtime cannot deliver.
+        self._apply_capabilities(self._capabilities)
         self._apply_preset("平衡")
 
     def _build_ui(self) -> None:
@@ -195,6 +199,29 @@ class OptimizePdfDialog(QDialog):
         value = self._quality_value()
         self.image_quality_label.setText(f"{self._quality_label_from_value(value)} ({value})")
 
+    def _apply_capabilities(self, capabilities: dict[str, bool]) -> None:
+        """Disable + uncheck controls whose runtime capability is unavailable.
+
+        Missing keys default to available. Checkbox writes are wrapped in the
+        `_applying_preset` guard so the `toggled -> _mark_custom` connection does
+        not flip the preset combo to 自訂.
+        """
+        gated_controls = (
+            ("linearize", self.linearize_checkbox),
+            ("object_streams", self.object_streams_checkbox),
+        )
+        tooltip = "目前環境未安裝 pikepdf，無法使用此功能。\n請執行 pip install pikepdf 以啟用。"
+        self._applying_preset = True
+        try:
+            for key, checkbox in gated_controls:
+                if capabilities.get(key, True):
+                    continue
+                checkbox.setChecked(False)
+                checkbox.setEnabled(False)
+                checkbox.setToolTip(tooltip)
+        finally:
+            self._applying_preset = False
+
     def _apply_preset(self, preset: str) -> None:
         options = PDFModel.preset_optimize_options(preset)
         self._applying_preset = True
@@ -216,8 +243,12 @@ class OptimizePdfDialog(QDialog):
             self.deflate_streams_checkbox.setChecked(options.deflate_streams)
             self.deflate_images_checkbox.setChecked(options.deflate_images)
             self.deflate_fonts_checkbox.setChecked(options.deflate_fonts)
-            self.object_streams_checkbox.setChecked(options.use_object_streams)
-            self.linearize_checkbox.setChecked(options.linearize)
+            # Capability-gated checkboxes stay unchecked: setChecked still works on
+            # disabled widgets, so presets must not write through the gate.
+            if self.object_streams_checkbox.isEnabled():
+                self.object_streams_checkbox.setChecked(options.use_object_streams)
+            if self.linearize_checkbox.isEnabled():
+                self.linearize_checkbox.setChecked(options.linearize)
         finally:
             self._applying_preset = False
 

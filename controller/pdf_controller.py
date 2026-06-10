@@ -1214,7 +1214,11 @@ class PDFController:
         suggested_name = f"{source_stem}.optimized.pdf"
 
         from view.pdf_view import OptimizePdfDialog
-        dialog = OptimizePdfDialog(self.view, audit_provider=self.model.build_pdf_audit_report)
+        dialog = OptimizePdfDialog(
+            self.view,
+            audit_provider=self.model.build_pdf_audit_report,
+            capabilities=self.model.optimize_capabilities(),
+        )
         if dialog.exec() != QDialog.Accepted:
             return
 
@@ -1322,8 +1326,10 @@ class PDFController:
 
     def _on_optimize_copy_failed(self, exc) -> None:
         self._hide_optimize_progress_dialog()
-        logger.error(f"最佳化 PDF 失敗: {exc}")
-        show_error(self.view, f"最佳化 PDF 失敗: {exc}")
+        # Model raises PdfOptimizeError with a complete user-facing message;
+        # re-wrapping here doubled the "最佳化 PDF 失敗:" prefix.
+        logger.error("最佳化 PDF 失敗: %s", exc)
+        show_error(self.view, str(exc))
 
     def _on_optimize_thread_finished(self) -> None:
         self._optimize_thread = None

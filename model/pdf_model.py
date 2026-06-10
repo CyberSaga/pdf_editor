@@ -3200,6 +3200,12 @@ class PDFModel:
     def _can_use_parallel_image_rewrite() -> bool:
         return pdf_optimizer.can_use_parallel_image_rewrite()
 
+    @staticmethod
+    def optimize_capabilities() -> dict[str, bool]:
+        # Runtime probe for optional post-save packaging (pikepdf-backed
+        # linearize / object streams); the controller feeds this to the dialog.
+        return pdf_optimizer.optimize_capabilities()
+
     def _rewrite_images_serially(
         self,
         working_doc: fitz.Document,
