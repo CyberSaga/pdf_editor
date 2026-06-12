@@ -23,6 +23,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QTextEdit
 
 from model.edit_requests import EditTextRequest, MoveTextRequest  # re-exported for view/controller
+from utils.render_limits import safe_render_scale as _safe_render_scale
 
 logger = logging.getLogger(__name__)
 
@@ -712,8 +713,9 @@ class PreviewRenderer:
             # the on-screen rotation (see the page-dimension note above).
             temp_page.insert_htmlbox(target_rect, html, css=css, scale_low=1)
 
+            clamped = _safe_render_scale(temp_page, float(render_scale))
             pixmap = temp_page.get_pixmap(
-                matrix=fitz.Matrix(float(render_scale), float(render_scale)),
+                matrix=fitz.Matrix(clamped, clamped),
                 alpha=True,
             )
             fmt = QImage.Format_RGBA8888 if pixmap.alpha else QImage.Format_RGB888

@@ -2332,6 +2332,7 @@ class PDFView(QMainWindow):
         return (
             f"QTextEdit {{ background: transparent; "
             f"border: 0px solid transparent; color: rgb({r},{g},{b}); "
+            f"padding: 0px; margin: 0px; "
             f"selection-background-color: rgba(30,120,255,0.0); }}"
             f"QTextEdit QScrollBar {{ background: transparent; }}"
         )
@@ -2678,11 +2679,12 @@ class PDFView(QMainWindow):
         if event.modifiers() & Qt.ControlModifier:
             if self.text_editor:
                 self._finalize_text_edit()
+            old_scale = self.scale
             factor = 1.1 if event.angleDelta().y() > 0 else 0.9
             self.scale = max(_MIN_VIEW_ZOOM, min(_MAX_VIEW_ZOOM, self.scale * factor))
-            # 即時套用 view transform，提供流暢的視覺縮放預覽（此時 pixmap 尚未重渲，畫面模糊屬正常）
-            self.graphics_view.setTransform(self.graphics_view.transform().scale(factor, factor))
-            # debounce：wheel 停止後 300ms 再重渲，避免連續滾動時每幀都重渲
+            eff = self.scale / old_scale if old_scale else 1.0
+            if eff != 1.0:
+                self.graphics_view.setTransform(self.graphics_view.transform().scale(eff, eff))
             self._zoom_debounce_timer.start(300)
             event.accept()
         else:

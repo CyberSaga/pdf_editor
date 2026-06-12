@@ -45,7 +45,7 @@ def _make_controller(model: PDFModel) -> PDFController:
     controller.model = model
     controller.view = _FakeView()
     controller._invalidate_active_render_state = lambda *args, **kwargs: None
-    controller._update_thumbnails = lambda: None
+    controller._invalidate_thumbnails = lambda *args, **kwargs: None
     controller.show_page = lambda page_idx: None
     controller._update_undo_redo_tooltips = lambda: None
     return controller
@@ -102,6 +102,52 @@ def test_move_text_across_pages_records_single_snapshot_command_and_undoes() -> 
             page2_redo = _norm(model.doc[1].get_text("text"))
             assert "move_me" not in page1_redo
             assert "move_me" in page2_redo
+        finally:
+            model.close()
+
+
+def test_cross_page_move_success_invalidates_thumbnails_for_both_pages() -> None:
+    """Successful cross-page text move must invalidate thumbnails for source
+    and destination pages (the old code had a wrong 'thumbnails stay valid' comment)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "cross_page_thumb.pdf"
+        _make_two_page_pdf(path)
+
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            model.set_text_target_mode("run")
+            hit = model.get_text_info_at_point(1, fitz.Point(60, 56))
+            assert hit is not None
+
+            thumb_calls: list[tuple] = []
+            controller = PDFController.__new__(PDFController)
+            controller.model = model
+            controller.view = _FakeView()
+            controller._invalidate_active_render_state = lambda *args, **kwargs: None
+            controller._invalidate_thumbnails = lambda *args, **kwargs: thumb_calls.append((args, kwargs))
+            controller.show_page = lambda page_idx: None
+            controller._update_undo_redo_tooltips = lambda: None
+
+            controller.move_text_across_pages(
+                source_page=1,
+                source_rect=fitz.Rect(hit.target_bbox),
+                destination_page=2,
+                destination_rect=fitz.Rect(60, 60, 220, 110),
+                new_text=hit.target_text,
+                font=hit.font,
+                size=int(round(hit.size)),
+                color=hit.color,
+                original_text=hit.target_text,
+                target_span_id=hit.target_span_id,
+                target_mode=hit.target_mode,
+            )
+
+            assert thumb_calls, "success path must invalidate thumbnails"
+            affected = thumb_calls[0][0][0]  # first positional arg
+            assert 1 in affected and 2 in affected, (
+                f"must invalidate both source and dest pages, got {affected}"
+            )
         finally:
             model.close()
 
@@ -204,11 +250,11 @@ def test_cross_page_move_add_failure_restores_before_snapshot_and_refreshes_ui(
             controller.model = model
             controller.view = _FakeView()
             invalidate_calls: list[tuple] = []
-            thumb_calls: list[bool] = []
+            thumb_invalidate_calls: list[tuple] = []
             shown_pages: list[int] = []
             tooltip_calls: list[bool] = []
             controller._invalidate_active_render_state = lambda *args, **kwargs: invalidate_calls.append((args, kwargs))
-            controller._update_thumbnails = lambda: thumb_calls.append(True)
+            controller._invalidate_thumbnails = lambda *args, **kwargs: thumb_invalidate_calls.append((args, kwargs))
             controller.show_page = lambda page_idx: shown_pages.append(page_idx)
             controller._update_undo_redo_tooltips = lambda: tooltip_calls.append(True)
 
@@ -240,9 +286,8 @@ def test_cross_page_move_add_failure_restores_before_snapshot_and_refreshes_ui(
             assert _norm(model.doc[0].get_text("text")) == before_page1
             assert _norm(model.doc[1].get_text("text")) == before_page2
             assert invalidate_calls
-            # Phase 4.1: text moves never change page count/geometry, so the
-            # restore path no longer rebuilds thumbnails.
-            assert not thumb_calls
+            # Rollback path must invalidate thumbnails for affected pages.
+            assert thumb_invalidate_calls, "rollback must invalidate thumbnails"
             assert shown_pages == [0]
             assert tooltip_calls
             assert errors

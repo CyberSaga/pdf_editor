@@ -56,6 +56,10 @@ class EditCommand(ABC):
         """回傳此指令持有的快照位元組數（byte-budget 修剪用）。預設 0。"""
         return 0
 
+    def _snapshot_chunks(self) -> tuple[bytes, ...]:
+        """Return all snapshot byte objects held by this command (for unique-byte accounting)."""
+        return ()
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # EditTextCommand
@@ -160,6 +164,9 @@ class EditTextCommand(EditCommand):
     def _byte_size(self) -> int:
         return len(self._page_snapshot_bytes)
 
+    def _snapshot_chunks(self) -> tuple[bytes, ...]:
+        return (self._page_snapshot_bytes,)
+
     def execute(self) -> bool:
         """
         執行文字編輯：直接委派給 model.edit_text()。
@@ -260,6 +267,12 @@ class AddTextboxCommand(EditCommand):
     def _byte_size(self) -> int:
         after = self._after_page_snapshot_bytes
         return len(self._before_page_snapshot_bytes) + (len(after) if after is not None else 0)
+
+    def _snapshot_chunks(self) -> tuple[bytes, ...]:
+        after = self._after_page_snapshot_bytes
+        if after is not None:
+            return (self._before_page_snapshot_bytes, after)
+        return (self._before_page_snapshot_bytes,)
 
     def execute(self) -> None:
         page_idx = self._page_num - 1
@@ -365,6 +378,9 @@ class SnapshotCommand(EditCommand):
 
     def _byte_size(self) -> int:
         return len(self._before_bytes) + len(self._after_bytes)
+
+    def _snapshot_chunks(self) -> tuple[bytes, ...]:
+        return (self._before_bytes, self._after_bytes)
 
     def execute(self) -> None:
         """redo：從 after_bytes 還原文件，並重建 TextBlock 索引。"""
@@ -600,14 +616,14 @@ class CommandManager:
                 self.MAX_UNDO_STACK_SIZE,
             )
 
-        total_bytes = sum(cmd._byte_size() for cmd in self._undo_stack)
+        total_bytes = self._unique_byte_total()
         if total_bytes <= self.MAX_UNDO_STACK_BYTES:
             return
         evicted = 0
-        while self._undo_stack and total_bytes > self.MAX_UNDO_STACK_BYTES:
-            removed = self._undo_stack.pop(0)
-            total_bytes -= removed._byte_size()
+        while len(self._undo_stack) > 1 and total_bytes > self.MAX_UNDO_STACK_BYTES:
+            self._undo_stack.pop(0)
             evicted += 1
+            total_bytes = self._unique_byte_total()
         if evicted:
             self._saved_stack_size = max(0, self._saved_stack_size - evicted)
             logger.debug(
@@ -616,6 +632,23 @@ class CommandManager:
                 self.MAX_UNDO_STACK_BYTES,
                 total_bytes,
             )
+        if total_bytes > self.MAX_UNDO_STACK_BYTES:
+            logger.warning(
+                "CommandManager: newest command (%s bytes) exceeds byte budget %s — keeping it",
+                total_bytes,
+                self.MAX_UNDO_STACK_BYTES,
+            )
+
+    def _unique_byte_total(self) -> int:
+        seen: set[int] = set()
+        total = 0
+        for cmd in self._undo_stack:
+            for chunk in cmd._snapshot_chunks():
+                chunk_id = id(chunk)
+                if chunk_id not in seen:
+                    seen.add(chunk_id)
+                    total += len(chunk)
+        return total
 
     def can_undo(self) -> bool:
         """是否有可撤銷的操作（供 UI 啟用/停用 Undo 按鈕）。"""

@@ -107,14 +107,11 @@ def _forwarded_argv_is_acceptable(argv: list[str]) -> bool:
     The untrusted socket peer is not bound by the sender-side normalization in
     ``_normalize_forwarded_argv``, so relative tokens must be resolved and
     validated here too — skipping them would let a crafted peer smuggle
-    arbitrary paths past the filter. Tokens starting with ``-`` are skipped as
-    flags (future-proofing; none are forwarded today). Legitimate forwarded
-    paths are already resolved by the sender, so double-resolve is idempotent."""
+    arbitrary paths past the filter. Every non-blank token must resolve to an
+    existing ``.pdf`` file; no flags are expected or skipped."""
     # The caller (_handle_socket_message) guarantees every item is a str, and
     # Path(str) cannot raise, so no per-item type guard is needed here.
     for item in argv:
-        if item.startswith("-"):
-            continue
         path = Path(item).resolve()
         if not path.exists() or path.suffix.lower() != ".pdf":
             return False

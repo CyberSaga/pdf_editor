@@ -406,6 +406,7 @@ class PDFController:
         self._search_session_id: str | None = None
         self._search_finished = True
         self._load_gen_by_session: dict[str, int] = {}
+        self._thumb_gen_by_session: dict[str, int] = {}
         self._render_gen_by_session: dict[str, int] = {}
         self._stale_index_gen_by_session: dict[str, int] = {}
         self._session_ui_state: dict[str, SessionUIState] = {}
@@ -555,6 +556,12 @@ class PDFController:
     def _next_load_gen(self, session_id: str) -> int:
         gen = self._load_gen_by_session.get(session_id, 0) + 1
         self._load_gen_by_session[session_id] = gen
+        self._thumb_gen_by_session[session_id] = self._thumb_gen_by_session.get(session_id, 0) + 1
+        return gen
+
+    def _next_thumb_gen(self, session_id: str) -> int:
+        gen = self._thumb_gen_by_session.get(session_id, 0) + 1
+        self._thumb_gen_by_session[session_id] = gen
         return gen
 
     def _next_render_gen(self, session_id: str) -> int:
@@ -581,9 +588,9 @@ class PDFController:
         if self.model.get_active_session_id() != session_id:
             return
         self._background_loading_started_by_session[session_id] = True
-        load_gen = self._load_gen_by_session.get(session_id)
-        if load_gen is not None:
-            QTimer.singleShot(0, lambda sid=session_id, gen=load_gen: self._schedule_thumbnail_batch(0, sid, gen))
+        thumb_gen = self._thumb_gen_by_session.get(session_id)
+        if thumb_gen is not None:
+            QTimer.singleShot(0, lambda sid=session_id, gen=thumb_gen: self._schedule_thumbnail_batch(0, sid, gen))
         self._schedule_deferred_sidebar_scans(session_id)
 
     def _maybe_start_background_loading_after_render(self, session_id: str, page_idx: int, quality: str) -> None:
@@ -678,8 +685,8 @@ class PDFController:
         if self.model.get_active_session_id() == session_id:
             if hasattr(self.view, "set_color_profile"):
                 self.view.set_color_profile(normalized)
-            gen = self._next_load_gen(session_id)
-            self._schedule_thumbnail_batch(0, session_id, gen)
+            self._next_load_gen(session_id)
+            self._schedule_thumbnail_batch(0, session_id, self._thumb_gen_by_session[session_id])
             if self.view.continuous_pages:
                 self._schedule_visible_render(session_id, immediate_page_idx=self.view.current_page)
             else:
@@ -1516,6 +1523,7 @@ class PDFController:
         self._session_ui_state.pop(sid, None)
         self._fullscreen_session_snapshots.pop(sid, None)
         self._load_gen_by_session.pop(sid, None)
+        self._thumb_gen_by_session.pop(sid, None)
         self._desired_scroll_page.pop(sid, None)
         self._open_priority_page_by_session.pop(sid, None)
         self._background_loading_started_by_session.pop(sid, None)
@@ -2417,7 +2425,7 @@ class PDFController:
             )
             self.model.command_manager.record(cmd)
             self._invalidate_active_render_state()
-            # Text moves never change page count/geometry — thumbnails stay valid.
+            self._invalidate_thumbnails(sorted({source_page, destination_page}))
             self.show_page(destination_page - 1)
             self._update_undo_redo_tooltips()
         except Exception as e:
@@ -2429,6 +2437,7 @@ class PDFController:
                         affected_pages=sorted({source_page, destination_page}),
                     )
                     self._invalidate_active_render_state()
+                    self._invalidate_thumbnails(sorted({source_page, destination_page}))
                     self.show_page(source_page - 1)
                     self._update_undo_redo_tooltips()
                 except Exception as restore_error:
@@ -2868,45 +2877,38 @@ class PDFController:
             self.view._update_page_counter()
             self.view._update_status_bar()
 
-    def _update_thumbnails(self):
-        """Deprecated synchronous full rebuild — no longer called by production code.
-
-        Kept because tests stub it by name (test_cross_page_text_move.py).
-        Use :meth:`_invalidate_thumbnails` instead: it pre-sets the widget item
-        count and reuses the async batch scheduler.
-        """
-        sid = self.model.get_active_session_id()
-        colorspace = self._fitz_colorspace_for_session(sid) if sid else fitz.csRGB
-        thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i + 1, colorspace=colorspace)) for i in range(len(self.model.doc))]
-        self.view.update_thumbnails(thumbs)
-
     def _invalidate_thumbnails(self, affected: list[int] | None = None) -> None:
-        """Schedule an async thumbnail batch from the earliest affected page.
+        """Schedule an async thumbnail batch for affected pages.
 
         ``affected`` holds 1-based page numbers; ``None`` means a full rebuild.
-        ``set_thumbnail_placeholders`` must run synchronously FIRST so the list
-        widget's item count matches the (possibly resized) document before any
-        batch lands — ``update_thumbnail_batch`` silently breaks on
-        out-of-range rows.
+        When the page count is unchanged and ``affected`` is known, only the
+        affected rows are re-rendered (prior thumbnail icons are preserved).
+        When the count changed, ``set_thumbnail_placeholders`` resets the widget
+        item count first.
         """
         sid = self.model.get_active_session_id()
         if not sid or not self.model.doc:
             return
         n = len(self.model.doc)
-        # Resize widget item count BEFORE batching (insert/delete changed it).
-        self.view.set_thumbnail_placeholders(n)
-        start = max(0, min(affected) - 2) if affected else 0  # one page before first affected
-        gen = self._next_load_gen(sid)  # cancels any in-flight batch chain
-        QTimer.singleShot(0, lambda s=sid, g=gen, st=start: self._schedule_thumbnail_batch(st, s, g))
+        count_unchanged = affected and hasattr(self.view, "thumbnail_list") and self.view.thumbnail_list.count() == n
+        gen = self._next_thumb_gen(sid)
+        if count_unchanged:
+            start = max(0, min(affected) - 2)
+            end_limit = min(max(affected), n)
+            QTimer.singleShot(0, lambda s=sid, g=gen, st=start, el=end_limit: self._schedule_thumbnail_batch(st, s, g, el))
+        else:
+            self.view.set_thumbnail_placeholders(n)
+            start = max(0, min(affected) - 2) if affected else 0
+            QTimer.singleShot(0, lambda s=sid, g=gen, st=start: self._schedule_thumbnail_batch(st, s, g))
 
-    def _schedule_thumbnail_batch(self, start: int, session_id: str, gen: int):
+    def _schedule_thumbnail_batch(self, start: int, session_id: str, gen: int, end_limit: int | None = None):
         if (
             self.model.get_active_session_id() != session_id
-            or self._load_gen_by_session.get(session_id) != gen
+            or self._thumb_gen_by_session.get(session_id) != gen
             or not self.model.doc
         ):
             return
-        n = len(self.model.doc)
+        n = end_limit if end_limit is not None else len(self.model.doc)
         end = min(start + THUMB_BATCH_SIZE, n)
         colorspace = self._fitz_colorspace_for_session(session_id)
         thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i + 1, colorspace=colorspace)) for i in range(start, end)]
@@ -2914,7 +2916,7 @@ class PDFController:
         if end < n:
             QTimer.singleShot(
                 THUMB_BATCH_INTERVAL_MS,
-                lambda e=end, sid=session_id, g=gen: self._schedule_thumbnail_batch(e, sid, g),
+                lambda e=end, sid=session_id, g=gen, el=end_limit: self._schedule_thumbnail_batch(e, sid, g, el),
             )
 
     def _schedule_index_batch(self, start: int, session_id: str, gen: int):

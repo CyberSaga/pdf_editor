@@ -64,6 +64,8 @@ class ToolManager:
     ) -> fitz.Pixmap:
         if not self._model.doc:
             raise RuntimeError("沒有開啟的 PDF 文件")
+        if page_num < 1 or page_num > len(self._model.doc):
+            raise ValueError(f"page_num={page_num} out of range [1, {len(self._model.doc)}]")
 
         session_id = self._active_session_id()
         page = self._model.doc[page_num - 1]

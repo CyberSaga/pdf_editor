@@ -873,7 +873,7 @@ def test_optimize_capabilities_reflect_pikepdf_availability(monkeypatch) -> None
     monkeypatch.setattr(pdf_optimizer, "_pikepdf", lambda: None)
     caps_absent = pdf_optimizer.optimize_capabilities()
 
-    assert caps_absent == {"linearize": False, "object_streams": False}
+    assert caps_absent == {"linearize": False, "object_streams": True}
     assert PDFModel.optimize_capabilities() == caps_absent
 
     fake_pikepdf = object()

@@ -913,12 +913,20 @@
 **Tests:** `test_scripts/test_startup_heavy_imports.py`
 
 ## QApplication-level QSS leaks across tests and shifts inline-editor pixels
-**Area:** test_scripts (process-wide Qt state), view/text_editing.py
+**Area:** test_scripts (process-wide Qt state), view/text_editing.py, view/pdf_view.py
 **Symptom:** 7 order-dependent failures in `test_no_jump_editor_geometry.py` when the full suite runs (~57.86% pixel diff vs the 1% threshold); the same tests pass in isolation (377 passed).
 **Cause:** Every test in `test_main_startup_behavior.py` runs `main_module.run(...)`, which calls `view.apply_initial_theme()` -> `app.setStyleSheet(build_qss(theme_id))`. The QApplication is a session-wide singleton, and `_cleanup_startup()` never cleared the stylesheet, so the theme QSS (`QTextEdit { padding: 4px 8px; ... }`) stayed active for every later test. When Qt polishes a freshly shown `PreviewBackedInlineTextEditor`, the app QSS padding overrides the constructor's `setViewportMargins(0,0,0,0)`, shifting the editor text relative to the PDF rendering in pixel-diff comparisons.
-**Fix:** Three layers: (1) `_cleanup_startup()` now calls `app.setStyleSheet("")` before `app.quit()`; (2) `PreviewBackedInlineTextEditor.__init__` sets a widget-level QSS override (`QTextEdit { padding: 0px; border: 0px; margin: 0px; }`) -- widget QSS beats app QSS, so the inline editor stays flush to the page even in a themed production app; (3) a function-scoped autouse fixture in `test_scripts/conftest.py` snapshots `app.styleSheet()` before each test and restores it after, so no future test can leak app-level QSS.
+**Fix:** Four layers: (1) `_cleanup_startup()` now calls `app.setStyleSheet("")` before `app.quit()`; (2) `PreviewBackedInlineTextEditor.__init__` sets a widget-level QSS override (`QTextEdit { padding: 0px; border: 0px; margin: 0px; }`) -- widget QSS beats app QSS, so the inline editor stays flush to the page even in a themed production app; (3) a function-scoped autouse fixture in `test_scripts/conftest.py` snapshots `app.styleSheet()` before each test and restores it after, so no future test can leak app-level QSS; (4) `_build_text_editor_stylesheet` (pdf_view.py) now includes `padding: 0px; margin: 0px;` in the replacement stylesheet that is applied after editor creation and on every mask refresh — this prevents the theme rule from cascading back after the initial `__init__` stylesheet is overwritten.
 **Gotcha:** `setViewportMargins()`/`setContentsMargins()` are NOT a defense against stylesheets -- app-level QSS padding is applied at polish time (first `show()`), after the constructor runs, and silently wins.
-**File:** `test_scripts/test_main_startup_behavior.py`, `view/text_editing.py`, `test_scripts/conftest.py`
+**File:** `test_scripts/test_main_startup_behavior.py`, `view/text_editing.py`, `view/pdf_view.py`, `test_scripts/conftest.py`
+
+## Preview render must clamp scale for pathological pages
+**Area:** `view/text_editing.py` (`_MuPDFPreviewRenderer._render_preview`), `utils/render_limits.py`
+**Symptom:** A page with very large dimensions rendered via the inline-editor preview path could produce an enormous pixmap (hundreds of megapixels), consuming memory or crashing.
+**Cause:** The preview `get_pixmap` call used `render_scale` unclamped; `_safe_render_scale` lived in `model/pdf_model.py` which the view layer cannot import.
+**Fix:** Extracted `safe_render_scale` and `_MAX_PIXMAP_PX` to `utils/render_limits.py` (view→utils is legal); `pdf_model.py` re-exports for backward compatibility. The preview renderer now calls `_safe_render_scale(temp_page, render_scale)` before `get_pixmap`.
+**File:** `utils/render_limits.py`, `view/text_editing.py`, `model/pdf_model.py`
+**Tests:** `test_scripts/test_text_editor_theme_padding.py`
 
 ## PyMuPDF `linear=1` removed in 1.24+; the pikepdf-absent fallback save was dead code
 **Area:** `model/pdf_optimizer.py` (optimize-copy save pipeline)
@@ -973,6 +981,15 @@
 **File:** `model/edit_commands.py` (`_trim_undo_stack_if_needed`)
 **Tests:** `test_scripts/test_undo_memory_budget.py::test_byte_budget_evicts_oldest_snapshot_commands`
 
+## Undo byte budget must floor at 1 command and use unique-byte accounting
+
+**Area:** `model/edit_commands.py` (`CommandManager._trim_undo_stack_if_needed`, `_unique_byte_total`)
+**Symptom:** (1) A single oversized command could be evicted, leaving `can_undo()` False and the edit silently lost. (2) After adjacent snapshot dedup (`curr._before_bytes = prev._after_bytes`), the shared bytes object was counted twice in the budget total, effectively halving the budget for deduped stacks.
+**Cause:** (1) The trim loop had `while self._undo_stack and ...` with no floor. (2) `_byte_size()` sums `len(before) + len(after)` per command, not per unique object.
+**Fix:** (1) Changed loop condition to `while len(self._undo_stack) > 1 and ...`, keeping the newest command; log warning if it still exceeds budget. (2) Added `_snapshot_chunks()` returning the actual `bytes` objects held; `_unique_byte_total()` sums `len(chunk)` over unique `id(chunk)` across all commands.
+**File:** `model/edit_commands.py`
+**Tests:** `test_scripts/test_undo_memory_budget.py` (`test_single_oversized_command_survives_byte_trim`, `test_dedup_shared_bytes_counted_once_in_budget`)
+
 ## Adjacent-snapshot dedup is only safe for SnapshotCommand pairs
 
 **Area:** `model/edit_commands.py` (`CommandManager._dedup_top_snapshot_pair`)
@@ -991,14 +1008,23 @@
 **File:** `model/tools/manager.py` (`ToolManager.build_print_snapshot`), `controller/pdf_controller.py` (`PrintJobRequest`, `_PrintSubmissionWorker.run`)
 **Tests:** `test_scripts/test_print_snapshot_path.py`, `test_scripts/test_print_controller_flow.py`
 
-## Thumbnail batch scheduler silently drops pages when the widget item count is stale
+## Thumbnail invalidation must distinguish count-changed from count-unchanged
 
 **Area:** `controller/pdf_controller.py` (`_invalidate_thumbnails`, `_schedule_thumbnail_batch`), `view/pdf_view.py` (`update_thumbnail_batch`)
-**Symptom:** After insert/delete, async thumbnail batches stop short (missing/blank thumbnails at the tail) with no error: `update_thumbnail_batch` updates icons by row index and silently `break`s on the first out-of-range row.
-**Cause:** The batch scheduler assumes the `QListWidget` already has one item per document page; structural operations change `len(doc)` but the widget still holds the OLD count when the first batch lands.
-**Fix:** `_invalidate_thumbnails` calls `view.set_thumbnail_placeholders(len(doc))` synchronously BEFORE bumping the load generation and scheduling `_schedule_thumbnail_batch` via `QTimer.singleShot(0, ...)`. Any new batch path must pre-set the item count the same way. The load-gen bump is the cancellation token (same mechanism as document open) — older chains exit at their gen check.
-**File:** `controller/pdf_controller.py` (`_invalidate_thumbnails`)
+**Symptom:** (1) After insert/delete, async thumbnail batches stop short if the widget item count is stale. (2) After rotate/straighten, `set_thumbnail_placeholders(n)` blanks ALL existing thumbnail icons (rows 0..n-1) even though only the rotated page changed — rotating 1 page of 2000 re-rasters all 2000. (3) `_invalidate_thumbnails` bumped `_load_gen_by_session`, which cancelled unrelated background loading and viewport-anchor restoration.
+**Cause:** The original implementation always called `set_thumbnail_placeholders` (which clears ALL rows) and used `_next_load_gen` (shared counter) as the cancellation token.
+**Fix:** When page count changed (widget item count != doc length), `set_thumbnail_placeholders` resets the widget first, then schedules a full batch. When count is unchanged and `affected` is known, skip the placeholder reset (preserve existing icons) and schedule a bounded batch covering only affected rows via the `end_limit` parameter. Thumbnail batches use a dedicated `_thumb_gen_by_session` counter — `_next_load_gen` bumps both counters, but `_invalidate_thumbnails` bumps only the thumb counter.
+**File:** `controller/pdf_controller.py` (`_invalidate_thumbnails`, `_schedule_thumbnail_batch`)
 **Tests:** `test_scripts/test_thumbnail_async.py`
+
+## Cross-page text move must invalidate thumbnails
+
+**Area:** `controller/pdf_controller.py` (`move_text_across_pages`)
+**Symptom:** After a cross-page text move, the source and destination page thumbnails show stale content (old text still visible on source, new text missing on destination).
+**Cause:** The success path had a wrong comment ("thumbnails stay valid") and skipped thumbnail invalidation. The rollback path also skipped it.
+**Fix:** Call `_invalidate_thumbnails(sorted({source_page, destination_page}))` on both success and rollback paths.
+**File:** `controller/pdf_controller.py`
+**Tests:** `test_scripts/test_cross_page_text_move.py`
 
 ## Search worker must be cancelled (and waited for) before any document mutation
 
@@ -1039,3 +1065,27 @@
 **Cause:** request_cancel() is checked between pages, not inside a single fitz call
 **Fix:** Accepted design. A slow page completes before cancel takes effect.
 **File:** controller/pdf_controller.py:217-266 (`_OcrWorker`; `request_cancel` at 240, per-page check at 251-253)
+
+## render_page_pixmap must reject page_num=0
+**Area:** `model/tools/manager.py` (`ToolManager.render_page_pixmap`)
+**Symptom:** Calling `render_page_pixmap(0)` silently renders `doc[-1]` (the last page) because Python negative indexing wraps around.
+**Cause:** No bounds check on the 1-based page_num parameter.
+**Fix:** Raise `ValueError` for `page_num < 1` or `page_num > len(doc)`.
+**File:** `model/tools/manager.py`
+**Tests:** `test_scripts/test_phase7_guard_hygiene.py`
+
+## Wheel zoom must use effective (clamped) factor for the transform
+**Area:** `view/pdf_view.py` (`_wheel_event`)
+**Symptom:** At max zoom, scrolling up visually overshoots past 400%, then snaps back when the debounce re-renders at the clamped scale.
+**Cause:** `self.scale` was clamped to `[MIN, MAX]` but the visual transform used the raw unclamped factor.
+**Fix:** Compute `eff = clamped_scale / old_scale`; apply transform with `eff`; skip when 1.0 (at boundary).
+**File:** `view/pdf_view.py`
+**Tests:** `test_scripts/test_phase7_guard_hygiene.py`
+
+## Object streams are natively supported by PyMuPDF
+**Area:** `model/pdf_optimizer.py`
+**Symptom:** The optimize dialog grayed out "使用物件串流" when pikepdf was absent, even though PyMuPDF supports `use_objstms=1` natively on both 1.25.5 and 1.27.1.
+**Cause:** The original comment conflated objstms with linearization; both were gated on pikepdf.
+**Fix:** `optimize_capabilities` returns `object_streams: True` unconditionally; `fast_save_kwargs` passes `use_objstms` from options; `requires_post_save_packaging` only gates on `linearize`.
+**File:** `model/pdf_optimizer.py`
+**Tests:** `test_scripts/test_phase7_guard_hygiene.py`, `test_scripts/test_pdf_optimize_workflow.py`

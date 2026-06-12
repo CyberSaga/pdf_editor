@@ -22,6 +22,7 @@ def _make_controller():
     controller._session_ui_state = {sid: SessionUIState()}
     controller._page_render_quality_by_session = {sid: {"srgb": {0: "high"}}}
     controller._load_gen_by_session = {}
+    controller._thumb_gen_by_session = {}
     controller._render_cache = OrderedDict()
     controller._render_cache_total_bytes = 0
 

@@ -203,3 +203,46 @@ def test_byte_size_returns_correct_values() -> None:
         description="d",
     )
     assert snap_cmd._byte_size() == 7
+
+
+def test_single_oversized_command_survives_byte_trim(monkeypatch) -> None:
+    """A single command larger than the budget must survive (can_undo stays True)."""
+    monkeypatch.setattr(CommandManager, "MAX_UNDO_STACK_BYTES", 100)
+
+    cm = CommandManager()
+    model = _FakeModel()
+    big = _snapshot_cmd(model, b"x" * 200, b"y" * 200, "big")
+    cm.record(big)
+
+    assert cm.can_undo() is True, "oversized newest command must survive trim"
+    assert cm._undo_stack[-1] is big
+    assert cm.has_pending_changes() is True
+
+
+def test_dedup_shared_bytes_counted_once_in_budget(monkeypatch) -> None:
+    """After dedup, shared bytes between adjacent commands should count once,
+    not twice. A budget that fits unique bytes but not double-counted bytes
+    must not evict anything."""
+    cm = CommandManager()
+    model = _FakeModel()
+
+    shared = b"s" * 100
+    cmd1 = _snapshot_cmd(model, b"a" * 50, bytes(shared), "op1")
+    cmd2 = _snapshot_cmd(model, bytes(shared), b"c" * 50, "op2")
+
+    cm.record(cmd1)
+    cm.record(cmd2)
+
+    # Verify dedup fired.
+    assert cm._undo_stack[0]._after_bytes is cm._undo_stack[1]._before_bytes
+
+    # Unique bytes: 50 (a) + 100 (shared) + 50 (c) = 200.
+    # Double-counted: 50 + 100 + 100 + 50 = 300.
+    # Budget = 250: fits unique (200), but not double-counted (300).
+    monkeypatch.setattr(CommandManager, "MAX_UNDO_STACK_BYTES", 250)
+    cm._trim_undo_stack_if_needed()
+
+    assert cm.undo_count == 2, (
+        f"dedup'd shared bytes should count once — both commands fit in 250-byte budget, "
+        f"but got undo_count={cm.undo_count}"
+    )

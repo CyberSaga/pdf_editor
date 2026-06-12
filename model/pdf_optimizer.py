@@ -259,14 +259,14 @@ def is_large_optimize_job(original_bytes: int, image_usage: dict[int, dict[str, 
 def optimize_capabilities() -> dict[str, bool]:
     """Return a capability dict reflecting the current runtime environment.
 
-    PyMuPDF 1.24+ removed linearization (`linear=1` raises), so linearize and
-    object-stream packaging are only available via the optional pikepdf
-    post-save repack step.
+    Object streams are natively supported by PyMuPDF (``use_objstms=1``).
+    Linearization requires the optional pikepdf post-save repack step
+    (PyMuPDF 1.24+ removed ``linear=1``).
     """
     has_pikepdf = _pikepdf() is not None
     return {
         "linearize": has_pikepdf,
-        "object_streams": has_pikepdf,
+        "object_streams": True,
     }
 
 
@@ -736,7 +736,7 @@ def rewrite_images_with_pillow(
 
 
 def requires_post_save_packaging(options: PdfOptimizeOptions) -> bool:
-    return bool(options.linearize or options.use_object_streams)
+    return bool(options.linearize)
 
 
 def fast_save_kwargs(options: PdfOptimizeOptions) -> dict[str, int]:
@@ -747,7 +747,7 @@ def fast_save_kwargs(options: PdfOptimizeOptions) -> dict[str, int]:
         "deflate_images": 0,
         "deflate_fonts": 0,
         "linear": 0,
-        "use_objstms": 0,
+        "use_objstms": int(bool(options.use_object_streams)),
         "compression_effort": 0,
     }
 
@@ -790,11 +790,9 @@ def save_optimized_working_doc(
     options: PdfOptimizeOptions,
 ) -> None:
     if model._requires_post_save_packaging(options) and _pikepdf() is None:
-        # PyMuPDF 1.24+ removed linearization (`linear=1` raises); fail fast with an
-        # actionable message instead of silently producing an unpackaged file.
         raise PdfOptimizeError(
-            "目前環境缺少 pikepdf，無法套用 linearize / object streams 後處理。"
-            "請執行 pip install pikepdf 後重試，或取消勾選「最佳化快速網頁檢視」和「使用物件串流」。"
+            "目前環境缺少 pikepdf，無法套用 linearize 後處理。"
+            "請執行 pip install pikepdf 後重試，或取消勾選「最佳化快速網頁檢視」。"
         )
     working_doc.save(str(temp_save), **model._fast_save_kwargs(options))
     if model._requires_post_save_packaging(options):
