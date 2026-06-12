@@ -3170,6 +3170,12 @@ class PDFModel:
         self._save_doc(self.doc, stream)
         return stream.getvalue()
 
+    def capture_worker_snapshot_bytes(self) -> bytes:
+        """Capture snapshot bytes for background worker readers."""
+        if not self.doc:
+            raise RuntimeError("沒有開啟的 PDF 文件")
+        return self.doc.tobytes(garbage=0, no_new_id=1, encryption=fitz.PDF_ENCRYPT_NONE)
+
     @staticmethod
     def preset_optimize_options(preset: str) -> PdfOptimizeOptions:
         return pdf_optimizer.preset_optimize_options(preset)

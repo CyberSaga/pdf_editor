@@ -98,7 +98,8 @@ class WatermarkTool(ToolExtension):
         return session_id in self._modified_sessions
 
     def needs_page_overlay(self, session_id: str, page_num: int, purpose: str) -> bool:
-        _ = purpose
+        if purpose == "print":
+            return False
         return bool(self._get_watermarks_for_page(session_id, page_num))
 
     def apply_page_overlay(self, session_id: str, page_num: int, page: fitz.Page, purpose: str) -> None:

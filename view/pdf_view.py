@@ -4836,6 +4836,16 @@ class PDFView(QMainWindow):
             item.setData(Qt.UserRole, (page_num, rect))
             self.search_results_list.addItem(item)
 
+    def append_search_results(self, results: list[tuple[int, str, fitz.Rect]]) -> None:
+        if getattr(self, "search_results_list", None) is None:
+            self.current_search_results = list(self.current_search_results) + list(results)
+            return
+        self.current_search_results = list(self.current_search_results) + list(results)
+        for page_num, context, rect in results:
+            item = QListWidgetItem(f"頁 {page_num}: {context[:80]}...")
+            item.setData(Qt.UserRole, (page_num, rect))
+            self.search_results_list.addItem(item)
+
     def populate_annotations_list(self, annotations: list[dict]):
         if getattr(self, "annotation_list", None) is None:
             return

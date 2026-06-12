@@ -258,7 +258,6 @@ def test_print_document_runs_in_background_and_defers_close_until_helper_finishe
         errors: list[str] = []
         main_thread_id = threading.get_ident()
         capture_started = threading.Event()
-        allow_capture_finish = threading.Event()
         runner_started = threading.Event()
         progress_thread_ids: list[int] = []
         runner_thread_ids: list[int] = []
@@ -289,15 +288,14 @@ def test_print_document_runs_in_background_and_defers_close_until_helper_finishe
             def terminate(self) -> None:
                 self.terminated = True
 
-        def _blocking_build_print_snapshot(dest: Path) -> None:
+        def _blocking_capture_worker_snapshot_bytes() -> bytes:
             capture_started.set()
-            assert threading.get_ident() != main_thread_id
-            assert allow_capture_finish.wait(2.0), "worker thread never received release for PDF capture"
-            Path(dest).write_bytes(b"%PDF-1.4 captured input")
+            assert threading.get_ident() == main_thread_id
+            return b"%PDF-1.4 captured input"
 
         try:
             controller.print_dispatcher = _FakePrintDispatcher()
-            monkeypatch.setattr(model, "build_print_snapshot", _blocking_build_print_snapshot)
+            monkeypatch.setattr(model, "capture_worker_snapshot_bytes", _blocking_capture_worker_snapshot_bytes)
             monkeypatch.setattr(pdf_controller_module, "UnifiedPrintDialog", _AcceptDialog)
             monkeypatch.setattr(pdf_controller_module, "QProgressDialog", _FakeProgressDialog, raising=False)
             monkeypatch.setattr(pdf_controller_module, "PrintSubprocessRunner", _FakeRunner, raising=False)
@@ -327,7 +325,7 @@ def test_print_document_runs_in_background_and_defers_close_until_helper_finishe
             assert controller._print_progress_dialog is not None
             assert controller._print_progress_dialog.isVisible()
             assert view.status_bar.currentMessage() == PRINT_STATUS_MESSAGE
-            assert _pump_until(app, capture_started.is_set), "PDF capture never started"
+            assert capture_started.is_set(), "PDF capture never started"
 
             close_event = _FakeCloseEvent()
             controller.handle_app_close(close_event)
@@ -336,7 +334,6 @@ def test_print_document_runs_in_background_and_defers_close_until_helper_finishe
             assert view.status_bar.currentMessage() == PRINT_CLOSING_MESSAGE
             assert view.isVisible() is True
 
-            allow_capture_finish.set()
             assert _pump_until(app, runner_started.is_set), "print helper runner never started"
             runner = _FakeRunner.instances[-1]
             assert runner.started is True
@@ -362,7 +359,6 @@ def test_print_document_runs_in_background_and_defers_close_until_helper_finishe
             assert controller._print_progress_dialog is None
             assert view.status_bar.currentMessage() == baseline_status
         finally:
-            allow_capture_finish.set()
             _AcceptDialog.instances.clear()
             _FakeRunner.instances.clear()
             if view.isVisible():

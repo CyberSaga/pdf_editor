@@ -127,6 +127,7 @@ class PrintSubprocessRunner(QObject):
         chunk = bytes(self._process.readAllStandardOutput()).decode("utf-8", errors="replace")
         if not chunk:
             return
+        self._last_activity = time.monotonic()
         self._stdout_buffer += chunk
         while "\n" in self._stdout_buffer:
             raw_line, self._stdout_buffer = self._stdout_buffer.split("\n", 1)

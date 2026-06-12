@@ -6,7 +6,6 @@ import logging
 import tempfile
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable
 from dataclasses import dataclass, field, replace as dataclass_replace
 from pathlib import Path
 
@@ -106,7 +105,7 @@ class FullscreenSessionSnapshot:
 
 @dataclass(frozen=True)
 class PrintJobRequest:
-    write_pdf_to: Callable[[Path], None]
+    pdf_bytes: bytes
     watermarks: list[dict]
     options: object
     job_id: str
@@ -133,7 +132,7 @@ class _PrintSubmissionWorker(QObject):
         try:
             self.progress.emit(PRINT_PREPARING_MESSAGE)
             input_pdf_path = Path(self._request.work_dir) / "input.pdf"
-            self._request.write_pdf_to(input_pdf_path)
+            input_pdf_path.write_bytes(self._request.pdf_bytes)
             self.prepared.emit(
                 PrintHelperJob(
                     job_id=self._request.job_id,
@@ -306,12 +305,13 @@ class _SearchWorker(QObject):
     failed = Signal(int, object)  # gen, exception
     finished = Signal(int)  # gen
 
-    def __init__(self, tool, query: str, total_pages: int, gen: int) -> None:
+    def __init__(self, tool, query: str, total_pages: int, gen: int, doc_bytes: bytes) -> None:
         super().__init__()
         self._tool = tool
         self._query = query
         self._total_pages = int(total_pages)
         self._gen = gen
+        self._doc_bytes = doc_bytes
         self._cancel_requested = False
 
     def request_cancel(self) -> None:
@@ -320,12 +320,20 @@ class _SearchWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
-            for page_num in range(1, self._total_pages + 1):
-                if self._cancel_requested:
-                    break
-                hits = self._tool.search_page(page_num, self._query)
-                if hits:
-                    self.hits_found.emit(self._gen, page_num, list(hits))
+            doc = fitz.open("pdf", self._doc_bytes)
+            try:
+                search_fn = getattr(self._tool, "search_page_in_doc", None)
+                for page_num in range(1, self._total_pages + 1):
+                    if self._cancel_requested:
+                        break
+                    if search_fn is not None:
+                        hits = search_fn(doc, page_num, self._query)
+                    else:
+                        hits = self._tool.search_page(page_num, self._query)
+                    if hits:
+                        self.hits_found.emit(self._gen, page_num, list(hits))
+            finally:
+                doc.close()
         except Exception as exc:
             logger.exception("Search worker failed")
             self.failed.emit(self._gen, exc)
@@ -382,6 +390,7 @@ class PDFController:
         self._search_gen = 0
         self._search_query = ""
         self._search_session_id: str | None = None
+        self._search_finished = True
         self._load_gen_by_session: dict[str, int] = {}
         self._render_gen_by_session: dict[str, int] = {}
         self._stale_index_gen_by_session: dict[str, int] = {}
@@ -985,6 +994,7 @@ class PDFController:
         self.activate()
         if self._fullscreen_is_blocked():
             return
+        self._cancel_search()
         session_id = self.model.get_active_session_id()
         if not session_id:
             return
@@ -1620,8 +1630,9 @@ class PDFController:
             extra = {**(getattr(normalized_options, "extra_options", {}) or {}), "render_colorspace": profile}
             normalized_options = dataclass_replace(normalized_options, extra_options=extra)
 
+        pdf_bytes = self.model.capture_worker_snapshot_bytes()
         request = PrintJobRequest(
-            write_pdf_to=self.model.build_print_snapshot,
+            pdf_bytes=pdf_bytes,
             watermarks=self.model.get_print_watermarks(),
             options=normalized_options,
             job_id=str(uuid.uuid4()),
@@ -2504,6 +2515,7 @@ class PDFController:
         self._search_accumulated_hits = []
         self._search_query = query
         self._search_session_id = sid
+        self._search_finished = False
         if not query or not self.model.doc or not sid:
             self.view.display_search_results([])
             if sid:
@@ -2512,7 +2524,13 @@ class PDFController:
 
         gen = self._search_gen  # already bumped by _cancel_search
         thread = QThread()
-        worker = _SearchWorker(self.model.tools.search, query, len(self.model.doc), gen)
+        worker = _SearchWorker(
+            self.model.tools.search,
+            query,
+            len(self.model.doc),
+            gen,
+            self.model.capture_worker_snapshot_bytes(),
+        )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         if self._search_worker_bridge is not None:
@@ -2548,21 +2566,30 @@ class PDFController:
         thread = self._search_thread
         self._search_worker = None
         self._search_thread = None
+        had_active_worker = (worker is not None or (thread is not None and thread.isRunning())) and not self._search_finished
+        if had_active_worker:
+            sid = self._search_session_id
+            self._search_accumulated_hits = []
+            self.view.display_search_results([])
+            if sid:
+                self._get_ui_state(sid).search_state = {"query": "", "results": [], "index": -1}
         if worker is not None:
             worker.request_cancel()
         if thread is not None and thread.isRunning():
             # quit() is thread-safe; the per-page cancel check makes run()
             # return quickly, after which the thread's event loop exits.
             thread.quit()
-            if not thread.wait(2000):
-                logger.warning("Search worker did not stop within 2s")
 
     @Slot(int, int, list)
     def _on_search_hits_found(self, gen: int, page_num: int, hits) -> None:
         if gen != self._search_gen:
             return
         self._search_accumulated_hits.extend(hits)
-        self.view.display_search_results(list(self._search_accumulated_hits))
+        append_results = getattr(type(self.view), "append_search_results", None)
+        if callable(append_results):
+            self.view.append_search_results(list(hits))
+        else:
+            self.view.display_search_results(list(self._search_accumulated_hits))
 
     @Slot(int, object)
     def _on_search_failed(self, gen: int, exc) -> None:
@@ -2575,9 +2602,8 @@ class PDFController:
     def _on_search_finished(self, gen: int) -> None:
         if gen != self._search_gen:
             return
-        if not self._search_accumulated_hits:
-            # No hits: refresh the result list/status from "搜尋中...".
-            self.view.display_search_results([])
+        self._search_finished = True
+        self.view.display_search_results(list(self._search_accumulated_hits))
         sid = self._search_session_id
         if sid:
             state = self._get_ui_state(sid)

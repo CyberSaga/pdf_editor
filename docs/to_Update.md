@@ -14,9 +14,12 @@
 * 依奇數頁、偶數頁來刪除、旋轉頁面
 * 可以做為開啟檔案的預設應用程式，圖示就用 Windows 預設的 PDF icon → OK
 * 頁數要改成輸入框，輸入數字就跳到該頁
+* 從檔案匯入頁時，若被匯入的檔案有密碼保護，也要跳出密碼輸入框來解鎖（合併檔案已經有密碼輸入框）
 -> 提出建議的實現方法並實作
 
 ## 待釐清（未必是錯誤）：
 * 為何拉正頁面後檔案大小變超大
 
 the .venv build env still has Pillow 12.1.1 and now-also-needed numpy isn't installed there — so before the next PyInstaller build, run .venv\Scripts\python -m pip install -U "Pillow>=12.2.0" numpy and rebuild, so the shipped artifact matches the secured requirements.txt.
+
+- Phase 2 note: print watermark overlays are now suppressed in `WatermarkTool.needs_page_overlay(...)` for `purpose == "print"`, so the helper subprocess remains the only print stamping path.

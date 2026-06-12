@@ -1004,10 +1004,26 @@
 
 **Area:** `controller/pdf_controller.py` (`_SearchWorker`, `_cancel_search`), `model/tools/search_tool.py`
 **Symptom:** Random crashes/corruption when deleting/rotating/inserting pages, undo/redo, switching or closing tabs while a search is running: the worker thread reads the live fitz document while the GUI thread mutates (or closes) it.
-**Cause:** PyMuPDF documents are not safe for concurrent read-during-mutation, and the worker resolves `model.doc` dynamically — a tab switch silently swaps the document under it mid-search.
-**Fix:** `_cancel_search()` (cancel flag + `thread.quit()` + bounded `thread.wait(2000)`; the per-page cancel check makes `run()` return within one page) at the top of every doc-mutating controller method AND at session-lifecycle boundaries (`_switch_to_session_id`, `on_tab_close_requested`, `open_pdf`). Two thread-lifecycle gotchas found empirically: (1) controller refs to the `QThread` wrapper must be released on `thread.finished` (identity-checked `_release_search_thread`), NOT on `worker.finished` — dropping the wrapper while the thread still runs lets Python GC destroy the C++ QThread and hard-crash the process with no traceback; (2) queued cross-thread signals already posted before a cancel are still delivered afterwards, so every worker signal carries the `_search_gen` generation token and handlers drop stale generations.
+**Cause:** PyMuPDF documents are not safe for concurrent read-during-mutation, and the worker resolves `model.doc` dynamically ??a tab switch silently swaps the document under it mid-search.
+**Fix:** Search workers now read from a private snapshot byte buffer captured on the GUI thread, so live-doc mutation no longer races the worker. `_cancel_search()` still drops stale generations and requests cancel, but it only clears the session `search_state` when an in-flight search is actually being aborted; a completed search keeps its results so tab restore can repopulate the finished results list. Two thread-lifecycle gotchas still matter: (1) controller refs to the `QThread` wrapper must be released on `thread.finished` (identity-checked `_release_search_thread`), NOT on `worker.finished` ??dropping the wrapper while the thread still runs lets Python GC destroy the C++ QThread and hard-crash the process with no traceback; (2) queued cross-thread signals already posted before a cancel are still delivered afterwards, so every worker signal carries the `_search_gen` generation token and handlers drop stale generations.
 **File:** `controller/pdf_controller.py` (`_cancel_search`, `_on_search_finished`, `_release_search_thread`)
 **Tests:** `test_scripts/test_search_worker_flow.py`
+
+## Search tab restore must persist completed results, not just the query
+
+**Area:** `controller/pdf_controller.py`, `view/pdf_view.py`
+**Symptom:** Switching away from a tab after a completed search could restore the query text but leave the result list empty when the tab was revisited.
+**Cause:** The controller treated a finished-but-not-yet-cleaned-up worker like an in-flight search and cleared the active session state during tab changes.
+**Fix:** Track whether the current search has actually finished. Only an active partial search gets cleared on cancel; a completed search keeps its accumulated hits and is restored from the per-session `search_state`.
+**File:** `controller/pdf_controller.py`, `view/pdf_view.py`
+
+## Print path must not double-stamp watermark overlays
+
+**Area:** `model/tools/watermark_tool.py`, `controller/pdf_controller.py`, `src/printing/subprocess_runner.py`
+**Symptom:** Watermark pages were eligible for both the controller-side print snapshot overlay path and the helper subprocess watermark stamping path, causing print output to be stamped twice.
+**Cause:** `WatermarkTool.needs_page_overlay(...)` ignored the render purpose and treated print the same as on-screen/view rendering.
+**Fix:** Return `False` for `purpose == "print"` so the helper subprocess remains the single stamping path for printed output. The subprocess runner heartbeat now also refreshes activity on every stdout chunk so heartbeat lines do not trip the stall watchdog.
+**File:** `model/tools/watermark_tool.py`, `src/printing/subprocess_runner.py`
 
 ## Cooperative OCR cancellation: per-page only
 **Area:** controller/pdf_controller.py _OcrWorker

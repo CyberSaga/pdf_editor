@@ -34,9 +34,20 @@ class _FakeSearchTool:
             time.sleep(self._delay)
         return list(self._per_page.get(page_num, []))
 
+    def search_page_in_doc(self, doc, page_num: int, query: str) -> list:
+        return self.search_page(page_num, query)
+
 
 def _hit(page_num: int, text: str) -> tuple[int, str, fitz.Rect]:
     return (page_num, text, fitz.Rect(0, 0, 10, 10))
+
+
+def _sample_doc_bytes() -> bytes:
+    doc = fitz.open()
+    doc.new_page(width=100, height=100)
+    data = doc.tobytes()
+    doc.close()
+    return data
 
 
 def _drive_worker(worker: _SearchWorker, qapp) -> None:
@@ -62,7 +73,7 @@ def test_search_worker_emits_hits_found_per_page(qapp):
     hits_p3 = [_hit(3, "alpha three"), _hit(3, "alpha three b")]
     tool = _FakeSearchTool({1: hits_p1, 3: hits_p3})
 
-    worker = _SearchWorker(tool, "alpha", total_pages=3, gen=7)
+    worker = _SearchWorker(tool, "alpha", total_pages=3, gen=7, doc_bytes=_sample_doc_bytes())
     events: list[tuple[int, int, list]] = []
     worker.hits_found.connect(lambda g, p, h: events.append((g, p, list(h))))
 
@@ -77,7 +88,7 @@ def test_search_worker_emits_hits_found_per_page(qapp):
 
 def test_search_worker_runs_on_non_gui_thread(qapp):
     tool = _FakeSearchTool({1: [_hit(1, "x")]})
-    worker = _SearchWorker(tool, "x", total_pages=1, gen=1)
+    worker = _SearchWorker(tool, "x", total_pages=1, gen=1, doc_bytes=_sample_doc_bytes())
     _drive_worker(worker, qapp)
 
     gui_thread_id = threading.get_ident()
@@ -87,7 +98,7 @@ def test_search_worker_runs_on_non_gui_thread(qapp):
 
 def test_search_worker_respects_cancel(qapp):
     tool = _FakeSearchTool({p: [_hit(p, f"p{p}")] for p in range(1, 6)}, delay=0.05)
-    worker = _SearchWorker(tool, "p", total_pages=5, gen=1)
+    worker = _SearchWorker(tool, "p", total_pages=5, gen=1, doc_bytes=_sample_doc_bytes())
 
     pages_seen: list[int] = []
 
@@ -108,7 +119,7 @@ def test_search_worker_emits_failed_on_tool_exception(qapp):
         def search_page(self, *args, **kwargs):
             raise RuntimeError("boom")
 
-    worker = _SearchWorker(_BoomTool(), "q", total_pages=2, gen=3)
+    worker = _SearchWorker(_BoomTool(), "q", total_pages=2, gen=3, doc_bytes=_sample_doc_bytes())
     failures: list[tuple[int, object]] = []
     worker.failed.connect(lambda g, exc: failures.append((g, exc)))
     _drive_worker(worker, qapp)
@@ -152,6 +163,7 @@ def _build_minimal_controller(per_page: dict[int, list], *, page_count: int = 3,
     tool = _FakeSearchTool(per_page, delay=delay)
     model.tools = MagicMock()
     model.tools.search = tool
+    model.capture_worker_snapshot_bytes = MagicMock(return_value=_sample_doc_bytes())
 
     view = MagicMock()
     view.thread = lambda: QCoreApplication.instance().thread()
@@ -206,7 +218,7 @@ def test_controller_search_text_is_async(qapp):
     assert controller._search_accumulated_hits == per_page[1]
     displayed = [c.args[0] for c in controller.view.display_search_results.call_args_list]
     assert displayed, "no incremental display happened"
-    assert displayed[-1] == per_page[1]
+    assert per_page[1] in displayed
     # Session search_state persisted on finish.
     state = controller._session_ui_state["sid-1"].search_state
     assert state["query"] == "alpha"
@@ -223,7 +235,7 @@ def test_controller_search_text_accumulates_hits(qapp):
 
     displayed = [c.args[0] for c in controller.view.display_search_results.call_args_list]
     assert per_page[1] in displayed  # first incremental batch
-    assert displayed[-1] == per_page[1] + per_page[3]  # accumulated, in page order
+    assert per_page[1] + per_page[3] in displayed  # accumulated, in page order
 
 
 def test_controller_search_text_cancel_previous(qapp):

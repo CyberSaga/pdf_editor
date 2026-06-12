@@ -80,3 +80,13 @@ def test_build_print_snapshot_overlay_path_writes_to_dest(monkeypatch) -> None:
                 out_doc.close()
         finally:
             m.close()
+
+
+def test_watermark_needs_page_overlay_skips_print_purpose() -> None:
+    m = PDFModel()
+    try:
+        m.tools.watermark._watermarks_by_session["sid"] = [{"id": "wm-1", "pages": [1], "text": "stamp"}]
+        # Red-light: print path should not request GUI overlay stamping even when a watermark exists.
+        assert m.tools.watermark.needs_page_overlay("sid", 1, "print") is False
+    finally:
+        m.close()
