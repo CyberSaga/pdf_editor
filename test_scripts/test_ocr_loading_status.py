@@ -24,7 +24,7 @@ from controller.pdf_controller import _OcrWorker  # noqa: E402
 
 
 class _FakeTool:
-    def ocr_pages(self, pages, languages, device):
+    def ocr_pages(self, pages, languages, device, doc=None):
         return {pages[0]: []}
 
 
@@ -32,10 +32,12 @@ def test_worker_emits_loading_status_before_first_page(qapp=None):
     if QApplication.instance() is None:
         QApplication([])
 
-    worker = _OcrWorker(_FakeTool(), page_nums=[1, 2], languages=["en"], device="cpu")
+    worker = _OcrWorker(
+        _FakeTool(), page_nums=[1, 2], languages=["en"], device="cpu", doc_bytes=b"snapshot"
+    )
     events: list[tuple[str, object]] = []
-    worker.status.connect(lambda msg: events.append(("status", msg)))
-    worker.progress.connect(lambda p, d, t: events.append(("progress", (p, d, t))))
+    worker.status.connect(lambda gen, msg: events.append(("status", msg)))
+    worker.progress.connect(lambda gen, p, d, t: events.append(("progress", (p, d, t))))
 
     worker.run()
 

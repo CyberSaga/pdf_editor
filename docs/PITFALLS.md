@@ -1025,6 +1025,14 @@
 **Fix:** Return `False` for `purpose == "print"` so the helper subprocess remains the single stamping path for printed output. The subprocess runner heartbeat now also refreshes activity on every stdout chunk so heartbeat lines do not trip the stall watchdog.
 **File:** `model/tools/watermark_tool.py`, `src/printing/subprocess_runner.py`
 
+## OCR workers must read from a snapshot, not the live doc
+
+**Area:** `controller/pdf_controller.py`, `model/tools/ocr_tool.py`
+**Symptom:** OCR can race live document mutations or apply page_done spans to the wrong tab if the active session changes mid-run.
+**Cause:** A background OCR worker that reads `model.doc` directly can outlive a session switch, and queued cross-thread signals posted before a cancel are still delivered afterward (same gotcha as the search worker).
+**Fix:** Capture snapshot bytes on the GUI thread, pass them into `_OcrWorker`, let `OcrTool.ocr_pages(..., doc=...)` render from that override. Every worker signal carries a generation token — `cancel_ocr()` bumps `_ocr_gen` *before* `request_cancel()` so already-queued emissions are dropped by the handlers; `page_done` is additionally dropped unless the active session still matches `_ocr_session_id`.
+**File:** `controller/pdf_controller.py`, `model/tools/ocr_tool.py`
+
 ## Cooperative OCR cancellation: per-page only
 **Area:** controller/pdf_controller.py _OcrWorker
 **Symptom:** Cancel appears to hang during a long page

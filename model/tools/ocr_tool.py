@@ -4,6 +4,8 @@ import importlib
 import logging
 from typing import TYPE_CHECKING, Callable, Iterable
 
+import fitz
+
 from .base import ToolExtension
 from .ocr_types import (
     OcrAvailability,
@@ -236,13 +238,19 @@ class OcrTool(ToolExtension):
         *,
         device: str = "auto",
         on_progress: Callable[[int, int, int], None] | None = None,
+        doc: fitz.Document | bytes | None = None,
     ) -> dict[int, list[OcrSpan]]:
         """Run Surya OCR on the given 1-based page numbers.
 
         Returns ``{page_num: [OcrSpan, ...]}`` with bboxes in **visual page
         coordinates** (not raster pixels).
         """
-        if not self._model.doc:
+        source_doc = doc if doc is not None else self._model.doc
+        opened_source_doc = False
+        if isinstance(source_doc, bytes):
+            source_doc = fitz.open("pdf", source_doc)
+            opened_source_doc = True
+        if not source_doc:
             return {}
 
         lang_list = [OcrLanguage.from_code(code).value for code in languages]
@@ -250,7 +258,7 @@ class OcrTool(ToolExtension):
             raise ValueError("OCR 語言清單不可為空")
 
         page_nums = list(pages)
-        total_pages = len(self._model.doc)
+        total_pages = len(source_doc)
         for page_num in page_nums:
             if page_num < 1 or page_num > total_pages:
                 raise ValueError(f"無效 OCR 頁碼: {page_num}")
@@ -272,15 +280,26 @@ class OcrTool(ToolExtension):
                 # introspectable (a real fitz document always is; a mocked doc in
                 # tests is not).
                 try:
-                    page_scale = _safe_render_scale(self._model.doc[page_num - 1], render_scale)
+                    page_obj = source_doc[page_num - 1]
+                    page_scale = _safe_render_scale(page_obj, render_scale)
                 except (TypeError, IndexError, AttributeError):
+                    page_obj = None
                     page_scale = render_scale
-                pix = self._model.tools.render_page_pixmap(
-                    page_num,
-                    scale=page_scale,
-                    annots=False,
-                    purpose="ocr",
-                )
+                if doc is not None:
+                    matrix = fitz.Matrix(page_scale, page_scale)
+                    pix = page_obj.get_pixmap(matrix=matrix, annots=False) if page_obj is not None else self._model.tools.render_page_pixmap(
+                        page_num,
+                        scale=page_scale,
+                        annots=False,
+                        purpose="ocr",
+                    )
+                else:
+                    pix = self._model.tools.render_page_pixmap(
+                        page_num,
+                        scale=page_scale,
+                        annots=False,
+                        purpose="ocr",
+                    )
                 image = _pixmap_to_image(pix)
                 try:
                     raw_spans = adapter.ocr(image, lang_list)
@@ -311,3 +330,5 @@ class OcrTool(ToolExtension):
             cleanup_device = getattr(adapter, "device", device)
             adapter = None  # drop strong ref before empty_cache
             _empty_torch_cache(cleanup_device)
+            if opened_source_doc:
+                source_doc.close()

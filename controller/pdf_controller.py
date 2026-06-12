@@ -214,12 +214,17 @@ class _OptimizeWorkerBridge(QObject):
 
 
 class _OcrWorker(QObject):
-    """Runs Surya OCR one page at a time on a background thread."""
+    """Runs Surya OCR one page at a time on a background thread.
 
-    progress = Signal(int, int, int)
-    status = Signal(str)
-    page_done = Signal(int, object)
-    failed = Signal(object)
+    Every signal (except ``finished``, which only drives thread teardown)
+    carries the OCR generation token so the controller can drop late queued
+    emissions from a cancelled run — mirroring ``_SearchWorker``.
+    """
+
+    progress = Signal(int, int, int, int)  # gen, page_num, done, total
+    status = Signal(int, str)  # gen, message
+    page_done = Signal(int, int, object)  # gen, page_num, spans
+    failed = Signal(int, object)  # gen, exception
     finished = Signal()
 
     def __init__(
@@ -228,12 +233,16 @@ class _OcrWorker(QObject):
         page_nums: list[int],
         languages: list[str],
         device: str,
+        doc_bytes: bytes | None = None,
+        gen: int = 0,
     ) -> None:
         super().__init__()
         self._tool = tool
         self._page_nums = list(page_nums)
         self._languages = list(languages)
         self._device = device
+        self._doc_bytes = doc_bytes
+        self._gen = gen
         self._cancel_requested = False
 
     def request_cancel(self) -> None:
@@ -246,47 +255,50 @@ class _OcrWorker(QObject):
             # The first page triggers Surya model loading (weights load from disk
             # with no visible CPU/GPU activity). Announce it so the wait does not
             # look like a hang.
-            self.status.emit("正在載入文字辨識模型，首次使用可能需要數十秒…")
+            self.status.emit(self._gen, "正在載入文字辨識模型，首次使用可能需要數十秒…")
             for index, page_num in enumerate(self._page_nums, start=1):
                 if self._cancel_requested:
                     break
+                ocr_kwargs = {"device": self._device}
+                if self._doc_bytes is not None:
+                    ocr_kwargs["doc"] = self._doc_bytes
                 result = self._tool.ocr_pages(
                     [page_num],
                     languages=self._languages,
-                    device=self._device,
+                    **ocr_kwargs,
                 )
                 spans = list(result.get(page_num, []))
-                self.page_done.emit(page_num, spans)
-                self.progress.emit(page_num, index, total)
+                self.page_done.emit(self._gen, page_num, spans)
+                self.progress.emit(self._gen, page_num, index, total)
         except Exception as exc:
             logger.exception("OCR worker failed")
-            self.failed.emit(exc)
+            self.failed.emit(self._gen, exc)
         finally:
             self.finished.emit()
 
 
 class _OcrBridge(QObject):
-    progress = Signal(int, int, int)
-    status = Signal(str)
-    page_done = Signal(int, object)
-    failed = Signal(object)
+    progress = Signal(int, int, int, int)
+    status = Signal(int, str)
+    page_done = Signal(int, int, object)
+    failed = Signal(int, object)
     thread_finished = Signal()
 
-    @Slot(int, int, int)
-    def forward_progress(self, page_num: int, done: int, total: int) -> None:
-        self.progress.emit(page_num, done, total)
+    @Slot(int, int, int, int)
+    def forward_progress(self, gen: int, page_num: int, done: int, total: int) -> None:
+        self.progress.emit(gen, page_num, done, total)
 
-    @Slot(str)
-    def forward_status(self, message: str) -> None:
-        self.status.emit(message)
+    @Slot(int, str)
+    def forward_status(self, gen: int, message: str) -> None:
+        self.status.emit(gen, message)
+
+    @Slot(int, int, object)
+    def forward_page_done(self, gen: int, page_num: int, spans) -> None:
+        self.page_done.emit(gen, page_num, spans)
 
     @Slot(int, object)
-    def forward_page_done(self, page_num: int, spans) -> None:
-        self.page_done.emit(page_num, spans)
-
-    @Slot(object)
-    def forward_failed(self, exc) -> None:
-        self.failed.emit(exc)
+    def forward_failed(self, gen: int, exc) -> None:
+        self.failed.emit(gen, exc)
 
     @Slot()
     def notify_thread_finished(self) -> None:
@@ -320,13 +332,13 @@ class _SearchWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
-            doc = fitz.open("pdf", self._doc_bytes)
+            doc = fitz.open("pdf", self._doc_bytes) if self._doc_bytes else None
             try:
                 search_fn = getattr(self._tool, "search_page_in_doc", None)
                 for page_num in range(1, self._total_pages + 1):
                     if self._cancel_requested:
                         break
-                    if search_fn is not None:
+                    if search_fn is not None and doc is not None:
                         hits = search_fn(doc, page_num, self._query)
                     else:
                         hits = self._tool.search_page(page_num, self._query)
@@ -383,6 +395,8 @@ class PDFController:
         self._ocr_thread: QThread | None = None
         self._ocr_worker: _OcrWorker | None = None
         self._ocr_worker_bridge: _OcrBridge | None = None
+        self._ocr_gen = 0
+        self._ocr_session_id: str | None = None
         self._search_thread: QThread | None = None
         self._search_worker: _SearchWorker | None = None
         self._search_worker_bridge: _SearchBridge | None = None
@@ -1108,7 +1122,8 @@ class PDFController:
             self._switch_to_session_id(existing_sid)
             return
 
-        # Opening appends + activates a new session; stop any search on the old doc.
+        # Opening appends + activates a new session; stop any background readers on the old doc.
+        self.cancel_ocr()
         self._cancel_search()
         self._capture_current_ui_state()
         password = None
@@ -1492,7 +1507,8 @@ class PDFController:
             self.view._finalize_text_edit()
         if not self._confirm_close_session(sid):
             return
-        # The search worker may still be reading the doc that is about to close.
+        # Cancel in-flight background readers before closing the doc.
+        self.cancel_ocr()
         self._cancel_search()
         if sid == self.model.get_active_session_id():
             self._capture_current_ui_state()
@@ -2653,12 +2669,17 @@ class PDFController:
             show_error(self.view, "未選擇任何頁面")
             return
 
+        self.cancel_ocr()
+        self._ocr_gen += 1
+        self._ocr_session_id = self.model.get_active_session_id()
         thread = QThread()
         worker = _OcrWorker(
             tool,
             page_nums=page_nums,
             languages=list(request.languages),
             device=request.device,
+            doc_bytes=self.model.capture_worker_snapshot_bytes(),
+            gen=self._ocr_gen,
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -2671,6 +2692,7 @@ class PDFController:
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda t=thread: self._release_ocr_thread(t))
 
         self._ocr_thread = thread
         self._ocr_worker = worker
@@ -2678,8 +2700,16 @@ class PDFController:
         thread.start()
 
     def cancel_ocr(self) -> None:
+        # Bump the gen first so queued cross-thread signals already posted by
+        # the worker are dropped by the handlers (they compare against it).
+        self._ocr_gen += 1
         if self._ocr_worker is not None:
             self._ocr_worker.request_cancel()
+
+    def _release_ocr_thread(self, thread) -> None:
+        if self._ocr_thread is thread:
+            self._ocr_thread = None
+            self._ocr_worker = None
 
     def _show_ocr_progress_dialog(self, total_pages: int) -> None:
         parent = self.view if isinstance(self.view, PDFView) else None
@@ -2702,8 +2732,10 @@ class PDFController:
         dialog.show()
         self._ocr_progress_dialog = dialog
 
-    @Slot(int, int, int)
-    def _on_ocr_progress(self, page_num: int, done: int, total: int) -> None:
+    @Slot(int, int, int, int)
+    def _on_ocr_progress(self, gen: int, page_num: int, done: int, total: int) -> None:
+        if gen != self._ocr_gen:
+            return
         dialog = self._ocr_progress_dialog
         if dialog is None:
             return
@@ -2711,22 +2743,33 @@ class PDFController:
         dialog.setValue(done)
         dialog.setLabelText(f"辨識第 {done}/{total} 頁… (頁 {page_num})")
 
-    @Slot(str)
-    def _on_ocr_status(self, message: str) -> None:
+    @Slot(int, str)
+    def _on_ocr_status(self, gen: int, message: str) -> None:
+        if gen != self._ocr_gen:
+            return
         dialog = self._ocr_progress_dialog
         if dialog is None:
             return
         dialog.setLabelText(message)
 
-    @Slot(int, object)
-    def _on_ocr_page_done(self, page_num: int, spans) -> None:
+    @Slot(int, int, object)
+    def _on_ocr_page_done(self, gen: int, page_num: int, spans) -> None:
+        if gen != self._ocr_gen:
+            logger.warning("Dropping OCR page %s from stale gen %s (current=%s)", page_num, gen, self._ocr_gen)
+            return
+        active_sid = self.model.get_active_session_id()
+        if self._ocr_session_id is not None and active_sid != self._ocr_session_id:
+            logger.warning("Dropping OCR page %s for stale session %s (active=%s)", page_num, self._ocr_session_id, active_sid)
+            return
         try:
             self.model.apply_ocr_spans(page_num, list(spans))
         except Exception:
             logger.exception("apply_ocr_spans failed for page %s", page_num)
 
-    @Slot(object)
-    def _on_ocr_failed(self, exc) -> None:
+    @Slot(int, object)
+    def _on_ocr_failed(self, gen: int, exc) -> None:
+        if gen != self._ocr_gen:
+            return
         logger.error("OCR failed: %s", exc)
         show_error(self.view, f"OCR 失敗: {exc}")
 
@@ -2736,8 +2779,7 @@ class PDFController:
         if dialog is not None:
             dialog.close()
         self._ocr_progress_dialog = None
-        self._ocr_thread = None
-        self._ocr_worker = None
+        self._release_ocr_thread(None)
 
     def undo(self):
         """
