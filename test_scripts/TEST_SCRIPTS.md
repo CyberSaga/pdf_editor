@@ -76,6 +76,8 @@ python test_scripts/test_1pdf_horizontal.py --gui --save out.pdf
 | `test_text_edit_finalize_outcome.py` | pytest | Regressions for text-edit finalize outcome enum and failed-emit reporting path | `pytest -q test_scripts/test_text_edit_finalize_outcome.py` |
 | `test_resolve_target_mode.py` | pytest | Target-mode resolution regressions: `run`-without-span-id promotes to paragraph, `run`-with-span-id stays in run scope | `pytest -q test_scripts/test_resolve_target_mode.py` |
 | `test_ux_signoff_agent.py` | pytest | UX signoff agent unit tests: fail-closed without credentials, PDF-run isolation and continuation after failure | `pytest -q test_scripts/test_ux_signoff_agent.py` |
+| `test_text_editor_theme_padding.py` | pytest | QSS theme padding cascade fix regression + safe_render_scale clamp for pathological page rects (40 MP pixmap budget) | `pytest -q test_scripts/test_text_editor_theme_padding.py` |
+| `test_phase7_guard_hygiene.py` | pytest | Audit remediation Phase 7 guards: render_page_pixmap bounds check, wheel zoom overshoot prevention, IPC dash-token rejection, native PyMuPDF object-streams support | `pytest -q test_scripts/test_phase7_guard_hygiene.py` |
 | `test_text_selection.py` | pytest | AC-1: character-level browse-mode text selection — same-run, cross-run, multi-line clipping; copied text matches highlight | `pytest -q test_scripts/test_text_selection.py` |
 | `test_print_layout.py` | pytest | AC-2/AC-3: print auto-orientation and paper-size matching; orientation override; paper combo coverage | `pytest -q test_scripts/test_print_layout.py` |
 | `test_print_speed.py` | pytest | AC-9: 10-page A4 @300 DPI spooled within 20s; progress visible; no UI freeze | `pytest -q test_scripts/test_print_speed.py` |
@@ -162,6 +164,18 @@ Notes:
 - `test_no_jump_editor_geometry.py` writes artifacts to `test_artifacts/no_jump/`; run via the full gate (`python scripts/completion_gate.py`) for tamper-evident proof.
 - `test_text_editing_fidelity_suite.py` includes real-PDF tests that require fixture PDFs under `test_files/`; these are skipped automatically when fixtures are absent.
 - Geometry tests exercise DPI-corrected font sizing, frozen first-frame, paragraph-mode height, and rotated-proxy invariants.
+
+### Audit remediation phases (headless)
+```bash
+QT_QPA_PLATFORM=offscreen PYTHONPATH=. pytest -q test_scripts/test_search_worker_flow.py test_scripts/test_print_snapshot_path.py test_scripts/test_ocr_controller_flow.py test_scripts/test_thumbnail_async.py test_scripts/test_undo_memory_budget.py test_scripts/test_text_editor_theme_padding.py test_scripts/test_phase7_guard_hygiene.py
+```
+
+Notes:
+- Phases 1–3: Snapshot isolation for background workers (search, print, OCR); gen-tokened signals drop late arrivals.
+- Phase 4: Thumbnail invalidation skip count-unchanged operations; dedicated `_thumb_gen_by_session` counter.
+- Phase 5: Undo byte budget floor (1 command survives oversized); dedup'd bytes counted once via `id()`.
+- Phase 6: QSS theme padding cascade fix; safe_render_scale clamp for preview pixmaps.
+- Phase 7: Render page bounds validation; wheel zoom effective factor (no overshoot); IPC dash-token rejection; native objstms on both PyMuPDF versions.
 
 ### Corpus and integration
 ```bash
