@@ -1,0 +1,299 @@
+```
+● All six phases of the audit-remediation plan are complete — each with a Sonnet 4.6 deep plan, Fable 5 implementation,
+  red-light-first tests, a green full-suite gate, and one atomic commit:
+
+  Phase: 0 — Restore the gate
+  Commit: 010d868
+  What landed: Real polluter was a QSS stylesheet leak from test_main_startup_behavior.py (not the audit's get_text suspect
+  —
+    ruled out empirically). Fixed at 3 layers: test cleanup, widget-level QSS override (also a production fix), conftest
+    autouse restore fixture.
+  Gate: 7 failed → 1234 passed, 0 failed
+  ────────────────────────────────────────
+  Phase: 1 — Linearize gate
+  Commit: 559d92f
+  What landed: PdfOptimizeError + optimize_capabilities(); dead linear=1 fallback deleted (fail-fast); doubled 「最佳化 PDF
+    失敗」 prefix fixed; dialog greys out linearize/object-streams without pikepdf; pikepdf 10.8.0 installed into  .venv —
+    the screenshot bug is gone both ways.
+  Gate: 1241 passed
+  ────────────────────────────────────────
+  Phase: 2 — Chokepoint guards
+  Commit: 0a7c96f
+  What landed: Central _safe_render_scale clamp in render_page_pixmap (strict-xfail test flipped green), shared zoom
+    constants, _guard_foreign_doc (insert + headless_merge + post-merge page invariant + contiguous-run batching),
+    _require_page, NaN-safe _coerce_wm funnel, IPC argv resolve-all-tokens. 16 red-light tests.
+  Gate: 1260 passed
+  ────────────────────────────────────────
+  Phase: 3 — Memory budgets
+  Commit: 9fdf6df
+  What landed: 512 MiB undo byte budget + adjacent-snapshot dedup (shared immutable bytes); build_print_snapshot(dest)
+  writes
+    straight to disk — no in-memory doc copy; dead capture_print_input_pdf_bytes removed.
+  Gate: 1266 passed
+  ────────────────────────────────────────
+  Phase: 4 — UI responsiveness
+  Commit: fd94cd2
+  What landed: All 9 thumbnail call sites now async via the batch scheduler (2 needless ones removed); search moved to a
+    QThread worker mirroring the OCR pattern, with generation-tokened signals and cancel-before-mutation guards (a
+    plan-literal version crashed via QThread GC — fixed and recorded in PITFALLS). 4.3 overlay cache deferred per plan.
+  Gate: 1281 passed
+● All six phases of the audit-remediation plan are complete — each with a Sonnet 4.6 deep plan, Fable 5 implementation, red-light-first tests, a green full-suite gate, and one atomic commit:
+
+### Development Progress and Technical Changes Summary
+
+| Phase | Commit | What landed  | Gate |
+|---|---|---|---|
+| 0 — Restore the gate |  010d868 | Real polluter was a QSS stylesheet leak from test_main_startup_behavior.py (not the audit's get_text suspect — ruled out empirically). Fixed at 3 layers: test cleanup, widget-level QSS override (also a production fix), conftest autouse restore fixture. | 7 failed → 1234 passed, 0 failed  |
+| 1 — Linearize gate | 559d92f | PdfOptimizeError + optimize_capabilities(); dead linear=1 fallback deleted (fail-fast); doubled 「最佳化 PDF 失敗」 prefix fixed; dialog greys out linearize/object-streams without pikepdf; pikepdf 10.8.0 installed into .venv — the screenshot bug is gone both ways. | 1241 passed |
+| 2 — Chokepoint | 0a7c96f  | Central _safe_render_scale clamp in render_page_pixmap (strict-xfail test flipped green), shared zoom constants, _guard_foreign_doc (insert + headless_merge + post-merge page invariant + contiguous-run batching), _require_page, NaN-safe _coerce_wm funnel, IPC argv resolve-all-tokens. 16 red-light tests. |  1260 passed |
+| 3 — Memory budgets  | 9fdf6df | 512 MiB undo byte budget + adjacent-snapshot dedup (shared immutable bytes); build_print_snapshot(dest) writes straight to disk — no in-memory doc copy; dead capture_print_input_pdf_bytes removed.   | 1266 passed   |
+|  4 — UI responsiveness | fd94cd2 | All 9 thumbnail call sites now async via the batch scheduler (2 needless ones removed); search moved to a QThread worker mirroring the OCR pattern, with generation-tokened signals and cancel-before-mutation guards (a plan-literal version crashed via QThread GC — fixed and recorded in PITFALLS). 4.3 overlay cache deferred per plan.    | 1281 passed |
+| 5 — Hygiene | ad32699 | pyproject.toml created (pip install -e ".[dev]" now works in .venv; ruff count stable at 240 — CLAUDE.md's stale "113" corrected); cooperative-OCR-cancel PITFALLS entry; mypy parent-dir __init__.py workaround documented.  | 1281 passed, ruff unchanged |
+
+Housekeeping notes:
+  - Resume cron deleted (d46f785f) — it existed only to recover from session limits, which hit twice and were recovered both times; the work is done.
+  - I did not archive the phase plans into plans/archive/ — you've deleted that directory as part of your docs reorganization (the working-tree deletions and new top-level plans//reports/ dirs), so I left
+  the committed plans in plans/ rather than recreate a directory you removed.
+  - Your unrelated working-tree changes (.gitignore line removal, docs deletions, untracked reorg dirs) were never staged — all 7 commits contain only phase files.
+  - One small leftover for you: PITFALLS.md and TODOS.md were updated in place under docs/, so if your reorg moves those, the new entries ride along.
+```
+```
+● Codex adversarial review output (verbatim):
+
+  # Codex Adversarial Review
+
+  Target: branch diff against 920368b
+  Verdict: needs-attention
+
+  No-ship: the new async search path creates a live-document concurrency hazard, and the controller only cancels it for a subset of mutations. That leaves real edit flows able to
+  mutate the same `fitz.Document` the worker is reading, which can surface as crashes, corrupt reads, or stale search results under ordinary use.
+
+  Findings:
+  - [high] Async search can race with uncancelled document mutations (controller/pdf_controller.py:1879-2575)
+    `search_text()` now spawns `_SearchWorker` against `self.model.doc`, and `_cancel_search()` is only called from a handful of entry points. Several real mutation flows in the
+  same controller still do not stop an in-flight search first, including `add_highlight`, `add_rect`, `move_object`, `rotate_object`, `delete_object`, `resize_object`,
+  `add_image_object`, `edit_text`, `move_text_across_pages`, and `add_annotation`. That means the worker can keep traversing pages while the main thread mutates the live PDF,
+  which is exactly the read-during-mutation case the new comments warn about. The likely impact is intermittent PyMuPDF failures or hard-to-reproduce UI corruption when users
+  search and edit at the same time.
+    Recommendation: Make search cancellation a mandatory precondition for every document-mutating action, or move the guard into a single mutation chokepoint inside the
+  model/command layer so no edit path can forget it.
+
+  Next steps:
+  - 1. Add a centralized mutation guard that cancels any in-flight search before document writes.
+  - 2. Re-run the async search and edit-path tests under concurrent interaction to confirm the race is gone.
+
+  This is review-only per the command, so I haven't changed anything. Worth noting: the finding is credible and maps exactly to your saved chokepoint rule — the Phase 4 implementation guarded the 8 mutation sites the plan enumerated plus 3 session-lifecycle boundaries, but per-site guarding missed the object/annotation/text-edit flows. Codex's
+  second recommendation (one mutation chokepoint that cancels search, rather than per-call-site guards) is the right shape. Say the word and I'll run the plan→implement cycle on it.
+
+※ recap: All six audit-remediation phases are committed and the suite is green (1281 passed). Codex's adversarial review flagged one high finding: async search can race with unguarded document mutations. Next action: your go-ahead to fix it via a central mutation chokepoint. 
+```
+```
+● All verification is complete — every candidate got an explicit verdict (the watermark-RGBA and
+  encryption-KEEP candidates were refuted/pre-existing and dropped; the rest confirmed or plausible).
+  The review is done. Here are the final results.
+
+  /code-review xhigh — six audit-remediation commits (920368b..HEAD)
+
+  TL;DR: the six phases are solid work, but three of them ship a significant regression each. The
+  print path now stamps watermarks twice; the Phase-0 "production fix" for QSS padding is dead code
+  in a themed session (the original glyph-shift bug is still live); and the new async thumbnail
+  invalidation blanks every thumbnail before the first affected page. Plus the search worker's
+  mutation guard misses all content-edit paths (native-crash class).
+
+  [
+    {
+      "file": "controller/pdf_controller.py",
+      "line": 1624,
+      "summary": "Print path applies watermarks twice: build_print_snapshot bakes overlays into
+  input.pdf (WatermarkTool.needs_page_overlay ignores purpose, watermark_tool.py:100-102) while
+  PrintJobRequest still ships watermarks= to the helper, which re-applies them
+  (helper_main.py:30-35).",
+      "failure_scenario": "CONFIRMED — print any watermarked document: old path sent a plain snapshot
+  (capture_print_input_pdf_bytes) + helper stamped once; new path sends a pre-stamped snapshot +
+  helper stamps again → doubled/darkened watermark on every printed page. Fix: pass watermarks=[]
+  when the snapshot already baked overlays, or make needs_page_overlay return False for purpose
+  'print'."
+    },
+    {
+      "file": "controller/pdf_controller.py",
+      "line": 1880,
+      "summary": "_cancel_search's contract ('must be called before any document mutation') is only
+  enforced on structural ops — add_highlight (1880), add_rect, edit_text (2092),
+  move_text_across_pages, add_annotation (3030), object move/rotate/delete, and the OCR page_done
+  handler all mutate the live fitz doc with no cancel while _SearchWorker reads the same doc on its
+  thread.",
+      "failure_scenario": "CONFIRMED — start a search on a large PDF, then commit an inline text edit
+  or add a highlight while results stream in: GUI thread rewrites page content while the worker is
+  inside page.search_for/get_text on the same fitz.Document → MuPDF read-during-mutation, native
+  crash or garbage hits. Deeper fix: cancel readers in one funnel (e.g. _capture_doc_snapshot or
+  command record) instead of per-site discipline."
+    },
+    {
+      "file": "view/text_editing.py",
+      "line": 1345,
+      "summary": "The Phase-0 widget-level QSS fix (setStyleSheet at __init__, line 752) is wiped
+  before the editor is shown: create_text_editor (1345) and the mask-refresh path (1195) replace the
+  stylesheet with _build_text_editor_stylesheet (pdf_view.py:2330-2337), which sets border/color but
+  NOT padding/margin, so the app-level theme rule 'QTextEdit { padding: 4px 8px; }' (theme.py:190)
+  cascades back in.",
+      "failure_scenario": "CONFIRMED — in a themed production session the inline editor regains
+  4px/8px padding the moment editing starts, shifting glyphs off the PDF text — the exact bug Phase 0
+  claimed to fix in production. Tests pass only because the conftest fixture strips the app
+  stylesheet. Fix: zero padding/margin inside _build_text_editor_stylesheet."
+    },
+    {
+      "file": "controller/pdf_controller.py",
+      "line": 2829,
+      "summary": "_invalidate_thumbnails calls set_thumbnail_placeholders(n) — which does
+  thumbnail_list.clear(), wiping ALL icons (pdf_view.py:2243) — but the batch chain starts at max(0,
+  min(affected)-2) and only walks forward, so rows 0..start-1 are never re-rendered.",
+      "failure_scenario": "CONFIRMED — rotate or delete page 50 of a 100-page document: all 100 icons
+  cleared, only rows 48..99 re-rendered, thumbnails 1-48 stay blank text placeholders until an
+  unrelated full rebuild (session switch). Also wasteful in the other direction: the chain always
+  runs to the END, so rotating page 1 of 2000 re-rasters ~2000 thumbnails. Fix: skip the placeholder
+  reset when count is unchanged, and render only affected rows for non-shifting ops."
+    },
+    {
+      "file": "model/edit_commands.py",
+      "line": 607,
+      "summary": "The byte-budget eviction loop has no floor protecting the just-recorded command,
+  and the snapshot dedup it ships with is double-counted by the budget (shared bytes object summed in
+  both adjacent commands), halving the effective budget.",
+      "failure_scenario": "CONFIRMED — one structural edit on a document whose before+after snapshot
+  pair exceeds 512 MiB (~260 MB PDF) is appended by record() and immediately evicted by the trim
+  loop: the operation succeeds but can_undo() is False with no warning, and _saved_stack_size
+  decrements make has_pending_changes() misreport. Fix: never evict the newest command (warn
+  instead), and count unique snapshot objects (dedup by id()) when summing."
+    },
+    {
+      "file": "controller/pdf_controller.py",
+      "line": 995,
+      "summary": "Two search_state lifecycle holes: (a) tab-switch mid-search captures the view's
+  PARTIAL hit list into the old session's search_state via get_search_ui_state() (line 593) and
+  presents it as complete on switch-back; (b) entering fullscreen clears search UI and state
+  (995-997) WITHOUT _cancel_search or a gen bump, so the still-running worker's next hits_found
+  repopulates the list the user just cleared, and _on_search_finished rewrites the cleared session
+  state.",
+      "failure_scenario": "CONFIRMED — search a large doc, switch tabs at 30%: switching back
+  restores a truncated result list labelled as final. Or enter fullscreen mid-search: cleared results
+  reappear. Fix: call _cancel_search in the fullscreen-enter path and skip search_state capture
+  while a search is in flight (or persist incrementally)."
+    },
+    {
+      "file": "controller/pdf_controller.py",
+      "line": 2556,
+      "summary": "_cancel_search fails open and blocks: the worker's cancel flag is only checked
+  BETWEEN pages, so thread.wait(2000) stalls the GUI thread up to 2s on every mutation during a
+  search, and on timeout it just logs a warning and lets the caller mutate anyway.",
+      "failure_scenario": "CONFIRMED mechanism — a pathological page makes page.search_for run >2s;
+  user hits Delete Page: 2s UI freeze, then the mutation proceeds while the worker is still mid-read
+  → the exact crash the guard exists to prevent. Fix: search a snapshot document in the worker
+  (fitz.open('pdf', snapshot_bytes)) so live-doc mutations never need to wait."
+    },
+    {
+      "file": "model/tools/manager.py",
+      "line": 99,
+      "summary": "build_print_snapshot runs on the print submission worker thread and reads/saves the
+  LIVE model doc; print is not covered by _cancel_search, so it can run concurrently with the search
+  worker and with GUI-thread timer reads (stale-index drain, thumbnail batches).",
+      "failure_scenario": "PLAUSIBLE — the worker-thread read existed before (old capture_pdf_bytes
+  also ran in run()), but this diff added a second concurrent reader (search worker) and a longer
+  overlay-branch window (per-page insert_pdf loop). Print while a search runs → two background
+  threads inside one MuPDF document. Same snapshot-document fix as the search worker would close
+  both."
+    },
+    {
+      "file": "model/pdf_model.py",
+      "line": 1492,
+      "summary": "compose_merged_document (1492) and open_merge_source (1512) still open
+  user-selected foreign PDFs with raw fitz.open() — no size/page/encryption guards and no post-merge
+  _MAX_PAGES invariant — despite the commit claiming every merge entry point is bounded;
+  view/pdf_view.py:4934/4989 are two more (pre-existing) bypasses.",
+      "failure_scenario": "CONFIRMED — merge dialog with a multi-GB or 100k-page PDF:
+  _guard_foreign_doc never runs, merged.insert_pdf clones everything, and the result exceeds
+  _MAX_PAGES unboundedly — OOM through the exact path the chokepoint was built to close. Fix: route
+  both merge opens through _guard_foreign_doc and add the post-merge page check compose-side."
+    },
+    {
+      "file": "controller/pdf_controller.py",
+      "line": 2565,
+      "summary": "_on_search_hits_found re-copies and fully re-renders the ENTIRE accumulated hit
+  list on every page that has hits (display_search_results clears and rebuilds the QListWidget),
+  making total UI work quadratic in pages-with-hits.",
+      "failure_scenario": "CONFIRMED — search a common word in a 1000-page document: hundreds of
+  thousands of cumulative QListWidgetItem constructions on the GUI thread, list flicker per batch,
+  worse perceived performance than the old synchronous search. Fix: append-only view update for new
+  hits, with the single full render in _on_search_finished."
+    },
+    {
+      "file": "view/text_editing.py",
+      "line": 715,
+      "summary": "Two gaps in the new raster chokepoint: the inline-editor live preview rasters via
+  raw temp_page.get_pixmap(matrix=Matrix(render_scale, render_scale)) with rect-derived page size,
+  bypassing _safe_render_scale; and the chokepoint itself (manager.py:69) indexes doc[page_num-1]
+  unguarded, so page_num=0 silently renders the LAST page.",
+      "failure_scenario": "PLAUSIBLE — a crafted PDF with a huge text-block rect makes every
+  keystroke in the inline editor build a pixmap past _MAX_PIXMAP_PX (OOM); and any future
+  0-based/1-based mixup at a render call site produces silently wrong output instead of an error.
+  Fix: clamp render_scale via _safe_render_scale in the preview, add a _require_page-style guard
+  inside render_page_pixmap."
+    },
+    {
+      "file": "model/pdf_optimizer.py",
+      "line": 793,
+      "summary": "The deleted no-pikepdf fallback was only dead for linear=1 — it was live for
+  fitz-native use_objstms (fast_save_kwargs always sets use_objstms:0, delegating to pikepdf).
+  Requesting object streams alone without pikepdf now raises PdfOptimizeError where the old code
+  succeeded natively.",
+      "failure_scenario": "CONFIRMED — programmatic/headless save_optimized_copy with
+  use_object_streams=True on a pikepdf-less environment (e.g. the system-Python test env) hard-fails
+  where it previously produced a valid object-stream PDF. Either restore the fitz-native objstms path
+  when only object streams are requested, or document the intentional capability narrowing."
+    },
+    {
+      "file": "view/pdf_view.py",
+      "line": 2683,
+      "summary": "Wheel zoom clamps self.scale to [0.1, 4.0] but the next line still multiplies the
+  QGraphicsView transform by the raw factor, so at the bounds the visual preview keeps zooming past
+  the cap and snaps back when the 300ms debounced re-render uses the clamped scale.",
+      "failure_scenario": "CONFIRMED — hold Ctrl+wheel past 400%: the canvas visually zooms to ~1000%
+  (transform compounds 1.1x per tick while scale stays 4.0), then jumps back to 400% after the
+  debounce. Fix: skip the transform multiply (or recompute factor) when the clamp saturates."
+    },
+    {
+      "file": "utils/single_instance.py",
+      "line": 116,
+      "summary": "The '-'-prefix skip in _forwarded_argv_is_acceptable is a live bypass, not
+  future-proofing: handle_forwarded_cli (controller:1141-1150) passes every non-blank token —
+  including '-' ones — straight to open_pdf, so a crafted peer's '-anything' token skips the
+  every-token-must-be-an-existing-.pdf gate yet still reaches the open path.",
+      "failure_scenario": "CONFIRMED — a same-user local peer sends {'argv': ['-\\\\evil\\\\x']}:
+  validation returns True, the message is ACKed, open_pdf runs on an attacker-controlled token (error
+  dialogs/focus stealing today; a real path-taking flag later rides the hole silently). Fix: delete
+  the two-line skip — validate every token."
+    },
+    {
+      "file": "controller/pdf_controller.py",
+      "line": 2393,
+      "summary": "Cross-page text move dropped _update_thumbnails() from success and rollback paths
+  with the justification 'thumbnails stay valid' — but thumbnails render page CONTENT, and the move
+  changes content on both pages.",
+      "failure_scenario": "CONFIRMED regression vs prior behavior — drag a text block from page 2 to
+  page 5: both sidebar thumbnails keep showing pre-move content until an unrelated structural op
+  rebuilds them. Fix: _invalidate_thumbnails([source_page, destination_page]) — though note that
+  currently inherits finding #4's blank-prefix bug."
+    }
+  ]
+
+  Cleanup findings that didn't make the 15-cap (correctness outranked them): dead _update_thumbnails
+  kept only because tests stub it by name — update the tests and delete it; _byte_size defaulting to
+  0 on the base class makes the 512 MiB budget silently undercount any future command type (make it
+  abstract); the new zoom constants weren't adopted at pdf_view.py:867, controller:592, or
+  pdf_model.py:4969 (the literals the constants were created to kill); _dedup_top_snapshot_pair runs
+  a full whole-document memcmp on the GUI thread on every record (a model dirty-counter would make it
+  free); _SearchWorker/_SearchBridge clone the OCR scaffolding while the OCR twin still lacks the
+  gen-token fix and the thread-GC-safe release; preset gating in the optimize dialog reads
+  isEnabled() instead of self._capabilities; and _invalidate_thumbnails bumping the shared
+  _load_gen_by_session can cancel the 250ms open-background fallback and viewport-anchor restore
+  (narrow window, worth a dedicated counter).
+```

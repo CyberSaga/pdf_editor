@@ -23,7 +23,7 @@ Maintenance — when check_completion_proof_hook.py changes legitimately:
   2. Replace _HOOK_HASH below with the new SHA-256.
   3. python -c "import hashlib,pathlib; p=pathlib.Path('scripts/gate_anchor.py'); print(hashlib.sha256(p.read_bytes()).hexdigest())"
   4. Replace the 'scripts/gate_anchor.py' entry in completion_gate.py _PINNED_HASHES.
-  5. Document the change in docs/plans/2026-05-05-no-jump-editor-geometry-gate.md.
+  5. Document the change in plans/2026-05-05-no-jump-editor-geometry-gate.md.
 """
 from __future__ import annotations
 

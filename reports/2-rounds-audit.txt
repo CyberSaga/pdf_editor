@@ -1,0 +1,268 @@
+● My audit is complete. Here are the findings across the codebase.
+
+  ---
+  Audit Results — CyberSagaPDF
+
+  I read the security-sensitive and hot-path modules (model, controller, view, src/printing, utils) and ran the test
+  suite. Summary up front: the test suite is currently red (7 failures), the documented decompression-bomb guard is
+  bypassed on the main view path, and there are three synchronous UI-thread bottlenecks that freeze on large documents.
+
+  Feature failure
+
+  F1 — The standard pytest run fails 7 tests; the same file passes in isolation (order-dependent global-state leak).
+  Running the suite (python -m pytest test_scripts) fails these:
+  test_no_jump_editor_geometry.py::test_click_to_edit_real_geometry_pipeline
+  test_no_jump_editor_geometry.py::test_click_to_edit_qtest_integration[colored/complexed/vertical]
+  test_no_jump_editor_geometry.py::test_reopen_same_textbox_cycles_do_not_cumulate_shrink[colored/complexed/vertical]
+  The lead failure is a rendering pixel diff of 42.91% vs a 1% threshold. But running test_no_jump_editor_geometry.py
+  alone gives 377 passed. So nothing is wrong with those tests — an earlier test in the full run leaks global state that
+  corrupts text rendering fidelity (most likely the fitz.Page.get_text rawdict monkey-wrap in model/pdf_model.py:113
+  interacting with a live QApplication, or a font/DPR global). This violates the project's own Definition of Done ("All
+  existing tests pass — no regressions") and means the suite can't be trusted as a gate until the leak is isolated. I
+  narrowed it part-way (it is not triggered by the alphabetically-adjacent test_native_* files) but did not pin the
+  exact polluter.
+
+  Performance bottlenecks
+
+  P1 — Unbounded interactive zoom with no pixmap-size cap (also a resource-exhaustion vector). view/pdf_view.py:2677
+  does self.scale *= factor on every Ctrl+wheel tick with no upper clamp (the pinch path at line 3601 clamps to 4.0, and
+  the zoom combo at 1351 clamps to 400% — the wheel is the inconsistent one). The rendered scale flows into
+  _render_page_into_scene (controller/pdf_controller.py:798) as max(0.1, view.scale) — floor only, no ceiling — then to
+  get_page_pixmap. A few seconds of scrolling produces pixmaps of arbitrary size and freezes/OOMs the process.
+
+  P2 — _update_thumbnails renders every page synchronously on the UI thread. controller/pdf_controller.py:2631-2635 is a
+  list comprehension over all pages. There is a batched async version (_schedule_thumbnail_batch) used on initial load,
+  but every undo/redo and structural op calls the synchronous full rebuild (_refresh_after_command:2578, plus lines
+  1155/1728/1750/2309…). With page count allowed up to _MAX_PAGES = 5000, this hangs the window.
+
+  P3 — Full-text search is synchronous and re-extracts text per hit. controller.search_text (pdf_controller.py:2412)
+  calls SearchTool.search_text directly on the UI thread (no QThread). model/tools/search_tool.py:19-25 loops every page
+  calling search_for, then a separate get_text(clip=…) for each hit's context. On a large document this is O(pages ×
+  hits) of native calls with the UI blocked, unlike OCR/print/optimize which correctly use worker threads.
+
+  Security issues
+
+  S1 — The _MAX_PIXMAP_PX decompression-bomb guard is bypassed on the primary render path (CWE-400/409).
+  model/pdf_model.py:100 defines _safe_render_scale specifically to cap pixmaps from "untrusted PDFs," and it's applied
+  in export_pages, deskew, and OCR — but not in ToolManager.render_page_pixmap (model/tools/manager.py:71), which is
+  what get_page_pixmap and all interactive viewing use. Opening a crafted PDF whose first page is enormous (e.g.
+  200000×200000 pt) renders at scale 1.0 into a multi-GB pixmap on display, before any user action. The guard exists but
+  the main code path skips it.
+
+  S2 — _coerce_wm does not validate color or offsets from untrusted embedded JSON, despite claiming to.
+  model/tools/watermark_tool.py:27 documents itself as clamping untrusted embedded-watermark fields against CWE-20, and
+  it does clamp text/pages/font_size/opacity — but color is taken as a raw tuple(wm["color"]) with no length or numeric
+  check, and offset_x/offset_y/line_spacing are float()-coerced with no bounds. A crafted embedded blob (these are read
+  from any opened PDF at _load_watermarks_from_doc:210) can pass a malformed color or astronomical offsets into
+  apply_watermarks_to_page, driving degenerate/oversized tiling. The hardening is incomplete relative to its own
+  contract.
+
+  S3 — Single-instance socket only validates absolute paths; relative path tokens bypass the filter.
+  utils/single_instance.py:103 (_forwarded_argv_is_acceptable) rejects an absolute path only if it isn't an existing
+  .pdf — but any relative token passes unchecked and is then resolved and opened by the receiving instance (main.py:107
+  → handle_forwarded_cli). The named pipe is restricted to the same user (UserAccessOption, line 37), which bounds the
+  impact, but the acceptance filter has a real gap: a same-user peer can make the running editor open files outside the
+  intended .pdf-only contract.
+
+  Also worth flagging
+
+  - pyproject.toml is missing, though CLAUDE.md §3.1 describes it as the source of truth for ruff/mypy/pytest config and
+  pip install -e ".[dev]". It's not in git history either. The lint/type/test tooling contract the harness depends on
+  isn't actually present.
+
+  ---
+  I stopped at reporting since this was an audit request. The highest-leverage fixes, if you want them: route
+  render_page_pixmap through _safe_render_scale (closes S1 and P1's resource angle in one place), add an upper clamp to
+  the wheel-zoom, and move search_text/_update_thumbnails onto the existing worker-thread pattern. I can take any of
+  these — say which and I'll write the failing test first per your Red-Light rule. I'd also suggest letting me bisect F1
+  to name the exact polluting test before anything else, since a red suite undermines every other gate.
+
+
+● All evidence is in. Here is the complete review.
+
+  ---
+  Defensive-Programming Review: model/pdf_model.py + controller/
+
+  Root cause of your screenshot first
+
+  The dialog 「最佳化 PDF 失敗: 最佳化 PDF 失敗: code=4: Linearisation is no longer supported」 is a broken fallback
+  path, not a corrupted file:
+
+  1. You enabled 「最佳化快速網頁檢視」 (linearize) in the optimize dialog (view/dialogs/optimize.py:120), or picked a
+  preset that sets linearize=True (model/pdf_optimizer.py:234).
+  2. Linearize requires the optional pikepdf post-save packager. Your .venv does not have it (I verified: system Python
+  has pikepdf 9.7.0, .venv raises ModuleNotFoundError).
+  3. save_optimized_working_doc (model/pdf_optimizer.py:763-784) then falls back to working_doc.save(...,
+  linear=int(bool(options.linearize))) at line 777. PyMuPDF removed linearization in 1.24+; on your installed 1.25.5
+  this always raises code=4: Linearisation is no longer supported. The fallback can never succeed — it's dead code that
+  converts a missing optional dependency into a hard failure.
+  4. The doubled prefix is a double-wrap: pdf_optimizer.py:844 raises RuntimeError(f"最佳化 PDF 失敗: {e}"), then
+  _on_optimize_copy_failed (controller/pdf_controller.py:1326) shows f"最佳化 PDF 失敗: {exc}" again.
+
+  Immediate workaround: .venv\Scripts\pip install pikepdf. But the code defect stands regardless — see H-1.
+
+  ---
+  High severity
+
+  H-1 · Optimize linearize fallback calls a removed API — guaranteed feature failure
+
+  Files: model/pdf_optimizer.py:763-784, view/dialogs/optimize.py:120
+  Class: business-logic failure / capability bypass
+  When requires_post_save_packaging(options) is true but pikepdf is absent, the code silently downgrades to a fitz save
+  that passes linear=1 — an option the engine no longer supports. The UI offers a checkbox for a capability the runtime
+  cannot deliver, and the failure surfaces only after the (potentially long) optimize pass completes.
+  Refactor: capability-gate at the boundary, not at the failure point. Expose optimize_capabilities() from the model
+  (e.g. linearize_available: bool = _pikepdf() is not None); the dialog disables the checkbox with a tooltip when
+  unavailable. Delete the linear= kwarg from every fitz save call permanently (it is already correctly hardcoded to 0 in
+  fast_save_kwargs:719-729 — make that the only path). If options request packaging and pikepdf is missing, raise a
+  clear domain error before doing any work.
+
+  H-2 · _MAX_PIXMAP_PX guard bypassed on the main view render path → OOM
+
+  Files: model/tools/manager.py:71, model/pdf_model.py:1498 (get_page_pixmap), controller/pdf_controller.py:798
+  (_render_page_into_scene), view/pdf_view.py:2677
+  Class: OOM
+  You built the guard (_safe_render_scale, _MAX_PIXMAP_PX = 40M px, pdf_model.py:89-111) but it is only applied on the
+  export path (export_pages:1271). The hot path — ToolManager.render_page_pixmap:71 — builds fitz.Matrix(scale, scale)
+  with no clamp. Upstream, Ctrl+wheel zoom (pdf_view.py:2677, self.scale *= factor) has no upper bound, and
+  _render_page_into_scene:798 clamps only the floor (max(0.1, ...)) then multiplies by devicePixelRatio. A crafted PDF
+  with a huge MediaBox, or simply holding Ctrl+wheel, drives pixmap allocation to arbitrary size: bytes ≈
+  w·h·scale²·dpr²·3.
+  Refactor: this is the exact pattern in your own playbook — guard at the chokepoint, once. Move
+  _safe_render_scale(page, scale) inside ToolManager.render_page_pixmap so every consumer (view, thumbnails, print
+  preview, export) inherits the cap. Additionally clamp the view-layer zoom with one shared constant (wheel currently
+  unbounded, pinch caps at 4.0, combo at 400% — three different policies for one value).
+
+  H-3 · Synchronous all-pages thumbnail rebuild on the UI thread → multi-second freezes
+
+  File: controller/pdf_controller.py:2631-2635 (_update_thumbnails), called from 9 sites including
+  _refresh_after_command:2570 (every undo/redo)
+  Class: UI freeze (and OOM amplifier — all QPixmaps materialized at once)
+  [pixmap_to_qpixmap(self.model.get_thumbnail(i + 1, ...)) for i in range(len(self.model.doc))] renders every page
+  synchronously. A batched async alternative already exists (_schedule_thumbnail_batch:2637) but is used only on
+  document open. On a 1000-page document, every undo, rotate, or page delete blocks the event loop for the full
+  re-render.
+  Refactor: route all 9 call sites through _schedule_thumbnail_batch; for structural ops, invalidate only the affected
+  page range instead of rebuilding all pages.
+
+  H-4 · Undo snapshot memory is unbounded in bytes → OOM on large documents
+
+  File: model/edit_commands.py:285 (SnapshotCommand), MAX_UNDO_STACK_SIZE = 100
+  Class: OOM
+  Each structural command stores two full document serializations (before_bytes + after_bytes). The stack is capped by
+  count (100), not bytes. With your own _MAX_PDF_BYTES = 512MB open limit, the theoretical ceiling is ~100 GB of RAM;
+  even a 50 MB document reaches 10 GB after 100 edits. Adjacent issue: _capture_doc_snapshot (pdf_model.py:3129)
+  serializes the whole doc on the UI thread per command — a latency cliff on big files.
+  Refactor: enforce a cumulative byte budget (e.g. 256–512 MB) with oldest-first eviction; deduplicate — command N's
+  after_bytes equals command N+1's before_bytes, so store one snapshot per state, halving usage immediately. Longer
+  term: spill old snapshots to a temp directory.
+
+  ---
+  Medium severity
+
+  M-1 · Synchronous full-document search on the UI thread
+
+  Files: controller/pdf_controller.py:419, 2412-2418; model/tools/search_tool.py
+  sig_search is directly connected to search_text, which loops every page and issues a per-hit page.get_text("text",
+  clip=..., sort=True) native call. O(pages × hits) on the event loop — a common term in a large doc freezes the UI for
+  seconds.
+  Refactor: mirror the _OptimizePdfCopyWorker/_OptimizeWorkerBridge pattern you already have — QThread worker emitting
+  incremental hits_found(page, hits) signals, with cancellation on new query.
+
+  M-2 · insert_pages_from_file bypasses every open guard
+
+  File: model/pdf_model.py:1383
+  fitz.open(str(source_path)) on the user-chosen source file skips _guard_before_open entirely: no 512 MB size check, no
+  5000-page check, no encryption handling (an encrypted source yields confusing downstream errors). There is also no
+  check that the merged document stays under _MAX_PAGES — insertion is a guard bypass route to a 50k-page in-memory doc.
+  Bonus: the per-page insert_pdf loop is O(n) native calls on the UI thread.
+  Refactor: extract the open-time checks into _guard_foreign_doc(path) -> fitz.Document used by both open_pdf and
+  insert_pages_from_file; validate len(self.doc) + len(selection) <= _MAX_PAGES before inserting; insert contiguous runs
+  with one insert_pdf(from_page, to_page) call instead of per-page.
+
+  M-3 · _coerce_wm sanitization is incomplete — non-finite and unvalidated fields pass through
+
+  File: model/tools/watermark_tool.py:27-54
+  The docstring claims clamping, but: result["color"] = tuple(wm["color"]) is raw (arbitrary length/contents);
+  offset_x/offset_y/line_spacing are float-coerced with no bounds; and Python's json.loads accepts Infinity/NaN, so
+  float(wm.get("angle", 0)) % 360 can yield nan and font_size clamping via max/min does not reject nan reliably
+  (min(nan, 1000.0) is nan). A crafted embedded blob produces degenerate render matrices.
+  Refactor: add a _finite(v, lo, hi, default) helper using math.isfinite; validate color as exactly 3 floats clamped to
+  [0,1]; clamp offsets to a sane multiple of page size. Funnel add_watermark/update_watermark through the same coercion
+  (see M-5).
+
+  M-4 · Annotation methods accept page 0 / negative pages — silent wrong-page mutation
+
+  File: model/tools/annotation_tool.py:31, 47
+  add_highlight and add_rect index self._model.doc[page_num - 1] with no bounds check. page_num=0 becomes doc[-1] —
+  Python negative indexing silently annotates the last page. add_annotation:68 has the correct guard; the other two
+  don't. This is a logic-bypass that corrupts the wrong page without any error.
+  Refactor: one _require_page(page_num) -> fitz.Page helper on the tool (or model) used by every public method; raise
+  ValueError on out-of-range, never rely on negative indexing.
+
+  M-5 · Inconsistent validation between watermark entry points
+
+  File: model/tools/watermark_tool.py:113-147, 166-208
+  Three entry points, three policies: _coerce_wm clamps font_size/opacity; add_watermark clamps only line_spacing
+  (opacity, angle, font_size raw from caller); update_watermark clamps opacity and line_spacing but not font_size. Any
+  future caller (scripting, session restore) inherits whichever holes that path has.
+  Refactor: make _coerce_wm (hardened per M-3) the single normalization chokepoint; add_watermark and update_watermark
+  build a candidate dict and pass it through.
+
+  M-6 · build_print_snapshot duplicates the whole document in memory
+
+  File: model/tools/manager.py:105-115
+  When any overlay exists, tmp_doc.insert_pdf(self._model.doc) clones the entire document, then saves it to a BytesIO
+  with garbage=0 — peak memory ≈ 3× document size. The overlay-detection pre-pass is also O(pages × extensions).
+  Acceptable for small docs, a memory spike near your 512 MB ceiling.
+  Refactor: stream to a tempfile.NamedTemporaryFile instead of BytesIO (the print dispatcher already writes bytes to a
+  temp file anyway — src/printing/dispatcher.py:107 — so today the data exists in RAM and on disk simultaneously;
+  passing a path end-to-end removes the in-memory copy entirely).
+
+  ---
+  Low severity
+
+  L-1 · Double-wrapped error prefix + eager f-string logging
+
+  Files: model/pdf_optimizer.py:844, controller/pdf_controller.py:1325-1326
+  The visible 「最佳化 PDF 失敗: 最佳化 PDF 失敗: …」. Convention fix: the model raises a domain exception
+  (PdfOptimizeError) whose message has no UI prefix; the controller is the only layer that adds user-facing framing.
+  Also logger.error(f"...") defeats lazy formatting — use logger.error("最佳化 PDF 失敗: %s", exc).
+
+  L-2 · Overlay render path copies the full page per frame
+
+  File: model/tools/manager.py:78-89
+  Every repaint of a page with a watermark overlay creates a temp doc, runs insert_pdf, applies overlays, renders,
+  closes. During interactive zoom this is per-frame work — noticeable hitching on complex pages. Consider caching the
+  overlaid temp page keyed by (page_num, watermark-list revision).
+
+  L-3 · headless_merge has no resource guards and silently overwrites output
+
+  File: model/headless_merge.py:8-31
+  No size/page-count limits on inputs, no overwrite confirmation on output. Low because it's a non-interactive utility
+  path, but it should share _guard_foreign_doc from M-2.
+
+  L-4 · OCR cancellation is between-pages only
+
+  File: controller/pdf_controller.py:241-262
+  request_cancel is checked once per page; a single slow page cannot be interrupted. Acceptable cooperative model — just
+  worth documenting in PITFALLS so nobody mistakes it for a hang.
+
+  ---
+  Cross-cutting refactor priorities (robustness lens)
+
+  1. Chokepoint guards over call-site patches — the recurring shape here (H-2, M-2, M-4, M-5) is "guard exists, but
+  enforcement is per-site and sites were missed." Put _safe_render_scale inside render_page_pixmap, _guard_foreign_doc
+  inside every foreign fitz.open, _require_page inside every tool method, _coerce_wm behind every watermark write. One
+  audit + one guard each.
+  2. Byte budgets, not count budgets — undo stack (H-4) and any future cache should be capped in bytes with eviction.
+  3. Capability detection at UI-build time — never offer an option (linearize) the runtime can't honor; never keep
+  fallback code for removed engine APIs (H-1).
+  4. One error-wrapping layer — model raises domain exceptions with bare messages; controller alone adds 「…失敗」
+  framing (L-1).
+  5. The worker pattern you already have is good — use it everywhere — optimize/OCR/print are properly threaded; search
+  (M-1) and thumbnails (H-3) are the two remaining synchronous heavyweights on the event loop.
+
+  And the environment action item independent of code: pikepdf is installed for system Python but not in .venv — install
+  it there (and add it to your dependency spec, noting pyproject.toml is still missing from the repo) or linearize will
+  stay broken even after the fallback is fixed to fail fast.

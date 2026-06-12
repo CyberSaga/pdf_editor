@@ -81,7 +81,7 @@
    + ARCHITECTURE.md updates after every non-trivial task
   - §7 Definition of Done — explicit checklist; agent cannot claim "done"
   without checking each item
-  - §8 Plan as First-Class Artifact — docs/plans/ as the Execution Plan store
+  - §8 Plan as First-Class Artifact — plans/ as the Execution Plan store
   with archive discipline
 
   ---

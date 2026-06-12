@@ -34,7 +34,7 @@ Codex goal sessions (non-Claude Code), enforcement is provided by:
   (a) the mandatory completion rule in the gate plan file (prompt-level), and
   (b) the goal file explicitly naming completion_gate.py as the only valid
       done signal — Codex must report its stdout to satisfy the AC.
-Both layers are documented in docs/plans/2026-05-05-no-jump-editor-geometry-gate.md.
+Both layers are documented in plans/2026-05-05-no-jump-editor-geometry-gate.md.
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ from pathlib import Path
 
 REPO_ROOT    = Path(__file__).parent.parent
 # Bound to the ACTUAL gate plan file added in this change-set.
-GOAL_FILE    = REPO_ROOT / "docs" / "plans" / "2026-05-05-no-jump-editor-geometry-gate.md"
+GOAL_FILE    = REPO_ROOT / "plans" / "2026-05-05-no-jump-editor-geometry-gate.md"
 PROOF_PATH   = REPO_ROOT / "test_artifacts" / ".completion_proof.json"
 MARKER_PATH  = REPO_ROOT / "test_artifacts" / ".gate_passed"
 SIGNOFF_PATH = REPO_ROOT / "test_artifacts" / "signoff.json"

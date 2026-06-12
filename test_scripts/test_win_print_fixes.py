@@ -13,7 +13,7 @@ touched:
 - P4  the Windows raster path must cap effective DPI at 150 to keep the EMF spool
       small, while leaving lower DPIs untouched.
 
-Plan: docs/plans/2026-06-01-plan-surgical-fixes-for-eager-biscuit.md
+Plan: plans/2026-06-01-plan-surgical-fixes-for-eager-biscuit.md
 """
 
 from __future__ import annotations

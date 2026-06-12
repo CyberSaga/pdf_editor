@@ -123,9 +123,9 @@ A task is complete when:
 
 For tasks larger than a single function change:
 
-1. Write `docs/plans/<feature-name>.md` with: goal, affected modules, step list, open questions.
+1. Write `plans/<feature-name>.md` with: goal, affected modules, step list, open questions.
 2. Update the plan as you go — record decisions made and dead ends hit.
-3. On completion, move the plan to `docs/plans/archive/` and summarize the key architectural decision in `docs/ARCHITECTURE.md`.
+3. On completion, move the plan to `plans/archive/` and summarize the key architectural decision in `docs/ARCHITECTURE.md`.
 
 ## 9. Known Pitfall Areas
 

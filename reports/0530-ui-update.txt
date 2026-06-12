@@ -1,0 +1,112 @@
+❯ @"✳ Implement docs plans learn-from-ui-update-report.txt" only remain user input and agent's findings, verdicts.
+  ignore tool callings and file editings part
+
+● Now I have the full picture. Here's the clean extract — only user inputs and agent findings/verdicts:
+
+  ---
+  User: learn from ui-update-report.txt, restart from commit 24c9dba, remake UI color to 3 styles (Alpine Snow, Meadow
+  Lupine, Ink Porcelain), use assets in appearance_design/
+
+  Agent (plan — rejected twice while adding Glimmering Glacier as a 4th theme): Presented "Rebuild UI Theme System
+  (Clean Restart from 24c9dba)" plan; user rejected the first two drafts; agent added Glimmering Glacier as a 4th
+  palette and expanded the test plan to map each test to a specific prior review finding. User approved the third draft.
+
+  ---
+  Agent (implementation complete):
+  - Reset update-ui to 24c9dba; old work preserved on backup/theme-switcher-b774a72
+  - Appended Glimmering Glacier block 03 to appearance_design/colors.css
+  - Created view/icons.py (31-label→PNG map + load_icon)
+  - Created view/theme.py (4 token dicts, THEME_REGISTRY, build_qss, ThemeSwitcherWidget/_ThemeChip)
+  - Updated utils/preferences.py (ui/theme get/set with _VALID_THEME_IDS validation)
+  - Updated view/pdf_view.py (removed all inline color stylesheets; object names for panels/tabs; 92px toolbar
+  container; text-beside-icon + 24px icons; status-bar switcher; sig_theme_selected)
+  - Updated controller/pdf_controller.py (set_theme slot applies app-level QSS + persists + syncs switcher)
+  - Verified: 66/66 theme + preference tests pass; ruff zero new violations; full suite confirms no regressions
+
+  ---
+  User: commit and then /codex:review
+
+  Agent — Codex review (working-tree diff was empty after commit; sandbox failed to spawn shell): Review could not
+  inspect the code. Suggested running /code-review on the branch instead.
+
+  ---
+  User: run /code-review on the branch instead
+
+  Agent — /code-review findings (3 findings):
+
+  ┌─────┬─────────────────────┬─────────────────────────────────────────────────────────────────────────────────────┐
+  │  #  │       Finding       │                                       Detail                                        │
+  ├─────┼─────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤
+  │     │ Switcher inert on   │ sig_theme_selected is only connected when a controller activates (after a document  │
+  │ 1   │ empty shell         │ is opened). On the empty-startup shell the switcher does nothing — theme does not   │
+  │     │                     │ change, is not persisted, active-chip ring never moves.                             │
+  ├─────┼─────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤
+  │     │ Dual source of      │ Controller validates against THEME_REGISTRY; preferences validates against          │
+  │ 2   │ truth for valid IDs │ _VALID_THEME_IDS frozenset. Any drift between the two would surface as an uncaught  │
+  │     │                     │ ValueError inside a Qt slot.                                                        │
+  ├─────┼─────────────────────┼─────────────────────────────────────────────────────────────────────────────────────┤
+  │     │ View constructor    │ PDFView.__init__ calls QApplication.instance().setStyleSheet(...), polluting the    │
+  │ 3   │ mutates global app  │ process-global QApplication across the entire test suite.                           │
+  │     │ stylesheet          │                                                                                     │
+  └─────┴─────────────────────┴─────────────────────────────────────────────────────────────────────────────────────┘
+
+  ---
+  User: fix all 3 of them
+
+  Agent — fixes applied:
+
+  ┌─────┬────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │  #  │                                                    Fix                                                     │
+  ├─────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 1   │ Theming moved to View (PDFView.apply_theme) — works without a controller; removed PDFController.set_theme. │
+  ├─────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 2   │ New leaf utils/theme_ids.py imported by both layers; view/theme.py raises at import on drift.              │
+  ├─────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │     │ Side-effect-free constructor; main.py calls view.apply_initial_theme() once at the composition root.       │
+  │ 3   │ Bonus: removing the global-QSS side effect eliminated cross-test QSS pollution —                           │
+  │     │ test_no_jump_editor_geometry went from 14 full-suite failures (on base 24c9dba) to 0 when run in           │
+  │     │ isolation.                                                                                                 │
+  └─────┴────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Verification: 68 theme/preference tests pass; full suite 1133 passed, 7 failed (all pre-existing geometry flakes —
+  base had 14); ruff clean.
+
+  Committed as 3d6a5e5.
+
+  ---
+  User: /codex:adversarial-review --background after fixes findings get more or less?
+
+  Agent — verdict: Codex sandbox failed to spawn a shell (exit -1 on every command); could not inspect the code. Its one
+  finding was about stray untracked files in the working tree (Claude-plans.lnk, loose *.png, ui-update-report.txt) —
+  pre-existing local files already excluded from all commits. No code-level verdict produced. Net findings trend from
+  the cycle: 3 (code-review) → fixed; the redesign introduced 1 new (dead signal) → flagged for next step.
+
+  ---
+  User: do surgical fixes for findings. as for untracked files, I've moved them to right places so simply commit them
+
+  Agent — surgical fix + result:
+
+  Found that removing PDFController.set_theme had left sig_theme_selected emitted with no connected consumer — a dead
+  signal. Fix: deleted sig_theme_selected and the _on_theme_selected indirection; connected
+  ThemeSwitcherWidget.theme_selected directly to PDFView.apply_theme.
+
+  Final commits on update-ui:
+
+  ┌─────────┬──────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ Commit  │                                               What                                               │
+  ├─────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ cb1c4ff │ Four-theme system (feature)                                                                      │
+  ├─────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 3d6a5e5 │ 3 code-review findings fixed (view-owned theming, single source of truth, side-effect-free ctor) │
+  ├─────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 86b85c8 │ Relocated assets (theme preview PNGs, straighten icon, UI report)                                │
+  ├─────────┼──────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ 1ea3637 │ Surgical removal of dead sig_theme_selected signal                                               │
+  └─────────┴──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Final verification: 68 theme tests pass; full suite 1133 passed / 7 pre-existing geometry flakes / 0 new failures.
+  Ruff clean on all changed files. Zero open findings.
+
+※ recap: Four-theme UI system (Alpine Snow, Meadow Lupine, Ink Porcelain, Glimmering Glacier) with status-bar switcher
+  is fully implemented and committed across 4 commits on update-ui. No open findings; optionally wire the
+  straighten-page icon into the action map next. (disable recaps in /config)

@@ -150,7 +150,7 @@ def main(skip_signoff: bool = False) -> int:
         print(
             "\n  If this change is legitimate: update _PINNED_HASHES in "
             "scripts/completion_gate.py with the new SHA-256 and document the "
-            "reason in docs/plans/2026-05-05-no-jump-editor-geometry-gate.md "
+            "reason in plans/2026-05-05-no-jump-editor-geometry-gate.md "
             "(hash-pinning section).  Then re-run this command."
         )
         return 1
