@@ -384,7 +384,7 @@ def test_04d_structural_metadata_uses_actual_import_insert_positions(mvc, tmp_pa
     source = _make_pdf(tmp_path / "B.pdf", ["imported"])
     controller.open_pdf(str(base))
 
-    controller.insert_pages_from_file(str(source), [0, 1], 2)
+    controller.insert_pages_from_file(str(source), [0, 1], 2, password=None)
 
     cmd = model.command_manager._undo_stack[-1]
     assert cmd.affected_pages == [2]

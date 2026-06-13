@@ -318,7 +318,7 @@ class PDFView(QMainWindow):
 
     # --- Insert Pages Signals ---
     sig_insert_blank_page = Signal(int)  # position (1-based)
-    sig_insert_pages_from_file = Signal(str, list, int)  # source_file, source_pages, position
+    sig_insert_pages_from_file = Signal(str, list, int, object)  # source_file, source_pages, position, password
     sig_merge_pdfs_requested = Signal()
     sig_optimize_pdf_copy_requested = Signal()
     sig_backend_bootstrap_requested = Signal()
@@ -5119,14 +5119,11 @@ class PDFView(QMainWindow):
         if not source_file:
             return
 
-        # 開啟來源檔案以獲取總頁數
-        try:
-            source_doc = fitz.open(source_file)
-            source_total_pages = len(source_doc)
-            source_doc.close()
-        except Exception as e:
-            show_error(self, f"無法讀取來源檔案: {e}")
+        resolved = self._resolve_insert_source_file(source_file)
+        if resolved is None:
             return
+        source_total_pages = int(resolved["page_count"])
+        password = resolved.get("password")
 
         # 詢問要插入的頁碼
         pages_text, ok = QInputDialog.getText(
@@ -5159,7 +5156,21 @@ class PDFView(QMainWindow):
             1
         )
         if ok:
-            self.sig_insert_pages_from_file.emit(source_file, source_pages, position)
+            self.sig_insert_pages_from_file.emit(source_file, source_pages, position, password)
+
+    def _resolve_insert_source_file(self, source_file: str) -> dict | None:
+        controller = getattr(self, "controller", None)
+        if controller is not None and hasattr(controller, "resolve_insert_source_file"):
+            return controller.resolve_insert_source_file(source_file)
+        try:
+            source_doc = fitz.open(source_file)
+            try:
+                return {"path": source_file, "page_count": len(source_doc), "password": None}
+            finally:
+                source_doc.close()
+        except Exception as e:
+            show_error(self, f"無法讀取來源檔案: {e}")
+            return None
 
     def _insert_pages_from_file_at(self, position: int) -> None:
         if self.total_pages == 0:
@@ -5175,13 +5186,11 @@ class PDFView(QMainWindow):
         if not source_file:
             return
 
-        try:
-            source_doc = fitz.open(source_file)
-            source_total_pages = len(source_doc)
-            source_doc.close()
-        except Exception as e:
-            show_error(self, f"無法讀取來源檔案: {e}")
+        resolved = self._resolve_insert_source_file(source_file)
+        if resolved is None:
             return
+        source_total_pages = int(resolved["page_count"])
+        password = resolved.get("password")
 
         pages_text, ok = QInputDialog.getText(
             self,
@@ -5201,7 +5210,7 @@ class PDFView(QMainWindow):
             return
 
         bounded = max(1, min(int(position), self.total_pages + 1))
-        self.sig_insert_pages_from_file.emit(source_file, source_pages, bounded)
+        self.sig_insert_pages_from_file.emit(source_file, source_pages, bounded, password)
 
     def _clipboard_png_bytes(self) -> bytes | None:
         clipboard = QApplication.clipboard()

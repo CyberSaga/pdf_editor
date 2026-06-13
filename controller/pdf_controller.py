@@ -3204,7 +3204,13 @@ class PDFController:
             logger.error(f"插入空白頁面失敗: {e}")
             show_error(self.view, f"插入空白頁面失敗: {e}")
 
-    def insert_pages_from_file(self, source_file: str, source_pages: list[int], position: int):
+    def insert_pages_from_file(
+        self,
+        source_file: str,
+        source_pages: list[int],
+        position: int,
+        password: str | None = None,
+    ):
         """從其他檔案插入頁面"""
         if not self.model.doc:
             show_error(self.view, "沒有開啟的PDF文件")
@@ -3214,7 +3220,12 @@ class PDFController:
             self._cancel_search()
             before = self.model._capture_doc_snapshot()
             # Model validates source pages and returns the actual inserted target positions.
-            actual_inserted_pages = self.model.insert_pages_from_file(source_file, source_pages, position)
+            actual_inserted_pages = self.model.insert_pages_from_file(
+                source_file,
+                source_pages,
+                position,
+                password=password,
+            )
             if not actual_inserted_pages:
                 return
             self._invalidate_active_render_state(clear_page_sizes=True)
@@ -3243,6 +3254,32 @@ class PDFController:
         except Exception as e:
             logger.error(f"從檔案插入頁面失敗: {e}")
             show_error(self.view, f"從檔案插入頁面失敗: {e}")
+
+    def resolve_insert_source_file(self, path: str) -> dict | None:
+        password = None
+        while True:
+            try:
+                return self.model.open_insert_source(path, password=password)
+            except RuntimeError as e:
+                err_msg = str(e)
+                if "需要密碼" in err_msg or "encrypted" in err_msg.lower():
+                    pw = self.view.ask_pdf_password(path)
+                    if pw is None:
+                        return None
+                    password = pw
+                    continue
+                if "密碼驗證失敗" in err_msg:
+                    show_error(self.view, "密碼錯誤，請重試。")
+                    pw = self.view.ask_pdf_password(path)
+                    if pw is None:
+                        return None
+                    password = pw
+                    continue
+                show_error(self.view, f"無法讀取來源檔案: {e}")
+                return None
+            except Exception as e:
+                show_error(self.view, f"無法讀取來源檔案: {e}")
+                return None
 
     def add_watermark(self, pages: list, text: str, angle: float, opacity: float, font_size: int, color: tuple, font: str, offset_x: float = 0, offset_y: float = 0, line_spacing: float = 1.3):
         """新增浮水印"""

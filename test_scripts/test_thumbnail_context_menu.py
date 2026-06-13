@@ -163,4 +163,4 @@ def test_insert_pages_from_file_at_uses_given_position(monkeypatch: pytest.Monke
 
     pdf_view.PDFView._insert_pages_from_file_at(view, 6)
 
-    assert view.sig_insert_pages_from_file.calls == [((str(source_path)), [1, 3, 4], 6)]
+    assert view.sig_insert_pages_from_file.calls == [((str(source_path)), [1, 3, 4], 6, None)]
