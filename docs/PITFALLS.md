@@ -1089,3 +1089,12 @@
 **Fix:** `optimize_capabilities` returns `object_streams: True` unconditionally; `fast_save_kwargs` passes `use_objstms` from options; `requires_post_save_packaging` only gates on `linearize`.
 **File:** `model/pdf_optimizer.py`
 **Tests:** `test_scripts/test_phase7_guard_hygiene.py`, `test_scripts/test_pdf_optimize_workflow.py`
+
+## Deskew Can Increase File Size
+
+**Area:** `model/pdf_model.py` (`straighten_page`)
+**Symptom:** After using `拉正頁面`, the saved PDF can become much larger than the original.
+**Cause:** `PDFModel.straighten_page()` is designed for scanned or photographed pages. It renders the current page to a full-page RGB image, inserts that bitmap back into the document, and replaces the original page content. Compact vector text, PDF drawing operators, and reusable resources therefore become pixels. A larger output file is expected for this rasterizing implementation, especially on text/vector-heavy pages.
+**Mitigation:** When file size matters, use `另存為最佳化的副本` after deskew and choose the `極致壓縮` preset.
+**File:** `model/pdf_model.py`
+**Tests:** `test_scripts/test_page_deskew.py`, `test_scripts/test_page_deskew_scope.py`, `test_scripts/test_theme_and_icons.py::test_straighten_action_warns_about_size_growth`

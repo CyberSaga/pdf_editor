@@ -67,6 +67,12 @@ python main.py
 
 ## 打包（Windows）
 
+重新打包前，先刷新建置環境相依套件，確保輸出的執行檔符合 `requirements.txt`：
+
+```text
+.venv\Scripts\python -m pip install -U "Pillow>=12.2.0" numpy
+```
+
 ```text
 .venv\Scripts\python -m PyInstaller --noconfirm --clean --onefile --windowed main.py
 ```

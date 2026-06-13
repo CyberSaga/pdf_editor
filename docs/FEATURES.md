@@ -86,6 +86,8 @@ Undo/redo uses command history. Add-text insertion is atomic per insertion event
 
 Page-level operations include delete, rotate, insert blank page, insert pages from another file, and export selected pages. These operations participate in command history and refresh flows.
 
+Deskew/`拉正頁面` is image-based: it rasterizes the page into a full-page bitmap and can increase file size. When size matters, save an optimized copy afterward with the `極致壓縮` preset.
+
 Export behavior is now driven by a unified dialog:
 - Page scope supports `當前頁` and `指定頁面`.
 - `指定頁面` accepts page expressions like `1,3-5`.

@@ -78,6 +78,12 @@ powershell -ExecutionPolicy Bypass -File scripts\windows_file_association.ps1
 
 ## 6. Package (Windows)
 
+Before rebuilding the packaged app, refresh the build environment dependencies so the shipped artifact matches `requirements.txt`:
+
+```text
+.venv\Scripts\python -m pip install -U "Pillow>=12.2.0" numpy
+```
+
 ```text
 .venv\Scripts\python -m PyInstaller --noconfirm --clean --onefile --windowed main.py
 ```
