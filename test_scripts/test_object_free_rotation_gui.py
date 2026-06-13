@@ -211,16 +211,16 @@ def test_apply_selection_rotation_turns_box_and_handles() -> None:
         assert item.origin == QPointF(150.0, 140.0)
 
 
-def test_rotate_handle_click_without_drag_uses_90_step(monkeypatch) -> None:
+def test_rotate_handle_click_without_drag_opens_exact_rotation_menu(monkeypatch) -> None:
     view = _make_view()
     monkeypatch.setattr(pdf_view.PDFView, "_point_hits_object_rotate_handle", lambda self, pos: True)
+    shown: list[object] = []
+    monkeypatch.setattr(pdf_view.PDFView, "_show_object_rotation_menu", lambda self, pos=None: shown.append(pos), raising=False)
     monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *a, **k: None)
     monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *a, **k: None)
 
     pdf_view.PDFView._mouse_press(view, _FakeEvent(250, 140))
     pdf_view.PDFView._mouse_release(view, _FakeEvent(250, 140))  # no move
 
-    assert len(view.sig_rotate_object.emitted) == 1
-    req = view.sig_rotate_object.emitted[0][0]
-    assert req.absolute_rotation is None
-    assert req.rotation_delta == 90
+    assert shown
+    assert view.sig_rotate_object.emitted == []

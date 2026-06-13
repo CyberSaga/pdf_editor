@@ -4044,6 +4044,50 @@ class PDFView(QMainWindow):
         self._update_object_selection_visuals()
         return True
 
+    def _normalize_object_rotation_angle(self, angle: int | float) -> float:
+        return float(angle) % 360.0
+
+    def _rotate_selected_object_absolute(self, angle: int | float) -> bool:
+        info = getattr(self, "_selected_object_info", None)
+        if info is None or not getattr(info, "supports_rotate", False):
+            return False
+        absolute = self._normalize_object_rotation_angle(angle)
+        self.sig_rotate_object.emit(
+            RotateObjectRequest(
+                object_id=info.object_id,
+                object_kind=info.object_kind,
+                page_num=info.page_num,
+                rotation_delta=0,
+                absolute_rotation=absolute,
+            )
+        )
+        self._selected_object_info = replace(
+            info,
+            bbox=fitz.Rect(info.bbox),
+            rotation=absolute,
+        )
+        self._update_object_selection_visuals()
+        return True
+
+    def _add_object_rotation_actions(self, menu: QMenu) -> None:
+        rotate_menu = menu.addMenu("Rotate Object") if hasattr(menu, "addMenu") else menu
+        for angle in (90, 180, 270, 360):
+            label = f"{angle}°" if rotate_menu is not menu else f"Rotate Object {angle}°"
+            rotate_menu.addAction(
+                label,
+                lambda checked=False, a=angle: self._rotate_selected_object_absolute(a),
+            )
+
+    def _show_object_rotation_menu(self, pos: QPoint | QPointF | None = None) -> None:
+        menu = QMenu(self)
+        self._add_object_rotation_actions(menu)
+        if pos is None:
+            menu.exec_(QCursor.pos())
+            return
+        if isinstance(pos, QPointF):
+            pos = pos.toPoint()
+        menu.exec_(self.graphics_view.viewport().mapToGlobal(pos))
+
     def _clamp_editor_pos_to_page(self, x: float, y: float, page_idx: int):
         """將編輯框的場景座標（左上角）限制在指定頁面的邊界內，回傳 (x, y)。"""
         rs = self._render_scale if self._render_scale > 0 else 1.0
@@ -4245,8 +4289,7 @@ class PDFView(QMainWindow):
                     if was_drag:
                         self._commit_free_rotation()
                     else:
-                        # A click without a drag keeps the legacy 90° step (AC-4e).
-                        self._rotate_selected_object(90)
+                        self._show_object_rotation_menu(event.pos())
                 event.accept()
                 return
 
@@ -4305,7 +4348,7 @@ class PDFView(QMainWindow):
             if self._object_rotate_pending:
                 self._object_rotate_pending = False
                 self._object_drag_pending = False
-                self._rotate_selected_object(90)
+                self._show_object_rotation_menu(event.pos())
                 event.accept()
                 return
             if self._object_drag_active and self._object_drag_preview_rect is not None:
@@ -4561,7 +4604,7 @@ class PDFView(QMainWindow):
                 if getattr(selected_object, "supports_delete", False):
                     menu.addAction("Delete Object", self._delete_selected_object)
                 if getattr(selected_object, "supports_rotate", False):
-                    menu.addAction("Rotate Object 90°", lambda checked=False: self._rotate_selected_object(90))
+                    self._add_object_rotation_actions(menu)
                 menu.addSeparator()
         if self.current_mode == 'browse':
             menu.addAction("Select All", self._select_all_text_on_current_page)

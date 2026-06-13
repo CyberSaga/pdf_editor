@@ -209,6 +209,24 @@ def test_rotate_selected_object_emits_request() -> None:
     assert view.sig_rotate_object.emitted
 
 
+def test_rotate_selected_object_absolute_emits_exact_request() -> None:
+    view = _make_view()
+    view._selected_object_info = _make_object_hit(kind="textbox", supports_rotate=True)
+    view._update_object_selection_visuals = lambda *args, **kwargs: None
+
+    assert pdf_view.PDFView._rotate_selected_object_absolute(view, 180) is True
+    req = view.sig_rotate_object.emitted[-1][0]
+    assert req.rotation_delta == 0
+    assert req.absolute_rotation == 180.0
+    assert view._selected_object_info.rotation == 180.0
+
+    assert pdf_view.PDFView._rotate_selected_object_absolute(view, 360) is True
+    req = view.sig_rotate_object.emitted[-1][0]
+    assert req.rotation_delta == 0
+    assert req.absolute_rotation == 0.0
+    assert view._selected_object_info.rotation == 0.0
+
+
 def test_delete_shortcut_works_in_objects_mode() -> None:
     view = _make_view()
     view.current_mode = "objects"
@@ -276,16 +294,16 @@ def test_textbox_rotate_pending_release_uses_legacy_90_step(monkeypatch) -> None
     view._object_rotate_active = False
     view._object_drag_pending = False
 
+    shown: list[QPoint] = []
+    monkeypatch.setattr(pdf_view.PDFView, "_show_object_rotation_menu", lambda self, pos=None: shown.append(pos), raising=False)
     monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *args, **kwargs: None)
 
     event = _FakeEvent(40, 40)
     pdf_view.PDFView._mouse_release(view, event)
 
     assert event.accepted is True
-    assert len(view.sig_rotate_object.emitted) == 1
-    req = view.sig_rotate_object.emitted[0][0]
-    assert req.rotation_delta == 90
-    assert req.absolute_rotation is None
+    assert shown == [QPoint(40, 40)]
+    assert view.sig_rotate_object.emitted == []
 
 
 def test_scene_context_menu_includes_object_actions(monkeypatch) -> None:
@@ -304,16 +322,25 @@ def test_scene_context_menu_includes_object_actions(monkeypatch) -> None:
     class _FakeMenu:
         def __init__(self) -> None:
             self._actions = []
+            self._children = []
 
         def addAction(self, text: str, callback=None):
             self._actions.append(_FakeAction(text))
             return self._actions[-1]
+
+        def addMenu(self, text: str):
+            self._actions.append(_FakeAction(text))
+            child = _FakeMenu()
+            self._children.append(child)
+            return child
 
         def addSeparator(self):
             return None
 
         def exec_(self, *args, **kwargs):
             labels.extend(action.text() for action in self._actions)
+            for child in self._children:
+                labels.extend(action.text() for action in child._actions)
             return None
 
     monkeypatch.setattr(pdf_view, "QMenu", _FakeMenu)
@@ -321,7 +348,11 @@ def test_scene_context_menu_includes_object_actions(monkeypatch) -> None:
     pdf_view.PDFView._show_context_menu(view, QPoint(0, 0))
 
     assert "Delete Object" in labels
-    assert any(label.startswith("Rotate Object 90") for label in labels)
+    assert "Rotate Object" in labels
+    assert "90°" in labels
+    assert "180°" in labels
+    assert "270°" in labels
+    assert "360°" in labels
 
 
 def test_objects_context_menu_exposes_image_insert_actions(monkeypatch) -> None:
