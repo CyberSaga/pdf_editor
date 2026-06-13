@@ -2999,7 +2999,7 @@ class PDFView(QMainWindow):
                 except Exception as e:
                     logger.error(f"開啟編輯框失敗: {e}")
 
-        if self.current_mode == 'rect':
+        if event.button() == Qt.LeftButton and self.current_mode == 'rect':
             page_idx = self._scene_y_to_page_index(scene_pos.y()) if (self.continuous_pages and self.page_y_positions) else self.current_page
             page_idx = max(0, min(int(page_idx), max(0, int(getattr(self, "total_pages", 1) or 1) - 1)))
             self._drawing_page_idx = page_idx
@@ -3007,7 +3007,7 @@ class PDFView(QMainWindow):
             self._update_rect_preview(self.drawing_start)
             event.accept()
             return
-        if self.current_mode == 'highlight':
+        if event.button() == Qt.LeftButton and self.current_mode == 'highlight':
             self.drawing_start = scene_pos
         QGraphicsView.mousePressEvent(self.graphics_view, event)
 
@@ -3254,6 +3254,7 @@ class PDFView(QMainWindow):
                 self.scene.removeItem(item)
             except Exception:
                 pass
+        self.drawing_start = None
         self._rect_preview_item = None
         self._drawing_page_idx = None
 
@@ -4343,7 +4344,7 @@ class PDFView(QMainWindow):
                     logger.debug(f"文字框拖曳完成，新 rect={self.editing_rect}")
                 return
 
-        if not self.drawing_start or self.current_mode not in ['rect', 'highlight']:
+        if event.button() != Qt.LeftButton or not self.drawing_start or self.current_mode not in ['rect', 'highlight']:
             QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
             return
 

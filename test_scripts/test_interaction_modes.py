@@ -228,6 +228,60 @@ def test_rect_release_emits_from_starting_page_and_clears_preview(monkeypatch) -
     assert preview.removed is True
 
 
+def test_rect_mode_switch_clears_drawing_start_and_preview(monkeypatch) -> None:
+    view = _make_view()
+    view.current_mode = "rect"
+    view.total_pages = 1
+    view._scene_y_to_page_index = lambda y: 0
+    view._get_page_scene_rect = lambda page_idx: QRectF(0, 0, 500, 500)
+    view._VALID_MODES = pdf_view.PDFView._VALID_MODES
+    view.text_editor = None
+    view._heavy_panels_initialized = True
+    view._clear_object_selection = lambda: None
+    view._reset_browse_hover_cursor = lambda: None
+    view._clear_hover_highlight = lambda: None
+    view._clear_all_block_outlines = lambda: None
+    view._outline_redraw_timer = SimpleNamespace(stop=lambda: None)
+    view._sync_mode_checked_state = lambda mode: None
+    view.graphics_view = SimpleNamespace(
+        setDragMode=lambda mode: None,
+        viewport=lambda: SimpleNamespace(setCursor=lambda cursor: None),
+    )
+    view.right_stacked_widget = SimpleNamespace(setCurrentWidget=lambda widget: None)
+    view.page_info_card = object()
+
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *args, **kwargs: None)
+    pdf_view.PDFView._mouse_press(view, _FakeEvent(10, 10))
+    preview = view._rect_preview_item
+
+    pdf_view.PDFView.set_mode(view, "browse")
+
+    assert view.drawing_start is None
+    assert view._rect_preview_item is None
+    assert view._drawing_page_idx is None
+    assert preview.removed is True
+
+
+def test_rect_ignores_non_left_mouse_buttons(monkeypatch) -> None:
+    view = _make_view()
+    view.current_mode = "rect"
+    view.total_pages = 1
+    view._scene_y_to_page_index = lambda y: 0
+    view._get_page_scene_rect = lambda page_idx: QRectF(0, 0, 500, 500)
+    view.rect_color = SimpleNamespace(getRgbF=lambda: (1.0, 0.0, 0.0, 1.0))
+
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pdf_view.QMessageBox, "question", lambda *args, **kwargs: pdf_view.QMessageBox.No)
+
+    pdf_view.PDFView._mouse_press(view, _FakeEvent(10, 10, button=Qt.RightButton))
+    pdf_view.PDFView._mouse_release(view, _FakeEvent(100, 100, button=Qt.RightButton))
+
+    assert view.drawing_start is None
+    assert view._rect_preview_item is None
+    assert view.sig_add_rect.calls == []
+
+
 def test_objects_mode_blocks_browse_text_selection_start(monkeypatch) -> None:
     view = _make_view()
     view.current_mode = "objects"
