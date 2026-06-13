@@ -1,4 +1,4 @@
-# Modifications Implementation Report: Phases 1-4
+# Modifications Implementation Report: Phases 1-5
 
 Date: 2026-06-13
 
@@ -8,8 +8,7 @@ Scope: implementation progress for `modifications.md` through:
 - `plans/2026-06-13-modifications-phase-2-page-controls.md`
 - `plans/2026-06-13-modifications-phase-3-object-rotation.md`
 - `plans/2026-06-13-modifications-phase-4-insert-password.md`
-
-Phase 5 is not included in this report.
+- `plans/2026-06-13-modifications-phase-5-deskew-build.md`
 
 ## Phase 1: F1 Browse Mode and Rectangle Preview
 
@@ -120,18 +119,67 @@ Review status:
 - A local review pass checked the same Phase 4 diff range and reran the full Phase 4 verification command above.
 - No local Phase 4 defect was found.
 
+## Phase 5: Deskew Size Warning and Build Readiness
+
+Commits:
+
+- `30572f2 feat(ui): warn about deskew size growth`
+- `2e447fa docs: explain deskew size growth`
+
+Implemented:
+
+- Added a non-blocking `拉正頁面` tooltip warning that deskew can materially increase output file size.
+- Recommended `另存為最佳化的副本` with `極致壓縮` when file size matters.
+- Documented the root cause in `docs/PITFALLS.md`: `PDFModel.straighten_page()` rasterizes the page to a full-page RGB image, reinserts a bitmap, and replaces compact vector/text content with pixels.
+- Added a concise user-facing deskew size note in `docs/FEATURES.md`.
+- Added build-readiness notes in `docs/README.md` and `docs/README.zh-TW.md` instructing maintainers to refresh `.venv` dependencies before the next PyInstaller build with:
+  `.venv\Scripts\python -m pip install -U "Pillow>=12.2.0" numpy`
+
+Verification:
+
+- `pytest -q test_scripts/test_theme_and_icons.py test_scripts/test_page_deskew.py test_scripts/test_page_deskew_scope.py test_scripts/test_security_pillow_floor.py test_scripts/test_startup_heavy_imports.py`
+- Result: `67 passed`.
+
+Review status:
+
+- Subagent review found no blocking issues.
+- Review confirmed the tooltip/docs/build-note changes and a clean `git diff --check` over the Phase 5 range.
+
+## Completion Audit
+
+Commits:
+
+- `a4a8502 chore(gate): refresh gate anchor hash pin`
+- `14d2757 fix(gate): validate no-jump negative artifacts`
+
+Implemented:
+
+- Refreshed stale no-jump completion-gate trust-chain hashes in `scripts/completion_gate.py` and `scripts/gate_anchor.py`.
+- Documented the hash refresh rationale in `plans/2026-05-05-no-jump-editor-geometry-gate.md`.
+- Fixed a verifier/schema mismatch in `scripts/verify_no_jump.py` so the three negative-control no-jump artifacts are validated against their actual evidence schema instead of the full geometry-matrix schema.
+- Added focused regression coverage for that verifier behavior in `test_scripts/test_verify_no_jump_artifacts.py`.
+
+Verification:
+
+- Main workspace full suite: `pytest -q`
+- Result: `1322 passed, 21 skipped, 5 warnings`.
+- Clean worktree completion proof: `python scripts/completion_gate.py --skip-signoff`
+- Result: exit code `0` in `.worktrees/completion-gate-14d2757`.
+
+Notes:
+
+- The non-skip completion gate path failed only on UX signoff because `OPENAI_API_KEY` / OpenAI signoff capability was unavailable in the environment.
+- The same clean-worktree gate run passed the two no-jump pytest/artifact verification runs before signoff handling.
+
 ## Current State
 
-Branch status after Phase 4: `main` contains the Phase 1-4 commits listed above.
+Branch status after Phase 5 and completion audit: `main` contains the Phase 1-5 commits listed above plus the two completion-gate maintenance commits.
 
-Known non-phase worktree state still exists and was not modified by these phases:
+Final implementation head:
 
-- `.codegraph/graph.db`
-- `CODEINDEX.md`
-- `docs/2026-06-12-audit-remediation-report.md`
-- `docs/to_Update.md`
-- untracked plan/spec/report files
+- `14d2757 fix(gate): validate no-jump negative artifacts`
 
-Next planned work:
+Additional artifacts:
 
-- Implement `plans/2026-06-13-modifications-phase-5-deskew-build.md`.
+- Completion proof artifacts were generated in the clean completion worktree and then copied into ignored `test_artifacts/`.
+- Stashed non-phase planning/reference files were preserved separately and can be restored or committed independently.
