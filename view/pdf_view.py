@@ -256,10 +256,10 @@ def __getattr__(name: str) -> object:
 class PDFView(QMainWindow):
     _VALID_MODES = {"browse", "edit_text", "text_edit", "objects", "add_text", "rect", "highlight", "add_annotation"}
     _PAGE_SCOPE_CURRENT = "目前頁"
-    _PAGE_SCOPE_ALL = "全部頁"
+    _PAGE_SCOPE_ALL = "全部"
     _PAGE_SCOPE_ODD = "奇數頁"
     _PAGE_SCOPE_EVEN = "偶數頁"
-    _PAGE_SCOPE_CUSTOM = "自訂頁碼..."
+    _PAGE_SCOPE_CUSTOM = "自訂範圍"
     _PAGE_SCOPE_LABELS = (
         _PAGE_SCOPE_CURRENT,
         _PAGE_SCOPE_ALL,
