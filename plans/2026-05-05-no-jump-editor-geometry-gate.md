@@ -24,3 +24,17 @@ the anchor still carried
 The anchor was updated to the current tracked hook hash, which changed
 `scripts/gate_anchor.py`'s own hash to
 `792b98925af76420ee921e9746cf1b9fcb4319ad225fd99a332bc5c6e737f949`.
+
+2026-06-13: Refreshed the `scripts/verify_no_jump.py` entry in
+`scripts/completion_gate.py` from
+`9f591f9e81a1b30196360a31885a44650a3dc9ab81361a1fae6518709fc5bb32` to
+`f852959cdf6c16af6ae3cae5ae1d8ce8fa435a96fb3aeff7685afb0f40fe9323`.
+
+Reason: the completion gate proved the pytest no-jump cases passed, but
+artifact validation rejected the three negative-control artifacts because the
+validator applied the full `geom_*` matrix schema to every `geom_*` ID.
+`geom_negative_control` and `geom_neg_fontsize_*` are fixed negative controls
+with their own evidence fields, so `verify_no_jump.py` now validates those
+explicit schemas before the generic geometry matrix branch. This preserves the
+gate's artifact completeness check while making the validator match the
+negative-control artifact contract.

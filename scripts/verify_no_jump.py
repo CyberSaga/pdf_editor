@@ -340,7 +340,27 @@ def _check_artifacts(run_id: str, manifest: list[str], expected_ids: set[str]) -
                 f"expected {run_id[:8]}, got {str(data.get('run_id',''))[:8]})"
             )
 
-        if test_id.startswith("geom_"):
+        if test_id == "geom_negative_control":
+            _require_metric_keys(
+                test_id,
+                data,
+                (
+                    "injected_x_offset",
+                    "detected_drift",
+                ),
+            )
+        elif test_id.startswith("geom_neg_fontsize_"):
+            _require_metric_keys(
+                test_id,
+                data,
+                (
+                    "font_case",
+                    "correct_size",
+                    "wrong_size",
+                    "bad_fs_ratio",
+                ),
+            )
+        elif test_id.startswith("geom_"):
             _require_metric_keys(
                 test_id,
                 data,
@@ -981,4 +1001,3 @@ if __name__ == "__main__":
                      help="Skip the UX signoff step (for environments without OPENAI_API_KEY)")
     _args = _ap.parse_args()
     sys.exit(main(skip_signoff=_args.skip_signoff))
-
