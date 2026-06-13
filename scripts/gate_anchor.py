@@ -27,4 +27,4 @@ Maintenance — when check_completion_proof_hook.py changes legitimately:
 """
 from __future__ import annotations
 
-_HOOK_HASH: str = "dba7d52a8c3cf5a7bf86f4ea3f9f3a29ce7840aee99572de29e5ba1093e2e8b6"
+_HOOK_HASH: str = "26965582400cff5054ae3b1d6a75b13d101904abfd17503ef799bb153c43a794"

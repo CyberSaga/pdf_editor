@@ -122,7 +122,7 @@ def main(skip_signoff: bool = False) -> int:
         "scripts/check_gate_passed.py":                   "6c9304abf17891de4dd3c30301472443f08d5c724f953b19799bb173e5ca6544",
         "scripts/codex_session_guard.py":                 "7b50b60331ee1fb5b9849a79fee5966fcfd584980ae7a37d78b1acb305b4cfb2",
         "scripts/ux_signoff_agent.py":                    "bf4d1034857c5700a67c4d246d9b1c3fb06df606b543e49a4f388909f36a3705",
-        "scripts/gate_anchor.py":                         "32cf4ba5fbef37b6f41decfc9224347134e25537f940954d5b6ce2ab5c40eae8",
+        "scripts/gate_anchor.py":                         "792b98925af76420ee921e9746cf1b9fcb4319ad225fd99a332bc5c6e737f949",
     }
     hash_mismatches: list[str] = []
     for rel, expected in _PINNED_HASHES.items():
