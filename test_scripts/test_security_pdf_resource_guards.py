@@ -216,6 +216,53 @@ def test_insert_pages_from_file_returns_contiguous_positions(tmp_path) -> None:
         model.close()
 
 
+def _encrypted_pdf(path, user_pw: str) -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+    page.insert_text((40, 60), "secret")
+    doc.save(
+        str(path),
+        encryption=fitz.PDF_ENCRYPT_AES_256,
+        user_pw=user_pw,
+        owner_pw="owner",
+    )
+    doc.close()
+
+
+def test_guard_foreign_doc_authenticates_encrypted_source(tmp_path) -> None:
+    src = tmp_path / "encrypted.pdf"
+    _encrypted_pdf(src, "secret")
+
+    with pytest.raises(RuntimeError) as needs_pw:
+        pdf_model._guard_foreign_doc(src, password=None)
+    assert "encrypted" in str(needs_pw.value).lower() or "需要密碼" in str(needs_pw.value)
+
+    with pytest.raises(RuntimeError) as wrong_pw:
+        pdf_model._guard_foreign_doc(src, password="wrong")
+    assert "密碼驗證失敗" in str(wrong_pw.value) or "authenticate" in str(wrong_pw.value)
+
+    doc = pdf_model._guard_foreign_doc(src, password="secret")
+    try:
+        assert doc.page_count == 1
+    finally:
+        doc.close()
+
+
+def test_insert_pages_from_file_accepts_encrypted_source_password(tmp_path) -> None:
+    base = _make_pdf(tmp_path / "base.pdf", pages=1)
+    src = tmp_path / "encrypted-source.pdf"
+    _encrypted_pdf(src, "secret")
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(base))
+        inserted = model.insert_pages_from_file(str(src), [1], 2, password="secret")
+        assert inserted == [2]
+        assert len(model.doc) == 2
+    finally:
+        model.close()
+
+
 # --- render_page_pixmap central clamp (F1 follow-up, fixed Phase 2.1) --------
 #
 # ToolManager.render_page_pixmap is the central raster chokepoint; it now clamps

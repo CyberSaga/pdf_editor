@@ -97,20 +97,25 @@ def _guard_before_open(path: Path) -> None:
         raise ValueError(f"PDF exceeds size limit ({_MAX_PDF_BYTES // 1_048_576} MB)")
 
 
-def _guard_foreign_doc(path: Path) -> fitz.Document:
+def _guard_foreign_doc(path: Path, password: str | None = None) -> fitz.Document:
     """Open a foreign PDF with all resource guards applied.
 
-    Size limit (_MAX_PDF_BYTES), open, page limit (_MAX_PAGES), encryption.
+    Size limit (_MAX_PDF_BYTES), open, optional authentication, page limit (_MAX_PAGES).
     Returns the opened document; caller closes it.
     """
     _guard_before_open(path)
     doc = fitz.open(str(path))
-    if doc.needs_pass:
+    try:
+        if doc.needs_pass:
+            if password is None:
+                raise RuntimeError(f"document closed or encrypted — 需要密碼: {path}")
+            if doc.authenticate(password) == 0:
+                raise RuntimeError(f"PDF 密碼驗證失敗（authenticate 回傳 0）: {path}")
+        if doc.page_count > _MAX_PAGES:
+            raise ValueError(f"Foreign PDF exceeds page limit ({_MAX_PAGES} pages): {path}")
+    except Exception:
         doc.close()
-        raise ValueError(f"Foreign PDF is encrypted and cannot be opened without a password: {path}")
-    if doc.page_count > _MAX_PAGES:
-        doc.close()
-        raise ValueError(f"Foreign PDF exceeds page limit ({_MAX_PAGES} pages): {path}")
+        raise
     return doc
 
 
@@ -1359,7 +1364,13 @@ class PDFModel:
         self.block_manager.rebuild_page(insert_at, self.doc)
         return [insert_at + 1]
 
-    def insert_pages_from_file(self, source_file: str, source_pages: list[int], position: int) -> list[int]:
+    def insert_pages_from_file(
+        self,
+        source_file: str,
+        source_pages: list[int],
+        position: int,
+        password: str | None = None,
+    ) -> list[int]:
         """
         Insert pages from another PDF and return the actual inserted page numbers (1-based, ascending).
 
@@ -1390,7 +1401,7 @@ class PDFModel:
                 pos_value = 1
 
             # 開啟來源PDF（套用 foreign-doc 資源防護：大小/頁數/加密）
-            source_doc = _guard_foreign_doc(source_path)
+            source_doc = _guard_foreign_doc(source_path, password=password)
 
             # 轉換為 0-based 索引
             insert_at = min(pos_value - 1, len(self.doc))
@@ -1456,6 +1467,26 @@ class PDFModel:
         except Exception as e:
             logger.error(f"從檔案插入頁面失敗: {e}")
             raise RuntimeError(f"從檔案插入頁面失敗: {e}")
+
+    def open_insert_source(self, path: str, password: str | None = None) -> dict:
+        src_path = Path(path).resolve()
+        if not src_path.exists():
+            raise FileNotFoundError(f"來源檔案不存在: {path}")
+        if not src_path.is_file():
+            raise ValueError(f"路徑不是有效檔案: {path}")
+
+        doc = _guard_foreign_doc(src_path, password=password)
+        try:
+            if len(doc) == 0:
+                raise RuntimeError(f"無法讀取來源檔案: {path}")
+            return {
+                "path": str(src_path),
+                "display_name": src_path.name,
+                "page_count": len(doc),
+                "password": password,
+            }
+        finally:
+            doc.close()
 
     def compose_merged_document(self, ordered_sources: list[dict]) -> fitz.Document:
         if not self.doc:
