@@ -1164,7 +1164,11 @@ class PDFView(QMainWindow):
         self._configure_tool_toolbar(tb_page)
         tb_page.addAction("刪除頁", self._delete_pages)
         tb_page.addAction("旋轉頁", self._rotate_pages)
-        tb_page.addAction("拉正頁面", self._straighten_current_page)
+        self._action_straighten_page = tb_page.addAction("拉正頁面", self._straighten_current_page)
+        self._action_straighten_page.setToolTip(
+            "拉正頁面會將頁面重新渲染成整頁影像，可能明顯增加檔案大小。"
+            "若檔案大小很重要，請在拉正後使用「另存為最佳化的副本」並選擇「極致壓縮」。"
+        )
         tb_page.addAction("匯出頁", self._export_pages)
         tb_page.addAction("插入空白頁", self._insert_blank_page)
         tb_page.addAction("從檔案插入頁", self._insert_pages_from_file)

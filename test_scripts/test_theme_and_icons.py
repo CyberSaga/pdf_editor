@@ -418,3 +418,24 @@ def test_straighten_action_has_icon(qapp):
         assert not actions[0].icon().isNull()
     finally:
         view.deleteLater()
+
+
+def test_straighten_action_warns_about_size_growth(qapp):
+    from view.pdf_view import PDFView
+
+    view = PDFView()
+    try:
+        actions = [
+            a
+            for tb in view._collect_toolbars()
+            for a in tb.actions()
+            if a.text() == "拉正頁面"
+        ]
+        assert actions, "no 拉正頁面 toolbar action found"
+        tooltip = actions[0].toolTip()
+        assert "檔案大小" in tooltip
+        assert "影像" in tooltip
+        assert "最佳化" in tooltip
+        assert "極致壓縮" in tooltip
+    finally:
+        view.deleteLater()
