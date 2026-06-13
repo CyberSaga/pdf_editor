@@ -1,8 +1,8 @@
 """AC-4 (view) — free drag-rotation interaction.
 
-Covers the angle maths (direction match, AC-4b) and that dragging the rotate
-handle emits an absolute-angle RotateObjectRequest (AC-4a), while a click with no
-drag keeps the legacy 90° step (AC-4e).
+Covers the angle maths (direction match, AC-4b), that dragging the rotate
+handle emits an absolute-angle RotateObjectRequest (AC-4a), and that a click
+with no drag opens the exact-angle menu.
 """
 
 from __future__ import annotations
@@ -64,6 +64,9 @@ class _FakeSignal:
 
 
 class _FakeViewport:
+    def mapToGlobal(self, pos):
+        return pos
+
     def mapFrom(self, _parent, pos):
         return QPoint(pos.x(), pos.y())
 
@@ -224,3 +227,41 @@ def test_rotate_handle_click_without_drag_opens_exact_rotation_menu(monkeypatch)
 
     assert shown
     assert view.sig_rotate_object.emitted == []
+
+
+def test_object_rotation_menu_action_emits_exact_request(monkeypatch) -> None:
+    view = _make_view()
+    selected_actions: list[str] = []
+
+    class _FakeMenu:
+        def __init__(self, *args, **kwargs) -> None:
+            self.actions: list[tuple[str, object]] = []
+            self.children: list[_FakeMenu] = []
+
+        def addMenu(self, text: str):
+            child = _FakeMenu()
+            self.children.append(child)
+            return child
+
+        def addAction(self, text: str, callback=None):
+            self.actions.append((text, callback))
+
+        def exec_(self, *args, **kwargs):
+            menus = [self, *self.children]
+            for menu in menus:
+                for text, callback in menu.actions:
+                    if text == "270°":
+                        selected_actions.append(text)
+                        callback()
+                        return None
+            return None
+
+    monkeypatch.setattr(pdf_view, "QMenu", _FakeMenu)
+
+    pdf_view.PDFView._show_object_rotation_menu(view, QPointF(250, 140))
+
+    assert selected_actions == ["270°"]
+    assert len(view.sig_rotate_object.emitted) == 1
+    req = view.sig_rotate_object.emitted[0][0]
+    assert req.rotation_delta == 0
+    assert req.absolute_rotation == 270.0
