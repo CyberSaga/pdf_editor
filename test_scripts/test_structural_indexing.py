@@ -119,6 +119,17 @@ def test_delete_pages_returns_actual_deleted_pages_after_validation(tmp_path) ->
     assert len(model.doc) == 2
 
 
+def test_rotate_pages_360_returns_no_changes(tmp_path) -> None:
+    model = PDFModel()
+    model.open_pdf(str(_make_three_page_doc(tmp_path / "three-pages.pdf")))
+
+    before_rotation = model.doc[0].rotation
+    rotated_pages = model.rotate_pages([1], 360)
+
+    assert rotated_pages == []
+    assert model.doc[0].rotation == before_rotation
+
+
 def test_insert_blank_page_returns_actual_insert_position_after_validation(tmp_path) -> None:
     model = PDFModel()
     model.open_pdf(str(_make_three_page_doc(tmp_path / "three-pages.pdf")))

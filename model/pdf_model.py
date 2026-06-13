@@ -1210,6 +1210,12 @@ class PDFModel:
         """
         if not self.doc:
             raise ValueError("沒有開啟的PDF文件")
+        try:
+            normalized_degrees = int(degrees) % 360
+        except (TypeError, ValueError):
+            normalized_degrees = 0
+        if normalized_degrees == 0:
+            return []
 
         max_page = len(self.doc)
         normalized: list[int] = []
@@ -1226,7 +1232,7 @@ class PDFModel:
         actual_pages = sorted(set(normalized))
         for page_num in actual_pages:
             page = self.doc[page_num - 1]
-            page.set_rotation((page.rotation + degrees) % 360)
+            page.set_rotation((page.rotation + normalized_degrees) % 360)
         for page_num in actual_pages:
             self.block_manager.rebuild_page(page_num - 1, self.doc)
         return actual_pages
