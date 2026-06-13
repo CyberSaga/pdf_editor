@@ -14,8 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import view.pdf_view as pdf_view
-from model.object_requests import ObjectHitInfo
+import view.pdf_view as pdf_view  # noqa: E402
+from model.object_requests import ObjectHitInfo  # noqa: E402
 
 
 class _FakeSignal:
@@ -286,7 +286,7 @@ def test_text_edit_mouse_press_on_rotate_handle_does_not_arm_free_rotation(monke
     assert event.accepted is False
 
 
-def test_textbox_rotate_pending_release_uses_legacy_90_step(monkeypatch) -> None:
+def test_textbox_rotate_pending_release_steps_to_next_right_angle(monkeypatch) -> None:
     view = _make_view()
     view.current_mode = "text_edit"
     view._selected_object_info = _make_object_hit(kind="textbox", supports_rotate=True)
@@ -294,16 +294,16 @@ def test_textbox_rotate_pending_release_uses_legacy_90_step(monkeypatch) -> None
     view._object_rotate_active = False
     view._object_drag_pending = False
 
-    shown: list[QPoint] = []
-    monkeypatch.setattr(pdf_view.PDFView, "_show_object_rotation_menu", lambda self, pos=None: shown.append(pos), raising=False)
     monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *args, **kwargs: None)
 
     event = _FakeEvent(40, 40)
     pdf_view.PDFView._mouse_release(view, event)
 
     assert event.accepted is True
-    assert shown == [QPoint(40, 40)]
-    assert view.sig_rotate_object.emitted == []
+    assert len(view.sig_rotate_object.emitted) == 1
+    req = view.sig_rotate_object.emitted[0][0]
+    assert req.rotation_delta == 0
+    assert req.absolute_rotation == 90.0
 
 
 def test_scene_context_menu_includes_object_actions(monkeypatch) -> None:
@@ -349,10 +349,10 @@ def test_scene_context_menu_includes_object_actions(monkeypatch) -> None:
 
     assert "Delete Object" in labels
     assert "Rotate Object" in labels
-    assert "90°" in labels
-    assert "180°" in labels
-    assert "270°" in labels
-    assert "360°" in labels
+    assert "90°" not in labels
+    assert "180°" not in labels
+    assert "270°" not in labels
+    assert "360°" not in labels
 
 
 def test_objects_context_menu_exposes_image_insert_actions(monkeypatch) -> None:

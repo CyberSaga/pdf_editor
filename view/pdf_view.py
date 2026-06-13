@@ -267,6 +267,12 @@ class PDFView(QMainWindow):
         _PAGE_SCOPE_EVEN,
         _PAGE_SCOPE_CUSTOM,
     )
+    _PAGE_ROTATION_SCOPE_LABELS = (
+        _PAGE_SCOPE_ALL,
+        _PAGE_SCOPE_CURRENT,
+        _PAGE_SCOPE_ODD,
+        _PAGE_SCOPE_EVEN,
+    )
     _AUTOPAN_DEADZONE_PX: float = 12.0
     _AUTOPAN_DIVISOR: float = 8.0
     _AUTOPAN_MAX_STEP_PX: float = 40.0
@@ -529,6 +535,7 @@ class PDFView(QMainWindow):
         self._selected_text_page_idx = None
         self._selected_text_cached = ""
         self._selected_text_hit_info = None
+        self._selected_text_from_drag = False
         self._text_selection_start_doc_point = None
         self._text_selection_extra_rect_items = []
         self._selected_object_info = None
@@ -2317,6 +2324,7 @@ class PDFView(QMainWindow):
         self._clear_hover_highlight()
         self._reset_browse_hover_cursor()
         self._clear_text_selection()
+        self._cancel_active_drawing_interactions()
         self._disconnect_scroll_handler()
         self.scene.clear()
         self.page_items.clear()
@@ -2562,6 +2570,7 @@ class PDFView(QMainWindow):
         self._clear_hover_highlight()
         self._reset_browse_hover_cursor()
         self._clear_text_selection()
+        self._cancel_active_drawing_interactions()
         self._disconnect_scroll_handler()
         self.scene.clear()
         self.page_items.clear()
@@ -3302,6 +3311,9 @@ class PDFView(QMainWindow):
         self._rect_preview_item = None
         self._drawing_page_idx = None
 
+    def _cancel_active_drawing_interactions(self) -> None:
+        self._clear_rect_preview()
+
     def _update_rect_preview(self, scene_pos: QPointF) -> None:
         if self.current_mode != "rect" or self.drawing_start is None:
             return
@@ -3517,6 +3529,7 @@ class PDFView(QMainWindow):
         self._selected_text_rect_doc = fitz.Rect(doc_rect)
         self._selected_text_cached = selected_text
         self._selected_text_hit_info = getattr(self, "_text_selection_start_hit_info", None)
+        self._selected_text_from_drag = True
         # Per-line highlight rects were already rendered by _update_text_selection
         # above; keep them rather than collapsing to a single bounding rectangle.
         self._sync_text_property_panel_state()
@@ -3575,6 +3588,7 @@ class PDFView(QMainWindow):
         self._selected_text_page_idx = None
         self._selected_text_cached = ""
         self._selected_text_hit_info = None
+        self._selected_text_from_drag = False
         if self._text_selection_rect_item is not None:
             try:
                 if self._text_selection_rect_item.scene():
@@ -3670,6 +3684,7 @@ class PDFView(QMainWindow):
         self._selected_text_rect_doc = precise_doc_rect
         self._selected_text_cached = selected_text
         self._selected_text_hit_info = self._resolve_text_info_for_doc_rect(page_idx, precise_doc_rect)
+        self._selected_text_from_drag = False
 
         if self._text_selection_rect_item is None and getattr(self, "scene", None) is not None:
             pen = QPen(QColor(30, 120, 255, 200), 2)
@@ -3730,6 +3745,8 @@ class PDFView(QMainWindow):
     def _copy_selected_text_to_clipboard(self) -> bool:
         text = (self._selected_text_cached or "").strip()
         if not text and self._selected_text_rect_doc is not None and self._selected_text_page_idx is not None:
+            if getattr(self, "_selected_text_from_drag", False):
+                return False
             try:
                 text = self.controller.get_text_in_rect(self._selected_text_page_idx + 1, self._selected_text_rect_doc).strip()
             except Exception:
@@ -4073,14 +4090,23 @@ class PDFView(QMainWindow):
         self._update_object_selection_visuals()
         return True
 
+    @staticmethod
+    def _next_right_angle_rotation(current_angle: int | float) -> float:
+        normalized = float(current_angle) % 360.0
+        for target in (90.0, 180.0, 270.0, 360.0):
+            if normalized < target:
+                return 0.0 if target == 360.0 else target
+        return 90.0
+
+    def _rotate_selected_object_to_next_right_angle(self) -> bool:
+        info = getattr(self, "_selected_object_info", None)
+        if info is None or not getattr(info, "supports_rotate", False):
+            return False
+        target = self._next_right_angle_rotation(getattr(info, "rotation", 0.0))
+        return self._rotate_selected_object_absolute(target)
+
     def _add_object_rotation_actions(self, menu: QMenu) -> None:
-        rotate_menu = menu.addMenu("Rotate Object") if hasattr(menu, "addMenu") else menu
-        for angle in (90, 180, 270, 360):
-            label = f"{angle}°" if rotate_menu is not menu else f"Rotate Object {angle}°"
-            rotate_menu.addAction(
-                label,
-                lambda checked=False, a=angle: self._rotate_selected_object_absolute(a),
-            )
+        menu.addAction("Rotate Object", lambda checked=False: self._rotate_selected_object_to_next_right_angle())
 
     def _show_object_rotation_menu(self, pos: QPoint | QPointF | None = None) -> None:
         menu = QMenu(self)
@@ -4293,7 +4319,7 @@ class PDFView(QMainWindow):
                     if was_drag:
                         self._commit_free_rotation()
                     else:
-                        self._show_object_rotation_menu(event.pos())
+                        self._rotate_selected_object_to_next_right_angle()
                 event.accept()
                 return
 
@@ -4352,7 +4378,7 @@ class PDFView(QMainWindow):
             if self._object_rotate_pending:
                 self._object_rotate_pending = False
                 self._object_drag_pending = False
-                self._show_object_rotation_menu(event.pos())
+                self._rotate_selected_object_to_next_right_angle()
                 event.accept()
                 return
             if self._object_drag_active and self._object_drag_preview_rect is not None:
@@ -4702,10 +4728,37 @@ class PDFView(QMainWindow):
         if self.total_pages == 0:
             show_error(self, "沒有開啟的PDF文件")
             return
-        menu = QMenu(self)
-        for scope in self._PAGE_SCOPE_LABELS:
-            menu.addAction(scope, lambda checked=False, s=scope: self._delete_pages_for_scope(s))
-        menu.exec_(QCursor.pos())
+        scope = self._prompt_delete_page_scope()
+        if scope is None:
+            return
+        self._delete_pages_for_scope(scope)
+
+    def _prompt_delete_page_scope(self) -> str | None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("刪除頁")
+        layout = QVBoxLayout(dialog)
+
+        scope_row = QHBoxLayout()
+        scope_row.addWidget(QLabel("範圍"))
+        scope_combo = QComboBox(dialog)
+        for scope in self._PAGE_ROTATION_SCOPE_LABELS:
+            scope_combo.addItem(scope, scope)
+        scope_row.addWidget(scope_combo)
+        layout.addLayout(scope_row)
+
+        button_row = QHBoxLayout()
+        ok_button = QPushButton("確定", dialog)
+        cancel_button = QPushButton("取消", dialog)
+        ok_button.clicked.connect(dialog.accept)
+        cancel_button.clicked.connect(dialog.reject)
+        button_row.addStretch(1)
+        button_row.addWidget(ok_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
+
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        return str(scope_combo.currentData())
 
     def _pages_for_scope(self, scope: str) -> list[int] | None:
         total = int(getattr(self, "total_pages", 0) or 0)
@@ -4747,16 +4800,46 @@ class PDFView(QMainWindow):
         if self.total_pages == 0:
             show_error(self, "沒有開啟的PDF文件")
             return
-        menu = QMenu(self)
-        for degrees in (90, 180, 270, 360):
-            menu.addAction(f"{degrees}°", lambda checked=False, d=degrees: self._rotate_pages_with_scope_menu(d))
-        menu.exec_(QCursor.pos())
+        selection = self._prompt_page_rotation_options()
+        if selection is None:
+            return
+        degrees, scope = selection
+        self._rotate_pages_for_scope(scope, degrees)
 
-    def _rotate_pages_with_scope_menu(self, degrees: int) -> None:
-        menu = QMenu(self)
-        for scope in self._PAGE_SCOPE_LABELS:
-            menu.addAction(scope, lambda checked=False, s=scope, d=degrees: self._rotate_pages_for_scope(s, d))
-        menu.exec_(QCursor.pos())
+    def _prompt_page_rotation_options(self) -> tuple[int, str] | None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("旋轉頁")
+        layout = QVBoxLayout(dialog)
+
+        angle_row = QHBoxLayout()
+        angle_row.addWidget(QLabel("角度"))
+        angle_combo = QComboBox(dialog)
+        for degrees in (90, 180, 270):
+            angle_combo.addItem(f"{degrees}°", degrees)
+        angle_row.addWidget(angle_combo)
+        layout.addLayout(angle_row)
+
+        scope_row = QHBoxLayout()
+        scope_row.addWidget(QLabel("範圍"))
+        scope_combo = QComboBox(dialog)
+        for scope in self._PAGE_ROTATION_SCOPE_LABELS:
+            scope_combo.addItem(scope, scope)
+        scope_row.addWidget(scope_combo)
+        layout.addLayout(scope_row)
+
+        button_row = QHBoxLayout()
+        ok_button = QPushButton("確定", dialog)
+        cancel_button = QPushButton("取消", dialog)
+        ok_button.clicked.connect(dialog.accept)
+        cancel_button.clicked.connect(dialog.reject)
+        button_row.addStretch(1)
+        button_row.addWidget(ok_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
+
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        return int(angle_combo.currentData()), str(scope_combo.currentData())
 
     def _rotate_pages_for_scope(self, scope: str, degrees: int) -> None:
         pages = self._pages_for_scope(scope)

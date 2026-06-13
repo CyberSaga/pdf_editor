@@ -10,7 +10,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QLineEdit  # noqa: E402
 
 import view.pdf_view as pdf_view  # noqa: E402
@@ -46,58 +45,31 @@ def test_pages_for_scope_resolves_current_all_odd_even_and_custom(monkeypatch) -
     assert pdf_view.PDFView._pages_for_scope(view, "自訂範圍") == [1, 3, 4]
 
 
-def test_delete_pages_uses_scope_menu(monkeypatch) -> None:
+def test_delete_pages_uses_dialog_scope(monkeypatch) -> None:
     view = _make_view()
-    labels: list[str] = []
-
-    class _FakeMenu:
-        def __init__(self, *args, **kwargs) -> None:
-            self.actions: list[tuple[str, object]] = []
-
-        def addAction(self, text: str, callback=None):
-            self.actions.append((text, callback))
-
-        def exec_(self, *args, **kwargs):
-            labels.extend(text for text, _ in self.actions)
-            for text, callback in self.actions:
-                if text == "奇數頁":
-                    callback()
-                    break
-
-    monkeypatch.setattr(pdf_view, "QMenu", _FakeMenu)
+    monkeypatch.setattr(
+        pdf_view.PDFView,
+        "_prompt_delete_page_scope",
+        lambda self: self._PAGE_SCOPE_ODD,
+        raising=False,
+    )
 
     pdf_view.PDFView._delete_pages(view)
 
-    assert labels == ["目前頁", "全部", "奇數頁", "偶數頁", "自訂範圍"]
     assert view.sig_delete_pages.calls == [([1, 3, 5],)]
 
 
-def test_rotate_pages_uses_angle_and_scope_menus(monkeypatch) -> None:
+def test_rotate_pages_uses_dialog_angle_and_scope(monkeypatch) -> None:
     view = _make_view()
-    menus: list[list[str]] = []
-
-    class _FakeMenu:
-        def __init__(self, *args, **kwargs) -> None:
-            self.actions: list[tuple[str, object]] = []
-
-        def addAction(self, text: str, callback=None):
-            self.actions.append((text, callback))
-
-        def exec_(self, *args, **kwargs):
-            labels = [text for text, _ in self.actions]
-            menus.append(labels)
-            target = "180°" if "180°" in labels else "奇數頁"
-            for text, callback in self.actions:
-                if text == target:
-                    callback()
-                    break
-
-    monkeypatch.setattr(pdf_view, "QMenu", _FakeMenu)
+    monkeypatch.setattr(
+        pdf_view.PDFView,
+        "_prompt_page_rotation_options",
+        lambda self: (180, self._PAGE_SCOPE_ODD),
+        raising=False,
+    )
 
     pdf_view.PDFView._rotate_pages(view)
 
-    assert menus[0] == ["90°", "180°", "270°", "360°"]
-    assert menus[1] == ["目前頁", "全部", "奇數頁", "偶數頁", "自訂範圍"]
     assert view.sig_rotate_pages.calls == [([1, 3, 5], 180)]
 
 

@@ -228,6 +228,21 @@ def test_rect_release_emits_from_starting_page_and_clears_preview(monkeypatch) -
     assert preview.removed is True
 
 
+def test_scene_rebuild_clears_active_rect_drawing_preview() -> None:
+    view = _make_view()
+    view.current_mode = "rect"
+    view.drawing_start = QPointF(10, 10)
+    view._drawing_page_idx = 0
+    view._rect_preview_item = _FakeRectItem(QRectF(10, 10, 40, 40))
+    view.scene = _FakeScene()
+
+    pdf_view.PDFView._cancel_active_drawing_interactions(view)
+
+    assert view.drawing_start is None
+    assert view._drawing_page_idx is None
+    assert view._rect_preview_item is None
+
+
 def test_rect_mode_switch_clears_drawing_start_and_preview(monkeypatch) -> None:
     view = _make_view()
     view.current_mode = "rect"

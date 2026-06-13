@@ -13,9 +13,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from PySide6.QtCore import QPointF, QRectF
+from PySide6.QtCore import QPointF, QRectF  # noqa: E402
 
-import view.pdf_view as pdf_view
+import view.pdf_view as pdf_view  # noqa: E402
 
 
 class _FakeSignal:
@@ -98,6 +98,7 @@ def _make_view() -> pdf_view.PDFView:
     view._selected_text_page_idx = None
     view._selected_text_cached = ""
     view._selected_text_hit_info = None
+    view._selected_text_from_drag = False
     view._render_scale = 1.0
     return view
 
@@ -189,3 +190,25 @@ def test_finalize_text_selection_uses_run_anchored_snapshot_and_preserves_start_
     assert view._selected_text_cached == "Beta Gamma\nDelta Epsilon Zeta\nEta Theta"
     assert view._selected_text_rect_doc == fitz.Rect(132, 59, 258, 123)
     assert view._selected_text_hit_info is start_hit
+
+
+def test_copy_drag_selection_does_not_fall_back_to_whole_line(monkeypatch) -> None:
+    view = _make_view()
+    view._selected_text_page_idx = 0
+    view._selected_text_rect_doc = fitz.Rect(100, 20, 160, 40)
+    view._selected_text_cached = ""
+    view._selected_text_from_drag = True
+    view.status_bar = None
+    calls = {"fallback": 0, "clipboard": 0}
+    view.controller = SimpleNamespace(
+        get_text_in_rect=lambda page_num, rect: calls.__setitem__("fallback", calls["fallback"] + 1) or "WHOLE LINE"
+    )
+
+    class _Clipboard:
+        def setText(self, text: str) -> None:
+            calls["clipboard"] += 1
+
+    monkeypatch.setattr(pdf_view.QApplication, "clipboard", lambda: _Clipboard())
+
+    assert pdf_view.PDFView._copy_selected_text_to_clipboard(view) is False
+    assert calls == {"fallback": 0, "clipboard": 0}

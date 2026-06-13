@@ -214,53 +214,53 @@ def test_apply_selection_rotation_turns_box_and_handles() -> None:
         assert item.origin == QPointF(150.0, 140.0)
 
 
-def test_rotate_handle_click_without_drag_opens_exact_rotation_menu(monkeypatch) -> None:
+def test_next_right_angle_rotation_advances_from_current_angle() -> None:
+    assert pdf_view.PDFView._next_right_angle_rotation(0) == 90.0
+    assert pdf_view.PDFView._next_right_angle_rotation(63) == 90.0
+    assert pdf_view.PDFView._next_right_angle_rotation(90) == 180.0
+    assert pdf_view.PDFView._next_right_angle_rotation(181) == 270.0
+    assert pdf_view.PDFView._next_right_angle_rotation(312) == 0.0
+    assert pdf_view.PDFView._next_right_angle_rotation(359.9) == 0.0
+
+
+def test_rotate_handle_click_without_drag_steps_to_next_right_angle(monkeypatch) -> None:
     view = _make_view()
+    view._selected_object_info = ObjectHitInfo(
+        object_kind="native_image",
+        object_id="native_image:1:0",
+        page_num=1,
+        bbox=fitz.Rect(100, 100, 200, 180),
+        rotation=63,
+        supports_move=True,
+        supports_delete=True,
+        supports_rotate=True,
+    )
     monkeypatch.setattr(pdf_view.PDFView, "_point_hits_object_rotate_handle", lambda self, pos: True)
-    shown: list[object] = []
-    monkeypatch.setattr(pdf_view.PDFView, "_show_object_rotation_menu", lambda self, pos=None: shown.append(pos), raising=False)
     monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *a, **k: None)
     monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *a, **k: None)
 
     pdf_view.PDFView._mouse_press(view, _FakeEvent(250, 140))
     pdf_view.PDFView._mouse_release(view, _FakeEvent(250, 140))  # no move
 
-    assert shown
-    assert view.sig_rotate_object.emitted == []
+    assert len(view.sig_rotate_object.emitted) == 1
+    req = view.sig_rotate_object.emitted[0][0]
+    assert req.rotation_delta == 0
+    assert req.absolute_rotation == 90.0
 
 
-def test_object_rotation_menu_action_emits_exact_request(monkeypatch) -> None:
+def test_object_rotation_action_steps_to_next_right_angle() -> None:
     view = _make_view()
-    selected_actions: list[str] = []
-
-    class _FakeMenu:
-        def __init__(self, *args, **kwargs) -> None:
-            self.actions: list[tuple[str, object]] = []
-            self.children: list[_FakeMenu] = []
-
-        def addMenu(self, text: str):
-            child = _FakeMenu()
-            self.children.append(child)
-            return child
-
-        def addAction(self, text: str, callback=None):
-            self.actions.append((text, callback))
-
-        def exec_(self, *args, **kwargs):
-            menus = [self, *self.children]
-            for menu in menus:
-                for text, callback in menu.actions:
-                    if text == "270°":
-                        selected_actions.append(text)
-                        callback()
-                        return None
-            return None
-
-    monkeypatch.setattr(pdf_view, "QMenu", _FakeMenu)
-
-    pdf_view.PDFView._show_object_rotation_menu(view, QPointF(250, 140))
-
-    assert selected_actions == ["270°"]
+    view._selected_object_info = ObjectHitInfo(
+        object_kind="native_image",
+        object_id="native_image:1:0",
+        page_num=1,
+        bbox=fitz.Rect(100, 100, 200, 180),
+        rotation=181,
+        supports_move=True,
+        supports_delete=True,
+        supports_rotate=True,
+    )
+    assert pdf_view.PDFView._rotate_selected_object_to_next_right_angle(view) is True
     assert len(view.sig_rotate_object.emitted) == 1
     req = view.sig_rotate_object.emitted[0][0]
     assert req.rotation_delta == 0
