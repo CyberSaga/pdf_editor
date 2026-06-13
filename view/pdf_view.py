@@ -488,6 +488,8 @@ class PDFView(QMainWindow):
         self._outline_redraw_timer.setSingleShot(True)
         self._outline_redraw_timer.timeout.connect(self._draw_all_block_outlines)
         self.drawing_start = None
+        self._drawing_page_idx = None
+        self._rect_preview_item = None
         self.text_editor: QGraphicsProxyWidget = None
         self.editing_intent = "edit_existing"
         self.editing_rect: fitz.Rect = None
@@ -927,6 +929,10 @@ class PDFView(QMainWindow):
         self._shortcut_escape = QShortcut(QKeySequence(Qt.Key_Escape), self)
         self._shortcut_escape.setContext(Qt.ShortcutContext.WindowShortcut)
         self._shortcut_escape.activated.connect(self._on_escape_shortcut)
+
+        self._shortcut_browse_mode = QShortcut(QKeySequence(Qt.Key_F1), self)
+        self._shortcut_browse_mode.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._shortcut_browse_mode.activated.connect(lambda: self.set_mode("browse"))
 
         self._shortcut_toggle_left_sidebar = QShortcut(QKeySequence("Ctrl+Alt+L"), self)
         self._shortcut_toggle_left_sidebar.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -1829,6 +1835,7 @@ class PDFView(QMainWindow):
             # mode-specific; carrying it across a mode switch leaves orphan
             # overlay items on the page.
             self._clear_object_selection()
+        self._clear_rect_preview()
         # 切換模式時清除所有拖曳/待定狀態
         self._drag_pending = False
         self._drag_active = False
@@ -2992,7 +2999,15 @@ class PDFView(QMainWindow):
                 except Exception as e:
                     logger.error(f"開啟編輯框失敗: {e}")
 
-        if self.current_mode in ['rect', 'highlight']:
+        if self.current_mode == 'rect':
+            page_idx = self._scene_y_to_page_index(scene_pos.y()) if (self.continuous_pages and self.page_y_positions) else self.current_page
+            page_idx = max(0, min(int(page_idx), max(0, int(getattr(self, "total_pages", 1) or 1) - 1)))
+            self._drawing_page_idx = page_idx
+            self.drawing_start = self._clamp_scene_point_to_page(scene_pos, page_idx)
+            self._update_rect_preview(self.drawing_start)
+            event.accept()
+            return
+        if self.current_mode == 'highlight':
             self.drawing_start = scene_pos
         QGraphicsView.mousePressEvent(self.graphics_view, event)
 
@@ -3174,6 +3189,11 @@ class PDFView(QMainWindow):
                     self._last_hover_scene_pos = scene_pos
                     self._update_hover_highlight(scene_pos)
 
+        if self.current_mode == 'rect' and self.drawing_start is not None:
+            self._update_rect_preview(scene_pos)
+            event.accept()
+            return
+
         QGraphicsView.mouseMoveEvent(self.graphics_view, event)
 
     def _update_browse_hover_cursor(self, scene_pos: QPointF) -> None:
@@ -3226,6 +3246,35 @@ class PDFView(QMainWindow):
         x = min(max(scene_pos.x(), page_rect.left()), page_rect.right())
         y = min(max(scene_pos.y(), page_rect.top()), page_rect.bottom())
         return QPointF(x, y)
+
+    def _clear_rect_preview(self) -> None:
+        item = getattr(self, "_rect_preview_item", None)
+        if item is not None:
+            try:
+                self.scene.removeItem(item)
+            except Exception:
+                pass
+        self._rect_preview_item = None
+        self._drawing_page_idx = None
+
+    def _update_rect_preview(self, scene_pos: QPointF) -> None:
+        if self.current_mode != "rect" or self.drawing_start is None:
+            return
+        page_idx = getattr(self, "_drawing_page_idx", None)
+        if page_idx is None:
+            return
+
+        end_pos = self._clamp_scene_point_to_page(scene_pos, page_idx)
+        rect = QRectF(self.drawing_start, end_pos).normalized()
+        pen = QPen(QColor(220, 38, 38, 210), 1)
+        brush = QBrush(QColor(220, 38, 38, 35))
+        if self._rect_preview_item is None:
+            self._rect_preview_item = self.scene.addRect(rect, pen, brush)
+            self._rect_preview_item.setZValue(20)
+        else:
+            self._rect_preview_item.setRect(rect)
+            self._rect_preview_item.setPen(pen)
+            self._rect_preview_item.setBrush(brush)
 
     def _scene_rect_to_doc_rect(self, scene_rect: QRectF, page_idx: int) -> fitz.Rect | None:
         rs = self._render_scale if self._render_scale > 0 else 1.0
@@ -4299,22 +4348,31 @@ class PDFView(QMainWindow):
             return
 
         end_pos = self._event_scene_pos(event)
-        rect = QRectF(self.drawing_start, end_pos).normalized()
-        cy = (rect.top() + rect.bottom()) / 2
-        page_idx = self._scene_y_to_page_index(cy) if (self.continuous_pages and self.page_y_positions) else self.current_page
-        y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0
-        fitz_rect = fitz.Rect(rect.x() / self.scale, (rect.y() - y0) / self.scale,
-                              rect.right() / self.scale, (rect.bottom() - y0) / self.scale)
 
         if self.current_mode == 'highlight':
+            rect = QRectF(self.drawing_start, end_pos).normalized()
+            cy = (rect.top() + rect.bottom()) / 2
+            page_idx = self._scene_y_to_page_index(cy) if (self.continuous_pages and self.page_y_positions) else self.current_page
+            y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0
+            fitz_rect = fitz.Rect(rect.x() / self.scale, (rect.y() - y0) / self.scale,
+                                  rect.right() / self.scale, (rect.bottom() - y0) / self.scale)
             color = self.highlight_color.getRgbF()
             self.sig_add_highlight.emit(page_idx + 1, fitz_rect, color)
         elif self.current_mode == 'rect':
-            color = self.rect_color.getRgbF()
-            fill = QMessageBox.question(self, "矩形", "是否填滿?") == QMessageBox.Yes
-            self.sig_add_rect.emit(page_idx + 1, fitz_rect, color, fill)
+            page_idx = getattr(self, "_drawing_page_idx", None)
+            if page_idx is None:
+                cy = (self.drawing_start.y() + end_pos.y()) / 2
+                page_idx = self._scene_y_to_page_index(cy) if (self.continuous_pages and self.page_y_positions) else self.current_page
+            end_pos = self._clamp_scene_point_to_page(end_pos, page_idx)
+            rect = QRectF(self.drawing_start, end_pos).normalized()
+            fitz_rect = self._scene_rect_to_doc_rect(rect, page_idx)
+            if fitz_rect is not None:
+                color = self.rect_color.getRgbF()
+                fill = QMessageBox.question(self, "矩形", "是否填滿?") == QMessageBox.Yes
+                self.sig_add_rect.emit(page_idx + 1, fitz_rect, color, fill)
 
         self.drawing_start = None
+        self._clear_rect_preview()
         QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
 
     def _create_text_editor(

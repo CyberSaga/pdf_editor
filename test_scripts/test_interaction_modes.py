@@ -13,7 +13,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from PySide6.QtCore import QPointF, Qt  # noqa: E402
+from PySide6.QtCore import QPointF, QRectF, Qt  # noqa: E402
+from PySide6.QtGui import QKeySequence, QShortcut  # noqa: E402
 
 import view.pdf_view as pdf_view  # noqa: E402
 from model.object_requests import ObjectHitInfo  # noqa: E402
@@ -25,6 +26,43 @@ class _FakeSignal:
 
     def emit(self, *args) -> None:
         self.calls.append(args)
+
+
+class _FakeRectItem:
+    def __init__(self, rect: QRectF) -> None:
+        self._rect = QRectF(rect)
+        self.removed = False
+        self.z_value = 0
+
+    def rect(self) -> QRectF:
+        return QRectF(self._rect)
+
+    def setRect(self, rect: QRectF) -> None:
+        self._rect = QRectF(rect)
+
+    def setPen(self, _pen) -> None:
+        pass
+
+    def setBrush(self, _brush) -> None:
+        pass
+
+    def setZValue(self, value: float) -> None:
+        self.z_value = value
+
+
+class _FakeScene:
+    def __init__(self) -> None:
+        self.items: list[_FakeRectItem] = []
+        self.removed: list[_FakeRectItem] = []
+
+    def addRect(self, rect: QRectF, *_args) -> _FakeRectItem:
+        item = _FakeRectItem(rect)
+        self.items.append(item)
+        return item
+
+    def removeItem(self, item: _FakeRectItem) -> None:
+        item.removed = True
+        self.removed.append(item)
 
 
 class _FakeEvent:
@@ -75,8 +113,15 @@ def _make_view() -> pdf_view.PDFView:
     view.current_page = 0
     view.total_pages = 1
     view.scale = 1.0
+    view._render_scale = 1.0
+    view.continuous_pages = True
+    view.page_y_positions = [0.0]
+    view.drawing_start = None
+    view._drawing_page_idx = None
+    view._rect_preview_item = None
     view._fullscreen_active = False
     view.graphics_view = object()
+    view.scene = _FakeScene()
 
     # Object selection state (single-select in current implementation).
     view._selected_object_info = None
@@ -104,6 +149,8 @@ def _make_view() -> pdf_view.PDFView:
 
     # Signals used by actions.
     view.sig_mode_changed = _FakeSignal()
+    view.sig_add_rect = _FakeSignal()
+    view.sig_add_highlight = _FakeSignal()
 
     # Object hit testing and selection helpers.
     view._point_hits_object_rotate_handle = lambda scene_pos: False
@@ -116,6 +163,69 @@ def _make_view() -> pdf_view.PDFView:
     )
 
     return view
+
+
+def test_f1_shortcut_switches_to_browse_mode(qapp) -> None:
+    view = pdf_view.PDFView()
+    try:
+        view.set_mode("rect")
+        shortcuts = [
+            child
+            for child in view.findChildren(QShortcut)
+            if child.key().matches(QKeySequence(Qt.Key_F1)) == QKeySequence.ExactMatch
+        ]
+        assert shortcuts
+
+        shortcuts[0].activated.emit()
+
+        assert view.current_mode == "browse"
+    finally:
+        view.close()
+        view.deleteLater()
+
+
+def test_rect_drag_creates_preview_on_starting_page(monkeypatch) -> None:
+    view = _make_view()
+    view.current_mode = "rect"
+    view.total_pages = 2
+    view.page_y_positions = [0.0, 1000.0]
+    view._scene_y_to_page_index = lambda y: 0 if y < 1000 else 1
+    view._get_page_scene_rect = lambda page_idx: QRectF(0, page_idx * 1000, 500, 500)
+
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseMoveEvent", lambda *args, **kwargs: None)
+
+    pdf_view.PDFView._mouse_press(view, _FakeEvent(10, 10))
+    pdf_view.PDFView._mouse_move(view, _FakeEvent(700, 1400))
+
+    assert view._drawing_page_idx == 0
+    assert view._rect_preview_item is not None
+    assert view._rect_preview_item.rect() == QRectF(10, 10, 490, 490)
+
+
+def test_rect_release_emits_from_starting_page_and_clears_preview(monkeypatch) -> None:
+    view = _make_view()
+    view.current_mode = "rect"
+    view.total_pages = 2
+    view.page_y_positions = [0.0, 1000.0]
+    view._scene_y_to_page_index = lambda y: 0 if y < 1000 else 1
+    view._get_page_scene_rect = lambda page_idx: QRectF(0, page_idx * 1000, 500, 500)
+    view.rect_color = SimpleNamespace(getRgbF=lambda: (1.0, 0.0, 0.0, 1.0))
+
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseMoveEvent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pdf_view.QMessageBox, "question", lambda *args, **kwargs: pdf_view.QMessageBox.No)
+
+    pdf_view.PDFView._mouse_press(view, _FakeEvent(10, 10))
+    pdf_view.PDFView._mouse_move(view, _FakeEvent(700, 1400))
+    preview = view._rect_preview_item
+    pdf_view.PDFView._mouse_release(view, _FakeEvent(700, 1400))
+
+    assert view.sig_add_rect.calls == [(1, fitz.Rect(10, 10, 500, 500), (1.0, 0.0, 0.0, 1.0), False)]
+    assert view._rect_preview_item is None
+    assert view._drawing_page_idx is None
+    assert preview.removed is True
 
 
 def test_objects_mode_blocks_browse_text_selection_start(monkeypatch) -> None:
