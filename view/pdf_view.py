@@ -255,6 +255,18 @@ def __getattr__(name: str) -> object:
 
 class PDFView(QMainWindow):
     _VALID_MODES = {"browse", "edit_text", "text_edit", "objects", "add_text", "rect", "highlight", "add_annotation"}
+    _PAGE_SCOPE_CURRENT = "目前頁"
+    _PAGE_SCOPE_ALL = "全部頁"
+    _PAGE_SCOPE_ODD = "奇數頁"
+    _PAGE_SCOPE_EVEN = "偶數頁"
+    _PAGE_SCOPE_CUSTOM = "自訂頁碼..."
+    _PAGE_SCOPE_LABELS = (
+        _PAGE_SCOPE_CURRENT,
+        _PAGE_SCOPE_ALL,
+        _PAGE_SCOPE_ODD,
+        _PAGE_SCOPE_EVEN,
+        _PAGE_SCOPE_CUSTOM,
+    )
     _AUTOPAN_DEADZONE_PX: float = 12.0
     _AUTOPAN_DIVISOR: float = 8.0
     _AUTOPAN_MAX_STEP_PX: float = 40.0
@@ -1185,6 +1197,12 @@ class PDFView(QMainWindow):
         right_layout = QHBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
         self.page_counter_label = QLabel("頁 1 / 1")
+        self.page_counter_label.setVisible(False)
+        self.page_number_input = QLineEdit("1")
+        self.page_number_input.setAlignment(Qt.AlignRight)
+        self.page_number_input.setFixedWidth(52)
+        self.page_number_input.returnPressed.connect(self._on_page_number_input_return_pressed)
+        self.page_total_label = QLabel("/ 1")
         self.zoom_combo = QComboBox()
         self.zoom_combo.setEditable(True)
         self.zoom_combo.setMinimumWidth(88)  # 放寬以完整顯示「100%」「200%」等縮放數字
@@ -1202,6 +1220,8 @@ class PDFView(QMainWindow):
         self._action_redo_right = QAction("↻ 重做", self)
         self._action_redo_right.triggered.connect(self.sig_redo.emit)
         right_layout.addWidget(self.page_counter_label)
+        right_layout.addWidget(self.page_number_input)
+        right_layout.addWidget(self.page_total_label)
         right_layout.addWidget(QLabel(" "))
         right_layout.addWidget(self.zoom_combo)
         right_layout.addWidget(self.fit_view_btn)
@@ -2106,13 +2126,33 @@ class PDFView(QMainWindow):
     def _update_page_counter(self):
         n = max(1, self.total_pages)
         cur = min(self.current_page + 1, n)
-        self.page_counter_label.setText(f"頁 {cur} / {n}")
+        if hasattr(self, "page_counter_label"):
+            self.page_counter_label.setText(f"頁 {cur} / {n}")
+        if hasattr(self, "page_number_input"):
+            if self.page_number_input.text() != str(cur):
+                self.page_number_input.blockSignals(True)
+                self.page_number_input.setText(str(cur))
+                self.page_number_input.blockSignals(False)
+        if hasattr(self, "page_total_label"):
+            self.page_total_label.setText(f"/ {n}")
         pct = int(round(self.scale * 100))
         text = f"{pct}%"
         if self.zoom_combo.currentText() != text:
             self.zoom_combo.blockSignals(True)
             self.zoom_combo.setCurrentText(text)
             self.zoom_combo.blockSignals(False)
+
+    def _on_page_number_input_return_pressed(self) -> None:
+        total = int(getattr(self, "total_pages", 0) or 0)
+        try:
+            page_num = int(self.page_number_input.text().strip())
+        except (TypeError, ValueError):
+            self._update_page_counter()
+            return
+        if total <= 0 or page_num < 1 or page_num > total:
+            self._update_page_counter()
+            return
+        self.sig_page_changed.emit(page_num - 1)
 
     def keyPressEvent(self, event):
         direction = self._tab_shortcut_direction(event.key(), event.modifiers())
@@ -4612,14 +4652,42 @@ class PDFView(QMainWindow):
         self.sig_optimize_pdf_copy_requested.emit()
 
     def _delete_pages(self):
-        pages, ok = QInputDialog.getText(self, "刪除頁面", "輸入頁碼 (如 1,3-5):")
-        if ok and pages:
+        if self.total_pages == 0:
+            show_error(self, "沒有開啟的PDF文件")
+            return
+        menu = QMenu(self)
+        for scope in self._PAGE_SCOPE_LABELS:
+            menu.addAction(scope, lambda checked=False, s=scope: self._delete_pages_for_scope(s))
+        menu.exec_(QCursor.pos())
+
+    def _pages_for_scope(self, scope: str) -> list[int] | None:
+        total = int(getattr(self, "total_pages", 0) or 0)
+        if total <= 0:
+            show_error(self, "沒有開啟的PDF文件")
+            return None
+        if scope == self._PAGE_SCOPE_CURRENT:
+            return [min(max(int(getattr(self, "current_page", 0)) + 1, 1), total)]
+        if scope == self._PAGE_SCOPE_ALL:
+            return list(range(1, total + 1))
+        if scope == self._PAGE_SCOPE_ODD:
+            return [page for page in range(1, total + 1) if page % 2 == 1]
+        if scope == self._PAGE_SCOPE_EVEN:
+            return [page for page in range(1, total + 1) if page % 2 == 0]
+        if scope == self._PAGE_SCOPE_CUSTOM:
+            pages, ok = QInputDialog.getText(self, "頁碼範圍", "輸入頁碼 (如 1,3-5):")
+            if not ok or not pages:
+                return None
             try:
-                parsed = parse_pages(pages, self.total_pages)
-                if parsed:
-                    self.sig_delete_pages.emit(parsed)
+                return parse_pages(pages, total)
             except ValueError:
                 show_error(self, "頁碼格式錯誤")
+                return None
+        return None
+
+    def _delete_pages_for_scope(self, scope: str) -> None:
+        pages = self._pages_for_scope(scope)
+        if pages:
+            self.sig_delete_pages.emit(sorted(set(int(page) for page in pages)))
 
     def _delete_specific_pages(self, pages: list[int]) -> None:
         if self.total_pages == 0:
@@ -4629,16 +4697,24 @@ class PDFView(QMainWindow):
             self.sig_delete_pages.emit(sorted(set(int(page) for page in pages)))
 
     def _rotate_pages(self):
-        pages, ok = QInputDialog.getText(self, "旋轉頁面", "輸入頁碼 (如 1,3-5):")
-        if ok and pages:
-            degrees, ok = QInputDialog.getInt(self, "旋轉角度", "輸入角度 (90, 180, 270):", 90, 0, 360, 90)
-            if ok:
-                try:
-                    parsed = parse_pages(pages, self.total_pages)
-                    if parsed:
-                        self.sig_rotate_pages.emit(parsed, degrees)
-                except ValueError:
-                    show_error(self, "頁碼格式錯誤")
+        if self.total_pages == 0:
+            show_error(self, "沒有開啟的PDF文件")
+            return
+        menu = QMenu(self)
+        for degrees in (90, 180, 270, 360):
+            menu.addAction(f"{degrees}°", lambda checked=False, d=degrees: self._rotate_pages_with_scope_menu(d))
+        menu.exec_(QCursor.pos())
+
+    def _rotate_pages_with_scope_menu(self, degrees: int) -> None:
+        menu = QMenu(self)
+        for scope in self._PAGE_SCOPE_LABELS:
+            menu.addAction(scope, lambda checked=False, s=scope, d=degrees: self._rotate_pages_for_scope(s, d))
+        menu.exec_(QCursor.pos())
+
+    def _rotate_pages_for_scope(self, scope: str, degrees: int) -> None:
+        pages = self._pages_for_scope(scope)
+        if pages:
+            self.sig_rotate_pages.emit(sorted(set(int(page) for page in pages)), int(degrees))
 
     def _straighten_current_page(self) -> None:
         if self.total_pages == 0:
