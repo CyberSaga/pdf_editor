@@ -175,6 +175,55 @@ def test_rotate_textbox_object_updates_rotation_metadata() -> None:
             model.close()
 
 
+def test_textbox_absolute_rotation_sets_exact_angle() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "rotate_box_absolute.pdf"
+        _make_pdf(path)
+
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            model.add_textbox(1, fitz.Rect(50, 70, 180, 110), "ROT_ME", font="cjk", size=14, color=(0, 0, 0))
+            hit = _object_hit(model, fitz.Point(80, 90))
+            assert hit is not None
+
+            assert model.rotate_object(
+                RotateObjectRequest(
+                    object_id=hit.object_id,
+                    object_kind=hit.object_kind,
+                    page_num=1,
+                    rotation_delta=90,
+                )
+            )
+            assert model.rotate_object(
+                RotateObjectRequest(
+                    object_id=hit.object_id,
+                    object_kind=hit.object_kind,
+                    page_num=1,
+                    rotation_delta=0,
+                    absolute_rotation=180,
+                )
+            )
+            rotated = _object_hit(model, fitz.Point(80, 90))
+            assert rotated is not None
+            assert rotated.rotation == 180
+
+            assert model.rotate_object(
+                RotateObjectRequest(
+                    object_id=hit.object_id,
+                    object_kind=hit.object_kind,
+                    page_num=1,
+                    rotation_delta=0,
+                    absolute_rotation=360,
+                )
+            )
+            reset = _object_hit(model, fitz.Point(80, 90))
+            assert reset is not None
+            assert reset.rotation == 0
+        finally:
+            model.close()
+
+
 def test_delete_textbox_after_move_and_rotate_removes_all_markers() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "delete_rotated_box.pdf"

@@ -2961,7 +2961,10 @@ class PDFModel:
             annot.update()
             return True
         old_rect = fitz.Rect(payload["rect"])
-        new_rotation = (int(payload.get("rotation", 0)) + int(request.rotation_delta)) % 360
+        if request.absolute_rotation is not None:
+            new_rotation = int(round(float(request.absolute_rotation))) % 360
+        else:
+            new_rotation = (int(payload.get("rotation", 0)) + int(request.rotation_delta)) % 360
         self._redact_and_restore_textbox_region(page, old_rect, request.object_id)
         self._delete_app_object_annots(request.page_num, request.object_id, expected_kind="textbox")
         insert_state = self._insert_textbox_visual_content(
