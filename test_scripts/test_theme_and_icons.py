@@ -361,18 +361,16 @@ def test_document_tabbar_no_inline_stylesheet(qapp):
 
 
 def test_toolbar_container_height(qapp):
-    # finding: P1 toolbar clipping — container raised to 92px.
     from view.pdf_view import PDFView
 
     view = PDFView()
     try:
-        assert view._toolbar_container.maximumHeight() == 92
+        assert view._toolbar_container.maximumHeight() == 68
     finally:
         view.deleteLater()
 
 
 def test_toolbar_button_style(qapp):
-    # finding: P1 text-beside-icon.
     from PySide6.QtCore import Qt
 
     from view.pdf_view import PDFView
@@ -382,13 +380,12 @@ def test_toolbar_button_style(qapp):
         toolbars = view._collect_toolbars()
         assert len(toolbars) == 5
         for toolbar in toolbars:
-            assert toolbar.toolButtonStyle() == Qt.ToolButtonTextBesideIcon
+            assert toolbar.toolButtonStyle() == Qt.ToolButtonIconOnly
     finally:
         view.deleteLater()
 
 
 def test_toolbar_icon_size(qapp):
-    # finding: icon wiring — every ribbon toolbar uses 24px icons.
     from PySide6.QtCore import QSize
 
     from view.pdf_view import PDFView
@@ -396,8 +393,27 @@ def test_toolbar_icon_size(qapp):
     view = PDFView()
     try:
         for toolbar in view._collect_toolbars():
-            assert toolbar.iconSize() == QSize(24, 24)
+            assert toolbar.iconSize() == QSize(28, 28)
     finally:
+        view.deleteLater()
+
+
+def test_toolbar_maximized_preset(qapp):
+    from PySide6.QtCore import QSize, Qt
+
+    from view.pdf_view import PDFView
+
+    view = PDFView()
+    try:
+        view.showMaximized()
+        view._update_toolbar_style()
+        assert view._toolbar_container.maximumHeight() == 100
+        toolbars = view._collect_toolbars()
+        for toolbar in toolbars:
+            assert toolbar.toolButtonStyle() == Qt.ToolButtonTextUnderIcon
+            assert toolbar.iconSize() == QSize(32, 32)
+    finally:
+        view.showNormal()
         view.deleteLater()
 
 

@@ -917,6 +917,11 @@ class PDFView(QMainWindow):
         # Non-deferred views still announce readiness after the first show turn.
         QTimer.singleShot(0, self._emit_shell_ready_once)
 
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.WindowStateChange:
+            self._update_toolbar_style()
+
     def _build_document_tabs_bar(self):
         """Document-level tab bar for multiple open PDFs."""
         self.document_tab_bar = QTabBar(self)
@@ -1051,35 +1056,51 @@ class PDFView(QMainWindow):
         """Return the five ribbon QToolBars (file/common/edit/page/convert)."""
         return list(getattr(self, "_ribbon_toolbars", []))
 
-    def _configure_tool_toolbar(self, toolbar: QToolBar) -> None:
-        """Per-widget layout for a ribbon toolbar; colours come from the global QSS.
-
-        Buttons show their label beside the icon (text-beside-icon) with 24px
-        icons, which is why the toolbar container must be tall enough (see
-        _build_toolbar_tabs).
-        """
-        toolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        toolbar.setIconSize(QSize(24, 24))
-
-    def _apply_toolbar_icons(self, toolbar: QToolBar) -> None:
+    def _apply_toolbar_icons(self, toolbar: QToolBar, size: int = 28) -> None:
         """Assign each action's PNG icon based on its label text."""
         for action in toolbar.actions():
-            icon = load_icon(action.text())
+            icon = load_icon(action.text(), size=size)
             if not icon.isNull():
                 action.setIcon(icon)
 
-    def _build_toolbar_tabs(self):
-        """Top toolbar (ribbon). 高度容納「圖示在左、文字在右」按鈕。
+    _toolbar_last_preset: tuple[int, int] | None = None
 
-        標籤列 (~26px) + 工具列按鈕 (圖示 24 + 文字 + 內距) + 容器上下邊距 ≈ 92px。
-        舊的固定 60px 會截斷文字旁的圖示。外觀（背景/邊框/標籤/按鈕）統一由全域
-        QSS 提供 (view.theme.build_qss)，scoped 到 QFrame#toolbar / QTabWidget#ribbonTabs。
+    def _update_toolbar_style(self) -> None:
+        """Switch ribbon buttons between icon+text (maximized) and icon-only (restored).
+
+        Maximized: icon on top, text below (ToolButtonTextUnderIcon), 32px icons,
+        taller container.  Restored: icon only (ToolButtonIconOnly), 28px icons,
+        shorter container.
+        """
+        if not hasattr(self, "_toolbar_container"):
+            return
+        maximized = self.isMaximized() or self.isFullScreen()
+        if maximized:
+            icon_sz, btn_style = 32, Qt.ToolButtonTextUnderIcon
+            container_h = 100
+        else:
+            icon_sz, btn_style = 28, Qt.ToolButtonIconOnly
+            container_h = 68
+
+        preset = (icon_sz, btn_style)
+        if preset == self._toolbar_last_preset:
+            return
+        self._toolbar_last_preset = preset
+
+        self._toolbar_container.setFixedHeight(container_h)
+        for tb in getattr(self, "_ribbon_toolbars", []):
+            tb.setToolButtonStyle(btn_style)
+            tb.setIconSize(QSize(icon_sz, icon_sz))
+            self._apply_toolbar_icons(tb, size=icon_sz)
+
+    def _build_toolbar_tabs(self):
+        """Top toolbar (ribbon).
+
+        Button style adapts to window state via :meth:`_update_toolbar_style`:
+        maximized shows icon-on-top + text-below; restored shows icon-only.
         """
         self._toolbar_container = QFrame()
         self._toolbar_container.setObjectName("toolbar")
-        # 固定高度避免佈局依子元件 sizeHint 過度分配垂直空間；92px 實測可容納
-        # 「圖示在左、文字在右」的按鈕。背景/邊框由全域 QSS (QFrame#toolbar) 提供。
-        self._toolbar_container.setFixedHeight(92)
         bar_layout = QHBoxLayout(self._toolbar_container)
         bar_layout.setContentsMargins(6, 4, 6, 4)
         bar_layout.setSpacing(6)
@@ -1097,7 +1118,6 @@ class PDFView(QMainWindow):
         # 檔案
         tab_file = QWidget()
         tb_file = QToolBar()
-        self._configure_tool_toolbar(tb_file)
         self._action_open = tb_file.addAction("開啟", self._open_file)
         self._action_open.setShortcut(QKeySequence("Ctrl+O"))
         self._action_print = tb_file.addAction("列印", self._print_document)
@@ -1114,7 +1134,6 @@ class PDFView(QMainWindow):
         # 常用
         tab_common = QWidget()
         tb_common = QToolBar()
-        self._configure_tool_toolbar(tb_common)
         self._action_browse = self._make_mode_action("瀏覽模式", "browse")
         tb_common.addAction(self._action_browse)
         self._action_objects = self._make_mode_action("操作物件", "objects")
@@ -1137,7 +1156,6 @@ class PDFView(QMainWindow):
         # 編輯
         tab_edit = QWidget()
         tb_edit = QToolBar()
-        self._configure_tool_toolbar(tb_edit)
         self._action_edit_text = self._make_mode_action("編輯文字", "edit_text")
         tb_edit.addAction(self._action_edit_text)
         self._action_edit_text.setShortcut(QKeySequence(Qt.Key_F2))
@@ -1168,7 +1186,6 @@ class PDFView(QMainWindow):
         # 頁面
         tab_page = QWidget()
         tb_page = QToolBar()
-        self._configure_tool_toolbar(tb_page)
         tb_page.addAction("刪除頁", self._delete_pages)
         tb_page.addAction("旋轉頁", self._rotate_pages)
         self._action_straighten_page = tb_page.addAction("拉正頁面", self._straighten_current_page)
@@ -1187,18 +1204,14 @@ class PDFView(QMainWindow):
         # 轉換
         tab_convert = QWidget()
         tb_convert = QToolBar()
-        self._configure_tool_toolbar(tb_convert)
         self.ocr_action = tb_convert.addAction("OCR（文字辨識）", self._ocr_pages)
         layout_convert = QVBoxLayout(tab_convert)
         layout_convert.setContentsMargins(4, 0, 0, 0)
         layout_convert.addWidget(tb_convert)
         self.toolbar_tabs.addTab(tab_convert, "轉換")
 
-        # Keep handles to the five ribbon toolbars and assign each action's PNG
-        # icon by its label text (unknown labels resolve to a null icon).
         self._ribbon_toolbars = [tb_file, tb_common, tb_edit, tb_page, tb_convert]
-        for toolbar in self._ribbon_toolbars:
-            self._apply_toolbar_icons(toolbar)
+        self._update_toolbar_style()
 
         bar_layout.addWidget(self.toolbar_tabs, 1)  # 讓分頁區優先取得水平空間
         # Fixed right section: 頁 X / Y, Zoom, 適應畫面, 復原, 重做
@@ -1224,7 +1237,7 @@ class PDFView(QMainWindow):
         self.fit_view_btn = QPushButton("適應畫面")
         self.fit_view_btn.clicked.connect(self._fit_to_view)
         self.fullscreen_quick_btn = QPushButton("全螢幕")
-        self.fullscreen_quick_btn.setIcon(load_icon("全螢幕"))
+        self.fullscreen_quick_btn.setIcon(load_icon("全螢幕", size=24))
         self.fullscreen_quick_btn.clicked.connect(self.sig_toggle_fullscreen.emit)
         self._action_undo_right = QAction("↺ 復原", self)
         self._action_undo_right.triggered.connect(self.sig_undo.emit)

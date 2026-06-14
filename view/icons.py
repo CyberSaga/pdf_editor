@@ -66,15 +66,19 @@ try:
 except ImportError:  # pragma: no cover - exercised only in headless map-only tests
     pass
 else:
+    _icon_cache: dict[tuple[str, int], QIcon] = {}
 
     def load_icon(label: str, size: int = 24) -> QIcon:
-        """Return the ``size``-square :class:`QIcon` for a ribbon action ``label``.
+        """Return a :class:`QIcon` for a ribbon action ``label``.
 
-        Looks the label up in :data:`ACTION_ICON_MAP` and loads the matching PNG
-        from :data:`ICON_DIR`, smooth-scaled to ``size``. Returns a null
-        :class:`QIcon` for an unknown label or a missing/unreadable file so
-        callers can assign the result unconditionally.
+        Results are cached by (label, size) so repeated calls (e.g. on
+        window-state toggles) skip disk I/O and scaling entirely.
+        Returns a null :class:`QIcon` for an unknown label or a missing file.
         """
+        key = (label, size)
+        cached = _icon_cache.get(key)
+        if cached is not None:
+            return cached
         filename = ACTION_ICON_MAP.get(label)
         if filename is None:
             return QIcon()
@@ -90,7 +94,9 @@ else:
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        return QIcon(scaled)
+        icon = QIcon(scaled)
+        _icon_cache[key] = icon
+        return icon
 
     def load_app_icon() -> QIcon:
         """Return the application/window :class:`QIcon` from :data:`APP_ICON_PATH`.
