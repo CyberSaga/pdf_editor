@@ -849,6 +849,8 @@ class PDFView(QMainWindow):
                 self.setGeometry(self._fullscreen_restore_geometry)
         if self._fullscreen_restore_visibility.get("toolbar", True):
             self._toolbar_container.show()
+            self._toolbar_last_preset = None
+            QTimer.singleShot(0, self._update_toolbar_style)
         if self._fullscreen_restore_visibility.get("document_tabs", False):
             self.document_tab_bar.show()
         if self._fullscreen_restore_visibility.get("left_sidebar", True):
@@ -916,11 +918,6 @@ class PDFView(QMainWindow):
             return
         # Non-deferred views still announce readiness after the first show turn.
         QTimer.singleShot(0, self._emit_shell_ready_once)
-
-    def changeEvent(self, event: QEvent) -> None:
-        super().changeEvent(event)
-        if event.type() == QEvent.WindowStateChange:
-            self._update_toolbar_style()
 
     def _build_document_tabs_bar(self):
         """Document-level tab bar for multiple open PDFs."""
@@ -1047,6 +1044,7 @@ class PDFView(QMainWindow):
         if app is not None:
             app.setStyleSheet(build_qss(theme_id))
         self._theme_switcher.set_active_theme(theme_id)
+        self._recompute_ribbon_text_min_width()
 
     def apply_initial_theme(self) -> None:
         """Apply the saved theme once at startup (no re-persist of the same value)."""
@@ -1064,18 +1062,43 @@ class PDFView(QMainWindow):
                 action.setIcon(icon)
 
     _toolbar_last_preset: tuple[int, int] | None = None
+    _ribbon_text_min_width: int = 0
+
+    def _recompute_ribbon_text_min_width(self) -> None:
+        """Measure the minimum ribbon width needed for text-under-icon display.
+
+        Temporarily sets text-under-icon + 32px on every ribbon toolbar, reads
+        the widest ``sizeHint().width()``, then lets ``_update_toolbar_style``
+        apply the correct preset.  Safe to call after theme changes since QSS
+        affects ``QToolButton`` padding/min-width.
+        """
+        toolbars = getattr(self, "_ribbon_toolbars", [])
+        if not toolbars:
+            return
+        for tb in toolbars:
+            tb.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            tb.setIconSize(QSize(32, 32))
+            self._apply_toolbar_icons(tb, size=32)
+        self._ribbon_text_min_width = max(
+            tb.sizeHint().width() for tb in toolbars
+        )
+        self._toolbar_last_preset = None
+        self._update_toolbar_style()
 
     def _update_toolbar_style(self) -> None:
-        """Switch ribbon buttons between icon+text (maximized) and icon-only (restored).
+        """Switch ribbon buttons based on available width.
 
-        Maximized: icon on top, text below (ToolButtonTextUnderIcon), 32px icons,
-        taller container.  Restored: icon only (ToolButtonIconOnly), 28px icons,
-        shorter container.
+        When the ribbon tab area is wide enough to fit the widest toolbar with
+        text labels, shows icon-on-top + text-below (32px).  Otherwise falls
+        back to icon-only (28px).
         """
         if not hasattr(self, "_toolbar_container"):
             return
-        maximized = self.isMaximized() or self.isFullScreen()
-        if maximized:
+        if not self._toolbar_container.isVisible():
+            return
+        available = self.toolbar_tabs.width() if hasattr(self, "toolbar_tabs") else 0
+        use_text = available >= self._ribbon_text_min_width > 0
+        if use_text:
             icon_sz, btn_style = 32, Qt.ToolButtonTextUnderIcon
             container_h = 100
         else:
@@ -1093,11 +1116,12 @@ class PDFView(QMainWindow):
             tb.setIconSize(QSize(icon_sz, icon_sz))
             self._apply_toolbar_icons(tb, size=icon_sz)
 
+
     def _build_toolbar_tabs(self):
         """Top toolbar (ribbon).
 
-        Button style adapts to window state via :meth:`_update_toolbar_style`:
-        maximized shows icon-on-top + text-below; restored shows icon-only.
+        Button style adapts to available width via :meth:`_update_toolbar_style`:
+        wide enough shows icon-on-top + text-below; narrow shows icon-only.
         """
         self._toolbar_container = QFrame()
         self._toolbar_container.setObjectName("toolbar")
@@ -1211,7 +1235,8 @@ class PDFView(QMainWindow):
         self.toolbar_tabs.addTab(tab_convert, "轉換")
 
         self._ribbon_toolbars = [tb_file, tb_common, tb_edit, tb_page, tb_convert]
-        self._update_toolbar_style()
+        self._recompute_ribbon_text_min_width()
+        self.toolbar_tabs.installEventFilter(self)
 
         bar_layout.addWidget(self.toolbar_tabs, 1)  # 讓分頁區優先取得水平空間
         # Fixed right section: 頁 X / Y, Zoom, 適應畫面, 復原, 重做
@@ -2229,6 +2254,8 @@ class PDFView(QMainWindow):
                     return True
             if event.type() == QEvent.MouseMove and self._fullscreen_active:
                 self._update_fullscreen_exit_hover(event.position().toPoint())
+        if obj is getattr(self, "toolbar_tabs", None) and event.type() == QEvent.Resize:
+            self._update_toolbar_style()
         thumb_list = getattr(self, "thumbnail_list", None)
         if thumb_list is not None and obj is thumb_list.viewport() and event.type() == QEvent.Resize:
             self._update_thumbnail_layout_metrics()

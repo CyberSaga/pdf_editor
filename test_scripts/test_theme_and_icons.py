@@ -365,8 +365,13 @@ def test_toolbar_container_height(qapp):
 
     view = PDFView()
     try:
+        view.resize(800, 600)
+        view.show()
+        qapp.processEvents()
+        view._update_toolbar_style()
         assert view._toolbar_container.maximumHeight() == 68
     finally:
+        view.close()
         view.deleteLater()
 
 
@@ -377,11 +382,16 @@ def test_toolbar_button_style(qapp):
 
     view = PDFView()
     try:
+        view.resize(800, 600)
+        view.show()
+        qapp.processEvents()
+        view._update_toolbar_style()
         toolbars = view._collect_toolbars()
         assert len(toolbars) == 5
         for toolbar in toolbars:
             assert toolbar.toolButtonStyle() == Qt.ToolButtonIconOnly
     finally:
+        view.close()
         view.deleteLater()
 
 
@@ -392,28 +402,54 @@ def test_toolbar_icon_size(qapp):
 
     view = PDFView()
     try:
+        view.resize(800, 600)
+        view.show()
+        qapp.processEvents()
+        view._update_toolbar_style()
         for toolbar in view._collect_toolbars():
             assert toolbar.iconSize() == QSize(28, 28)
     finally:
+        view.close()
         view.deleteLater()
 
 
-def test_toolbar_maximized_preset(qapp):
+def test_toolbar_wide_text_under_icon(qapp):
     from PySide6.QtCore import QSize, Qt
 
     from view.pdf_view import PDFView
 
     view = PDFView()
     try:
-        view.showMaximized()
+        view.resize(1920, 1080)
+        view.show()
+        qapp.processEvents()
         view._update_toolbar_style()
         assert view._toolbar_container.maximumHeight() == 100
-        toolbars = view._collect_toolbars()
-        for toolbar in toolbars:
+        for toolbar in view._collect_toolbars():
             assert toolbar.toolButtonStyle() == Qt.ToolButtonTextUnderIcon
             assert toolbar.iconSize() == QSize(32, 32)
     finally:
-        view.showNormal()
+        view.close()
+        view.deleteLater()
+
+
+def test_toolbar_narrow_icon_only(qapp):
+    from PySide6.QtCore import QSize, Qt
+
+    from view.pdf_view import PDFView
+
+    view = PDFView()
+    try:
+        view.resize(800, 600)
+        view.show()
+        qapp.processEvents()
+        view._update_toolbar_style()
+        assert view._toolbar_container.maximumHeight() == 68
+        for toolbar in view._collect_toolbars():
+            assert toolbar.toolButtonStyle() == Qt.ToolButtonIconOnly
+            assert toolbar.iconSize() == QSize(28, 28)
+    finally:
+        view.close()
         view.deleteLater()
 
 
