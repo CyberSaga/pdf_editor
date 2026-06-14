@@ -1098,3 +1098,17 @@
 **Mitigation:** When file size matters, use `另存為最佳化的副本` after deskew and choose the `極致壓縮` preset.
 **File:** `model/pdf_model.py`
 **Tests:** `test_scripts/test_page_deskew.py`, `test_scripts/test_page_deskew_scope.py`, `test_scripts/test_theme_and_icons.py::test_straighten_action_warns_about_size_growth`
+
+## Adaptive toolbar preset must use measured width, not window state
+**Area:** `view/pdf_view.py` — `_update_toolbar_style`
+**Symptom:** Toolbar shows icon-only on a wide restored window, or icon+text on a narrow maximized window (e.g. snapped to half-screen).
+**Cause:** An earlier implementation keyed the ribbon preset off `isMaximized()` / `isFullScreen()` instead of actual available width. Window state does not correlate with space.
+**Fix:** Measure the widest ribbon toolbar's `sizeHint().width()` once (cached in `_ribbon_text_min_width`), compare against `toolbar_tabs.width()` on every resize. Listen via `eventFilter` on `toolbar_tabs` (not `resizeEvent` on the main window) so child-only width changes are caught.
+**File:** `view/pdf_view.py`
+
+## Toolbar preset stale after fullscreen or theme change
+**Area:** `view/pdf_view.py` — `_update_toolbar_style`, `exit_fullscreen_ui`, `apply_theme`
+**Symptom:** After exiting fullscreen, the toolbar stays in icon-only mode even though the window is wide. Or after switching theme, buttons overflow because the cached width threshold no longer matches themed padding.
+**Cause:** `_update_toolbar_style` skips work when `_toolbar_container` is hidden (correct), but the cached `_toolbar_last_preset` then blocks recomputation after the toolbar is re-shown. Theme QSS changes `QToolButton` padding, invalidating the pre-theme `sizeHint` measurement.
+**Fix:** `exit_fullscreen_ui` clears `_toolbar_last_preset` and schedules a deferred `_update_toolbar_style` via `QTimer.singleShot(0, ...)`. `apply_theme` calls `_recompute_ribbon_text_min_width()` after setting the stylesheet.
+**File:** `view/pdf_view.py`
