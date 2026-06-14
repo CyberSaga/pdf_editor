@@ -23,6 +23,44 @@
 - [ ] **Deferred — Preset objstms re-enable.** The optimizer presets currently leave `use_object_streams=False`; now that native `use_objstms=1` works, consider enabling it by default in balanced/compression presets.
 - [x] **Phase 5 — Hygiene / Documentation** (landed 2026-06-11): `pyproject.toml` added (name=`cybersaga-pdf`, setuptools backend with explicit flat-layout package discovery incl. the `src.printing` namespace package; deps mirror requirements.txt; `dev` extra = ruff/mypy/pytest; `[tool.ruff]` encodes the default rule set so the 240-violation baseline is stable; `[tool.mypy]` gradual + `explicit_package_bases` for the parent-dir `__init__.py` gotcha; `[tool.pytest.ini_options] testpaths=["test_scripts"]`). `pip install -e ".[dev]"` now works (`.venv` pip upgraded 21.2.3 → 26.1.2 for PEP 660). PITFALLS: cooperative OCR cancellation entry. CLAUDE.md §3.1 violation count reconciled (113 → 240). Plan: `plans/phase-5-hygiene.md`.
 
+## Done (2026-06-14) -- UI/UX Fable-5 polish refactor
+
+- What: Raised UI/UX polish (visual hierarchy, spacing/alignment, elevation, and
+  modern `:hover`/`:pressed`/`:focus` feedback) under two hard constraints —
+  **no icon changes** and **no new colours**. Branch `feat/ui-ux-fable5-refactor`.
+- Shipped:
+  - `view/theme.py` — token dicts grew 17 → 20 keys with three brand colours
+    lifted verbatim from `appearance_design/colors.css` (`accent_line`,
+    `hover_strong`, `shadow`; shadow alpha pinned to the documented `--shadow-lg`
+    layer). `build_qss` gained: colour-only focus rings (no layout shift), hover
+    states on all three tab families (scoped), slim themed scrollbars, themed
+    `QSplitter::handle`, `QToolTip`, accent-fill check/radio indicators (no glyph
+    asset → respects icon lockdown), `QMenu` padding + separators, accent
+    `QPushButton:default`, `#rightPanelTitle` section header, toolbar separators.
+    New Qt-guarded `shadow_color()` + `_parse_qcolor` (QColor can't parse
+    `rgba()` float-alpha).
+  - `view/pdf_view.py` — right-panel "屬性" title moved off an inline stylesheet
+    onto `#rightPanelTitle`; theme-aware `QGraphicsDropShadowEffect` on the
+    toolbar chrome (`_apply_chrome_shadow`, re-applied colour-only on theme
+    switch). Adaptive-toolbar logic untouched.
+  - Tests: `test_scripts/test_theme_and_icons.py` +28 (new tokens, focus,
+    scrollbars, splitter, tooltip, scoped tab hover, indicators, default button,
+    shadow helper, `#rightPanelTitle`). Red-light shown before implementation.
+- Verified: 1354 passed / 20 skipped / 0 failed; ruff clean on both files; QSS
+  parses with 0 warnings across all 4 themes; icons (`view/icons.py`,
+  `appearance_design/`) byte-identical. 5-lens adversarial review (icons /
+  colors / architecture / qss-correctness) returned clean (qt-runtime lens
+  blocked by a session limit; its concerns were self-verified offscreen).
+- Docs: `docs/ARCHITECTURE.md` §2.5 + `docs/PITFALLS.md` (QSS-no-box-shadow,
+  QColor-rgba-parse, focus-ring-no-layout-shift). Plan archived.
+- Follow-ups (deferred, optional):
+  - Sidebar `QListWidget::item` padding/radius was intentionally NOT added
+    globally to avoid perturbing thumbnail cell metrics; if per-list polish is
+    wanted, give the search/annotation/watermark lists their own object names and
+    scope item padding to those.
+  - Consider a `QPropertyAnimation`-backed hover/press micro-transition for key
+    buttons (QSS can't animate); only if perf budget allows.
+
 ## Open -- App identity single source of truth (from /code-review of claude/simplify, 2026-06-10)
 
 - [ ] **Consolidate app-identity strings into one canonical module.** The CyberSagaPDF

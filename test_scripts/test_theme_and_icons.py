@@ -22,18 +22,27 @@ from view.theme import (
     build_qss,
 )
 
-# The 17 token keys every palette must define for build_qss().
+# The 20 token keys every palette must define for build_qss().
+# accent_line / hover_strong / shadow are brand tokens lifted verbatim from
+# appearance_design/colors.css (they were documented there but never plumbed
+# into the QSS); they back focus rings, tab hover, and chrome elevation.
 _TOKEN_KEYS = {
     "bg", "surface", "sunken", "elev",
     "line", "line_strong", "line_soft",
     "fg", "fg_muted", "fg_subtle",
-    "accent", "accent_fg", "accent_soft",
-    "hover", "pressed", "highlight", "paper",
+    "accent", "accent_fg", "accent_soft", "accent_line",
+    "hover", "hover_strong", "pressed", "highlight", "paper",
+    "shadow",
 }
 
 _EXPECTED_IDS = {"alpine-snow", "meadow-lupine", "ink-porcelain", "glimmering-glacier"}
 
 _ALL_THEMES = ["alpine-snow", "meadow-lupine", "ink-porcelain", "glimmering-glacier"]
+
+
+def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+    h = value.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
 # --------------------------------------------------------------------------- #
@@ -163,6 +172,136 @@ def test_native_controls_themed(theme_id):
 def test_qmenu_rules_present():
     # finding: parentless context menus unthemed.
     assert "QMenu" in build_qss()
+
+
+# --------------------------------------------------------------------------- #
+# Fable-5 refactor: new brand tokens + modern interactive QSS
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("theme_id", _ALL_THEMES)
+def test_new_brand_tokens_present(theme_id):
+    # accent_line / hover_strong / shadow must be defined for every theme so
+    # focus rings, tab hover, and elevation render under all four palettes.
+    tokens = THEME_REGISTRY[theme_id].tokens
+    assert tokens["accent_line"]
+    assert tokens["hover_strong"]
+    assert tokens["shadow"]
+
+
+def test_meadow_bg_matches_meadow_green_hue():
+    # User request (2026-06-14): Meadow Lupine's background surfaces must share
+    # the theme's meadow-green hue, not the cool lavender "alpine sky" they
+    # shipped with. The bg (chrome) and sunken (canvas well) must read green
+    # (green channel dominant), and bg must differ from Alpine's lavender chrome.
+    for key in ("bg", "sunken"):
+        r, g, b = _hex_to_rgb(MEADOW_LUPINE[key])
+        assert g >= r and g > b, (
+            f"meadow {key} should be green-dominant, got {MEADOW_LUPINE[key]}"
+        )
+    assert MEADOW_LUPINE["bg"] != ALPINE_SNOW["bg"]
+    # The Lupine accent stays purple — only the background hue changed.
+    assert MEADOW_LUPINE["accent"] == "#4338ca"
+
+
+def test_accent_line_values_from_colors_css():
+    # Lifted verbatim from --color-accent-line in appearance_design/colors.css
+    # (palette preservation: no invented hues).
+    assert ALPINE_SNOW["accent_line"] == "#b9aee2"
+    assert GLIMMERING_GLACIER["accent_line"] == "#8ec8e6"
+
+
+@pytest.mark.parametrize("theme_id", _ALL_THEMES)
+def test_focus_states_present(theme_id):
+    # finding (a11y, Critical): keyboard users need a visible focus indicator.
+    qss = build_qss(theme_id)
+    assert ":focus" in qss
+    tokens = THEME_REGISTRY[theme_id].tokens
+    # The focus ring recolours the border to the accent (color-only → no shift).
+    assert f"border: 1px solid {tokens['accent']}" in qss
+
+
+@pytest.mark.parametrize("theme_id", _ALL_THEMES)
+def test_scrollbar_rules_present(theme_id):
+    qss = build_qss(theme_id)
+    assert "QScrollBar:vertical" in qss
+    assert "QScrollBar:horizontal" in qss
+    assert "QScrollBar::handle" in qss
+
+
+def test_splitter_handle_themed():
+    assert "QSplitter::handle" in build_qss()
+
+
+def test_tooltip_themed():
+    qss = build_qss()
+    tooltip_rule = qss.split("QToolTip {")[1].split("}")[0]
+    assert "background:" in tooltip_rule
+    assert "border" in tooltip_rule
+
+
+def test_tab_hover_states_present_and_scoped():
+    # Every tab family gains a :hover affordance, and it must stay scoped to its
+    # object name (the unscoped-leak guard in test_ribbon_rules_are_scoped also
+    # covers this, but assert the positive case here too).
+    qss = build_qss()
+    assert "QTabWidget#ribbonTabs QTabBar::tab:hover" in qss
+    assert "QTabWidget#sidebarTabs QTabBar::tab:hover" in qss
+    assert "QTabBar#documentTabBar::tab:hover" in qss
+
+
+def test_checkbox_indicator_themed():
+    assert "QCheckBox::indicator" in build_qss()
+    assert "QRadioButton::indicator" in build_qss()
+
+
+def test_primary_default_button_uses_accent():
+    # The default dialog button (OK/確定) reads as primary via the accent.
+    qss = build_qss()
+    default_rule = qss.split("QPushButton:default {")[1].split("}")[0]
+    tokens = THEME_REGISTRY["alpine-snow"].tokens
+    assert tokens["accent"] in default_rule
+
+
+def test_native_controls_still_themed_after_refactor():
+    # Regression guard: the refactor must not drop the elev/surface anchors that
+    # test_native_controls_themed relies on (re-asserted independently here).
+    for theme_id in _ALL_THEMES:
+        qss = build_qss(theme_id)
+        tokens = THEME_REGISTRY[theme_id].tokens
+        assert f"background: {tokens['elev']}" in qss.split("QPushButton {")[1]
+        assert f"background: {tokens['surface']}" in qss.split("QStatusBar {")[1]
+
+
+@pytest.mark.parametrize("theme_id", _ALL_THEMES)
+def test_shadow_color_helper_returns_qcolor(qapp, theme_id):
+    from PySide6.QtGui import QColor
+
+    from view.theme import shadow_color
+
+    color = shadow_color(theme_id)
+    assert isinstance(color, QColor)
+    assert color.isValid()
+    # A drop shadow must have some opacity to be visible.
+    assert color.alpha() > 0
+
+
+def test_shadow_color_unknown_falls_back(qapp):
+    from view.theme import shadow_color
+
+    assert shadow_color("__nope__").isValid()
+
+
+def test_right_panel_title_themed_in_qss(qapp):
+    # The 屬性 section header is themed via #rightPanelTitle (no inline colour
+    # stylesheet on the label).
+    from view.pdf_view import PDFView
+
+    assert "#rightPanelTitle" in build_qss()
+    view = PDFView()
+    try:
+        assert view._right_panel_title.styleSheet() == ""
+        assert view._right_panel_title.objectName() == "rightPanelTitle"
+    finally:
+        view.deleteLater()
 
 
 def test_combobox_dropdown_themed():

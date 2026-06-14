@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QGraphicsPixmapItem,
     QGraphicsProxyWidget,
     QGraphicsScene,
@@ -82,7 +83,7 @@ from model.object_requests import (
 from utils.helpers import parse_pages, show_error
 from utils.preferences import UserPreferences
 from view.icons import load_icon
-from view.theme import THEME_REGISTRY, ThemeSwitcherWidget, build_qss
+from view.theme import THEME_REGISTRY, ThemeSwitcherWidget, build_qss, shadow_color
 from view.text_editing import (
     _DEFAULT_EDITOR_MASK_COLOR,
     _EditorShortcutForwarder,  # noqa: F401 — re-exported for tests and legacy imports
@@ -424,9 +425,11 @@ class PDFView(QMainWindow):
         self.right_sidebar.setAcceptDrops(True)
         right_sidebar_layout = QVBoxLayout(self.right_sidebar)
         right_sidebar_layout.setContentsMargins(0, 0, 0, 0)
-        right_title = QLabel("屬性")
-        right_title.setStyleSheet("font-weight: bold; padding: 8px;")
-        right_sidebar_layout.addWidget(right_title)
+        # Themed via QSS (QLabel#rightPanelTitle) rather than an inline stylesheet
+        # so the section header re-themes with the rest of the chrome.
+        self._right_panel_title = QLabel("屬性")
+        self._right_panel_title.setObjectName("rightPanelTitle")
+        right_sidebar_layout.addWidget(self._right_panel_title)
 
         self.color_profile_card = QWidget()
         self.color_profile_card.setObjectName("colorProfileCard")
@@ -1044,7 +1047,29 @@ class PDFView(QMainWindow):
         if app is not None:
             app.setStyleSheet(build_qss(theme_id))
         self._theme_switcher.set_active_theme(theme_id)
+        self._apply_chrome_shadow(theme_id)
         self._recompute_ribbon_text_min_width()
+
+    def _apply_chrome_shadow(self, theme_id: str) -> None:
+        """Elevate the top toolbar chrome with a theme-aware drop shadow.
+
+        QSS has no ``box-shadow``; a real drop shadow needs a
+        ``QGraphicsDropShadowEffect``. The effect is created once and only its
+        colour is refreshed on subsequent theme switches (the shadow hue differs
+        light vs dark). Applied only to the toolbar container, which never holds
+        the heavy ``QGraphicsView``, so there is no render-path interaction.
+        """
+        container = getattr(self, "_toolbar_container", None)
+        if container is None:
+            return
+        effect = container.graphicsEffect()
+        if not isinstance(effect, QGraphicsDropShadowEffect):
+            effect = QGraphicsDropShadowEffect(container)
+            effect.setBlurRadius(18.0)
+            effect.setXOffset(0.0)
+            effect.setYOffset(2.0)
+            container.setGraphicsEffect(effect)
+        effect.setColor(shadow_color(theme_id))
 
     def apply_initial_theme(self) -> None:
         """Apply the saved theme once at startup (no re-persist of the same value)."""

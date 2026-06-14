@@ -1112,3 +1112,24 @@
 **Cause:** `_update_toolbar_style` skips work when `_toolbar_container` is hidden (correct), but the cached `_toolbar_last_preset` then blocks recomputation after the toolbar is re-shown. Theme QSS changes `QToolButton` padding, invalidating the pre-theme `sizeHint` measurement.
 **Fix:** `exit_fullscreen_ui` clears `_toolbar_last_preset` and schedules a deferred `_update_toolbar_style` via `QTimer.singleShot(0, ...)`. `apply_theme` calls `_recompute_ribbon_text_min_width()` after setting the stylesheet.
 **File:** `view/pdf_view.py`
+
+## Qt QSS has no box-shadow or CSS transitions
+**Area:** `view/theme.py`, `view/pdf_view.py`
+**Symptom:** Attempting `box-shadow:` / `transition:` in `build_qss` does nothing (silently ignored), so "elevation" and "smooth state changes" never appear.
+**Cause:** Qt Style Sheets implement a CSS *subset* — neither `box-shadow` nor `transition`/animation properties exist.
+**Fix:** For real shadows use a `QGraphicsDropShadowEffect` in code (`PDFView._apply_chrome_shadow`), applied to a container that does **not** hold the heavy `QGraphicsView` (avoids render-path interaction). Re-apply only its `setColor(...)` on theme switch (the hue is theme-dependent); guard with `isinstance(..., QGraphicsDropShadowEffect)` so the effect is created once, not leaked per switch. For "smooth feedback", differentiate `:hover` / `:pressed` / `:focus` as distinct *static* states instead.
+**File:** `view/pdf_view.py` (`_apply_chrome_shadow`), `view/theme.py` (`build_qss`)
+
+## QColor() cannot parse `rgba(r,g,b,a)` float-alpha strings
+**Area:** `view/theme.py` — `_parse_qcolor`
+**Symptom:** Feeding an interaction/shadow token like `rgba(40,28,72,0.18)` straight into `QColor(str)` yields an **invalid** colour (`isValid() == False`), so the drop shadow renders as nothing.
+**Cause:** `QColor`'s string constructor accepts `#rrggbb`, `#aarrggbb`, and named colours, but not the CSS `rgba(...)` functional form with a 0–1 float alpha (those tokens were authored for CSS in `colors.css`).
+**Fix:** `_parse_qcolor` detects the `rgba(...)` form, splits the four components, and scales the float alpha to 0–255 (`int(round(a*255))`); hex/named values fall through to `QColor(str)`, with a final opaque-ish black fallback for unparseable input.
+**File:** `view/theme.py`
+
+## Focus rings must be colour-only to avoid layout shift
+**Area:** `view/theme.py` — `build_qss`
+**Symptom:** Adding a border on `:focus` to a control that has no base border makes the content jump by the border width each time it gains/loses focus.
+**Cause:** A QSS border participates in box metrics; introducing it on `:focus` changes the widget's content rect.
+**Fix:** Give the control a base `1px` border at rest and only **recolour** it to `accent` on `:focus` (inputs/combos/buttons already carry a 1px line border). Skipped focus rings on `QToolButton` (no base border) to avoid perturbing the measured ribbon width used by the adaptive toolbar.
+**File:** `view/theme.py`

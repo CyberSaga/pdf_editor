@@ -15,6 +15,15 @@ Four modes are offered, matching the four blocks documented in colors.css:
 The switcher previews each theme with its ``bg`` tone (one square per chip) so the
 light modes stay distinguishable even when they share an accent, and rings the
 active chip with ``accent``.
+
+Token note: ``accent_line`` / ``hover_strong`` / ``shadow`` are brand colours
+lifted verbatim from ``colors.css`` (``--color-accent-line``,
+``--color-hover-strong``, and the ``--shadow-*`` hue). They were documented in
+the palette but never plumbed into the QSS; they back focus rings, tab hover,
+and chrome elevation (``QGraphicsDropShadowEffect``) without introducing any new
+hue. Qt QSS has no ``box-shadow`` and no CSS transitions, so "smooth feedback"
+here means crisp, well-differentiated ``:hover`` / ``:pressed`` / ``:focus``
+states, and real drop shadows are applied in code via :func:`shadow_color`.
 """
 
 from __future__ import annotations
@@ -39,17 +48,24 @@ ALPINE_SNOW: dict[str, str] = {
     "accent": "#4338ca",
     "accent_fg": "#ffffff",
     "accent_soft": "#e0dbf3",
+    "accent_line": "#b9aee2",
     "hover": "rgba(40,28,72,0.06)",
+    "hover_strong": "rgba(40,28,72,0.10)",
     "pressed": "rgba(40,28,72,0.14)",
     "highlight": "#f0d670",
     "paper": "#ffffff",
+    "shadow": "rgba(40,28,72,0.18)",
 }
 
 # Light, low visual burden — translated from the meadow-lupine block.
+# bg / sunken are the theme's meadow-green chrome (per 2026-06-14 request): the
+# background surfaces now share the green hue of the surface/border family
+# instead of the original cool-lavender "alpine sky". The Lupine accent stays
+# indigo (the theme's signature).
 MEADOW_LUPINE: dict[str, str] = {
-    "bg": "#eae6f3",
+    "bg": "#e6ecdd",
     "surface": "#f5f7f2",
-    "sunken": "#dbd6e9",
+    "sunken": "#d9e1cc",
     "elev": "#fdfdf8",
     "line": "#d4d7cf",
     "line_strong": "#a4ab9d",
@@ -60,10 +76,13 @@ MEADOW_LUPINE: dict[str, str] = {
     "accent": "#4338ca",
     "accent_fg": "#ffffff",
     "accent_soft": "#e2dcf3",
+    "accent_line": "#bcaee4",
     "hover": "rgba(40,28,72,0.06)",
+    "hover_strong": "rgba(40,28,72,0.10)",
     "pressed": "rgba(40,28,72,0.14)",
     "highlight": "#f0d670",
     "paper": "#ffffff",
+    "shadow": "rgba(40,28,72,0.18)",
 }
 
 # Dark, low visual burden — translated from the ink-porcelain block.
@@ -81,10 +100,13 @@ INK_PORCELAIN: dict[str, str] = {
     "accent": "#9b8fc0",
     "accent_fg": "#0d0c12",
     "accent_soft": "rgba(155,143,192,0.13)",
+    "accent_line": "rgba(155,143,192,0.32)",
     "hover": "rgba(255,255,255,0.04)",
+    "hover_strong": "rgba(255,255,255,0.07)",
     "pressed": "rgba(255,255,255,0.12)",
     "highlight": "#e6c62c",
     "paper": "#f1efe8",
+    "shadow": "rgba(0,0,0,0.55)",
 }
 
 # Light, icy cerulean — translated from the glimmering-glacier block.
@@ -102,10 +124,13 @@ GLIMMERING_GLACIER: dict[str, str] = {
     "accent": "#0369a1",
     "accent_fg": "#ffffff",
     "accent_soft": "#cce6f7",
+    "accent_line": "#8ec8e6",
     "hover": "rgba(3,105,161,0.06)",
+    "hover_strong": "rgba(3,105,161,0.10)",
     "pressed": "rgba(3,105,161,0.14)",
     "highlight": "#67e8f9",
     "paper": "#ffffff",
+    "shadow": "rgba(12,48,82,0.20)",
 }
 
 
@@ -153,6 +178,12 @@ def build_qss(theme_name: str = _DEFAULT_THEME) -> str:
     """Return the complete application QSS for the named theme.
 
     Unknown names fall back to the default (Alpine Snow) theme.
+
+    The stylesheet is applied once at the ``QApplication`` level. Every rule is
+    object-name-scoped where it could otherwise leak across tab widgets
+    (``#ribbonTabs`` / ``#sidebarTabs`` / ``#documentTabBar``). Interactive
+    surfaces carry explicit ``:hover`` / ``:pressed`` / ``:focus`` states because
+    QSS cannot animate transitions — differentiation has to be static.
     """
     t = (THEME_REGISTRY.get(theme_name) or THEME_REGISTRY[_DEFAULT_THEME]).tokens
     return f"""
@@ -164,11 +195,27 @@ def build_qss(theme_name: str = _DEFAULT_THEME) -> str:
         QLabel, QGroupBox, QPushButton, QCheckBox, QRadioButton,
         QLineEdit, QComboBox, QListWidget, QToolButton {{ color: {t["fg"]}; }}
 
+        /* Tooltips are top-level popups; theme them so they match the chrome. */
+        QToolTip {{
+            background: {t["elev"]};
+            color: {t["fg"]};
+            border: 1px solid {t["line_strong"]};
+            padding: 5px 8px;
+            border-radius: 6px;
+        }}
+
         QGroupBox {{
             border: 1px solid {t["line"]};
             border-radius: 8px;
-            margin-top: 8px;
-            padding-top: 8px;
+            margin-top: 10px;
+            padding-top: 10px;
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            left: 10px;
+            padding: 0 4px;
+            color: {t["fg_muted"]};
         }}
 
         /* Give buttons a themed surface; the global QWidget colour sets the
@@ -176,13 +223,27 @@ def build_qss(theme_name: str = _DEFAULT_THEME) -> str:
            (unreadable light-on-light text would appear under dark themes). */
         QPushButton {{
             border-radius: 6px;
-            padding: 6px 12px;
+            padding: 6px 14px;
             border: 1px solid {t["line"]};
             background: {t["elev"]};
+            min-height: 16px;
         }}
         QPushButton:hover {{ background: {t["surface"]}; border-color: {t["line_strong"]}; }}
         QPushButton:pressed {{ background: {t["sunken"]}; }}
+        QPushButton:focus {{ border: 1px solid {t["accent"]}; }}
         QPushButton:disabled {{ color: {t["fg_subtle"]}; border-color: {t["line_soft"]}; }}
+        /* The default dialog button (OK / 確定) reads as the primary action. */
+        QPushButton:default {{
+            background: {t["accent"]};
+            color: {t["accent_fg"]};
+            border: 1px solid {t["accent"]};
+        }}
+        QPushButton:default:hover {{ background: {t["accent"]}; border-color: {t["accent_line"]}; }}
+        QPushButton:default:disabled {{
+            background: {t["sunken"]};
+            color: {t["fg_subtle"]};
+            border-color: {t["line_soft"]};
+        }}
 
         QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox,
         QTextEdit, QPlainTextEdit {{
@@ -191,7 +252,18 @@ def build_qss(theme_name: str = _DEFAULT_THEME) -> str:
             border: 1px solid {t["line"]};
             background: {t["elev"]};
             color: {t["fg"]};
+            selection-background-color: {t["accent"]};
+            selection-color: {t["accent_fg"]};
         }}
+        QLineEdit:hover, QComboBox:hover, QSpinBox:hover,
+        QDoubleSpinBox:hover, QTextEdit:hover, QPlainTextEdit:hover {{
+            border-color: {t["line_strong"]};
+        }}
+        /* Focus ring: recolour the existing 1px border to the accent so keyboard
+           users get a visible indicator with no layout shift (no width change). */
+        QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
+        QTextEdit:focus, QPlainTextEdit:focus {{ border: 1px solid {t["accent"]}; }}
+        QComboBox::drop-down {{ border: none; width: 22px; }}
         /* Combo-box popup list (otherwise a native light list under dark themes). */
         QComboBox QAbstractItemView {{
             background: {t["elev"]};
@@ -199,6 +271,29 @@ def build_qss(theme_name: str = _DEFAULT_THEME) -> str:
             border: 1px solid {t["line"]};
             selection-background-color: {t["accent"]};
             selection-color: {t["accent_fg"]};
+            outline: none;
+        }}
+
+        /* Check / radio indicators: native ones nearly vanish under dark themes.
+           Checked = accent fill (no glyph asset needed). */
+        QCheckBox::indicator, QRadioButton::indicator {{
+            width: 16px;
+            height: 16px;
+            border: 1px solid {t["line_strong"]};
+            background: {t["elev"]};
+        }}
+        QCheckBox::indicator {{ border-radius: 4px; }}
+        QRadioButton::indicator {{ border-radius: 9px; }}
+        QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
+            border-color: {t["accent"]};
+        }}
+        QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
+            background: {t["accent"]};
+            border-color: {t["accent"]};
+        }}
+        QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
+            background: {t["sunken"]};
+            border-color: {t["line_soft"]};
         }}
 
         /* Modal dialogs (print, export, OCR, watermark, …). Applying the QSS at
@@ -208,21 +303,60 @@ def build_qss(theme_name: str = _DEFAULT_THEME) -> str:
 
         /* Context menus are top-level QMenus (not children of any styled widget),
            so they only pick up theme colours from an application-level stylesheet. */
-        QMenu {{ background: {t["elev"]}; color: {t["fg"]}; border: 1px solid {t["line"]}; }}
+        QMenu {{
+            background: {t["elev"]};
+            color: {t["fg"]};
+            border: 1px solid {t["line"]};
+            padding: 4px;
+        }}
+        QMenu::item {{ padding: 6px 24px 6px 12px; border-radius: 4px; }}
         QMenu::item:selected {{ background: {t["accent"]}; color: {t["accent_fg"]}; }}
+        QMenu::separator {{ height: 1px; background: {t["line"]}; margin: 4px 8px; }}
 
         /* Disabled text must dim, not vanish, against the themed surface. */
         QLabel:disabled, QCheckBox:disabled, QRadioButton:disabled,
         QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled,
         QDoubleSpinBox:disabled, QGroupBox:disabled {{ color: {t["fg_subtle"]}; }}
 
+        /* Slim, themed scrollbars (the native ones clash with the chrome). */
+        QScrollBar:vertical {{ background: transparent; width: 12px; margin: 0px; }}
+        QScrollBar::handle:vertical {{
+            background: {t["line_strong"]};
+            min-height: 28px;
+            border-radius: 5px;
+            margin: 2px;
+        }}
+        QScrollBar::handle:vertical:hover {{ background: {t["fg_subtle"]}; }}
+        QScrollBar:horizontal {{ background: transparent; height: 12px; margin: 0px; }}
+        QScrollBar::handle:horizontal {{
+            background: {t["line_strong"]};
+            min-width: 28px;
+            border-radius: 5px;
+            margin: 2px;
+        }}
+        QScrollBar::handle:horizontal:hover {{ background: {t["fg_subtle"]}; }}
+        QScrollBar::add-line, QScrollBar::sub-line {{ width: 0px; height: 0px; }}
+        QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+
+        /* Splitter divider between the panels and the canvas. */
+        QSplitter::handle {{ background: {t["line_soft"]}; }}
+        QSplitter::handle:horizontal {{ width: 6px; }}
+        QSplitter::handle:vertical {{ height: 6px; }}
+        QSplitter::handle:hover {{ background: {t["accent_line"]}; }}
+
         /* Status bar (hosts the theme switcher) — keep its chrome themed so the
            permanent-widget chips stay legible under dark themes. */
-        QStatusBar {{ background: {t["surface"]}; color: {t["fg"]}; }}
+        QStatusBar {{ background: {t["surface"]}; color: {t["fg"]}; border-top: 1px solid {t["line"]}; }}
         QStatusBar::item {{ border: none; }}
 
         /* Left / right side panels. */
         QWidget#leftPanel, QWidget#rightPanel {{ background: {t["surface"]}; }}
+        QLabel#rightPanelTitle {{
+            font-weight: 600;
+            padding: 8px 10px;
+            color: {t["fg"]};
+            border-bottom: 1px solid {t["line"]};
+        }}
         QWidget#colorProfileCard {{
             border-top: 1px solid {t["line"]};
             border-bottom: 1px solid {t["line"]};
@@ -244,6 +378,10 @@ def build_qss(theme_name: str = _DEFAULT_THEME) -> str:
             background: {t["sunken"]};
             color: {t["fg_muted"]};
         }}
+        QTabWidget#sidebarTabs QTabBar::tab:hover {{
+            background: {t["accent_soft"]};
+            color: {t["fg"]};
+        }}
         QTabWidget#sidebarTabs QTabBar::tab:selected {{
             background: {t["accent"]};
             color: {t["accent_fg"]};
@@ -254,7 +392,9 @@ def build_qss(theme_name: str = _DEFAULT_THEME) -> str:
             background: {t["elev"]};
             color: {t["fg"]};
             border: 1px solid {t["line"]};
+            outline: none;
         }}
+        QListWidget::item:hover {{ background: {t["hover"]}; }}
         QListWidget::item:selected {{
             background: {t["accent"]};
             color: {t["accent_fg"]};
@@ -272,10 +412,15 @@ def build_qss(theme_name: str = _DEFAULT_THEME) -> str:
         QTabWidget#ribbonTabs::pane {{ border: none; background: transparent; top: 0px; }}
         QTabWidget#ribbonTabs QTabBar::tab {{
             min-width: 52px;
-            padding: 5px 10px;
+            padding: 5px 12px;
             margin-right: 2px;
             background: transparent;
             color: {t["fg_muted"]};
+            border-radius: 4px;
+        }}
+        QTabWidget#ribbonTabs QTabBar::tab:hover {{
+            background: {t["hover_strong"]};
+            color: {t["fg"]};
         }}
         QTabWidget#ribbonTabs QTabBar::tab:selected {{
             background: {t["accent"]};
@@ -284,11 +429,12 @@ def build_qss(theme_name: str = _DEFAULT_THEME) -> str:
         }}
 
         /* Tool toolbars. */
-        QToolBar {{ spacing: 4px; padding: 2px 0; }}
+        QToolBar {{ spacing: 4px; padding: 2px 0; border: none; }}
+        QToolBar::separator {{ background: {t["line"]}; width: 1px; height: 1px; margin: 4px 4px; }}
         QToolButton {{
             min-width: 52px;
             padding: 4px 8px;
-            border-radius: 4px;
+            border-radius: 6px;
             color: {t["fg"]};
         }}
         QToolButton:hover {{ background: {t["hover"]}; }}
@@ -322,10 +468,20 @@ def build_qss(theme_name: str = _DEFAULT_THEME) -> str:
             background: {t["sunken"]};
             color: {t["fg_muted"]};
         }}
+        QTabBar#documentTabBar::tab:hover {{
+            background: {t["surface"]};
+            color: {t["fg"]};
+        }}
         QTabBar#documentTabBar::tab:selected {{
             background: {t["elev"]};
             color: {t["fg"]};
             border-color: {t["line_strong"]};
+        }}
+        QTabBar#documentTabBar::close-button {{
+            border-radius: 4px;
+        }}
+        QTabBar#documentTabBar::close-button:hover {{
+            background: {t["pressed"]};
         }}
     """
 
@@ -339,6 +495,33 @@ try:
 except ImportError:  # pragma: no cover - exercised only in headless token tests
     pass
 else:
+
+    def _parse_qcolor(value: str) -> QColor:
+        """Parse a token value (``#hex`` or ``rgba(r,g,b,a)``) into a QColor.
+
+        QColor's string constructor accepts hex/named colours but not the
+        ``rgba(...)`` float-alpha form used by the interaction/shadow tokens, so
+        that form is parsed explicitly.
+        """
+        text = value.strip()
+        if text.startswith("rgba(") and text.endswith(")"):
+            parts = [p.strip() for p in text[5:-1].split(",")]
+            if len(parts) == 4:
+                r, g, b = (int(float(parts[i])) for i in range(3))
+                alpha = int(round(float(parts[3]) * 255))
+                return QColor(r, g, b, alpha)
+        color = QColor(text)
+        return color if color.isValid() else QColor(0, 0, 0, 90)
+
+    def shadow_color(theme_name: str = _DEFAULT_THEME) -> QColor:
+        """Return the drop-shadow :class:`QColor` for ``theme_name``.
+
+        Used by :class:`QGraphicsDropShadowEffect` to elevate the top chrome.
+        The hue is the ``shadow`` brand token (from the ``--shadow-*`` colours in
+        ``appearance_design/colors.css``). Unknown names fall back to the default.
+        """
+        meta = THEME_REGISTRY.get(theme_name) or THEME_REGISTRY[_DEFAULT_THEME]
+        return _parse_qcolor(meta.tokens["shadow"])
 
     class _ThemeChip(QFrame):
         """A clickable preview of one theme: a single colour square + accent ring."""

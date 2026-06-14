@@ -88,10 +88,11 @@
 .theme-meadow-lupine {
   color-scheme: light;
 
-  /* Surfaces — bg 維持冷紫天空，surface / elev 採 Meadow White 綠調暖白 */
-  --color-bg:          #eae6f3;   /* alpine sky */
+  /* Surfaces — bg / sunken 採 meadow 綠調 chrome（與 surface/border 同色系），
+     surface / elev 採 Meadow White 綠調暖白 */
+  --color-bg:          #e6ecdd;   /* meadow-green chrome */
   --color-surface:     #f5f7f2;   /* meadow white card */
-  --color-sunken:      #dbd6e9;
+  --color-sunken:      #d9e1cc;   /* meadow-green canvas well */
   --color-elev:        #fdfdf8;   /* warmest meadow-ivory */
 
   /* Borders — 帶綠灰的分隔線，與面板同語系 */
@@ -131,7 +132,7 @@
   --color-paper:       #ffffff;
   --color-paper-edge:  rgba(40, 28, 72, 0.12);
 
-  --swatch-1: #eae6f3;
+  --swatch-1: #e6ecdd;
   --swatch-2: #f5f7f2;
   --swatch-3: #4338ca;
 }
