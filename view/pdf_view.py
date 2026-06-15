@@ -1285,6 +1285,7 @@ class PDFView(QMainWindow):
         self.zoom_combo.setCurrentText("100%")
         self.zoom_combo.currentTextChanged.connect(self._on_zoom_combo_changed)
         self.fit_view_btn = QPushButton("適應畫面")
+        self.fit_view_btn.setIcon(load_icon("適應畫面", size=24))
         self.fit_view_btn.clicked.connect(self._fit_to_view)
         self.fullscreen_quick_btn = QPushButton("全螢幕")
         self.fullscreen_quick_btn.setIcon(load_icon("全螢幕", size=24))

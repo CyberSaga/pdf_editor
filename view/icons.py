@@ -56,6 +56,7 @@ ACTION_ICON_MAP: dict[str, str] = {
     "OCR（文字辨識）": "31_OCR（文字辨識）.png",
     # Key is the toolbar action label (拉正頁面); the asset is named 拉正PDF頁面.
     "拉正頁面": "33_拉正PDF頁面.png",
+    "適應畫面": "34_適應畫面.png",
 }
 
 
