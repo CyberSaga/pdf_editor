@@ -12,6 +12,17 @@
 
 ---
 
+## ⚙️ Active operating directive (user, 2026-06-15)
+
+Continue **R2.5 → R2.7** on the autonomous ticks (cron `5f4278a1` + dynamic wakeups).
+**When R2 is fully committed (all of R2.1–R2.7), the conversation context should be
+`/compact`'d** before starting R3 (the high-risk god-module decomposition). `/compact` is a
+harness command the agent cannot self-invoke, so on R2 completion the loop will
+**PushNotification** that R2 is done and that it is the `/compact` point, then continue to R3
+after compaction. (This note exists so the directive survives the compaction itself.)
+
+---
+
 ## 0. Campaign invariant — pragmatic & deployable
 
 Incremental, behavior-preserving, always-green. No big-bang rewrites. Every phase ends at a
