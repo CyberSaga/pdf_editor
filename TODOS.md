@@ -5,7 +5,7 @@
 - [x] **Phase 1 (2026-06-12) — Search snapshot restore / print snapshot funnel:** search workers now read private snapshot bytes captured on the GUI thread, completed tab-search results are preserved per tab across switches, and only in-flight partial searches are cleared on cancel; print submission captures snapshot bytes before the helper thread starts. Tests: `test_scripts/test_search_worker_flow.py`, `test_scripts/test_multi_tab_plan.py::test_05_search_state_restored_per_tab`, `test_scripts/test_print_controller_flow.py`.
 - [x] **Phase 2 (2026-06-12) — Watermark double-stamp fix:** `WatermarkTool.needs_page_overlay(...)` now returns `False` for `purpose == "print"`, leaving the helper subprocess as the only print stamping path; helper heartbeat output now refreshes runner activity so heartbeat lines do not trip the stall watchdog. Tests: `test_scripts/test_print_snapshot_path.py`, `test_scripts/test_print_subprocess_runner.py`.
 - [x] **Phase 3 (2026-06-12) — OCR worker parity:** `_OcrWorker` now receives GUI-thread snapshot bytes, `OcrTool.ocr_pages(..., doc=...)` can render from an override document/bytes, every OCR signal carries a generation token (`cancel_ocr` bumps it, handlers drop stale gens) and `page_done` is additionally dropped when the active session no longer matches the captured `_ocr_session_id`; OCR cancellation is non-blocking from session-switch/close chokepoints. Tests: `test_scripts/test_ocr_controller_flow.py`.
-- [ ] **Flaky test under load:** `test_scripts/test_print_subprocess_runner.py::test_runner_heartbeat_events_prevent_false_stall` intermittently fails in full-suite runs (timing-sensitive stall watchdog vs CPU contention) but passes in isolation — widen its timing margins or fake the clock.
+- [x] **Flaky test under load (resolved R0.3, 2026-06-15):** `test_scripts/test_print_subprocess_runner.py::test_runner_heartbeat_events_prevent_false_stall` — fixed by injecting a fake monotonic clock into `PrintSubprocessRunner` (`monotonic=` param defaulting to `time.monotonic`, production behavior unchanged); the test advances the clock explicitly, so stall detection is wall-clock independent. Verified green ×5 under `.venv`.
 
 - [x] **Phase 0 — Restore the Gate:** polluter = stylesheet leak in `test_main_startup_behavior.py`; fixed via cleanup + widget QSS override + conftest fixture (7 order-dependent failures in `test_no_jump_editor_geometry.py` eliminated).
 - [x] **Phase 1 — Linearize Capability Gate + Error Wrapping:** dead PyMuPDF `linear=1` fallback deleted (fail-fast `PdfOptimizeError`); `optimize_capabilities()` runtime probe gates the dialog's linearize/object-streams checkboxes; double 「最佳化 PDF 失敗:」 prefix fixed; `pikepdf>=8.0` in optional-requirements.txt and installed into `.venv`.
@@ -402,7 +402,7 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
 
 - [ ] Tune middle-click auto-pan speed/feel after manual validation on long multi-page PDFs.
 - [ ] Consider drawing an origin marker for auto-pan so users can see the deadzone anchor more clearly.
-- [ ] Flaky: `test_scripts/test_print_subprocess_runner.py::test_runner_heartbeat_events_prevent_false_stall` can fail during long `pytest -x` runs in the worktree but passes when run alone (timing-sensitive).
+- [x] Flaky (resolved R0.3, 2026-06-15): `test_scripts/test_print_subprocess_runner.py::test_runner_heartbeat_events_prevent_false_stall` — injectable monotonic clock makes it deterministic (see Audit-remediation section).
 
 ## Notes on `objects mode`
 

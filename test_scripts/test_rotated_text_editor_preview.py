@@ -60,8 +60,13 @@ def _ink_dims(img: QImage) -> tuple[int, int]:
 def test_preview_glyphs_stay_upright_for_proxy_rotation(rotation: int) -> None:
     model = PDFModel()
     renderer = PreviewRenderer(model=model)
-    # Narrow-tall rect: representative of a real rotated/vertical text run.
-    rect = fitz.Rect(0, 0, 20, 120)
+    # Narrow-tall rect: representative of a real rotated/vertical text run. Width
+    # is 60pt (not 20) so the upright "ABCDEFG" also fits horizontally at
+    # rotation 0: PyMuPDF 1.27's insert_htmlbox renders *nothing* when content
+    # overflows at scale_low=1 (1.25 rendered clipped glyphs), so a 20pt-wide box
+    # produced zero ink for the unrotated control. 60x120 still exercises the
+    # 90/270 wrap-dimension swap while fitting the text at every rotation.
+    rect = fitz.Rect(0, 0, 60, 120)
 
     img = renderer.render(
         text="ABCDEFG",

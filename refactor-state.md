@@ -28,14 +28,26 @@ state machine internals before its managers exist (`pdf_view.py:2899-4558`).
 |---|---|---|
 | Suite (system Py3.10 / PyMuPDF 1.25.5) | **1 failed, 1354 passed, 20 skipped** (149.7s) | census test-env lens |
 | The 1 failure | `test_theme_and_icons.py:339` `assert len(ACTION_ICON_MAP)==32`; live = 33 | RED tree |
-| Suite (`.venv` / PyMuPDF 1.27.1 — shipped stack) | **cannot collect** — `INTERNALERROR`, aborts at 983 | `ux_signoff_agent.py:36-39 sys.exit(1)` at import |
+| Suite (`.venv` / PyMuPDF 1.27.1 — shipped stack) | **R0 FROZEN: 1355 passed / 20 skipped / 0 failed** (was: cannot collect — `INTERNALERROR` aborts at 983) | frozen 2026-06-15 |
 | 20 skips | all OCR (surya/torch absent) — environmental, not regressions | — |
 | ruff total (E4/E7/E9+F, E501 unselected) | **238** (doc said 240); 28 in production layers, 210 in test/script | hygiene lens |
 | ruff auto-fixable | 18 (F541×12, F401×6) | hygiene lens |
 | God-module LOC | `pdf_view` 5497 / `pdf_model` 5166 / `pdf_controller` 3383 / `text_editing` 1809 / `text_block` 1043 | LOC scan |
-| Coverage tooling | **none installed** in either interpreter | test-env lens |
+| Coverage tooling | **pytest-cov 7.1.0 in `.venv` (R0.5)**; floor: model 79.2% / controller 78.8% / view 76.6% (combined 78.0%) | R0.5 |
 
 **R0 freeze target:** `.venv` collects full suite; **≥1355 passed / exactly the 20 OCR skips / 0 failed**, deterministic; a captured per-module coverage number as the floor.
+
+**R0 FROZEN (2026-06-15):** `.venv` declared the canonical regression interpreter — canonical command
+`.venv\Scripts\python.exe -m pytest test_scripts/`. Result **1355 passed / 20 skipped / 0 failed**,
+deterministic over 2 full runs + heartbeat ×5. The 20 skips = OCR (surya/torch absent) **+ 2
+large-fixture-absent optimizer-integrity params** (the census machine had those fixtures, so its
+count was "20 OCR"; composition differs, count holds). Coverage floor recorded above. **1.27-skew
+triage (R0.4, the 3-model authority gate): all 3 surfaced failures were non-product** — (A) `pypdf`
+test-dep missing in `.venv` → installed + declared in `optional-requirements.txt`; (B) degenerate
+20pt-wide preview box hit PyMuPDF 1.27's `insert_htmlbox` overflow→blank (1.25 clipped) — test rect
+widened to 60pt, **product overflow behavior flagged as a follow-up, not changed**; (C) stale
+`doc.name == ""` memory-backed proxy (1.27 names stream docs `"pdf"`). The `Windows fatal exception
+0x80040155` faulthandler dumps in offscreen runs are benign handled-COM noise (see PITFALLS).
 
 ---
 
@@ -43,7 +55,7 @@ state machine internals before its managers exist (`pdf_view.py:2899-4558`).
 
 | ID | Phase | Fusion mode | Playbook(s) | Status | Plan |
 |----|-------|-------------|-------------|--------|------|
-| **R0** | Baseline Freeze & Regression-Net Repair | 2-model (mech) + 3-model (interpreter-authority) | 4.5 | ☐ not started | [`plans/refactor-R0-baseline-freeze.md`](plans/refactor-R0-baseline-freeze.md) |
+| **R0** | Baseline Freeze & Regression-Net Repair | 2-model (mech) + 3-model (interpreter-authority) | 4.5 | ✅ **done 2026-06-15** | [`plans/refactor-R0-baseline-freeze.md`](plans/refactor-R0-baseline-freeze.md) |
 | **R1** | Mechanical Hygiene (ruff + app-identity + packaging) | 2-model | 4.2 | ☐ not started | [`plans/refactor-R1-mechanical-hygiene.md`](plans/refactor-R1-mechanical-hygiene.md) |
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ☐ not started | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
 | **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ☐ not started | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
@@ -108,3 +120,14 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   corrections: R0 expanded (RED+venv+deflake+coverage), R2 before R3 (guard-first), R6 folded
   (test-env→R0, coverage→tail). **Next step:** begin **R0** — fix `test_theme_and_icons.py:339`
   (assert `==33` *and* membership), then lazify `ux_signoff_agent.py` import so `.venv` collects.
+- **2026-06-15 (turn 2): R0 LANDED.** Red-Light-First throughout: reproduced the RED icon test, the
+  `.venv` collection abort, and a deterministic root-cause repro of the heartbeat flake before each
+  fix. Shipped: R0.1 icon count `==33` + on-disk membership invariant; R0.2 `ux_signoff_agent`
+  lazy `pyautogui` (collection abort gone, 1375 collected); R0.3 injectable monotonic clock in
+  `subprocess_runner` + `_FakeClock` (heartbeat green ×5); R0.4 ran the suite under `.venv`, triaged
+  3 1.27-skew failures (all non-product — see §1 FROZEN note) → `.venv` declared authority; R0.5
+  `pytest-cov` added + coverage floor captured. Net: 4 failed → **0 failed (1355 passed / 20
+  skipped)**, deterministic ×2. Docs: 6 PITFALLS entries, TODOS heartbeat items closed. One atomic
+  commit (HEAD, unpushed). **Open follow-up (not R0 scope):** assess whether the live preview/commit
+  path blanks on `insert_htmlbox` overflow at `scale_low=1` under 1.27. **Next step:** begin **R1**
+  (mechanical hygiene — ruff production-layer clean, `app_identity` leaf, `MANIFEST.in` prune).

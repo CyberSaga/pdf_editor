@@ -115,8 +115,15 @@ def test_open_damaged_pdf_auto_repairs_in_memory() -> None:
             assert bool(getattr(model.doc, "is_repaired", False)) is False, (
                 "damaged document was not auto-repaired on open"
             )
-            assert model.doc.name == "", (
-                "repaired document should be memory-backed (round-tripped)"
+            # Memory-backed (round-tripped) handle, not the original damaged
+            # file. PyMuPDF reports a stream doc's name as "" (<=1.25) or the
+            # filetype "pdf" (1.27+, from fitz.open("pdf", bytes)); both prove the
+            # round-trip produced a fresh in-memory doc. The is_repaired==False
+            # check above already proves the xref was rebuilt; this guards that
+            # the handle is no longer bound to the on-disk damaged file.
+            assert model.doc.name in ("", "pdf"), (
+                "repaired document should be memory-backed (round-tripped); got "
+                f"name {model.doc.name!r}"
             )
 
             # Content and structure are preserved through the repair.

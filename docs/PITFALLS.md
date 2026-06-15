@@ -5,6 +5,66 @@
 
 ---
 
+## Import-time `sys.exit` aborts pytest collection for the whole suite
+
+**Area:** `scripts/ux_signoff_agent.py` (R0.2)
+**Symptom:** `.venv\Scripts\python.exe -m pytest test_scripts/` dies with `INTERNALERROR ... SystemExit: 1` after collecting ~983 of 1375 tests; the shipped stack cannot run the suite at all.
+**Cause:** An optional dependency was imported at module top with `try: import pyautogui except ImportError: sys.exit(1)`. Two CUA tests import the module at top level, so the `sys.exit` ran during *collection* and aborted the whole session — not just those tests.
+**Fix:** Bind the optional name to `None` on `ImportError` and resolve it lazily at the use-site (`_require_pyautogui()` raises a clear `RuntimeError`). A missing optional dep then degrades to a runtime error in the one code path that needs it, never a collection abort.
+**File:** `scripts/ux_signoff_agent.py`
+
+---
+
+## Exact-count test assertions go stale on additive changes
+
+**Area:** `test_scripts/test_theme_and_icons.py` (R0.1)
+**Symptom:** `assert len(ACTION_ICON_MAP) == 32` failed (`33 == 32`) after a ribbon action was added; the product was correct, the literal was stale.
+**Cause:** A bare magic-number count with no membership invariant breaks on every legitimate addition and tells you nothing about *which* entry changed.
+**Fix:** Keep the exact count (it still catches a *dropped* icon) **and** pair it with a membership invariant — every mapped label resolves to a non-empty PNG on disk. Count + membership catches both additions and silent asset removals.
+**File:** `test_scripts/test_theme_and_icons.py`
+
+---
+
+## PyMuPDF 1.27 names a stream-opened doc `"pdf"`, not `""`
+
+**Area:** `model/pdf_model.py` repair round-trip; `test_scripts/test_xref_repair.py` (R0.4)
+**Symptom:** After `_repair_doc_xref_in_memory`, `model.doc.name == "pdf"` on PyMuPDF 1.27 where 1.25 returned `""`; tests using `doc.name == ""` as a "memory-backed" proxy fail.
+**Cause:** `fitz.open("pdf", repaired_bytes)` still produces a memory/stream doc, but 1.27 reflects the filetype argument (`"pdf"`) in `doc.name`; 1.25 left it empty. The product behavior (round-trip to memory) is unchanged.
+**Fix:** Don't use `doc.name == ""` to mean "memory-backed". Assert `doc.name in ("", "pdf")` (or `!= <original path>`), and prefer `is_repaired is False` as the real proof the xref round-trip happened.
+**File:** `test_scripts/test_xref_repair.py`
+
+---
+
+## PyMuPDF 1.27 `insert_htmlbox` renders nothing on overflow at `scale_low=1`
+
+**Area:** `view/text_editing.py` `PreviewRenderer.render`; `test_scripts/test_rotated_text_editor_preview.py` (R0.4)
+**Symptom:** A preview that produced (clipped) ink on 1.25 produces **zero** ink on 1.27 when the text cannot fit the box at 100% scale; `insert_htmlbox` returns a negative spare-height (`-1`).
+**Cause:** With `scale_low=1` (no shrink permitted, used for pixel-parity with the commit path), 1.27 declines to render overflowing content at all where 1.25 rendered it clipped. A test feeding a 20pt-wide box an unrotated 7-glyph run hit this; real rotated cases (90/270) swap to a wide page and still fit.
+**Fix (test):** size controls so the text fits at every rotation (60×120, not 20×120). **Watch (product):** the live preview/commit may blank out for edits that overflow the box at 100% — flagged for a follow-up assessment, not changed here.
+**File:** `test_scripts/test_rotated_text_editor_preview.py`
+
+---
+
+## Stall watchdog needs an injectable clock to be testable under load
+
+**Area:** `src/printing/subprocess_runner.py`; `test_scripts/test_print_subprocess_runner.py` (R0.3)
+**Symptom:** `test_runner_heartbeat_events_prevent_false_stall` flaked in full-suite runs (passed in isolation): under CPU contention the real-clock 40ms watchdog false-fired between heartbeats spaced by `time.sleep(0.02)`.
+**Cause:** `_check_stall` read wall-clock `time.monotonic()`, so test timing depended on OS scheduling, not the heartbeats it meant to assert.
+**Fix:** Add a `monotonic: Callable[[], float] = time.monotonic` injection seam (production default unchanged); the test passes a `_FakeClock` it advances explicitly, making stall detection wall-clock independent and deterministic.
+**File:** `src/printing/subprocess_runner.py`
+
+---
+
+## Windows fatal exception `0x80040155` in the offscreen test suite is benign
+
+**Area:** test suite under `QT_QPA_PLATFORM=offscreen` (R0.4)
+**Symptom:** `Windows fatal exception: code 0x80040155` with a `Current thread ... (most recent call first)` stack dump appears repeatedly during the pytest run; the suite still reports all-passed.
+**Cause:** `0x80040155` is `REGDB_E_IIDNOTREG` — a *handled* COM/OLE exception from Qt's Windows integration in headless/offscreen mode. pytest's built-in faulthandler prints any SEH exception's stack even when it is caught and the process continues.
+**Fix:** Nothing — it is noise, not a crash. The suite stays green and deterministic across runs. Do **not** disable faulthandler (it would also hide real native crashes); recognize this code and move on.
+**File:** n/a (environment artifact)
+
+---
+
 ## PDF cm tokens must not use scientific notation
 
 **Area:** `model/pdf_content_ops.py`  

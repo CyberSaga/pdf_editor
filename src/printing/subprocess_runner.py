@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
@@ -37,6 +38,7 @@ class PrintSubprocessRunner(QObject):
         work_dir: str | None = None,
         stall_timeout_ms: int = 30000,
         stall_check_interval_ms: int = 500,
+        monotonic: Callable[[], float] = time.monotonic,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -49,7 +51,11 @@ class PrintSubprocessRunner(QObject):
         self._stdout_buffer = ""
         self._stderr_buffer = ""
         self._stall_timeout_ms = max(1, int(stall_timeout_ms))
-        self._last_activity = time.monotonic()
+        # Injectable clock: defaults to the real monotonic clock in production;
+        # tests pass a controllable fake so stall detection is wall-clock
+        # independent (and therefore deterministic under load).
+        self._monotonic = monotonic
+        self._last_activity = self._monotonic()
         self._termination_requested = False
         self._terminal_event_seen = False
         self._stall_reported = False
@@ -109,7 +115,7 @@ class PrintSubprocessRunner(QObject):
         project_root = self._detect_project_root()
         helper_env = self._build_helper_env(project_root)
         self._configure_process_context(self._process, project_root=project_root, env=helper_env)
-        self._last_activity = time.monotonic()
+        self._last_activity = self._monotonic()
         self._watchdog.start()
         self._process.start(
             self._python_executable,
@@ -127,7 +133,7 @@ class PrintSubprocessRunner(QObject):
         chunk = bytes(self._process.readAllStandardOutput()).decode("utf-8", errors="replace")
         if not chunk:
             return
-        self._last_activity = time.monotonic()
+        self._last_activity = self._monotonic()
         self._stdout_buffer += chunk
         while "\n" in self._stdout_buffer:
             raw_line, self._stdout_buffer = self._stdout_buffer.split("\n", 1)
@@ -147,7 +153,7 @@ class PrintSubprocessRunner(QObject):
     def _handle_event(self, payload: dict) -> None:
         if payload.get("job_id") != self.job.job_id:
             return
-        self._last_activity = time.monotonic()
+        self._last_activity = self._monotonic()
         event = payload.get("event")
         message = str(payload.get("message", ""))
         if event in {"started", "progress", "heartbeat"}:
@@ -178,7 +184,7 @@ class PrintSubprocessRunner(QObject):
             return
         if self._process.state() == QProcess.ProcessState.NotRunning:
             return
-        elapsed_ms = (time.monotonic() - self._last_activity) * 1000.0
+        elapsed_ms = (self._monotonic() - self._last_activity) * 1000.0
         if elapsed_ms < self._stall_timeout_ms:
             return
         self._stall_reported = True

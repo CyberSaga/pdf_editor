@@ -18,5 +18,11 @@ pycups>=2.0.4; platform_system == "Linux" or platform_system == "Darwin"
 # disables 「最佳化快速網頁檢視」 and 「使用物件串流」.
 pikepdf>=8.0
 
+# Cross-parser integrity validation for the optimize-workflow tests:
+# test_scripts/validate_optimized_pdf.py reads an optimized PDF back with
+# fitz + pikepdf + pypdf and asserts header/EOF + page-count agreement. Without
+# pypdf the large-file integrity tests error at import on the .venv stack.
+pypdf>=4.0
+
 # Test runner (only needed when running test_scripts/*pytest*).
 pytest>=7.0

@@ -334,12 +334,23 @@ def test_dark_dialog_renders_dark(qapp):
 # Icon loader
 # --------------------------------------------------------------------------- #
 def test_action_icon_map_covers_core_actions():
-    from view.icons import ACTION_ICON_MAP
+    from view.icons import ACTION_ICON_MAP, ICON_DIR
 
-    assert len(ACTION_ICON_MAP) == 32
+    # Exact count: an exact assertion still catches a *dropped* icon. It went
+    # stale (32 -> 33) when the Fable-5 ribbon commit grew the map and left the
+    # literal behind; pair the count with the membership invariant below so a
+    # silent additive/subtractive drift cannot pass unnoticed.
+    assert len(ACTION_ICON_MAP) == 33
     for label in ("開啟", "瀏覽模式", "拉正頁面", "OCR（文字辨識）"):
         assert label in ACTION_ICON_MAP
         assert ACTION_ICON_MAP[label].endswith(".png")
+    # Membership invariant: every mapped label resolves to a non-empty PNG on
+    # disk, so a renamed or removed asset fails here even when the count holds.
+    for label, filename in ACTION_ICON_MAP.items():
+        assert filename.endswith(".png"), f"{label!r} maps to non-PNG {filename!r}"
+        asset = ICON_DIR / filename
+        assert asset.is_file(), f"{label!r} -> {filename!r} missing on disk"
+        assert asset.stat().st_size > 0, f"{label!r} -> {filename!r} is empty"
 
 
 def test_load_icon_unknown_label_returns_null(qapp):

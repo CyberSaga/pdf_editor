@@ -63,3 +63,9 @@ docs/readable-markdown.css
 # Packaging artifacts (editable install creates cybersaga_pdf.egg-info/)
 *.egg-info/
 dist/
+
+# Coverage artifacts (R0.5 pytest-cov; regenerate via --cov, floor lives in refactor-state.md)
+.coverage
+.coverage.*
+coverage*.json
+htmlcov/

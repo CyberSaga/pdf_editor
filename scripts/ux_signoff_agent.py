@@ -34,9 +34,13 @@ try:
     # pyautogui pulls in Pillow transitively (used for its screenshot backend),
     # so a successful import also confirms Pillow is available.
     import pyautogui
-except ImportError:
-    print("ERROR: pip install pyautogui pillow")
-    sys.exit(1)
+except ImportError:  # pragma: no cover - optional dep absent on headless boxes
+    # Bind the name to None instead of calling sys.exit: an import-time exit
+    # aborts pytest *collection* for the whole suite (this module is imported at
+    # top level by the CUA allowlist/signoff tests). The real dependency is
+    # resolved lazily at the use-site by _require_pyautogui(); the CUA tests
+    # monkeypatch this module attribute with a fake.
+    pyautogui = None  # type: ignore[assignment]
 
 REPO_ROOT    = Path(__file__).parent.parent
 ARTIFACT_DIR = REPO_ROOT / "test_artifacts" / "no_jump"
@@ -188,9 +192,25 @@ _CUA_TOOL = [{
 }]
 
 
+def _require_pyautogui():
+    """Return the pyautogui module, or raise a clear error if it is absent.
+
+    pyautogui drives the real mouse/keyboard and is an optional dependency that
+    is absent on headless CI/test machines. It is resolved here at the use-site
+    (rather than at import time) so a missing dependency fails with an actionable
+    runtime error instead of aborting pytest collection for the whole suite.
+    """
+    if pyautogui is None:
+        raise RuntimeError(
+            "pyautogui is required for the CUA signoff but is not installed: "
+            "pip install pyautogui pillow"
+        )
+    return pyautogui
+
+
 def _screenshot_b64() -> str:
     """Capture the full screen and return it as a base64-encoded PNG string."""
-    img = pyautogui.screenshot()
+    img = _require_pyautogui().screenshot()
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode()

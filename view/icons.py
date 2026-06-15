@@ -21,7 +21,7 @@ ICON_DIR: Path = _APPEARANCE_DIR / "function_icons"
 # can pick the right size per DPI.
 APP_ICON_PATH: Path = _APPEARANCE_DIR / "app_icon.ico"
 
-# Action label text -> PNG filename (32 ribbon actions).
+# Action label text -> PNG filename (33 ribbon actions).
 ACTION_ICON_MAP: dict[str, str] = {
     "開啟": "01_開啟.png",
     "列印": "02_列印.png",

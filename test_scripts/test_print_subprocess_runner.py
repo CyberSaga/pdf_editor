@@ -41,6 +41,25 @@ def _pump_until(app: QApplication, predicate, timeout: float = 2.0) -> bool:
     return bool(predicate())
 
 
+class _FakeClock:
+    """Controllable monotonic clock injected into the runner's stall watchdog.
+
+    The watchdog computes elapsed-since-last-activity from this callable, so
+    advancing it explicitly makes stall detection wall-clock independent — the
+    heartbeat test no longer flakes when OS scheduling under load stretches a
+    real sleep past the stall timeout.
+    """
+
+    def __init__(self, start: float = 0.0) -> None:
+        self._t = start
+
+    def __call__(self) -> float:
+        return self._t
+
+    def advance(self, dt: float) -> None:
+        self._t += dt
+
+
 class _FakeProcess(QObject):
     readyReadStandardOutput = Signal()
     readyReadStandardError = Signal()
@@ -196,6 +215,7 @@ def test_runner_heartbeat_events_prevent_false_stall(tmp_path: Path) -> None:
         options=PrintJobOptions(printer_name="Printer A"),
     )
 
+    clock = _FakeClock(1000.0)
     stalled: list[bool] = []
     succeeded: list[object] = []
     runner = PrintSubprocessRunner(
@@ -203,6 +223,7 @@ def test_runner_heartbeat_events_prevent_false_stall(tmp_path: Path) -> None:
         process_factory=_FakeProcess,
         stall_timeout_ms=40,
         stall_check_interval_ms=10,
+        monotonic=clock,
     )
     runner.stalled.connect(lambda: stalled.append(True))
     runner.succeeded.connect(lambda payload: succeeded.append(payload))
@@ -212,7 +233,11 @@ def test_runner_heartbeat_events_prevent_false_stall(tmp_path: Path) -> None:
     for _ in range(4):
         process.push_stdout_event({"job_id": job.job_id, "event": "heartbeat", "message": ""})
         app.processEvents()
-        time.sleep(0.02)
+        # Advance the fake clock by less than the 40ms stall timeout. This used
+        # time.sleep(0.02), which flaked under load when OS scheduling stretched
+        # the gap past 40ms and the watchdog false-fired; the injected clock
+        # makes elapsed-since-heartbeat deterministic regardless of wall-clock.
+        clock.advance(0.02)
         app.processEvents()
 
     assert stalled == []
