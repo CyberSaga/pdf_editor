@@ -206,3 +206,22 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   `iter_text_targets`, `get_watermarks`, `has_unsaved_changes`); R2.6 (PreviewRenderer → public
   `controller.build_insert_preview_html` — PIXEL-PARITY, run `verify_no_jump.py --skip-signoff`);
   R2.7 (`pdf_renderer.py:84` clamp + `compose_merged_document`/`open_merge_source` `_guard_foreign_doc`).
+- **2026-06-15 (turn 7): R2.5 LANDED (controller query facade).** Added thin read-only forwards on
+  PDFController — `has_unsaved_changes`, `get_watermarks`, `get_render_width_for_edit`,
+  `ensure_page_index_built`, `iter_text_targets(page_idx, mode, *, blocks_fallback)`, `get_text_blocks`
+  — and routed every remaining View→Model **method** reach-through through them: pdf_view status-bar
+  `has_unsaved_changes` (1879); watermark-edit 4-hop `tools.watermark.get_watermarks` (5083);
+  `_iter_outline_targets` + `_draw_all_block_outlines` `block_manager.get_paragraphs/runs/blocks` +
+  `ensure_page_index_built`; text_editing.py:1227 `get_render_width_for_edit`. Forwards only;
+  `iter_text_targets` mirrors each site's exact mode/fallback, so behavior-identical. **ruff caught a
+  real bug before the suite ran:** the first pass missed `_iter_outline_targets`' third (blocks-fallback)
+  branch — F821 `manager` undefined — fixed via `get_text_blocks`. Incidental `model.doc`/`text_target_mode`
+  attribute reads remain (lighter coupling, out of R2.5's method scope). Production ruff still 0.
+  **Test churn (expected for MVC decoupling):** the first full-suite gate caught **5** GUI tests that
+  mocked the OLD `controller.model.<method>` path; updated them to the new controller facade (a shared
+  `_outline_controller(model)` helper for the 3 block-outline tests + controller-level
+  `get_render_width_for_edit`/`has_unsaved_changes` on the add-text/interaction-mode mocks). Re-gated
+  green. (Note for R2.6/R3: the suite mocks `controller.model` heavily, so further view→controller
+  decoupling carries a mock-update tail.) **Next step:** R2.6 PreviewRenderer → public
+  `controller.build_insert_preview_html` (PIXEL-PARITY, verify_no_jump); R2.7 `pdf_renderer.py:84`
+  clamp + merge `_guard_foreign_doc`.

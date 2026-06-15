@@ -1224,7 +1224,7 @@ class TextEditManager:
         if editor_intent == "edit_existing":
             scaled_width = int(round(rect.width * rs))
         else:
-            render_width_pt = view.controller.model.get_render_width_for_edit(page_idx + 1, rect)
+            render_width_pt = view.controller.get_render_width_for_edit(page_idx + 1, rect)
             scaled_width = int(render_width_pt * rs)
         scaled_rect = rect * rs
 

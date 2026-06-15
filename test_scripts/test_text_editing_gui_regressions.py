@@ -1090,6 +1090,29 @@ def test_escape_still_discards() -> None:
     )
 
 
+def _outline_controller(model: SimpleNamespace) -> SimpleNamespace:
+    """Controller mock exposing the R2.5 read-only facade the block-outline view
+    code now calls (controller.iter_text_targets / ensure_page_index_built /
+    get_text_blocks), forwarding to a model-shaped mock's block_manager. Mirrors
+    PDFController's real facade so the view's behavior is unchanged."""
+    bm = model.block_manager
+
+    def iter_text_targets(page_idx, mode, *, blocks_fallback=False):
+        if mode == "paragraph":
+            return list(getattr(bm, "get_paragraphs", lambda _i: [])(page_idx) or [])
+        candidates = list(getattr(bm, "get_runs", lambda _i: [])(page_idx) or [])
+        if blocks_fallback and not candidates:
+            candidates = list(getattr(bm, "get_blocks", lambda _i: [])(page_idx) or [])
+        return candidates
+
+    return SimpleNamespace(
+        model=model,
+        ensure_page_index_built=model.ensure_page_index_built,
+        iter_text_targets=iter_text_targets,
+        get_text_blocks=lambda page_idx: list(getattr(bm, "get_blocks", lambda _i: [])(page_idx) or []),
+    )
+
+
 def test_block_outlines_only_drawn_for_visible_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     """_draw_all_block_outlines must only query visible pages using 0-based page indices."""
 
@@ -1112,8 +1135,8 @@ def test_block_outlines_only_drawn_for_visible_pages(monkeypatch: pytest.MonkeyP
         visited_pages.append(page_idx)
         return [fake_run]
 
-    view.controller = SimpleNamespace(
-        model=SimpleNamespace(
+    view.controller = _outline_controller(
+        SimpleNamespace(
             doc=True,
             text_target_mode="run",
             ensure_page_index_built=lambda page_num: None,
@@ -1156,8 +1179,8 @@ def test_block_outlines_follow_run_boxes_in_run_mode(monkeypatch: pytest.MonkeyP
     fake_run = SimpleNamespace(bbox=fitz.Rect(20, 30, 70, 44))
     fake_block = SimpleNamespace(rect=fitz.Rect(10, 10, 180, 90))
 
-    view.controller = SimpleNamespace(
-        model=SimpleNamespace(
+    view.controller = _outline_controller(
+        SimpleNamespace(
             doc=True,
             text_target_mode="run",
             ensure_page_index_built=lambda page_num: None,
@@ -1196,8 +1219,8 @@ def test_paragraph_outlines_use_light_blue_dashed_border(monkeypatch: pytest.Mon
     view.continuous_pages = False
 
     fake_para = SimpleNamespace(bbox=fitz.Rect(20, 30, 170, 74))
-    view.controller = SimpleNamespace(
-        model=SimpleNamespace(
+    view.controller = _outline_controller(
+        SimpleNamespace(
             doc=True,
             text_target_mode="paragraph",
             ensure_page_index_built=lambda page_num: None,
@@ -1259,7 +1282,8 @@ def test_create_text_editor_keeps_background_transparent_for_edit_and_add_text(
     view.scene = _FakeSceneWithAddWidget()
     view._render_scale = 1.0
     view.controller = SimpleNamespace(
-        model=SimpleNamespace(get_render_width_for_edit=lambda page_num, rect: 40.0)
+        model=SimpleNamespace(get_render_width_for_edit=lambda page_num, rect: 40.0),
+        get_render_width_for_edit=lambda page_num, rect: 40.0,
     )
     view._refresh_undo_redo_action_state = lambda: None
     view._set_document_undo_redo_enabled = lambda enabled: None
@@ -1305,7 +1329,8 @@ def test_create_text_editor_rotates_proxy_for_vertical_text(monkeypatch: pytest.
     view.scene = _FakeSceneWithAddWidget()
     view._render_scale = 1.0
     view.controller = SimpleNamespace(
-        model=SimpleNamespace(get_render_width_for_edit=lambda page_num, rect: 40.0)
+        model=SimpleNamespace(get_render_width_for_edit=lambda page_num, rect: 40.0),
+        get_render_width_for_edit=lambda page_num, rect: 40.0,
     )
     view._refresh_undo_redo_action_state = lambda: None
     view._set_document_undo_redo_enabled = lambda enabled: None
@@ -1365,7 +1390,8 @@ def test_create_text_editor_adds_mask_item_to_hide_display_text(monkeypatch: pyt
     view.scene = _FakeSceneWithEditorMask()
     view._render_scale = 1.0
     view.controller = SimpleNamespace(
-        model=SimpleNamespace(get_render_width_for_edit=lambda page_num, rect: 40.0)
+        model=SimpleNamespace(get_render_width_for_edit=lambda page_num, rect: 40.0),
+        get_render_width_for_edit=lambda page_num, rect: 40.0,
     )
     view._refresh_undo_redo_action_state = lambda: None
     view._set_document_undo_redo_enabled = lambda enabled: None
@@ -1498,7 +1524,8 @@ def test_phase2_create_text_editor_records_fractional_initial_size(
     view.scene = _FakeSceneWithAddWidget()
     view._render_scale = 1.0
     view.controller = SimpleNamespace(
-        model=SimpleNamespace(get_render_width_for_edit=lambda page_num, rect: 40.0)
+        model=SimpleNamespace(get_render_width_for_edit=lambda page_num, rect: 40.0),
+        get_render_width_for_edit=lambda page_num, rect: 40.0,
     )
     view._refresh_undo_redo_action_state = lambda: None
     view._set_document_undo_redo_enabled = lambda enabled: None

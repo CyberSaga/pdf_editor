@@ -160,6 +160,7 @@ def _make_view() -> pdf_view.PDFView:
     view.controller = SimpleNamespace(
         get_object_info_at_point=lambda page_num, point: None,
         get_text_info_at_point=lambda page_num, point, allow_fallback=False: None,
+        has_unsaved_changes=lambda: False,
     )
 
     return view

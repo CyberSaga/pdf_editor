@@ -3296,6 +3296,46 @@ class PDFController:
         ``get_page_rect``; the view must not index ``model.doc`` directly)."""
         return int(self.model.doc[page_idx].rotation)
 
+    # --- R2.5: read-only query facade (forwards only, owns no state) ---------
+    # The view must not reach through self.controller.model.<method>(...) — these
+    # thin forwards keep the deep model methods on the controller's surface.
+
+    def has_unsaved_changes(self) -> bool:
+        """Read-only: does the active document have unsaved edits? (status bar)."""
+        return bool(self.model.has_unsaved_changes()) if self.model is not None else False
+
+    def get_watermarks(self) -> list:
+        """Read-only watermark list for the view (replaces the 4-hop
+        controller.model.tools.watermark.get_watermarks() reach-through)."""
+        return self.model.tools.watermark.get_watermarks()
+
+    def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect) -> float:
+        """Read-only: the model's wrap width (pt) for an add-new inline editor."""
+        return self.model.get_render_width_for_edit(page_num, rect)
+
+    def ensure_page_index_built(self, page_num: int) -> None:
+        """Ensure the model's text index for ``page_num`` (1-based) is built."""
+        self.model.ensure_page_index_built(page_num)
+
+    def iter_text_targets(self, page_idx: int, mode: str, *, blocks_fallback: bool = False) -> list:
+        """Read-only text-target candidates (paragraphs or runs[/blocks]) for a
+        page so the view never reaches model.block_manager directly. Mirrors the
+        two view call sites exactly: ``'paragraph'`` -> get_paragraphs; otherwise
+        -> get_runs, and (only when ``blocks_fallback``) get_blocks if runs is
+        empty."""
+        bm = self.model.block_manager
+        if mode == "paragraph":
+            return list(getattr(bm, "get_paragraphs", lambda _i: [])(page_idx) or [])
+        candidates = list(getattr(bm, "get_runs", lambda _i: [])(page_idx) or [])
+        if blocks_fallback and not candidates:
+            candidates = list(getattr(bm, "get_blocks", lambda _i: [])(page_idx) or [])
+        return candidates
+
+    def get_text_blocks(self, page_idx: int) -> list:
+        """Read-only text blocks for a page (the outline blocks-fallback path);
+        keeps the view off model.block_manager."""
+        return list(getattr(self.model.block_manager, "get_blocks", lambda _i: [])(page_idx) or [])
+
     def add_watermark(self, pages: list, text: str, angle: float, opacity: float, font_size: int, color: tuple, font: str, offset_x: float = 0, offset_y: float = 0, line_spacing: float = 1.3):
         """新增浮水印"""
         if not self.model.doc:

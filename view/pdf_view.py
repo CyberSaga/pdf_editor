@@ -1876,7 +1876,7 @@ class PDFView(QMainWindow):
         total = getattr(self, "total_pages", 0)
         cur = getattr(self, "current_page", 0)
         parts = []
-        if getattr(self.controller, "model", None) and self.controller.model.has_unsaved_changes():
+        if self.controller is not None and self.controller.has_unsaved_changes():
             parts.append("已修改")
         if getattr(self, "left_sidebar", None) and self.left_sidebar.currentIndex() == 1 and getattr(self, "current_search_results", None) and self.current_search_results:
             parts.append(f"找到 {len(self.current_search_results)} 個結果 • 按 Esc 關閉搜尋")
@@ -2466,25 +2466,18 @@ class PDFView(QMainWindow):
         if not hasattr(self, "controller") or not getattr(self.controller.model, "doc", None):
             return []
         model = self.controller.model
-        manager = model.block_manager
         mode = (getattr(model, "text_target_mode", "run") or "run").lower()
 
         targets: list[tuple[tuple[int, int], fitz.Rect]] = []
-        if mode == "paragraph":
-            for target_idx, para in enumerate(manager.get_paragraphs(page_idx)):
-                rect = fitz.Rect(getattr(para, "bbox", fitz.Rect()))
-                if not rect.is_empty:
-                    targets.append(((page_idx, target_idx), rect))
-        else:
-            for target_idx, run in enumerate(manager.get_runs(page_idx)):
-                rect = fitz.Rect(getattr(run, "bbox", fitz.Rect()))
-                if not rect.is_empty:
-                    targets.append(((page_idx, target_idx), rect))
+        for target_idx, item in enumerate(self.controller.iter_text_targets(page_idx, mode)):
+            rect = fitz.Rect(getattr(item, "bbox", fitz.Rect()))
+            if not rect.is_empty:
+                targets.append(((page_idx, target_idx), rect))
 
         if targets:
             return targets
 
-        for target_idx, block in enumerate(manager.get_blocks(page_idx)):
+        for target_idx, block in enumerate(self.controller.get_text_blocks(page_idx)):
             rect = fitz.Rect(getattr(block, "rect", fitz.Rect()))
             if not rect.is_empty:
                 targets.append(((page_idx, target_idx), rect))
@@ -4238,20 +4231,14 @@ class PDFView(QMainWindow):
 
         for page_idx in range(int(start_page), int(end_page) + 1):
             try:
-                model.ensure_page_index_built(page_idx + 1)
+                self.controller.ensure_page_index_built(page_idx + 1)
             except Exception:
                 continue
 
-            if mode == "paragraph":
-                candidates = getattr(model.block_manager, "get_paragraphs", lambda _i: [])(page_idx) or []
-                def _bbox(item):
-                    return getattr(item, "bbox", None) or getattr(item, "rect", None)
-            else:
-                candidates = getattr(model.block_manager, "get_runs", lambda _i: [])(page_idx) or []
-                if not candidates:
-                    candidates = getattr(model.block_manager, "get_blocks", lambda _i: [])(page_idx) or []
-                def _bbox(item):
-                    return getattr(item, "bbox", None) or getattr(item, "rect", None)
+            candidates = self.controller.iter_text_targets(page_idx, mode, blocks_fallback=True)
+
+            def _bbox(item):
+                return getattr(item, "bbox", None) or getattr(item, "rect", None)
 
             y0 = (
                 self.page_y_positions[page_idx]
@@ -5080,7 +5067,7 @@ class PDFView(QMainWindow):
             return
         if not self.controller:
             return
-        watermarks = self.controller.model.tools.watermark.get_watermarks()
+        watermarks = self.controller.get_watermarks()
         edit_wm = next((w for w in watermarks if w.get("id") == wm_id), None)
         if not edit_wm:
             return
