@@ -109,7 +109,7 @@ def main() -> None:
 
     h(1, "CODEGRAPH_REPORT — pdf_editor")
     line(f"> Generated {date.today().isoformat()} by `.codegraph/report_gen.py`  ")
-    line(f"> Source: `.codegraph/graph.db` — re-run after structural changes.")
+    line("> Source: `.codegraph/graph.db` — re-run after structural changes.")
     line()
 
     # ── 1. Summary ──────────────────────────────────────────────────────────

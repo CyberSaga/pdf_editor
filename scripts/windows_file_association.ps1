@@ -63,6 +63,12 @@ $Pythonw    = Join-Path $ScriptsDir 'pythonw.exe'
 $Launcher   = Join-Path $ScriptsDir 'cybersaga_pdf.exe'   # uniquely-named copy
 $MainPy     = Join-Path $ProjectDir 'main.py'
 
+# --- App identity (single source of truth: utils/app_identity.py) ------------
+# This script cannot import Python, so these literals MIRROR the leaf and must be
+# kept byte-identical with it (a drift breaks the file-association registration):
+#   $AppExe / $Launcher stem  <-  app_identity.ARGPARSE_PROG ('cybersaga_pdf') + '.exe'
+#   $AppName / $AppRegName     <-  app_identity.APP           ('CyberSagaPDF')
+#   $ProgId                    <-  '<APP>.Document'           (derived from app_identity.APP)
 $ProgId     = 'CyberSagaPDF.Document'
 $AppExe     = 'cybersaga_pdf.exe'                         # Applications\<this>
 $AppName    = 'CyberSagaPDF'

@@ -56,7 +56,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | ID | Phase | Fusion mode | Playbook(s) | Status | Plan |
 |----|-------|-------------|-------------|--------|------|
 | **R0** | Baseline Freeze & Regression-Net Repair | 2-model (mech) + 3-model (interpreter-authority) | 4.5 | ✅ **done 2026-06-15** | [`plans/refactor-R0-baseline-freeze.md`](plans/refactor-R0-baseline-freeze.md) |
-| **R1** | Mechanical Hygiene (ruff + app-identity + packaging) | 2-model | 4.2 | ☐ not started | [`plans/refactor-R1-mechanical-hygiene.md`](plans/refactor-R1-mechanical-hygiene.md) |
+| **R1** | Mechanical Hygiene (ruff + app-identity + packaging) | 2-model | 4.2 | ✅ **done 2026-06-15** | [`plans/refactor-R1-mechanical-hygiene.md`](plans/refactor-R1-mechanical-hygiene.md) |
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ☐ not started | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
 | **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ☐ not started | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ☐ not started | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
@@ -131,3 +131,18 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   commit (HEAD, unpushed). **Open follow-up (not R0 scope):** assess whether the live preview/commit
   path blanks on `insert_htmlbox` overflow at `scale_low=1` under 1.27. **Next step:** begin **R1**
   (mechanical hygiene — ruff production-layer clean, `app_identity` leaf, `MANIFEST.in` prune).
+- **2026-06-15 (turn 3): R1 LANDED.** R1.1 ruff: 18 repo-wide auto-fixes + 27 manual production fixes
+  (E402 docstring-before-`__future__` in `pdf_optimizer.py`; hoisted `src.printing` imports above the
+  constants in `pdf_controller.py`; E701 ×3; F841 `new_annot_xref`) → **production layers ruff-clean
+  (0)**, repo-wide 238→193 (remaining all test/script, deferred). R1.2 `utils/app_identity.py` leaf
+  (Red-Light-First via `test_app_identity.py`): 8 identity constants consolidated from main.py/
+  preferences.py/single_instance.py + `.ps1` sync-note; IPC prefixes + QSettings org/app byte-identical
+  (verified). R1.3 `MANIFEST.in` (prune scripts/test_scripts/docs/.codegraph). **Regression caught by
+  the gate & fixed:** the plan called `pdf_model.py:91 _MAX_PIXMAP_PX` "`--fix`-safe", but it is an
+  intentional **re-export** (tests read `pdf_model._MAX_PIXMAP_PX`); `ruff --fix` stripped it and broke
+  2 render-guard tests → restored with `# noqa: F401` + comment (PITFALLS entry added). **Fusion
+  tooling unavailable** in this environment (`gemini` not in PATH; `/codex:rescue` needs OAuth) — the
+  2-model Playbook-4.2 lens was applied manually; authoritative gates were ruff + the full pytest net.
+  Docs: 3 PITFALLS entries, CLAUDE.md §3.1 ruff count, ARCHITECTURE.md identity para, 2 TODOS closed.
+  **Next step:** begin **R2** (MVC boundary reconvergence, guard-first — ship `test_layer_boundaries.py`
+  AST guard FIRST, then generalize the encryption guard, then the View→Model reach-through fixes).

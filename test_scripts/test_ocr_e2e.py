@@ -5,7 +5,6 @@ Run: python -m pytest test_scripts/test_ocr_e2e.py -v -s
 """
 from __future__ import annotations
 
-import os
 import sys
 import pathlib
 import pytest

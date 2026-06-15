@@ -63,7 +63,7 @@
 
 ## Open -- App identity single source of truth (from /code-review of claude/simplify, 2026-06-10)
 
-- [ ] **Consolidate app-identity strings into one canonical module.** The CyberSagaPDF
+- [x] **Consolidate app-identity strings into one canonical module (DONE R1.2, 2026-06-15).** Created the dependency-free leaf `utils/app_identity.py` (ORG/APP/LEGACY_ORG/LEGACY_APP/ARGPARSE_PROG/APP_USER_MODEL_ID/IPC_SERVER_PREFIX/IPC_LEGACY_SERVER_PREFIX); imported into main.py/preferences.py/single_instance.py; the `.ps1` mirrors it via a header sync-note; byte-identical values pinned by `test_scripts/test_app_identity.py`. Original finding: The CyberSagaPDF
   rename touched 5+ independent hardcoded sites with no shared constant: `main.py:21`
   (`prog="cybersaga_pdf"`), `main.py:37` (`APP_USER_MODEL_ID = "CyberSaga.CyberSagaPDF"`),
   `utils/preferences.py:29-30` (`_ORG`/`_APP` for QSettings), `utils/single_instance.py:22`
@@ -133,7 +133,7 @@ an upstream-blocked residual. Locked by `test_security_pillow_floor.py` and
 
 ### Packaging hygiene (recorded during F3 / Task 5)
 
-- [ ] **Exclude `scripts/` from any future packaged artifact.** There is currently no
+- [x] **Exclude `scripts/` from any future packaged artifact (DONE R1.3, 2026-06-15).** Added `MANIFEST.in` (`prune scripts`/`test_scripts`/`docs`/`.codegraph`) so the sdist drops the CUA harness; the wheel already excludes it via the `pyproject.toml` `packages.find` allow-list. (A PyInstaller `.spec` exclusion for the frozen build remains a separate future task; an automated build-artifact guard test is tracked for R5.4.) Original finding: There is currently no
   app packaging manifest in the repo (no `setup.py`/`setup.cfg`/`pyproject.toml`/
   `MANIFEST.in`, no PyInstaller `.spec`), so the dev-only CUA harness
   `scripts/ux_signoff_agent.py` is not shipped by anything. When packaging is added,

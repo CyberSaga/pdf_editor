@@ -4,6 +4,7 @@ import logging
 from typing import Iterable, Protocol
 
 from model.tools.ocr_types import OcrDevice, OcrLanguage
+from utils.app_identity import APP as _APP, LEGACY_APP as _LEGACY_APP, LEGACY_ORG as _LEGACY_ORG, ORG as _ORG
 from utils.theme_ids import DEFAULT_THEME_ID, VALID_THEME_IDS
 
 logger = logging.getLogger(__name__)
@@ -26,11 +27,8 @@ _THEME_KEY = "ui/theme"
 _THEME_DEFAULT = DEFAULT_THEME_ID
 _VALID_THEME_IDS = VALID_THEME_IDS
 
-_ORG = "CyberSaga"
-_APP = "CyberSagaPDF"
-
-_LEGACY_ORG = "pdf_editor"
-_LEGACY_APP = "pdf_editor"
+# Identity strings (_ORG/_APP for the live QSettings store, _LEGACY_* for the
+# one-time migration) come from the utils.app_identity leaf — see the import.
 
 _MIGRATE_KEYS = (_OCR_DEVICE_KEY, _OCR_LANGS_KEY, _THEME_KEY)
 

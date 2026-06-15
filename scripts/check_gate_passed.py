@@ -19,7 +19,6 @@ A forged or stale .gate_passed cannot make it pass:
 """
 from __future__ import annotations
 import json
-import subprocess
 import sys
 from pathlib import Path
 

@@ -10,6 +10,8 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication, QLockFile
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
+from utils.app_identity import IPC_LEGACY_SERVER_PREFIX, IPC_SERVER_PREFIX
+
 _ACTIVE_SERVERS: dict[str, QLocalServer] = {}
 
 
@@ -19,11 +21,11 @@ def _safe_username() -> str:
 
 
 def _build_server_name() -> str:
-    return f"cybersagapdf_singleinstance_{_safe_username()}"
+    return f"{IPC_SERVER_PREFIX}{_safe_username()}"
 
 
 def _build_legacy_server_name() -> str:
-    return f"pdf_editor_singleinstance_{_safe_username()}"
+    return f"{IPC_LEGACY_SERVER_PREFIX}{_safe_username()}"
 
 
 def _remove_server(name: str) -> None:

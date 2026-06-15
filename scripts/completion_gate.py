@@ -57,7 +57,7 @@ def main(skip_signoff: bool = False) -> int:
         encoding="utf-8",
     )
     print(f"[completion-gate] invocation_id={invocation_id}")
-    print(f"[completion-gate] Prior proof (if any) replaced with IN_PROGRESS marker")
+    print("[completion-gate] Prior proof (if any) replaced with IN_PROGRESS marker")
 
     # Step 0: Verify all gate scripts are committed to git — not just present on disk.
     # This closes the bypass where an agent creates the scripts as untracked files,
@@ -238,11 +238,11 @@ def main(skip_signoff: bool = False) -> int:
 
     # .gate_passed MUST exist.  signoff.json only required when signoff was not skipped.
     if not MARKER_PATH.exists():
-        print(f"\n[completion-gate] FAIL — .gate_passed missing when writing proof — "
-              f"filesystem was mutated after gate run"); return 1
+        print("\n[completion-gate] FAIL — .gate_passed missing when writing proof — "
+              "filesystem was mutated after gate run"); return 1
     if not skip_signoff and not SIGNOFF_PATH.exists():
-        print(f"\n[completion-gate] FAIL — signoff.json missing when writing proof — "
-              f"filesystem was mutated after gate run"); return 1
+        print("\n[completion-gate] FAIL — signoff.json missing when writing proof — "
+              "filesystem was mutated after gate run"); return 1
 
     # Verify .gate_passed's recorded commit matches HEAD (final sanity check)
     try:
@@ -274,11 +274,11 @@ def main(skip_signoff: bool = False) -> int:
     except Exception as exc:
         print(f"\n[completion-gate] FAIL — proof write/read back failed: {exc}"); return 1
     if written.get("invocation_id") != invocation_id:
-        print(f"\n[completion-gate] FAIL — proof invocation_id mismatch after write"); return 1
+        print("\n[completion-gate] FAIL — proof invocation_id mismatch after write"); return 1
     if written.get("git_commit") != head:
-        print(f"\n[completion-gate] FAIL — proof git_commit mismatch after write"); return 1
+        print("\n[completion-gate] FAIL — proof git_commit mismatch after write"); return 1
     if written.get("verify_no_jump_exit_code") != 0 or written.get("check_gate_passed_exit_code") != 0:
-        print(f"\n[completion-gate] FAIL — proof exit codes invalid after write"); return 1
+        print("\n[completion-gate] FAIL — proof exit codes invalid after write"); return 1
 
     print("\n[completion-gate] BOTH COMMANDS PASSED — no-jump goal is resolved")
     print(f"[completion-gate] Proof written and validated: {PROOF_PATH}")

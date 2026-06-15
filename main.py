@@ -6,6 +6,8 @@ import os
 import sys
 from typing import Any
 
+from utils.app_identity import APP_USER_MODEL_ID, ARGPARSE_PROG
+
 
 def _configure_logging() -> logging.Logger:
     # Default to WARNING for shipped builds so absolute file paths and full
@@ -18,7 +20,7 @@ def _configure_logging() -> logging.Logger:
 
 def parse_cli(argv: list[str] | None = None) -> argparse.Namespace:
     cli_args = list(sys.argv[1:] if argv is None else argv)
-    parser = argparse.ArgumentParser(prog="cybersaga_pdf")
+    parser = argparse.ArgumentParser(prog=ARGPARSE_PROG)
     parser.add_argument("files", nargs="*", help="PDF files to open")
     parser.add_argument("--merge", dest="merge_output", metavar="OUTPUT", help="Merge inputs into OUTPUT and exit")
     args = parser.parse_args(cli_args)
@@ -32,9 +34,6 @@ def run_merge_and_exit(args: argparse.Namespace) -> int:
 
     headless_merge(args.files, args.merge_output)
     return 0
-
-
-APP_USER_MODEL_ID = "CyberSaga.CyberSagaPDF"
 
 
 def _set_windows_app_user_model_id() -> None:

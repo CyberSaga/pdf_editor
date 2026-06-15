@@ -28,17 +28,6 @@ from model.object_requests import (
 from model.pdf_model import PDFModel
 from utils.helpers import pixmap_to_qimage, pixmap_to_qpixmap, show_error
 from view.pdf_view import EditTextRequest, MoveTextRequest, PDFView, ViewportAnchor
-
-THUMB_BATCH_SIZE = 10
-THUMB_BATCH_INTERVAL_MS = 30
-INDEX_BATCH_SIZE = 5
-INDEX_BATCH_INTERVAL_MS = 50
-FIRST_PAGE_PREVIEW_SCALE = 0.25
-VISIBLE_PREFETCH_PAGES = 1
-VISIBLE_RENDER_BATCH_SIZE = 2
-LOW_RES_RENDER_SCALE = 0.5
-RENDER_CACHE_BUDGET_BYTES = 96 * 1024 * 1024
-
 from src.printing import PrintDispatcher, PrintHelperTerminatedError, PrintingError
 from src.printing.helper_protocol import PrintHelperJob
 from src.printing.messages import (
@@ -65,6 +54,15 @@ from src.printing.messages import (
 from src.printing.print_dialog import UnifiedPrintDialog
 from src.printing.subprocess_runner import PrintSubprocessRunner
 
+THUMB_BATCH_SIZE = 10
+THUMB_BATCH_INTERVAL_MS = 30
+INDEX_BATCH_SIZE = 5
+INDEX_BATCH_INTERVAL_MS = 50
+FIRST_PAGE_PREVIEW_SCALE = 0.25
+VISIBLE_PREFETCH_PAGES = 1
+VISIBLE_RENDER_BATCH_SIZE = 2
+LOW_RES_RENDER_SCALE = 0.5
+RENDER_CACHE_BUDGET_BYTES = 96 * 1024 * 1024
 OPEN_BACKGROUND_FALLBACK_MS = 250
 
 logger = logging.getLogger(__name__)
@@ -2168,7 +2166,8 @@ class PDFController:
         # Empty string is a valid "delete textbox content" intent from inline edit.
         if new_text is None:
             new_text = ""
-        if not self.model.doc or page < 1 or page > len(self.model.doc): return
+        if not self.model.doc or page < 1 or page > len(self.model.doc):
+            return
         try:
             page_idx = page - 1
             view = getattr(self, "view", None)
@@ -3092,12 +3091,14 @@ class PDFController:
 
     def add_annotation(self, page_idx: int, doc_point: fitz.Point, text: str):
         """Handle request to add a new annotation. doc_point 已由 view 轉為文件座標。"""
-        if not self.model.doc: return
+        if not self.model.doc:
+            return
 
         try:
             before = self.model._capture_doc_snapshot()
-            # Model expects 1-based page number
-            new_annot_xref = self.model.tools.annotation.add_annotation(page_idx + 1, doc_point, text)
+            # Model expects 1-based page number. The call is side-effecting (the
+            # annotation is added); the returned xref is intentionally unused here.
+            self.model.tools.annotation.add_annotation(page_idx + 1, doc_point, text)
             self._invalidate_active_render_state()
             after = self.model._capture_doc_snapshot()
             cmd = SnapshotCommand(
@@ -3132,7 +3133,8 @@ class PDFController:
 
     def toggle_annotations_visibility(self, visible: bool):
         """Show or hide all annotations."""
-        if not self.model.doc: return
+        if not self.model.doc:
+            return
         self.model.tools.annotation.toggle_annotations_visibility(visible)
         self._invalidate_active_render_state()
         self.show_page(self.view.current_page)

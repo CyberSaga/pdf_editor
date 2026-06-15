@@ -1,0 +1,12 @@
+# Source-distribution (sdist) contents — defense-in-depth.
+#
+# The wheel already excludes everything outside the production packages via
+# [tool.setuptools.packages.find] in pyproject.toml (include = controller*,
+# model*, utils*, view*, src*). The sdist, however, is built from MANIFEST/SCM
+# rather than packages.find, so without these prunes dev/test/doc trees would
+# ride along. In particular `scripts/` contains the CUA sign-off harness, which
+# drives the real keyboard/mouse via pyautogui and must never be distributed.
+prune scripts
+prune test_scripts
+prune docs
+prune .codegraph

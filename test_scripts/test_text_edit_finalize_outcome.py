@@ -2,7 +2,7 @@
 from __future__ import annotations
 from unittest.mock import MagicMock
 from view.text_editing import (
-    TextEditOutcome, TextEditFinalizeResult, finalize_text_edit_impl, TextEditReason,
+    TextEditOutcome, finalize_text_edit_impl, TextEditReason,
 )
 
 

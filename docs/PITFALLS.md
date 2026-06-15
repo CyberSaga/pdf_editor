@@ -65,6 +65,36 @@
 
 ---
 
+## `ruff --fix` (F401) silently strips an intentional re-export
+
+**Area:** `model/pdf_model.py` (R1.1)
+**Symptom:** After a blanket `ruff check --fix .`, `test_security_pdf_resource_guards` failed with `AttributeError: module 'model.pdf_model' has no attribute '_MAX_PIXMAP_PX'`.
+**Cause:** `pdf_model.py` imported `_MAX_PIXMAP_PX` from `utils/render_limits` purely to **re-export** it (external callers/tests read `pdf_model._MAX_PIXMAP_PX`). It is unused *within* the module, so ruff flagged F401 and `--fix` removed it — exactly the dynamic/re-export footgun blanket autofix is prone to.
+**Fix:** Restore the import and annotate the intent: `from utils.render_limits import _MAX_PIXMAP_PX, ...  # noqa: E402, F401` with a comment. Before running `ruff --fix` on a module, scan for symbols other modules access via `<module>.<name>` (re-exports) and `# noqa: F401` them first.
+**File:** `model/pdf_model.py`
+
+---
+
+## Module docstring after `from __future__` makes every import E402
+
+**Area:** `model/pdf_optimizer.py` (R1.1)
+**Symptom:** Every import in the file is flagged E402 ("module level import not at top of file") even though they sit directly below the docstring.
+**Cause:** The file opened with `from __future__ import annotations` and *then* the module docstring. A docstring placed after a statement is a plain string-expression statement, so ruff treats it as code and every subsequent import is "not at top". (It is also a dead expression, not the module `__doc__`.)
+**Fix:** Order is docstring → `from __future__ import annotations` → imports. The `__future__` import is permitted to follow the docstring; the docstring must be the file's first statement to remain `__doc__`.
+**File:** `model/pdf_optimizer.py`
+
+---
+
+## Consolidating identity strings must preserve IPC prefixes byte-identical
+
+**Area:** `utils/app_identity.py`, `utils/single_instance.py`, `utils/preferences.py` (R1.2)
+**Symptom:** A drifted single-instance server-name prefix or QSettings org/app breaks open-file forwarding to a running instance, or "resets" preferences — with **no exception** surfaced.
+**Cause:** These are compatibility values shared with already-running / already-installed builds (`cybersagapdf_singleinstance_`, the legacy `pdf_editor_singleinstance_` probe, and `QSettings("CyberSaga"/"CyberSagaPDF")` plus the legacy `pdf_editor` migration source). A consolidation that "tidies" any of them silently breaks runtime behavior.
+**Fix:** Source them from the `utils/app_identity.py` leaf and pin them byte-identical with a test (`test_app_identity.py`). The Windows `.ps1` cannot import Python, so it mirrors the leaf with a header sync-note.
+**File:** `utils/app_identity.py`
+
+---
+
 ## PDF cm tokens must not use scientific notation
 
 **Area:** `model/pdf_content_ops.py`  

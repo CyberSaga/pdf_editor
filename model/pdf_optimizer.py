@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Internal optimizer implementation for `檔案 > 另存為最佳化的副本`.
 
@@ -12,6 +10,8 @@ Design constraints:
 
 `PDFModel` is the public facade; it re-exports the schema types and delegates to this module.
 """
+
+from __future__ import annotations
 
 import io
 import json

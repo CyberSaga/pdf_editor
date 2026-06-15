@@ -88,7 +88,11 @@ PdfOptimizationResult = pdf_optimizer.PdfOptimizationResult
 # or render. These cap the worst case; they do not affect any realistic document.
 _MAX_PDF_BYTES = 512 * 1024 * 1024  # 512 MB
 _MAX_PAGES = 5_000
-from utils.render_limits import _MAX_PIXMAP_PX, safe_render_scale as _safe_render_scale  # noqa: E402
+# _MAX_PIXMAP_PX is re-exported here for backward compatibility: external callers
+# and tests reference ``model.pdf_model._MAX_PIXMAP_PX`` (see docs/PITFALLS.md).
+# It is unused *within* this module, so F401 is suppressed deliberately — do NOT
+# let ``ruff --fix`` strip it (that breaks test_security_pdf_resource_guards).
+from utils.render_limits import _MAX_PIXMAP_PX, safe_render_scale as _safe_render_scale  # noqa: E402, F401
 
 
 def _guard_before_open(path: Path) -> None:

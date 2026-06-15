@@ -241,7 +241,7 @@ def main() -> None:
     else:
         label_a = "Gemini — correctness/architecture lens"
         label_b = "Gemini — simplification/efficiency lens"
-        print(f"[fusion] Running two Gemini passes in parallel...", flush=True)
+        print("[fusion] Running two Gemini passes in parallel...", flush=True)
         output_a, output_b = run_gemini_dual(full_prompt)
 
     print(_divider(f"Pass A — {label_a}"))

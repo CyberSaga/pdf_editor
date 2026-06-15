@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import ast
 import fnmatch
-import json
 import os
 import sqlite3
-import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent.resolve()
@@ -353,11 +351,11 @@ def generate_codeindex(all_nodes: list[dict], all_edges: list[dict]) -> None:
         methods = [n for n in syms if n["kind"] == "method"]
         lines.append(f"### `{f}`")
         if classes:
-            lines.append(f"**Classes:** " + ", ".join(
+            lines.append("**Classes:** " + ", ".join(
                 f"`{n['name']}` (L{n['line']})" for n in classes
             ))
         if funcs:
-            lines.append(f"**Functions:** " + ", ".join(
+            lines.append("**Functions:** " + ", ".join(
                 f"`{n['name']}` (L{n['line']})" for n in funcs
             ))
         if methods:
