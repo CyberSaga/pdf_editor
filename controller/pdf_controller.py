@@ -3283,6 +3283,19 @@ class PDFController:
                 show_error(self.view, f"無法讀取來源檔案: {e}")
                 return None
 
+    def get_page_rect(self, page_idx: int) -> fitz.Rect:
+        """Read-only page geometry for the view, which must not index
+        ``model.doc`` directly (CLAUDE.md §2). Returns a *copy* of the page's
+        rect — rotation-faithful, exactly as PyMuPDF reports ``page.rect`` — so
+        object-drag/editor-clamp geometry is byte-identical to the old direct read.
+        """
+        return fitz.Rect(self.model.doc[page_idx].rect)
+
+    def get_page_rotation(self, page_idx: int) -> int:
+        """Read-only page rotation angle in degrees for the view (companion to
+        ``get_page_rect``; the view must not index ``model.doc`` directly)."""
+        return int(self.model.doc[page_idx].rotation)
+
     def add_watermark(self, pages: list, text: str, angle: float, opacity: float, font_size: int, color: tuple, font: str, offset_x: float = 0, offset_y: float = 0, line_spacing: float = 1.3):
         """新增浮水印"""
         if not self.model.doc:

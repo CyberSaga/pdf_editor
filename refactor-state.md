@@ -179,3 +179,19 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   `test_layer_boundaries.py` (leaving `text_editing.py:1`); then R2.4 (8 `controller.model.doc[...]`
   reads → `controller.get_page_rect`), R2.5/2.6 (controller query facade + PreviewRenderer public
   preview-HTML), R2.7 (`pdf_renderer.py:84` clamp + merge `_guard_foreign_doc`).
+- **2026-06-15 (turn 6): R2.3 + R2.4 LANDED (view stops touching model.doc).** R2.3: removed the
+  `pdf_view.py` `_resolve_insert_source_file` `fitz.open` fallback (the controller's
+  `resolve_insert_source_file`, which handles passwords via the model, is now the only path; shows an
+  error if no controller) and dropped `pdf_view.py` from the `test_layer_boundaries` allowlist — so
+  `view/` now has **exactly one** sanctioned `fitz.open` (`text_editing.py`), enforced by the guard.
+  R2.4: added read-only `controller.get_page_rect(page_idx) -> fitz.Rect` (rotation-faithful copy) +
+  `get_page_rotation`, and replaced all **8** `…model.doc[page_idx].rect/.rotation` reach-through
+  reads in `pdf_view.py` (3239/3354/3411/3428/3460/3730/4191/5386). `view/pdf_view.py` now has **0**
+  `.doc[` indexes (verified); behavior-identical (each site only read `.rect`/`.rotation`). Production
+  ruff still 0. One test (`test_thumbnail_context_menu`'s insert-position case) drove the removed view
+  `fitz.open` fallback via a monkeypatched `pdf_view.fitz`; updated it to wire a controller mock
+  (`resolve_insert_source_file`) — the MVC path R2.3 enforces. Full suite **1361 passed / 20 skipped /
+  0 failed**. **Next step:** R2.5 (controller read-only query facade — `get_render_width_for_edit`,
+  `iter_text_targets`, `get_watermarks`, `has_unsaved_changes`); R2.6 (PreviewRenderer → public
+  `controller.build_insert_preview_html` — PIXEL-PARITY, run `verify_no_jump.py --skip-signoff`);
+  R2.7 (`pdf_renderer.py:84` clamp + `compose_merged_document`/`open_merge_source` `_guard_foreign_doc`).

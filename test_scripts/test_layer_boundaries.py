@@ -53,12 +53,9 @@ def test_model_layer_imports_no_qt_and_no_view_or_controller() -> None:
 # allowlisted file while staying robust to line-number drift.
 _VIEW_FITZ_OPEN_ALLOWLIST: dict[str, int] = {
     # Empty scratch doc for the no-jump inline-editor preview — sanctioned,
-    # permanent (it never touches a real/user document).
+    # permanent (it never touches a real/user document). This is the ONLY
+    # fitz.open permitted anywhere in view/; R2.3 removed the merge-dialog leak.
     "view/text_editing.py": 1,
-    # PENDING removal by R2.3: the merge/insert dialog falls back to
-    # fitz.open(source_file) to probe a page count. R2.3 routes that through the
-    # controller and then deletes BOTH the call and this allowlist entry.
-    "view/pdf_view.py": 1,
 }
 
 

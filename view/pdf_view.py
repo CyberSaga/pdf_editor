@@ -3236,7 +3236,7 @@ class PDFView(QMainWindow):
                     start_rect.y1 + dy_doc,
                 )
                 try:
-                    page_rect = fitz.Rect(self.controller.model.doc[self._object_drag_page_idx].rect)
+                    page_rect = self.controller.get_page_rect(self._object_drag_page_idx)
                     if preview.x0 < page_rect.x0:
                         preview = fitz.Rect(page_rect.x0, preview.y0, page_rect.x0 + start_rect.width, preview.y1)
                     if preview.y0 < page_rect.y0:
@@ -3351,9 +3351,9 @@ class PDFView(QMainWindow):
     def _get_page_scene_rect(self, page_idx: int) -> QRectF:
         rs = self._render_scale if self._render_scale > 0 else 1.0
         try:
-            page = self.controller.model.doc[page_idx]
-            page_w_scene = page.rect.width * rs
-            page_h_scene = page.rect.height * rs
+            page_rect = self.controller.get_page_rect(page_idx)
+            page_w_scene = page_rect.width * rs
+            page_h_scene = page_rect.height * rs
         except Exception:
             page_w_scene = 595.0 * rs
             page_h_scene = 842.0 * rs
@@ -3408,7 +3408,7 @@ class PDFView(QMainWindow):
         y1_doc = (max(scene_rect.top(), scene_rect.bottom()) - y0) / rs
         rect = fitz.Rect(x0, y0_doc, x1, y1_doc)
         try:
-            page_rect = self.controller.model.doc[page_idx].rect
+            page_rect = self.controller.get_page_rect(page_idx)
             rect = fitz.Rect(
                 max(rect.x0, page_rect.x0),
                 max(rect.y0, page_rect.y0),
@@ -3425,8 +3425,7 @@ class PDFView(QMainWindow):
         model = getattr(self.controller, "model", None)
         if model is None or not model.doc:
             return fitz.Rect(doc_point.x, doc_point.y, doc_point.x + 1, doc_point.y + 1)
-        page = model.doc[page_idx]
-        page_rect = fitz.Rect(page.rect)
+        page_rect = self.controller.get_page_rect(page_idx)
         w = float(self._add_text_default_width_pt)
         h = float(self._add_text_default_height_pt)
         rect = fitz.Rect(doc_point.x, doc_point.y, doc_point.x + w, doc_point.y + h)
@@ -3457,7 +3456,7 @@ class PDFView(QMainWindow):
         selected_pdf_font = self._qt_font_to_pdf(
             str(self.text_font.currentData() or self.text_font.currentText())
         )
-        page_rotation = int(model.doc[page_idx].rotation)
+        page_rotation = self.controller.get_page_rotation(page_idx)
         self.editing_font_name = selected_pdf_font
         self.editing_color = self._add_text_default_color
         self.editing_original_text = ""
@@ -3727,7 +3726,7 @@ class PDFView(QMainWindow):
 
         page_idx = min(max(self.current_page, 0), self.total_pages - 1)
         try:
-            page_rect = fitz.Rect(model.doc[page_idx].rect)
+            page_rect = self.controller.get_page_rect(page_idx)
         except Exception:
             return False
 
@@ -4188,9 +4187,9 @@ class PDFView(QMainWindow):
         """將編輯框的場景座標（左上角）限制在指定頁面的邊界內，回傳 (x, y)。"""
         rs = self._render_scale if self._render_scale > 0 else 1.0
         try:
-            page = self.controller.model.doc[page_idx]
-            page_w_scene = page.rect.width * rs
-            page_h_scene = page.rect.height * rs
+            page_rect = self.controller.get_page_rect(page_idx)
+            page_w_scene = page_rect.width * rs
+            page_h_scene = page_rect.height * rs
         except Exception:
             page_w_scene = 595 * rs
             page_h_scene = 842 * rs
@@ -5315,15 +5314,13 @@ class PDFView(QMainWindow):
         controller = getattr(self, "controller", None)
         if controller is not None and hasattr(controller, "resolve_insert_source_file"):
             return controller.resolve_insert_source_file(source_file)
-        try:
-            source_doc = fitz.open(source_file)
-            try:
-                return {"path": source_file, "page_count": len(source_doc), "password": None}
-            finally:
-                source_doc.close()
-        except Exception as e:
-            show_error(self, f"無法讀取來源檔案: {e}")
-            return None
+        # Layer boundary (CLAUDE.md §2): the view never opens a fitz document
+        # itself — page counting and password handling for an insert source live
+        # in the controller/model (resolve_insert_source_file). With no controller
+        # wired we cannot proceed, so fail visibly instead of reaching through to
+        # fitz.open.
+        show_error(self, "無法讀取來源檔案：控制器尚未就緒")
+        return None
 
     def _insert_pages_from_file_at(self, position: int) -> None:
         if self.total_pages == 0:
@@ -5383,9 +5380,8 @@ class PDFView(QMainWindow):
     def _default_image_insert_rect_for_page(self, page_idx: int, center: fitz.Point | None = None) -> fitz.Rect:
         page_rect = fitz.Rect(0.0, 0.0, 595.0, 842.0)
         try:
-            model = getattr(getattr(self, "controller", None), "model", None)
-            if model is not None and getattr(model, "doc", None):
-                page_rect = fitz.Rect(model.doc[page_idx].rect)
+            if getattr(getattr(self, "controller", None), "model", None) is not None:
+                page_rect = self.controller.get_page_rect(page_idx)
         except Exception:
             pass
         width = min(220.0, max(120.0, page_rect.width * 0.28))

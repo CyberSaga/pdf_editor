@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -145,19 +146,17 @@ def test_insert_pages_from_file_at_uses_given_position(monkeypatch: pytest.Monke
     source_path = tmp_path / "source.pdf"
     source_path.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
 
-    class _FakeSourceDoc:
-        def __len__(self) -> int:
-            return 4
-
-        def close(self) -> None:
-            return None
+    # R2.3: the view no longer opens the source itself (no fitz.open in view/);
+    # the controller's resolve_insert_source_file supplies page count + password.
+    view.controller = SimpleNamespace(
+        resolve_insert_source_file=lambda path: {"path": path, "page_count": 4, "password": None}
+    )
 
     monkeypatch.setattr(
         pdf_view.QFileDialog,
         "getOpenFileName",
         lambda *args, **kwargs: (str(source_path), "PDF (*.pdf)"),
     )
-    monkeypatch.setattr(pdf_view, "fitz", type("FitzModule", (), {"open": staticmethod(lambda path: _FakeSourceDoc())}))
     monkeypatch.setattr(pdf_view.QInputDialog, "getText", lambda *args, **kwargs: ("1,3-4", True))
     monkeypatch.setattr(pdf_view, "parse_pages", lambda text, total: [1, 3, 4])
 
