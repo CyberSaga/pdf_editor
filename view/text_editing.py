@@ -615,7 +615,23 @@ class PreviewRenderer:
     metrics-equivalent CSS/HTML is used instead.
     """
 
-    def __init__(self, model=None) -> None:
+    def __init__(self, build_preview_html=None, model=None) -> None:
+        # R2.6: the preview borrows the commit path's CSS/HTML through a public
+        # callable (controller.build_insert_preview_html), so render() no longer
+        # reaches the model's private dunders. The legacy ``model=`` argument is a
+        # backward-compat shim (tests construct PreviewRenderer with a model):
+        # when no callable is supplied, derive one from the model's builders so
+        # the rendered pixels are identical either way.
+        if build_preview_html is None and model is not None and hasattr(model, "_build_insert_css"):
+            def build_preview_html(*, text, font_size, color, font_name, line_height):
+                css = model._build_insert_css(
+                    size=font_size, color=color, font_hint=font_name, line_height=line_height
+                )
+                html = model._convert_text_to_html(
+                    text=text, font_size=font_size, color=color, latin_font=font_name
+                )
+                return css, html
+        self._build_preview_html = build_preview_html
         self._model = model
         self._cache_key: tuple | None = None
         self._cache_image: QImage | None = None
@@ -681,20 +697,16 @@ class PreviewRenderer:
         try:
             temp_page = temp_doc.new_page(width=page_w_pt, height=page_h_pt)
 
-            if self._model is not None and hasattr(self._model, "_build_insert_css"):
-                # Borrow the commit path's exact CSS/HTML so preview and
-                # committed pixels come from one engine configuration.
-                css = self._model._build_insert_css(
-                    size=float(font_size),
-                    color=tuple(float(c) for c in color),
-                    font_hint=str(font_name),
-                    line_height=float(line_height),
-                )
-                html = self._model._convert_text_to_html(
+            if self._build_preview_html is not None:
+                # Borrow the commit path's exact CSS/HTML so preview and committed
+                # pixels come from one engine configuration (the builder forwards
+                # to the model's _build_insert_css / _convert_text_to_html).
+                css, html = self._build_preview_html(
                     text=text or "",
                     font_size=float(font_size),
                     color=tuple(float(c) for c in color),
-                    latin_font=str(font_name),
+                    font_name=str(font_name),
+                    line_height=float(line_height),
                 )
             else:
                 import html as _html_mod
@@ -1325,8 +1337,9 @@ class TextEditManager:
                 initial_frame = None
 
         if self._preview_renderer is None:
-            model = getattr(getattr(view, "controller", None), "model", None)
-            self._preview_renderer = PreviewRenderer(model=model)
+            controller = getattr(view, "controller", None)
+            builder = getattr(controller, "build_insert_preview_html", None)
+            self._preview_renderer = PreviewRenderer(build_preview_html=builder)
         editor = PreviewBackedInlineTextEditor(text, self._preview_renderer)
         editor.setProperty("original_text", text)
         view._editing_rotation = normalized_rotation

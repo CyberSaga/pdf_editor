@@ -225,3 +225,18 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   decoupling carries a mock-update tail.) **Next step:** R2.6 PreviewRenderer → public
   `controller.build_insert_preview_html` (PIXEL-PARITY, verify_no_jump); R2.7 `pdf_renderer.py:84`
   clamp + merge `_guard_foreign_doc`.
+- **2026-06-15 (turn 8): R2.6 LANDED (PreviewRenderer decoupled, PIXEL-PARITY held).** Added public
+  `controller.build_insert_preview_html(text, font_size, color, font_name, line_height) -> (css, html)`
+  forwarding to the model's `_build_insert_css`/`_convert_text_to_html`; `PreviewRenderer.render()` now
+  depends on an injected `build_preview_html` callable (production passes the controller's). **Zero test
+  churn** via a backward-compat `model=` shim that derives the same callable, so the ~15
+  `PreviewRenderer(model=...)`/`PreviewRenderer()` sites are untouched; render() passes byte-identical
+  args → bit-exact raster. Verified: `test_no_jump_editor_geometry` **377 passed**, preview/fidelity
+  **82 passed**, full suite **1361 passed / 20 skipped / 0 failed**, production ruff 0. (Residual, out of
+  R2.6 scope: the view still pulls `model.block_manager.find_span_by_id` at ~text_editing.py:1364 for the
+  cluster line-height probe — a separate reach-through.) **Infra note:** the full pytest suite
+  intermittently hard-crashes (Windows fatal exception in offscreen Qt/PyMuPDF — exit 3 + faulthandler
+  "Extension modules" dump, **no FAILED lines**); environmental — same code passes 1361 on re-run.
+  **Next step:** R2.7 (`pdf_renderer.py:84` `safe_render_scale` clamp + `compose_merged_document`/
+  `open_merge_source` `_guard_foreign_doc`) — last R2 item; then mark R2 done, ARCHITECTURE §7, and
+  PushNotification the `/compact` point.

@@ -3336,6 +3336,28 @@ class PDFController:
         keeps the view off model.block_manager."""
         return list(getattr(self.model.block_manager, "get_blocks", lambda _i: [])(page_idx) or [])
 
+    def build_insert_preview_html(
+        self,
+        *,
+        text: str,
+        font_size: float,
+        color: tuple[float, float, float],
+        font_name: str,
+        line_height: float,
+    ) -> tuple[str, str]:
+        """Public (css, html) builder for the inline-editor preview. Forwards to
+        the SAME model engine the commit path uses (``_build_insert_css`` /
+        ``_convert_text_to_html``) so preview and committed pixels are bit-exact —
+        and keeps the view's PreviewRenderer off the model's private builders
+        (CLAUDE.md §2). The no-jump gate enforces the pixel contract."""
+        css = self.model._build_insert_css(
+            size=font_size, color=color, font_hint=font_name, line_height=line_height
+        )
+        html = self.model._convert_text_to_html(
+            text=text, font_size=font_size, color=color, latin_font=font_name
+        )
+        return css, html
+
     def add_watermark(self, pages: list, text: str, angle: float, opacity: float, font_size: int, color: tuple, font: str, offset_x: float = 0, offset_y: float = 0, line_spacing: float = 1.3):
         """新增浮水印"""
         if not self.model.doc:
