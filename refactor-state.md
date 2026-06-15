@@ -146,3 +146,21 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   Docs: 3 PITFALLS entries, CLAUDE.md §3.1 ruff count, ARCHITECTURE.md identity para, 2 TODOS closed.
   **Next step:** begin **R2** (MVC boundary reconvergence, guard-first — ship `test_layer_boundaries.py`
   AST guard FIRST, then generalize the encryption guard, then the View→Model reach-through fixes).
+- **2026-06-15 (turn 4): R2.1 LANDED (import-boundary guard).** Verified the invariant green first
+  (model/ has 0 Qt/view/controller imports; view/ `fitz.open` only at `text_editing.py:680` +
+  `pdf_view.py:5319`). Shipped `test_scripts/test_layer_boundaries.py` (2 tests, green): model/ Qt +
+  cross-import ban; view/ `fitz.open` exact-count allowlist (`text_editing.py`:1 permanent;
+  `pdf_view.py`:1 **PENDING R2.3 removal** — exact counts catch a new handle while tolerating line
+  drift). **R2.2 analysis surfaced a NEW security finding (→ R5):** generalizing the encryption guard
+  to the `model.doc` receiver (used by `pdf_optimizer.py` and the R3 free-functions) catches
+  `pdf_optimizer.py:332` (size-measure via `len(...tobytes())`, ephemeral — safe) and `:347`
+  `build_working_doc_for_optimized_copy`: for an **encrypted** source (`needs_pass` ⇒
+  `_resolve_file_backed_optimize_source` returns None at `:310`) it falls to
+  `fitz.open("pdf", model.doc.tobytes(...))` and **decrypts the live doc into the optimized copy** —
+  so 另存為最佳化的副本 of an encrypted PDF silently drops its password (same class as R5.1's print
+  leak; NOT previously tracked). Decision: do **not** fix in R2 (product call: refuse vs
+  preserve-encryption); allowlist `:347` in the R2.2 guard with a flag and add an R5 item. **Next
+  step:** R2.2 — generalize the encryption AST guard to all of model/ with a function-scoped
+  decrypt-sink allowlist (`capture_worker_snapshot_bytes`, optimizer `332`/`347` [flagged],
+  page-snapshot `tmp_doc.save`, export `new_doc.save`) + strengthen the explicit-`PDF_ENCRYPT_NONE`
+  check; then R2.3–R2.7 (view→model reach-through + pulled-forward render clamp/merge guard).
