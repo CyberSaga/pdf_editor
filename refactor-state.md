@@ -164,3 +164,18 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   decrypt-sink allowlist (`capture_worker_snapshot_bytes`, optimizer `332`/`347` [flagged],
   page-snapshot `tmp_doc.save`, export `new_doc.save`) + strengthen the explicit-`PDF_ENCRYPT_NONE`
   check; then R2.3–R2.7 (view→model reach-through + pulled-forward render clamp/merge guard).
+- **2026-06-15 (turn 5): R2.2 LANDED (encryption guard generalized).** Replaced the pdf_model-only
+  `self.doc` scan in `test_xref_repair.py::test_live_doc_roundtrips_preserve_encryption` with an
+  all-`model/` walk over the `self.doc`/`model.doc`/`self._model.doc` receivers + a function-scoped
+  decrypt-sink allowlist (`capture_worker_snapshot_bytes`; optimizer `current_document_size_bytes`
+  [safe]; optimizer `build_working_doc_for_optimized_copy` [flagged]) + the explicit-`PDF_ENCRYPT_NONE`
+  strengthening. **Red-Light-verified teeth** (un-allowlisting flags optimizer `:332`/`:347`), green
+  restored (11 passed xref+boundary). This satisfies the planned **R5.3** (marked done in
+  `plans/refactor-R5`), and the optimizer-decrypt finding is now tracked there as **R5.5** (HIGH;
+  fix = preserve-encryption vs refuse, a product decision — not done autonomously). Also, per a user
+  request mid-turn, created cron `5f4278a1` (`51 17,22,3,8 * * *` → "continue"; durable requested but
+  runtime forced **session-only**, 7-day expiry). **Next step:** R2.3 — remove the `pdf_view.py:5319`
+  `fitz.open` merge-dialog fallback (route page-count through the controller) and drop its entry from
+  `test_layer_boundaries.py` (leaving `text_editing.py:1`); then R2.4 (8 `controller.model.doc[...]`
+  reads → `controller.get_page_rect`), R2.5/2.6 (controller query facade + PreviewRenderer public
+  preview-HTML), R2.7 (`pdf_renderer.py:84` clamp + merge `_guard_foreign_doc`).

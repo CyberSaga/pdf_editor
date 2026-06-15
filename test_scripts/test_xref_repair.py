@@ -329,49 +329,109 @@ def test_encrypted_doc_survives_doc_level_snapshot_restore() -> None:
 
 
 def test_live_doc_roundtrips_preserve_encryption() -> None:
-    """Structural guard: every ``self.doc.tobytes(...)`` AND ``self.doc.save(...)``
-    round-trips/serializes the LIVE document, so it must pass ``encryption=``
-    (KEEP). Both default to ``encryption=NONE``, which silently decrypts:
-    ``tobytes`` strips the password in memory; ``save`` (full or incremental)
-    drops it on disk — and an incremental save with the default even *raises*
-    ("Can't do incremental writes when changing encryption"), silently degrading
-    every encrypted save-back to a full rewrite. Live-doc round-trips funnel
-    through ``_roundtrip_live_doc`` and disk/stream saves through ``_save_doc``
-    (both inject ``encryption=KEEP``); this AST scan is the backstop that catches
-    the next *direct* ``self.doc.save``/``tobytes`` that bypasses those funnels.
+    """Structural guard (generalized in R2.2 to all of ``model/``): every
+    serialization of the **live** document must pass ``encryption=`` (KEEP).
+    ``tobytes`` and ``save`` both default to ``encryption=NONE``, which silently
+    decrypts — ``tobytes`` strips the password in memory; an incremental ``save``
+    with the default even *raises* ("Can't do incremental writes when changing
+    encryption"), degrading every encrypted save-back to a full rewrite. Live-doc
+    round-trips funnel through ``_roundtrip_live_doc`` / ``_save_doc`` (both inject
+    ``encryption=KEEP``); this AST scan is the backstop that catches the next
+    *direct* live-doc serialization bypassing those funnels.
 
-    Scope note: only ``self.doc`` is checked. The funnels themselves serialize a
-    generic ``doc`` receiver, so they don't trip this scan — ``_roundtrip_live_doc``
-    still appears here via its own ``self.doc.tobytes(..., encryption=KEEP)`` and
-    passes. Page-level snapshot captures serialize a *fresh* ``tmp_doc`` (not
-    ``self.doc``) and stay decrypted by design.
+    R2.2 widened the scan from ``pdf_model.py`` alone to **every** ``model/``
+    module and from the ``self.doc`` receiver to all three live-doc access
+    patterns — ``self.doc``, ``model.doc`` (free-function modules taking
+    ``model: PDFModel``), and ``self._model.doc`` (ToolManager) — so the guard
+    does not go blind when ``edit_text``/object-ops leave ``pdf_model.py`` in R3.
+    Generic receivers (``tmp_doc``/``new_doc``/``working_doc``/a bare ``doc``
+    parameter) serialize *non-live* copies and are not checked.
+
+    Decrypt-sink allowlist — the only live-doc serializations permitted without
+    ``encryption=KEEP`` (each a deliberate, reviewed exception):
+      - ``pdf_model.capture_worker_snapshot_bytes`` — explicit ``PDF_ENCRYPT_NONE``,
+        an in-memory worker snapshot that never replaces the live handle.
+      - ``pdf_optimizer.current_document_size_bytes`` — ``len(...tobytes())``; the
+        bytes are measured then discarded.
+      - ``pdf_optimizer.build_working_doc_for_optimized_copy`` — builds the
+        optimize working copy. **KNOWN GAP (tracked for R5):** for an *encrypted*
+        source this decrypts the live doc into the optimized copy (另存為最佳化的
+        副本 strips the password). Allowlisted so the guard is green; the fix is a
+        product decision (refuse vs preserve-encryption).
+
+    Strengthening (R2.2): an explicit ``encryption=PDF_ENCRYPT_NONE`` on a live-doc
+    serialization is allowed only on the allowlist — presence of an ``encryption=``
+    keyword is not by itself sufficient.
     """
     import ast
 
-    # utf-8-sig: the module carries a UTF-8 BOM; plain utf-8 leaves U+FEFF in the
-    # text and ast.parse would raise instead of scanning.
-    src = (REPO_ROOT / "model" / "pdf_model.py").read_text(encoding="utf-8-sig")
-    offenders: list[tuple[str, int]] = []
-    for node in ast.walk(ast.parse(src)):
-        if not isinstance(node, ast.Call):
-            continue
-        f = node.func
-        is_self_doc_roundtrip = (
-            isinstance(f, ast.Attribute)
-            and f.attr in {"tobytes", "save"}
-            and isinstance(f.value, ast.Attribute)
-            and f.value.attr == "doc"
-            and isinstance(f.value.value, ast.Name)
-            and f.value.value.id == "self"
+    live_receivers = {"self.doc", "model.doc", "self._model.doc"}
+    allowlist = {
+        ("pdf_model.py", "capture_worker_snapshot_bytes"),
+        ("pdf_optimizer.py", "current_document_size_bytes"),
+        ("pdf_optimizer.py", "build_working_doc_for_optimized_copy"),
+    }
+
+    def _receiver_str(node: ast.AST) -> str:
+        parts: list[str] = []
+        cur: ast.AST = node
+        while isinstance(cur, ast.Attribute):
+            parts.append(cur.attr)
+            cur = cur.value
+        parts.append(cur.id if isinstance(cur, ast.Name) else "?")
+        return ".".join(reversed(parts))
+
+    def _is_encrypt_none(node: ast.AST) -> bool:
+        return (isinstance(node, ast.Attribute) and node.attr == "PDF_ENCRYPT_NONE") or (
+            isinstance(node, ast.Name) and node.id == "PDF_ENCRYPT_NONE"
         )
-        if is_self_doc_roundtrip and not any(k.arg == "encryption" for k in node.keywords):
-            offenders.append((f.attr, node.lineno))
+
+    offenders: list[str] = []
+
+    class _LiveDocVisitor(ast.NodeVisitor):
+        def __init__(self, rel: str) -> None:
+            self.rel = rel
+            self.stack: list[str] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+        def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+            f = node.func
+            if (
+                isinstance(f, ast.Attribute)
+                and f.attr in {"tobytes", "save"}
+                and _receiver_str(f.value) in live_receivers
+            ):
+                func = self.stack[-1] if self.stack else "<module>"
+                if (self.rel, func) not in allowlist:
+                    enc = next((k for k in node.keywords if k.arg == "encryption"), None)
+                    if enc is None or _is_encrypt_none(enc.value):
+                        why = "missing encryption=" if enc is None else "explicit PDF_ENCRYPT_NONE"
+                        offenders.append(
+                            f"{self.rel}:{node.lineno} {_receiver_str(f.value)}.{f.attr}() "
+                            f"{why} (in {func})"
+                        )
+            self.generic_visit(node)
+
+    model_root = REPO_ROOT / "model"
+    for path in sorted(model_root.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        rel = path.relative_to(model_root).as_posix()
+        # utf-8-sig: some modules carry a UTF-8 BOM; plain utf-8 would leave a
+        # U+FEFF that makes ast.parse raise instead of scanning.
+        _LiveDocVisitor(rel).visit(ast.parse(path.read_text(encoding="utf-8-sig")))
 
     assert not offenders, (
-        f"self.doc.<tobytes|save>(...) missing encryption= at {offenders}: a "
-        "live-doc round-trip will silently decrypt (and an incremental save will "
-        "raise). Pass encryption=fitz.PDF_ENCRYPT_KEEP — route round-trips "
-        "through _roundtrip_live_doc."
+        "Live-doc serialization that may silently decrypt the active document — "
+        "pass encryption=fitz.PDF_ENCRYPT_KEEP, route through _roundtrip_live_doc/"
+        "_save_doc, or add a reviewed decrypt-sink allowlist entry. Offenders: "
+        f"{offenders}"
     )
 
 

@@ -51,21 +51,46 @@ guard. (Census: security lens; critique HAZARD 6.)
   `PDF_EDITOR_OCR_WEIGHTS_DIR` in the packaged build so OCR loads **offline + verified**. Follow
   `docs/ocr-weights-verification.md`.
 
-## R5.3 — Strengthen the encryption AST guard (2-model)
+## R5.3 — Strengthen the encryption AST guard (2-model) — ✅ DONE in R2.2 (2026-06-15)
 
-- (If not already generalized in R2.2/R3.3.) The guard checks only for the **presence** of
-  `encryption=`, so `capture_worker_snapshot_bytes`'s intentional `PDF_ENCRYPT_NONE` *passes* the
-  guard while decrypting.
-- **Fix:** assert any `self.doc.{save,tobytes}` with `encryption=PDF_ENCRYPT_NONE` is on a vetted
-  **decrypt-sink allowlist** (currently `capture_worker_snapshot_bytes` + export `new_doc.save`
-  at `:1316`), and document the allowlist's rationale. Keeps the guard's intent explicit, not
-  presence-only.
+- **Landed in R2.2** (`test_xref_repair.py::test_live_doc_roundtrips_preserve_encryption`): the guard
+  now walks **all of model/**, catches the `self.doc` / `model.doc` / `self._model.doc` receivers,
+  attributes each call to its enclosing function, uses a **function-scoped decrypt-sink allowlist**,
+  and **strengthens** so an explicit `encryption=PDF_ENCRYPT_NONE` is allowed only on that allowlist
+  (presence of `encryption=` is no longer sufficient). Teeth verified — it flags the optimizer
+  `model.doc.tobytes()` sites when they are un-allowlisted.
+- Allowlist: `pdf_model.capture_worker_snapshot_bytes` (explicit NONE worker snapshot),
+  `pdf_optimizer.current_document_size_bytes` (size measured via `len()` then discarded), and
+  `pdf_optimizer.build_working_doc_for_optimized_copy` (flagged — see **R5.5**).
 
 ## R5.4 — Packaging guard test (2-model)
 
 - The wheel is safe (allow-list discovery) but there is no automated assertion. Pair with R1.3's
   `MANIFEST.in`: a guard test builds a wheel **and** sdist into a temp dir and asserts no member
   path contains `scripts/` or `test_scripts/`. Wire into CI.
+
+## R5.5 — Optimize-copy decrypts an encrypted source (HIGH, surfaced by R2.2)
+
+- `build_working_doc_for_optimized_copy` (`model/pdf_optimizer.py:347`): for an **encrypted** live
+  doc, `_resolve_file_backed_optimize_source` returns `None` (the `needs_pass` gate at `:310`), so
+  the working copy is built from `fitz.open("pdf", model.doc.tobytes(...))` — a **decrypted**
+  serialization (`tobytes` defaults to `encryption=NONE`). The optimized output (`working_doc.save`
+  at `:797`) is then written **without encryption**, so 另存為最佳化的副本 of a password-protected
+  PDF silently produces an unprotected copy. Same class as **R5.1** (print decrypts to disk); **not**
+  previously tracked. The R2.2 guard allowlists `:347` with a `KNOWN GAP` flag so the net stays
+  green — this item is the fix.
+- **Fix — product decision (pick one; 3-model, security-invariant-adjacent):**
+  - **(A) preserve encryption:** carry the source's encryption (and session password) into the
+    optimized copy's final save (`encryption=KEEP`, or re-apply the encryption dict + permissions
+    via pikepdf). Keeps the protection the user had.
+  - **(B) refuse + inform:** detect `needs_pass`/`is_encrypted` before optimizing and either disable
+    the optimize-copy action for encrypted docs or require explicit confirmation that the copy will
+    be unprotected.
+  - Prefer (A) if PyMuPDF/pikepdf can re-encrypt the optimized output with equivalent parameters;
+    fall back to (B). `current_document_size_bytes:332` is **safe** (bytes measured then discarded)
+    and stays allowlisted.
+- **Red-light:** optimize an encrypted PDF, assert the output `needs_pass` (A) OR the action is
+  refused/warns (B). Before the fix, the optimized output opens with no password.
 
 ---
 
