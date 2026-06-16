@@ -69,7 +69,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R0** | Baseline Freeze & Regression-Net Repair | 2-model (mech) + 3-model (interpreter-authority) | 4.5 | ✅ **done 2026-06-15** | [`plans/refactor-R0-baseline-freeze.md`](plans/refactor-R0-baseline-freeze.md) |
 | **R1** | Mechanical Hygiene (ruff + app-identity + packaging) | 2-model | 4.2 | ✅ **done 2026-06-15** | [`plans/refactor-R1-mechanical-hygiene.md`](plans/refactor-R1-mechanical-hygiene.md) |
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
-| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
+| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅, R3.2/search ✅) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ☐ not started | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
 | **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ☐ not started | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
 | **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
@@ -271,3 +271,26 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   plan ordering. **Next step:** R3.2 — controller async-job coordinators, smallest first
   (`controller/search_coordinator.py` → `ocr_coordinator.py` → `print_coordinator.py`); preserve exact
   `QThread` signal wiring (a missed `connect` = silent worker hang).
+- **2026-06-16 (turn 11): R3.2/search LANDED (first controller async coordinator) — fusion tooling restored.**
+  User fixed the 3-model panel (Codex auth + a Windows `gemini.cmd` path fix in `fusion.py`), so this seam
+  used the **mandated 3-model design review**: Gemini Pass A (correctness/arch) + Codex Pass C (o3) — both
+  **independently agreed** on the design; Gemini Pass B (simplification) timed out at 180s on the 3383-LOC
+  file (noted, not blocking). Synthesis verified against source (the 8 runtime `_search_*` attrs are read
+  ONLY in `__init__`/`activate`/the 6 search methods — `search_state` persistence goes through
+  `_get_ui_state`, untouched). Extracted `controller/search_coordinator.py`: `_SearchWorker`/`_SearchBridge`
+  moved verbatim (re-exported from `pdf_controller` — `# noqa: F401` — keeping `test_search_worker_flow.py:18`
+  valid) + `class SearchCoordinator(controller)` owning `_search_thread/_worker/_worker_bridge/
+  _accumulated_hits/_gen/_query/_session_id/_finished` + `search_text`/`cancel`/`connect_bridge`/
+  `_release_search_thread`/`_on_search_{hits_found,failed,finished}`. Bodies moved verbatim, only
+  `self.model/view/_get_ui_state`→`self._c.*` and `_cancel_search()`→`cancel()`. PDFController now holds one
+  `self._search_coordinator` and keeps `search_text` + `_cancel_search` **delegates** (the latter for the 13
+  pre-mutation callers + `sig_search`); `__init__` 8-attr block → 1 line; `activate()` bridge-wiring →
+  `connect_bridge()`. **Invariants preserved verbatim** (per fusion): `thread.finished`-bound release (NOT
+  `worker.finished` — GC hard-crash), two-hop `worker→bridge→coordinator` wiring (missing = silent hang),
+  synchronous `cancel()` with `_search_gen += 1` + `gen != self._search_gen` slot guards, empty-query +
+  `capture_worker_snapshot_bytes` paths. **Red-Light First:** new `test_search_coordinator_extraction.py`
+  RED (`ModuleNotFoundError`) → GREEN. **Test churn (R2.5-class, accepted):** `test_search_worker_flow.py`
+  `_build_minimal_controller`/`_wait_for_search_finish` + 3 flow tests redirected to
+  `controller._search_coordinator` (assertions unchanged); worker/bridge unit tests untouched. Gates:
+  search+guards 23p, related controller-flow 96p/1s, full suite green, production ruff 0. **Next:** R3.2/OCR
+  (`controller/ocr_coordinator.py`) then R3.2/print (largest; coordinate with R5.1 decrypt-snapshot).

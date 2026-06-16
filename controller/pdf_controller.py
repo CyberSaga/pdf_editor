@@ -303,70 +303,14 @@ class _OcrBridge(QObject):
         self.thread_finished.emit()
 
 
-class _SearchWorker(QObject):
-    """Runs SearchTool.search_page page-by-page on a background thread.
-
-    Every signal carries the search generation token so the controller can
-    drop late queued emissions from a cancelled search (queued events posted
-    before a disconnect would otherwise still be delivered).
-    """
-
-    hits_found = Signal(int, int, list)  # gen, page_num, page hits
-    failed = Signal(int, object)  # gen, exception
-    finished = Signal(int)  # gen
-
-    def __init__(self, tool, query: str, total_pages: int, gen: int, doc_bytes: bytes) -> None:
-        super().__init__()
-        self._tool = tool
-        self._query = query
-        self._total_pages = int(total_pages)
-        self._gen = gen
-        self._doc_bytes = doc_bytes
-        self._cancel_requested = False
-
-    def request_cancel(self) -> None:
-        self._cancel_requested = True
-
-    @Slot()
-    def run(self) -> None:
-        try:
-            doc = fitz.open("pdf", self._doc_bytes) if self._doc_bytes else None
-            try:
-                search_fn = getattr(self._tool, "search_page_in_doc", None)
-                for page_num in range(1, self._total_pages + 1):
-                    if self._cancel_requested:
-                        break
-                    if search_fn is not None and doc is not None:
-                        hits = search_fn(doc, page_num, self._query)
-                    else:
-                        hits = self._tool.search_page(page_num, self._query)
-                    if hits:
-                        self.hits_found.emit(self._gen, page_num, list(hits))
-            finally:
-                doc.close()
-        except Exception as exc:
-            logger.exception("Search worker failed")
-            self.failed.emit(self._gen, exc)
-        finally:
-            self.finished.emit(self._gen)
-
-
-class _SearchBridge(QObject):
-    hits_found = Signal(int, int, list)
-    failed = Signal(int, object)
-    finished = Signal(int)
-
-    @Slot(int, int, list)
-    def forward_hits_found(self, gen: int, page_num: int, hits) -> None:
-        self.hits_found.emit(gen, page_num, hits)
-
-    @Slot(int, object)
-    def forward_failed(self, gen: int, exc) -> None:
-        self.failed.emit(gen, exc)
-
-    @Slot(int)
-    def forward_finished(self, gen: int) -> None:
-        self.finished.emit(gen)
+# R3.2: the async search subsystem (worker, bridge, orchestration + state) lives in
+# controller/search_coordinator.py. _SearchWorker/_SearchBridge are re-exported here so
+# `from controller.pdf_controller import _SearchWorker, _SearchBridge` stays valid.
+from controller.search_coordinator import (  # noqa: E402
+    SearchCoordinator,
+    _SearchBridge,  # noqa: F401  (re-export for backward compatibility)
+    _SearchWorker,  # noqa: F401  (re-export for backward compatibility)
+)
 
 
 class PDFController:
@@ -395,14 +339,7 @@ class PDFController:
         self._ocr_worker_bridge: _OcrBridge | None = None
         self._ocr_gen = 0
         self._ocr_session_id: str | None = None
-        self._search_thread: QThread | None = None
-        self._search_worker: _SearchWorker | None = None
-        self._search_worker_bridge: _SearchBridge | None = None
-        self._search_accumulated_hits: list[tuple[int, str, object]] = []
-        self._search_gen = 0
-        self._search_query = ""
-        self._search_session_id: str | None = None
-        self._search_finished = True
+        self._search_coordinator = SearchCoordinator(self)
         self._load_gen_by_session: dict[str, int] = {}
         self._thumb_gen_by_session: dict[str, int] = {}
         self._render_gen_by_session: dict[str, int] = {}
@@ -447,11 +384,7 @@ class PDFController:
             self._ocr_worker_bridge.page_done.connect(self._on_ocr_page_done)
             self._ocr_worker_bridge.failed.connect(self._on_ocr_failed)
             self._ocr_worker_bridge.thread_finished.connect(self._on_ocr_thread_finished)
-        if self._search_worker_bridge is None:
-            self._search_worker_bridge = _SearchBridge(self.view)
-            self._search_worker_bridge.hits_found.connect(self._on_search_hits_found)
-            self._search_worker_bridge.failed.connect(self._on_search_failed)
-            self._search_worker_bridge.finished.connect(self._on_search_finished)
+        self._search_coordinator.connect_bridge()
         if self.print_dispatcher is None:
             self.print_dispatcher = PrintDispatcher()
         if not self._signals_connected:
@@ -2528,114 +2461,16 @@ class PDFController:
         self.model.set_text_target_mode(mode)
 
     def search_text(self, query: str):
-        """非同步搜尋：工作執行緒逐頁搜尋，GUI 執行緒增量累積並顯示結果。
-
-        每次呼叫先取消前一次搜尋（generation token 會丟棄遲到的佇列訊號），
-        worker 結束時把完整結果寫回 session 的 search_state。
-        """
-        self._cancel_search()
-        query = query or ""
-        sid = self.model.get_active_session_id()
-        self._search_accumulated_hits = []
-        self._search_query = query
-        self._search_session_id = sid
-        self._search_finished = False
-        if not query or not self.model.doc or not sid:
-            self.view.display_search_results([])
-            if sid:
-                self._get_ui_state(sid).search_state = {"query": query, "results": [], "index": -1}
-            return
-
-        gen = self._search_gen  # already bumped by _cancel_search
-        thread = QThread()
-        worker = _SearchWorker(
-            self.model.tools.search,
-            query,
-            len(self.model.doc),
-            gen,
-            self.model.capture_worker_snapshot_bytes(),
-        )
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        if self._search_worker_bridge is not None:
-            worker.hits_found.connect(self._search_worker_bridge.forward_hits_found)
-            worker.failed.connect(self._search_worker_bridge.forward_failed)
-            worker.finished.connect(self._search_worker_bridge.forward_finished)
-        worker.finished.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        # Drop controller refs only once the THREAD has finished (not the worker):
-        # releasing the Python QThread wrapper while the thread still runs lets GC
-        # destroy the C++ object and hard-crash the process.
-        thread.finished.connect(lambda t=thread: self._release_search_thread(t))
-
-        self._search_thread = thread
-        self._search_worker = worker
-        thread.start()
-
-    def _release_search_thread(self, thread) -> None:
-        if self._search_thread is thread:
-            self._search_thread = None
-            self._search_worker = None
+        """Facade: delegate async page-by-page search to the SearchCoordinator."""
+        return self._search_coordinator.search_text(query)
 
     def _cancel_search(self) -> None:
-        """Cancel any in-flight search and wait for its worker to stop.
+        """Facade: cancel any in-flight search (called before document mutations).
 
-        Must be called before any document mutation: the worker reads the live
-        fitz document, which is not safe for concurrent read-during-mutation.
-        Bumping ``_search_gen`` makes the handlers drop late queued signals.
+        13 mutation/session/navigation callers rely on this returning after the
+        worker's cancel flag is set; it delegates to the coordinator's cancel().
         """
-        self._search_gen += 1
-        worker = self._search_worker
-        thread = self._search_thread
-        self._search_worker = None
-        self._search_thread = None
-        had_active_worker = (worker is not None or (thread is not None and thread.isRunning())) and not self._search_finished
-        if had_active_worker:
-            sid = self._search_session_id
-            self._search_accumulated_hits = []
-            self.view.display_search_results([])
-            if sid:
-                self._get_ui_state(sid).search_state = {"query": "", "results": [], "index": -1}
-        if worker is not None:
-            worker.request_cancel()
-        if thread is not None and thread.isRunning():
-            # quit() is thread-safe; the per-page cancel check makes run()
-            # return quickly, after which the thread's event loop exits.
-            thread.quit()
-
-    @Slot(int, int, list)
-    def _on_search_hits_found(self, gen: int, page_num: int, hits) -> None:
-        if gen != self._search_gen:
-            return
-        self._search_accumulated_hits.extend(hits)
-        append_results = getattr(type(self.view), "append_search_results", None)
-        if callable(append_results):
-            self.view.append_search_results(list(hits))
-        else:
-            self.view.display_search_results(list(self._search_accumulated_hits))
-
-    @Slot(int, object)
-    def _on_search_failed(self, gen: int, exc) -> None:
-        if gen != self._search_gen:
-            return
-        logger.error("搜尋失敗: %s", exc)
-        show_error(self.view, f"搜尋失敗: {exc}")
-
-    @Slot(int)
-    def _on_search_finished(self, gen: int) -> None:
-        if gen != self._search_gen:
-            return
-        self._search_finished = True
-        self.view.display_search_results(list(self._search_accumulated_hits))
-        sid = self._search_session_id
-        if sid:
-            state = self._get_ui_state(sid)
-            state.search_state = {
-                "query": self._search_query,
-                "results": list(self._search_accumulated_hits),
-                "index": -1,
-            }
+        self._search_coordinator.cancel()
 
     def jump_to_result(self, page_num: int, rect: fitz.Rect):
         scale = self.view.scale

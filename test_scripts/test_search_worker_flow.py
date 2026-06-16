@@ -16,6 +16,7 @@ import fitz
 from PySide6.QtCore import QCoreApplication, QEventLoop, QThread, QTimer
 
 from controller.pdf_controller import PDFController, _SearchBridge, _SearchWorker
+from controller.search_coordinator import SearchCoordinator
 
 
 class _FakeSearchTool:
@@ -171,17 +172,21 @@ def _build_minimal_controller(per_page: dict[int, list], *, page_count: int = 3,
     controller.model = model
     controller.view = view
     controller._session_ui_state = {}
-    controller._search_thread = None
-    controller._search_worker = None
-    controller._search_gen = 0
-    controller._search_query = ""
-    controller._search_session_id = None
-    controller._search_accumulated_hits = []
-    controller._search_worker_bridge = _SearchBridge(None)
-    # Wire bridge to controller handlers (mirrors activate()).
-    controller._search_worker_bridge.hits_found.connect(controller._on_search_hits_found)
-    controller._search_worker_bridge.failed.connect(controller._on_search_failed)
-    controller._search_worker_bridge.finished.connect(controller._on_search_finished)
+    # R3.2: the search runtime now lives on the coordinator (PDFController keeps only
+    # the search_text/_cancel_search delegates + _session_ui_state).
+    sc = SearchCoordinator(controller)
+    controller._search_coordinator = sc
+    sc._search_thread = None
+    sc._search_worker = None
+    sc._search_gen = 0
+    sc._search_query = ""
+    sc._search_session_id = None
+    sc._search_accumulated_hits = []
+    sc._search_worker_bridge = _SearchBridge(None)
+    # Wire bridge to coordinator handlers (mirrors activate()/connect_bridge()).
+    sc._search_worker_bridge.hits_found.connect(sc._on_search_hits_found)
+    sc._search_worker_bridge.failed.connect(sc._on_search_failed)
+    sc._search_worker_bridge.finished.connect(sc._on_search_finished)
     return controller, tool
 
 
@@ -193,7 +198,7 @@ def _wait_for_search_finish(controller, qapp, timeout_ms: int = 4000) -> None:
     timer.start(timeout_ms)
 
     def _check():
-        if controller._search_thread is None:
+        if controller._search_coordinator._search_thread is None:
             loop.quit()
         else:
             QTimer.singleShot(20, _check)
@@ -210,12 +215,12 @@ def test_controller_search_text_is_async(qapp):
 
     # search_text returns immediately: the worker thread is still running and no
     # hits have been displayed yet.
-    assert controller._search_thread is not None
-    assert controller._search_accumulated_hits == []
+    assert controller._search_coordinator._search_thread is not None
+    assert controller._search_coordinator._search_accumulated_hits == []
 
     _wait_for_search_finish(controller, qapp)
 
-    assert controller._search_accumulated_hits == per_page[1]
+    assert controller._search_coordinator._search_accumulated_hits == per_page[1]
     displayed = [c.args[0] for c in controller.view.display_search_results.call_args_list]
     assert displayed, "no incremental display happened"
     assert per_page[1] in displayed
@@ -243,7 +248,7 @@ def test_controller_search_text_cancel_previous(qapp):
     controller, tool = _build_minimal_controller(per_page, page_count=5, delay=0.05)
 
     controller.search_text("slow")
-    first_worker = controller._search_worker
+    first_worker = controller._search_coordinator._search_worker
     assert first_worker is not None
 
     controller.search_text("slow-again")

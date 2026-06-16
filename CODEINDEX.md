@@ -22,6 +22,7 @@
 **controller/**
   - `controller/__init__.py`
   - `controller/pdf_controller.py`
+  - `controller/search_coordinator.py`
 **model/**
   - `model/__init__.py`
   - `model/color_profile.py`
@@ -188,6 +189,7 @@
   - `test_scripts/test_rotated_text_editor_preview.py`
   - `test_scripts/test_sample_pdfs.py`
   - `test_scripts/test_scene_context_menu.py`
+  - `test_scripts/test_search_coordinator_extraction.py`
   - `test_scripts/test_search_worker_flow.py`
   - `test_scripts/test_security_cua_allowlist.py`
   - `test_scripts/test_security_dispatcher_temp_cleanup.py`
@@ -261,8 +263,12 @@
 ### `controller/__init__.py`
 
 ### `controller/pdf_controller.py`
-**Classes:** `SessionUIState` (L88), `FullscreenSessionSnapshot` (L98), `PrintJobRequest` (L105), `OptimizePdfCopyRequest` (L114), `_PrintSubmissionWorker` (L119), `_PrintWorkerBridge` (L148), `_OptimizePdfCopyWorker` (L173), `_OptimizeWorkerBridge` (L196), `_OcrWorker` (L214), `_OcrBridge` (L278), `_SearchWorker` (L306), `_SearchBridge` (L354), `PDFController` (L372)
-**Methods (206):** `__init__`, `run`, `forward_progress`, `forward_prepared`, `forward_failed`, `notify_thread_finished`, `__init__`, `run`, `forward_succeeded`, `forward_failed`, `notify_thread_finished`, `__init__`, `request_cancel`, `run`, `forward_progress`, `forward_status`, `forward_page_done`, `forward_failed`, `notify_thread_finished`, `__init__` …
+**Classes:** `SessionUIState` (L88), `FullscreenSessionSnapshot` (L98), `PrintJobRequest` (L105), `OptimizePdfCopyRequest` (L114), `_PrintSubmissionWorker` (L119), `_PrintWorkerBridge` (L148), `_OptimizePdfCopyWorker` (L173), `_OptimizeWorkerBridge` (L196), `_OcrWorker` (L214), `_OcrBridge` (L278), `PDFController` (L316)
+**Methods (196):** `__init__`, `run`, `forward_progress`, `forward_prepared`, `forward_failed`, `notify_thread_finished`, `__init__`, `run`, `forward_succeeded`, `forward_failed`, `notify_thread_finished`, `__init__`, `request_cancel`, `run`, `forward_progress`, `forward_status`, `forward_page_done`, `forward_failed`, `notify_thread_finished`, `__init__` …
+
+### `controller/search_coordinator.py`
+**Classes:** `_SearchWorker` (L29), `_SearchBridge` (L77), `SearchCoordinator` (L95)
+**Methods (14):** `__init__`, `request_cancel`, `run`, `forward_hits_found`, `forward_failed`, `forward_finished`, `__init__`, `connect_bridge`, `search_text`, `_release_search_thread`, `cancel`, `_on_search_hits_found`, `_on_search_failed`, `_on_search_finished`
 
 ### `main.py`
 **Functions:** `_configure_logging` (L12), `parse_cli` (L21), `run_merge_and_exit` (L32), `_set_windows_app_user_model_id` (L39), `run` (L54)
@@ -378,7 +384,7 @@
 **Functions:** `_sha256` (L35), `_run` (L39), `main` (L46)
 
 ### `scripts/fusion.py`
-**Functions:** `run_gemini_cli` (L52), `run_openai` (L77), `run_gemini_dual` (L95), `run_openai_gemini` (L114), `synthesize` (L156), `build_prompt` (L176), `_divider` (L191), `main` (L198)
+**Functions:** `_gemini_cmd` (L52), `run_gemini_cli` (L57), `run_openai` (L82), `run_gemini_dual` (L100), `run_openai_gemini` (L119), `synthesize` (L161), `build_prompt` (L181), `_divider` (L196), `main` (L203)
 
 ### `scripts/gate_anchor.py`
 
@@ -800,9 +806,12 @@
 **Functions:** `_make_view` (L39), `test_scene_context_menu_includes_richer_browse_actions` (L55), `test_scene_context_menu_page_actions_reuse_page_specific_helpers` (L107)
 **Methods (5):** `__init__`, `setCursor`, `__init__`, `viewport`, `mapToGlobal`
 
+### `test_scripts/test_search_coordinator_extraction.py`
+**Functions:** `test_worker_bridge_reexported_from_controller` (L24), `test_coordinator_owns_search_runtime_state` (L29), `test_coordinator_exposes_facade_methods` (L51), `test_controller_holds_a_coordinator_and_delegates` (L68)
+
 ### `test_scripts/test_search_worker_flow.py`
-**Classes:** `_FakeSearchTool` (L21)
-**Functions:** `_hit` (L41), `_sample_doc_bytes` (L45), `_drive_worker` (L53), `test_search_worker_emits_hits_found_per_page` (L71), `test_search_worker_runs_on_non_gui_thread` (L89), `test_search_worker_respects_cancel` (L99), `test_search_worker_emits_failed_on_tool_exception` (L117), `test_search_bridge_forwards_signals` (L132), `_build_minimal_controller` (L156), `_wait_for_search_finish` (L188), `test_controller_search_text_is_async` (L205), `test_controller_search_text_accumulates_hits` (L229), `test_controller_search_text_cancel_previous` (L241)
+**Classes:** `_FakeSearchTool` (L22)
+**Functions:** `_hit` (L42), `_sample_doc_bytes` (L46), `_drive_worker` (L54), `test_search_worker_emits_hits_found_per_page` (L72), `test_search_worker_runs_on_non_gui_thread` (L90), `test_search_worker_respects_cancel` (L100), `test_search_worker_emits_failed_on_tool_exception` (L118), `test_search_bridge_forwards_signals` (L133), `_build_minimal_controller` (L157), `_wait_for_search_finish` (L193), `test_controller_search_text_is_async` (L210), `test_controller_search_text_accumulates_hits` (L234), `test_controller_search_text_cancel_previous` (L246)
 **Methods (3):** `__init__`, `search_page`, `search_page_in_doc`
 
 ### `test_scripts/test_security_cua_allowlist.py`
@@ -1020,7 +1029,8 @@
 
 ## Internal Import Graph
 
-- `controller/pdf_controller.py` → `model/color_profile.py`, `model/edit_commands.py`, `model/merge_session.py`, `model/object_requests.py`, `model/pdf_model.py`, `src/printing/__init__.py`, `src/printing/helper_protocol.py`, `src/printing/messages.py`, `src/printing/print_dialog.py`, `src/printing/subprocess_runner.py`, `utils/helpers.py`, `view/pdf_view.py`
+- `controller/pdf_controller.py` → `controller/search_coordinator.py`, `model/color_profile.py`, `model/edit_commands.py`, `model/merge_session.py`, `model/object_requests.py`, `model/pdf_model.py`, `src/printing/__init__.py`, `src/printing/helper_protocol.py`, `src/printing/messages.py`, `src/printing/print_dialog.py`, `src/printing/subprocess_runner.py`, `utils/helpers.py`, `view/pdf_view.py`
+- `controller/search_coordinator.py` → `controller/pdf_controller.py`, `utils/helpers.py`
 - `main.py` → `controller/pdf_controller.py`, `model/headless_merge.py`, `model/pdf_model.py`, `utils/app_identity.py`, `utils/single_instance.py`, `view/icons.py`, `view/pdf_view.py`
 - `model/headless_merge.py` → `model/pdf_model.py`
 - `model/pdf_content_ops.py` → `model/geometry.py`
@@ -1124,7 +1134,8 @@
 - `test_scripts/test_rotated_text_editor_preview.py` → `model/pdf_model.py`, `view/text_editing.py`
 - `test_scripts/test_sample_pdfs.py` → `model/pdf_model.py`
 - `test_scripts/test_scene_context_menu.py` → `view/pdf_view.py`
-- `test_scripts/test_search_worker_flow.py` → `controller/pdf_controller.py`
+- `test_scripts/test_search_coordinator_extraction.py` → `controller/pdf_controller.py`, `controller/search_coordinator.py`
+- `test_scripts/test_search_worker_flow.py` → `controller/pdf_controller.py`, `controller/search_coordinator.py`
 - `test_scripts/test_security_cua_allowlist.py` → `scripts/ux_signoff_agent.py`
 - `test_scripts/test_security_dispatcher_temp_cleanup.py` → `src/printing/base_driver.py`, `src/printing/dispatcher.py`
 - `test_scripts/test_security_logging_level.py` → `main.py`

@@ -39,7 +39,14 @@ crosses a layer.** One cohesive seam per commit; full suite green before/after e
   test (feed a fitz page dict, assert dataclass output) before the move. **Lowest blast radius of
   all five modules — do it first.**
 
-### R3.2 — Controller async-job coordinators (search → OCR → print)
+### R3.2 — Controller async-job coordinators (search → OCR → print) — search ✅ DONE 2026-06-16
+> **R3.2/search landed** (3-model fusion design: Gemini Pass A + Codex Pass C agreed; Pass B timed
+> out). New `controller/search_coordinator.py` (`SearchCoordinator` + `_SearchWorker`/`_SearchBridge`
+> moved, re-exported from `pdf_controller`). 8 runtime attrs + 4 slots moved off the controller;
+> `search_text`/`_cancel_search` are delegates. Signal wiring / QThread lifecycle / `_search_gen`
+> guards preserved verbatim. Test net redirected to `controller._search_coordinator`. Gates: search +
+> guards 23p, related controller-flow 96p, full suite green, ruff 0. **OCR + print coordinators still TODO.**
+
 - The 8 worker/bridge QObjects are **already module-level** (`_PrintSubmissionWorker:121`,
   `_OcrWorker:216`, `_SearchWorker:308`, + bridges); only orchestration methods/state live on
   PDFController.
