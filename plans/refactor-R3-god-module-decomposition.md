@@ -51,6 +51,36 @@ crosses a layer.** One cohesive seam per commit; full suite green before/after e
 - **Coordinate with R5:** `print_coordinator` relocates the decrypted-snapshot handoff R5.1 fixes
   — share one regression pass (see refactor-state §3 hazard 5).
 
+#### R3.2a — `controller/search_coordinator.py` extraction map (reverse-engineered 2026-06-16, pre-move)
+> Scoped and ready to execute; **blocked on the fusion-design decision below** (3-model review the plan
+> mandates is unavailable in this env). All line numbers vs HEAD `89770be`.
+- **Module-level classes stay put / re-exported:** `_SearchWorker` (`pdf_controller.py:306`), `_SearchBridge`
+  (`:354`). `test_search_worker_flow.py:18` does `from controller.pdf_controller import _SearchWorker,
+  _SearchBridge` and the worker/bridge **unit** tests (lines 71–148) exercise the real async machinery
+  **without touching the controller** — so if the classes move into `search_coordinator.py` they MUST be
+  re-exported from `pdf_controller` to keep that import green.
+- **State to migrate (8 attrs, `__init__` 398–405):** `_search_thread`, `_search_worker`,
+  `_search_worker_bridge`, `_search_accumulated_hits`, `_search_gen`, `_search_query`,
+  `_search_session_id`, `_search_finished` → onto `SearchCoordinator(self._c)`.
+- **Methods to move (6):** `search_text` (2530), `_release_search_thread` (2576), `_cancel_search` (2581),
+  `_on_search_hits_found` (2607), `_on_search_failed` (2618), `_on_search_finished` (2625).
+- **Controller delegates kept:** `search_text` (public) **and** `_cancel_search` — the latter has **13
+  internal callers** (1016/1114/1132/1238/1517/1825/1849/1873/2536/2800/2811/3181/3222) that call
+  `self._cancel_search()` before mutations, so it must stay callable on the controller (thin delegate).
+  `test_thumbnail_async.py:112` does `controller._cancel_search = MagicMock()` — works with a delegate.
+- **Bridge lazy-init** moves from `activate()` (450–454) into the coordinator (connect bridge→coordinator
+  handlers). `jump_to_result` (2640) stays on the controller (no worker/thread state — pixmap+nav only).
+- **Signal wiring to preserve VERBATIM** (the silent-hang / hard-crash vectors): `thread.started→worker.run`;
+  `worker.{hits_found,failed,finished}→bridge.forward_*`; `worker.finished→thread.quit`+`worker.deleteLater`;
+  `thread.finished→thread.deleteLater`+`lambda t: _release_search_thread(t)` (release the QThread wrapper
+  ONLY after `thread.finished`, never mid-run — see the inline comment at 2567–2569).
+- **Test churn (accepted, R2.5-class):** rewrite `test_search_worker_flow.py` `_build_minimal_controller`
+  (156–185) + `_wait_for_search_finish` (188–202) + the 3 controller-flow tests (205–258) to drive
+  `controller._search_coordinator` instead of `controller._search_*`. Worker/bridge unit tests unchanged.
+- **Gate:** worker/bridge unit tests + rewritten flow tests + full suite + AST guards all green; revert (not
+  patch forward) if not. **DECISION NEEDED:** proceed solo with manual-lens + pytest gating (R1/R2
+  precedent), or hold for fusion 3-model review.
+
 ### R3.3 — Generalize the encryption AST guard to all of model/ (if not already done in R2.2)
 - **Before** any model engine leaves `pdf_model.py`. Confirm the guard walks all of model/ and the
   decrypt-sink allowlist is in place. (Belt-and-suspenders with R2.2.)
