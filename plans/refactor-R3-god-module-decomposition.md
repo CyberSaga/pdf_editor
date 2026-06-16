@@ -161,6 +161,45 @@ crosses a layer.** One cohesive seam per commit; full suite green before/after e
   `pdf_content_ops.py` stream parsing. PDFModel keeps the verbs as delegates. **HIGH risk** (undo-
   snapshot + encryption roundtrip). Sequence adjacent to R3.5; share a single regression pass.
 
+#### R3.4a — `model/pdf_object_ops.py` extraction map (3-model: Codex + source-verified; Gemini hung on 5160-LOC file)
+> Verified against source at HEAD `a597f42`. Gemini full-file fusion HUNG (>10min, killed) — re-ran focused
+> on a 2200-3070 extract; Codex Pass C was thorough and I cross-verified the call graph myself (authoritative).
+- **MOVE to `model/pdf_object_ops.py`** (free functions `def fn(model: PDFModel, ...)`, mirroring
+  `pdf_optimizer.py`): two NON-contiguous blocks — **2209-2643** (`_dump_app_object_payload`,
+  `_load_app_object_payload`, `_iter_page_annots` [dead — no callers; move w/ cluster],
+  `_find_app_object_annot`, `_find_native_image_invocation`, `_rewrite_native_image_matrix`,
+  `_find_app_image_invocation` [nested `_rect_dist`], `_remove_native_image_invocation`,
+  `_delete_app_object_annots`, `_create_textbox_object_marker`, `_create_image_object_marker`,
+  `add_image_object`, `_insert_textbox_visual_content`) and **2725-3061** (`add_textbox`,
+  `get_object_info_at_point`, `_redact_and_restore_textbox_region`, `move_object`,
+  `_rotate_native_image_absolute`, `rotate_object`, `delete_object`, `resize_object`).
+- **STAY on PDFModel — INTERLEAVED, do NOT move:** `_pick_ocr_font` (2644) + `apply_ocr_spans` (2654, the
+  method the OcrCoordinator calls) + `_convert_text_to_html` (3063). The cluster is split around these.
+- **Cluster is CLOSED:** every moved private's callers (verified) are all within the moved set
+  (2248-3046); no staying method calls a moved private; `apply_ocr_spans` calls no object-op. So NO
+  staying-code call-site changes — only the moved methods' own bodies transform.
+- **Wrappers (7 public, tests call them):** `add_image_object`, `add_textbox`, `get_object_info_at_point`,
+  `move_object`, `rotate_object`, `delete_object`, `resize_object` → 1-line `return pdf_object_ops.fn(self, …)`.
+  Moved PRIVATES are deleted from PDFModel (no external callers).
+- **Transform:** `def m(self,…)`→`def m(model: PDFModel,…)`; `self.<movedname>(`→`<movedname>(model, `;
+  remaining `self.`→`model.`. Reaches staying surface via `model.`: `doc`, `pending_edits`, `edit_count`,
+  `block_manager`, `tools`, `_resolve_add_text_font`, `_needs_cjk_font`, `_visual_rect_to_unrotated_rect`,
+  `_unrotated_page_rect`, `_insert_tiny_plain_text`, `_repair_active_doc_in_memory`, `_safe_exc_message`.
+- **Invariants (Codex+verified):** object ops NEVER call `_capture_*`/`_restore_*` (undo is the controller's
+  boundary — wrappers stay 1-line); keep `pending_edits.append(...)`/`edit_count += 1` in exact order after
+  `doc.update_stream`; `block_manager.rebuild_page(...)` calls verbatim; NO `.save`/`.tobytes` (encryption
+  guard scans model/); import `PDFModel` only under `TYPE_CHECKING`; import (don't move) `pdf_content_ops`.
+- **Test surface (8 files, all via the public wrappers):** test_add_textbox_atomic, test_image_objects_model,
+  test_native_image_discovery, test_native_pdf_images_model, test_object_free_rotation,
+  test_object_manipulation_model, test_object_controller_flow, test_object_manipulation_gui — all call the
+  7 public methods on `model`; **wrappers preserve them → expected ZERO test churn.** R3.5 (edit_text) is the
+  adjacent next seam; object-ops moves FIRST and independently (shares no moved code).
+- **Deferred finding (DO NOT fix in R3.4 — flagged by Gemini Pass A):** the `rect`/`textbox`/image-delete
+  branches of `move_object`/`rotate_object`/`delete_object` may omit `pending_edits.append`/`edit_count += 1`
+  that the native-image path performs. This is **existing** behavior (possibly intentional — the controller
+  captures a doc snapshot for undo independently of `pending_edits`). Move it **verbatim**; if it's a real
+  save-prompt/refresh bug it is a separate post-R3 fix, not part of this structural seam.
+
 ### R3.5 — `model/pdf_text_edit.py` (edit_text/redaction engine — LAST model seam)
 - `pdf_model.py:4012-4940` (~930 LOC) + push-down helpers `:3650-4011`: `_resolve_edit_target/
   _apply_redact_insert/_verify_rebuild_edit/_resolve_effective_target_mode/edit_text` +
