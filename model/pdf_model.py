@@ -1517,13 +1517,11 @@ class PDFModel:
                 continue
 
             password = (source or {}).get("password")
-            file_doc = fitz.open(str(path))
+            # Route foreign opens through the resource guard (size/page caps +
+            # auth) instead of a bare fitz.open — same auth errors, plus the
+            # _MAX_PDF_BYTES/_MAX_PAGES limits a merge previously bypassed.
+            file_doc = _guard_foreign_doc(Path(str(path)), password=password)
             try:
-                if file_doc.needs_pass:
-                    if password is None:
-                        raise RuntimeError(f"document closed or encrypted — 需要密碼: {path}")
-                    if file_doc.authenticate(password) == 0:
-                        raise RuntimeError(f"PDF 密碼驗證失敗（authenticate 回傳 0）: {path}")
                 merged.insert_pdf(file_doc)
             finally:
                 file_doc.close()
@@ -1537,14 +1535,10 @@ class PDFModel:
         if not src_path.is_file():
             raise ValueError(f"路徑不是有效檔案: {path}")
 
-        doc = fitz.open(str(src_path))
+        # Mirror open_insert_source: the resource guard applies the size/page
+        # caps + auth (replacing the bare fitz.open + inline auth here).
+        doc = _guard_foreign_doc(src_path, password=password)
         try:
-            if doc.needs_pass:
-                if password is None:
-                    raise RuntimeError("document closed or encrypted — 需要密碼")
-                if doc.authenticate(password) == 0:
-                    raise RuntimeError(f"PDF 密碼驗證失敗（authenticate 回傳 0）: {path}")
-
             if len(doc) == 0:
                 raise RuntimeError(f"無法讀取來源檔案: {path}")
 

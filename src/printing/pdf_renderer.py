@@ -10,6 +10,7 @@ import fitz
 from PySide6.QtGui import QImage
 
 from utils.helpers import pixmap_to_qimage
+from utils.render_limits import safe_render_scale
 
 from .errors import RenderingError
 
@@ -69,7 +70,6 @@ class PDFRenderer:
     ) -> Iterator[RenderedPage]:
         """Stream page images in requested order."""
         zoom = float(dpi) / 72.0
-        matrix = fitz.Matrix(zoom, zoom)
 
         doc = fitz.open(pdf_path)
         cache: OrderedDict[int, fitz.DisplayList] = OrderedDict()
@@ -80,6 +80,11 @@ class PDFRenderer:
                         f"Invalid page index {page_index} for doc with {len(doc)} pages."
                     )
                 page = doc[page_index]
+                # Clamp the zoom per page so a crafted oversized page can't blow
+                # past the pixmap-pixel cap (CWE-400/409 decompression-bomb guard);
+                # safe_render_scale returns zoom unchanged on normal pages.
+                clamped_zoom = safe_render_scale(page, zoom)
+                matrix = fitz.Matrix(clamped_zoom, clamped_zoom)
                 dlist = self._get_display_list(page_index, page, cache)
                 pix = dlist.get_pixmap(matrix=matrix, colorspace=self._colorspace, alpha=False)
                 yield RenderedPage(

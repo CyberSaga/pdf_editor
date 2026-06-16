@@ -68,7 +68,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 |----|-------|-------------|-------------|--------|------|
 | **R0** | Baseline Freeze & Regression-Net Repair | 2-model (mech) + 3-model (interpreter-authority) | 4.5 | ✅ **done 2026-06-15** | [`plans/refactor-R0-baseline-freeze.md`](plans/refactor-R0-baseline-freeze.md) |
 | **R1** | Mechanical Hygiene (ruff + app-identity + packaging) | 2-model | 4.2 | ✅ **done 2026-06-15** | [`plans/refactor-R1-mechanical-hygiene.md`](plans/refactor-R1-mechanical-hygiene.md) |
-| **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ☐ not started | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
+| **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
 | **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ☐ not started | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ☐ not started | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
 | **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ☐ not started | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
@@ -240,3 +240,16 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   **Next step:** R2.7 (`pdf_renderer.py:84` `safe_render_scale` clamp + `compose_merged_document`/
   `open_merge_source` `_guard_foreign_doc`) — last R2 item; then mark R2 done, ARCHITECTURE §7, and
   PushNotification the `/compact` point.
+- **2026-06-15 (turn 9): R2.7 LANDED — R2 COMPLETE.** R2.7 (pulled-forward security quick-wins):
+  `src/printing/pdf_renderer.py:iter_page_images` clamps the render zoom **per page** via
+  `safe_render_scale` (the last unclamped raster path — CWE-400/409 bomb guard); `open_merge_source`
+  and the `compose_merged_document` file-source block now open foreign files through `_guard_foreign_doc`
+  (size/page caps + auth, identical auth errors), mirroring the already-guarded `open_insert_source`.
+  Behavior-identical for normal docs; adds the `_MAX_PDF_BYTES`/`_MAX_PAGES` caps a merge previously
+  bypassed. Verified: merge + resource-guard tests **34 passed**, full suite **1361 passed / 20 skipped
+  / 0 failed**, production ruff 0. **All R2.1–R2.7 done → R2 ✅.** Docs: ARCHITECTURE §7.2 added
+  (import-boundary guard + controller read-only query API + preview-HTML builder + print clamp),
+  §7.1 `_guard_foreign_doc` routing updated. **Per the user directive this is the `/compact` point**
+  (recorded in the "Active operating directive" section) — PushNotification sent so the context can be
+  `/compact`'d before R3 (the high-risk god-module decomposition). Campaign commits: R0 6f16ec2 ·
+  R1 4e6f755 · R2.1 2a2aa96 · R2.2 cbe0284 · R2.3+4 6e3dea1 · R2.5 870728c · R2.6 dc1bb2c · R2.7 (this).
