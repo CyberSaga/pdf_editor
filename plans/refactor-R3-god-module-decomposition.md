@@ -153,7 +153,14 @@ crosses a layer.** One cohesive seam per commit; full suite green before/after e
 - **Before** any model engine leaves `pdf_model.py`. Confirm the guard walks all of model/ and the
   decrypt-sink allowlist is in place. (Belt-and-suspenders with R2.2.)
 
-### R3.4 — `model/pdf_object_ops.py` (object markers + native-image invocation + verbs)
+### R3.4 — `model/pdf_object_ops.py` (object markers + native-image invocation + verbs) ✅ DONE 2026-06-16
+> Landed: pdf_model.py 5164→4410 LOC; new `model/pdf_object_ops.py` (~830 LOC, 19 free functions + the
+> moved `_APP_OBJECT_*` constants). Controlled verbatim transform (my own script: dedent + `self`→`model` +
+> `self.<moved>(`→`<moved>(model,`), NOT the codex-rescue agent's unrequested file (quarantined; it wrongly
+> moved OCR). 7 public wrappers; OCR (`apply_ocr_spans`/`_pick_ocr_font`) + HTML converters stay. Caught
+> `_html_mod` (module-level `import html`) needed in the new module. Gates: object-ops 78p (8 suites +
+> extraction + guards), full suite green, ruff 0. Deferred finding (possible missing pending_edits in some
+> move/rotate/delete branches) moved verbatim, NOT fixed.
 - `pdf_model.py:2211-3065` (~850 LOC): markers, `_find/_rewrite/_remove_native_image_invocation`,
   `add_image_object/add_textbox/move_object/rotate_object/delete_object/resize_object`. self-refs
   dominated by `doc×50`, shares `pending_edits/edit_count` + snapshot machinery with edit_text.

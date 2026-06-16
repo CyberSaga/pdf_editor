@@ -69,7 +69,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R0** | Baseline Freeze & Regression-Net Repair | 2-model (mech) + 3-model (interpreter-authority) | 4.5 | ✅ **done 2026-06-15** | [`plans/refactor-R0-baseline-freeze.md`](plans/refactor-R0-baseline-freeze.md) |
 | **R1** | Mechanical Hygiene (ruff + app-identity + packaging) | 2-model | 4.2 | ✅ **done 2026-06-15** | [`plans/refactor-R1-mechanical-hygiene.md`](plans/refactor-R1-mechanical-hygiene.md) |
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
-| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅, R3.2 ✅ search+OCR+print; R3.4/R3.5 model + R3.6-8 view TODO) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
+| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅, R3.2 ✅, R3.4 ✅; R3.5 model + R3.6-8 view TODO) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ☐ not started | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
 | **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ☐ not started | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
 | **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
@@ -348,3 +348,26 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   untouched (facade kept). Gates: print 8p, AST guards + snapshot/speed/multi_tab 85p/1s, production ruff 0.
   **R3.2 ✅ (search c66877c + OCR cc1e0f9 + print this).** Next: R3.4 (`model/pdf_object_ops.py`) → R3.5
   (`model/pdf_text_edit.py`, LAST model seam — full edit_text suite + no-jump gate before/after).
+- **2026-06-16 (turn 14): R3.4/object-ops LANDED (first MODEL seam).** Extracted `model/pdf_object_ops.py`
+  (~830 LOC, 19 free functions `def fn(model: PDFModel, ...)` + the moved `_APP_OBJECT_*` constants) out of
+  pdf_model.py (5164→4410 LOC), mirroring the `pdf_optimizer.py` precedent. **3-model design:** Codex Pass C
+  (thorough) + Gemini Pass A (focused — the full-file Gemini fusion HUNG on the 5160-LOC file, killed + re-ran
+  on an extract) + my own authoritative call-graph verification, which found: (a) the OCR methods
+  `apply_ocr_spans`/`_pick_ocr_font` are **interleaved** in the object-ops region and must STAY (Gemini wrongly
+  grouped them as movable — Codex/I overrode); (b) the cluster is **closed** (no staying method calls a moved
+  private → zero staying-code churn). **Process note:** the codex-rescue agent (run for DESIGN ONLY) overstepped
+  and wrote an unrequested `pdf_object_ops.py` (incl. the OCR methods) — I **quarantined** it and did my OWN
+  controlled verbatim transform via a one-shot script (dedent 4 + `self.<moved>(`→`<moved>(model,` +
+  `self.`→`model.` + def-sig `self`→`model: PDFModel`), guaranteeing no-logic-drift. Caught during gating: the
+  new module needed `import html as _html_mod` (a bare module-level name the moved code used); `_html_mod` ALSO
+  stays in pdf_model (used by `_convert_text_to_html`/`_build_multi_style_html`). PDFModel keeps 7 public
+  delegating wrappers; moved privates (no external callers) deleted. **Invariants verbatim:** free functions
+  NEVER call `_capture_*`/`_restore_*` (undo = controller's boundary); `pending_edits`/`edit_count` order after
+  `doc.update_stream`; `block_manager.rebuild_page` verbatim; NO `.save`/`.tobytes` (encryption guard scans
+  pdf_object_ops.py — PASSED); `TYPE_CHECKING`-only PDFModel import. **Red-Light:**
+  `test_pdf_object_ops_extraction.py` RED→GREEN. **Zero test churn** (8 object-ops files call the public
+  wrappers). Removed 10 now-unused pdf_content_ops imports from pdf_model (ruff `--fix`, non-re-export).
+  **Deferred finding** (Gemini A): some move/rotate/delete branches may omit `pending_edits` that native-image
+  does — moved VERBATIM, flagged, NOT fixed. Gates: object-ops 78p (8 suites + extraction + AST guards), full
+  suite green, production ruff 0, codegraph re-indexed. **Next:** R3.5 (`model/pdf_text_edit.py` — LAST +
+  highest-risk model seam; DO NOT split `_apply_redact_insert`; no-jump gate before/after).

@@ -36,6 +36,7 @@
   - `model/object_requests.py`
   - `model/pdf_content_ops.py`
   - `model/pdf_model.py`
+  - `model/pdf_object_ops.py`
   - `model/pdf_optimizer.py`
   - `model/pdf_validator.py`
   - `model/text_block.py`
@@ -171,6 +172,7 @@
   - `test_scripts/test_pdf_compliance.py`
   - `test_scripts/test_pdf_content_ops_cm_format.py`
   - `test_scripts/test_pdf_merge_workflow.py`
+  - `test_scripts/test_pdf_object_ops_extraction.py`
   - `test_scripts/test_pdf_optimize_workflow.py`
   - `test_scripts/test_performance.py`
   - `test_scripts/test_performance_script_runner.py`
@@ -318,9 +320,12 @@
 **Functions:** `_is_whitespace` (L57), `_is_delimiter` (L61), `tokenize_content_stream` (L65), `parse_operators` (L131), `_rotation_from_cm` (L156), `format_cm_value` (L170), `decompose_image_cm` (L183), `rotated_image_stream_cm` (L201), `_cm_values_from_operands` (L233), `_bbox_from_stream_cm` (L243), `_q_bounds_by_operator_index` (L266), `discover_native_image_invocations` (L284), `_discover_form_nested_invocations` (L381), `replace_operator_operands` (L488), `remove_operator_range` (L496), `serialize_tokens` (L501), `fitz_rect_to_stream_cm` (L507), `form_rect_to_stream_cm` (L531)
 
 ### `model/pdf_model.py`
-**Classes:** `TextHit` (L168), `_EditTextResolveResult` (L202), `DocumentSession` (L271), `PDFModel` (L289)
-**Functions:** `_guard_before_open` (L98), `_guard_foreign_doc` (L104), `_install_rawdict_text_compat` (L126), `_classify_insert_path` (L218)
-**Methods (183):** `_legacy`, `__getitem__`, `__iter__`, `__len__`, `__init__`, `_canonicalize_path`, `_safe_exc_message`, `_active_session`, `_activate_temporarily`, `session_ids`, `list_sessions`, `get_session_id_by_index`, `get_active_session_id`, `get_active_session_index`, `find_session_by_path`, `activate_session`, `activate_session_by_index`, `session_has_unsaved_changes`, `has_any_unsaved_changes`, `get_dirty_session_ids` …
+**Classes:** `TextHit` (L151), `_EditTextResolveResult` (L185), `DocumentSession` (L254), `PDFModel` (L272)
+**Functions:** `_guard_before_open` (L81), `_guard_foreign_doc` (L87), `_install_rawdict_text_compat` (L109), `_classify_insert_path` (L201)
+**Methods (169):** `_legacy`, `__getitem__`, `__iter__`, `__len__`, `__init__`, `_canonicalize_path`, `_safe_exc_message`, `_active_session`, `_activate_temporarily`, `session_ids`, `list_sessions`, `get_session_id_by_index`, `get_active_session_id`, `get_active_session_index`, `find_session_by_path`, `activate_session`, `activate_session_by_index`, `session_has_unsaved_changes`, `has_any_unsaved_changes`, `get_dirty_session_ids` …
+
+### `model/pdf_object_ops.py`
+**Functions:** `_dump_app_object_payload` (L56), `_load_app_object_payload` (L59), `_iter_page_annots` (L77), `_find_app_object_annot` (L86), `_find_native_image_invocation` (L105), `_rewrite_native_image_matrix` (L121), `_find_app_image_invocation` (L197), `_remove_native_image_invocation` (L222), `_delete_app_object_annots` (L265), `_create_textbox_object_marker` (L294), `_create_image_object_marker` (L333), `add_image_object` (L366), `_insert_textbox_visual_content` (L389), `add_textbox` (L492), `get_object_info_at_point` (L538), `_redact_and_restore_textbox_region` (L588), `move_object` (L607), `_rotate_native_image_absolute` (L678), `rotate_object` (L713), `delete_object` (L788), `resize_object` (L818)
 
 ### `model/pdf_optimizer.py`
 **Classes:** `PdfOptimizeOptions` (L62), `PdfAuditItem` (L86), `PdfAuditReport` (L94), `PdfOptimizationResult` (L102), `PdfOptimizeExecutionProfile` (L113), `PdfOptimizeError` (L119)
@@ -745,6 +750,9 @@
 ### `test_scripts/test_pdf_merge_workflow.py`
 **Functions:** `_make_pdf` (L19), `_pump_events` (L29), `_reorder_list_widget` (L38), `qapp` (L45), `mvc` (L53), `test_merge_session_keeps_current_entry_locked_and_appends_new_files` (L72), `test_start_merge_pdfs_seeds_dialog_with_current_document` (L93), `test_merge_ordered_sources_into_current_replaces_active_document_in_list_order` (L113), `test_merge_dialog_appends_picker_results_and_deletes_only_unlocked_rows` (L138), `test_save_ordered_sources_as_new_opens_merged_result_as_new_tab` (L182), `test_resolve_merge_file_retries_password_and_skips_on_cancel` (L208), `test_start_merge_pdfs_accepts_dialog_and_saves_new_file` (L235), `test_start_merge_pdfs_passes_controller_resolver_into_dialog` (L267), `test_merge_dialog_validates_selected_files_before_appending` (L296), `test_merge_dialog_updates_progress_while_processing_picker_batch` (L338), `test_merge_dialog_preserves_reordered_list_when_adding_files` (L384), `test_merge_dialog_preserves_reordered_list_when_removing_files` (L414)
 
+### `test_scripts/test_pdf_object_ops_extraction.py`
+**Functions:** `test_module_exposes_object_ops_free_functions` (L18), `test_pdfmodel_keeps_public_verb_wrappers` (L41), `test_ocr_and_html_methods_stay_on_pdfmodel` (L54)
+
 ### `test_scripts/test_pdf_optimize_workflow.py`
 **Functions:** `_make_pdf` (L27), `_make_pdf_with_image` (L37), `_make_pdf_with_many_images` (L51), `_large_pdf_path` (L66), `_pump_events` (L73), `_wait_until` (L82), `qapp` (L96), `mvc` (L104), `test_optimize_dialog_defaults_to_balanced_and_switches_to_custom` (L123), `test_pdf_model_optimizer_facade_uses_internal_module` (L138), `test_file_tab_exposes_optimize_copy_action` (L148), `test_save_optimized_copy_uses_working_doc_and_preserves_live_doc` (L157), `test_save_optimized_copy_avoids_live_doc_tobytes_for_clean_session` (L180), `test_save_optimized_copy_prefers_parallel_image_rewrite_for_clean_source` (L209), `test_save_optimized_copy_prefers_parallel_image_rewrite_for_dirty_session` (L249), `test_fast_preset_skips_content_cleanup` (L291), `test_fast_preset_skips_font_subsetting` (L315), `test_balanced_preset_keeps_cleanup_and_subset_for_small_jobs` (L339), `test_balanced_preset_skips_cleanup_for_large_jobs` (L369), `test_extreme_preset_keeps_cleanup_and_subset_for_large_jobs` (L415), `test_save_optimized_copy_dirty_session_preserves_unsaved_edits` (L445), `test_save_optimized_copy_accepts_all_presets` (L469), `test_build_pdf_audit_report_groups_known_categories` (L488), `test_build_pdf_audit_report_caches_active_document_results` (L509), `test_pdf_audit_report_dialog_uses_table_and_stacked_bar` (L544), `test_start_optimize_pdf_copy_saves_and_opens_new_tab` (L570), `test_start_optimize_pdf_copy_rejects_current_path_collision` (L605), `test_start_optimize_pdf_copy_runs_work_in_background` (L630), `test_start_optimize_pdf_copy_cancels_active_background_loading` (L670), `test_start_optimize_pdf_copy_completion_message_uses_human_units` (L713), `test_format_size_units_covers_kb_mb_and_gb` (L755), `test_pil_png_debug_logging_is_suppressed` (L764), `test_large_file_optimize_submission_keeps_progress_dialog_responsive` (L771), `test_large_file_optimized_copy_passes_integrity_validation` (L819), `test_save_optimized_working_doc_raises_domain_error_when_no_pikepdf_and_linearize` (L843), `test_optimize_capabilities_reflect_pikepdf_availability` (L869), `test_optimize_copy_error_is_not_double_prefixed` (L887), `test_optimize_dialog_capability_gate_disables_and_unchecks` (L912), `test_optimize_dialog_preset_cannot_recheck_gated_checkbox` (L931), `test_optimize_dialog_without_capabilities_keeps_packaging_controls_enabled` (L945), `test_save_optimized_copy_with_linearize_succeeds_when_pikepdf_present` (L955)
 
@@ -1054,7 +1062,8 @@
 - `main.py` → `controller/pdf_controller.py`, `model/headless_merge.py`, `model/pdf_model.py`, `utils/app_identity.py`, `utils/single_instance.py`, `view/icons.py`, `view/pdf_view.py`
 - `model/headless_merge.py` → `model/pdf_model.py`
 - `model/pdf_content_ops.py` → `model/geometry.py`
-- `model/pdf_model.py` → `model/__init__.py`, `model/edit_commands.py`, `model/geometry.py`, `model/object_requests.py`, `model/pdf_content_ops.py`, `model/text_block.py`, `model/text_normalization.py`, `model/tools/__init__.py`, `utils/render_limits.py`
+- `model/pdf_model.py` → `model/__init__.py`, `model/edit_commands.py`, `model/geometry.py`, `model/object_requests.py`, `model/text_block.py`, `model/text_normalization.py`, `model/tools/__init__.py`, `utils/render_limits.py`
+- `model/pdf_object_ops.py` → `model/geometry.py`, `model/object_requests.py`, `model/pdf_content_ops.py`, `model/pdf_model.py`
 - `model/pdf_optimizer.py` → `model/pdf_model.py`
 - `model/text_block.py` → `model/__init__.py`, `model/text_block_parsing.py`
 - `model/text_block_parsing.py` → `model/text_normalization.py`
@@ -1135,6 +1144,7 @@
 - `test_scripts/test_pdf_compliance.py` → `model/pdf_validator.py`
 - `test_scripts/test_pdf_content_ops_cm_format.py` → `model/pdf_content_ops.py`
 - `test_scripts/test_pdf_merge_workflow.py` → `controller/pdf_controller.py`, `model/merge_session.py`, `model/pdf_model.py`, `view/pdf_view.py`
+- `test_scripts/test_pdf_object_ops_extraction.py` → `model/pdf_model.py`, `model/pdf_object_ops.py`
 - `test_scripts/test_pdf_optimize_workflow.py` → `controller/pdf_controller.py`, `model/__init__.py`, `model/pdf_model.py`, `model/pdf_optimizer.py`, `test_scripts/validate_optimized_pdf.py`, `view/pdf_view.py`
 - `test_scripts/test_performance.py` → `model/pdf_model.py`
 - `test_scripts/test_phase7_guard_hygiene.py` → `model/pdf_optimizer.py`, `model/tools/manager.py`, `utils/single_instance.py`, `view/pdf_view.py`
