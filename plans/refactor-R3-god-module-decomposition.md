@@ -236,16 +236,62 @@ pokes the privates directly (`test_edit_text_helpers`, `test_resolve_target_mode
 **Gates (all green):** contract test RED→GREEN; edit suites 425p; AST guards; full suite 1384p/20s;
 no-jump completion-gate PASSED before (`04b0a4c`) and after.
 
-### R3.6 — `view/object_selection.py` `ObjectSelectionManager(view)`
-- `pdf_view.py:3828-4187` (~20 methods) + ~25 attrs (`_selected_object_info×46`,
-  `_object_rotate_handle_item`, `_object_resize_handle_items`, `_object_drag_*`, `_object_rotate_*`,
-  `_object_resize_*`). Emits `sig_delete/rotate/resize/move_object`. Template = `TextEditManager`.
-- **Extract** the manager holding `self._view`; **migrate the ~25 attrs into it** (the main risk —
-  any attr left on PDFView or double-owned causes selection desync). Signals **stay class attrs on
-  PDFView** (a plain helper cannot own Qt Signals); the manager emits via `self._view.sig_*`.
-- **Blocker:** `_mouse_press/move/release` read+write this state inline (45+ refs). Expose
-  `handle_press/move/release(scene_pos, event)` the handlers call — do **not** inline-split the
-  handlers yet.
+### R3.6 — `view/object_selection.py` `ObjectSelectionManager(view)` — MAP (3-model synthesized + source-verified)
+Template = `TextEditManager` (view/text_editing.py:976): plain helper holding `self._view`; own
+migrated state via `self.X`; view state/methods via `self._view.X`; Qt Signals stay class attrs on
+PDFView, manager emits via `self._view.sig_*`. PDFView constructs it eagerly in `__init__` (where the
+attr block was, ~544) **and** exposes a lazy `_ensure_object_selection_manager()` (mirrors
+`_ensure_text_edit_manager` :2486) because `set_mode` (:1932) calls `_clear_object_selection` and can
+fire during startup.
+
+**MOVE — 20 object-selection methods** (scattered in pdf_view.py 3688-4172, NOT a contiguous span; the
+region also holds 5 STAY text/general methods — `_select_all_text_on_current_page`, `_zoom_relative`,
+`_start_text_edit_from_hit`, `_copy_selected_text_to_clipboard`, `_clamp_editor_pos_to_page`):
+`_resolve_object_info_for_context_menu_pos`, `_clear_object_selection`, `_select_object`,
+`_rebase_object_selection_to_bboxes`, `_apply_object_selection_rotation`, `_object_center_scene`,
+`_supports_free_rotate`, `_update_object_selection_visuals` (carries the post-`scene.clear()` validity
+guard :3935-3945 — moves with it, so that invariant is preserved free), `_point_hits_object_resize_handle`,
+`_hit_object_resize_handle_index`, `_point_hits_object_rotate_handle`, `_delete_selected_object`,
+`_commit_free_rotation`, `_rotate_selected_object`, `_normalize_object_rotation_angle`,
+`_rotate_selected_object_absolute`, `_next_right_angle_rotation` (staticmethod), `_rotate_selected_object_to_next_right_angle`,
+`_add_object_rotation_actions`, `_show_object_rotation_menu`.
+
+**MIGRATE — 27 instance attrs** into the manager `__init__` (delete from PDFView `__init__` 544-560):
+`_selected_object_info`, `_selected_object_infos`, `_selected_object_page_idx`,
+`_object_selection_rect_item`, `_object_rotate_handle_item`, `_object_resize_handle_items`,
+`_object_drag_{pending,active,start_scene_pos,start_doc_rect,start_doc_rects,preview_rect,preview_rects,page_idx}`,
+`_object_rotate_{pending,active,center_scene,start_angle,start_rotation,preview_angle}`,
+`_object_resize_{pending,active,start_scene_pos,start_doc_rect,preview_rect,handle_anchor}`.
+⚠ The **6 `_object_resize_*` attrs are NOT in PDFView `__init__`** today (first set at press, :2927-2932) —
+the manager **must** init all 6 to `None`/`False` to avoid `AttributeError` on an early release.
+
+**Facade — 3 methods** so the mouse handlers delegate WITHOUT inline-splitting (plan blocker; R3.8 owns the
+handler refactor). Each returns `bool` (`True` = consumed → handler does `event.accept(); return`):
+- `handle_press(scene_pos, event)` ← `_mouse_press` object branch (:2918-3014: resize/rotate handle hit → select/multi-select)
+- `handle_move(scene_pos, event)` ← `_mouse_move` object branch (:3133-3246: resize/rotate/drag previews + browse-mode object-drag clamp)
+- `handle_release(scene_pos, event)` ← `_mouse_release` object branch (:4344-4460: emit resize/rotate/move requests, rebase, clear pending)
+Note the **browse-mode object-drag path** (:3213-3246, :4429-4459) touches `_object_drag_*` directly — those
+reads move INTO the manager via the facade (not external).
+
+**Signals STAY on PDFView** (class attrs :297-300 `sig_{move,delete,rotate,resize}_object`); manager emits via `self._view.sig_*`.
+
+**Churn strategy (desync-safe, mirrors R3.5):** PDFView keeps **delegating method wrappers** for the
+externally-called methods (context-menu :4674/4683/4687/4689 → `_resolve_object_info_for_context_menu_pos`/
+`_select_object`/`_delete_selected_object`/`_add_object_rotation_actions`; keyPress :2246 → `_delete_selected_object`;
+set_mode :1932 → `_clear_object_selection`) + **read-only `@property` forwarders** for attrs the 6 GUI tests
+assert on (`test_object_{manipulation,multi_select,resize,free_rotation}_gui.py`, `test_interaction_modes.py`,
+`test_autopan.py`) — chiefly `_selected_object_info` (also read by context menu :4684). Read-only forwarders are
+NOT double-ownership (manager stays single source of truth). Decide per-symbol at execution via grep; add write-
+forwarders only if a test mutates an attr directly.
+
+**Transform discipline:** per moved method, classify every `self.X` — if `X` ∈ {27 migrated attrs} ∪ {20 moved
+methods} → stays `self.X`; else (view attr/method: `scene`, `_render_scale`, `page_y_positions`,
+`_clear_text_selection`, `sig_*`, etc.) → `self._view.X`. This is NOT a uniform replace (contrast R3.5) — needs the
+symbol table above. **Invariants (preserve byte-identical):** QGraphicsItem validity (`shiboken6.isValid`), z-order
+(rect/handles addRect/addEllipse z-values), hit-test geometry (`item.rect().contains(scene_pos)` — do NOT switch to
+`mapFromScene`), no-jump drag parity (deltas ÷ `self._view._render_scale`), rotation transform-origin math.
+**Gate:** new `test_object_selection_extraction.py` RED→GREEN; the 6 object GUI suites; AST boundary guard;
+full suite; **no-jump completion-gate before/after** (selection visuals render to the scene).
 
 ### R3.7 — `view/text_selection.py` `TextSelectionManager(view)`
 - `pdf_view.py:3477-3669` + ~17 attrs (`_text_selection_*`, `_selected_text_*`). Emits nothing
