@@ -19,6 +19,7 @@
   - `view/object_selection.py`
   - `view/pdf_view.py`
   - `view/text_editing.py`
+  - `view/text_selection.py`
   - `view/theme.py`
 **controller/**
   - `controller/__init__.py`
@@ -225,6 +226,7 @@
   - `test_scripts/test_text_extraction_line_joining.py`
   - `test_scripts/test_text_normalization.py`
   - `test_scripts/test_text_selection.py`
+  - `test_scripts/test_text_selection_extraction.py`
   - `test_scripts/test_theme_and_icons.py`
   - `test_scripts/test_thumbnail_async.py`
   - `test_scripts/test_thumbnail_context_menu.py`
@@ -938,6 +940,9 @@
 ### `test_scripts/test_text_selection.py`
 **Functions:** `_make_text_pdf` (L20), `_first_run` (L28), `test_get_chars_in_run_returns_per_character_boxes` (L35), `test_same_run_drag_selects_only_character_range` (L53), `test_same_run_drag_is_order_independent` (L82), `test_cross_run_same_line_clips_both_boundaries` (L101), `test_multi_run_selection_fetches_rawdict_once` (L136), `test_multi_line_drag_partial_first_full_middle_partial_last` (L178)
 
+### `test_scripts/test_text_selection_extraction.py`
+**Functions:** `test_manager_owns_the_text_selection_verbs` (L28), `test_manager_holds_view_backref` (L33), `test_pdfview_keeps_delegating_wrappers_and_lazy_accessor` (L38)
+
 ### `test_scripts/test_theme_and_icons.py`
 **Classes:** `_FakeStore` (L431)
 **Functions:** `_hex_to_rgb` (L43), `test_token_dicts_all_keys` (L54), `test_token_accent_values` (L59), `test_registry_ids_exact` (L66), `test_registry_matches_canonical_valid_ids` (L71), `test_swatch_is_bg_color` (L78), `test_registry_meta_id_matches_key` (L85), `test_build_qss_all_themes_contain_colors` (L94), `test_build_qss_unknown_falls_back_to_alpine_snow` (L102), `test_build_qss_default_is_alpine_snow` (L107), `test_ribbon_rules_are_scoped` (L111), `test_sidebar_rules_present` (L122), `test_document_tabbar_rules_present` (L127), `test_panel_rules_present` (L132), `test_dark_theme_has_foreground` (L139), `test_all_themes_pair_bg_and_fg` (L145), `test_dialog_themed` (L154), `test_native_controls_themed` (L162), `test_qmenu_rules_present` (L172), `test_new_brand_tokens_present` (L181), `test_meadow_bg_matches_meadow_green_hue` (L190), `test_accent_line_values_from_colors_css` (L205), `test_focus_states_present` (L213), `test_scrollbar_rules_present` (L223), `test_splitter_handle_themed` (L230), `test_tooltip_themed` (L234), `test_tab_hover_states_present_and_scoped` (L241), `test_checkbox_indicator_themed` (L251), `test_primary_default_button_uses_accent` (L256), `test_native_controls_still_themed_after_refactor` (L264), `test_shadow_color_helper_returns_qcolor` (L275), `test_shadow_color_unknown_falls_back` (L287), `test_right_panel_title_themed_in_qss` (L293), `test_combobox_dropdown_themed` (L307), `test_dark_dialog_renders_dark` (L312), `test_action_icon_map_covers_core_actions` (L336), `test_load_icon_unknown_label_returns_null` (L356), `test_load_icon_known_label_returns_icon` (L362), `test_load_icon_straighten_page` (L369), `test_chip_count_matches_registry` (L381), `test_chip_single_square` (L388), `test_active_chip_on_init` (L397), `test_theme_selected_signal_emits` (L407), `test_set_active_theme_updates_chips` (L417), `test_apply_initial_theme_sets_app_stylesheet` (L442), `test_construction_does_not_mutate_global_stylesheet` (L457), `test_switcher_applies_theme_without_a_controller` (L473), `test_graphics_view_no_inline_stylesheet` (L491), `test_document_tabbar_no_inline_stylesheet` (L502), `test_toolbar_container_height` (L513), `test_toolbar_button_style` (L528), `test_toolbar_icon_size` (L548), `test_toolbar_wide_text_under_icon` (L566), `test_toolbar_narrow_icon_only` (L586), `test_straighten_action_has_icon` (L606), `test_straighten_action_warns_about_size_growth` (L625)
@@ -1059,14 +1064,18 @@
 **Methods (21):** `__init__`, `_resolve_object_info_for_context_menu_pos`, `_clear_object_selection`, `_select_object`, `_rebase_object_selection_to_bboxes`, `_apply_object_selection_rotation`, `_object_center_scene`, `_supports_free_rotate`, `_update_object_selection_visuals`, `_point_hits_object_resize_handle`, `_hit_object_resize_handle_index`, `_point_hits_object_rotate_handle`, `_delete_selected_object`, `_commit_free_rotation`, `_rotate_selected_object`, `_normalize_object_rotation_angle`, `_rotate_selected_object_absolute`, `_next_right_angle_rotation`, `_rotate_selected_object_to_next_right_angle`, `_add_object_rotation_actions` …
 
 ### `view/pdf_view.py`
-**Classes:** `_NoCtrlTabTabBar` (L191), `PDFView` (L240)
-**Functions:** `_ctrl_tab_direction` (L111), `compute_object_resize_rect` (L121), `screen_angle_degrees` (L181), `__getattr__` (L221)
-**Methods (267):** `event`, `keyPressEvent`, `__init__`, `ensure_heavy_panels_initialized`, `_emit_shell_ready_once`, `_configure_drop_targets`, `_extract_dropped_pdf_paths`, `_set_drag_drop_affordance`, `_queue_or_open_paths`, `drain_pending_open_paths`, `_handle_drag_drop_event`, `dragEnterEvent`, `dragMoveEvent`, `dragLeaveEvent`, `dropEvent`, `_build_fullscreen_exit_button`, `_update_fullscreen_exit_button_geometry`, `_set_fullscreen_exit_button_visible`, `_update_fullscreen_exit_hover`, `is_fullscreen_active` …
+**Classes:** `_NoCtrlTabTabBar` (L192), `PDFView` (L241)
+**Functions:** `_ctrl_tab_direction` (L112), `compute_object_resize_rect` (L122), `screen_angle_degrees` (L182), `__getattr__` (L222)
+**Methods (268):** `event`, `keyPressEvent`, `__init__`, `ensure_heavy_panels_initialized`, `_emit_shell_ready_once`, `_configure_drop_targets`, `_extract_dropped_pdf_paths`, `_set_drag_drop_affordance`, `_queue_or_open_paths`, `drain_pending_open_paths`, `_handle_drag_drop_event`, `dragEnterEvent`, `dragMoveEvent`, `dragLeaveEvent`, `dropEvent`, `_build_fullscreen_exit_button`, `_update_fullscreen_exit_button_geometry`, `_set_fullscreen_exit_button_visible`, `_update_fullscreen_exit_hover`, `is_fullscreen_active` …
 
 ### `view/text_editing.py`
 **Classes:** `TextEditUIConstants` (L82), `TextEditGeometryConstants` (L94), `TextEditFinalizeReason` (L99), `TextEditOutcome` (L110), `TextEditReason` (L117), `TextEditDragState` (L121), `TextEditDelta` (L128), `TextEditFinalizeResult` (L140), `TextEditSession` (L150), `_EditorShortcutForwarder` (L166), `InlineTextEditor` (L231), `ViewportAnchor` (L256), `PreviewRenderer` (L608), `PreviewBackedInlineTextEditor` (L745), `TextEditManager` (L976)
 **Functions:** `_parse_font_size_str` (L31), `_format_font_size` (L39), `_readable_editor_mask_color` (L69), `_normalize_for_edit_compare` (L262), `_average_image_rect_color` (L271), `_contrast_ratio_rgb` (L278), `_qimage_mean_rgb` (L292), `_qimage_ring_mean_rgb` (L337), `_blend_patch_towards_rgb` (L394), `_mask_leak_ratio` (L436), `_make_fallback_mask_result` (L474), `_widget_logical_dpi` (L496), `_display_font_pt` (L507), `_measure_text_content_height_px` (L520), `_compute_editor_proxy_layout` (L541), `_viewport_editor_height_cap_px` (L570), `_alias_font_family` (L591), `_map_legacy_reason` (L1785), `finalize_text_edit_impl` (L1791)
 **Methods (35):** `any_change`, `__init__`, `_trigger`, `_editor_widget`, `_handle_editor_undo`, `_handle_editor_redo`, `eventFilter`, `keyPressEvent`, `focusOutEvent`, `__init__`, `_pixel_dims`, `_to_qimage_dimensions`, `render`, `__init__`, `keyPressEvent`, `configure_render_context`, `_schedule_preview`, `_mutated_preview_has_visible_ink`, `_regenerate_preview`, `paintEvent` …
+
+### `view/text_selection.py`
+**Classes:** `TextSelectionManager` (L34)
+**Methods (13):** `__init__`, `_selected_text_has_context`, `_start_text_selection`, `_update_text_selection`, `_finalize_text_selection`, `_selection_doc_rect_to_scene`, `_clear_text_selection_extra_rects`, `_render_text_selection_line_rects`, `_clear_text_selection`, `_resolve_text_info_for_doc_rect`, `_resolve_text_info_for_context_menu_pos`, `_select_all_text_on_current_page`, `_copy_selected_text_to_clipboard`
 
 ### `view/theme.py`
 **Classes:** `ThemeMeta` (L138)
@@ -1211,6 +1220,7 @@
 - `test_scripts/test_text_extraction_line_joining.py` → `model/pdf_model.py`, `model/text_block.py`
 - `test_scripts/test_text_normalization.py` → `model/text_normalization.py`
 - `test_scripts/test_text_selection.py` → `model/pdf_model.py`
+- `test_scripts/test_text_selection_extraction.py` → `view/pdf_view.py`, `view/text_selection.py`
 - `test_scripts/test_theme_and_icons.py` → `utils/preferences.py`, `utils/theme_ids.py`, `view/icons.py`, `view/pdf_view.py`, `view/theme.py`
 - `test_scripts/test_thumbnail_async.py` → `controller/pdf_controller.py`
 - `test_scripts/test_thumbnail_context_menu.py` → `view/pdf_view.py`
@@ -1233,6 +1243,7 @@
 - `view/dialogs/optimize.py` → `model/pdf_model.py`, `model/pdf_optimizer.py`, `utils/helpers.py`
 - `view/dialogs/watermark.py` → `utils/helpers.py`
 - `view/object_selection.py` → `model/object_requests.py`, `view/pdf_view.py`
-- `view/pdf_view.py` → `model/object_requests.py`, `utils/helpers.py`, `utils/preferences.py`, `view/dialogs/export.py`, `view/dialogs/ocr.py`, `view/dialogs/password.py`, `view/dialogs/watermark.py`, `view/icons.py`, `view/object_selection.py`, `view/text_editing.py`, `view/theme.py`
+- `view/pdf_view.py` → `model/object_requests.py`, `utils/helpers.py`, `utils/preferences.py`, `view/dialogs/export.py`, `view/dialogs/ocr.py`, `view/dialogs/password.py`, `view/dialogs/watermark.py`, `view/icons.py`, `view/object_selection.py`, `view/text_editing.py`, `view/text_selection.py`, `view/theme.py`
 - `view/text_editing.py` → `model/edit_requests.py`, `utils/render_limits.py`
+- `view/text_selection.py` → `view/pdf_view.py`
 - `view/theme.py` → `utils/theme_ids.py`

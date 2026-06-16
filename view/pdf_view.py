@@ -74,6 +74,7 @@ from model.object_requests import (
     MoveObjectRequest,
     ResizeObjectRequest,
 )
+from view.text_selection import TextSelectionManager  # noqa: E402
 from view.object_selection import (  # noqa: E402
     ObjectSelectionManager,
     absolute_rotation_from_drag,  # noqa: F401  (re-export for pdf_view.absolute_rotation_from_drag)
@@ -548,6 +549,7 @@ class PDFView(QMainWindow):
         self._last_text_edit_finalize_result: TextEditFinalizeResult | None = None
         self.text_edit_manager = TextEditManager(self)
         self._obj_sel_mgr = ObjectSelectionManager(self)
+        self._text_sel_mgr = TextSelectionManager(self)
         # Phase 5: edit_text 模式下的 hover 文字塊高亮
         self._hover_highlight_item = None       # QGraphicsRectItem | None
         self._last_hover_scene_pos = None       # QPointF | None（節流用）
@@ -1787,15 +1789,6 @@ class PDFView(QMainWindow):
         if self.text_size.findText(size_str) == -1:
             self.text_size.addItem(size_str)
         self.text_size.setCurrentText(size_str)
-
-    def _selected_text_has_context(self) -> bool:
-        return bool(
-            getattr(self, "current_mode", "browse") == "browse"
-            and (
-                getattr(self, "_selected_text_cached", "")
-                or getattr(self, "_selected_text_rect_doc", None) is not None
-            )
-        )
 
     def _sync_text_property_panel_state(self) -> None:
         text_card = getattr(self, "text_card", None)
@@ -3450,282 +3443,50 @@ class PDFView(QMainWindow):
             "add_new",
         )
 
-    def _start_text_selection(self, scene_pos: QPointF, page_idx: int) -> None:
-        self._clear_hover_highlight()
-        self._reset_browse_hover_cursor()
-        self._clear_text_selection()
-        start_pos = self._clamp_scene_point_to_page(scene_pos, page_idx)
-        try:
-            hit_page_idx, doc_point = self._scene_pos_to_page_and_doc_point(start_pos)
-            if hit_page_idx != page_idx:
-                return
-            start_hit = self.controller.get_text_info_at_point(
-                page_idx + 1,
-                doc_point,
-                allow_fallback=False,
-            )
-        except Exception:
-            start_hit = None
-        if start_hit is None or not getattr(start_hit, "target_span_id", None):
-            return
-        self._text_selection_active = True
-        self._text_selection_page_idx = page_idx
-        self._text_selection_start_scene_pos = start_pos
-        self._text_selection_live_doc_rect = None
-        self._text_selection_live_text = ""
-        self._text_selection_last_scene_pos = None
-        self._text_selection_start_span_id = start_hit.target_span_id
-        self._text_selection_start_hit_info = start_hit
-        self._text_selection_start_doc_point = doc_point
-        pen = QPen(QColor(30, 120, 255, 220), 1)
-        brush = QBrush(QColor(30, 120, 255, 35))
-        rect = QRectF(start_pos, start_pos).normalized()
-        self._text_selection_rect_item = self.scene.addRect(rect, pen, brush)
-        self._text_selection_rect_item.setZValue(20)
-        # Live highlight should only appear after snapping to actual text bounds.
-        self._text_selection_rect_item.setVisible(False)
-        self._text_selection_extra_rect_items = []
+    # R3.7: text-selection verbs delegate to TextSelectionManager (view/text_selection.py).
+    # State attrs + mouse handlers stay here for now (approach X).
+    def _selected_text_has_context(self, *args, **kwargs):
+        return self._ensure_text_selection_manager()._selected_text_has_context(*args, **kwargs)
 
-    def _update_text_selection(self, scene_pos: QPointF, force: bool = False) -> None:
-        if not self._text_selection_active or self._text_selection_page_idx is None:
-            return
-        if self._text_selection_start_scene_pos is None or self._text_selection_rect_item is None:
-            return
-        if not force and self._text_selection_last_scene_pos is not None:
-            if (
-                abs(scene_pos.x() - self._text_selection_last_scene_pos.x()) < 2.0 and
-                abs(scene_pos.y() - self._text_selection_last_scene_pos.y()) < 2.0
-            ):
-                return
-        self._text_selection_last_scene_pos = scene_pos
+    def _start_text_selection(self, *args, **kwargs):
+        return self._ensure_text_selection_manager()._start_text_selection(*args, **kwargs)
 
-        end_pos = self._clamp_scene_point_to_page(scene_pos, self._text_selection_page_idx)
-        try:
-            end_page_idx, end_doc_point = self._scene_pos_to_page_and_doc_point(end_pos)
-        except Exception:
-            end_page_idx, end_doc_point = self._text_selection_page_idx, None
-        if end_doc_point is None or end_page_idx != self._text_selection_page_idx:
-            self._text_selection_live_doc_rect = None
-            self._text_selection_live_text = ""
-            self._text_selection_rect_item.setVisible(False)
-            return
+    def _update_text_selection(self, *args, **kwargs):
+        return self._ensure_text_selection_manager()._update_text_selection(*args, **kwargs)
 
-        try:
-            selected_text, line_rects = self.controller.get_text_selection_lines(
-                self._text_selection_page_idx + 1,
-                self._text_selection_start_span_id,
-                end_doc_point,
-                getattr(self, "_text_selection_start_doc_point", None),
-            )
-        except Exception:
-            selected_text = ""
-            line_rects = []
-        if not selected_text.strip() or not line_rects:
-            self._text_selection_live_doc_rect = None
-            self._text_selection_live_text = ""
-            self._text_selection_rect_item.setVisible(False)
-            self._clear_text_selection_extra_rects()
-            return
+    def _finalize_text_selection(self, *args, **kwargs):
+        return self._ensure_text_selection_manager()._finalize_text_selection(*args, **kwargs)
 
-        bounds = fitz.Rect(line_rects[0])
-        for line_rect in line_rects[1:]:
-            bounds.include_rect(line_rect)
-        if bounds.width <= 0 or bounds.height <= 0:
-            self._text_selection_live_doc_rect = None
-            self._text_selection_live_text = ""
-            self._text_selection_rect_item.setVisible(False)
-            self._clear_text_selection_extra_rects()
-            return
+    def _selection_doc_rect_to_scene(self, *args, **kwargs):
+        return self._ensure_text_selection_manager()._selection_doc_rect_to_scene(*args, **kwargs)
 
-        self._text_selection_live_doc_rect = bounds
-        self._text_selection_live_text = selected_text
-        self._render_text_selection_line_rects(line_rects)
+    def _clear_text_selection_extra_rects(self, *args, **kwargs):
+        return self._ensure_text_selection_manager()._clear_text_selection_extra_rects(*args, **kwargs)
 
-    def _finalize_text_selection(self, scene_pos: QPointF) -> None:
-        if not self._text_selection_active:
-            return
-        if self._text_selection_start_scene_pos is not None:
-            dx = scene_pos.x() - self._text_selection_start_scene_pos.x()
-            dy = scene_pos.y() - self._text_selection_start_scene_pos.y()
-            if dx * dx + dy * dy < 4.0:
-                self._clear_text_selection()
-                return
+    def _render_text_selection_line_rects(self, *args, **kwargs):
+        return self._ensure_text_selection_manager()._render_text_selection_line_rects(*args, **kwargs)
 
-        self._update_text_selection(scene_pos, force=True)
-        self._text_selection_active = False
-        self._text_selection_start_scene_pos = None
-        self._text_selection_last_scene_pos = None
-        page_idx = self._text_selection_page_idx
-        if page_idx is None or self._text_selection_rect_item is None:
-            self._clear_text_selection()
-            return
-        doc_rect = self._text_selection_live_doc_rect
-        if doc_rect is None:
-            self._clear_text_selection()
-            return
-        selected_text = (getattr(self, "_text_selection_live_text", "") or "").strip()
-        if not selected_text.strip():
-            self._clear_text_selection()
-            return
-        self._selected_text_page_idx = page_idx
-        self._selected_text_rect_doc = fitz.Rect(doc_rect)
-        self._selected_text_cached = selected_text
-        self._selected_text_hit_info = getattr(self, "_text_selection_start_hit_info", None)
-        self._selected_text_from_drag = True
-        # Per-line highlight rects were already rendered by _update_text_selection
-        # above; keep them rather than collapsing to a single bounding rectangle.
-        self._sync_text_property_panel_state()
+    def _clear_text_selection(self, *args, **kwargs):
+        return self._ensure_text_selection_manager()._clear_text_selection(*args, **kwargs)
 
-    def _selection_doc_rect_to_scene(self, doc_rect: fitz.Rect) -> QRectF:
-        rs = self._render_scale if self._render_scale > 0 else 1.0
-        page_idx = self._text_selection_page_idx or 0
-        y0 = self.page_y_positions[page_idx] if (
-            self.continuous_pages and page_idx < len(self.page_y_positions)
-        ) else 0.0
-        return QRectF(
-            doc_rect.x0 * rs,
-            y0 + doc_rect.y0 * rs,
-            max(1.0, doc_rect.width * rs),
-            max(1.0, doc_rect.height * rs),
-        )
+    def _resolve_text_info_for_doc_rect(self, *args, **kwargs):
+        return self._ensure_text_selection_manager()._resolve_text_info_for_doc_rect(*args, **kwargs)
 
-    def _clear_text_selection_extra_rects(self) -> None:
-        for item in getattr(self, "_text_selection_extra_rect_items", None) or []:
-            try:
-                self.scene.removeItem(item)
-            except Exception:
-                pass
-        self._text_selection_extra_rect_items = []
+    def _resolve_text_info_for_context_menu_pos(self, *args, **kwargs):
+        return self._ensure_text_selection_manager()._resolve_text_info_for_context_menu_pos(*args, **kwargs)
 
-    def _render_text_selection_line_rects(self, line_rects: list) -> None:
-        """Draw one highlight rect per visual line so a multi-line selection shows
-        a partial first line, full middle lines and a partial last line (AC-1d)."""
-        if self._text_selection_rect_item is None or not line_rects:
-            return
-        self._clear_text_selection_extra_rects()
-        self._text_selection_rect_item.setRect(self._selection_doc_rect_to_scene(line_rects[0]))
-        self._text_selection_rect_item.setVisible(True)
-        pen = QPen(QColor(30, 120, 255, 220), 1)
-        brush = QBrush(QColor(30, 120, 255, 35))
-        extras = []
-        for doc_rect in line_rects[1:]:
-            item = self.scene.addRect(self._selection_doc_rect_to_scene(doc_rect), pen, brush)
-            try:
-                item.setZValue(20)
-            except Exception:
-                pass
-            extras.append(item)
-        self._text_selection_extra_rect_items = extras
+    def _select_all_text_on_current_page(self, *args, **kwargs):
+        return self._ensure_text_selection_manager()._select_all_text_on_current_page(*args, **kwargs)
 
-    def _clear_text_selection(self) -> None:
-        self._text_selection_active = False
-        self._text_selection_page_idx = None
-        self._text_selection_start_scene_pos = None
-        self._text_selection_live_doc_rect = None
-        self._text_selection_live_text = ""
-        self._text_selection_last_scene_pos = None
-        self._text_selection_start_span_id = None
-        self._text_selection_start_hit_info = None
-        self._selected_text_rect_doc = None
-        self._selected_text_page_idx = None
-        self._selected_text_cached = ""
-        self._selected_text_hit_info = None
-        self._selected_text_from_drag = False
-        if self._text_selection_rect_item is not None:
-            try:
-                if self._text_selection_rect_item.scene():
-                    self.scene.removeItem(self._text_selection_rect_item)
-            except Exception:
-                pass
-            self._text_selection_rect_item = None
-        self._clear_text_selection_extra_rects()
-        self._text_selection_start_doc_point = None
-        self._sync_text_property_panel_state()
+    def _copy_selected_text_to_clipboard(self, *args, **kwargs):
+        return self._ensure_text_selection_manager()._copy_selected_text_to_clipboard(*args, **kwargs)
 
-    def _resolve_text_info_for_doc_rect(self, page_idx: int, doc_rect: fitz.Rect):
-        controller = getattr(self, "controller", None)
-        if controller is None or doc_rect is None:
-            return None
-        try:
-            center = fitz.Point((doc_rect.x0 + doc_rect.x1) / 2.0, (doc_rect.y0 + doc_rect.y1) / 2.0)
-            return controller.get_text_info_at_point(page_idx + 1, center)
-        except Exception:
-            return None
-
-    def _resolve_text_info_for_context_menu_pos(self, pos: QPoint):
-        if self.current_mode != "browse":
-            return None
-        controller = getattr(self, "controller", None)
-        graphics_view = getattr(self, "graphics_view", None)
-        if controller is None or graphics_view is None:
-            return None
-        try:
-            scene_pos = graphics_view.mapToScene(pos)
-            page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
-            info = controller.get_text_info_at_point(page_idx + 1, doc_point)
-        except Exception:
-            return None
-        if info is None:
-            return None
-        return page_idx, info
-
-    def _select_all_text_on_current_page(self) -> bool:
-        if self.total_pages <= 0:
-            return False
-        controller = getattr(self, "controller", None)
-        model = getattr(controller, "model", None) if controller is not None else None
-        if model is None or not getattr(model, "doc", None):
-            return False
-
-        page_idx = min(max(self.current_page, 0), self.total_pages - 1)
-        try:
-            page_rect = self.controller.get_page_rect(page_idx)
-        except Exception:
-            return False
-
-        try:
-            selected_text = controller.get_text_in_rect(page_idx + 1, page_rect)
-        except Exception:
-            selected_text = ""
-        if not selected_text.strip():
-            return False
-
-        precise_doc_rect = fitz.Rect(page_rect)
-        try:
-            precise = controller.get_text_bounds(page_idx + 1, page_rect)
-            if precise is not None and precise.width > 0 and precise.height > 0:
-                precise_doc_rect = fitz.Rect(precise)
-        except Exception:
-            pass
-
-        self._selected_text_page_idx = page_idx
-        self._selected_text_rect_doc = precise_doc_rect
-        self._selected_text_cached = selected_text
-        self._selected_text_hit_info = self._resolve_text_info_for_doc_rect(page_idx, precise_doc_rect)
-        self._selected_text_from_drag = False
-
-        if self._text_selection_rect_item is None and getattr(self, "scene", None) is not None:
-            pen = QPen(QColor(30, 120, 255, 200), 2)
-            brush = QBrush(QColor(30, 120, 255, 35))
-            self._text_selection_rect_item = self.scene.addRect(QRectF(), pen, brush)
-            self._text_selection_rect_item.setZValue(11)
-
-        if self._text_selection_rect_item is not None:
-            rs = self._render_scale if self._render_scale > 0 else 1.0
-            y0 = self.page_y_positions[page_idx] if (
-                self.continuous_pages and page_idx < len(self.page_y_positions)
-            ) else 0.0
-            scene_rect = QRectF(
-                precise_doc_rect.x0 * rs,
-                y0 + precise_doc_rect.y0 * rs,
-                max(1.0, precise_doc_rect.width * rs),
-                max(1.0, precise_doc_rect.height * rs),
-            )
-            self._text_selection_rect_item.setRect(scene_rect)
-            self._text_selection_rect_item.setVisible(True)
-
-        self._sync_text_property_panel_state()
-        return True
+    def _ensure_text_selection_manager(self) -> TextSelectionManager:
+        mgr = getattr(self, "_text_sel_mgr", None)
+        if mgr is None:
+            mgr = TextSelectionManager(self)
+            self._text_sel_mgr = mgr
+        return mgr
 
     def _zoom_relative(self, factor: float) -> None:
         try:
@@ -3760,25 +3521,6 @@ class PDFView(QMainWindow):
             logger.error("open edit text from context menu failed: %s", exc)
             return False
 
-    def _copy_selected_text_to_clipboard(self) -> bool:
-        text = (self._selected_text_cached or "").strip()
-        if not text and self._selected_text_rect_doc is not None and self._selected_text_page_idx is not None:
-            if getattr(self, "_selected_text_from_drag", False):
-                return False
-            try:
-                text = self.controller.get_text_in_rect(self._selected_text_page_idx + 1, self._selected_text_rect_doc).strip()
-            except Exception:
-                text = ""
-        if not text:
-            return False
-        QApplication.clipboard().setText(text)
-        self._selected_text_cached = text
-        if getattr(self, "status_bar", None):
-            self.status_bar.showMessage("Copied selected text", 1500)
-        return True
-
-    # R3.6: object-selection verbs delegate to ObjectSelectionManager
-    # (view/object_selection.py). State attrs + mouse handlers stay here for now.
     def _resolve_object_info_for_context_menu_pos(self, *args, **kwargs):
         return self._ensure_object_selection_manager()._resolve_object_info_for_context_menu_pos(*args, **kwargs)
 

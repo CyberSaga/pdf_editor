@@ -69,7 +69,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R0** | Baseline Freeze & Regression-Net Repair | 2-model (mech) + 3-model (interpreter-authority) | 4.5 | ✅ **done 2026-06-15** | [`plans/refactor-R0-baseline-freeze.md`](plans/refactor-R0-baseline-freeze.md) |
 | **R1** | Mechanical Hygiene (ruff + app-identity + packaging) | 2-model | 4.2 | ✅ **done 2026-06-15** | [`plans/refactor-R1-mechanical-hygiene.md`](plans/refactor-R1-mechanical-hygiene.md) |
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
-| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅, R3.2 ✅, R3.4 ✅, R3.5 ✅ — ALL model seams done; R3.6 ✅ first view seam; R3.7-8 view TODO) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
+| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅, R3.2 ✅, R3.4 ✅, R3.5 ✅ — ALL model seams done; R3.6 ✅, R3.7 ✅ view seams; R3.8 mouse-dispatcher + state migration TODO) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ☐ not started | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
 | **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ☐ not started | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
 | **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
@@ -417,3 +417,25 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   unrelated print-heartbeat timing flake — passes in isolation), production ruff 0, codegraph re-indexed,
   **no-jump completion-gate before/after.** **Next:** R3.7 (`view/text_selection.py` `TextSelectionManager`) —
   lower coupling now objects are out; then R3.8 (mouse-handler dispatcher + object/text state migration).
+- **2026-06-17 (turn 22): R3.7 LANDED — `view/text_selection.py` `TextSelectionManager`, the SECOND view seam.**
+  Full 3-model design review (Gemini dual-lens + Codex, both no timeout) + source verification, synthesized and
+  executed in ONE atomic tick (no separate map commit — folded the map into this commit, avoiding R3.6's wasteful
+  doc-commit gate-rebind). **Approach X again (method-only):** moved 12 browse-mode text-selection/highlight/copy
+  verbs into the manager (reads view state via `self._view`); the ~17 state attrs + three mouse handlers stay on
+  PDFView. **No Qt signals** (copy = `QApplication.clipboard()`). **Gemini surfaced** the `_selection_doc_rect_to_scene`
+  rendering helper (not in my initial grep — its name lacks "text_selection"; called only intra-cluster → MOVE, the
+  12th). **Source-verified STAY:** `_sync_text_property_panel_state` (called by both text + non-text code 1716/1982 →
+  cross-cutting), `_update_browse_hover_cursor`/`_reset_browse_hover_cursor` (outside cluster). **Codex caught** the
+  cross-layer caller `controller/pdf_controller.py:791` (`view._clear_text_selection()`) and the Ctrl+A/Ctrl+C
+  `QAction.triggered` bindings (1354/4351/4363) → all 12 get mandatory PDFView wrappers + `_ensure_text_selection_manager()`
+  lazy accessor. **UNIFORM transform** `self.X→self._view.X` + `(get|set|has)attr(self,"X")→self._view` (notably the
+  `_selected_text_from_drag` copy-fallback guard). Source = 3 non-contiguous regions (1791; 3453-3729; 3763-3781) with
+  `_zoom_relative`/`_start_text_edit_from_hit` interleaved as STAY. **DEFERRED finding** (flagged, NOT fixed — keeps the
+  move verbatim): text cleanup uses `if item.scene():` not `shiboken6.isValid()` like ObjectSelectionManager; harden in a
+  follow-up. **R3.8 highest-risk attrs to migrate:** `_selected_text_rect_doc`/`_selected_text_cached` (read by non-text
+  code). The R6.6-style playbook carried over with **ZERO debugging** — contract + text/object GUI suites 101p GREEN
+  first try. **pdf_view 5152→4894 LOC, ZERO test churn.** New `test_text_selection_extraction.py` RED→GREEN. Gates: full
+  suite **1391p/20s** (clean first run), production ruff 0, codegraph re-indexed, **no-jump completion-gate before/after.**
+  **Next:** R3.8 — the LAST view artifact: refactor `_mouse_press/move/release` into a per-mode dispatcher delegating to
+  the two managers + migrate the object/text interaction state into them (preserve the `current_mode` early-return
+  ordering exactly).

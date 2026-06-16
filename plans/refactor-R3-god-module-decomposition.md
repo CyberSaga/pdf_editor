@@ -306,10 +306,36 @@ PDFView keeps 20 delegating wrappers + eager construct + `_ensure_object_selecti
 4411→… (5481→5158 LOC). Zero test churn. Gates green: object suites 59p, full suite 1387p (1 unrelated print
 heartbeat flake, passes in isolation), ruff 0, no-jump before/after.
 
-### R3.7 — `view/text_selection.py` `TextSelectionManager(view)`
-- `pdf_view.py:3477-3669` + ~17 attrs (`_text_selection_*`, `_selected_text_*`). Emits nothing
-  (local selection; copy uses clipboard). Browse-mode-owned, so separable by the mode gate at
-  `:2924`. Extract **after** R3.6 (lower coupling once objects are out).
+### R3.7 — `view/text_selection.py` `TextSelectionManager(view)` ✅ LANDED (approach X, 3-model + source-verified)
+**MOVE — 12 methods** (3 non-contiguous source regions; `_zoom_relative`/`_start_text_edit_from_hit`
+interleave as STAY): `_selected_text_has_context` (1791), then `_start_text_selection`,
+`_update_text_selection`, `_finalize_text_selection`, `_selection_doc_rect_to_scene` (rendering helper —
+Gemini's catch, called only intra-cluster), `_clear_text_selection_extra_rects`,
+`_render_text_selection_line_rects`, `_clear_text_selection`, `_resolve_text_info_for_doc_rect`,
+`_resolve_text_info_for_context_menu_pos`, `_select_all_text_on_current_page` (3453-3729 block), and
+`_copy_selected_text_to_clipboard` (3763-3781). No staticmethods/properties in the set.
+
+**STAY:** `_sync_text_property_panel_state` (1800 — called by BOTH text methods AND non-text code 1716/1982,
+so cross-cutting; moved methods reach it via `self._view`); `_update_browse_hover_cursor`/`_reset_browse_hover_cursor`
+(3295/3323, browse-hover feedback, outside the cluster); the three mouse handlers; all ~17 state attrs
+(`_text_selection_*`, `_selected_text_*`). **No Qt signals** (copy uses `QApplication.clipboard()`).
+
+**Wrappers:** PDFView keeps 1-line delegating wrappers for all 12 + `_ensure_text_selection_manager()` lazy
+accessor. Mandatory because external callers exist: **controller** (`controller/pdf_controller.py:791`
+`self.view._clear_text_selection()`), set_mode/document-reset/scene-rebuild (`_clear_text_selection` ~11 refs),
+context menu (`_resolve_text_info_for_context_menu_pos`, `_selected_text_has_context`), **QAction `triggered`
+bindings** for Ctrl+A/Ctrl+C (`_select_all_text_on_current_page`, `_copy_selected_text_to_clipboard` at 1354/4351/4363),
+and tests that call/monkeypatch these on PDFView.
+
+**Transform:** UNIFORM `self.X → self._view.X` for ALL X (inter-method calls route through the wrappers →
+monkeypatch-safe) + `(get|set|has)attr(self,"X") → (…)(self._view,…)` (notably `getattr(self,"_selected_text_from_drag")`
+in the copy fallback guard). No-cycle import (manager imports nothing from pdf_view at runtime; mirrors the templates).
+**Verbatim move:** kept the `if item.scene():` cleanup guards. **DEFERRED finding:** unlike ObjectSelectionManager,
+text selection lacks `shiboken6.isValid()` guards on the rect/extra-rect cleanup — hardening is a follow-up, NOT done
+here (no logic drift in a no-op move). **R3.8 high-risk attrs to migrate:** `_selected_text_rect_doc` + `_selected_text_cached`
+(read by non-text code — mouse_press blank-click guard, context menu, panel-sync predicate).
+**pdf_view 5152→4894 LOC. ZERO test churn.** Gates: new `test_text_selection_extraction.py` RED→GREEN; text/object
+GUI suites 101p; full suite; production ruff 0; **no-jump completion-gate before/after.**
 
 ### R3.8 — Mouse-handler dispatcher (LAST view artifact)
 - Only after R3.6+R3.7: refactor `_mouse_press/move/release` (L2899-4558, ~830 LOC, the
