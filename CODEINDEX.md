@@ -21,6 +21,7 @@
   - `view/theme.py`
 **controller/**
   - `controller/__init__.py`
+  - `controller/ocr_coordinator.py`
   - `controller/pdf_controller.py`
   - `controller/search_coordinator.py`
 **model/**
@@ -151,6 +152,7 @@
   - `test_scripts/test_object_requests.py`
   - `test_scripts/test_object_resize.py`
   - `test_scripts/test_ocr_controller_flow.py`
+  - `test_scripts/test_ocr_coordinator_extraction.py`
   - `test_scripts/test_ocr_dialog.py`
   - `test_scripts/test_ocr_e2e.py`
   - `test_scripts/test_ocr_loading_status.py`
@@ -262,9 +264,13 @@
 
 ### `controller/__init__.py`
 
+### `controller/ocr_coordinator.py`
+**Classes:** `_OcrWorker` (L32), `_OcrBridge` (L96), `OcrCoordinator` (L124)
+**Methods (19):** `__init__`, `request_cancel`, `run`, `forward_progress`, `forward_status`, `forward_page_done`, `forward_failed`, `notify_thread_finished`, `__init__`, `connect_bridge`, `start_ocr`, `cancel_ocr`, `_release_ocr_thread`, `_show_ocr_progress_dialog`, `_on_ocr_progress`, `_on_ocr_status`, `_on_ocr_page_done`, `_on_ocr_failed`, `_on_ocr_thread_finished`
+
 ### `controller/pdf_controller.py`
-**Classes:** `SessionUIState` (L88), `FullscreenSessionSnapshot` (L98), `PrintJobRequest` (L105), `OptimizePdfCopyRequest` (L114), `_PrintSubmissionWorker` (L119), `_PrintWorkerBridge` (L148), `_OptimizePdfCopyWorker` (L173), `_OptimizeWorkerBridge` (L196), `_OcrWorker` (L214), `_OcrBridge` (L278), `PDFController` (L316)
-**Methods (196):** `__init__`, `run`, `forward_progress`, `forward_prepared`, `forward_failed`, `notify_thread_finished`, `__init__`, `run`, `forward_succeeded`, `forward_failed`, `notify_thread_finished`, `__init__`, `request_cancel`, `run`, `forward_progress`, `forward_status`, `forward_page_done`, `forward_failed`, `notify_thread_finished`, `__init__` …
+**Classes:** `SessionUIState` (L88), `FullscreenSessionSnapshot` (L98), `PrintJobRequest` (L105), `OptimizePdfCopyRequest` (L114), `_PrintSubmissionWorker` (L119), `_PrintWorkerBridge` (L148), `_OptimizePdfCopyWorker` (L173), `_OptimizeWorkerBridge` (L196), `PDFController` (L234)
+**Methods (181):** `__init__`, `run`, `forward_progress`, `forward_prepared`, `forward_failed`, `notify_thread_finished`, `__init__`, `run`, `forward_succeeded`, `forward_failed`, `notify_thread_finished`, `__init__`, `is_active`, `activate`, `_refresh_ocr_availability`, `_connect_signals`, `_next_load_gen`, `_next_thumb_gen`, `_next_render_gen`, `_next_stale_index_gen` …
 
 ### `controller/search_coordinator.py`
 **Classes:** `_SearchWorker` (L29), `_SearchBridge` (L77), `SearchCoordinator` (L95)
@@ -667,8 +673,11 @@
 
 ### `test_scripts/test_ocr_controller_flow.py`
 **Classes:** `_FakeTool` (L13)
-**Functions:** `_sample_doc_bytes` (L39), `_drive_worker` (L49), `test_worker_emits_page_done_and_progress` (L77), `test_worker_runs_on_non_gui_thread` (L96), `test_worker_respects_cancel_between_pages` (L106), `test_worker_emits_failed_on_tool_exception` (L128), `test_worker_forwards_device_and_languages` (L142), `test_ocr_bridge_forwards_signals` (L149), `test_controller_start_ocr_refuses_when_surya_missing` (L172), `test_controller_start_ocr_applies_spans_per_page` (L185), `test_controller_ocr_ignores_stale_session_page_done` (L206), `test_controller_cancel_ocr_sets_worker_flag` (L224), `test_controller_ocr_drops_stale_gen_page_done` (L234), `test_controller_cancel_ocr_invalidates_generation` (L251), `_build_minimal_controller` (L267), `_wait_for_ocr_finish` (L308)
+**Functions:** `_sample_doc_bytes` (L39), `_drive_worker` (L49), `test_worker_emits_page_done_and_progress` (L77), `test_worker_runs_on_non_gui_thread` (L96), `test_worker_respects_cancel_between_pages` (L106), `test_worker_emits_failed_on_tool_exception` (L128), `test_worker_forwards_device_and_languages` (L142), `test_ocr_bridge_forwards_signals` (L149), `test_controller_start_ocr_refuses_when_surya_missing` (L172), `test_controller_start_ocr_applies_spans_per_page` (L187), `test_controller_ocr_ignores_stale_session_page_done` (L208), `test_controller_cancel_ocr_sets_worker_flag` (L227), `test_controller_ocr_drops_stale_gen_page_done` (L237), `test_controller_cancel_ocr_invalidates_generation` (L255), `_build_minimal_controller` (L271), `_wait_for_ocr_finish` (L318)
 **Methods (3):** `__init__`, `ocr_pages`, `availability`
+
+### `test_scripts/test_ocr_coordinator_extraction.py`
+**Functions:** `test_worker_bridge_reexported_from_controller` (L24), `test_coordinator_owns_ocr_runtime_state` (L29), `test_coordinator_exposes_facade_methods` (L48), `test_availability_probe_stays_on_controller` (L68)
 
 ### `test_scripts/test_ocr_dialog.py`
 **Classes:** `_FakeStore` (L10)
@@ -1029,7 +1038,8 @@
 
 ## Internal Import Graph
 
-- `controller/pdf_controller.py` → `controller/search_coordinator.py`, `model/color_profile.py`, `model/edit_commands.py`, `model/merge_session.py`, `model/object_requests.py`, `model/pdf_model.py`, `src/printing/__init__.py`, `src/printing/helper_protocol.py`, `src/printing/messages.py`, `src/printing/print_dialog.py`, `src/printing/subprocess_runner.py`, `utils/helpers.py`, `view/pdf_view.py`
+- `controller/ocr_coordinator.py` → `controller/pdf_controller.py`, `utils/helpers.py`, `view/pdf_view.py`
+- `controller/pdf_controller.py` → `controller/ocr_coordinator.py`, `controller/search_coordinator.py`, `model/color_profile.py`, `model/edit_commands.py`, `model/merge_session.py`, `model/object_requests.py`, `model/pdf_model.py`, `src/printing/__init__.py`, `src/printing/helper_protocol.py`, `src/printing/messages.py`, `src/printing/print_dialog.py`, `src/printing/subprocess_runner.py`, `utils/helpers.py`, `view/pdf_view.py`
 - `controller/search_coordinator.py` → `controller/pdf_controller.py`, `utils/helpers.py`
 - `main.py` → `controller/pdf_controller.py`, `model/headless_merge.py`, `model/pdf_model.py`, `utils/app_identity.py`, `utils/single_instance.py`, `view/icons.py`, `view/pdf_view.py`
 - `model/headless_merge.py` → `model/pdf_model.py`
@@ -1096,7 +1106,8 @@
 - `test_scripts/test_object_multi_select.py` → `model/object_requests.py`, `view/pdf_view.py`
 - `test_scripts/test_object_requests.py` → `model/object_requests.py`
 - `test_scripts/test_object_resize.py` → `model/object_requests.py`, `view/pdf_view.py`
-- `test_scripts/test_ocr_controller_flow.py` → `controller/__init__.py`, `controller/pdf_controller.py`, `model/tools/ocr_types.py`
+- `test_scripts/test_ocr_controller_flow.py` → `controller/__init__.py`, `controller/ocr_coordinator.py`, `controller/pdf_controller.py`, `model/tools/ocr_types.py`
+- `test_scripts/test_ocr_coordinator_extraction.py` → `controller/ocr_coordinator.py`, `controller/pdf_controller.py`
 - `test_scripts/test_ocr_dialog.py` → `model/tools/ocr_types.py`, `utils/preferences.py`, `view/dialogs/ocr.py`
 - `test_scripts/test_ocr_e2e.py` → `model/pdf_model.py`, `model/tools/ocr_tool.py`
 - `test_scripts/test_ocr_loading_status.py` → `controller/pdf_controller.py`

@@ -69,7 +69,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R0** | Baseline Freeze & Regression-Net Repair | 2-model (mech) + 3-model (interpreter-authority) | 4.5 | ✅ **done 2026-06-15** | [`plans/refactor-R0-baseline-freeze.md`](plans/refactor-R0-baseline-freeze.md) |
 | **R1** | Mechanical Hygiene (ruff + app-identity + packaging) | 2-model | 4.2 | ✅ **done 2026-06-15** | [`plans/refactor-R1-mechanical-hygiene.md`](plans/refactor-R1-mechanical-hygiene.md) |
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
-| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅, R3.2/search ✅) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
+| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅, R3.2 search+OCR ✅, print TODO) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ☐ not started | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
 | **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ☐ not started | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
 | **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
@@ -294,3 +294,29 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   `controller._search_coordinator` (assertions unchanged); worker/bridge unit tests untouched. Gates:
   search+guards 23p, related controller-flow 96p/1s, full suite green, production ruff 0. **Next:** R3.2/OCR
   (`controller/ocr_coordinator.py`) then R3.2/print (largest; coordinate with R5.1 decrypt-snapshot).
+- **2026-06-16 (turn 12): R3.2/OCR LANDED (second controller async coordinator).** Full 3-model fusion
+  design review (tooling now restored): Gemini Pass A + Pass B (both completed, no timeout) + Codex Pass C.
+  **One design split, resolved:** both Gemini passes said move `_refresh_ocr_availability` into the
+  coordinator; Codex said KEEP it on PDFController (it owns no thread/worker/gen/session/dialog runtime —
+  it's a one-shot UI-availability probe). Upheld **Codex** (aligns with the plan's coordinator-scope
+  definition = async-job runtime only; also lower-churn — the method + its activate() call stay untouched).
+  Extracted `controller/ocr_coordinator.py`: `_OcrWorker`/`_OcrBridge` moved verbatim (re-exported from
+  `pdf_controller`, `# noqa: F401`) + `class OcrCoordinator(controller)` owning `_ocr_progress_dialog/
+  _ocr_thread/_ocr_worker/_ocr_worker_bridge/_ocr_gen/_ocr_session_id` + `start_ocr`/`cancel_ocr`/
+  `connect_bridge`/`_release_ocr_thread`/`_show_ocr_progress_dialog`/`_on_ocr_{progress,status,page_done,
+  failed,thread_finished}`. Bodies verbatim, only `self.model/view`→`self._c.*`. PDFController keeps
+  `start_ocr`+`cancel_ocr` delegates + `_refresh_ocr_availability`; `__init__` 6-attr block → 1 line;
+  `activate()` bridge-wiring → `connect_bridge()`. **Invariants preserved verbatim:** `thread.finished`-bound
+  release; two-hop worker→bridge→coordinator wiring; `_ocr_gen += 1` in cancel + `gen != self._ocr_gen`
+  slot guards; the per-page **session guard** (`active_sid != _ocr_session_id` drops OCR spans after a tab
+  switch — never inject text into the wrong doc); GUI-thread `model.apply_ocr_spans`; `QProgressDialog`
+  parent-only-if-PDFView + close/null on finish. **Red-Light:** the existing `test_ocr_controller_flow.py`
+  broke 6→green on the controller change (behavioral net); added `test_ocr_coordinator_extraction.py`
+  (4p) as the contract guard, mirroring the search seam. **Test churn (R2.5-class):** redirected the OCR
+  flow test's `controller._ocr_*`/`_on_ocr_*` pokes to `controller._ocr_coordinator`, and retargeted one
+  `monkeypatch` of `show_error` from `pdf_controller`→`ocr_coordinator` (the availability-error call
+  relocated with the seam). Gates: OCR + guards 33p/8s, full suite green, production ruff 0. Also this
+  turn: regenerated the no-jump completion proof (PASSED at 2634359, confirming R3.1/R3.2 left the
+  text-editor geometry intact) after repairing two stale gate-script pins (R0/R1 loose end). **Next:**
+  R3.2/print (largest coordinator: subprocess runner + stall/terminate edges; coordinate with R5.1
+  decrypt-snapshot handoff — share one regression pass per §3 hazard 5).

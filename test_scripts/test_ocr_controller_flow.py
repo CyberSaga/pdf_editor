@@ -170,16 +170,18 @@ def test_ocr_bridge_forwards_signals(qapp):
 
 
 def test_controller_start_ocr_refuses_when_surya_missing(qapp, monkeypatch):
-    from controller import pdf_controller
+    # R3.2: start_ocr's availability-error path now runs in the OcrCoordinator, so
+    # show_error must be patched there (the call relocated with the seam).
+    from controller import ocr_coordinator
 
     shown: list[str] = []
-    monkeypatch.setattr(pdf_controller, "show_error", lambda parent, msg: shown.append(msg))
+    monkeypatch.setattr(ocr_coordinator, "show_error", lambda parent, msg: shown.append(msg))
 
     controller = _build_minimal_controller(monkeypatch, available=False)
     request = OcrRequest(page_indices=(0,), languages=("en",), device="auto")
     controller.start_ocr(request)
     assert shown, "expected error dialog"
-    assert controller._ocr_thread is None
+    assert controller._ocr_coordinator._ocr_thread is None
 
 
 def test_controller_start_ocr_applies_spans_per_page(qapp, monkeypatch):
@@ -210,13 +212,14 @@ def test_controller_ocr_ignores_stale_session_page_done(qapp, monkeypatch):
         per_page={1: [OcrSpan((0, 0, 10, 10), "one", 0.9)]},
     )
     controller.model.get_active_session_id = MagicMock(return_value="sid-2")
-    controller._ocr_session_id = "sid-1"
-    controller._ocr_gen = 5
-    controller._ocr_thread = None
-    controller._ocr_worker = None
+    oc = controller._ocr_coordinator
+    oc._ocr_session_id = "sid-1"
+    oc._ocr_gen = 5
+    oc._ocr_thread = None
+    oc._ocr_worker = None
 
     # gen matches (5) so this isolates the session guard.
-    controller._on_ocr_page_done(5, 1, [OcrSpan((0, 0, 10, 10), "one", 0.9)])
+    oc._on_ocr_page_done(5, 1, [OcrSpan((0, 0, 10, 10), "one", 0.9)])
 
     controller.model.apply_ocr_spans.assert_not_called()
 
@@ -228,7 +231,7 @@ def test_controller_cancel_ocr_sets_worker_flag(qapp, monkeypatch):
     # Cancel immediately
     controller.cancel_ocr()
     _wait_for_ocr_finish(controller, qapp)
-    assert controller._ocr_worker is None or controller._ocr_thread is None
+    assert controller._ocr_coordinator._ocr_worker is None or controller._ocr_coordinator._ocr_thread is None
 
 
 def test_controller_ocr_drops_stale_gen_page_done(qapp, monkeypatch):
@@ -240,10 +243,11 @@ def test_controller_ocr_drops_stale_gen_page_done(qapp, monkeypatch):
         per_page={1: [OcrSpan((0, 0, 10, 10), "one", 0.9)]},
     )
     controller.model.get_active_session_id = MagicMock(return_value="sid-1")
-    controller._ocr_session_id = "sid-1"
-    controller._ocr_gen = 5
+    oc = controller._ocr_coordinator
+    oc._ocr_session_id = "sid-1"
+    oc._ocr_gen = 5
 
-    controller._on_ocr_page_done(4, 1, [OcrSpan((0, 0, 10, 10), "one", 0.9)])
+    oc._on_ocr_page_done(4, 1, [OcrSpan((0, 0, 10, 10), "one", 0.9)])
 
     controller.model.apply_ocr_spans.assert_not_called()
 
@@ -253,9 +257,9 @@ def test_controller_cancel_ocr_invalidates_generation(qapp, monkeypatch):
     controller = _build_minimal_controller(monkeypatch, available=True, per_page={1: []}, delay=0.3)
     request = OcrRequest(page_indices=(0,), languages=("en",), device="auto")
     controller.start_ocr(request)
-    gen_at_start = controller._ocr_gen
+    gen_at_start = controller._ocr_coordinator._ocr_gen
     controller.cancel_ocr()
-    assert controller._ocr_gen > gen_at_start
+    assert controller._ocr_coordinator._ocr_gen > gen_at_start
     _wait_for_ocr_finish(controller, qapp)
 
 
@@ -291,17 +295,23 @@ def _build_minimal_controller(monkeypatch, *, available: bool, per_page: dict | 
     controller = PDFController.__new__(PDFController)
     controller.model = model
     controller.view = view
-    controller._ocr_thread = None
-    controller._ocr_worker = None
-    controller._ocr_worker_bridge = _OcrBridge(None)
-    controller._ocr_progress_dialog = None
-    controller._ocr_gen = 0
-    controller._ocr_session_id = None
-    # Wire bridge to controller handlers (mirrors activate()).
-    controller._ocr_worker_bridge.page_done.connect(controller._on_ocr_page_done)
-    controller._ocr_worker_bridge.progress.connect(controller._on_ocr_progress)
-    controller._ocr_worker_bridge.failed.connect(controller._on_ocr_failed)
-    controller._ocr_worker_bridge.thread_finished.connect(controller._on_ocr_thread_finished)
+    # R3.2: the OCR runtime now lives on the coordinator (PDFController keeps only
+    # the start_ocr/cancel_ocr delegates).
+    from controller.ocr_coordinator import OcrCoordinator
+
+    oc = OcrCoordinator(controller)
+    controller._ocr_coordinator = oc
+    oc._ocr_thread = None
+    oc._ocr_worker = None
+    oc._ocr_worker_bridge = _OcrBridge(None)
+    oc._ocr_progress_dialog = None
+    oc._ocr_gen = 0
+    oc._ocr_session_id = None
+    # Wire bridge to coordinator handlers (mirrors activate()/connect_bridge()).
+    oc._ocr_worker_bridge.page_done.connect(oc._on_ocr_page_done)
+    oc._ocr_worker_bridge.progress.connect(oc._on_ocr_progress)
+    oc._ocr_worker_bridge.failed.connect(oc._on_ocr_failed)
+    oc._ocr_worker_bridge.thread_finished.connect(oc._on_ocr_thread_finished)
     return controller
 
 
@@ -315,7 +325,7 @@ def _wait_for_ocr_finish(controller, qapp, timeout_ms: int = 4000) -> None:
     timer.start(timeout_ms)
 
     def _check():
-        if controller._ocr_thread is None:
+        if controller._ocr_coordinator._ocr_thread is None:
             loop.quit()
         else:
             QTimer.singleShot(20, _check)

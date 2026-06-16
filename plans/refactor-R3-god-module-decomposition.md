@@ -45,7 +45,15 @@ crosses a layer.** One cohesive seam per commit; full suite green before/after e
 > moved, re-exported from `pdf_controller`). 8 runtime attrs + 4 slots moved off the controller;
 > `search_text`/`_cancel_search` are delegates. Signal wiring / QThread lifecycle / `_search_gen`
 > guards preserved verbatim. Test net redirected to `controller._search_coordinator`. Gates: search +
-> guards 23p, related controller-flow 96p, full suite green, ruff 0. **OCR + print coordinators still TODO.**
+> guards 23p, related controller-flow 96p, full suite green, ruff 0.
+>
+> **R3.2/OCR landed 2026-06-16** (full 3-model fusion: Gemini A+B + Codex C). New
+> `controller/ocr_coordinator.py` (`OcrCoordinator` + `_OcrWorker`/`_OcrBridge` moved, re-exported).
+> 6 runtime attrs + 5 slots + dialog/release helpers moved; `start_ocr`/`cancel_ocr` delegates.
+> **Design split resolved:** 2 Gemini said move `_refresh_ocr_availability`, Codex said keep it on the
+> controller (it owns no worker runtime — a UI probe); upheld Codex (scope-minimal, lower-churn). Session
+> guard / `_ocr_gen` token / GUI-thread `apply_ocr_spans` / dialog parenting preserved verbatim. Gates:
+> OCR + guards 33p/8s, full suite green, ruff 0. **print coordinator still TODO (largest; coord. R5.1).**
 
 - The 8 worker/bridge QObjects are **already module-level** (`_PrintSubmissionWorker:121`,
   `_OcrWorker:216`, `_SearchWorker:308`, + bridges); only orchestration methods/state live on
