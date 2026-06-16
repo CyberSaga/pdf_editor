@@ -96,6 +96,45 @@ crosses a layer.** One cohesive seam per commit; full suite green before/after e
   patch forward) if not. **DECISION NEEDED:** proceed solo with manual-lens + pytest gating (R1/R2
   precedent), or hold for fusion 3-model review.
 
+#### R3.2c — `controller/print_coordinator.py` extraction map (3-model fusion, 2026-06-16, pre-move)
+> Synthesized from Gemini Pass A + Pass B + Codex Pass C — **all three agreed** on the design; Codex
+> supplied the exact test-churn map. Ready to execute (strictly mechanical; **R5.1 deferred**). Largest /
+> highest-risk coordinator (subprocess runner + stall/terminate state machine + app-close/fullscreen
+> coupling). Line numbers vs HEAD `cc1e0f9` (±, verify on read).
+- **Stay on `PDFController`:** `print_document()` (delegate → coordinator), `activate()` (→
+  `connect_bridge()`), `_render_print_preview_image()` (~:1402 — controller-only render helpers
+  `_fitz_colorspace_for_session`/session state/`pixmap_to_qimage`; passed as the dialog's preview
+  callback), `handle_app_close()` + `_fullscreen_is_blocked()` (app-lifecycle; query the coordinator), and
+  **`_has_active_print_submission()` MUST stay a controller facade** (monkeypatched at
+  `test_multi_tab_plan.py:1630,1634`; used by close/fullscreen) — delegate it to
+  `self._print_coordinator.has_active_job()`. **Verify `print_dispatcher` ownership** (Pass A said move it;
+  Codex didn't list it — confirm whether it's print-submission state or separate before moving).
+- **Move to `PrintCoordinator`:** 8 state attrs (`_print_dialog`, `_print_progress_dialog`,
+  `_print_thread`, `_print_worker`, `_print_runner`, `_print_worker_bridge`, `_print_close_pending`,
+  `_print_stalled`); `_PrintSubmissionWorker` + `_PrintWorkerBridge` + **`PrintJobRequest`** (move +
+  re-export from `pdf_controller`); `_show/_update/_hide_print_progress_dialog`, `_set_print_status_message`,
+  `_set_print_ui_busy`, `_update_print_close_pending_ui`, `_enable_print_terminate_option`,
+  `_start_print_submission`, `_create_print_runner`, all `_on_print_*`, `_terminate_active_print_submission`,
+  `_finalize_print_submission`, `_complete_active_print_submission_if_idle` (~:1412-1599).
+- **Invariants (verbatim):** `connect_bridge()` in `activate()`; all 4 bridge signals
+  (progress/prepared/failed/thread_finished) + all 5 runner signals connected BEFORE `runner.start()`;
+  `thread.finished`-bound `_release_print_thread`; `work_dir = Path(job.input_pdf_path).parent` (so
+  `PrintSubprocessRunner._cleanup` deletes the right temp dir); stall/terminate state machine
+  (`_print_stalled`/`_print_close_pending` + `PRINT_*_MESSAGE`/`PRINT_TERMINATE_BUTTON_TEXT`);
+  close-during-print suppresses message boxes + ignores the close event, view.close() only after idle;
+  `capture_worker_snapshot_bytes()` SYNCHRONOUS on the GUI thread before `QThread.start()`, **name
+  unchanged** (encryption AST-guard chokepoint, allowlisted at `test_xref_repair.py:350-414`); progress
+  dialog view-parented, non-auto-close, `deleteLater()`, cancel→terminate.
+- **Test churn (Codex-mapped, R2.5-class):** `test_print_controller_flow.py` — redirect `_print_*`/
+  `_on_print_*`/`_terminate_active_print_submission` accesses to `controller._print_coordinator.*`, AND
+  **retarget module patches** `UnifiedPrintDialog`/`QProgressDialog`/`PrintSubprocessRunner`/`show_error`
+  (and maybe `QMessageBox`) from `controller.pdf_controller` → `controller.print_coordinator` (the symbols
+  are used in the coordinator now). Keep `controller._has_active_print_submission` facade for
+  `test_multi_tab_plan.py`. `test_print_subprocess_runner.py` unchanged. `test_print_speed.py:10` stale
+  comment → comment-only update.
+- **Commit boundary:** single mechanical commit; **defer R5.1** (decrypt-snapshot/PDF_ENCRYPT_NONE) to its
+  own reviewed commit — don't mix relocation with security semantics.
+
 ### R3.3 — Generalize the encryption AST guard to all of model/ (if not already done in R2.2)
 - **Before** any model engine leaves `pdf_model.py`. Confirm the guard walks all of model/ and the
   decrypt-sink allowlist is in place. (Belt-and-suspenders with R2.2.)
