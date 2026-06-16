@@ -69,7 +69,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R0** | Baseline Freeze & Regression-Net Repair | 2-model (mech) + 3-model (interpreter-authority) | 4.5 | ✅ **done 2026-06-15** | [`plans/refactor-R0-baseline-freeze.md`](plans/refactor-R0-baseline-freeze.md) |
 | **R1** | Mechanical Hygiene (ruff + app-identity + packaging) | 2-model | 4.2 | ✅ **done 2026-06-15** | [`plans/refactor-R1-mechanical-hygiene.md`](plans/refactor-R1-mechanical-hygiene.md) |
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
-| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅, R3.2 ✅, R3.4 ✅, R3.5 ✅ — ALL model seams done; R3.6-8 view TODO) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
+| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅, R3.2 ✅, R3.4 ✅, R3.5 ✅ — ALL model seams done; R3.6 ✅ first view seam; R3.7-8 view TODO) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ☐ not started | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
 | **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ☐ not started | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
 | **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
@@ -396,3 +396,24 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   AST boundary + object-ops guards 43p, full suite **1384p/20s** (clean first run), production ruff 0, **no-jump
   completion-gate PASSED before (`04b0a4c`) and after.** **Next:** R3.6 (`view/object_selection.py` — first
   view seam; migrate ~25 selection attrs into the manager; Qt Signals stay class attrs on PDFView).
+- **2026-06-16 (turn 18-19): R3.6 LANDED — `view/object_selection.py` `ObjectSelectionManager`, the FIRST view
+  seam.** Map first (`5179b4f`, doc-only, 3-model: Gemini dual-lens + Codex + source-verified), then the
+  extraction. **Approach X (lower-risk, method-only):** moved the 20 object selection/drag/resize/free-rotation
+  verbs + the pure `absolute_rotation_from_drag` (re-exported from `pdf_view`) into the manager, which reads
+  view state via `self._view` and emits via `self._view.sig_*` (Signals stay PDFView class attrs). PDFView keeps
+  20 delegating wrappers + eager construct + `_ensure_object_selection_manager()` lazy accessor (mirrors
+  `_ensure_text_edit_manager`; needed because `set_mode` can call `_clear_object_selection` at startup).
+  **Deferred to R3.8:** migrating the 26 interaction-state attrs + a `handle_press/move/release` facade — they
+  are coupled to the mouse-handler refactor, so the 26 attrs and the three handlers stay UNCHANGED on PDFView
+  (no temporary property-forwarder scaffold). **Transform = UNIFORM `self.X → self._view.X`** for ALL X incl.
+  inter-method calls (they dispatch through the PDFView wrappers, preserving monkeypatch semantics — tests patch
+  `view._update_object_selection_visuals` / `view._point_hits_object_*`). Two bugs caught by the GUI suites
+  mid-extraction (RED→GREEN loop): the dotted regex missed `(get|set|has)attr(self,"X")` receivers (→ wrong
+  `_delete_selected_object` result) — fixed by also rewriting those to `self._view`; and `_next_right_angle_rotation`
+  is a `@staticmethod` called unbound by tests — its PDFView wrapper must be `@staticmethod` too. No-cycle import:
+  manager imports nothing from pdf_view at runtime (mirrors TextEditManager); `pdf_view` imports the manager +
+  re-exports the helper. **pdf_view 5481→5158 LOC. ZERO test churn.** New `test_object_selection_extraction.py`
+  RED→GREEN. Gates: object suites 59p (6 GUI + interaction + autopan + AST guard), full suite 1387p/20s (1
+  unrelated print-heartbeat timing flake — passes in isolation), production ruff 0, codegraph re-indexed,
+  **no-jump completion-gate before/after.** **Next:** R3.7 (`view/text_selection.py` `TextSelectionManager`) —
+  lower coupling now objects are out; then R3.8 (mouse-handler dispatcher + object/text state migration).

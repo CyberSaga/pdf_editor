@@ -4,11 +4,9 @@ import importlib
 import logging
 import math
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 import fitz
-import shiboken6
 from PySide6.QtCore import QBuffer, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
@@ -71,14 +69,14 @@ if not hasattr(QGraphicsProxyWidget, "graphicsProxyWidget"):
     QGraphicsProxyWidget.graphicsProxyWidget = _graphics_proxy_widget
 
 from model.object_requests import (
-    BatchDeleteObjectsRequest,
     BatchMoveObjectsRequest,
-    DeleteObjectRequest,
     InsertImageObjectRequest,
     MoveObjectRequest,
-    ObjectRef,
     ResizeObjectRequest,
-    RotateObjectRequest,
+)
+from view.object_selection import (  # noqa: E402
+    ObjectSelectionManager,
+    absolute_rotation_from_drag,  # noqa: F401  (re-export for pdf_view.absolute_rotation_from_drag)
 )
 from utils.helpers import parse_pages, show_error
 from utils.preferences import UserPreferences
@@ -188,21 +186,6 @@ def screen_angle_degrees(center_x: float, center_y: float, x: float, y: float) -
     """
     return math.degrees(math.atan2(y - center_y, x - center_x))
 
-
-def absolute_rotation_from_drag(
-    start_rotation: float,
-    start_angle: float,
-    current_angle: float,
-) -> float:
-    """Absolute stored rotation for a rotate-handle drag.
-
-    ``start_rotation`` is the object's stored angle at grab time;
-    ``start_angle``/``current_angle`` are :func:`screen_angle_degrees` samples.
-    The screen delta is clockwise-positive; the stored (raw-cm) convention is
-    the screen direction's inverse, so it is subtracted.
-    """
-    delta = current_angle - start_angle
-    return (start_rotation - delta) % 360.0
 
 
 class _NoCtrlTabTabBar(QTabBar):
@@ -564,6 +547,7 @@ class PDFView(QMainWindow):
         self._finalizing_text_edit = False
         self._last_text_edit_finalize_result: TextEditFinalizeResult | None = None
         self.text_edit_manager = TextEditManager(self)
+        self._obj_sel_mgr = ObjectSelectionManager(self)
         # Phase 5: edit_text 模式下的 hover 文字塊高亮
         self._hover_highlight_item = None       # QGraphicsRectItem | None
         self._last_hover_scene_pos = None       # QPointF | None（節流用）
@@ -3685,30 +3669,6 @@ class PDFView(QMainWindow):
             return None
         return page_idx, info
 
-    def _resolve_object_info_for_context_menu_pos(self, pos: QPoint):
-        if self.current_mode not in ("browse", "objects", "edit_text", "text_edit"):
-            return None
-        controller = getattr(self, "controller", None)
-        graphics_view = getattr(self, "graphics_view", None)
-        if controller is None or graphics_view is None:
-            return None
-        try:
-            scene_pos = graphics_view.mapToScene(pos)
-            page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
-            info = controller.get_object_info_at_point(page_idx + 1, doc_point)
-        except Exception:
-            return None
-        if info is None:
-            return None
-        allowed_kinds = None
-        if self.current_mode == "objects":
-            allowed_kinds = ("rect", "image")
-        elif self.current_mode in ("edit_text", "text_edit"):
-            allowed_kinds = ("textbox",)
-        if allowed_kinds is not None and getattr(info, "object_kind", None) not in allowed_kinds:
-            return None
-        return page_idx, info
-
     def _select_all_text_on_current_page(self) -> bool:
         if self.total_pages <= 0:
             return False
@@ -3817,364 +3777,75 @@ class PDFView(QMainWindow):
             self.status_bar.showMessage("Copied selected text", 1500)
         return True
 
-    def _clear_object_selection(self) -> None:
-        self._selected_object_info = None
-        if hasattr(self, "_selected_object_infos"):
-            self._selected_object_infos = {}
-        if hasattr(self, "_selected_object_page_idx"):
-            self._selected_object_page_idx = None
-        self._object_drag_pending = False
-        self._object_drag_active = False
-        self._object_rotate_pending = False
-        self._object_drag_start_scene_pos = None
-        self._object_drag_start_doc_rect = None
-        self._object_drag_preview_rect = None
-        self._object_drag_page_idx = None
-        if self._object_selection_rect_item is not None:
-            try:
-                self.scene.removeItem(self._object_selection_rect_item)
-            except Exception:
-                pass
-            self._object_selection_rect_item = None
-        if self._object_rotate_handle_item is not None:
-            try:
-                self.scene.removeItem(self._object_rotate_handle_item)
-            except Exception:
-                pass
-            self._object_rotate_handle_item = None
-        for item in getattr(self, "_object_resize_handle_items", []) or []:
-            try:
-                self.scene.removeItem(item)
-            except Exception:
-                pass
-        self._object_resize_handle_items = []
-        self._object_resize_pending = False
-        self._object_resize_active = False
-        self._object_resize_start_scene_pos = None
-        self._object_resize_start_doc_rect = None
-        self._object_resize_preview_rect = None
-        self._object_resize_handle_anchor = 3  # default BR
+    # R3.6: object-selection verbs delegate to ObjectSelectionManager
+    # (view/object_selection.py). State attrs + mouse handlers stay here for now.
+    def _resolve_object_info_for_context_menu_pos(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._resolve_object_info_for_context_menu_pos(*args, **kwargs)
 
-    def _select_object(self, info) -> None:
-        self._selected_object_info = info
-        self._update_object_selection_visuals()
+    def _clear_object_selection(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._clear_object_selection(*args, **kwargs)
 
-    def _rebase_object_selection_to_bboxes(self, new_bboxes: dict[str, fitz.Rect]) -> None:
-        """Replace selection state with new bboxes and refresh overlay visuals.
+    def _select_object(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._select_object(*args, **kwargs)
 
-        Used by drag/resize release paths so the selection overlay follows moved
-        objects without waiting for the next click. Safe to call whether the
-        selection is single (`_selected_object_info` only) or multi (`_selected_object_infos`).
-        """
-        infos = getattr(self, "_selected_object_infos", None)
-        selected = self._selected_object_info
-        selected_oid = str(selected.object_id) if selected is not None else None
-        for oid, new_bbox in new_bboxes.items():
-            target = None
-            if infos is not None and oid in infos:
-                target = infos[oid]
-            elif selected_oid == oid:
-                target = selected
-            if target is None:
-                continue
-            new_info = replace(target, bbox=fitz.Rect(new_bbox))
-            if infos is not None and oid in infos:
-                infos[oid] = new_info
-            if selected_oid == oid:
-                self._selected_object_info = new_info
-        if infos:
-            self._object_drag_start_doc_rects = {
-                k: fitz.Rect(v.bbox) for k, v in infos.items()
-            }
-        if self._selected_object_info is not None:
-            self._object_drag_start_doc_rect = fitz.Rect(self._selected_object_info.bbox)
-            self._object_drag_preview_rect = fitz.Rect(self._selected_object_info.bbox)
-        self._update_object_selection_visuals()
+    def _rebase_object_selection_to_bboxes(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._rebase_object_selection_to_bboxes(*args, **kwargs)
 
-    def _apply_object_selection_rotation(self, angle_deg: float) -> None:
-        """Rotate the selection box + handle items about the object centre, so the
-        whole frame turns rigidly with the object during a rotate drag (AC-4c)."""
-        center = getattr(self, "_object_rotate_center_scene", None)
-        if center is None:
-            return
-        items = [getattr(self, "_object_selection_rect_item", None)]
-        items.append(getattr(self, "_object_rotate_handle_item", None))
-        items.extend(getattr(self, "_object_resize_handle_items", None) or [])
-        for item in items:
-            if item is None:
-                continue
-            try:
-                item.setTransformOriginPoint(center)
-                item.setRotation(angle_deg)
-            except Exception:
-                continue
+    def _apply_object_selection_rotation(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._apply_object_selection_rotation(*args, **kwargs)
 
-    def _object_center_scene(self, info) -> QPointF:
-        """Scene-space centre of an object's bbox (accounts for render scale and
-        continuous-mode page offset)."""
-        rs = self._render_scale if self._render_scale > 0 else 1.0
-        page_idx = max(0, int(info.page_num) - 1)
-        y0 = self.page_y_positions[page_idx] if (
-            self.continuous_pages and page_idx < len(self.page_y_positions)
-        ) else 0.0
-        bbox = fitz.Rect(info.bbox)
-        return QPointF(
-            (bbox.x0 + bbox.x1) / 2.0 * rs,
-            y0 + (bbox.y0 + bbox.y1) / 2.0 * rs,
-        )
+    def _object_center_scene(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._object_center_scene(*args, **kwargs)
 
-    def _supports_free_rotate(self, info: object | None) -> bool:
-        if info is None or not getattr(info, "supports_rotate", False):
-            return False
-        return str(getattr(info, "object_kind", "") or "") in {"image", "native_image"}
+    def _supports_free_rotate(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._supports_free_rotate(*args, **kwargs)
 
-    def _update_object_selection_visuals(self, rect: fitz.Rect | None = None) -> None:
-        info = getattr(self, "_selected_object_info", None)
-        if info is None or getattr(self, "scene", None) is None:
-            return
-        # scene.clear() deletes the underlying C++ items but leaves the Python
-        # wrappers dangling; drop them here so we re-create instead of poking
-        # a freed object.
-        if self._object_selection_rect_item is not None and not shiboken6.isValid(self._object_selection_rect_item):
-            self._object_selection_rect_item = None
-        if self._object_rotate_handle_item is not None and not shiboken6.isValid(self._object_rotate_handle_item):
-            self._object_rotate_handle_item = None
-        if getattr(self, "_object_resize_handle_items", None):
-            self._object_resize_handle_items = [
-                item for item in self._object_resize_handle_items if shiboken6.isValid(item)
-            ]
-        bbox = fitz.Rect(rect if rect is not None else info.bbox)
-        rs = self._render_scale if self._render_scale > 0 else 1.0
-        page_idx = max(0, int(info.page_num) - 1)
-        y0 = self.page_y_positions[page_idx] if (
-            self.continuous_pages and page_idx < len(self.page_y_positions)
-        ) else 0.0
-        scene_rect = QRectF(
-            bbox.x0 * rs,
-            y0 + bbox.y0 * rs,
-            max(1.0, bbox.width * rs),
-            max(1.0, bbox.height * rs),
-        )
-        pen = QPen(QColor(14, 165, 233, 220), 2)
-        brush = QBrush(QColor(14, 165, 233, 30))
-        if self._object_selection_rect_item is None:
-            self._object_selection_rect_item = self.scene.addRect(scene_rect, pen, brush)
-            self._object_selection_rect_item.setZValue(21)
-        else:
-            self._object_selection_rect_item.setRect(scene_rect)
-            self._object_selection_rect_item.setPen(pen)
-            self._object_selection_rect_item.setBrush(brush)
-        if self._supports_free_rotate(info):
-            handle_rect = QRectF(scene_rect.right() - 12, scene_rect.top() - 18, 12, 12)
-            if self._object_rotate_handle_item is None:
-                self._object_rotate_handle_item = self.scene.addEllipse(
-                    handle_rect,
-                    QPen(QColor(2, 132, 199, 230), 1),
-                    QBrush(QColor(56, 189, 248, 220)),
-                )
-                self._object_rotate_handle_item.setZValue(22)
-            else:
-                self._object_rotate_handle_item.setRect(handle_rect)
-        elif self._object_rotate_handle_item is not None:
-            try:
-                self.scene.removeItem(self._object_rotate_handle_item)
-            except Exception:
-                pass
-            self._object_rotate_handle_item = None
+    def _update_object_selection_visuals(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._update_object_selection_visuals(*args, **kwargs)
 
-        # Resize handles: single-select only.
-        if getattr(self, "_object_resize_handle_items", None) is None:
-            self._object_resize_handle_items = []
-        for item in list(self._object_resize_handle_items):
-            try:
-                self.scene.removeItem(item)
-            except Exception:
-                pass
-        self._object_resize_handle_items = []
+    def _point_hits_object_resize_handle(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._point_hits_object_resize_handle(*args, **kwargs)
 
-        handle_size = 10.0
-        half = handle_size / 2.0
-        handle_pen = QPen(QColor(2, 132, 199, 230), 1)
-        handle_brush = QBrush(QColor(56, 189, 248, 220))
-        for hx, hy in (
-            (scene_rect.left() - half, scene_rect.top() - half),  # TL
-            (scene_rect.right() - half, scene_rect.top() - half),  # TR
-            (scene_rect.left() - half, scene_rect.bottom() - half),  # BL
-            (scene_rect.right() - half, scene_rect.bottom() - half),  # BR
-        ):
-            hrect = QRectF(hx, hy, handle_size, handle_size)
-            item = self.scene.addRect(hrect, handle_pen, handle_brush)
-            try:
-                item.setZValue(22)
-            except Exception:
-                pass
-            self._object_resize_handle_items.append(item)
+    def _hit_object_resize_handle_index(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._hit_object_resize_handle_index(*args, **kwargs)
 
-    def _point_hits_object_resize_handle(self, scene_pos: QPointF) -> bool:
-        return self._hit_object_resize_handle_index(scene_pos) >= 0
+    def _point_hits_object_rotate_handle(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._point_hits_object_rotate_handle(*args, **kwargs)
 
-    def _hit_object_resize_handle_index(self, scene_pos: QPointF) -> int:
-        """Return the index (0=TL,1=TR,2=BL,3=BR) of the hit handle, or -1 if none."""
-        items = getattr(self, "_object_resize_handle_items", None) or []
-        for i, item in enumerate(items):
-            try:
-                if item.rect().contains(scene_pos):
-                    return i
-            except Exception:
-                continue
-        return -1
+    def _delete_selected_object(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._delete_selected_object(*args, **kwargs)
 
-    def _point_hits_object_rotate_handle(self, scene_pos: QPointF) -> bool:
-        if self._object_rotate_handle_item is None:
-            return False
-        try:
-            return self._object_rotate_handle_item.rect().contains(scene_pos)
-        except Exception:
-            return False
+    def _commit_free_rotation(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._commit_free_rotation(*args, **kwargs)
 
-    def _delete_selected_object(self) -> bool:
-        infos = getattr(self, "_selected_object_infos", None)
-        if infos and len(infos) > 1:
-            refs: list[ObjectRef] = []
-            for info in infos.values():
-                if not getattr(info, "supports_delete", False):
-                    continue
-                refs.append(
-                    ObjectRef(
-                        object_id=str(info.object_id),
-                        object_kind=str(info.object_kind),
-                        page_num=int(info.page_num),
-                    )
-                )
-            if not refs:
-                return False
-            self.sig_delete_object.emit(BatchDeleteObjectsRequest(objects=refs))
-            self._clear_object_selection()
-            return True
-        info = getattr(self, "_selected_object_info", None)
-        if info is None or not getattr(info, "supports_delete", False):
-            return False
-        self.sig_delete_object.emit(
-            DeleteObjectRequest(
-                object_id=info.object_id,
-                object_kind=info.object_kind,
-                page_num=info.page_num,
-            )
-        )
-        self._clear_object_selection()
-        return True
+    def _rotate_selected_object(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._rotate_selected_object(*args, **kwargs)
 
-    def _commit_free_rotation(self) -> bool:
-        """Emit an absolute-angle rotate request from an accumulated drag (AC-4a)."""
-        info = getattr(self, "_selected_object_info", None)
-        if not self._supports_free_rotate(info):
-            return False
-        start_rotation = float(getattr(self, "_object_rotate_start_rotation", 0.0) or 0.0)
-        start_angle = float(getattr(self, "_object_rotate_start_angle", 0.0) or 0.0)
-        delta_screen = float(getattr(self, "_object_rotate_preview_angle", 0.0) or 0.0)
-        new_angle = absolute_rotation_from_drag(
-            start_rotation, start_angle, start_angle + delta_screen
-        )
-        self.sig_rotate_object.emit(
-            RotateObjectRequest(
-                object_id=info.object_id,
-                object_kind=info.object_kind,
-                page_num=info.page_num,
-                rotation_delta=0,
-                absolute_rotation=new_angle,
-            )
-        )
-        self._object_rotate_preview_angle = 0.0
-        # Clear the live preview transform; the page re-render + reselect will
-        # rebuild the frame around the new (rotated) bounding box.
-        for item in (
-            [getattr(self, "_object_selection_rect_item", None),
-             getattr(self, "_object_rotate_handle_item", None)]
-            + (getattr(self, "_object_resize_handle_items", None) or [])
-        ):
-            if item is None:
-                continue
-            try:
-                item.setRotation(0.0)
-            except Exception:
-                continue
-        self._selected_object_info = replace(
-            info, bbox=fitz.Rect(info.bbox), rotation=new_angle
-        )
-        return True
+    def _normalize_object_rotation_angle(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._normalize_object_rotation_angle(*args, **kwargs)
 
-    def _rotate_selected_object(self, rotation_delta: int) -> bool:
-        info = getattr(self, "_selected_object_info", None)
-        if info is None or not getattr(info, "supports_rotate", False):
-            return False
-        self.sig_rotate_object.emit(
-            RotateObjectRequest(
-                object_id=info.object_id,
-                object_kind=info.object_kind,
-                page_num=info.page_num,
-                rotation_delta=rotation_delta,
-            )
-        )
-        self._selected_object_info = replace(
-            info,
-            bbox=fitz.Rect(info.bbox),
-            rotation=(int(info.rotation) + int(rotation_delta)) % 360,
-        )
-        self._update_object_selection_visuals()
-        return True
-
-    def _normalize_object_rotation_angle(self, angle: int | float) -> float:
-        return float(angle) % 360.0
-
-    def _rotate_selected_object_absolute(self, angle: int | float) -> bool:
-        info = getattr(self, "_selected_object_info", None)
-        if info is None or not getattr(info, "supports_rotate", False):
-            return False
-        absolute = self._normalize_object_rotation_angle(angle)
-        self.sig_rotate_object.emit(
-            RotateObjectRequest(
-                object_id=info.object_id,
-                object_kind=info.object_kind,
-                page_num=info.page_num,
-                rotation_delta=0,
-                absolute_rotation=absolute,
-            )
-        )
-        self._selected_object_info = replace(
-            info,
-            bbox=fitz.Rect(info.bbox),
-            rotation=absolute,
-        )
-        self._update_object_selection_visuals()
-        return True
+    def _rotate_selected_object_absolute(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._rotate_selected_object_absolute(*args, **kwargs)
 
     @staticmethod
-    def _next_right_angle_rotation(current_angle: int | float) -> float:
-        normalized = float(current_angle) % 360.0
-        for target in (90.0, 180.0, 270.0, 360.0):
-            if normalized < target:
-                return 0.0 if target == 360.0 else target
-        return 90.0
+    def _next_right_angle_rotation(*args, **kwargs):
+        return ObjectSelectionManager._next_right_angle_rotation(*args, **kwargs)
 
-    def _rotate_selected_object_to_next_right_angle(self) -> bool:
-        info = getattr(self, "_selected_object_info", None)
-        if info is None or not getattr(info, "supports_rotate", False):
-            return False
-        target = self._next_right_angle_rotation(getattr(info, "rotation", 0.0))
-        return self._rotate_selected_object_absolute(target)
+    def _rotate_selected_object_to_next_right_angle(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._rotate_selected_object_to_next_right_angle(*args, **kwargs)
 
-    def _add_object_rotation_actions(self, menu: QMenu) -> None:
-        menu.addAction("Rotate Object", lambda checked=False: self._rotate_selected_object_to_next_right_angle())
+    def _add_object_rotation_actions(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._add_object_rotation_actions(*args, **kwargs)
 
-    def _show_object_rotation_menu(self, pos: QPoint | QPointF | None = None) -> None:
-        menu = QMenu(self)
-        self._add_object_rotation_actions(menu)
-        if pos is None:
-            menu.exec_(QCursor.pos())
-            return
-        if isinstance(pos, QPointF):
-            pos = pos.toPoint()
-        menu.exec_(self.graphics_view.viewport().mapToGlobal(pos))
+    def _show_object_rotation_menu(self, *args, **kwargs):
+        return self._ensure_object_selection_manager()._show_object_rotation_menu(*args, **kwargs)
+
+    def _ensure_object_selection_manager(self) -> ObjectSelectionManager:
+        mgr = getattr(self, "_obj_sel_mgr", None)
+        if mgr is None:
+            mgr = ObjectSelectionManager(self)
+            self._obj_sel_mgr = mgr
+        return mgr
 
     def _clamp_editor_pos_to_page(self, x: float, y: float, page_idx: int):
         """將編輯框的場景座標（左上角）限制在指定頁面的邊界內，回傳 (x, y)。"""

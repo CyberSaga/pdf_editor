@@ -293,6 +293,19 @@ symbol table above. **Invariants (preserve byte-identical):** QGraphicsItem vali
 **Gate:** new `test_object_selection_extraction.py` RED→GREEN; the 6 object GUI suites; AST boundary guard;
 full suite; **no-jump completion-gate before/after** (selection visuals render to the scene).
 
+**AS-BUILT (R3.6 LANDED — approach X, lower-risk method-only extraction):** Moved the 20 methods +
+`absolute_rotation_from_drag` into `view/object_selection.py`; the manager reads/writes view state via
+`self._view`. **Deferred to R3.8:** migrating the 26 state attrs into the manager + the `handle_*` facade —
+those are coupled to the mouse-handler refactor, so the 26 attrs and the three handlers stay UNCHANGED on
+PDFView for now (no temporary property-forwarder scaffold). Transform is **UNIFORM** `self.X → self._view.X`
+for ALL X (incl. inter-method calls — they dispatch through the PDFView wrappers, preserving monkeypatch
+semantics, e.g. tests patch `view._update_object_selection_visuals` / `view._point_hits_object_*`); two
+non-obvious extras the dotted regex missed/needed: `(get|set|has)attr(self, "…")` receivers also rewritten to
+`self._view`, and the `_next_right_angle_rotation` PDFView wrapper is a `@staticmethod` (tests call it unbound).
+PDFView keeps 20 delegating wrappers + eager construct + `_ensure_object_selection_manager()`. `pdf_view`
+4411→… (5481→5158 LOC). Zero test churn. Gates green: object suites 59p, full suite 1387p (1 unrelated print
+heartbeat flake, passes in isolation), ruff 0, no-jump before/after.
+
 ### R3.7 — `view/text_selection.py` `TextSelectionManager(view)`
 - `pdf_view.py:3477-3669` + ~17 attrs (`_text_selection_*`, `_selected_text_*`). Emits nothing
   (local selection; copy uses clipboard). Browse-mode-owned, so separable by the mode gate at

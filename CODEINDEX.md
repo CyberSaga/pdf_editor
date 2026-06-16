@@ -16,6 +16,7 @@
   - `view/dialogs/password.py`
   - `view/dialogs/watermark.py`
   - `view/icons.py`
+  - `view/object_selection.py`
   - `view/pdf_view.py`
   - `view/text_editing.py`
   - `view/theme.py`
@@ -154,6 +155,7 @@
   - `test_scripts/test_object_multi_select.py`
   - `test_scripts/test_object_requests.py`
   - `test_scripts/test_object_resize.py`
+  - `test_scripts/test_object_selection_extraction.py`
   - `test_scripts/test_ocr_controller_flow.py`
   - `test_scripts/test_ocr_coordinator_extraction.py`
   - `test_scripts/test_ocr_dialog.py`
@@ -688,6 +690,9 @@
 **Functions:** `_make_object_hit` (L125), `_make_view` (L138), `test_single_select_creates_resize_handles_and_hit_outside_bbox` (L169), `test_resize_drag_emits_resize_request` (L185), `test_top_left_handle_drag_moves_x0_y0_preserves_x1_y1` (L204), `test_compute_resize_rect_free_form_changes_aspect_ratio` (L229), `test_compute_resize_rect_shift_locks_aspect_ratio` (L239), `test_compute_resize_rect_lock_keeps_opposite_corner_for_tl` (L250), `test_bottom_left_handle_drag_moves_x0_y1_preserves_x1_y0` (L259)
 **Methods (23):** `__init__`, `emit`, `mapFrom`, `__init__`, `viewport`, `mapToScene`, `__init__`, `rect`, `setRect`, `setPen`, `setBrush`, `setZValue`, `scene`, `__init__`, `addRect`, `addEllipse`, `removeItem`, `__init__`, `position`, `pos` …
 
+### `test_scripts/test_object_selection_extraction.py`
+**Functions:** `test_manager_owns_the_object_selection_verbs` (L34), `test_manager_holds_view_backref` (L39), `test_pdfview_keeps_delegating_wrappers_and_lazy_accessor` (L44), `test_absolute_rotation_from_drag_moved_and_reexported` (L53)
+
 ### `test_scripts/test_ocr_controller_flow.py`
 **Classes:** `_FakeTool` (L13)
 **Functions:** `_sample_doc_bytes` (L39), `_drive_worker` (L49), `test_worker_emits_page_done_and_progress` (L77), `test_worker_runs_on_non_gui_thread` (L96), `test_worker_respects_cancel_between_pages` (L106), `test_worker_emits_failed_on_tool_exception` (L128), `test_worker_forwards_device_and_languages` (L142), `test_ocr_bridge_forwards_signals` (L149), `test_controller_start_ocr_refuses_when_surya_missing` (L172), `test_controller_start_ocr_applies_spans_per_page` (L187), `test_controller_ocr_ignores_stale_session_page_done` (L208), `test_controller_cancel_ocr_sets_worker_flag` (L227), `test_controller_ocr_drops_stale_gen_page_done` (L237), `test_controller_cancel_ocr_invalidates_generation` (L255), `_build_minimal_controller` (L271), `_wait_for_ocr_finish` (L318)
@@ -1048,10 +1053,15 @@
 
 ### `view/icons.py`
 
+### `view/object_selection.py`
+**Classes:** `ObjectSelectionManager` (L60)
+**Functions:** `absolute_rotation_from_drag` (L43)
+**Methods (21):** `__init__`, `_resolve_object_info_for_context_menu_pos`, `_clear_object_selection`, `_select_object`, `_rebase_object_selection_to_bboxes`, `_apply_object_selection_rotation`, `_object_center_scene`, `_supports_free_rotate`, `_update_object_selection_visuals`, `_point_hits_object_resize_handle`, `_hit_object_resize_handle_index`, `_point_hits_object_rotate_handle`, `_delete_selected_object`, `_commit_free_rotation`, `_rotate_selected_object`, `_normalize_object_rotation_angle`, `_rotate_selected_object_absolute`, `_next_right_angle_rotation`, `_rotate_selected_object_to_next_right_angle`, `_add_object_rotation_actions` …
+
 ### `view/pdf_view.py`
-**Classes:** `_NoCtrlTabTabBar` (L208), `PDFView` (L257)
-**Functions:** `_ctrl_tab_direction` (L113), `compute_object_resize_rect` (L123), `screen_angle_degrees` (L183), `absolute_rotation_from_drag` (L192), `__getattr__` (L238)
-**Methods (266):** `event`, `keyPressEvent`, `__init__`, `ensure_heavy_panels_initialized`, `_emit_shell_ready_once`, `_configure_drop_targets`, `_extract_dropped_pdf_paths`, `_set_drag_drop_affordance`, `_queue_or_open_paths`, `drain_pending_open_paths`, `_handle_drag_drop_event`, `dragEnterEvent`, `dragMoveEvent`, `dragLeaveEvent`, `dropEvent`, `_build_fullscreen_exit_button`, `_update_fullscreen_exit_button_geometry`, `_set_fullscreen_exit_button_visible`, `_update_fullscreen_exit_hover`, `is_fullscreen_active` …
+**Classes:** `_NoCtrlTabTabBar` (L191), `PDFView` (L240)
+**Functions:** `_ctrl_tab_direction` (L111), `compute_object_resize_rect` (L121), `screen_angle_degrees` (L181), `__getattr__` (L221)
+**Methods (267):** `event`, `keyPressEvent`, `__init__`, `ensure_heavy_panels_initialized`, `_emit_shell_ready_once`, `_configure_drop_targets`, `_extract_dropped_pdf_paths`, `_set_drag_drop_affordance`, `_queue_or_open_paths`, `drain_pending_open_paths`, `_handle_drag_drop_event`, `dragEnterEvent`, `dragMoveEvent`, `dragLeaveEvent`, `dropEvent`, `_build_fullscreen_exit_button`, `_update_fullscreen_exit_button_geometry`, `_set_fullscreen_exit_button_visible`, `_update_fullscreen_exit_hover`, `is_fullscreen_active` …
 
 ### `view/text_editing.py`
 **Classes:** `TextEditUIConstants` (L82), `TextEditGeometryConstants` (L94), `TextEditFinalizeReason` (L99), `TextEditOutcome` (L110), `TextEditReason` (L117), `TextEditDragState` (L121), `TextEditDelta` (L128), `TextEditFinalizeResult` (L140), `TextEditSession` (L150), `_EditorShortcutForwarder` (L166), `InlineTextEditor` (L231), `ViewportAnchor` (L256), `PreviewRenderer` (L608), `PreviewBackedInlineTextEditor` (L745), `TextEditManager` (L976)
@@ -1135,6 +1145,7 @@
 - `test_scripts/test_object_multi_select.py` → `model/object_requests.py`, `view/pdf_view.py`
 - `test_scripts/test_object_requests.py` → `model/object_requests.py`
 - `test_scripts/test_object_resize.py` → `model/object_requests.py`, `view/pdf_view.py`
+- `test_scripts/test_object_selection_extraction.py` → `view/object_selection.py`, `view/pdf_view.py`
 - `test_scripts/test_ocr_controller_flow.py` → `controller/__init__.py`, `controller/ocr_coordinator.py`, `controller/pdf_controller.py`, `model/tools/ocr_types.py`
 - `test_scripts/test_ocr_coordinator_extraction.py` → `controller/ocr_coordinator.py`, `controller/pdf_controller.py`
 - `test_scripts/test_ocr_dialog.py` → `model/tools/ocr_types.py`, `utils/preferences.py`, `view/dialogs/ocr.py`
@@ -1221,6 +1232,7 @@
 - `view/dialogs/ocr.py` → `model/tools/ocr_tool.py`, `model/tools/ocr_types.py`, `utils/preferences.py`
 - `view/dialogs/optimize.py` → `model/pdf_model.py`, `model/pdf_optimizer.py`, `utils/helpers.py`
 - `view/dialogs/watermark.py` → `utils/helpers.py`
-- `view/pdf_view.py` → `model/object_requests.py`, `utils/helpers.py`, `utils/preferences.py`, `view/dialogs/export.py`, `view/dialogs/ocr.py`, `view/dialogs/password.py`, `view/dialogs/watermark.py`, `view/icons.py`, `view/text_editing.py`, `view/theme.py`
+- `view/object_selection.py` → `model/object_requests.py`, `view/pdf_view.py`
+- `view/pdf_view.py` → `model/object_requests.py`, `utils/helpers.py`, `utils/preferences.py`, `view/dialogs/export.py`, `view/dialogs/ocr.py`, `view/dialogs/password.py`, `view/dialogs/watermark.py`, `view/icons.py`, `view/object_selection.py`, `view/text_editing.py`, `view/theme.py`
 - `view/text_editing.py` → `model/edit_requests.py`, `utils/render_limits.py`
 - `view/theme.py` → `utils/theme_ids.py`
