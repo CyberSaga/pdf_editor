@@ -69,7 +69,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R0** | Baseline Freeze & Regression-Net Repair | 2-model (mech) + 3-model (interpreter-authority) | 4.5 | ✅ **done 2026-06-15** | [`plans/refactor-R0-baseline-freeze.md`](plans/refactor-R0-baseline-freeze.md) |
 | **R1** | Mechanical Hygiene (ruff + app-identity + packaging) | 2-model | 4.2 | ✅ **done 2026-06-15** | [`plans/refactor-R1-mechanical-hygiene.md`](plans/refactor-R1-mechanical-hygiene.md) |
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
-| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅, R3.2 search+OCR ✅, print TODO) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
+| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅, R3.2 ✅ search+OCR+print; R3.4/R3.5 model + R3.6-8 view TODO) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ☐ not started | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
 | **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ☐ not started | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
 | **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
@@ -320,3 +320,31 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   text-editor geometry intact) after repairing two stale gate-script pins (R0/R1 loose end). **Next:**
   R3.2/print (largest coordinator: subprocess runner + stall/terminate edges; coordinate with R5.1
   decrypt-snapshot handoff — share one regression pass per §3 hazard 5).
+- **2026-06-16 (turn 13): R3.2/print LANDED — R3.2 COMPLETE (all 3 controller coordinators).** Full 3-model
+  fusion design (Gemini A+B + Codex C, all agreed; Codex mapped the exact test-churn — its biggest
+  contribution). Largest/highest-risk coordinator (subprocess runner + stall/terminate state machine +
+  app-close/fullscreen coupling + the R5.1-adjacent snapshot handoff). New `controller/print_coordinator.py`:
+  `_PrintSubmissionWorker`/`_PrintWorkerBridge`/`PrintJobRequest` moved verbatim (re-exported from
+  `pdf_controller`, `# noqa: F401`) + `class PrintCoordinator(controller)` owning `print_dispatcher` +
+  the 8 `_print_*` attrs + the dialog/status/busy helpers + stall/terminate machine + `PrintSubprocessRunner`
+  lifecycle + all `_on_print_*` + `print_document`. Bodies verbatim, only `self.{model,view,activate,
+  _resolve_session_profile,_render_print_preview_image}`→`self._c.*` and `_has_active_print_submission()`→
+  `has_active_job()`. **Design resolutions:** `print_dispatcher` MOVED (only print uses it; lazy-init in
+  `connect_bridge()`); `_render_print_preview_image` + `handle_app_close` (→ new coordinator
+  `begin_close_pending()`) + `_fullscreen_is_blocked` STAY on the controller; `print_document` +
+  `_has_active_print_submission` are controller delegates. Removed 9 now-unused print imports from
+  pdf_controller (`tempfile`/`uuid`/`replace`/`PrintDispatcher`/`PrintHelperTerminatedError`/`PrintingError`/
+  `PrintHelperJob`/`UnifiedPrintDialog`/`PrintSubprocessRunner`) via ruff `--fix` (each verified count=1,
+  no re-export — unlike the R1 `_MAX_PIXMAP_PX` incident). **Invariants verbatim:** GUI-thread
+  `capture_worker_snapshot_bytes()` before `QThread.start()`, **name unchanged** (R5.1 deferred — encryption
+  AST-guard chokepoint untouched); `worker→bridge→coordinator` wiring; `thread.finished`-bound release;
+  stall/terminate transitions + `work_dir = Path(job.input_pdf_path).parent`; close-during-print
+  suppression (view.close() only when idle); view-parented progress dialog. **Red-Light:**
+  `test_print_coordinator_extraction.py` RED (`ModuleNotFoundError`) → GREEN (4 contract tests). **Test
+  churn (Codex-mapped, R2.5-class):** `test_print_controller_flow.py` accesses → `controller._print_coordinator.*`,
+  module patches `UnifiedPrintDialog`/`QProgressDialog`/`PrintSubprocessRunner`/`show_error`/`QMessageBox`
+  retargeted `pdf_controller`→`print_coordinator` (dropped the now-unused `pdf_controller_module` alias →
+  test E402 count back to baseline 7). `test_multi_tab_plan.py` `_has_active_print_submission` monkeypatch
+  untouched (facade kept). Gates: print 8p, AST guards + snapshot/speed/multi_tab 85p/1s, production ruff 0.
+  **R3.2 ✅ (search c66877c + OCR cc1e0f9 + print this).** Next: R3.4 (`model/pdf_object_ops.py`) → R3.5
+  (`model/pdf_text_edit.py`, LAST model seam — full edit_text suite + no-jump gate before/after).

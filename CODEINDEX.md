@@ -23,6 +23,7 @@
   - `controller/__init__.py`
   - `controller/ocr_coordinator.py`
   - `controller/pdf_controller.py`
+  - `controller/print_coordinator.py`
   - `controller/search_coordinator.py`
 **model/**
   - `model/__init__.py`
@@ -176,6 +177,7 @@
   - `test_scripts/test_phase7_guard_hygiene.py`
   - `test_scripts/test_print_colorspace.py`
   - `test_scripts/test_print_controller_flow.py`
+  - `test_scripts/test_print_coordinator_extraction.py`
   - `test_scripts/test_print_dialog_properties_button.py`
   - `test_scripts/test_print_layout.py`
   - `test_scripts/test_print_snapshot_path.py`
@@ -269,8 +271,12 @@
 **Methods (19):** `__init__`, `request_cancel`, `run`, `forward_progress`, `forward_status`, `forward_page_done`, `forward_failed`, `notify_thread_finished`, `__init__`, `connect_bridge`, `start_ocr`, `cancel_ocr`, `_release_ocr_thread`, `_show_ocr_progress_dialog`, `_on_ocr_progress`, `_on_ocr_status`, `_on_ocr_page_done`, `_on_ocr_failed`, `_on_ocr_thread_finished`
 
 ### `controller/pdf_controller.py`
-**Classes:** `SessionUIState` (L88), `FullscreenSessionSnapshot` (L98), `PrintJobRequest` (L105), `OptimizePdfCopyRequest` (L114), `_PrintSubmissionWorker` (L119), `_PrintWorkerBridge` (L148), `_OptimizePdfCopyWorker` (L173), `_OptimizeWorkerBridge` (L196), `PDFController` (L234)
-**Methods (181):** `__init__`, `run`, `forward_progress`, `forward_prepared`, `forward_failed`, `notify_thread_finished`, `__init__`, `run`, `forward_succeeded`, `forward_failed`, `notify_thread_finished`, `__init__`, `is_active`, `activate`, `_refresh_ocr_availability`, `_connect_signals`, `_next_load_gen`, `_next_thumb_gen`, `_next_render_gen`, `_next_stale_index_gen` …
+**Classes:** `SessionUIState` (L82), `FullscreenSessionSnapshot` (L92), `OptimizePdfCopyRequest` (L110), `_OptimizePdfCopyWorker` (L115), `_OptimizeWorkerBridge` (L138), `PDFController` (L176)
+**Methods (157):** `__init__`, `run`, `forward_succeeded`, `forward_failed`, `notify_thread_finished`, `__init__`, `is_active`, `activate`, `_refresh_ocr_availability`, `_connect_signals`, `_next_load_gen`, `_next_thumb_gen`, `_next_render_gen`, `_next_stale_index_gen`, `_pause_session_background_loading`, `_start_open_background_loading`, `_maybe_start_background_loading_after_render`, `_start_open_background_loading_if_current`, `_capture_current_ui_state`, `_get_ui_state` …
+
+### `controller/print_coordinator.py`
+**Classes:** `PrintJobRequest` (L53), `_PrintSubmissionWorker` (L61), `_PrintWorkerBridge` (L90), `PrintCoordinator` (L115)
+**Methods (29):** `__init__`, `run`, `forward_progress`, `forward_prepared`, `forward_failed`, `notify_thread_finished`, `__init__`, `connect_bridge`, `has_active_job`, `begin_close_pending`, `_show_print_progress_dialog`, `_update_print_progress_dialog`, `_hide_print_progress_dialog`, `_set_print_status_message`, `_set_print_ui_busy`, `_update_print_close_pending_ui`, `_enable_print_terminate_option`, `_start_print_submission`, `_create_print_runner`, `_on_print_job_prepared` …
 
 ### `controller/search_coordinator.py`
 **Classes:** `_SearchWorker` (L29), `_SearchBridge` (L77), `SearchCoordinator` (L95)
@@ -759,6 +765,9 @@
 **Functions:** `_ensure_app` (L38), `_pump_until` (L45), `_make_single_page_pdf` (L56), `test_print_document_defers_snapshot_until_user_accepts` (L204), `test_print_document_runs_in_background_and_defers_close_until_helper_finishes` (L241), `test_stalled_print_helper_can_be_terminated_without_closing_main_window` (L369), `test_terminate_active_print_submission_handles_reentrant_runner_cleanup` (L455)
 **Methods (34):** `list_printers`, `get_printer_status`, `print_pdf_file`, `print_pdf_bytes`, `__init__`, `isVisible`, `raise_`, `activateWindow`, `exec`, `result_data`, `__init__`, `isVisible`, `raise_`, `activateWindow`, `exec`, `result_data`, `__init__`, `setWindowTitle`, `setWindowModality`, `setCancelButton` …
 
+### `test_scripts/test_print_coordinator_extraction.py`
+**Functions:** `test_worker_bridge_request_reexported_from_controller` (L27), `test_coordinator_owns_print_runtime_state` (L33), `test_coordinator_exposes_facade_methods` (L51), `test_controller_keeps_facades_and_lifecycle_hooks` (L70)
+
 ### `test_scripts/test_print_dialog_properties_button.py`
 **Classes:** `_FakeDispatcher` (L26)
 **Functions:** `_ensure_app` (L60), `_make_single_page_pdf` (L67), `test_properties_button_calls_dispatcher_when_supported` (L75), `test_properties_button_disabled_when_not_supported` (L100), `test_properties_button_syncs_dialog_fields_from_system_preferences` (L125), `test_properties_button_keeps_auto_paper_and_orientation_app_owned` (L172), `test_properties_tray_preferences_are_inherited_without_dialog_field` (L217), `test_user_changed_hardware_field_marks_only_that_override` (L244), `test_opening_properties_resets_touched_overrides` (L283), `test_properties_cancel_keeps_current_ui_and_touched_state` (L330), `test_driver_private_properties_use_system_color_state_in_ui` (L369), `test_switching_printers_resets_touched_overrides_and_loads_new_defaults` (L420), `test_preview_errors_are_handled_without_raising_from_ui_path` (L474), `test_preview_provider_supports_dialog_without_temp_pdf_path` (L506), `test_preview_page_info_label_uses_readable_page_summary` (L537)
@@ -1039,7 +1048,8 @@
 ## Internal Import Graph
 
 - `controller/ocr_coordinator.py` → `controller/pdf_controller.py`, `utils/helpers.py`, `view/pdf_view.py`
-- `controller/pdf_controller.py` → `controller/ocr_coordinator.py`, `controller/search_coordinator.py`, `model/color_profile.py`, `model/edit_commands.py`, `model/merge_session.py`, `model/object_requests.py`, `model/pdf_model.py`, `src/printing/__init__.py`, `src/printing/helper_protocol.py`, `src/printing/messages.py`, `src/printing/print_dialog.py`, `src/printing/subprocess_runner.py`, `utils/helpers.py`, `view/pdf_view.py`
+- `controller/pdf_controller.py` → `controller/ocr_coordinator.py`, `controller/print_coordinator.py`, `controller/search_coordinator.py`, `model/color_profile.py`, `model/edit_commands.py`, `model/merge_session.py`, `model/object_requests.py`, `model/pdf_model.py`, `src/printing/messages.py`, `utils/helpers.py`, `view/pdf_view.py`
+- `controller/print_coordinator.py` → `controller/pdf_controller.py`, `src/printing/__init__.py`, `src/printing/helper_protocol.py`, `src/printing/messages.py`, `src/printing/print_dialog.py`, `src/printing/subprocess_runner.py`, `utils/helpers.py`
 - `controller/search_coordinator.py` → `controller/pdf_controller.py`, `utils/helpers.py`
 - `main.py` → `controller/pdf_controller.py`, `model/headless_merge.py`, `model/pdf_model.py`, `utils/app_identity.py`, `utils/single_instance.py`, `view/icons.py`, `view/pdf_view.py`
 - `model/headless_merge.py` → `model/pdf_model.py`
@@ -1129,7 +1139,8 @@
 - `test_scripts/test_performance.py` → `model/pdf_model.py`
 - `test_scripts/test_phase7_guard_hygiene.py` → `model/pdf_optimizer.py`, `model/tools/manager.py`, `utils/single_instance.py`, `view/pdf_view.py`
 - `test_scripts/test_print_colorspace.py` → `src/printing/base_driver.py`, `src/printing/errors.py`, `src/printing/qt_bridge.py`
-- `test_scripts/test_print_controller_flow.py` → `controller/pdf_controller.py`, `model/pdf_model.py`, `src/printing/base_driver.py`, `src/printing/errors.py`, `src/printing/messages.py`, `view/pdf_view.py`
+- `test_scripts/test_print_controller_flow.py` → `controller/pdf_controller.py`, `controller/print_coordinator.py`, `model/pdf_model.py`, `src/printing/base_driver.py`, `src/printing/errors.py`, `src/printing/messages.py`, `view/pdf_view.py`
+- `test_scripts/test_print_coordinator_extraction.py` → `controller/pdf_controller.py`, `controller/print_coordinator.py`
 - `test_scripts/test_print_dialog_properties_button.py` → `src/printing/base_driver.py`, `src/printing/print_dialog.py`
 - `test_scripts/test_print_layout.py` → `src/printing/__init__.py`, `src/printing/base_driver.py`, `src/printing/layout.py`, `src/printing/print_dialog.py`
 - `test_scripts/test_print_snapshot_path.py` → `model/pdf_model.py`

@@ -39,7 +39,7 @@ crosses a layer.** One cohesive seam per commit; full suite green before/after e
   test (feed a fitz page dict, assert dataclass output) before the move. **Lowest blast radius of
   all five modules — do it first.**
 
-### R3.2 — Controller async-job coordinators (search → OCR → print) — search ✅ DONE 2026-06-16
+### R3.2 — Controller async-job coordinators (search → OCR → print) — ✅ ALL DONE 2026-06-16
 > **R3.2/search landed** (3-model fusion design: Gemini Pass A + Codex Pass C agreed; Pass B timed
 > out). New `controller/search_coordinator.py` (`SearchCoordinator` + `_SearchWorker`/`_SearchBridge`
 > moved, re-exported from `pdf_controller`). 8 runtime attrs + 4 slots moved off the controller;
@@ -134,6 +134,20 @@ crosses a layer.** One cohesive seam per commit; full suite green before/after e
   comment → comment-only update.
 - **Commit boundary:** single mechanical commit; **defer R5.1** (decrypt-snapshot/PDF_ENCRYPT_NONE) to its
   own reviewed commit — don't mix relocation with security semantics.
+
+> **R3.2/print LANDED 2026-06-16** (per the map above). New `controller/print_coordinator.py`
+> (`PrintCoordinator` + `_PrintSubmissionWorker`/`_PrintWorkerBridge`/`PrintJobRequest` moved + re-exported).
+> Resolved `print_dispatcher` → **moved** (only print uses it; coordinator's `connect_bridge()` lazy-inits
+> it). `print_document` + `_has_active_print_submission` are controller delegates; `_render_print_preview_image`
+> + `handle_app_close` (→ `coordinator.begin_close_pending()`) + `_fullscreen_is_blocked` stay. Removed 9
+> now-unused print imports from pdf_controller (ruff `--fix`, verified non-re-export). R5.1 deferred;
+> `capture_worker_snapshot_bytes` name + GUI-thread sequence unchanged. Test churn: redirected
+> `test_print_controller_flow.py` accesses to `controller._print_coordinator.*` and retargeted the
+> `UnifiedPrintDialog`/`QProgressDialog`/`PrintSubprocessRunner`/`show_error`/`QMessageBox` patches
+> `pdf_controller`→`print_coordinator` (removed the now-unused `pdf_controller_module` alias → test ruff
+> back to baseline 7). Gates: print contract + flow 8p, AST guards + snapshot/speed/multi_tab 85p/1s,
+> production ruff 0. **R3.2 COMPLETE (search + OCR + print).** Next: R3.3 (confirm encryption guard, done
+> in R2.2) → R3.4 (`model/pdf_object_ops.py`) → R3.5 (`model/pdf_text_edit.py`, LAST model seam, no-jump gate).
 
 ### R3.3 — Generalize the encryption AST guard to all of model/ (if not already done in R2.2)
 - **Before** any model engine leaves `pdf_model.py`. Confirm the guard walks all of model/ and the

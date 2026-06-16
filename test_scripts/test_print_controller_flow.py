@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import controller.pdf_controller as pdf_controller_module
+import controller.print_coordinator as print_coordinator_module
 from controller.pdf_controller import PDFController
 from model.pdf_model import PDFModel
 from src.printing.base_driver import PrinterDevice, PrintJobOptions, PrintJobResult
@@ -211,7 +211,7 @@ def test_print_document_defers_snapshot_until_user_accepts(monkeypatch) -> None:
         view = PDFView()
         controller = PDFController(model, view)
         view.controller = controller
-        controller.print_dispatcher = _FakePrintDispatcher()
+        controller._print_coordinator.print_dispatcher = _FakePrintDispatcher()
         model.open_pdf(str(pdf_path))
 
         snapshot_called = False
@@ -222,7 +222,7 @@ def test_print_document_defers_snapshot_until_user_accepts(monkeypatch) -> None:
             raise AssertionError("print snapshot capture should not run before the user accepts printing")
 
         monkeypatch.setattr(model, "build_print_snapshot", _unexpected_snapshot)
-        monkeypatch.setattr(pdf_controller_module, "UnifiedPrintDialog", _CancelDialog)
+        monkeypatch.setattr(print_coordinator_module, "UnifiedPrintDialog", _CancelDialog)
 
         try:
             controller.print_document()
@@ -294,15 +294,15 @@ def test_print_document_runs_in_background_and_defers_close_until_helper_finishe
             return b"%PDF-1.4 captured input"
 
         try:
-            controller.print_dispatcher = _FakePrintDispatcher()
+            controller._print_coordinator.print_dispatcher = _FakePrintDispatcher()
             monkeypatch.setattr(model, "capture_worker_snapshot_bytes", _blocking_capture_worker_snapshot_bytes)
-            monkeypatch.setattr(pdf_controller_module, "UnifiedPrintDialog", _AcceptDialog)
-            monkeypatch.setattr(pdf_controller_module, "QProgressDialog", _FakeProgressDialog, raising=False)
-            monkeypatch.setattr(pdf_controller_module, "PrintSubprocessRunner", _FakeRunner, raising=False)
-            monkeypatch.setattr(pdf_controller_module, "show_error", lambda _parent, message: errors.append(message))
-            original_update_print_progress_dialog = controller._update_print_progress_dialog
+            monkeypatch.setattr(print_coordinator_module, "UnifiedPrintDialog", _AcceptDialog)
+            monkeypatch.setattr(print_coordinator_module, "QProgressDialog", _FakeProgressDialog, raising=False)
+            monkeypatch.setattr(print_coordinator_module, "PrintSubprocessRunner", _FakeRunner, raising=False)
+            monkeypatch.setattr(print_coordinator_module, "show_error", lambda _parent, message: errors.append(message))
+            original_update_print_progress_dialog = controller._print_coordinator._update_print_progress_dialog
             monkeypatch.setattr(
-                controller,
+                controller._print_coordinator,
                 "_update_print_progress_dialog",
                 lambda label_text: (
                     progress_thread_ids.append(threading.get_ident()),
@@ -310,7 +310,7 @@ def test_print_document_runs_in_background_and_defers_close_until_helper_finishe
                 )[-1],
             )
             monkeypatch.setattr(
-                pdf_controller_module.QMessageBox,
+                print_coordinator_module.QMessageBox,
                 "information",
                 lambda _parent, title, message: info_calls.append((title, message)),
             )
@@ -322,8 +322,8 @@ def test_print_document_runs_in_background_and_defers_close_until_helper_finishe
             elapsed = time.perf_counter() - started_at
 
             assert elapsed < 0.2, f"print_document blocked the UI thread for {elapsed:.3f}s"
-            assert controller._print_progress_dialog is not None
-            assert controller._print_progress_dialog.isVisible()
+            assert controller._print_coordinator._print_progress_dialog is not None
+            assert controller._print_coordinator._print_progress_dialog.isVisible()
             assert view.status_bar.currentMessage() == PRINT_STATUS_MESSAGE
             assert capture_started.is_set(), "PDF capture never started"
 
@@ -339,11 +339,11 @@ def test_print_document_runs_in_background_and_defers_close_until_helper_finishe
             assert runner.started is True
             assert getattr(getattr(runner.job, "options", None), "extra_options", {}).get("render_colorspace") == "gray"
             assert runner_thread_ids == [main_thread_id]
-            assert _pump_until(app, lambda: controller._print_thread is None), "preparation worker thread never finished"
+            assert _pump_until(app, lambda: controller._print_coordinator._print_thread is None), "preparation worker thread never finished"
             assert progress_thread_ids
             assert all(thread_id == main_thread_id for thread_id in progress_thread_ids)
 
-            controller._on_print_submission_succeeded(
+            controller._print_coordinator._on_print_submission_succeeded(
                 PrintJobResult(
                     success=True,
                     route="print-helper",
@@ -351,12 +351,12 @@ def test_print_document_runs_in_background_and_defers_close_until_helper_finishe
                     job_id="job-1",
                 )
             )
-            controller._on_print_runner_finished()
+            controller._print_coordinator._on_print_runner_finished()
             assert _pump_until(app, lambda: not view.isVisible()), "view did not auto-close after print completion"
 
             assert errors == []
             assert info_calls == []
-            assert controller._print_progress_dialog is None
+            assert controller._print_coordinator._print_progress_dialog is None
             assert view.status_bar.currentMessage() == baseline_status
         finally:
             _AcceptDialog.instances.clear()
@@ -407,13 +407,13 @@ def test_stalled_print_helper_can_be_terminated_without_closing_main_window(monk
                 self.terminated = True
 
         try:
-            controller.print_dispatcher = _FakePrintDispatcher()
-            monkeypatch.setattr(pdf_controller_module, "UnifiedPrintDialog", _AcceptDialog)
-            monkeypatch.setattr(pdf_controller_module, "QProgressDialog", _FakeProgressDialog, raising=False)
-            monkeypatch.setattr(pdf_controller_module, "PrintSubprocessRunner", _FakeRunner, raising=False)
-            monkeypatch.setattr(pdf_controller_module, "show_error", lambda _parent, message: errors.append(message))
+            controller._print_coordinator.print_dispatcher = _FakePrintDispatcher()
+            monkeypatch.setattr(print_coordinator_module, "UnifiedPrintDialog", _AcceptDialog)
+            monkeypatch.setattr(print_coordinator_module, "QProgressDialog", _FakeProgressDialog, raising=False)
+            monkeypatch.setattr(print_coordinator_module, "PrintSubprocessRunner", _FakeRunner, raising=False)
+            monkeypatch.setattr(print_coordinator_module, "show_error", lambda _parent, message: errors.append(message))
             monkeypatch.setattr(
-                pdf_controller_module.QMessageBox,
+                print_coordinator_module.QMessageBox,
                 "information",
                 lambda _parent, title, message: info_calls.append((title, message)),
             )
@@ -425,20 +425,20 @@ def test_stalled_print_helper_can_be_terminated_without_closing_main_window(monk
             runner = _FakeRunner.instances[-1]
             assert runner.started is True
 
-            controller._on_print_submission_stalled()
+            controller._print_coordinator._on_print_submission_stalled()
             app.processEvents()
 
-            assert controller._print_progress_dialog is not None
-            assert controller._print_progress_dialog.label_text == PRINT_STALLED_MESSAGE
-            assert controller._print_progress_dialog.cancel_button_text == PRINT_TERMINATE_BUTTON_TEXT
+            assert controller._print_coordinator._print_progress_dialog is not None
+            assert controller._print_coordinator._print_progress_dialog.label_text == PRINT_STALLED_MESSAGE
+            assert controller._print_coordinator._print_progress_dialog.cancel_button_text == PRINT_TERMINATE_BUTTON_TEXT
             assert view.status_bar.currentMessage() == PRINT_STALLED_MESSAGE
 
-            controller._terminate_active_print_submission()
+            controller._print_coordinator._terminate_active_print_submission()
             assert runner.terminated is True
 
-            controller._on_print_submission_failed(PrintHelperTerminatedError("列印背景工作已終止"))
-            controller._on_print_runner_finished()
-            assert _pump_until(app, lambda: controller._print_progress_dialog is None), "print UI never cleaned up"
+            controller._print_coordinator._on_print_submission_failed(PrintHelperTerminatedError("列印背景工作已終止"))
+            controller._print_coordinator._on_print_runner_finished()
+            assert _pump_until(app, lambda: controller._print_coordinator._print_progress_dialog is None), "print UI never cleaned up"
 
             assert errors == []
             assert info_calls == []
@@ -468,18 +468,18 @@ def test_terminate_active_print_submission_handles_reentrant_runner_cleanup(monk
 
     try:
         runner = _FakeRunner()
-        controller._print_runner = runner
-        monkeypatch.setattr(controller, "_set_print_status_message", lambda _message: None)
+        controller._print_coordinator._print_runner = runner
+        monkeypatch.setattr(controller._print_coordinator, "_set_print_status_message", lambda _message: None)
         monkeypatch.setattr(
-            controller,
+            controller._print_coordinator,
             "_update_print_progress_dialog",
-            lambda _message: setattr(controller, "_print_runner", None),
+            lambda _message: setattr(controller._print_coordinator, "_print_runner", None),
         )
 
-        controller._terminate_active_print_submission()
+        controller._print_coordinator._terminate_active_print_submission()
 
         assert runner.terminated is False
-        assert controller._print_runner is None
+        assert controller._print_coordinator._print_runner is None
     finally:
         view.close()
         model.close()
