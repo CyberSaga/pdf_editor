@@ -69,7 +69,12 @@ Key contracts:
 - `insert_pages_from_file(source_file, source_pages, position) -> list[int]` returns the actual inserted target page numbers (1-based, sorted).
 
 Text index lifecycle:
-- Page text indices live in `TextBlockManager` ([`model/text_block.py`](../model/text_block.py)).
+- Page text indices live in `TextBlockManager` ([`model/text_block.py`](../model/text_block.py)). The
+  stateless parsing layer — geometry helpers, the `TextBlock`/`EditableSpan`/`EditableParagraph`
+  dataclasses, and the pure fitz-dict→dataclass transforms — lives in
+  [`model/text_block_parsing.py`](../model/text_block_parsing.py) (R3.1). It owns **no** index state;
+  `TextBlockManager` keeps every page-keyed index and delegates the transforms. `text_block` re-exports
+  the dataclasses and `rotation_degrees_from_dir`, so `from model.text_block import …` is unchanged.
 - Each cached page has a state: `"missing" | "clean" | "stale"`.
 - Structural ops shift cached keys and mark shifted pages `"stale"` (cheap), instead of eagerly rebuilding the entire document.
 - Any immediate edit/search path calls `model.ensure_page_index_built(page_num)` which rebuilds missing/stale pages on-demand.

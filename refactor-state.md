@@ -69,7 +69,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R0** | Baseline Freeze & Regression-Net Repair | 2-model (mech) + 3-model (interpreter-authority) | 4.5 | ✅ **done 2026-06-15** | [`plans/refactor-R0-baseline-freeze.md`](plans/refactor-R0-baseline-freeze.md) |
 | **R1** | Mechanical Hygiene (ruff + app-identity + packaging) | 2-model | 4.2 | ✅ **done 2026-06-15** | [`plans/refactor-R1-mechanical-hygiene.md`](plans/refactor-R1-mechanical-hygiene.md) |
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
-| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ☐ not started | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
+| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ☐ not started | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
 | **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ☐ not started | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
 | **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
@@ -252,4 +252,22 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   §7.1 `_guard_foreign_doc` routing updated. **Per the user directive this is the `/compact` point**
   (recorded in the "Active operating directive" section) — PushNotification sent so the context can be
   `/compact`'d before R3 (the high-risk god-module decomposition). Campaign commits: R0 6f16ec2 ·
-  R1 4e6f755 · R2.1 2a2aa96 · R2.2 cbe0284 · R2.3+4 6e3dea1 · R2.5 870728c · R2.6 dc1bb2c · R2.7 (this).
+  R1 4e6f755 · R2.1 2a2aa96 · R2.2 cbe0284 · R2.3+4 6e3dea1 · R2.5 870728c · R2.6 dc1bb2c · R2.7 0dd1fac.
+- **2026-06-16 (turn 10): R3.1 LANDED (model/text_block_parsing.py — first god-module seam).** Post-`/compact`,
+  began R3. Extracted the stateless parsing layer out of `text_block.py` (1043→338 LOC) into a new pure
+  leaf `model/text_block_parsing.py` (~640 LOC): the 6 geometry helpers, the 3 output dataclasses
+  (`TextBlock`/`EditableSpan`/`EditableParagraph`), and the 14 fitz-dict→dataclass transforms
+  (`_parse_block`/`_parse_spans`/`_parse_runs_from_raw_block`/`_parse_runs_from_raw_line`/
+  `_build_paragraphs`/`_merge_vertical_paragraphs`/`_match_by_text`/`_dynamic_scan`/…). Moved **verbatim**
+  (only `self.`→module-fn calls; constants byte-verified incl. U+2022/U+FFFD) — **no logic drift**. The
+  module owns **no** instance state; `TextBlockManager` keeps every page-keyed index and the 14 methods
+  become thin **delegates** (signatures preserved → `manager._build_paragraphs(...)` and all internal
+  `self._parse_*` callers unchanged). `text_block` re-exports the dataclasses + `rotation_degrees_from_dir`
+  (`# noqa: F401`) so `from model.text_block import …` (pdf_model + 3 tests) is byte-identical. **Red-Light
+  First:** new `test_text_block_parsing_extraction.py` failed RED (`ModuleNotFoundError`) before the move,
+  GREEN after (5 tests: module surface, free-fn callability, parse_block/build_paragraphs output,
+  manager↔module parity). Gates: parsing regressions 59p/1s, AST guards (boundary+encryption) 11p,
+  production ruff **0**, codegraph re-indexed (3338→3609 nodes). Lowest-blast-radius seam, done first per
+  plan ordering. **Next step:** R3.2 — controller async-job coordinators, smallest first
+  (`controller/search_coordinator.py` → `ocr_coordinator.py` → `print_coordinator.py`); preserve exact
+  `QThread` signal wiring (a missed `connect` = silent worker hang).

@@ -23,7 +23,12 @@ crosses a layer.** One cohesive seam per commit; full suite green before/after e
 
 ## HARD internal ordering (non-negotiable — critique-enforced)
 
-### R3.1 — `model/text_block_parsing.py` (FIRST — verified pure leaf)
+### R3.1 — `model/text_block_parsing.py` (FIRST — verified pure leaf) ✅ DONE 2026-06-16
+> Landed: `text_block.py` 1043→338 LOC; new pure leaf `model/text_block_parsing.py` (helpers + 3
+> dataclasses + 14 transforms), moved verbatim. `TextBlockManager` keeps all index state and delegates
+> (signatures preserved); `text_block` re-exports dataclasses + `rotation_degrees_from_dir`. Red-Light via
+> `test_text_block_parsing_extraction.py`. Suite 1366p/20s, AST guards green, ruff 0, codegraph re-indexed.
+
 - `text_block.py:392-1043` (~652 LOC): `_parse_block/_parse_spans/_parse_runs_from_raw_*/
   _build_paragraphs/_merge_vertical_paragraphs/_expand_ligatures/...`. **10 `self.` refs total, 5
   `@staticmethod`**; none touch the instance indices (`_index/_span_index/_paragraph_index/
