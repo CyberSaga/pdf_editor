@@ -49,11 +49,16 @@ _LENS_B = (
 
 # ── gemini runner ─────────────────────────────────────────────────────────────
 
+def _gemini_cmd() -> str:
+    # On Windows, npm installs gemini as gemini.cmd — subprocess can't resolve .ps1
+    return "gemini.cmd" if sys.platform == "win32" else "gemini"
+
+
 def run_gemini_cli(prompt: str, system: str | None = None) -> str:
     full_prompt = f"{system}\n\n{prompt}" if system else prompt
     try:
         result = subprocess.run(
-            ["gemini"],
+            [_gemini_cmd()],
             input=full_prompt,
             capture_output=True,
             text=True,
@@ -65,7 +70,7 @@ def run_gemini_cli(prompt: str, system: str | None = None) -> str:
             return f"[ERROR] Gemini CLI exited {result.returncode}: {result.stderr.strip()}"
         return result.stdout.strip()
     except FileNotFoundError:
-        return "[ERROR] `gemini` not found in PATH."
+        return f"[ERROR] `{_gemini_cmd()}` not found in PATH."
     except subprocess.TimeoutExpired:
         return f"[ERROR] Gemini CLI timed out after {GEMINI_CLI_TIMEOUT}s"
     except Exception as e:
