@@ -69,7 +69,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R0** | Baseline Freeze & Regression-Net Repair | 2-model (mech) + 3-model (interpreter-authority) | 4.5 | ✅ **done 2026-06-15** | [`plans/refactor-R0-baseline-freeze.md`](plans/refactor-R0-baseline-freeze.md) |
 | **R1** | Mechanical Hygiene (ruff + app-identity + packaging) | 2-model | 4.2 | ✅ **done 2026-06-15** | [`plans/refactor-R1-mechanical-hygiene.md`](plans/refactor-R1-mechanical-hygiene.md) |
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
-| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅, R3.2 ✅, R3.4 ✅; R3.5 model + R3.6-8 view TODO) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
+| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅, R3.2 ✅, R3.4 ✅, R3.5 ✅ — ALL model seams done; R3.6-8 view TODO) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ☐ not started | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
 | **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ☐ not started | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
 | **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
@@ -371,3 +371,28 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   does — moved VERBATIM, flagged, NOT fixed. Gates: object-ops 78p (8 suites + extraction + AST guards), full
   suite green, production ruff 0, codegraph re-indexed. **Next:** R3.5 (`model/pdf_text_edit.py` — LAST +
   highest-risk model seam; DO NOT split `_apply_redact_insert`; no-jump gate before/after).
+- **2026-06-16 (turn 15): R3.5 LANDED — `model/pdf_text_edit.py`, the LAST + highest-risk model seam. ALL
+  model seams now done.** Full 3-model design review on a focused extract (pdf_model `2861-4190`): Gemini
+  dual-lens (both passes completed) + Codex. **Source verification produced a concrete override both Gemini
+  lenses missed:** they classified `_resolve_font_for_push` as MOVE, but it is called by the *staying*
+  `_resolve_add_text_font` (pdf_model:2144) → it must STAY (Codex independently concurred). Extracted a
+  contiguous run of **9 methods** (pdf_model `2951-4184`) into free functions `fn(model: PDFModel, ...)`:
+  `_has_complex_script/_push_down_overlapping_text/_replay_protected_spans/_validate_protected_spans/
+  _resolve_edit_target/_apply_redact_insert` (moved **WHOLE**, ~360 LOC, never split)`/_verify_rebuild_edit/
+  _resolve_effective_target_mode/edit_text`. Two module-level helpers moved with the cluster and are
+  **re-exported from pdf_model** (`_EditTextResolveResult` dataclass + `_classify_insert_path` view/model
+  shared classifier — tests `from model.pdf_model import` both). **STAY** (cross-cutting consumers, reached
+  via `model.`): `_resolve_font_for_push` (add-text), `_needs_cjk_font` (object-ops + monkeypatched),
+  `_convert_text_to_html`/`_build_insert_css`/`_build_multi_style_html` (controller+view preview),
+  `_maybe_garbage_collect` (encryption `_roundtrip_live_doc` + `test_xref_repair`), `_reauthenticate_if_needed`.
+  **Transform discipline:** UNIFORM `self.`→`model.` (NOT local free-calls among the moved set) so every
+  inter-method call dispatches through its PDFModel wrapper — this preserves exact bound-method/monkeypatch
+  semantics (**Codex caught** `test_edit_text_helpers` monkeypatching `_push_down_overlapping_text`; a local
+  free-call would have silently bypassed it and failed parity). PDFModel keeps delegating wrappers for **all 9**
+  (8 generic `(*args, **kwargs)` forwarders + explicit `edit_text` signature) because the test net pokes the
+  privates directly → **ZERO test churn.** pdf_model 4411→3159 LOC; BOM preserved; 5 now-unused imports
+  stripped (ruff `--fix`, none re-exported). **Red-Light First:** new `test_pdf_text_edit_extraction.py` RED
+  (`ModuleNotFoundError`) → GREEN. Gates: edit suites 425p (incl. monkeypatch + privates-poking + xref guard),
+  AST boundary + object-ops guards 43p, full suite **1384p/20s** (clean first run), production ruff 0, **no-jump
+  completion-gate PASSED before (`04b0a4c`) and after.** **Next:** R3.6 (`view/object_selection.py` — first
+  view seam; migrate ~25 selection attrs into the manager; Qt Signals stay class attrs on PDFView).

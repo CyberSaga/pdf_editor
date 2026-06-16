@@ -1223,3 +1223,10 @@
 **Cause:** A QSS border participates in box metrics; introducing it on `:focus` changes the widget's content rect.
 **Fix:** Give the control a base `1px` border at rest and only **recolour** it to `accent` on `:focus` (inputs/combos/buttons already carry a 1px line border). Skipped focus rings on `QToolButton` (no base border) to avoid perturbing the measured ribbon width used by the adaptive toolbar.
 **File:** `view/theme.py`
+
+## Free-function extraction silently bypasses method monkeypatching
+**Area:** model/pdf_text_edit.py, model/pdf_object_ops.py (god-module decomposition seams)
+**Symptom:** After extracting a method `_foo` into a free function `_foo(model, ...)`, a test that does `monkeypatch.setattr(model, "_foo", ...)` and asserts the patch fired starts failing — the patch never intercepts.
+**Cause:** The original inter-method call was `self._foo(...)` (a bound-method lookup that honours instance/class monkeypatching). A naive transform rewrites sibling calls to the *local* free function `_foo(model, ...)`, which resolves at module scope and never consults `model._foo` — so the monkeypatch is invisible. `test_edit_text_helpers.test_prepush_growth_branch_does_not_raise_name_error` patches `_push_down_overlapping_text` exactly this way.
+**Fix:** Use a UNIFORM `self.` → `model.` transform (every inter-method call dispatches through the PDFModel delegating wrapper), and keep a wrapper on PDFModel for *every* moved method the test net pokes — not only the public verbs. Calls that were already bare module-level (e.g. `_classify_insert_path`, `_EditTextResolveResult(...)`) stay bare. Verify by grepping the test suite for `monkeypatch.setattr(... , "_<moved>"` and for `model._<moved>(` / direct `from model.pdf_model import _<moved>` before deciding move-vs-wrapper.
+**File:** `model/pdf_text_edit.py` (wrappers in `model/pdf_model.py`)

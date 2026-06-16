@@ -207,15 +207,34 @@ crosses a layer.** One cohesive seam per commit; full suite green before/after e
   captures a doc snapshot for undo independently of `pending_edits`). Move it **verbatim**; if it's a real
   save-prompt/refresh bug it is a separate post-R3 fix, not part of this structural seam.
 
-### R3.5 — `model/pdf_text_edit.py` (edit_text/redaction engine — LAST model seam)
-- `pdf_model.py:4012-4940` (~930 LOC) + push-down helpers `:3650-4011`: `_resolve_edit_target/
-  _apply_redact_insert/_verify_rebuild_edit/_resolve_effective_target_mode/edit_text` +
-  `_push_down_overlapping_text/_replay_protected_spans/...`.
-- **Extract** a free-function module (`model: PDFModel`) reading `block_manager/doc/pending_edits/
-  edit_count` + run-reopen-anchor helpers (which stay PDFModel methods the module calls). PDFModel
-  keeps `edit_text()` as a 1-line delegate. **DO NOT split `_apply_redact_insert` (~360 LOC, L4191)
-  across commits — move it whole.** Highest model risk; require full edit_text integration suite +
-  no-jump gate green before/after.
+### R3.5 — `model/pdf_text_edit.py` (edit_text/redaction engine — LAST model seam) ✅ LANDED
+**As-built extraction map** (3-model: Gemini dual-lens + Codex + source-verified; the source
+verification produced a concrete override BOTH Gemini lenses missed — see below).
+
+**MOVE** (9 methods, a contiguous run `pdf_model.py:2951-4184`, → free functions `fn(model: PDFModel, ...)`):
+`_has_complex_script`, `_push_down_overlapping_text`, `_replay_protected_spans`,
+`_validate_protected_spans`, `_resolve_edit_target`, `_apply_redact_insert` (moved WHOLE, ~360 LOC),
+`_verify_rebuild_edit`, `_resolve_effective_target_mode`, `edit_text` (body moves; wrapper stays).
+Two module-level helpers move too and are **re-exported from pdf_model** (tests import them):
+`_EditTextResolveResult` (dataclass) and `_classify_insert_path` (view/model shared classifier).
+
+**STAY** (cross-cutting consumers reach them, so they remain PDFModel methods; moved code calls via `model.`):
+- `_resolve_font_for_push` — **source-verified override of both Gemini lenses (which said MOVE):**
+  called by the *staying* `_resolve_add_text_font` (pdf_model:2144), so it cannot move. Codex concurred.
+- `_needs_cjk_font` — also `pdf_object_ops.py:444` + monkeypatched in tests.
+- `_convert_text_to_html` / `_build_insert_css` / `_build_multi_style_html` — controller + view preview path.
+- `_maybe_garbage_collect` — encryption-preserving `_roundtrip_live_doc`; also `test_xref_repair.py`.
+- `_reauthenticate_if_needed` — save/snapshot/roundtrip paths.
+
+**Transform discipline:** UNIFORM `self.` → `model.` (every inter-method call among the moved set
+dispatches through its PDFModel wrapper) — this preserves exact bound-method / monkeypatch semantics
+(`test_edit_text_helpers` monkeypatches `_push_down_overlapping_text`; a local free-call would bypass it).
+`_classify_insert_path`/`_EditTextResolveResult` were already called BARE → stay local.
+**Wrappers:** PDFModel keeps delegating wrappers for ALL 9 (not just `edit_text`) because the test net
+pokes the privates directly (`test_edit_text_helpers`, `test_resolve_target_mode`) — 8 generic
+`(*args, **kwargs)` forwarders + the explicit `edit_text` signature. ZERO test churn.
+**Gates (all green):** contract test RED→GREEN; edit suites 425p; AST guards; full suite 1384p/20s;
+no-jump completion-gate PASSED before (`04b0a4c`) and after.
 
 ### R3.6 — `view/object_selection.py` `ObjectSelectionManager(view)`
 - `pdf_view.py:3828-4187` (~20 methods) + ~25 attrs (`_selected_object_info×46`,
