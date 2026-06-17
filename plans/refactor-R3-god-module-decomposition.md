@@ -337,11 +337,92 @@ here (no logic drift in a no-op move). **R3.8 high-risk attrs to migrate:** `_se
 **pdf_view 5152→4894 LOC. ZERO test churn.** Gates: new `test_text_selection_extraction.py` RED→GREEN; text/object
 GUI suites 101p; full suite; production ruff 0; **no-jump completion-gate before/after.**
 
-### R3.8 — Mouse-handler dispatcher (LAST view artifact)
-- Only after R3.6+R3.7: refactor `_mouse_press/move/release` (L2899-4558, ~830 LOC, the
-  convergence of autopan + object-drag + text-selection + add-text) into a thin **per-mode
-  dispatcher** that delegates to the two managers. **Preserve the `current_mode` early-return
-  ordering exactly** (gate at L2924) — reordering changes which mode wins on overlapping hits.
+### R3.8 — Mouse-handler dispatcher (LAST view artifact) — SPLIT into R3.8a (DONE) + R3.8b (DEFERRED)
+The 3-model review (Gemini dual-lens + Codex, both confirmed) **split R3.8** into two orthogonal failure
+domains: state-ownership desync (R3.8a) vs handler-ordering/Qt-event drift (R3.8b). **User decision
+(2026-06-17): do R3.8a only; defer R3.8b; document its context + landmines here.**
+
+#### R3.8a — interaction-state migration ✅ LANDED (gate-verified)
+Migrated all **43 interaction-state attrs** out of `PDFView.__init__` into the two managers' `__init__`
+(real storage): 17 text (`_text_selection_*`, `_selected_text_*`, `_browse_text_cursor_active`) →
+`TextSelectionManager`; 26 object (`_selected_object_*`, `_object_drag_*`, `_object_rotate_*`,
+`_object_resize_*`) → `ObjectSelectionManager` (incl. the 9 that were never in `__init__` — the
+`_object_resize_*` family + `_selected_object_infos`/`_selected_object_page_idx` — first-set in handlers;
+defaults taken from `_clear_object_selection`). PDFView keeps **get/set `@property` forwarders** for all 43,
+proxying to the manager **via the lazy accessor** (`_ensure_*_manager()`) so `PDFView.__new__()` test doubles
+and any pre-construction access still work. Manager bodies changed `self._view._<attr>` → `self._<attr>`
+(word-boundary exact) for the migrated names only; everything else (`scene`, `_render_scale`, `current_mode`,
+`_sync_text_property_panel_state`, signals, …) still goes through `self._view`. Handlers stay byte-identical;
+the only intended behavior delta is **none** — the gate proves it (pure state-binding: a desync fails pixel
+parity / the full suite). Forwarders are NOT double-ownership (manager = single source of truth). pdf_view
+shrank by the 34 removed init lines; +43 forwarder property pairs. ZERO test churn. **R3.8b will drop the
+forwarders** once the handler branches move into the managers.
+
+#### R3.8b — per-mode dispatcher (DEFERRED — needs interaction tests / manual QA)
+**Why deferred:** both Gemini lenses AND Codex independently concluded the 377-case **pixel-parity + model
+suite STRUCTURALLY CANNOT validate this refactor** — it asserts end-state rendering and is blind to Qt
+event-routing mechanics (`accept()`/`ignore()` propagation to `QGraphicsView`, autopan `QTimer` + mouse-leave,
+drag-vs-click `startDragDistance` thresholds, `super().mouseMoveEvent` fallthrough, mode-priority on
+overlapping hits). R3.8b requires **dedicated `pytest-qt` interaction tests** (assert `event.isAccepted()`
+after `qtbot.mousePress→mouseMove→mouseRelease` sequences) AND/OR **manual human verification** for
+autopan, drag-out-of-bounds text selection, and overlapping object/handle hits. R3.8b is also **largely
+cosmetic** — the handlers already delegate method *calls* to the managers (R3.6/R3.7); R3.8b only relocates
+branch *bodies*, so functional behavior is identical either way.
+
+**Procedure when resumed (Strangler-Fig / Boolean-consumption contract):** add
+`handle_press/move/release(scene_pos, event) -> bool` to each manager; lift ONE mode-branch at a time,
+keeping its existing `event.accept()` calls INSIDE the branch (do NOT centralize accept/ignore — there are
+NO `event.ignore()` calls in these handlers); in the handler, replace the lifted branch with
+`if self._<mgr>.handle_*(scene_pos, event): return` slotted at the EXACT same position in the if/elif chain;
+test + gate + commit per mode. Then drop the R3.8a forwarders only after `rg` shows no remaining direct
+PDFView state reads in handlers / context menu / property panel / hover-cursor helpers / tests.
+
+**Branch boundaries (Codex, line-grounded at R3.8a HEAD — RE-VERIFY after edits):**
+- `_mouse_press` (2869-3101): STAY = autopan 2870-2882, `scene_pos`/left-gate 2883-2884, `add_annotation`
+  2885-2890 (returns WITHOUT accept), `add_text` 3010-3028, `edit_text` 3030-3090, `rect` 3091-3098,
+  `highlight` 3099-3100, fallback 3101. → `ObjectSelectionManager.handle_press` = 2892-2991 (`objects`/`text_edit`;
+  True only at the accepts 2910/2935/2990). → `TextSelectionManager.handle_press` = browse block 2993-3009
+  (True only when selection starts + accepts at 3005; False if it only clears stale text at 3007-3008).
+- `_mouse_move` (3103-3751): STAY = autopan 3104-3107, browse hover-cursor 3228-3231, edit/add-text drag+hover
+  3232-3280, rect preview 3281-3284, fallback 3286. → `ObjectSelectionManager.handle_move` = 3110-3188
+  (`objects`/`text_edit`/`edit_text`) + browse object-drag 3190-3223 (True at accepts 3131/3147/3187/3222). →
+  `TextSelectionManager.handle_move` = active browse text-selection 3224-3227 (True at accept 3226).
+- `_mouse_release` (3752-3955): STAY = autopan 3753-3755, edit/add-text release 3880-3923 (returns WITHOUT
+  accept), rect/highlight/fallback 3925-3955. → `ObjectSelectionManager.handle_release` = 3757-3840
+  (`objects`/`text_edit`) + browse selected-object release 3842-3873 (True at 3776/3788/3814/3834/3839/3847/3868/3872).
+  → `TextSelectionManager.handle_release` = 3874-3878 (True at accept 3877).
+
+**Codex's 10 CRITICAL LANDMINES for R3.8b (do NOT lose these):**
+1. **`_object_resize_*` + `_object_resize_handle_items` were NOT in `__init__`** (first-set in `_mouse_press`).
+   (R3.8a already initializes them in the manager `__init__` — but any getter/`hasattr` path must stay robust.)
+2. **`text_edit` vs `edit_text` inconsistency:** `set_mode()` normalizes inbound `"text_edit"`→`"edit_text"`
+   (1894-1895), but press/release guard on `("objects","text_edit")` while move guards on
+   `("objects","text_edit","edit_text")`. **Preserve each tuple EXACTLY — do not simplify.**
+3. **Accept behavior is intentionally UNEVEN:** `add_annotation`, `add_text`, and edit-text release paths
+   return WITHOUT `event.accept()`, deliberately letting `QGraphicsView` run. Wrapping them in a
+   `bool consumed` return and only calling `super()` when `not consumed` would **silently swallow that
+   fallthrough**. Keep the `super()` call unconditional where the original falls through.
+4. **Autopan (2870-2882) is unconditional** (all buttons, any mode) and interacts with
+   `_autopan_suppress_next_context_menu`/`_autopan_manual_menu` (4082-4085). **Never wrap autopan into a manager.**
+5. **Object/text mutual-exclusion clears are manual + repeated** (2903, 2917, 2968-2973; browse stale-text
+   clear 3007-3008). Factoring into one "clear the other" call risks dropping a redundant-but-necessary clear.
+6. **`scene.clear()` (2372/2611/2683) invalidates manager item pointers.** Object mgr guards with
+   `shiboken6.isValid()`; text mgr uses `item.scene()`. Clear manager item refs BEFORE `scene.clear()` or verify
+   the guards survive. (See also the R3.7 deferred `shiboken6.isValid` hardening for text.)
+7. **`PDFView.__new__` test doubles** lack `_obj_sel_mgr`/`_text_sel_mgr`; property getters must lazy-init
+   (R3.8a forwarders already do via `_ensure_*_manager()`).
+8. **Shift has two unrelated meanings:** multi-select toggle (2950, object mode) vs aspect-ratio resize lock
+   (3125, resize active). Do NOT unify.
+9. **Release paths emit a model mutation then immediately rebase the overlay** (3773/3812/3831). The rebase must
+   stay adjacent to the emit INSIDE the manager, or be explicitly re-triggered in the dispatcher after the
+   delegate — else overlays go stale until next render.
+10. **Browse object-drag (3208-3219) clamps to page bounds; objects/text_edit drag preview (3155-3188) does
+    NOT.** They are functionally different — do NOT merge into one manager drag method.
+
+**Verification-gap test files to extend first:** `test_interaction_modes.py`, `test_autopan.py`,
+`test_object_{manipulation,resize,free_rotation,multi_select}_gui.py`, `test_browse_selection_gui_regressions.py`,
+`test_scene_context_menu.py`. New coverage needed: overlapping-hit priority (resize-handle vs rotate-handle vs
+body vs text), drag-threshold boundary, accept/ignore propagation, autopan timer + mouse-leave.
 
 ### DO-NOT-TOUCH in R3
 - The model **session/legacy-shadow accessor layer** (`pdf_model.py:267-668`) — every core

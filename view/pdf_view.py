@@ -508,40 +508,6 @@ class PDFView(QMainWindow):
         self._pending_text_info = None          # 待定狀態下存放的文字塊資訊（drag_pending 且無編輯框時）
         self.current_search_results = []
         self.current_search_index = -1
-        self._browse_text_cursor_active = False
-        self._text_selection_active = False
-        self._text_selection_page_idx = None
-        self._text_selection_start_scene_pos = None
-        self._text_selection_rect_item = None
-        self._text_selection_live_doc_rect = None
-        self._text_selection_live_text = ""
-        self._text_selection_last_scene_pos = None
-        self._text_selection_start_span_id = None
-        self._text_selection_start_hit_info = None
-        self._selected_text_rect_doc = None
-        self._selected_text_page_idx = None
-        self._selected_text_cached = ""
-        self._selected_text_hit_info = None
-        self._selected_text_from_drag = False
-        self._text_selection_start_doc_point = None
-        self._text_selection_extra_rect_items = []
-        self._selected_object_info = None
-        self._object_selection_rect_item = None
-        self._object_rotate_handle_item = None
-        self._object_drag_pending = False
-        self._object_drag_active = False
-        self._object_rotate_pending = False
-        self._object_rotate_active = False
-        self._object_rotate_center_scene = None
-        self._object_rotate_start_angle = 0.0
-        self._object_rotate_start_rotation = 0.0
-        self._object_rotate_preview_angle = 0.0
-        self._object_drag_start_scene_pos = None
-        self._object_drag_start_doc_rect = None
-        self._object_drag_start_doc_rects = None
-        self._object_drag_preview_rect = None
-        self._object_drag_preview_rects = None
-        self._object_drag_page_idx = None
         # Inline-editor focus lifecycle guards.
         self._edit_focus_guard_connected = False
         self._edit_focus_check_pending = False
@@ -3581,6 +3547,311 @@ class PDFView(QMainWindow):
 
     def _show_object_rotation_menu(self, *args, **kwargs):
         return self._ensure_object_selection_manager()._show_object_rotation_menu(*args, **kwargs)
+
+    # R3.8a: interaction state migrated into the managers; PDFView forwards via the
+    # lazy accessors so handlers / context menu / __new__ test doubles keep working.
+    # R3.8b (deferred) will lift the handler branches into the managers and drop these.
+
+    @property
+    def _selected_object_info(self):
+        return self._ensure_object_selection_manager()._selected_object_info
+    @_selected_object_info.setter
+    def _selected_object_info(self, value):
+        self._ensure_object_selection_manager()._selected_object_info = value
+
+    @property
+    def _object_selection_rect_item(self):
+        return self._ensure_object_selection_manager()._object_selection_rect_item
+    @_object_selection_rect_item.setter
+    def _object_selection_rect_item(self, value):
+        self._ensure_object_selection_manager()._object_selection_rect_item = value
+
+    @property
+    def _object_rotate_handle_item(self):
+        return self._ensure_object_selection_manager()._object_rotate_handle_item
+    @_object_rotate_handle_item.setter
+    def _object_rotate_handle_item(self, value):
+        self._ensure_object_selection_manager()._object_rotate_handle_item = value
+
+    @property
+    def _object_drag_pending(self):
+        return self._ensure_object_selection_manager()._object_drag_pending
+    @_object_drag_pending.setter
+    def _object_drag_pending(self, value):
+        self._ensure_object_selection_manager()._object_drag_pending = value
+
+    @property
+    def _object_drag_active(self):
+        return self._ensure_object_selection_manager()._object_drag_active
+    @_object_drag_active.setter
+    def _object_drag_active(self, value):
+        self._ensure_object_selection_manager()._object_drag_active = value
+
+    @property
+    def _object_rotate_pending(self):
+        return self._ensure_object_selection_manager()._object_rotate_pending
+    @_object_rotate_pending.setter
+    def _object_rotate_pending(self, value):
+        self._ensure_object_selection_manager()._object_rotate_pending = value
+
+    @property
+    def _object_rotate_active(self):
+        return self._ensure_object_selection_manager()._object_rotate_active
+    @_object_rotate_active.setter
+    def _object_rotate_active(self, value):
+        self._ensure_object_selection_manager()._object_rotate_active = value
+
+    @property
+    def _object_rotate_center_scene(self):
+        return self._ensure_object_selection_manager()._object_rotate_center_scene
+    @_object_rotate_center_scene.setter
+    def _object_rotate_center_scene(self, value):
+        self._ensure_object_selection_manager()._object_rotate_center_scene = value
+
+    @property
+    def _object_rotate_start_angle(self):
+        return self._ensure_object_selection_manager()._object_rotate_start_angle
+    @_object_rotate_start_angle.setter
+    def _object_rotate_start_angle(self, value):
+        self._ensure_object_selection_manager()._object_rotate_start_angle = value
+
+    @property
+    def _object_rotate_start_rotation(self):
+        return self._ensure_object_selection_manager()._object_rotate_start_rotation
+    @_object_rotate_start_rotation.setter
+    def _object_rotate_start_rotation(self, value):
+        self._ensure_object_selection_manager()._object_rotate_start_rotation = value
+
+    @property
+    def _object_rotate_preview_angle(self):
+        return self._ensure_object_selection_manager()._object_rotate_preview_angle
+    @_object_rotate_preview_angle.setter
+    def _object_rotate_preview_angle(self, value):
+        self._ensure_object_selection_manager()._object_rotate_preview_angle = value
+
+    @property
+    def _object_drag_start_scene_pos(self):
+        return self._ensure_object_selection_manager()._object_drag_start_scene_pos
+    @_object_drag_start_scene_pos.setter
+    def _object_drag_start_scene_pos(self, value):
+        self._ensure_object_selection_manager()._object_drag_start_scene_pos = value
+
+    @property
+    def _object_drag_start_doc_rect(self):
+        return self._ensure_object_selection_manager()._object_drag_start_doc_rect
+    @_object_drag_start_doc_rect.setter
+    def _object_drag_start_doc_rect(self, value):
+        self._ensure_object_selection_manager()._object_drag_start_doc_rect = value
+
+    @property
+    def _object_drag_start_doc_rects(self):
+        return self._ensure_object_selection_manager()._object_drag_start_doc_rects
+    @_object_drag_start_doc_rects.setter
+    def _object_drag_start_doc_rects(self, value):
+        self._ensure_object_selection_manager()._object_drag_start_doc_rects = value
+
+    @property
+    def _object_drag_preview_rect(self):
+        return self._ensure_object_selection_manager()._object_drag_preview_rect
+    @_object_drag_preview_rect.setter
+    def _object_drag_preview_rect(self, value):
+        self._ensure_object_selection_manager()._object_drag_preview_rect = value
+
+    @property
+    def _object_drag_preview_rects(self):
+        return self._ensure_object_selection_manager()._object_drag_preview_rects
+    @_object_drag_preview_rects.setter
+    def _object_drag_preview_rects(self, value):
+        self._ensure_object_selection_manager()._object_drag_preview_rects = value
+
+    @property
+    def _object_drag_page_idx(self):
+        return self._ensure_object_selection_manager()._object_drag_page_idx
+    @_object_drag_page_idx.setter
+    def _object_drag_page_idx(self, value):
+        self._ensure_object_selection_manager()._object_drag_page_idx = value
+
+    @property
+    def _selected_object_infos(self):
+        return self._ensure_object_selection_manager()._selected_object_infos
+    @_selected_object_infos.setter
+    def _selected_object_infos(self, value):
+        self._ensure_object_selection_manager()._selected_object_infos = value
+
+    @property
+    def _selected_object_page_idx(self):
+        return self._ensure_object_selection_manager()._selected_object_page_idx
+    @_selected_object_page_idx.setter
+    def _selected_object_page_idx(self, value):
+        self._ensure_object_selection_manager()._selected_object_page_idx = value
+
+    @property
+    def _object_resize_handle_items(self):
+        return self._ensure_object_selection_manager()._object_resize_handle_items
+    @_object_resize_handle_items.setter
+    def _object_resize_handle_items(self, value):
+        self._ensure_object_selection_manager()._object_resize_handle_items = value
+
+    @property
+    def _object_resize_pending(self):
+        return self._ensure_object_selection_manager()._object_resize_pending
+    @_object_resize_pending.setter
+    def _object_resize_pending(self, value):
+        self._ensure_object_selection_manager()._object_resize_pending = value
+
+    @property
+    def _object_resize_active(self):
+        return self._ensure_object_selection_manager()._object_resize_active
+    @_object_resize_active.setter
+    def _object_resize_active(self, value):
+        self._ensure_object_selection_manager()._object_resize_active = value
+
+    @property
+    def _object_resize_start_scene_pos(self):
+        return self._ensure_object_selection_manager()._object_resize_start_scene_pos
+    @_object_resize_start_scene_pos.setter
+    def _object_resize_start_scene_pos(self, value):
+        self._ensure_object_selection_manager()._object_resize_start_scene_pos = value
+
+    @property
+    def _object_resize_start_doc_rect(self):
+        return self._ensure_object_selection_manager()._object_resize_start_doc_rect
+    @_object_resize_start_doc_rect.setter
+    def _object_resize_start_doc_rect(self, value):
+        self._ensure_object_selection_manager()._object_resize_start_doc_rect = value
+
+    @property
+    def _object_resize_preview_rect(self):
+        return self._ensure_object_selection_manager()._object_resize_preview_rect
+    @_object_resize_preview_rect.setter
+    def _object_resize_preview_rect(self, value):
+        self._ensure_object_selection_manager()._object_resize_preview_rect = value
+
+    @property
+    def _object_resize_handle_anchor(self):
+        return self._ensure_object_selection_manager()._object_resize_handle_anchor
+    @_object_resize_handle_anchor.setter
+    def _object_resize_handle_anchor(self, value):
+        self._ensure_object_selection_manager()._object_resize_handle_anchor = value
+
+    @property
+    def _browse_text_cursor_active(self):
+        return self._ensure_text_selection_manager()._browse_text_cursor_active
+    @_browse_text_cursor_active.setter
+    def _browse_text_cursor_active(self, value):
+        self._ensure_text_selection_manager()._browse_text_cursor_active = value
+
+    @property
+    def _text_selection_active(self):
+        return self._ensure_text_selection_manager()._text_selection_active
+    @_text_selection_active.setter
+    def _text_selection_active(self, value):
+        self._ensure_text_selection_manager()._text_selection_active = value
+
+    @property
+    def _text_selection_page_idx(self):
+        return self._ensure_text_selection_manager()._text_selection_page_idx
+    @_text_selection_page_idx.setter
+    def _text_selection_page_idx(self, value):
+        self._ensure_text_selection_manager()._text_selection_page_idx = value
+
+    @property
+    def _text_selection_start_scene_pos(self):
+        return self._ensure_text_selection_manager()._text_selection_start_scene_pos
+    @_text_selection_start_scene_pos.setter
+    def _text_selection_start_scene_pos(self, value):
+        self._ensure_text_selection_manager()._text_selection_start_scene_pos = value
+
+    @property
+    def _text_selection_rect_item(self):
+        return self._ensure_text_selection_manager()._text_selection_rect_item
+    @_text_selection_rect_item.setter
+    def _text_selection_rect_item(self, value):
+        self._ensure_text_selection_manager()._text_selection_rect_item = value
+
+    @property
+    def _text_selection_live_doc_rect(self):
+        return self._ensure_text_selection_manager()._text_selection_live_doc_rect
+    @_text_selection_live_doc_rect.setter
+    def _text_selection_live_doc_rect(self, value):
+        self._ensure_text_selection_manager()._text_selection_live_doc_rect = value
+
+    @property
+    def _text_selection_live_text(self):
+        return self._ensure_text_selection_manager()._text_selection_live_text
+    @_text_selection_live_text.setter
+    def _text_selection_live_text(self, value):
+        self._ensure_text_selection_manager()._text_selection_live_text = value
+
+    @property
+    def _text_selection_last_scene_pos(self):
+        return self._ensure_text_selection_manager()._text_selection_last_scene_pos
+    @_text_selection_last_scene_pos.setter
+    def _text_selection_last_scene_pos(self, value):
+        self._ensure_text_selection_manager()._text_selection_last_scene_pos = value
+
+    @property
+    def _text_selection_start_span_id(self):
+        return self._ensure_text_selection_manager()._text_selection_start_span_id
+    @_text_selection_start_span_id.setter
+    def _text_selection_start_span_id(self, value):
+        self._ensure_text_selection_manager()._text_selection_start_span_id = value
+
+    @property
+    def _text_selection_start_hit_info(self):
+        return self._ensure_text_selection_manager()._text_selection_start_hit_info
+    @_text_selection_start_hit_info.setter
+    def _text_selection_start_hit_info(self, value):
+        self._ensure_text_selection_manager()._text_selection_start_hit_info = value
+
+    @property
+    def _selected_text_rect_doc(self):
+        return self._ensure_text_selection_manager()._selected_text_rect_doc
+    @_selected_text_rect_doc.setter
+    def _selected_text_rect_doc(self, value):
+        self._ensure_text_selection_manager()._selected_text_rect_doc = value
+
+    @property
+    def _selected_text_page_idx(self):
+        return self._ensure_text_selection_manager()._selected_text_page_idx
+    @_selected_text_page_idx.setter
+    def _selected_text_page_idx(self, value):
+        self._ensure_text_selection_manager()._selected_text_page_idx = value
+
+    @property
+    def _selected_text_cached(self):
+        return self._ensure_text_selection_manager()._selected_text_cached
+    @_selected_text_cached.setter
+    def _selected_text_cached(self, value):
+        self._ensure_text_selection_manager()._selected_text_cached = value
+
+    @property
+    def _selected_text_hit_info(self):
+        return self._ensure_text_selection_manager()._selected_text_hit_info
+    @_selected_text_hit_info.setter
+    def _selected_text_hit_info(self, value):
+        self._ensure_text_selection_manager()._selected_text_hit_info = value
+
+    @property
+    def _selected_text_from_drag(self):
+        return self._ensure_text_selection_manager()._selected_text_from_drag
+    @_selected_text_from_drag.setter
+    def _selected_text_from_drag(self, value):
+        self._ensure_text_selection_manager()._selected_text_from_drag = value
+
+    @property
+    def _text_selection_start_doc_point(self):
+        return self._ensure_text_selection_manager()._text_selection_start_doc_point
+    @_text_selection_start_doc_point.setter
+    def _text_selection_start_doc_point(self, value):
+        self._ensure_text_selection_manager()._text_selection_start_doc_point = value
+
+    @property
+    def _text_selection_extra_rect_items(self):
+        return self._ensure_text_selection_manager()._text_selection_extra_rect_items
+    @_text_selection_extra_rect_items.setter
+    def _text_selection_extra_rect_items(self, value):
+        self._ensure_text_selection_manager()._text_selection_extra_rect_items = value
 
     def _ensure_object_selection_manager(self) -> ObjectSelectionManager:
         mgr = getattr(self, "_obj_sel_mgr", None)

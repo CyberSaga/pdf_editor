@@ -69,7 +69,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R0** | Baseline Freeze & Regression-Net Repair | 2-model (mech) + 3-model (interpreter-authority) | 4.5 | ✅ **done 2026-06-15** | [`plans/refactor-R0-baseline-freeze.md`](plans/refactor-R0-baseline-freeze.md) |
 | **R1** | Mechanical Hygiene (ruff + app-identity + packaging) | 2-model | 4.2 | ✅ **done 2026-06-15** | [`plans/refactor-R1-mechanical-hygiene.md`](plans/refactor-R1-mechanical-hygiene.md) |
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
-| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ◐ **in progress** (R3.1 ✅, R3.2 ✅, R3.4 ✅, R3.5 ✅ — ALL model seams done; R3.6 ✅, R3.7 ✅ view seams; R3.8 mouse-dispatcher + state migration TODO) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
+| **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ✅ **done 2026-06-17** (R3.1-R3.7 ✅; R3.8a ✅ state migration; **R3.8b dispatcher DEFERRED per user** — gate can't validate Qt event-routing; context+landmines documented) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ☐ not started | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
 | **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ☐ not started | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
 | **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
@@ -439,3 +439,22 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   **Next:** R3.8 — the LAST view artifact: refactor `_mouse_press/move/release` into a per-mode dispatcher delegating to
   the two managers + migrate the object/text interaction state into them (preserve the `current_mode` early-return
   ordering exactly).
+- **2026-06-17 (turn 24): R3.8a LANDED + R3.8b DEFERRED (user decision) → R3 COMPLETE.** Full 3-model review
+  (Gemini dual-lens + Codex) on the 3 mouse handlers (~1090 LOC, 8-mode convergence). Gemini first timed out on
+  the 1100-line extract (documented large-input failure) → retried with a compact structure-only prompt. **Both
+  vendors independently SPLIT R3.8** into R3.8a (state-ownership) vs R3.8b (handler-ordering/Qt-event) and both
+  concluded the **377-case pixel-parity + model gate STRUCTURALLY CANNOT validate R3.8b** (blind to Qt event
+  routing: accept/ignore propagation, autopan QTimer, drag-vs-click thresholds, super().mouseMoveEvent fallthrough,
+  overlapping-hit priority) — needs pytest-qt interaction tests + manual QA. Surfaced this as a checkpoint; **user
+  chose: R3.8a only, defer R3.8b, document context + Codex's landmines, /compact when R3 done.** **R3.8a (executed,
+  gate-verified):** migrated all 43 interaction-state attrs (17 text + 26 object, incl. the 9 never-in-__init__
+  `_object_resize_*`/`_selected_object_infos`/`_selected_object_page_idx`) out of `PDFView.__init__` into the two
+  managers' `__init__`; PDFView keeps get/set `@property` forwarders for all 43 proxying via the lazy accessors
+  (so `__new__` test doubles + pre-construction access work). Manager bodies `self._view._<attr>` → `self._<attr>`
+  (word-boundary exact) for migrated names only. Handlers byte-identical. One transform bug caught + fixed: the
+  8-space init-line removal matched a 20-space handler substring (`str.replace` corruption) → anchored removal with
+  a leading `\n` + asserted exactly 34 lines removed. ZERO test churn. **R3.8b fully documented** in the plan
+  (branch boundaries, Strangler-Fig/Boolean-consumption procedure, Codex's 10 landmines, the verification-gap test
+  files). Gates: interaction GUI suites 130p, full suite **1391p/20s** (clean), production ruff 0, codegraph
+  re-indexed, **no-jump completion-gate before/after.** **R3 COMPLETE** (R3.1-R3.7 + R3.8a; R3.8b deferred). **Next:**
+  per user, `/compact`, then R4 (performance deferrals).

@@ -1066,7 +1066,7 @@
 ### `view/pdf_view.py`
 **Classes:** `_NoCtrlTabTabBar` (L192), `PDFView` (L241)
 **Functions:** `_ctrl_tab_direction` (L112), `compute_object_resize_rect` (L122), `screen_angle_degrees` (L182), `__getattr__` (L222)
-**Methods (268):** `event`, `keyPressEvent`, `__init__`, `ensure_heavy_panels_initialized`, `_emit_shell_ready_once`, `_configure_drop_targets`, `_extract_dropped_pdf_paths`, `_set_drag_drop_affordance`, `_queue_or_open_paths`, `drain_pending_open_paths`, `_handle_drag_drop_event`, `dragEnterEvent`, `dragMoveEvent`, `dragLeaveEvent`, `dropEvent`, `_build_fullscreen_exit_button`, `_update_fullscreen_exit_button_geometry`, `_set_fullscreen_exit_button_visible`, `_update_fullscreen_exit_hover`, `is_fullscreen_active` …
+**Methods (354):** `event`, `keyPressEvent`, `__init__`, `ensure_heavy_panels_initialized`, `_emit_shell_ready_once`, `_configure_drop_targets`, `_extract_dropped_pdf_paths`, `_set_drag_drop_affordance`, `_queue_or_open_paths`, `drain_pending_open_paths`, `_handle_drag_drop_event`, `dragEnterEvent`, `dragMoveEvent`, `dragLeaveEvent`, `dropEvent`, `_build_fullscreen_exit_button`, `_update_fullscreen_exit_button_geometry`, `_set_fullscreen_exit_button_visible`, `_update_fullscreen_exit_hover`, `is_fullscreen_active` …
 
 ### `view/text_editing.py`
 **Classes:** `TextEditUIConstants` (L82), `TextEditGeometryConstants` (L94), `TextEditFinalizeReason` (L99), `TextEditOutcome` (L110), `TextEditReason` (L117), `TextEditDragState` (L121), `TextEditDelta` (L128), `TextEditFinalizeResult` (L140), `TextEditSession` (L150), `_EditorShortcutForwarder` (L166), `InlineTextEditor` (L231), `ViewportAnchor` (L256), `PreviewRenderer` (L608), `PreviewBackedInlineTextEditor` (L745), `TextEditManager` (L976)
