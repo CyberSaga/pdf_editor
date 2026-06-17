@@ -166,6 +166,7 @@ from controller.ocr_coordinator import (  # noqa: E402
 # R3.2: the async search subsystem (worker, bridge, orchestration + state) lives in
 # controller/search_coordinator.py. _SearchWorker/_SearchBridge are re-exported here so
 # `from controller.pdf_controller import _SearchWorker, _SearchBridge` stays valid.
+from controller.thumbnail_coordinator import ThumbnailCoordinator  # noqa: E402
 from controller.search_coordinator import (  # noqa: E402
     SearchCoordinator,
     _SearchBridge,  # noqa: F401  (re-export for backward compatibility)
@@ -187,6 +188,7 @@ class PDFController:
         self._optimize_paused_session_id: str | None = None
         self._ocr_coordinator = OcrCoordinator(self)
         self._search_coordinator = SearchCoordinator(self)
+        self._thumbnail_coordinator = ThumbnailCoordinator(self)
         self._load_gen_by_session: dict[str, int] = {}
         self._thumb_gen_by_session: dict[str, int] = {}
         self._render_gen_by_session: dict[str, int] = {}
@@ -224,6 +226,7 @@ class PDFController:
             self._optimize_worker_bridge.thread_finished.connect(self._on_optimize_thread_finished)
         self._ocr_coordinator.connect_bridge()
         self._search_coordinator.connect_bridge()
+        self._thumbnail_coordinator.connect_bridge()
         if not self._signals_connected:
             self._connect_signals()
             self._signals_connected = True
@@ -2240,6 +2243,11 @@ class PDFController:
             or self._thumb_gen_by_session.get(session_id) != gen
             or not self.model.doc
         ):
+            return
+        # R4.3: offload large, overlay-free rebuilds to a background worker (renders off
+        # snapshot bytes, never the live doc). Returns True only when it owns the range.
+        coordinator = getattr(self, "_thumbnail_coordinator", None)
+        if coordinator is not None and coordinator.try_start(start, session_id, gen, end_limit):
             return
         n = end_limit if end_limit is not None else len(self.model.doc)
         end = min(start + THUMB_BATCH_SIZE, n)

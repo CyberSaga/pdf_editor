@@ -510,3 +510,26 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   passed). Gates: search+ocr+print flow + snapshot + xref-guard 41p, production ruff 0, full suite GREEN.
   PITFALLS + ARCHITECTURE (controller perf §) updated. **Next:** R4.3 (thumbnail rasterization → QThread,
   reuses this cache) → R4.1 (overlay raster cache, highest invalidation risk).
+- **2026-06-17 (turn 27): R4.3 LANDED (hybrid async thumbnails, 3-model concurrency item; user-approved scope).**
+  Source mapping surfaced a design fork the one-paragraph plan missed: `get_thumbnail` → `get_page_pixmap(0.2)` →
+  `render_page_pixmap` reads the LIVE non-thread-safe `fitz.Document` AND applies watermark overlays
+  (`needs_page_overlay(..., "view")`). The plan's "worker opens its own fitz over snapshot bytes" avoids the
+  live-doc race but the snapshot (`doc.tobytes()`) has NO overlays — so a naive worker render would silently drop
+  watermarks from thumbnails. Surfaced this as a checkpoint; **user chose the behavior-preserving hybrid.**
+  Built `controller/thumbnail_coordinator.py` (`ThumbnailCoordinator`/`_ThumbnailWorker`/`_ThumbnailBridge`,
+  mirroring Search/Ocr coordinators verbatim: `worker→bridge→handler`, refs dropped on `thread.finished`).
+  `_schedule_thumbnail_batch` now calls `coordinator.try_start(start, sid, gen, end_limit)` first and falls back
+  to the unchanged synchronous path. **Async path taken ONLY when** `_should_async` holds: bridge wired
+  (post-activate), session still active, range ≥ `THUMB_ASYNC_MIN_PAGES=24`, AND `get_watermarks()` empty
+  (watermarked sessions stay sync → output byte-identical; annotations are baked into the bytes via `annots=True`
+  so they survive). Worker renders off R4.2 snapshot bytes with the same `_safe_render_scale` clamp + colorspace,
+  emits detached `QImage`s; `_on_batch_ready` converts to `QPixmap` on the GUI thread and drops stale batches via
+  the `_thumb_gen_by_session` token. **Red-Light First:** new `test_thumbnail_coordinator.py` RED (ModuleNotFound)
+  → 11 GREEN (worker batches synchronously, `_should_async` ×5 eligibility, `_on_batch_ready` paint + staleness,
+  scheduler delegation). **Two bugs caught mid-gating:** (a) a live-thread end-to-end test hung when interleaved
+  (passed in isolation) — the documented Qt/COM instability; removed it (behavior covered deterministically + the
+  wiring is identical to proven coordinators). (b) `QPixmap.fromImage` HANGS without the `qapp` fixture — added it
+  to the QPixmap-touching tests (PITFALLS entry). **ZERO churn** to existing thumbnail/flow/multi-tab suites
+  (100p). Gates: thumbnail+flow+multitab 100p/1s, production ruff 0, full suite GREEN. PITFALLS ×2 + ARCHITECTURE
+  (hybrid async thumbnails §) + TODOS updated. **Next (last R4 item):** R4.1 — overlay raster cache with per-tool
+  revision counters (highest invalidation risk, ~25 mutation sites).
