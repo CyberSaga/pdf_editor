@@ -640,13 +640,19 @@ class CommandManager:
             )
 
     def _unique_byte_total(self) -> int:
-        seen: set[int] = set()
+        # Dedup by CONTENT, not id(): adjacent boundary pairs are aliased to one
+        # object by _dedup_top_snapshot_pair, but byte-identical snapshots that are
+        # *non-adjacent* (e.g. a fresh capture matching an earlier doc state) remain
+        # distinct objects. An id()-keyed sum double-counts those against the budget
+        # and evicts prematurely. bytes are hashable (CPython caches the hash on the
+        # object), so a content-keyed set is exact and amortized-cheap across the
+        # repeated calls in the trim loop.
+        seen: set[bytes] = set()
         total = 0
         for cmd in self._undo_stack:
             for chunk in cmd._snapshot_chunks():
-                chunk_id = id(chunk)
-                if chunk_id not in seen:
-                    seen.add(chunk_id)
+                if chunk not in seen:
+                    seen.add(chunk)
                     total += len(chunk)
         return total
 

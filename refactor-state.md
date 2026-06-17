@@ -473,3 +473,17 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   ruff 0, full suite GREEN. **Next:** R4.4 (undo dedup coverage, 2-model) → then the three 3-model concurrency
   items: R4.2 (snapshot-bytes cache, now unblocked by R3 coordinators) → R4.3 (thumbnail QThread, reuses R4.2) →
   R4.1 (overlay raster cache, highest invalidation risk).
+- **2026-06-17 (turn 25b): R4.4 LANDED (undo dedup coverage, 2-model).** `CommandManager._unique_byte_total`
+  (`edit_commands.py:642`) deduped the undo byte-budget accounting by `id()`. But `_dedup_top_snapshot_pair`
+  only aliases the **top two** commands at push time, so byte-identical snapshots that are *non-adjacent* (a
+  fresh `_capture_doc_snapshot()` matching an earlier doc state) stay distinct `bytes` objects and were summed
+  twice → the 512 MiB cap tripped early → undo history evicted prematurely. **Fix:** dedup by **content**
+  (`seen: set[bytes]`); CPython caches each bytes object's hash, so it's amortized-cheap across the recompute
+  loop in `_trim_undo_stack_if_needed`. Exact + leak-free — deliberately NOT a persistent `digest→bytes` intern
+  map (would keep evicted snapshots alive; `bytes` aren't weak-referenceable). The hot-path adjacent RAM-sharing
+  in `_dedup_top_snapshot_pair` is untouched. **Red-Light First:** two new tests — `test_non_adjacent_identical_bytes_counted_once`
+  (asserts exact unique total 300, was 400) + `test_non_adjacent_duplicate_does_not_prematurely_evict` (budget
+  350 fits unique 300 but not id-double-counted 400 → was `undo_count=2`, now 3). Both RED before, GREEN after.
+  Gates: undo-budget 8p, production ruff 0, full suite GREEN. PITFALLS entry added ("Undo byte-budget must dedup
+  by content, not id()"). **Next:** the three 3-model concurrency items — R4.2 (snapshot-bytes cache) → R4.3
+  (thumbnail QThread) → R4.1 (overlay raster cache).

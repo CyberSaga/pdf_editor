@@ -246,3 +246,58 @@ def test_dedup_shared_bytes_counted_once_in_budget(monkeypatch) -> None:
         f"dedup'd shared bytes should count once — both commands fit in 250-byte budget, "
         f"but got undo_count={cm.undo_count}"
     )
+
+
+def test_non_adjacent_identical_bytes_counted_once() -> None:
+    """R4.4: byte-identical snapshots that are NOT an adjacent boundary pair must
+    still count once against the budget. `_dedup_top_snapshot_pair` only aliases the
+    top two commands at push time, so non-adjacent duplicates stay distinct objects;
+    `_unique_byte_total` must dedup them by CONTENT, not by id()."""
+    cm = CommandManager()
+    model = _FakeModel()
+
+    x = b"x" * 100
+    x_dup = bytes(bytearray(b"x" * 100))  # identical content, distinct object
+    assert x == x_dup and x is not x_dup
+
+    cmd1 = _snapshot_cmd(model, b"a" * 50, x, "op1")
+    cmd2 = _snapshot_cmd(model, b"b" * 50, b"c" * 50, "op2")
+    cmd3 = _snapshot_cmd(model, x_dup, b"d" * 50, "op3")
+
+    cm.record(cmd1)
+    cm.record(cmd2)
+    cm.record(cmd3)
+
+    # The duplicate (x / x_dup) is non-adjacent, so no alias was created.
+    assert cm._undo_stack[0]._after_bytes is not cm._undo_stack[2]._before_bytes
+
+    # Distinct content: a(50) + x(100) + b(50) + c(50) + d(50) = 300.
+    # id()-keyed double-counts x twice -> 400.
+    assert cm._unique_byte_total() == 300, (
+        f"non-adjacent identical bytes must count once, got {cm._unique_byte_total()}"
+    )
+
+
+def test_non_adjacent_duplicate_does_not_prematurely_evict(monkeypatch) -> None:
+    """R4.4: a budget that fits the unique footprint but not the id()-double-counted
+    figure must NOT evict when the duplicate is non-adjacent."""
+    cm = CommandManager()
+    model = _FakeModel()
+
+    x = b"x" * 100
+    cmd1 = _snapshot_cmd(model, b"a" * 50, x, "op1")
+    cmd2 = _snapshot_cmd(model, b"b" * 50, b"c" * 50, "op2")
+    cmd3 = _snapshot_cmd(model, bytes(bytearray(b"x" * 100)), b"d" * 50, "op3")
+
+    cm.record(cmd1)
+    cm.record(cmd2)
+    cm.record(cmd3)
+
+    # Unique footprint = 300; id()-double-counted = 400. Budget 350 fits unique only.
+    monkeypatch.setattr(CommandManager, "MAX_UNDO_STACK_BYTES", 350)
+    cm._trim_undo_stack_if_needed()
+
+    assert cm.undo_count == 3, (
+        f"non-adjacent duplicate should count once — all 3 fit in 350-byte budget, "
+        f"got undo_count={cm.undo_count}"
+    )
