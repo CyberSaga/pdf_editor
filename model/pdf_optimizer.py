@@ -226,7 +226,7 @@ def preset_optimize_options(preset: str) -> PdfOptimizeOptions:
             remove_metadata=False,
             remove_xml_metadata=False,
             garbage_level=2,
-            use_object_streams=False,
+            use_object_streams=True,
             linearize=False,
             compression_effort=3,
         )

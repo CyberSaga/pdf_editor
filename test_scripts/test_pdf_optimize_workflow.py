@@ -145,6 +145,27 @@ def test_pdf_model_optimizer_facade_uses_internal_module() -> None:
     assert options.preset == "平衡"
 
 
+def test_fast_preset_enables_object_streams(tmp_path: Path) -> None:
+    """R4.5: 快速 must enable object streams (cheap structural shrink).
+
+    It is the only preset where the flip is both effective and unblocked: 平衡 already
+    sets it True, 極致壓縮 forces linearize=True (which strips objstms in
+    normalize_optimize_options). 快速 has linearize=False, so the flip survives
+    normalization and reaches the save settings as use_objstms=1.
+    """
+    from model.pdf_model import PDFModel
+    from model.pdf_optimizer import fast_save_kwargs, normalize_optimize_options
+
+    options = PDFModel.preset_optimize_options("快速")
+    assert options.use_object_streams is True
+    # linearize is False, so normalization must NOT strip object streams.
+    assert options.linearize is False
+    normalized = normalize_optimize_options(options)
+    assert normalized.use_object_streams is True
+    # The win must actually reach the PyMuPDF save settings (use_objstms=1).
+    assert fast_save_kwargs(normalized)["use_objstms"] == 1
+
+
 def test_file_tab_exposes_optimize_copy_action(mvc) -> None:
     _model, view, _controller = mvc
 

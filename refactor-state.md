@@ -458,3 +458,18 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   files). Gates: interaction GUI suites 130p, full suite **1391p/20s** (clean), production ruff 0, codegraph
   re-indexed, **no-jump completion-gate before/after.** **R3 COMPLETE** (R3.1-R3.7 + R3.8a; R3.8b deferred). **Next:**
   per user, `/compact`, then R4 (performance deferrals).
+- **2026-06-17 (turn 25): R4 BEGUN — R4.5 LANDED (快速 preset objstms flip, the lowest-risk R4 item).** Post-`/compact`,
+  re-indexed codegraph (3338→3762 nodes), froze the `.venv` baseline GREEN (**1391p/20s**), then started R4 with
+  the most-mechanical item (2-model class). **Census confirmed the scope was narrower than the original deferral
+  note claimed:** of the three presets, `平衡` already had `use_object_streams=True`, and `極致壓縮` is structurally
+  blocked (`linearize=True` → `normalize_optimize_options:250-252` strips objstms), so **only `快速`
+  (`linearize=False`) was a genuine opportunity.** Flipped `use_object_streams=False → True` in
+  `preset_optimize_options` (`pdf_optimizer.py:229`). **Red-Light First:** new
+  `test_pdf_optimize_workflow.py::test_fast_preset_enables_object_streams` proves the full chain (preset True →
+  survives `normalize_optimize_options` → reaches `fast_save_kwargs` as `use_objstms=1`), RED before the flip
+  (`assert False is True`) → GREEN after. The two capability-gate tests (928/942) assert `use_object_streams is
+  False` for the *gated* dialog (preset 平衡/極致壓縮 with `object_streams:False` capability) — verified unaffected.
+  Gates: optimize-workflow + phase7-guard 41p/4s (the 4 skips = large-fixture-absent integrity params), production
+  ruff 0, full suite GREEN. **Next:** R4.4 (undo dedup coverage, 2-model) → then the three 3-model concurrency
+  items: R4.2 (snapshot-bytes cache, now unblocked by R3 coordinators) → R4.3 (thumbnail QThread, reuses R4.2) →
+  R4.1 (overlay raster cache, highest invalidation risk).
