@@ -16,6 +16,45 @@ is sequenced **after** R3's coordinator extraction (it touches the same controll
 
 ## R4.1 — Overlay raster cache with per-tool revision counters (3-model)
 
+> **STATUS: EVALUATED → DEFERRED (2026-06-17).** A source audit + 3-way design review found
+> every viable variant is either incorrect, high-risk-without-a-pixel-gate, or a non-win with
+> architectural friction. R4 ships at **4/5** (R4.5/R4.4/R4.2/R4.3 landed). Full rationale below;
+> see also `refactor-state.md` turn 28 and the PITFALLS design-note.
+>
+> **Key audit findings (vs the original spec):**
+> 1. **Watermark-only.** Only `WatermarkTool` overrides `needs_page_overlay` (true for
+>    `purpose="view"`). `AnnotationTool` uses the base default (`False`) — annotations are *baked*
+>    into the doc and rendered via `get_pixmap(annots=True)`, NOT composited as overlays. So the
+>    spec's `annot_revision` counter is moot, and the entire win applies only to watermarked docs.
+> 2. **The literal spec key is incorrect (stale composites).** Keying on
+>    `(session,page,scale,dpr,wm_revision,annot_revision)` omits any *base-content* revision, yet the
+>    overlay branch does `insert_pdf(base page) → draw watermark → get_pixmap`, so the composite
+>    includes the page's text/objects. Editing text under a watermark changes the composite while
+>    leaving `wm_revision` untouched → the cache would serve the old text under the watermark.
+> 3. **No model-owned complete invalidation signal.** `edit_count`/`rebuild_page` are incomplete
+>    (rotation, annotations, watermarks don't all route through them). The only complete
+>    "render changed" signal is the controller's whole-session `_render_revision`.
+> 4. **The safe (`render_revision`-keyed) cache is correct but a non-win.** It is redundant with the
+>    existing `_render_cache` (already keyed on `render_revision`), which prevents redundant overlay
+>    computation *within* a revision: page-view composites hit `_render_cache` and never reach the
+>    overlay branch; thumbnails render once into the widget; snapshots are on-demand. A new
+>    `render_revision`-keyed cache helps only under a QPixmap-cache eviction edge case, while
+>    requiring the controller's `render_revision` token be threaded into the model render API (layer
+>    smell) and roughly doubling composite memory.
+> 5. **Separate-canvas variant = high risk, no pixel gate.** Rendering the watermark on a transparent
+>    canvas and alpha-compositing over the base (skipping `insert_pdf`) must replicate page rotation,
+>    MediaBox origin, and session colorspace (sRGB/gray/CMYK) exactly, and accept anti-aliasing /
+>    overlap-blending differences — silent visual regressions on rotated/CMYK/multi-watermark pages,
+>    with no automated pixel-parity coverage for watermark rendering (no-jump only guards the editor).
+>
+> **What the real win would require (and why it's not worth it):** cross-revision *per-page* reuse,
+> i.e. per-page base-content revision tracking wired across the ~25 `_invalidate_active_render_state`
+> sites (one miss = silent stale render) OR the separate-canvas rewrite. Disproportionate risk for a
+> watermark-only conditional gain on a path the existing multi-layer caches already keep efficient
+> within a revision. **Revisit only if** watermarked-doc scroll-after-edit latency becomes a measured,
+> reported bottleneck; the lowest-risk path then is the separate-canvas approach *plus* a new
+> watermark pixel-parity gate built first.
+
 - **Current state (not "no cache"):** the controller already caches the final composited QPixmap
   in `_render_cache` keyed by `_render_revision` (`pdf_controller.py:857`). The residual cost is
   the **cache-MISS** path: `render_page_pixmap` overlay branch (`manager.py:88-99`) does

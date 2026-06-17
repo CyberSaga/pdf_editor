@@ -70,7 +70,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R1** | Mechanical Hygiene (ruff + app-identity + packaging) | 2-model | 4.2 | ✅ **done 2026-06-15** | [`plans/refactor-R1-mechanical-hygiene.md`](plans/refactor-R1-mechanical-hygiene.md) |
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
 | **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ✅ **done 2026-06-17** (R3.1-R3.7 ✅; R3.8a ✅ state migration; **R3.8b dispatcher DEFERRED per user** — gate can't validate Qt event-routing; context+landmines documented) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
-| **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ☐ not started | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
+| **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ✅ **done 2026-06-17** (4/5: R4.5 objstms ✅, R4.4 undo-dedup ✅, R4.2 snapshot-bytes cache ✅, R4.3 async thumbnails ✅; **R4.1 overlay raster cache EVALUATED → DEFERRED** — all variants incorrect/high-risk/non-win, see plan + turn 28) | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
 | **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ☐ not started | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
 | **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
 
@@ -533,3 +533,25 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   (100p). Gates: thumbnail+flow+multitab 100p/1s, production ruff 0, full suite GREEN. PITFALLS ×2 + ARCHITECTURE
   (hybrid async thumbnails §) + TODOS updated. **Next (last R4 item):** R4.1 — overlay raster cache with per-tool
   revision counters (highest invalidation risk, ~25 mutation sites).
+- **2026-06-17 (turn 28): R4.1 EVALUATED → DEFERRED → R4 COMPLETE (4/5).** Source audit + 3-way design review of
+  the overlay raster cache found every viable variant is incorrect, high-risk-without-a-pixel-gate, or a non-win
+  with friction — so the deliverable is the documented deferral, not code. **Findings (recorded in the plan's R4.1
+  STATUS block):** (1) **watermark-only** — only `WatermarkTool` overlays `purpose="view"`; `AnnotationTool` uses
+  the base `needs_page_overlay=False` (annotations are baked via `get_pixmap(annots=True)`, not overlays), so the
+  spec's `annot_revision` is moot. (2) **The literal spec key is incorrect** — `(...,wm_revision,annot_revision)`
+  omits a base-content revision, but the overlay branch composites `insert_pdf(base)→draw→get_pixmap`, so editing
+  text under a watermark would serve a stale composite. (3) **No complete model-owned invalidation signal**
+  (`edit_count`/`rebuild_page` miss rotation/annotations/watermarks); the only complete one is the controller's
+  whole-session `_render_revision`. (4) **The safe `render_revision`-keyed cache is correct but a non-win** —
+  redundant with the existing `_render_cache` (already `render_revision`-keyed; prevents redundant overlay compute
+  within a revision — page view hits `_render_cache` and never reaches the overlay branch, thumbnails render once
+  into the widget, snapshots are on-demand); it would only help under a QPixmap-cache eviction edge case while
+  requiring the controller token threaded into the model render API (layer smell) + ~2× composite memory.
+  (5) **Separate-canvas variant = high risk** — must replicate page rotation, MediaBox origin, and session
+  colorspace (sRGB/gray/CMYK) and accept AA/overlap blending diffs, with NO watermark pixel-parity gate (no-jump
+  only guards the editor). The real win (cross-revision per-page reuse) needs per-page content-revision tracking
+  across the ~25 `_invalidate_active_render_state` sites (one miss = silent stale render) — disproportionate risk
+  for a watermark-only conditional gain. **Decision (user-directed):** defer R4.1, record considerations, close R4.
+  Docs-only commit; PITFALLS design-note added. **R4 ✅ 4/5** — R4.5 `2a8cf8c` · R4.4 `62e0b81` · R4.2 `883fc6e` ·
+  R4.3 `60c36fc`. **Next:** R5 (security & supply-chain hardening) — and the deferred-findings backlog (R5.1
+  print-decrypt, R5.5 optimizer-decrypt, R3.4 pending_edits, R3.7 shiboken6.isValid, R3.8b dispatcher).
