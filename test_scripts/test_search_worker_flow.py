@@ -172,6 +172,9 @@ def _build_minimal_controller(per_page: dict[int, list], *, page_count: int = 3,
     controller.model = model
     controller.view = view
     controller._session_ui_state = {}
+    # R4.2: the worker snapshot cache lives on the controller now.
+    controller._worker_snapshot_cache = None
+    controller._render_revision_by_session = {}
     # R3.2: the search runtime now lives on the coordinator (PDFController keeps only
     # the search_text/_cancel_search delegates + _session_ui_state).
     sc = SearchCoordinator(controller)

@@ -146,7 +146,7 @@ class SearchCoordinator:
             query,
             len(self._c.model.doc),
             gen,
-            self._c.model.capture_worker_snapshot_bytes(),
+            self._c.capture_worker_snapshot_bytes(),
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)

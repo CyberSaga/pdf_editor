@@ -232,7 +232,7 @@ class PrintCoordinator:
             extra = {**(getattr(normalized_options, "extra_options", {}) or {}), "render_colorspace": profile}
             normalized_options = dataclass_replace(normalized_options, extra_options=extra)
 
-        pdf_bytes = self._c.model.capture_worker_snapshot_bytes()
+        pdf_bytes = self._c.capture_worker_snapshot_bytes()
         request = PrintJobRequest(
             pdf_bytes=pdf_bytes,
             watermarks=self._c.model.get_print_watermarks(),

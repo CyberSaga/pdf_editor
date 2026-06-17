@@ -487,3 +487,26 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   Gates: undo-budget 8p, production ruff 0, full suite GREEN. PITFALLS entry added ("Undo byte-budget must dedup
   by content, not id()"). **Next:** the three 3-model concurrency items — R4.2 (snapshot-bytes cache) → R4.3
   (thumbnail QThread) → R4.1 (overlay raster cache).
+- **2026-06-17 (turn 26): R4.2 LANDED (worker snapshot-bytes cache, 3-model concurrency item).** Fusion
+  tooling was inconclusive this turn (both Gemini passes timed out at 180s even on a compact prompt — the
+  documented hang; the codex-rescue agent returned only a forwarding meta-message, and SendMessage isn't in
+  this session's toolset) — so per the manual ("fusion is advisory; authoritative gates = ruff + pytest +
+  no-jump") and the R1 precedent, the design lens was applied via **my own source-grounded verification**.
+  **The finding that de-risked AND re-risked the design:** keying the cache on the existing `render_revision`
+  token (the page-render cache's invalidation key) is sound for every *render-visible* mutation — but
+  `grep render_mode=3` proved OCR's `apply_ocr_spans` is the UNIQUE *render-invisible, worker-visible* mutation
+  (injects invisible but searchable text; `_on_ocr_page_done` does NOT bump render_revision). A naive
+  `(sid, render_revision)` cache would serve pre-OCR bytes to a later search → silently miss the OCR'd text
+  (regression vs the current always-fresh call). **Design:** controller `capture_worker_snapshot_bytes()`
+  single-entry cache keyed `(active_session_id, render_revision)`; `_invalidate_worker_snapshot_cache()` dropped
+  from BOTH `_bump_render_revision` (visible mutations + memory free) AND `ocr_coordinator._on_ocr_page_done`
+  after `apply_ocr_spans` (the invisible-text gap). The 3 coordinators (search/OCR/print) now call
+  `self._c.capture_worker_snapshot_bytes()` not the model. Threading-safe (capture is GUI-thread
+  pre-`thread.start()`; `bytes` immutable). Encryption AST guard undisturbed (cache delegates to the model; no
+  new `tobytes` in model/) — `test_xref_repair` green. **Red-Light First:** new `test_worker_snapshot_cache.py`
+  (4 tests incl. the **OCR-staleness regression guard** asserting `_on_ocr_page_done` drops the cache), all RED
+  (method absent) → GREEN. **Test churn (R2.5-class):** the search + OCR flow harnesses' `__new__` controllers
+  needed `_worker_snapshot_cache=None` + `_render_revision_by_session={}` (2 lines each; print harness already
+  passed). Gates: search+ocr+print flow + snapshot + xref-guard 41p, production ruff 0, full suite GREEN.
+  PITFALLS + ARCHITECTURE (controller perf §) updated. **Next:** R4.3 (thumbnail rasterization → QThread,
+  reuses this cache) → R4.1 (overlay raster cache, highest invalidation risk).

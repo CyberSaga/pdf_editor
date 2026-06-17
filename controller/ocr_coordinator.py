@@ -180,7 +180,7 @@ class OcrCoordinator:
             page_nums=page_nums,
             languages=list(request.languages),
             device=request.device,
-            doc_bytes=self._c.model.capture_worker_snapshot_bytes(),
+            doc_bytes=self._c.capture_worker_snapshot_bytes(),
             gen=self._ocr_gen,
         )
         worker.moveToThread(thread)
@@ -265,6 +265,10 @@ class OcrCoordinator:
             return
         try:
             self._c.model.apply_ocr_spans(page_num, list(spans))
+            # OCR injects invisible text (render_mode=3): it changes doc.tobytes()
+            # (searchable!) but is pixel-identical, so it does NOT bump render_revision.
+            # Drop the worker snapshot cache or a later search reads stale pre-OCR bytes.
+            self._c._invalidate_worker_snapshot_cache()
         except Exception:
             logger.exception("apply_ocr_spans failed for page %s", page_num)
 

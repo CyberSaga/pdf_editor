@@ -295,6 +295,9 @@ def _build_minimal_controller(monkeypatch, *, available: bool, per_page: dict | 
     controller = PDFController.__new__(PDFController)
     controller.model = model
     controller.view = view
+    # R4.2: the worker snapshot cache lives on the controller now.
+    controller._worker_snapshot_cache = None
+    controller._render_revision_by_session = {}
     # R3.2: the OCR runtime now lives on the coordinator (PDFController keeps only
     # the start_ocr/cancel_ocr delegates).
     from controller.ocr_coordinator import OcrCoordinator

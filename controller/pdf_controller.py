@@ -201,6 +201,9 @@ class PDFController:
         self._render_revision_by_session: dict[str, int] = {}
         self._render_cache: OrderedDict[tuple[str, str, int, int, str, int], tuple[QPixmap, int]] = OrderedDict()
         self._render_cache_total_bytes = 0
+        # R4.2: single-entry cache of the full-doc worker snapshot bytes, keyed by
+        # (active_session_id, render_revision). See capture_worker_snapshot_bytes().
+        self._worker_snapshot_cache: tuple[str, int, bytes] | None = None
         self._fullscreen_session_snapshots: dict[str, FullscreenSessionSnapshot] = {}
         self._global_mode = self._normalize_mode(getattr(self.view, "current_mode", "browse"))
         self._signals_connected = False
@@ -579,6 +582,39 @@ class PDFController:
         self._render_revision_by_session[sid] = self._render_revision_by_session.get(sid, 0) + 1
         self._page_render_quality_by_session[sid] = {}
         self._drop_render_cache_for_session(sid)
+        # Any render-visible mutation also changes doc.tobytes(); free the stale
+        # snapshot now (the revision-keyed read below would miss it anyway).
+        self._invalidate_worker_snapshot_cache()
+
+    def capture_worker_snapshot_bytes(self) -> bytes:
+        """Revision-keyed cache over ``model.capture_worker_snapshot_bytes()``.
+
+        The snapshot is a full ``doc.tobytes()``; search, OCR and print each capture it
+        independently on the GUI thread before ``QThread.start()``, so overlapping jobs
+        on an unedited doc re-serialize identical bytes. Cache on
+        ``(active_session_id, render_revision)`` — the same token the page-render cache
+        trusts: any mutation that changes a rendered page bumps ``_render_revision`` via
+        ``_invalidate_active_render_state``. The one doc mutation that changes
+        ``doc.tobytes()`` WITHOUT a render bump is OCR invisible-text injection
+        (``apply_ocr_spans``, ``render_mode=3`` — searchable but pixel-identical); the
+        OCR coordinator drops this cache after applying spans so a later search never
+        reads stale bytes. A session with no active id is never cached. The cached
+        ``bytes`` are immutable, so handing them to a worker thread is safe.
+        """
+        sid = self.model.get_active_session_id()
+        if not sid:
+            return self.model.capture_worker_snapshot_bytes()
+        revision = self._render_revision(sid)
+        cached = self._worker_snapshot_cache
+        if cached is not None and cached[0] == sid and cached[1] == revision:
+            return cached[2]
+        data = self.model.capture_worker_snapshot_bytes()
+        self._worker_snapshot_cache = (sid, revision, data)
+        return data
+
+    def _invalidate_worker_snapshot_cache(self) -> None:
+        """Drop the cached worker snapshot bytes (frees a full-document copy)."""
+        self._worker_snapshot_cache = None
 
     def _drop_render_cache_for_session(self, session_id: str) -> None:
         doomed = [key for key in self._render_cache.keys() if key[0] == session_id]
