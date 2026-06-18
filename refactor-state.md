@@ -72,7 +72,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ✅ **done 2026-06-17** (R3.1-R3.7 ✅; R3.8a ✅ state migration; **R3.8b dispatcher DEFERRED per user** — gate can't validate Qt event-routing; context+landmines documented) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ✅ **done 2026-06-17** (4/5: R4.5 objstms ✅, R4.4 undo-dedup ✅, R4.2 snapshot-bytes cache ✅, R4.3 async thumbnails ✅; **R4.1 overlay raster cache EVALUATED → DEFERRED** — all variants incorrect/high-risk/non-win, see plan + turn 28) | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
 | **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ✅ **done 2026-06-18 (4/5 — autonomous ceiling)** (R5.1 print-decrypt ✅, R5.3 ✅ in R2.2, R5.4 packaging guard ✅, R5.5 optimize-copy encryption ✅; **R5.2 OCR bundle BLOCKED** on an out-of-band vetted weights bundle + digests — packaging/human task, not code; enforcement already fails closed) | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
-| **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
+| **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ◑ **in progress 2026-06-18** (R6.1 characterization tests ✅ — merge-compose/print-watermark/bridge-slots/text-selection, 23 tests; R6.2 retire stale no-jump ignores + R6.3 coverage floor pending) | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
 
 ---
 
@@ -625,3 +625,25 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   (Coverage Hardening — test tail over the R3-decomposed seams), plus the standing deferred-findings backlog
   (R3.4 pending_edits, R3.7 shiboken6.isValid, R3.8b dispatcher). Awaiting user direction or a scheduled
   "continue" tick before starting R6.
+- **2026-06-18 (turn 33): R6.1 — characterization tests for verified-untested live methods.** Confirmed the
+  `.venv` net green first (1420 passed / 20 skipped on HEAD `15b50d6`), then added 23 characterization tests
+  over four census-verified zero-reference surfaces with live production callers — the PyMuPDF/PySide6 glue that
+  regresses silently across a version bump. (1) `model.compose_merged_document` → `test_merge_composition.py`
+  (6 tests: no-doc ValueError, current/file/mixed-order inserts assert page **text** not just count, skips
+  unknown-kind + pathless-file, empty/None → 0 pages). (2) `model.get_print_watermarks` →
+  `test_print_watermarks.py` (4: empty, core fields, CJK `ensure_ascii=False` round-trip, and the **deep-copy
+  isolation** that distinguishes it from the shallow `get_watermarks` — teeth proven out-of-band: the shallow
+  path leaks an appended `999` into the stored list, the deep print copy does not). (3) the three worker→GUI
+  bridge slots `forward_prepared` (`_PrintWorkerBridge`), `forward_succeeded` (`_OptimizeWorkerBridge`),
+  `forward_status` (`_OcrBridge`) + siblings → `test_worker_bridge_slots.py` (9: arity + payload identity across
+  the `@Slot`→`Signal` re-emit; receivers/closures bound to locals per the R5.1 inline-`_Bridge()` GC bite). (4)
+  `model.get_text_selection_bounds` + the `run_reopen_anchors` session property →
+  `test_text_selection_bounds.py` (5: None on no-doc/out-of-range-page/rect-misses-text, encloses the selected
+  line geometry, session-routed set/get round-trip). All 23 green, ruff-clean. **Red-light note:**
+  characterization tests pin *shipped* behavior, so they are green-by-construction — no red-light (CLAUDE.md §5.1
+  governs new features); the discipline shifted to *teeth* (assert a side effect a plausible regression breaks)
+  + PITFALLS entry. R6.1 line shifts vs the plan: post-R5 reindex moved `compose_merged_document` to `:1411`,
+  and R3 decomposition relocated the bridge slots out of `pdf_controller.py` into the print/ocr coordinators.
+  Docs: PITFALLS (characterization-teeth entry), TODOS (R6.1), this file. **Next:** R6.2 (retire the three stale
+  `verify_no_jump.py` full-suite `--ignore` lines — re-verify the three files pass/skip under `.venv` *before*
+  editing the gate script) + R6.3 (coverage floor at-or-below measured baseline).

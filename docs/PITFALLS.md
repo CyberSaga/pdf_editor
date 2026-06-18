@@ -1300,3 +1300,10 @@
 **Cause:** `Path.write_text`/`open(mode="w")` use `newline=None`, which translates `\n` → `os.linesep` (`\r\n`) on write; `read_text` translates `\r\n` → `\n` on read. So a round-trip through write_text converts an LF-committed file to CRLF on disk while the normalized string compare hides it.
 **Fix:** To restore a tracked file exactly, use `git checkout -- <file>` (or write bytes with `newline=""`). Never rely on a Python write_text round-trip to leave a file byte-identical for git.
 **File:** (general — observed during the R5.4 teeth experiment)
+
+## Characterization tests are green-by-construction — they need *teeth*, not a red-light
+**Area:** testing / coverage-hardening (R6.1)
+**Symptom:** A "characterization" test added over already-shipped behavior passes on first run, which superficially violates Red-Light-First (CLAUDE.md §5.1: "if a test passes before any implementation exists, the test is invalid").
+**Cause:** Red-Light-First governs *new features* (write the failing test, then make it pass). A characterization test pins **existing** behavior, so it is green by definition — there is no implementation to write. The real risk is a vacuous assertion that would still pass if the behavior silently flipped (a no-op test), and — when written after an R3-style decomposition — a test that pins the **new** seam rather than the **old** contract, so it cannot catch a decomposition regression.
+**Fix:** Give each characterization test teeth: assert a state change / side effect that a plausible regression would break, and prove it out-of-band. E.g. `get_print_watermarks` returns a JSON deep copy, not the shallow `get_watermarks` list — the isolation test was proven to have teeth by confirming the shallow path *does* leak a nested mutation (999 appended) while the deep path does not. For methods touched by a refactor, author the characterization test against pre-refactor behavior first and carry it through green.
+**File:** `test_scripts/test_merge_composition.py`, `test_scripts/test_print_watermarks.py`, `test_scripts/test_worker_bridge_slots.py`, `test_scripts/test_text_selection_bounds.py`
