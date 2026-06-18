@@ -71,7 +71,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
 | **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ✅ **done 2026-06-17** (R3.1-R3.7 ✅; R3.8a ✅ state migration; **R3.8b dispatcher DEFERRED per user** — gate can't validate Qt event-routing; context+landmines documented) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ✅ **done 2026-06-17** (4/5: R4.5 objstms ✅, R4.4 undo-dedup ✅, R4.2 snapshot-bytes cache ✅, R4.3 async thumbnails ✅; **R4.1 overlay raster cache EVALUATED → DEFERRED** — all variants incorrect/high-risk/non-win, see plan + turn 28) | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
-| **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ◑ **in progress** (R5.3 ✅ in R2.2; **R5.5 optimize-copy encryption ✅** + **R5.1 print-decrypt ✅** + **R5.4 packaging guard ✅ 2026-06-18**; only **R5.2 OCR bundle** remains — BLOCKED on an out-of-band vetted weights bundle, not a code change) | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
+| **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ✅ **done 2026-06-18 (4/5 — autonomous ceiling)** (R5.1 print-decrypt ✅, R5.3 ✅ in R2.2, R5.4 packaging guard ✅, R5.5 optimize-copy encryption ✅; **R5.2 OCR bundle BLOCKED** on an out-of-band vetted weights bundle + digests — packaging/human task, not code; enforcement already fails closed) | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
 | **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
 
 ---
@@ -615,3 +615,13 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   full suite pending. Docs: TODOS R5.4 + R1.3 ref updated, PITFALLS gotcha. **R5 status:** R5.1/R5.3/R5.4/R5.5
   done; only **R5.2** (OCR weights bundle) remains, and it is BLOCKED on shipping/vetting an out-of-band weights
   bundle (a packaging/human task, not a code change) — so R5 is effectively at its autonomous completion ceiling.
+- **2026-06-18 (turn 32): R5 CLOSED at 4/5 (autonomous ceiling).** R5.1 (`94a62ad`), R5.4 (`7b413ae`), R5.5
+  (`5165b0f`) landed this session, each Red→Green + full-suite green + atomic commit + no-jump gate rebind; R5.3
+  was already done in R2.2. **R5.2 (OCR weights bundle) marked BLOCKED** — a packaging/human step (vet + ship a
+  surya 0.17.x checkpoint set out-of-band, populate `WEIGHTS_MANIFEST` with measured SHA256s, default
+  `PDF_EDITOR_OCR_WEIGHTS_DIR`); no safe autonomous change remains (the enforcement layer already fails closed on
+  an empty manifest, and defaulting the dir before the bundle exists would only break OCR). Plan annotated with a
+  STATUS:BLOCKED block (mirrors R4.1's deferral record). Full suite 1420 passed / 20 skipped. **Next:** R6
+  (Coverage Hardening — test tail over the R3-decomposed seams), plus the standing deferred-findings backlog
+  (R3.4 pending_edits, R3.7 shiboken6.isValid, R3.8b dispatcher). Awaiting user direction or a scheduled
+  "continue" tick before starting R6.

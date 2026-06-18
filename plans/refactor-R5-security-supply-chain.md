@@ -41,6 +41,20 @@ guard. (Census: security lens; critique HAZARD 6.)
 
 ## R5.2 — OCR weights: ship a vetted bundle + populate digests (3-model, packaging)
 
+> **STATUS: BLOCKED — out-of-band human step (2026-06-18).** This is explicitly a *packaging,
+> not code* task and cannot be completed by the agent: it requires obtaining a real surya
+> 0.17.x checkpoint set (large binary weights from surya's S3), **vetting** it, computing the
+> SHA256 digests from those exact files, and **distributing** the bundle out-of-band. The
+> enforcement code is already complete and wired (`ocr_tool.py:141 enforce_weights_policy`;
+> `ocr_weights.py` SHA256-verifies and **fails closed on an empty manifest**), so populating
+> `WEIGHTS_MANIFEST` or defaulting `PDF_EDITOR_OCR_WEIGHTS_DIR` *before* the bundle exists would
+> only break OCR (missing dir / empty manifest → fail-closed), not improve security. No safe
+> autonomous change remains. **Unblock requires:** a maintainer vets + ships the bundle, then
+> populates `WEIGHTS_MANIFEST` with the measured digests and defaults the env var in the packaged
+> build (follow `docs/ocr-weights-verification.md`). Until then the runtime stays on the
+> revision-pinned online fetch (protection present but inert). **R5 ships at 4/5** (R5.1 ✅, R5.3 ✅
+> in R2.2, R5.4 ✅, R5.5 ✅).
+
 - The integrity layer is **complete and wired** (`ocr_tool.py:141 enforce_weights_policy`;
   `ocr_weights.py` SHA256-verifies + fails closed on empty manifest; revision pins) — but
   `WEIGHTS_MANIFEST = {}` is empty and no bundle ships. With no `PDF_EDITOR_OCR_WEIGHTS_DIR`, the
