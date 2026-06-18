@@ -704,3 +704,20 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   (R3.4 deferred-finding block) + this entry; finding closed, revisit only if object-edit output size becomes a
   measured concern. **Remaining backlog:** R3.7 (`shiboken6.isValid` view hardening), R3.8b (dispatcher, explicit
   user deferral — gate-unvalidatable Qt event-routing).
+- **2026-06-18 (turn 37): deferred-finding R3.7 (`shiboken6.isValid` cleanup hardening) — DONE (low-risk,
+  behavior-identical, tested).** `TextSelectionManager`'s two scene-item cleanup sites (`_clear_text_selection`
+  rect item; `_clear_text_selection_extra_rects` line rects) relied on a broad `try/except Exception: pass` around
+  `item.scene()` to absorb the `RuntimeError` a `scene.clear()`-freed C++ wrapper raises, whereas the sibling
+  `ObjectSelectionManager` guards proactively with `shiboken6.isValid(item)`. **Investigated first:** both were
+  already crash-safe (probe confirmed `scene.clear()` flips `shiboken6.isValid`→False and a bare `.scene()` then
+  raises `RuntimeError`, which the try/except caught) — so this is NOT a latent crash, just a divergent pattern +
+  an untested guard path. Unified to `if shiboken6.isValid(item) and item.scene() is not None: scene.removeItem(...)`
+  (the exact ObjectSelectionManager idiom), replacing exception-as-control-flow; added `import shiboken6`. **No
+  observable behavior change** (both safe), so no red-light is possible — pinned instead with a characterization
+  test `test_text_selection_cleanup_guard.py` (4: the dangling state is real [teeth], both cleanup sites survive
+  `scene.clear()` without raising and drop their refs, a live item is still removed from the scene). Test green on
+  the OLD code (crash-safe) and the NEW code (explicit guard); ruff-clean incl. production `view/text_selection.py`;
+  module-header DEFERRED note rewritten to record the hardening. Gate can't validate Qt object-lifetime, but the
+  change matches a proven in-file sibling and is directly unit-tested. Docs: TODOS (R3.7), this entry. **Backlog
+  now:** only R3.8b remains (mouse-handler dispatcher) — explicit prior user deferral; the 377-case pixel gate is
+  structurally blind to Qt event-routing, so untouched without direct instruction.

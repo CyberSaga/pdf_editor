@@ -13,9 +13,12 @@ Scope note (approach X): this seam moves the METHODS only. The ~17 selection-sta
 (`_text_selection_*`, `_selected_text_*`) and the three mouse handlers stay on PDFView for now
 (manager reaches them via ``self._view``); state migration lands with the R3.8 handler refactor.
 
-DEFERRED finding (not done here, to keep the move verbatim): unlike ObjectSelectionManager,
-the selection-rect / extra-line-rect cleanup uses ``if item.scene():`` rather than
-``shiboken6.isValid(item)``; hardening to the latter is a follow-up, not part of this no-op move.
+R3.7 hardening (2026-06-18): the selection-rect / extra-line-rect cleanup now guards with
+``shiboken6.isValid(item)`` (mirroring ObjectSelectionManager) instead of relying on a broad
+``try/except`` around ``item.scene()`` to absorb the RuntimeError a scene.clear()-freed wrapper
+raises. Behavior-identical (both were crash-safe); the explicit validity test replaces
+exception-as-control-flow and unifies the two selection managers. Covered by
+``test_text_selection_cleanup_guard.py``.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import fitz
+import shiboken6
 from PySide6.QtCore import QPoint, QPointF, QRectF
 from PySide6.QtGui import QBrush, QColor, QPen
 from PySide6.QtWidgets import QApplication
@@ -202,11 +206,11 @@ class TextSelectionManager:
         )
 
     def _clear_text_selection_extra_rects(self) -> None:
+        # Mirror ObjectSelectionManager: skip wrappers whose C++ item was already
+        # freed by scene.clear() rather than catching the resulting RuntimeError.
         for item in getattr(self, "_text_selection_extra_rect_items", None) or []:
-            try:
+            if shiboken6.isValid(item) and item.scene() is not None:
                 self._view.scene.removeItem(item)
-            except Exception:
-                pass
         self._text_selection_extra_rect_items = []
 
     def _render_text_selection_line_rects(self, line_rects: list) -> None:
@@ -244,11 +248,12 @@ class TextSelectionManager:
         self._selected_text_hit_info = None
         self._selected_text_from_drag = False
         if self._text_selection_rect_item is not None:
-            try:
-                if self._text_selection_rect_item.scene():
-                    self._view.scene.removeItem(self._text_selection_rect_item)
-            except Exception:
-                pass
+            # scene.clear() deletes the underlying C++ item but leaves the Python
+            # wrapper dangling; test validity (mirroring ObjectSelectionManager)
+            # instead of relying on a caught RuntimeError from poking a freed
+            # object, then remove only if it is still live and in a scene.
+            if shiboken6.isValid(self._text_selection_rect_item) and self._text_selection_rect_item.scene() is not None:
+                self._view.scene.removeItem(self._text_selection_rect_item)
             self._text_selection_rect_item = None
         self._view._clear_text_selection_extra_rects()
         self._text_selection_start_doc_point = None
