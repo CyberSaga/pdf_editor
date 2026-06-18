@@ -60,9 +60,11 @@ docs/readable-markdown.css
 # macOS
 .DS_Store
 
-# Packaging artifacts (editable install creates cybersaga_pdf.egg-info/)
+# Packaging artifacts (editable install creates cybersaga_pdf.egg-info/;
+# setuptools/`pip wheel` create build/ in the project root — incl. the R5.4 guard test)
 *.egg-info/
 dist/
+build/
 
 # Coverage artifacts (R0.5 pytest-cov; regenerate via --cov, floor lives in refactor-state.md)
 .coverage

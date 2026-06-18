@@ -71,7 +71,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
 | **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ✅ **done 2026-06-17** (R3.1-R3.7 ✅; R3.8a ✅ state migration; **R3.8b dispatcher DEFERRED per user** — gate can't validate Qt event-routing; context+landmines documented) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ✅ **done 2026-06-17** (4/5: R4.5 objstms ✅, R4.4 undo-dedup ✅, R4.2 snapshot-bytes cache ✅, R4.3 async thumbnails ✅; **R4.1 overlay raster cache EVALUATED → DEFERRED** — all variants incorrect/high-risk/non-win, see plan + turn 28) | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
-| **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ◑ **in progress** (R5.3 ✅ in R2.2; **R5.5 optimize-copy encryption ✅** + **R5.1 print-decrypt ✅ 2026-06-18**, both Option A; R5.4 packaging guard next, R5.2 OCR bundle pending — needs out-of-band bundle) | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
+| **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ◑ **in progress** (R5.3 ✅ in R2.2; **R5.5 optimize-copy encryption ✅** + **R5.1 print-decrypt ✅** + **R5.4 packaging guard ✅ 2026-06-18**; only **R5.2 OCR bundle** remains — BLOCKED on an out-of-band vetted weights bundle, not a code change) | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
 | **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
 
 ---
@@ -596,3 +596,22 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   contract) + PITFALLS + TODOS. **Next:** R5.4 (packaging guard — resolve the build-env approach: setuptools 57.4.0
   + no `build` frontend make an in-`.venv` artifact build fragile) then R5.2 (OCR bundle — blocked on out-of-band
   vetted weights, not a code change).
+- **2026-06-18 (turn 31): R5.4 — packaging guard test (no dev/test trees in shipped artifacts).**
+  `scripts/` is a REAL package (`scripts/__init__.py` exists) holding the CUA pyautogui sign-off harness, so a
+  regression to find-all wheel discovery would ship it. New `test_scripts/test_security_packaging.py` guards both
+  artifact mechanisms hermetically — wheel via the pyproject `[tool.setuptools.packages.find].include` allow-list
+  (no pattern may match scripts/test_scripts/docs; prod packages still discoverable), sdist via `MANIFEST.in`
+  `prune scripts`/`prune test_scripts` — PLUS a best-effort real isolated `pip wheel . --no-deps` build asserting
+  `_offending_members(names)` is empty. **Env reality:** `.venv` has setuptools 57.4.0 (predates PEP 621
+  `[project]` + `[tool.setuptools]`, needs 61+) and no `build` frontend (a local `build/` dir shadows it), so an
+  in-`.venv` direct build can't honor the config; but PyPI is reachable, so PEP 517 isolation fetches setuptools
+  82.0.1 and the wheel builds in ~5s. The real-build test SKIPS (not fails) if the backend/network is unavailable,
+  degrading to the hermetic guards offline. **Teeth verified out-of-band:** transiently adding `scripts*` to the
+  discovery allow-list leaked 10 `scripts/` members (incl. the gate/CUA harness) into the wheel — the predicate
+  flags them; reverted via `git checkout` (note: Python `Path.write_text` on Windows rewrites LF→CRLF, so it can't
+  be used to "revert" a file — git checkout is the correct restore). **Tree hygiene:** added `build/` to
+  `.gitignore` (setuptools/`pip wheel` write it into the project root; already had `dist/` + `*.egg-info/`); the
+  guard test also `rmtree`s `build/` so the suite leaves the tree clean. 4 tests GREEN (incl. the real build);
+  full suite pending. Docs: TODOS R5.4 + R1.3 ref updated, PITFALLS gotcha. **R5 status:** R5.1/R5.3/R5.4/R5.5
+  done; only **R5.2** (OCR weights bundle) remains, and it is BLOCKED on shipping/vetting an out-of-band weights
+  bundle (a packaging/human task, not a code change) — so R5 is effectively at its autonomous completion ceiling.
