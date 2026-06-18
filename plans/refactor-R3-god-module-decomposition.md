@@ -206,6 +206,22 @@ crosses a layer.** One cohesive seam per commit; full suite green before/after e
   that the native-image path performs. This is **existing** behavior (possibly intentional — the controller
   captures a doc snapshot for undo independently of `pending_edits`). Move it **verbatim**; if it's a real
   save-prompt/refresh bug it is a separate post-R3 fix, not part of this structural seam.
+  - **RESOLVED 2026-06-18 (post-R6, traced end-to-end) → NOT a correctness bug; DOCUMENT & CLOSE (user decision).**
+    `pending_edits` has exactly **one** consumer repo-wide: `PDFModel.apply_pending_redactions()`
+    (`pdf_model.py:2775`), which calls `page.clean_contents()` on each registered page — a Phase-6 **content-stream
+    size optimization** ("壓縮 content stream… 降低 PDF 大小 10-30%"), invoked before `save_as` (`:3082`) and on the
+    text-edit GC cadence. It is **not** a correctness mechanism: no rendering, data, undo, encryption, or
+    save-prompt path reads it (undo is the controller's independent doc snapshot; the dirty/save-prompt flag is
+    separate). `edit_count` is read only by `_maybe_garbage_collect`, which is called **only** from the *text-edit*
+    path (`pdf_text_edit.py:1276`), never from object ops — so its increment is inert for the object verbs.
+    **Net consequence of the omission:** after a textbox move/rotate or image/textbox delete, that page skips the
+    optional pre-save `clean_contents()` compaction the native-image path gets, so the saved PDF is slightly
+    **larger** — but byte-correct and pixel-identical when rendered. The annotation-only `rect` branches correctly
+    omit it (`clean_contents` cleans the content stream, not annotations). Any fix would **change saved-PDF output**
+    for object edits, which the no-jump gate (text-editor pixel geometry only) structurally cannot validate — same
+    class as the deferred R3.8b. Closed with no code change; revisit only if object-edit output size becomes a
+    measured concern (then: register the content-rewriting branches for `clean_contents`, gated by an object-mode
+    save-size test built first). See `refactor-state.md` turn 36.
 
 ### R3.5 — `model/pdf_text_edit.py` (edit_text/redaction engine — LAST model seam) ✅ LANDED
 **As-built extraction map** (3-model: Gemini dual-lens + Codex + source-verified; the source

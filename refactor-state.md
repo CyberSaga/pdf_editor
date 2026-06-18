@@ -687,3 +687,20 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   **No autonomous work remains in the R-series plan** — the only open residuals are human/out-of-band (R5.2
   weights bundle) or explicitly deferred (R4.1 overlay raster cache), plus the standing deferred-findings backlog
   (R3.4 pending_edits, R3.7 shiboken6.isValid, R3.8b dispatcher) which is not part of R0–R6.
+- **2026-06-18 (turn 36): deferred-finding R3.4 (`pending_edits` asymmetry) — INVESTIGATED → NOT a correctness
+  bug → DOCUMENT & CLOSE (user decision; docs-only, no code change).** Traced `pending_edits` end-to-end: its
+  **only** consumer repo-wide is `apply_pending_redactions()` (`pdf_model.py:2775`) → `page.clean_contents()` on
+  each registered page, a Phase-6 **content-stream size optimization** (10-30% smaller PDF) run pre-`save_as`
+  (`:3082`) + on the text-edit GC cadence — NOT a correctness path (undo = the controller's independent doc
+  snapshot; the save-prompt/dirty flag is separate; nothing else reads it). The paired `edit_count` is read only
+  by `_maybe_garbage_collect`, called **only** from the *text-edit* path (`pdf_text_edit.py:1276`), never from the
+  object verbs, so its increment is inert for object ops. **Conclusion:** the app-object content-rewriting
+  branches (textbox move/rotate via redact+reinsert; image/textbox delete via redactions) skip the *optional*
+  pre-save `clean_contents()` compaction that the native-image path gets → saved PDF slightly **larger** but
+  byte-correct + pixel-identical when rendered; the annotation-only `rect` branches correctly omit it
+  (`clean_contents` doesn't touch annotations). Any fix changes object-edit **save output**, which the no-jump gate
+  (text-editor pixel geometry only) cannot validate — same gate-blind class as R3.8b — so I surfaced the fork
+  rather than silently altering save bytes; **user chose document-and-close.** Resolution recorded in the R3 plan
+  (R3.4 deferred-finding block) + this entry; finding closed, revisit only if object-edit output size becomes a
+  measured concern. **Remaining backlog:** R3.7 (`shiboken6.isValid` view hardening), R3.8b (dispatcher, explicit
+  user deferral — gate-unvalidatable Qt event-routing).
