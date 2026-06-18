@@ -58,3 +58,18 @@ on a missing optional `pyautogui` with `pyautogui = None` + a lazy
 threshold-encoding files (`test_no_jump_editor_geometry.py`,
 `test_text_editing_fidelity_suite.py`, `verify_no_jump.py`) and the trust-chain
 anchor still match their pins — nothing security-critical moved.
+
+2026-06-18 (R6.2): Refreshed the `scripts/verify_no_jump.py` entry in
+`scripts/completion_gate.py` from
+`f852959cdf6c16af6ae3cae5ae1d8ce8fa435a96fb3aeff7685afb0f40fe9323` to
+`a037795ff0f9dd7b6a6f86131e21b1c8f1b54706128f5831e55233668834fe42`.
+
+Reason: R6.2 removed three stale `--ignore` lines from `_run_full_suite`
+(`test_multi_tab_plan.py`, `test_ocr_e2e.py`, `test_render_colorspace.py`),
+which had been excluded as "missing fixtures" but now pass/skip cleanly under
+`.venv` (re-audited: 72 passed / 9 skipped). This **widens** the gate's
+full-suite coverage — the opposite of threshold loosening — so the pin refresh
+is legitimate. The change is confined to the ignore list + its comment; no
+no-jump geometry threshold, scoring, artifact schema, signoff, or hook behavior
+was touched (verified by diff). The other threshold-encoding files and the
+trust-chain anchor still match their pins.
