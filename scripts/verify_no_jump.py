@@ -807,10 +807,10 @@ def _run_full_suite() -> bool:
             "--ignore=test_scripts/test_no_jump_editor_geometry.py",
             "--ignore=test_scripts/test_print_subprocess_runner.py",
             "--ignore=test_scripts/test_print_subprocess_helper.py",
-            # Pre-existing failures unrelated to no-jump geometry (missing test fixtures)
-            "--ignore=test_scripts/test_multi_tab_plan.py",
-            "--ignore=test_scripts/test_ocr_e2e.py",
-            "--ignore=test_scripts/test_render_colorspace.py",
+            # R6.2 (2026-06-18): the former test_multi_tab_plan / test_ocr_e2e /
+            # test_render_colorspace ignores ("missing fixtures") were re-audited and
+            # removed — all three now pass/skip cleanly under .venv (72 passed / 9
+            # skipped), so the full-suite step covers them again.
         ],
         cwd=REPO_ROOT,
         env=_clean_pytest_env(),   # strip PYTEST_ADDOPTS etc. - same as _run_pytest()

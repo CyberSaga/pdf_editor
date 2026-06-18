@@ -646,4 +646,19 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   and R3 decomposition relocated the bridge slots out of `pdf_controller.py` into the print/ocr coordinators.
   Docs: PITFALLS (characterization-teeth entry), TODOS (R6.1), this file. **Next:** R6.2 (retire the three stale
   `verify_no_jump.py` full-suite `--ignore` lines — re-verify the three files pass/skip under `.venv` *before*
-  editing the gate script) + R6.3 (coverage floor at-or-below measured baseline).
+  editing the gate script) + R6.3 (coverage floor at-or-below measured baseline). R6.1 committed `42aa51b`,
+  gate PASSED bound to that HEAD.
+- **2026-06-18 (turn 34): R6.2 — retire stale `verify_no_jump.py` full-suite ignores.** The gate's full-suite
+  step (`_run_full_suite`) hard-`--ignore`d `test_multi_tab_plan.py` / `test_ocr_e2e.py` /
+  `test_render_colorspace.py` with a "missing test fixtures / pre-existing failures" comment — long stale: a
+  direct `.venv` re-audit of all three returned **72 passed / 9 skipped**, so the gate had silently stopped
+  covering them (a regression in any of the three would never trip it). Removed exactly those three `--ignore`
+  lines and replaced the misleading comment with a dated re-audit note; **kept** the structurally-justified
+  ignores — `test_no_jump_editor_geometry.py` (validated by a dedicated earlier gate step, excluded so the
+  full-suite run can't overwrite its hashed artifacts) and the genuinely timing-sensitive
+  `test_print_subprocess_runner/helper.py`. Order discipline: verified the three files green **before** touching
+  the gate script (editing source during a gate run is forbidden; the gate script is itself tracked). Edit is a
+  comment/ignore-list change only — parse-checked + ruff-clean. Docs: PITFALLS ("gate ignores go stale —
+  re-audit on every gate change"), TODOS (R6.2), this file. **Next:** R6.3 (coverage floor at-or-below the
+  measured `pytest-cov` baseline for model/controller/view; do NOT set it above measured or it blocks unrelated
+  PRs).
