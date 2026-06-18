@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import threading
 from collections.abc import Callable
@@ -14,6 +15,7 @@ import fitz
 from model.tools.watermark_tool import WatermarkTool
 
 from .dispatcher import PrintDispatcher
+from .errors import PrintingError
 from .helper_protocol import PrintHelperJob, encode_helper_event
 from .messages import (
     PRINT_HELPER_STARTED_MESSAGE,
@@ -22,14 +24,23 @@ from .messages import (
 )
 
 
-def _build_snapshot_bytes(pdf_path: str, watermarks: list[dict]) -> bytes:
+def _build_snapshot_bytes(
+    pdf_path: str, watermarks: list[dict], password: str | None = None
+) -> bytes:
     pdf_bytes = Path(pdf_path).read_bytes()
-    if not watermarks:
-        return pdf_bytes
-
     doc = fitz.open("pdf", pdf_bytes)
     try:
-        WatermarkTool.apply_watermarks_to_document(doc, watermarks)
+        if doc.needs_pass:
+            # R5.1: input.pdf is written encrypted; authenticate in-memory so the
+            # printer receives rasterizable (decrypted) bytes. The decryption never
+            # touches disk — only this in-process save below produces the print bytes.
+            if not password or doc.authenticate(password) == 0:
+                raise PrintingError("加密的列印輸入需要有效的密碼才能列印。")
+        elif not watermarks:
+            # Unencrypted, no overlays: hand the captured bytes back verbatim (unchanged).
+            return pdf_bytes
+        if watermarks:
+            WatermarkTool.apply_watermarks_to_document(doc, watermarks)
         stream = io.BytesIO()
         doc.save(stream, garbage=0)
         return stream.getvalue()
@@ -80,7 +91,11 @@ def run_print_helper(
             interval_ms=job.heartbeat_interval_ms,
             emit_event=emit_event,
         )
-        snapshot_bytes = _build_snapshot_bytes(job.input_pdf_path, job.watermarks)
+        snapshot_bytes = _build_snapshot_bytes(
+            job.input_pdf_path,
+            job.watermarks,
+            password=os.environ.get("PDF_EDITOR_PRINT_PASSWORD"),
+        )
         emit_event(encode_helper_event(job.job_id, "progress", PRINT_SUBMITTING_MESSAGE))
         result = dispatcher.print_pdf_bytes(snapshot_bytes, job.options)
         emit_event(

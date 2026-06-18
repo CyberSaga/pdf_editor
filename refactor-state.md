@@ -71,7 +71,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
 | **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ✅ **done 2026-06-17** (R3.1-R3.7 ✅; R3.8a ✅ state migration; **R3.8b dispatcher DEFERRED per user** — gate can't validate Qt event-routing; context+landmines documented) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ✅ **done 2026-06-17** (4/5: R4.5 objstms ✅, R4.4 undo-dedup ✅, R4.2 snapshot-bytes cache ✅, R4.3 async thumbnails ✅; **R4.1 overlay raster cache EVALUATED → DEFERRED** — all variants incorrect/high-risk/non-win, see plan + turn 28) | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
-| **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ◑ **in progress** (R5.3 ✅ in R2.2; **R5.5 optimize-copy encryption ✅ 2026-06-18**, Option A; R5.1 print-decrypt next, R5.4 packaging guard, R5.2 OCR bundle pending) | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
+| **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ◑ **in progress** (R5.3 ✅ in R2.2; **R5.5 optimize-copy encryption ✅** + **R5.1 print-decrypt ✅ 2026-06-18**, both Option A; R5.4 packaging guard next, R5.2 OCR bundle pending — needs out-of-band bundle) | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
 | **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
 
 ---
@@ -575,3 +575,24 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   optimized copy `needs_pass` + rejects wrong pw + opens with the original pw) failed RED (output `needs_pass=0`),
   passes GREEN after the fix. Docs: ARCHITECTURE optimizer § + PITFALLS entry + TODOS R5.5. **Next:** R5.1 (print
   writes encrypted temp + plumb password to helper via a non-disk channel — env/stdin, NOT job.json).
+- **2026-06-18 (turn 30): R5.1 — print path no longer writes a decrypted PDF to disk (HIGH, Option A).** The
+  acute at-rest leak: `capture_worker_snapshot_bytes()` decrypts (`PDF_ENCRYPT_NONE`), and the print worker wrote
+  those bytes verbatim to `work_dir/input.pdf`, leaving a fully decrypted copy of a password-protected source on
+  disk for the print job's duration. **Fix (variant A2 — controller/helper only, no model changes):** (1)
+  `PrintJobRequest` gains `password`; `_start_print_submission` captures `model.password` *only* when
+  `model.doc.needs_pass`. (2) `_PrintSubmissionWorker._encode_input_bytes()` re-encrypts the captured bytes
+  (AES-256, `owner_pw==user_pw`) before `write_bytes`, so the temp is never plaintext. (3) The password reaches the
+  helper **out-of-band** via the QProcess environment — `PrintSubprocessRunner(helper_password=…)` injects
+  `PDF_EDITOR_PRINT_PASSWORD` in `_build_helper_env` — explicitly NOT `job.json`, which lives in the same `work_dir`
+  (PDF + password side-by-side would defeat the fix). (4) `helper_main._build_snapshot_bytes(..., password=…)`
+  authenticates the encrypted `input.pdf` in-memory so the dispatcher still gets rasterizable bytes; the decryption
+  never touches disk. Coordinator drops `self._print_password` once idle. **Isolation/guard:** every re-encrypt/auth
+  `save` is in `controller/` + `src/printing/`, outside `model/`, so the R2.2 encryption AST guard does not apply and
+  `pdf_model.py:267-668` is untouched; `model.password` is only *read*. **Behavior:** unencrypted + no-watermark
+  path returns captured bytes byte-identically; only encrypted inputs change (they now print instead of failing).
+  **Red→Green:** `test_print_encrypted_input.py` — 5 RED (TypeError: no `password` field/param) → 6 GREEN (worker
+  encrypts temp, plain when no pw, password absent from job.json, helper decrypts with pw / raises without / leaves
+  unencrypted input unchanged). Print suite 43p, ruff clean. Docs: ARCHITECTURE print § (secure print-input
+  contract) + PITFALLS + TODOS. **Next:** R5.4 (packaging guard — resolve the build-env approach: setuptools 57.4.0
+  + no `build` frontend make an in-`.venv` artifact build fragile) then R5.2 (OCR bundle — blocked on out-of-band
+  vetted weights, not a code change).

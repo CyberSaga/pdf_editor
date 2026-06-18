@@ -40,12 +40,16 @@ class PrintSubprocessRunner(QObject):
         stall_check_interval_ms: int = 500,
         monotonic: Callable[[], float] = time.monotonic,
         parent: QObject | None = None,
+        helper_password: str | None = None,
     ) -> None:
         super().__init__(parent)
         self.job = job
         self._process_factory = process_factory or QProcess
         self._python_executable = python_executable or sys.executable
         self._provided_work_dir = work_dir
+        # R5.1: handed to the helper via the process environment (in-memory, not job.json)
+        # so it can re-authenticate an encrypted input.pdf for rasterization.
+        self._helper_password = helper_password
         self._owned_temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._process: QProcess | None = None
         self._stdout_buffer = ""
@@ -77,6 +81,8 @@ class PrintSubprocessRunner(QObject):
         if root not in parts:
             parts.insert(0, root)
         env["PYTHONPATH"] = os.pathsep.join(parts)
+        if self._helper_password:
+            env["PDF_EDITOR_PRINT_PASSWORD"] = self._helper_password
         return env
 
     def _configure_process_context(

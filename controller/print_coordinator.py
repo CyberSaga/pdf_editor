@@ -17,6 +17,7 @@ stall/terminate transitions, and progress-dialog ownership — is byte-identical
 
 from __future__ import annotations
 
+import io
 import logging
 import tempfile
 import uuid
@@ -25,6 +26,7 @@ from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import fitz
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import QDialog, QMessageBox, QProgressDialog
 
@@ -56,6 +58,11 @@ class PrintJobRequest:
     options: object
     job_id: str
     work_dir: str
+    # R5.1: when the source is password-protected, the captured bytes are decrypted
+    # (capture_worker_snapshot_bytes uses PDF_ENCRYPT_NONE). The worker re-encrypts the
+    # on-disk temp with this password so no plaintext copy lands at rest; the password
+    # itself travels to the helper out-of-band (process env), never in this payload.
+    password: str | None = None
 
 
 class _PrintSubmissionWorker(QObject):
@@ -72,7 +79,7 @@ class _PrintSubmissionWorker(QObject):
         try:
             self.progress.emit(PRINT_PREPARING_MESSAGE)
             input_pdf_path = Path(self._request.work_dir) / "input.pdf"
-            input_pdf_path.write_bytes(self._request.pdf_bytes)
+            input_pdf_path.write_bytes(self._encode_input_bytes())
             self.prepared.emit(
                 PrintHelperJob(
                     job_id=self._request.job_id,
@@ -85,6 +92,34 @@ class _PrintSubmissionWorker(QObject):
             self.failed.emit(exc)
         finally:
             self.finished.emit()
+
+    def _encode_input_bytes(self) -> bytes:
+        """Bytes to write to ``work_dir/input.pdf``.
+
+        For an unprotected source this is the captured snapshot verbatim. For a
+        password-protected source the captured bytes are *decrypted*
+        (``capture_worker_snapshot_bytes`` uses ``PDF_ENCRYPT_NONE``), so we re-encrypt
+        with the session password before the disk write — the temp must never be a
+        plaintext copy of a protected PDF (R5.1). Runs on the worker thread; the save
+        targets a freshly opened in-memory handle, never the live model document.
+        """
+        pdf_bytes = self._request.pdf_bytes
+        password = self._request.password
+        if not password:
+            return pdf_bytes
+        src = fitz.open("pdf", pdf_bytes)
+        try:
+            buffer = io.BytesIO()
+            src.save(
+                buffer,
+                encryption=fitz.PDF_ENCRYPT_AES_256,
+                owner_pw=password,
+                user_pw=password,
+                garbage=0,
+            )
+            return buffer.getvalue()
+        finally:
+            src.close()
 
 
 class _PrintWorkerBridge(QObject):
@@ -132,6 +167,9 @@ class PrintCoordinator:
         self._print_worker_bridge: _PrintWorkerBridge | None = None
         self._print_close_pending = False
         self._print_stalled = False
+        # R5.1: session password for an encrypted in-flight job, handed to the helper
+        # via the subprocess environment (never job.json). Cleared once the job is idle.
+        self._print_password: str | None = None
 
     def connect_bridge(self) -> None:
         """Lazy-init the GUI-thread bridge + dispatcher (from PDFController.activate())."""
@@ -233,12 +271,18 @@ class PrintCoordinator:
             normalized_options = dataclass_replace(normalized_options, extra_options=extra)
 
         pdf_bytes = self._c.capture_worker_snapshot_bytes()
+        # R5.1: capture_worker_snapshot_bytes decrypts; if the source needs a password,
+        # carry it so the worker re-encrypts the on-disk temp and the helper can re-auth.
+        doc = getattr(self._c.model, "doc", None)
+        password = self._c.model.password if doc is not None and getattr(doc, "needs_pass", False) else None
+        self._print_password = password
         request = PrintJobRequest(
             pdf_bytes=pdf_bytes,
             watermarks=self._c.model.get_print_watermarks(),
             options=normalized_options,
             job_id=str(uuid.uuid4()),
             work_dir=work_dir,
+            password=password,
         )
         thread = QThread(self._c.view)
         worker = _PrintSubmissionWorker(request)
@@ -258,7 +302,12 @@ class PrintCoordinator:
 
     def _create_print_runner(self, job: PrintHelperJob) -> PrintSubprocessRunner:
         work_dir = str(Path(job.input_pdf_path).parent)
-        return PrintSubprocessRunner(job, work_dir=work_dir, parent=self._c.view)
+        return PrintSubprocessRunner(
+            job,
+            work_dir=work_dir,
+            parent=self._c.view,
+            helper_password=self._print_password,
+        )
 
     def _on_print_job_prepared(self, job: PrintHelperJob) -> None:
         self._update_print_progress_dialog(PRINT_SUBMITTING_MESSAGE)
@@ -331,6 +380,8 @@ class PrintCoordinator:
         if self.has_active_job():
             return
         self._print_stalled = False
+        # R5.1: drop the in-flight session password once no job references it.
+        self._print_password = None
         if not self._print_close_pending:
             self._set_print_ui_busy(False)
             return
