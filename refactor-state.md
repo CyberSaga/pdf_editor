@@ -71,7 +71,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R2** | MVC Boundary Reconvergence (**guard-first**) | 2-model | 4.3 | ✅ **done 2026-06-15** | [`plans/refactor-R2-mvc-boundary.md`](plans/refactor-R2-mvc-boundary.md) |
 | **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ✅ **done 2026-06-17** (R3.1-R3.7 ✅; R3.8a ✅ state migration; **R3.8b dispatcher DEFERRED per user** — gate can't validate Qt event-routing; context+landmines documented) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ✅ **done 2026-06-17** (4/5: R4.5 objstms ✅, R4.4 undo-dedup ✅, R4.2 snapshot-bytes cache ✅, R4.3 async thumbnails ✅; **R4.1 overlay raster cache EVALUATED → DEFERRED** — all variants incorrect/high-risk/non-win, see plan + turn 28) | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
-| **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ☐ not started | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
+| **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ◑ **in progress** (R5.3 ✅ in R2.2; **R5.5 optimize-copy encryption ✅ 2026-06-18**, Option A; R5.1 print-decrypt next, R5.4 packaging guard, R5.2 OCR bundle pending) | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
 | **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ☐ not started | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
 
 ---
@@ -555,3 +555,23 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   Docs-only commit; PITFALLS design-note added. **R4 ✅ 4/5** — R4.5 `2a8cf8c` · R4.4 `62e0b81` · R4.2 `883fc6e` ·
   R4.3 `60c36fc`. **Next:** R5 (security & supply-chain hardening) — and the deferred-findings backlog (R5.1
   print-decrypt, R5.5 optimizer-decrypt, R3.4 pending_edits, R3.7 shiboken6.isValid, R3.8b dispatcher).
+- **2026-06-18 (turn 29): R5 begins — R5.5 optimize-copy encryption preservation (HIGH, Option A).** User chose
+  Option A (preserve encryption) for the R5.1/R5.5 fork. R5.5 landed first (model-contained, lower risk; and the
+  more serious leak — a *persistent* user-kept file, not a temp). **Bug:** for an encrypted (`needs_pass`) source,
+  `_resolve_file_backed_optimize_source` returns None at the `needs_pass` gate, so the working doc is built from
+  `model.doc.tobytes(...)` (defaults to `encryption=NONE`, decrypted) and saved unprotected — 另存為最佳化的副本 of a
+  password-protected PDF silently produced an openable, unprotected copy. **Fix:** `save_optimized_copy` calls the
+  new `reapply_source_encryption(model, new_path)` as the final step (after the `shutil.move` AND after any pikepdf
+  post-packaging — which itself re-saves and would strip encryption): reopens the output file and re-saves with the
+  session password (`model.password`; `owner_pw == user_pw` because only one password is retained in memory), the
+  live doc's permission bits (`int(doc.permissions)` — the signed value round-trips exactly through fitz
+  `save(permissions=...)`, verified empirically: print/copy preserved, modify denied), and an encryption method
+  parsed from `metadata['encryption']` (default AES-256, never weakening). **Key empirical finding (PyMuPDF 1.27):**
+  `doc.needs_pass` STAYS truthy after a successful `authenticate()` (it is `is_encrypted` that flips to False), so
+  `needs_pass` is the reliable "file required a password" signal post-auth and the correct re-encrypt trigger;
+  owner-password-only PDFs open with `needs_pass` False and are intentionally left unencrypted. The re-save targets a
+  reopened handle of the *output file*, never `model.doc`, so the R2.2 encryption AST guard stays green (verified —
+  `test_xref_repair` 44p incl. guard). **Red→Green:** `test_save_optimized_copy_preserves_encryption` (asserts the
+  optimized copy `needs_pass` + rejects wrong pw + opens with the original pw) failed RED (output `needs_pass=0`),
+  passes GREEN after the fix. Docs: ARCHITECTURE optimizer § + PITFALLS entry + TODOS R5.5. **Next:** R5.1 (print
+  writes encrypted temp + plumb password to helper via a non-disk channel — env/stdin, NOT job.json).

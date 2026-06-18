@@ -799,6 +799,66 @@ def save_optimized_working_doc(
         model._postprocess_optimized_pdf_with_pikepdf(temp_save, options)
 
 
+def _encryption_method_for(encryption_meta: str) -> int:
+    """Map a PyMuPDF ``metadata['encryption']`` string to a save-time method const.
+
+    Defaults to AES-256 for unrecognised strings — re-encrypting never *weakens* the
+    protection below the strongest standard, so an unknown method falls back up, not down.
+    """
+    enc = (encryption_meta or "").upper()
+    if "AES" in enc:
+        return fitz.PDF_ENCRYPT_AES_128 if "128" in enc else fitz.PDF_ENCRYPT_AES_256
+    if "RC4" in enc or " V1" in enc or " V2" in enc or "40-BIT" in enc:
+        return fitz.PDF_ENCRYPT_RC4_40 if "40" in enc else fitz.PDF_ENCRYPT_RC4_128
+    return fitz.PDF_ENCRYPT_AES_256
+
+
+def reapply_source_encryption(model: PDFModel, output_path: str) -> None:
+    """Re-encrypt an optimized copy so an encrypted source stays password-protected.
+
+    The optimize pipeline rebuilds the working doc from the *decrypted* live-doc bytes
+    (``build_working_doc_for_optimized_copy`` -> ``tobytes`` for the encrypted/needs_pass
+    case), so without this the optimized copy of a password-protected PDF would be written
+    unprotected (R5.5). We re-apply the session password captured at open and the live
+    doc's effective permission bits. Only one password is retained in memory, so the
+    owner/user split collapses (``owner_pw == user_pw``); the confidentiality invariant —
+    the copy needs the same password to open — is preserved.
+
+    No-op for unprotected sources. Owner-password-only PDFs open with ``needs_pass`` False
+    (no password barrier at open) and are intentionally left unencrypted, matching how the
+    live session already treats them.
+
+    The save operates on a freshly reopened handle of the *optimized output file*, never
+    on ``model.doc`` (the live doc), so it does not cross the encryption AST guard.
+    """
+    doc = model.doc
+    if doc is None or not getattr(doc, "needs_pass", False):
+        return
+    password = model.password
+    if not password:
+        # A needs_pass document cannot have been opened/authenticated without a
+        # password, so this is unreachable in practice. Refuse loudly rather than
+        # emit a silently unprotected copy.
+        raise PdfOptimizeError("無法保留來源加密：找不到工作階段密碼。")
+    metadata = doc.metadata or {}
+    method = _encryption_method_for(metadata.get("encryption", ""))
+    permissions = int(getattr(doc, "permissions", -1))
+    out = Path(output_path)
+    temp_enc = out.with_name(f".{out.stem}_enc_{uuid.uuid4().hex}.pdf")
+    reopened = fitz.open(output_path)
+    try:
+        reopened.save(
+            str(temp_enc),
+            encryption=method,
+            owner_pw=password,
+            user_pw=password,
+            permissions=permissions,
+        )
+    finally:
+        reopened.close()
+    os.replace(str(temp_enc), output_path)
+
+
 def save_optimized_copy(
     model: PDFModel,
     new_path: str,
@@ -832,6 +892,9 @@ def save_optimized_copy(
         model._save_optimized_working_doc(working_doc, temp_save, resolved_options)
         Path(new_path).parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(temp_save), new_path)
+        # R5.5: an encrypted source is rebuilt from decrypted bytes above; re-apply the
+        # session password so the optimized copy stays password-protected (no-op otherwise).
+        reapply_source_encryption(model, new_path)
         optimized_bytes = Path(new_path).stat().st_size
         bytes_saved = max(0, original_bytes - optimized_bytes)
         summary: list[str] = [resolved_options.preset]

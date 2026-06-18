@@ -70,6 +70,21 @@ def _large_pdf_path(name: str) -> Path:
     return path
 
 
+def _make_encrypted_pdf(path: Path, user_pw: str, owner_pw: str = "ownerpw") -> Path:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "confidential content", fontsize=12, fontname="helv")
+    doc.save(
+        str(path),
+        encryption=fitz.PDF_ENCRYPT_AES_256,
+        owner_pw=owner_pw,
+        user_pw=user_pw,
+        permissions=int(fitz.PDF_PERM_PRINT | fitz.PDF_PERM_COPY),
+    )
+    doc.close()
+    return path
+
+
 def _pump_events(ms: int = 100) -> None:
     app = QApplication.instance()
     assert app is not None
@@ -194,6 +209,48 @@ def test_save_optimized_copy_uses_working_doc_and_preserves_live_doc(tmp_path: P
         assert result.output_path == str(output)
         assert result.optimized_bytes > 0
         assert before_bytes == after_bytes
+    finally:
+        model.close()
+
+
+def test_save_optimized_copy_preserves_encryption(tmp_path: Path) -> None:
+    """R5.5: optimizing an encrypted PDF must not silently drop password protection.
+
+    Before the fix, the working doc is rebuilt from decrypted ``tobytes`` and saved
+    without encryption, so 另存為最佳化的副本 of a password-protected PDF produced an
+    unprotected copy. Option A re-applies the session password to the optimized output.
+    """
+    from model.pdf_model import PDFModel
+
+    source = _make_encrypted_pdf(tmp_path / "encrypted-source.pdf", user_pw="secret")
+    output = tmp_path / "encrypted-optimized.pdf"
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source), password="secret")
+        model.save_optimized_copy(str(output), model.preset_optimize_options("平衡"))
+
+        # Fresh handle rejects the wrong password (still locked).
+        wrong = fitz.open(str(output))
+        try:
+            assert wrong.needs_pass, (
+                "optimized copy of an encrypted PDF must remain password-protected"
+            )
+            assert wrong.authenticate("wrong-password") == 0, (
+                "optimized copy must reject an incorrect password"
+            )
+        finally:
+            wrong.close()
+
+        # Fresh handle opens with the original password.
+        reopened = fitz.open(str(output))
+        try:
+            assert reopened.needs_pass
+            assert reopened.authenticate("secret") != 0, (
+                "optimized copy must open with the original password"
+            )
+        finally:
+            reopened.close()
     finally:
         model.close()
 
