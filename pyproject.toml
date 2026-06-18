@@ -54,3 +54,24 @@ explicit_package_bases = true
 
 [tool.pytest.ini_options]
 testpaths = ["test_scripts"]
+
+[tool.coverage.run]
+# R6.3 (2026-06-18): coverage scoped to the three production layers the R-series
+# campaign hardened. Pinning `source` here means `pytest --cov` (no explicit
+# targets) measures exactly model/ + controller/ + view/, matching the R0.5
+# baseline methodology.
+source = ["model", "controller", "view"]
+branch = false
+
+[tool.coverage.report]
+# R6.3 coverage FLOOR, set AT-OR-BELOW the measured baseline so it catches a real
+# regression without blocking unrelated PRs on a sub-percent dip. Measured combined
+# TOTAL = 78.7% on 2026-06-18 (15082 stmts / 3206 missed; 1443 passed / 20 skipped
+# under .venv); R0.5 baseline was 78.0% (model 79.2 / controller 78.8 / view 76.6).
+# 75 leaves ~3.7% headroom. RATCHET UPWARD only in a separate PR — never set above
+# the value measured here, or the campaign's own merges would be blocked.
+# Enforced ONLY on explicit `--cov` runs; plain `pytest` (incl. the no-jump gate's
+# full-suite step) collects no coverage and is therefore unaffected.
+fail_under = 75
+# Canonical local command (the .venv is the coverage authority — see refactor-state.md):
+#   .venv\Scripts\python.exe -m pytest test_scripts/ --cov --cov-report=term-missing

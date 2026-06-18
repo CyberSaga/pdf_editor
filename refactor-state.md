@@ -44,7 +44,7 @@ state machine internals before its managers exist (`pdf_view.py:2899-4558`).
 | ruff total (E4/E7/E9+F, E501 unselected) | **238** (doc said 240); 28 in production layers, 210 in test/script | hygiene lens |
 | ruff auto-fixable | 18 (F541×12, F401×6) | hygiene lens |
 | God-module LOC | `pdf_view` 5497 / `pdf_model` 5166 / `pdf_controller` 3383 / `text_editing` 1809 / `text_block` 1043 | LOC scan |
-| Coverage tooling | **pytest-cov 7.1.0 in `.venv` (R0.5)**; floor: model 79.2% / controller 78.8% / view 76.6% (combined 78.0%) | R0.5 |
+| Coverage tooling | **pytest-cov 7.1.0 in `.venv`**; R0.5 baseline model 79.2% / controller 78.8% / view 76.6% (combined 78.0%); **R6.3 enforced floor `[tool.coverage.report] fail_under = 75`** (at-or-below the 78.7% combined re-measured 2026-06-18, 1443 passed / 20 skipped) — `--cov` runs only | R0.5 + R6.3 |
 
 **R0 freeze target:** `.venv` collects full suite; **≥1355 passed / exactly the 20 OCR skips / 0 failed**, deterministic; a captured per-module coverage number as the floor.
 
@@ -72,7 +72,7 @@ widened to 60pt, **product overflow behavior flagged as a follow-up, not changed
 | **R3** | God-Module Decomposition | 3-model | 4.4 + 4.1 | ✅ **done 2026-06-17** (R3.1-R3.7 ✅; R3.8a ✅ state migration; **R3.8b dispatcher DEFERRED per user** — gate can't validate Qt event-routing; context+landmines documented) | [`plans/refactor-R3-god-module-decomposition.md`](plans/refactor-R3-god-module-decomposition.md) |
 | **R4** | Performance Deferrals | 3-model (cache/thread) + 2-model (digest/objstms) | 4.4 + 4.5 | ✅ **done 2026-06-17** (4/5: R4.5 objstms ✅, R4.4 undo-dedup ✅, R4.2 snapshot-bytes cache ✅, R4.3 async thumbnails ✅; **R4.1 overlay raster cache EVALUATED → DEFERRED** — all variants incorrect/high-risk/non-win, see plan + turn 28) | [`plans/refactor-R4-performance-deferrals.md`](plans/refactor-R4-performance-deferrals.md) |
 | **R5** | Security & Supply-Chain Hardening | 3-model (leak/bundle) + 2-model (guard) | 4.6 + security-review | ✅ **done 2026-06-18 (4/5 — autonomous ceiling)** (R5.1 print-decrypt ✅, R5.3 ✅ in R2.2, R5.4 packaging guard ✅, R5.5 optimize-copy encryption ✅; **R5.2 OCR bundle BLOCKED** on an out-of-band vetted weights bundle + digests — packaging/human task, not code; enforcement already fails closed) | [`plans/refactor-R5-security-supply-chain.md`](plans/refactor-R5-security-supply-chain.md) |
-| **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ◑ **in progress 2026-06-18** (R6.1 characterization tests ✅ — merge-compose/print-watermark/bridge-slots/text-selection, 23 tests; R6.2 retire stale no-jump ignores + R6.3 coverage floor pending) | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
+| **R6** | Coverage Hardening (tail over decomposed seams) | 3-model | 4.5 | ✅ **done 2026-06-18 (3/3)** (R6.1 characterization tests ✅ — merge-compose/print-watermark/bridge-slots/text-selection, 23 tests; R6.2 retire 3 stale no-jump full-suite ignores ✅; R6.3 coverage floor `fail_under=75` at-or-below 78.7% measured ✅) | [`plans/refactor-R6-coverage-tail.md`](plans/refactor-R6-coverage-tail.md) |
 
 ---
 
@@ -661,4 +661,29 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   comment/ignore-list change only — parse-checked + ruff-clean. Docs: PITFALLS ("gate ignores go stale —
   re-audit on every gate change"), TODOS (R6.2), this file. **Next:** R6.3 (coverage floor at-or-below the
   measured `pytest-cov` baseline for model/controller/view; do NOT set it above measured or it blocks unrelated
-  PRs).
+  PRs). R6.2 needed a follow-on commit `cbfba8e`: editing the tracked `verify_no_jump.py` tripped the
+  completion-gate hash pin (a deliberate anti-loosening trip-wire) — refreshed `_PINNED_HASHES` in
+  `completion_gate.py` (`f852959c…` → `a037795f…`) and documented the reason (coverage **widens**, not loosens)
+  in the gate plan's hash-pinning section. Gate PASSED bound to `cbfba8e`.
+- **2026-06-18 (turn 35): R6.3 — coverage floor ratchet. R6 CLOSED (3/3); the R0–R6 campaign is complete.**
+  Re-measured combined coverage under `.venv`: **TOTAL 78.7%** (15082 stmts / 3206 missed), **1443 passed / 20
+  skipped** (= the prior 1420 + the 23 R6.1 characterization tests, full suite green). Added a `[tool.coverage]`
+  block to `pyproject.toml`: `[tool.coverage.run] source = [model, controller, view]` (matches the R0.5 baseline
+  methodology) + `[tool.coverage.report] fail_under = 75`. The floor is set **at-or-below** the 78.7% measurement
+  (and the 78.0% R0.5 baseline) by design — ~3.7% headroom so an unrelated PR with a sub-percent dip is not
+  blocked; ratchet upward only in a *separate* PR, never above the measured value, per the plan's explicit
+  warning. **Mechanism scope:** `fail_under` fires only when coverage is collected, i.e. on an explicit `--cov`
+  run; plain `pytest` (incl. the no-jump gate's full-suite step) collects nothing and is unaffected — verified by
+  running a plain test file (exit 0, no enforcement). **CI note:** `ci.yml` deliberately does NOT gate on the
+  floor — its `test` job only runs the import-light security subset (the full suite needs surya/torch/win32print,
+  run under the local `.venv` authority), so a CI-side floor would measure the wrong thing; the floor lives where
+  the full suite actually runs. **Teeth:** against the just-collected `.coverage`, `coverage report` exits 0 at
+  79% vs the 75 floor and exits 2 against `--fail-under=85`. Docs: TODOS (R6.3), coverage-tooling ledger row +
+  R6 ledger row flipped to done, this file. **Campaign metrics (R0→R6):** R0 froze the baseline + made `.venv`
+  the test authority; R1 mechanical hygiene (production layers ruff-clean); R2 MVC-boundary + encryption AST
+  guard; R3 god-module decomposition into coordinators/managers; R4 performance (4/5, R4.1 deferred); R5 security
+  (4/5, R5.2 BLOCKED on an out-of-band weights bundle); R6 coverage tail (3/3). Net test suite **1443 passed / 20
+  skipped**, combined coverage **78.7%** with an enforced 75% floor, no-jump pixel gate green and bound to HEAD.
+  **No autonomous work remains in the R-series plan** — the only open residuals are human/out-of-band (R5.2
+  weights bundle) or explicitly deferred (R4.1 overlay raster cache), plus the standing deferred-findings backlog
+  (R3.4 pending_edits, R3.7 shiboken6.isValid, R3.8b dispatcher) which is not part of R0–R6.
