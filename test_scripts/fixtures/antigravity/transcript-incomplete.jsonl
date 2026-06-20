@@ -1,0 +1,2 @@
+{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"[FUSION_CALL_ID:call-incomplete]"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"IN_PROGRESS","content":"Partial answer"}

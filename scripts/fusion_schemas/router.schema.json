@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "route": {"type": "string", "enum": ["direct", "fusion"]},
+    "risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
+    "task_kind": {
+      "type": "string",
+      "enum": [
+        "simple",
+        "code_review",
+        "research",
+        "architecture",
+        "medical",
+        "legal",
+        "financial",
+        "security",
+        "other"
+      ]
+    },
+    "reasons": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "direct_answer": {"type": ["string", "null"]},
+    "panel_brief": {"type": ["string", "null"]}
+  },
+  "required": [
+    "route",
+    "risk_level",
+    "task_kind",
+    "reasons",
+    "direct_answer",
+    "panel_brief"
+  ]
+}
