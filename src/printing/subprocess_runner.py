@@ -127,6 +127,9 @@ class PrintSubprocessRunner(QObject):
             self._python_executable,
             ["-m", "src.printing.helper_main", str(job_path)],
         )
+        # R5-05: the QProcess now owns the environment (incl. PDF_EDITOR_PRINT_PASSWORD);
+        # drop our copy immediately so the credential does not live as long as the runner.
+        self._helper_password = None
 
     def terminate(self) -> None:
         self._termination_requested = True
@@ -235,3 +238,8 @@ class PrintSubprocessRunner(QObject):
             self._owned_temp_dir = None
         elif self._provided_work_dir:
             shutil.rmtree(self._provided_work_dir, ignore_errors=True)
+        # R5-05: clear the credential (belt-and-suspenders if start() never ran) and
+        # release Qt parent ownership so a completed runner does not linger under the
+        # long-lived view holding decrypted-print state.
+        self._helper_password = None
+        self.deleteLater()

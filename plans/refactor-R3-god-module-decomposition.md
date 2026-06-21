@@ -222,6 +222,22 @@ crosses a layer.** One cohesive seam per commit; full suite green before/after e
     class as the deferred R3.8b. Closed with no code change; revisit only if object-edit output size becomes a
     measured concern (then: register the content-rewriting branches for `clean_contents`, gated by an object-mode
     save-size test built first). See `refactor-state.md` turn 36.
+  - **REOPENED 2026-06-21 (R6-01 / Codex) → CONFIRMED data-integrity + confidentiality defect → FIXED.**
+    The turn-36 closure was **wrong**. It reasoned that because `edit_count` is read only by
+    `_maybe_garbage_collect` (text-edit path), its omission was "inert" and the only loss was the optional
+    `clean_contents()` compaction → "slightly larger but byte-correct." The missed consequence: with no
+    `edit_count` bump, the object verbs **never** trigger the every-20-edits `garbage=4` orphan-xref
+    round-trip either. The redact-and-reinsert in `move_object`/`rotate_object`/`delete_object` orphans the
+    prior content stream on *every* op, and nothing reclaims it. Measured: `doc.xref_length()` grows ~**57×**
+    over 25 textbox moves (super-linear, unbounded), not "slightly larger." Worse, the normal save path uses
+    `garbage=0` (`_save_doc` default), so deleted text/images **survive byte-for-byte as orphan xrefs in the
+    saved file** — a confidentiality leak (reproduced: a deleted "CANARY" string was recoverable from the
+    saved PDF). **Fix:** `pdf_object_ops._register_mutation` (batched GC for textbox move/rotate, mirrors the
+    text-edit path) and `_purge_deleted_content` (immediate, fail-closed `garbage=4` for textbox/app-image/
+    native-image delete — deletes are destructive + security-sensitive, so they don't wait for the batch
+    threshold). Tests: `test_scripts/test_pdf_object_ops_gc.py` (drop-detection proves GC runs; canary-absent
+    proves no orphan recovery; fail-closed on GC failure; native-image immediate purge). See `refactor-state.md`
+    turn 38.
 
 ### R3.5 — `model/pdf_text_edit.py` (edit_text/redaction engine — LAST model seam) ✅ LANDED
 **As-built extraction map** (3-model: Gemini dual-lens + Codex + source-verified; the source

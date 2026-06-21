@@ -249,7 +249,9 @@ def test_delete_native_image_removes_one_invocation_but_keeps_shared_resource() 
             survivor = _hit(model, fitz.Point(180, 60))
             assert survivor is not None
             assert survivor.object_kind == "native_image"
-            assert _image_names(page) == names_before
+            # delete now forces a garbage=4 round-trip (R6-01 confidentiality), which
+            # replaces model.doc — re-fetch the page instead of the pre-delete handle.
+            assert _image_names(model.doc[0]) == names_before
         finally:
             model.close()
 
@@ -272,7 +274,9 @@ def test_delete_native_image_prunes_unused_resource_name() -> None:
             ok = model.delete_object(DeleteObjectRequest(hit.object_id, hit.object_kind, 1))
 
             assert ok is True
-            names_after = _image_names(page)
+            # delete now forces a garbage=4 round-trip (R6-01 confidentiality), which
+            # replaces model.doc — re-fetch the page instead of the pre-delete handle.
+            names_after = _image_names(model.doc[0])
             assert len(names_after) == 1
             assert names_after != names_before
             assert _hit(model, fitz.Point(30, 30)) is None

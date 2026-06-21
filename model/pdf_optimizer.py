@@ -301,16 +301,31 @@ def resolve_optimize_execution_profile(
     )
 
 
+def _session_doc(model: PDFModel, session_id: str | None) -> fitz.Document | None:
+    """The fitz.Document bound to ``session_id`` (falling back to the active document).
+
+    The optimize pipeline resolves every document read through here so a background job
+    reads the *requested* session even if the active tab changes mid-run (R5-03 — the
+    working-doc build, size probe, and source resolution must not read live ``model.doc``).
+    """
+    if session_id:
+        session = model._sessions_by_id.get(session_id)
+        if session is not None:
+            return session.doc
+    return model.doc
+
+
 def resolve_file_backed_optimize_source(model: PDFModel, session_id: str | None) -> Path | None:
-    if not session_id or not model.doc:
+    doc = _session_doc(model, session_id)
+    if not session_id or doc is None:
         return None
     session = model._sessions_by_id.get(session_id)
     if session is None or model.session_has_unsaved_changes(session_id):
         return None
-    if getattr(model.doc, "needs_pass", False):
+    if getattr(doc, "needs_pass", False):
         return None
     source_path = Path(session.original_path).resolve()
-    doc_name = getattr(model.doc, "name", "") or ""
+    doc_name = getattr(doc, "name", "") or ""
     if not doc_name:
         return None
     try:
@@ -324,12 +339,13 @@ def resolve_file_backed_optimize_source(model: PDFModel, session_id: str | None)
 
 
 def current_document_size_bytes(model: PDFModel, session_id: str | None) -> int:
-    if not model.doc:
+    doc = _session_doc(model, session_id)
+    if doc is None:
         raise RuntimeError("沒有可最佳化的 PDF")
     source_path = model._resolve_file_backed_optimize_source(session_id)
     if source_path is not None:
         return source_path.stat().st_size
-    return len(model.doc.tobytes(garbage=0, no_new_id=1))
+    return len(doc.tobytes(garbage=0, no_new_id=1))
 
 
 def build_working_doc_for_optimized_copy(model: PDFModel, session_id: str | None) -> fitz.Document:
@@ -338,13 +354,14 @@ def build_working_doc_for_optimized_copy(model: PDFModel, session_id: str | None
       live doc -> disposable working doc -> tool save prep
     Prefer reopening the clean source file to avoid cloning the live doc bytes.
     """
-    if not model.doc:
+    doc = _session_doc(model, session_id)
+    if doc is None:
         raise RuntimeError("沒有可最佳化的 PDF")
     source_path = model._resolve_file_backed_optimize_source(session_id)
     if source_path is not None:
         working_doc = fitz.open(str(source_path))
     else:
-        working_doc = fitz.open("pdf", model.doc.tobytes(garbage=0, no_new_id=1))
+        working_doc = fitz.open("pdf", doc.tobytes(garbage=0, no_new_id=1))
     prepared_doc = model.tools.prepare_doc_for_save(session_id, working_doc) if session_id else None
     if prepared_doc is None:
         return working_doc
@@ -813,61 +830,112 @@ def _encryption_method_for(encryption_meta: str) -> int:
     return fitz.PDF_ENCRYPT_AES_256
 
 
-def reapply_source_encryption(model: PDFModel, output_path: str) -> None:
-    """Re-encrypt an optimized copy so an encrypted source stays password-protected.
+@dataclass(frozen=True)
+class EncryptionDescriptor:
+    """Immutable snapshot of a session's encryption state, captured *before* the optimize
+    job runs so re-encryption never reads mutable live-model state afterwards (R5-03).
 
-    The optimize pipeline rebuilds the working doc from the *decrypted* live-doc bytes
-    (``build_working_doc_for_optimized_copy`` -> ``tobytes`` for the encrypted/needs_pass
-    case), so without this the optimized copy of a password-protected PDF would be written
-    unprotected (R5.5). We re-apply the session password captured at open and the live
-    doc's effective permission bits. Only one password is retained in memory, so the
-    owner/user split collapses (``owner_pw == user_pw``); the confidentiality invariant —
-    the copy needs the same password to open — is preserved.
-
-    No-op for unprotected sources. Owner-password-only PDFs open with ``needs_pass`` False
-    (no password barrier at open) and are intentionally left unencrypted, matching how the
-    live session already treats them.
-
-    The save operates on a freshly reopened handle of the *optimized output file*, never
-    on ``model.doc`` (the live doc), so it does not cross the encryption AST guard.
+    ``should_encrypt`` is True only for sources that required a password to open
+    (``needs_pass``); owner-password-only / unencrypted sources have ``auth_level is None``
+    and are copied through unprotected, matching how the live session treats them.
     """
-    doc = model.doc
-    if doc is None or not getattr(doc, "needs_pass", False):
-        return
-    password = model.password
-    if not password:
-        # A needs_pass document cannot have been opened/authenticated without a
-        # password, so this is unreachable in practice. Refuse loudly rather than
-        # emit a silently unprotected copy.
-        raise PdfOptimizeError("無法保留來源加密：找不到工作階段密碼。")
-    metadata = doc.metadata or {}
-    method = _encryption_method_for(metadata.get("encryption", ""))
+
+    session_id: str | None
+    password: str | None
+    method: int
+    permissions: int
+    auth_level: int | None
+    is_encrypted: bool = False
+
+    @property
+    def should_encrypt(self) -> bool:
+        return self.is_encrypted
+
+
+def _capture_encryption_descriptor(
+    model: PDFModel, session_id: str | None
+) -> EncryptionDescriptor:
+    """Snapshot the encryption state of ``session_id`` (defaults to the active session).
+
+    Read once, up front, binding to the specific session by id so a later active-session
+    change cannot redirect the read to another tab's document/password (R5-03).
+
+    Encryption is detected from the trailer metadata as well as ``needs_pass`` so that an
+    owner-password-only source (blank user password — opens without a prompt) is still
+    recognised as encrypted and not silently downgraded to an unprotected copy (R5-02).
+    """
+    session = model._sessions_by_id.get(session_id) if session_id else None
+    doc = session.doc if session is not None else model.doc
+    if doc is None:
+        return EncryptionDescriptor(session_id, None, fitz.PDF_ENCRYPT_NONE, -1, None, False)
+    enc_meta = (doc.metadata or {}).get("encryption") or ""
+    is_encrypted = bool(enc_meta) or bool(getattr(doc, "needs_pass", False))
+    if not is_encrypted:
+        return EncryptionDescriptor(session_id, None, fitz.PDF_ENCRYPT_NONE, -1, None, False)
+    password = session.password if session is not None else model.password
+    auth_level = session.auth_level if session is not None else None
+    method = _encryption_method_for(enc_meta)
     permissions = int(getattr(doc, "permissions", -1))
-    out = Path(output_path)
-    temp_enc = out.with_name(f".{out.stem}_enc_{uuid.uuid4().hex}.pdf")
-    reopened = fitz.open(output_path)
+    return EncryptionDescriptor(session_id, password, method, permissions, auth_level, True)
+
+
+def reapply_source_encryption(
+    enc: EncryptionDescriptor, source_path: str | Path, dest_path: str | Path
+) -> None:
+    """Encrypt the (plaintext) optimized file at ``source_path`` into ``dest_path``.
+
+    The optimize pipeline rebuilds the working doc from *decrypted* bytes, so without this
+    the optimized copy of a password-protected PDF would be unprotected (R5.5). We re-apply
+    the captured method, permissions, and password.
+
+    R5-02 — the auth role is preserved, never promoted:
+      * USER auth (2): keep the credential as ``user_pw`` and generate an unguessable
+        random ``owner_pw`` so the user cannot elevate to owner / permission control.
+      * OWNER / both (4/6): the retained credential is (at least) the owner password.
+      * Owner-only source (no password captured): lock the copy with a random ``owner_pw``
+        and a blank ``user_pw`` — preserves the permission restrictions and the
+        open-without-password model, without inventing a user-password barrier.
+    The caller must only invoke this when ``enc.should_encrypt`` is True.
+
+    The save targets a freshly reopened handle of the optimized *output* file, never
+    ``model.doc`` (the live doc), so it does not cross the encryption AST guard.
+    """
+    if not enc.should_encrypt:
+        raise PdfOptimizeError("無法保留來源加密：缺少有效的加密描述。")
+    if enc.auth_level == 2:  # authenticated as USER — must not become owner in the copy
+        user_pw = enc.password or ""
+        owner_pw = uuid.uuid4().hex
+    elif enc.auth_level in (4, 6):  # owner / both: retained credential is the owner password
+        owner_pw = enc.password or uuid.uuid4().hex
+        user_pw = enc.password or ""
+    else:  # owner-only encrypted source opened without a password (R5-02 blank-user case)
+        owner_pw = uuid.uuid4().hex
+        user_pw = ""
+    reopened = fitz.open(str(source_path))
     try:
         reopened.save(
-            str(temp_enc),
-            encryption=method,
-            owner_pw=password,
-            user_pw=password,
-            permissions=permissions,
+            str(dest_path),
+            encryption=enc.method,
+            owner_pw=owner_pw,
+            user_pw=user_pw,
+            permissions=enc.permissions,
         )
     finally:
         reopened.close()
-    os.replace(str(temp_enc), output_path)
 
 
 def save_optimized_copy(
     model: PDFModel,
     new_path: str,
     options: PdfOptimizeOptions | None = None,
+    session_id: str | None = None,
 ) -> PdfOptimizationResult:
     if not model.doc:
         raise RuntimeError("沒有可最佳化的 PDF")
 
-    active_sid = model.get_active_session_id()
+    # R5-03 / Codex F1: bind to the session selected at dispatch, NOT whichever tab is
+    # active when this (background) worker runs. Every read below resolves this id.
+    active_sid = session_id if session_id is not None else model.get_active_session_id()
     canonical_new = model._canonicalize_path(new_path)
     current_meta = model.get_session_meta(active_sid) if active_sid else None
     current_canonical = model._canonicalize_path(current_meta["path"]) if current_meta and current_meta.get("path") else None
@@ -878,9 +946,13 @@ def save_optimized_copy(
     resolved_options = model._normalize_optimize_options(options or model.preset_optimize_options("平衡"))
     optimize_source_path = model._resolve_file_backed_optimize_source(active_sid)
     original_bytes = model._current_document_size_bytes(active_sid)
+    # R5-03: snapshot the source's encryption state up front, bound to active_sid, so the
+    # re-encryption decision below never depends on live model state read after this point.
+    enc = _capture_encryption_descriptor(model, active_sid)
     working_doc = model._build_working_doc_for_optimized_copy(active_sid)
     image_usage = collect_image_usage(working_doc) if resolved_options.optimize_images else {}
-    temp_save = Path(model.temp_dir.name) / f"optimized_{uuid.uuid4()}.pdf"
+    temp_plain = Path(model.temp_dir.name) / f"optimized_{uuid.uuid4()}.pdf"
+    temp_enc: Path | None = None
     try:
         model._apply_optimize_options(
             working_doc,
@@ -889,12 +961,21 @@ def save_optimized_copy(
             original_bytes=original_bytes,
             image_usage=image_usage,
         )
-        model._save_optimized_working_doc(working_doc, temp_save, resolved_options)
+        model._save_optimized_working_doc(working_doc, temp_plain, resolved_options)
         Path(new_path).parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(temp_save), new_path)
-        # R5.5: an encrypted source is rebuilt from decrypted bytes above; re-apply the
-        # session password so the optimized copy stays password-protected (no-op otherwise).
-        reapply_source_encryption(model, new_path)
+        if enc.should_encrypt:
+            # R5-04 fail-closed: encrypt into a destination-directory staging file and
+            # install it atomically — new_path NEVER holds the transient plaintext. The
+            # sibling staging keeps os.replace on the same filesystem (atomic). R5.5: the
+            # working doc was rebuilt from decrypted bytes, so this restores protection.
+            out = Path(new_path)
+            temp_enc = out.with_name(f".{out.stem}_enc_{uuid.uuid4().hex}.pdf")
+            reapply_source_encryption(enc, temp_plain, temp_enc)
+            os.replace(str(temp_enc), str(new_path))
+            temp_enc = None  # consumed by os.replace; do not unlink in finally
+        else:
+            # Unencrypted source: install the optimized plaintext directly (cross-fs safe).
+            shutil.move(str(temp_plain), str(new_path))
         optimized_bytes = Path(new_path).stat().st_size
         bytes_saved = max(0, original_bytes - optimized_bytes)
         summary: list[str] = [resolved_options.preset]
@@ -914,21 +995,19 @@ def save_optimized_copy(
             applied_summary=summary,
         )
     except PdfOptimizeError:
-        if temp_save.exists():
-            try:
-                temp_save.unlink()
-            except OSError:
-                pass
         # Already a complete user-facing message; re-wrapping would double the prefix.
         raise
     except Exception as exc:
-        if temp_save.exists():
-            try:
-                temp_save.unlink()
-            except OSError:
-                pass
         raise PdfOptimizeError(f"最佳化 PDF 失敗: {model._safe_exc_message(exc)}") from exc
     finally:
+        # R5-04: always clean every staging path — the plaintext intermediate and, on a
+        # failed/partial encrypt, the encrypted sibling. (temp_enc is None once consumed.)
+        for staging in (temp_plain, temp_enc):
+            if staging is not None and staging.exists():
+                try:
+                    staging.unlink()
+                except OSError:
+                    pass
         working_doc.close()
 
 

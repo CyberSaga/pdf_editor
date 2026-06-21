@@ -195,6 +195,10 @@ class DocumentSession:
     # reopen-after-save handle when a full save preserves encryption. Never
     # logged or persisted to disk; the decrypted content already lives in RAM.
     password: str | None = None
+    # Authentication class returned by ``doc.authenticate()`` at open: 2=user,
+    # 4=owner, 6=both, None=unencrypted / no password barrier. Lets the optimize
+    # pipeline preserve the source's auth role instead of promoting user->owner (R5-02).
+    auth_level: int | None = None
     block_manager: TextBlockManager = field(default_factory=TextBlockManager)
     command_manager: CommandManager = field(default_factory=CommandManager)
     pending_edits: list = field(default_factory=list)
@@ -689,6 +693,7 @@ class PDFModel:
             doc = fitz.open(str(src_path))
 
             # 若 PDF 需要密碼，嘗試認證（支援 user 與 owner password）
+            auth_level: int | None = None
             if doc.needs_pass:
                 if password is None:
                     raise RuntimeError("document closed or encrypted — 需要密碼")
@@ -697,6 +702,9 @@ class PDFModel:
                     raise RuntimeError(
                         f"PDF 密碼驗證失敗（authenticate 回傳 0）: {path}"
                     )
+                # Retain the auth class (2=user/4=owner/6=both) so the optimize pipeline
+                # preserves the source role rather than promoting a user to owner (R5-02).
+                auth_level = int(auth_result)
                 # auth_result: 2=user, 4=owner, 6=both — 均允許繼續
                 logger.debug(
                     f"PDF 密碼驗證成功 (auth_level={auth_result}，"
@@ -742,6 +750,7 @@ class PDFModel:
                 # Kept in-memory so a save that preserves encryption can
                 # re-authenticate the reopened handle (see _reopen_doc_after_save).
                 password=password,
+                auth_level=auth_level,
             )
             self._sessions_by_id[session_id] = session
             self._session_ids.append(session_id)
@@ -2511,10 +2520,16 @@ class PDFModel:
     def _save_optimized_working_doc(self, working_doc: fitz.Document, temp_save: Path, options: PdfOptimizeOptions) -> None:
         pdf_optimizer.save_optimized_working_doc(self, working_doc, temp_save, options)
 
-    def save_optimized_copy(self, new_path: str, options: PdfOptimizeOptions | None = None) -> PdfOptimizationResult:
+    def save_optimized_copy(
+        self,
+        new_path: str,
+        options: PdfOptimizeOptions | None = None,
+        session_id: str | None = None,
+    ) -> PdfOptimizationResult:
         # Optimize-copy is a strict "write a new file" workflow.
         # Implementation is delegated so `PDFModel` does not become an optimizer grab-bag.
-        return pdf_optimizer.save_optimized_copy(self, new_path, options)
+        # session_id binds the job to its source tab (R5-03); None = active session.
+        return pdf_optimizer.save_optimized_copy(self, new_path, options, session_id)
 
     def _restore_doc_from_snapshot(self, snapshot_bytes: bytes) -> None:
         """用 bytes 快照替換整份文件（SnapshotCommand undo/redo 時呼叫）。

@@ -147,7 +147,10 @@ def test_delete_image_object_removes_marker_and_page_image_ref() -> None:
             assert ok is True
             assert _hit(model, fitz.Point(60, 80)) is None
 
-            after_images = list(page.get_images(full=True))
+            # R6-01: delete_object now forces an immediate garbage=4 round-trip (a deleted
+            # image must not survive as a recoverable orphan xref), which replaces
+            # model.doc and invalidates the pre-delete page handle — re-fetch it.
+            after_images = list(model.doc[0].get_images(full=True))
             assert len(after_images) <= len(before_images)
         finally:
             model.close()

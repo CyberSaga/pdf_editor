@@ -1,5 +1,46 @@
 # TODOS
 
+## Post-campaign repair (2026-06-21 — R4/R5/R6-01 review findings + Codex fusion)
+
+Acting on `docs/code-review-findings.md` (review of the R0–R6 campaign): kept R0–R3, repaired R4/R5 defects
+and the wrong R6 closure. All red-light-first; full suite green under `.venv`. Codex (`/codex:rescue`) was the
+third fusion lens and surfaced 5 additional confirmed gaps that were also fixed.
+
+- [x] **R4-01…R4-04 — async thumbnail coordinator removed.** Deleted `controller/thumbnail_coordinator.py`
+  (session cross-paint, GUI-thread snapshot serialization, decrypted-snapshot-on-close, uncancelled fallback).
+  Restored the synchronous bounded-batch `_schedule_thumbnail_batch`; added the R4-03 worker-snapshot-cache clear
+  to `on_tab_close_requested`. Kept R4.2's cache (search/OCR/print). Tests: `test_thumbnail_async_removal.py`
+  (the plan's claim to also delete `test_thumbnail_async.py`/`test_worker_bridge_slots.py` was wrong — those test
+  the synchronous scheduler and the print/optimize/OCR bridges, retained).
+- [x] **R5-02 / R5-03 / R5-04 — optimize encrypt path.** `DocumentSession.auth_level`; `EncryptionDescriptor` +
+  `_capture_encryption_descriptor` (session-bound, captured before background work); `reapply_source_encryption`
+  preserves the auth role (user→random-owner; owner/both retain credential; owner-only blank-user re-locked).
+  `save_optimized_copy` stages encrypted output in a destination-sibling temp + atomic `os.replace` (never
+  plaintext at `new_path`); session_id threaded dispatch→worker→helpers (read `session.doc`, not active doc).
+  Tests: `test_pdf_optimize_workflow.py` (+5).
+- [x] **R5-05 — runner password lifetime.** `PrintSubprocessRunner` clears `_helper_password` after `start()` and
+  in `_cleanup()`, then `deleteLater()`s. Tests: `test_print_subprocess_runner.py` (+2).
+- [x] **R5-06 — packaging guard.** fnmatch validator over concrete forbidden package names; rejects the find-all
+  `*`/`**` false-negative. Tests: `test_security_packaging.py` (+1 teeth test).
+- [x] **R5-01 — print dispatcher plaintext temp (partial / residual documented).** The pragmatic finally-unlink
+  already existed; added a real-sink regression test (`test_print_dispatcher_real_sink.py`) pinning deletion after
+  the driver call. **Residual (deferred):** the plaintext temp still exists *during* the driver/spool call — fully
+  eliminating it needs a fileless / password-aware raster path (driver API takes a file path). Tracked below.
+- [x] **R6-01 — object-ops GC bypass (REOPENS R3.4).** `_register_mutation` (batched GC for textbox move/rotate)
+  + `_purge_deleted_content` (immediate, fail-closed `garbage=4` for textbox/app-image/native-image delete).
+  Fixes unbounded xref growth (~57× measured) and deleted-data recovery from saved files (save uses `garbage=0`).
+  Tests: `test_pdf_object_ops_gc.py` (6). **delete now swaps the live doc handle** — callers/tests must re-fetch
+  `model.doc[0]` after a delete (updated `test_image_objects_model.py`, `test_native_pdf_images_model.py`).
+
+### Deferred / known limitations from this campaign
+- [ ] **R5-01 fileless print path.** Eliminate the transient plaintext temp during the driver call (page-streamed
+  raster or password-aware driver boundary) + avoid the duplicate full-document copies. Large redesign.
+- [ ] **Codex F6 — in-flight worker decrypted-bytes lifetime.** `cancel_ocr`/`_cancel_search` are non-blocking by
+  design, so a search/OCR worker can hold its snapshot `_doc_bytes` briefly after a tab closes. A blocking join
+  would regress responsiveness (intentional non-blocking cancel); the live doc is decrypted in RAM regardless, and
+  the controller's long-lived cache is already cleared on close (R4-03). Revisit only if a worker can be made to
+  clear its payload race-free on cancel.
+
 ## Audit remediation (2026-06-10 two-round audit)
 
 - [x] **Phase 1 (2026-06-12) — Search snapshot restore / print snapshot funnel:** search workers now read private snapshot bytes captured on the GUI thread, completed tab-search results are preserved per tab across switches, and only in-flight partial searches are cleared on cancel; print submission captures snapshot bytes before the helper thread starts. Tests: `test_scripts/test_search_worker_flow.py`, `test_scripts/test_multi_tab_plan.py::test_05_search_state_restored_per_tab`, `test_scripts/test_print_controller_flow.py`.
@@ -28,7 +69,7 @@
 - [x] **R6.2 (2026-06-18) — Retire stale `verify_no_jump.py` full-suite ignores.** The gate's full-suite step hard-`--ignore`d `test_multi_tab_plan.py`, `test_ocr_e2e.py`, `test_render_colorspace.py` as "missing test fixtures / pre-existing failures" — but all three now pass/skip cleanly under `.venv` (re-audited: **72 passed / 9 skipped**), so the gate had silently stopped covering them. Removed the three `--ignore` lines (kept the structurally-justified ones: `test_no_jump_editor_geometry.py` is validated by a dedicated earlier gate step, and the genuinely timing-sensitive `test_print_subprocess_runner/helper.py`). Verified the three files green *before* editing the gate script, then re-ran the gate. PITFALLS entry added (re-audit gate ignores on every gate change).
 - [x] **R6.3 (2026-06-18) — Coverage floor ratchet.** Added `[tool.coverage.run]` (`source = model, controller, view`) + `[tool.coverage.report] fail_under = 75` to `pyproject.toml`. Floor set **at-or-below** the measured baseline (combined TOTAL **78.7%** on 2026-06-18 — 15082 stmts / 3206 missed, **1443 passed / 20 skipped** under `.venv`; R0.5 baseline 78.0%), leaving ~3.7% headroom so unrelated PRs aren't blocked by a sub-percent dip — ratchet upward only in a *separate* PR. **Enforced only on explicit `--cov` runs** (`pytest test_scripts/ --cov --cov-report=term-missing`); plain `pytest`, incl. the no-jump gate's full-suite step, collects no coverage and is unaffected (verified). CI (`ci.yml`) intentionally does NOT gate on this — the full suite needs the heavy optional/platform stack (surya/torch, win32print) and runs under the local `.venv` authority, where the floor lives. Teeth: `coverage report` exits 0 at 79% vs the 75 floor, exits 2 against `--fail-under=85`.
 - [x] **R3.7 deferred finding (2026-06-18) — `shiboken6.isValid` cleanup hardening (done).** `TextSelectionManager`'s scene-item cleanup (`_clear_text_selection`, `_clear_text_selection_extra_rects`) relied on a broad `try/except` around `item.scene()` to absorb the `RuntimeError` a `scene.clear()`-freed C++ wrapper raises; `ObjectSelectionManager` instead guards with `shiboken6.isValid(item)`. Both were already crash-safe (verified — not a latent crash), but the patterns diverged and the guard path was untested. Unified to the explicit `shiboken6.isValid(item) and item.scene() is not None` guard (no behavior change — replaces exception-as-control-flow) and added `test_text_selection_cleanup_guard.py` (4 tests: dangling state is real, both cleanup sites survive `scene.clear()` without raising + drop refs, live items still removed). Module-header DEFERRED note updated to record the hardening. `refactor-state.md` turn 37.
-- [x] **R3.4 deferred finding (2026-06-18) — `pending_edits` asymmetry: INVESTIGATED → not a correctness bug → documented & closed (user decision).** The textbox move/rotate + image/textbox delete branches of `move_object`/`rotate_object`/`delete_object` omit the `pending_edits.append` the native-image path performs. Traced end-to-end: `pending_edits`' only consumer is `apply_pending_redactions()` → `page.clean_contents()`, a Phase-6 content-stream **size optimization** (10-30% smaller PDF), not a correctness path (undo/save-prompt are independent). So the omission only means those pages skip the optional pre-save compaction → saved PDF slightly larger but byte-correct + pixel-identical when rendered; annotation-only `rect` branches correctly omit it. Any fix changes object-edit save output, which the no-jump gate can't validate (same class as R3.8b) — so closed with no code change per user. Full rationale in `plans/refactor-R3-god-module-decomposition.md` (R3.4 block) + `refactor-state.md` turn 36.
+- [x] **R3.4 deferred finding (2026-06-18) — `pending_edits` asymmetry: INVESTIGATED → not a correctness bug → documented & closed (user decision).** The textbox move/rotate + image/textbox delete branches of `move_object`/`rotate_object`/`delete_object` omit the `pending_edits.append` the native-image path performs. Traced end-to-end: `pending_edits`' only consumer is `apply_pending_redactions()` → `page.clean_contents()`, a Phase-6 content-stream **size optimization** (10-30% smaller PDF), not a correctness path (undo/save-prompt are independent). So the omission only means those pages skip the optional pre-save compaction → saved PDF slightly larger but byte-correct + pixel-identical when rendered; annotation-only `rect` branches correctly omit it. Any fix changes object-edit save output, which the no-jump gate can't validate (same class as R3.8b) — so closed with no code change per user. Full rationale in `plans/refactor-R3-god-module-decomposition.md` (R3.4 block) + `refactor-state.md` turn 36. **⚠️ SUPERSEDED 2026-06-21 (R6-01): this closure was WRONG** — it missed that without the `edit_count` bump the object verbs never trigger the `garbage=4` GC either, so orphans grow unbounded (~57×) and deleted content survives in saved files (`garbage=0`). Reopened and FIXED — see the Post-campaign repair section (R6-01) at the top.
 - [x] **R4.5 (2026-06-17) — Preset objstms re-enable.** Census found the residual was narrower than the original note: `平衡` already sets `use_object_streams=True`, and `極致壓縮` is structurally blocked (`linearize=True` → `normalize_optimize_options` strips objstms). `快速` (`linearize=False`) was the only genuine opportunity — flipped `use_object_streams=False → True` in `preset_optimize_options` (`pdf_optimizer.py:229`); the flag survives normalization and reaches `fast_save_kwargs` as `use_objstms=1`. Test: `test_pdf_optimize_workflow.py::test_fast_preset_enables_object_streams`.
 - [x] **Phase 5 — Hygiene / Documentation** (landed 2026-06-11): `pyproject.toml` added (name=`cybersaga-pdf`, setuptools backend with explicit flat-layout package discovery incl. the `src.printing` namespace package; deps mirror requirements.txt; `dev` extra = ruff/mypy/pytest; `[tool.ruff]` encodes the default rule set so the 240-violation baseline is stable; `[tool.mypy]` gradual + `explicit_package_bases` for the parent-dir `__init__.py` gotcha; `[tool.pytest.ini_options] testpaths=["test_scripts"]`). `pip install -e ".[dev]"` now works (`.venv` pip upgraded 21.2.3 → 26.1.2 for PEP 660). PITFALLS: cooperative OCR cancellation entry. CLAUDE.md §3.1 violation count reconciled (113 → 240). Plan: `plans/phase-5-hygiene.md`.
 

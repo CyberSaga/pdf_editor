@@ -1314,3 +1314,84 @@
 **Cause:** An `--ignore` added to route around a *transient* breakage (a missing fixture, a since-fixed flake) is inert documentation once the breakage is resolved. Nothing forces a re-audit, so the ignore outlives its reason. R6.2 found three (`test_multi_tab_plan`, `test_ocr_e2e`, `test_render_colorspace`) that had passed/skipped cleanly under `.venv` (72 passed / 9 skipped) since well before the audit.
 **Fix:** Before removing any gate ignore, run the named files directly under `.venv` and confirm they pass/skip. Only then delete the `--ignore` line(s) and leave a dated comment recording the re-audit result. Keep ignores that are *structurally* justified (the no-jump artifacts validated by a dedicated earlier step; genuinely timing-sensitive print runner/helper tests) — those are not stale. Re-audit the whole ignore list whenever the gate script itself changes.
 **File:** `scripts/verify_no_jump.py` (`_run_full_suite`)
+
+---
+
+## Object-ops (move/rotate/delete) bypassed GC → unbounded growth + deleted-data recovery
+**Area:** `model/pdf_object_ops.py` (R6-01; reopened R3.4)
+**Symptom:** Repeated textbox move/rotate grew `doc.xref_length()` ~57× over 25 ops (super-linear, unbounded); a deleted textbox/image was recoverable byte-for-byte from the *saved* PDF.
+**Cause:** The textbox move/rotate and textbox/app-image/native-image delete branches rewrite page content via redact-and-reinsert but never bumped `model.edit_count` / `model.pending_edits`, so `_maybe_garbage_collect`'s every-20-edits `garbage=4` orphan-xref round-trip never fired for object ops. Orphaned content streams accumulated, and because the normal save path uses `garbage=0` (`_save_doc` default), they persisted in saved files. (The earlier R3.4 closure looked only at `clean_contents()` compaction and wrongly concluded "slightly larger but byte-correct.")
+**Fix:** `_register_mutation(model, page_idx, rect)` (mirrors the text-edit bookkeeping: append `pending_edits`, bump `edit_count`, call `_maybe_garbage_collect`) on textbox move/rotate; `_purge_deleted_content(...)` (immediate `garbage=4` round-trip) on every delete branch — deletes are destructive/security-sensitive so they don't wait for the batch threshold.
+**File:** `model/pdf_object_ops.py`
+
+---
+
+## `delete_object` now replaces the live `fitz.Document` handle
+**Area:** `model/pdf_object_ops.py` `_purge_deleted_content`; callers/tests
+**Symptom:** Code that captured `page = model.doc[0]` (or held `model.doc`) before a delete then used it after crashed with `AttributeError: 'NoneType' object has no attribute 'get_page_images'` (a page from a closed document).
+**Cause:** The immediate `garbage=4` purge calls `_roundtrip_live_doc`, which serializes + reopens the document and closes the old handle (same post-condition as the every-20-edits GC, but now on *every* delete). Pre-delete page/doc references become stale.
+**Fix:** Always re-fetch `model.doc` / `model.doc[page_idx]` after any object delete. Never cache page handles across a mutation that can trigger GC.
+**File:** `model/pdf_object_ops.py`, `test_scripts/test_image_objects_model.py`, `test_scripts/test_native_pdf_images_model.py`
+
+---
+
+## Delete confidentiality must fail closed, not swallow the GC error
+**Area:** `model/pdf_object_ops.py` `_purge_deleted_content` (Codex F4)
+**Symptom:** A first cut caught the round-trip exception and logged a warning (mirroring `_maybe_garbage_collect`), so `delete_object` returned `True` even when the orphan purge failed — claiming success while deleted content stayed recoverable.
+**Cause:** The immediate purge *is* the confidentiality guarantee of a delete; swallowing its failure is unlike the batched GC (where a failure only defers compaction).
+**Fix:** Let the round-trip exception propagate from `_purge_deleted_content` so the delete surfaces as a failed operation. The batched `_maybe_garbage_collect` may still swallow (non-destructive), but destructive deletes must not.
+**File:** `model/pdf_object_ops.py`
+
+---
+
+## Optimize-copy must bind to its source session, not live `model.doc`
+**Area:** `model/pdf_optimizer.py`, `controller/pdf_controller.py` (R5-03; Codex F1/F2)
+**Symptom:** A background optimize could read whichever tab was active when the worker ran, mixing document A's optimize request with document B's bytes/encryption if the user (or a single-instance `open_pdf` via `QTimer`) switched tabs mid-run.
+**Cause:** `save_optimized_copy` captured `active_sid` on the *worker* thread, and `build_working_doc_for_optimized_copy` / size / source-resolve helpers read the active `model.doc` property rather than the requested session's document.
+**Fix:** Capture the session id at *dispatch* (`OptimizePdfCopyRequest.session_id`), thread it through the worker to `save_optimized_copy(session_id=...)`, and resolve every document read via `_session_doc(model, session_id)` (`model._sessions_by_id[sid].doc`). Capture the `EncryptionDescriptor` up front, before any background work.
+**File:** `model/pdf_optimizer.py`, `controller/pdf_controller.py`
+
+---
+
+## Re-encryption must preserve the auth role and never publish plaintext at the output
+**Area:** `model/pdf_optimizer.py` `reapply_source_encryption` / `save_optimized_copy` (R5-02, R5-04)
+**Symptom:** (R5-02) A source opened with a restricted *user* password produced an optimized copy where that same password authenticated as *owner* (`owner_pw == user_pw`), silently dropping the permission mask; an owner-only/blank-user encrypted source became fully unprotected. (R5-04) On a re-encryption/`os.replace` failure, the plaintext optimized file was left at the requested output path (it had already been `shutil.move`d there before encryption).
+**Cause:** One captured credential was reused as both owner and user password; the pipeline moved plaintext to `new_path` and *then* encrypted in place, with cleanup that only checked the already-moved temp.
+**Fix:** Track `DocumentSession.auth_level` (2/4/6/None). In `reapply_source_encryption`: user-auth keeps the credential as `user_pw` + a random `owner_pw` (no promotion); owner/both retain the credential; owner-only blank-user sources (detected via encryption metadata, not just `needs_pass`) re-lock with a random `owner_pw` + blank `user_pw` + the restricted permissions. In `save_optimized_copy`: write plaintext to a temp, encrypt into a *destination-sibling* staging file, then atomic `os.replace` only on success; clean every staging path in `finally`. `new_path` never holds transient plaintext for an encrypted source.
+**File:** `model/pdf_optimizer.py`, `model/pdf_model.py`
+
+---
+
+## PyMuPDF `Document.save()`/`tobytes()` default to `garbage=0` — orphans persist on disk
+**Area:** `model/pdf_model.py` save path; relevant to any redaction/delete
+**Symptom:** Content removed by `apply_redactions` (or a redact-and-reinsert edit) is still recoverable from a saved file — the redaction rewrites the *current* content stream but the pre-redaction stream remains as an orphan xref.
+**Cause:** `_save_doc` / `_full_save_to_path` / `save_as` use the PyMuPDF default `garbage=0`, which does not prune unreferenced objects. Only `garbage>=1` (full pruning at `garbage=4`) reclaims orphans.
+**Fix:** For security-sensitive deletions, reclaim orphans *before* the user can save (immediate `garbage=4` round-trip, see `_purge_deleted_content`). Do not assume the save step will scrub them — it won't at the default garbage level. (Raising the save garbage level globally is a larger, separate change with incremental-save implications.)
+**File:** `model/pdf_object_ops.py`, `model/pdf_model.py`
+
+---
+
+## Async thumbnail QThread coordinator was removed (R4) — keep thumbnails synchronous
+**Area:** `controller/pdf_controller.py` (R4-01…R4-04)
+**Symptom:** The R4.3 `ThumbnailCoordinator` could paint a cancelled tab's queued batch into the newly-active tab (the `batch_ready` signal carried only `(gen, start_index, images)` and `gen` collides across sessions), serialized the snapshot on the GUI thread, retained a decrypted snapshot after tab close, and left the old worker running on sync fallback.
+**Cause:** Per-session generation tokens are not globally unique, and the coordinator's session id was a mutable field overwritten by each `try_start`.
+**Fix:** Removed the coordinator entirely; `_schedule_thumbnail_batch` renders synchronously in bounded `QTimer` batches guarded by `_thumb_gen_by_session` (cannot cross-paint by construction). Separately, `on_tab_close_requested` clears `_worker_snapshot_cache` for the departing session (R4-03) so decrypted bytes don't outlive it. Do not reintroduce an async thumbnail path without a globally-unique job token and a close/switch-time cancel+cache-clear.
+**File:** `controller/pdf_controller.py`
+
+---
+
+## Completed print runner retained its password until the view was destroyed (R5-05)
+**Area:** `src/printing/subprocess_runner.py`
+**Symptom:** Each `PrintSubprocessRunner` stored `_helper_password` and was parented to the long-lived view; completion dropped the coordinator's refs but Qt parent ownership kept the runner (and its credential) alive — `view.children()` accumulated `['secret-0', 'secret-1', ...]`.
+**Cause:** `_cleanup()` neither cleared the password nor scheduled the runner for deletion.
+**Fix:** Clear `self._helper_password = None` immediately after `self._process.start()` (QProcess already inherited the env) and again in `_cleanup()`, then `self.deleteLater()`. Test note: `deleteLater` posts a `DeferredDelete` event that a plain `processEvents()` does not deliver — drain it with `app.sendPostedEvents(None, QEvent.Type.DeferredDelete)`.
+**File:** `src/printing/subprocess_runner.py`
+
+---
+
+## Packaging guard accepted a find-all `*` discovery pattern (R5-06)
+**Area:** `test_scripts/test_security_packaging.py`
+**Symptom:** The allow-list guard stripped trailing `*`/`.` and checked the remaining prefix, so a discovery list like `['controller*', '*']` passed — `'*'` stripped to `''`, which does not start with any forbidden prefix — even though setuptools would then discover `scripts`.
+**Cause:** Prefix-string matching cannot model setuptools' fnmatch-glob discovery semantics; a find-all reduces to the empty string and slips through.
+**Fix:** Evaluate each include pattern with `fnmatch` against concrete forbidden package names (`scripts`, `scripts.fusion_schemas`, `test_scripts`, `docs`, `plans`) and reject any pattern that strips to empty (`*`/`**`). Keep a teeth test asserting the validator flags `*`/`scripts*`.
+**File:** `test_scripts/test_security_packaging.py`

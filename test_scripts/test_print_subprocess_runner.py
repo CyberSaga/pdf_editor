@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
+from PySide6.QtCore import QEvent, QObject, QProcess, QProcessEnvironment, Signal
 from PySide6.QtWidgets import QApplication
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -254,3 +254,66 @@ def test_runner_heartbeat_events_prevent_false_stall(tmp_path: Path) -> None:
     process.emit_finished(0)
     assert _pump_until(app, lambda: bool(succeeded)), "runner never emitted succeeded event"
     assert stalled == []
+
+
+def test_runner_clears_helper_password_after_start(tmp_path: Path) -> None:
+    """R5-05: the helper password is dropped as soon as QProcess has the environment.
+
+    The env still carries it (handed off), but the runner no longer retains the credential
+    in a field that lives as long as its long-lived view parent.
+    """
+    app = _ensure_app()
+    job = PrintHelperJob(
+        job_id="pw-start",
+        input_pdf_path=str(tmp_path / "input.pdf"),
+        watermarks=[],
+        options=PrintJobOptions(printer_name="Printer A"),
+    )
+    runner = PrintSubprocessRunner(
+        job, process_factory=_FakeProcess, helper_password="secret-xyz"
+    )
+
+    runner.start()
+
+    assert runner._helper_password is None, "runner must drop the password once env is handed off"
+    process = _FakeProcess.instances[-1]
+    assert process.process_environment is not None
+    assert process.process_environment.get("PDF_EDITOR_PRINT_PASSWORD") == "secret-xyz", (
+        "the password must still reach the helper via the process environment"
+    )
+    app.processEvents()
+
+
+def test_runner_clears_password_and_unparents_on_cleanup(tmp_path: Path) -> None:
+    """R5-05: a completed runner clears its credential and releases Qt parent ownership
+    (deleteLater), so it does not linger under the view holding a secret."""
+    app = _ensure_app()
+    view = QObject()
+    job = PrintHelperJob(
+        job_id="pw-cleanup",
+        input_pdf_path=str(tmp_path / "input.pdf"),
+        watermarks=[],
+        options=PrintJobOptions(printer_name="Printer A"),
+    )
+    runner = PrintSubprocessRunner(
+        job, process_factory=_FakeProcess, helper_password="secret-2", parent=view
+    )
+    assert runner in view.children()
+
+    runner.start()
+    process = _FakeProcess.instances[-1]
+    assert len(view.children()) == 1
+    process.emit_finished(0)
+
+    assert runner._helper_password is None
+
+    # _cleanup() schedules deleteLater(); DeferredDelete is not delivered by a plain
+    # processEvents(), so drain it explicitly (the real event loop does this for us).
+    def _deleted() -> bool:
+        app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+        return len(view.children()) == 0
+
+    assert _pump_until(app, _deleted), (
+        "completed runner must be scheduled for deletion and unparented from the view"
+    )

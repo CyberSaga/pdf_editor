@@ -721,3 +721,34 @@ created. (Examples: icon-count fix, `app_identity` leaf, F401/F841 removal, E701
   change matches a proven in-file sibling and is directly unit-tested. Docs: TODOS (R3.7), this entry. **Backlog
   now:** only R3.8b remains (mouse-handler dispatcher) — explicit prior user deferral; the 377-case pixel gate is
   structurally blind to Qt event-routing, so untouched without direct instruction.
+- **2026-06-21 (turn 38): post-campaign repair of R4/R5/R6-01 review findings (red-light-first; Codex fusion pass).**
+  Acting on `docs/code-review-findings.md`: kept R0–R3 structural work, repaired the defects R4/R5 introduced and
+  the R6 closure that was wrong.
+  - **R4 (Plan A) — removed the async thumbnail coordinator.** Deleted `controller/thumbnail_coordinator.py`
+    (4 structural defects: session cross-paint via gen-only `batch_ready`, GUI-thread snapshot serialization,
+    decrypted snapshot retained on close, uncancelled fallback worker). Restored the pre-R4.3 synchronous
+    bounded-batch `_schedule_thumbnail_batch` (cannot cross-paint by construction) and added the R4-03
+    snapshot-cache clear in `on_tab_close_requested`. Kept R4.2's snapshot cache (valid for search/OCR/print).
+    Tests: `test_thumbnail_async_removal.py`. `test_thumbnail_async.py`/`test_worker_bridge_slots.py` were NOT
+    deleted (the plan was wrong — they test the synchronous scheduler and the print/optimize/OCR bridges).
+  - **R5 (Plan B) — fix-forward encrypt/print security.** Added `DocumentSession.auth_level`;
+    `EncryptionDescriptor` + `_capture_encryption_descriptor` (session-bound, captured before background work);
+    `reapply_source_encryption(enc, src, dst)` preserves the auth role (R5-02: user stays user — random owner_pw;
+    owner/both retain the credential; owner-only blank-user sources re-locked with random owner_pw + restricted
+    perms). `save_optimized_copy` now stages the encrypted artifact in a destination-sibling temp and atomically
+    `os.replace`s — `new_path` never holds transient plaintext (R5-04 fail-closed). R5-05: runner clears
+    `_helper_password` after `start()` + in `_cleanup()` and `deleteLater()`s. R5-06: packaging guard uses fnmatch
+    against concrete forbidden package names (rejects the find-all `*` false-negative). R5-01: the pragmatic
+    temp deletion already existed — added a real-sink regression test + documented the transient-during-driver
+    residual (the fileless/password-aware driver redesign stays deferred).
+  - **R6-01 (Plan C) — object-ops GC bypass.** Reopened R3.4 (the turn-36 closure missed that no `edit_count`
+    bump means the `garbage=4` GC never runs for object verbs → unbounded orphan growth + deleted-data recovery,
+    since save uses `garbage=0`). `_register_mutation` (batched GC for move/rotate) + `_purge_deleted_content`
+    (immediate, fail-closed `garbage=4` for delete). Tests: `test_pdf_object_ops_gc.py`.
+  - **Codex fusion pass (`/codex:rescue` = the third review lens).** Confirmed and fixed 5 of 6 findings beyond
+    the plan: optimize session-binding threaded dispatch→worker→`save_optimized_copy(session_id=)`→helpers read
+    `session.doc` not active `model.doc` (F1/F2, deeper R5-03); owner-only encryption preserved (F3); delete purge
+    made fail-closed (F4); native-image delete now purges immediately (F5). F6 (in-flight worker bytes outliving a
+    closed session) left as a documented limitation — a blocking join would regress the intentional non-blocking
+    cancel, and the live doc is decrypted in RAM regardless; the controller's long-lived cache is the part R4-03
+    fixed. **Backlog still:** R3.8b only.

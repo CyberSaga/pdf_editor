@@ -604,6 +604,41 @@ def _redact_and_restore_textbox_region(model: PDFModel, page: fitz.Page, rect: f
     if filtered_annots:
         model.tools.annotation._restore_annots(page, filtered_annots)
 
+def _register_mutation(model: PDFModel, page_idx: int, rect: fitz.Rect) -> None:
+    """Register a content-rewriting mutation for layered GC tracking.
+
+    Mirrors the bookkeeping the text-edit path performs (``pdf_text_edit`` ~L1275):
+    append to ``pending_edits`` (drives the every-5-edits ``clean_contents``) and bump
+    ``edit_count`` (drives the every-20-edits ``garbage=4`` orphan-xref round-trip via
+    ``_maybe_garbage_collect``). The textbox move/rotate branches redact-and-reinsert page
+    content but previously skipped this, so their orphan xrefs were never reclaimed —
+    unbounded ``xref_length`` growth over repeated transforms (R6-01 / R3.4).
+    """
+    model.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(rect)})
+    model.edit_count += 1
+    model._maybe_garbage_collect()
+
+
+def _purge_deleted_content(model: PDFModel, page_idx: int, rect: fitz.Rect) -> None:
+    """Immediately reclaim orphan xrefs after a destructive delete (confidentiality).
+
+    A redaction removes content from the *current* content stream but leaves the
+    pre-redaction stream as an orphan xref — byte-for-byte recoverable from the saved file
+    until a ``garbage=4`` round-trip prunes it. Deletes therefore force the full GC
+    immediately rather than waiting for the 20-edit batch threshold that is tuned for
+    (non-destructive) text edits.
+
+    Fail-closed (Codex F4): a round-trip failure PROPAGATES. The immediate purge is the
+    confidentiality guarantee of a delete, so a failure must surface as a failed operation
+    rather than be swallowed — otherwise ``delete_object`` would return success while the
+    deleted content stays recoverable in orphan xrefs.
+    """
+    model.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(rect)})
+    model.edit_count += 1
+    model._roundtrip_live_doc(garbage=4, deflate=True)
+    model.block_manager.build_index(model.doc)
+
+
 def move_object(model: PDFModel, request: MoveObjectRequest) -> bool:
     if request.destination_page != request.source_page:
         return False
@@ -673,6 +708,9 @@ def move_object(model: PDFModel, request: MoveObjectRequest) -> bool:
         object_id=request.object_id,
     )
     model.block_manager.rebuild_page(request.destination_page - 1, model.doc)
+    # R6-01: redact+reinsert orphaned the prior content stream; register the mutation so
+    # the batched garbage=4 round-trip reclaims it (bounds file growth over repeats).
+    _register_mutation(model, request.destination_page - 1, old_rect | fitz.Rect(request.destination_rect))
     return True
 
 def _rotate_native_image_absolute(
@@ -783,6 +821,8 @@ def rotate_object(model: PDFModel, request: RotateObjectRequest) -> bool:
         object_id=request.object_id,
     )
     model.block_manager.rebuild_page(request.page_num - 1, model.doc)
+    # R6-01: redact+reinsert orphaned the prior content stream; register for batched GC.
+    _register_mutation(model, request.page_num - 1, old_rect)
     return True
 
 def delete_object(model: PDFModel, request: DeleteObjectRequest) -> bool:
@@ -790,7 +830,12 @@ def delete_object(model: PDFModel, request: DeleteObjectRequest) -> bool:
         invocation = _find_native_image_invocation(model, request.page_num, request.object_id)
         if invocation is None:
             return False
-        return _remove_native_image_invocation(model, invocation)
+        if not _remove_native_image_invocation(model, invocation):
+            return False
+        # R6-01 / Codex F5: a deleted native image must not survive as a recoverable
+        # orphan xref — purge immediately, same as the app-image/textbox delete branches.
+        _purge_deleted_content(model, request.page_num - 1, fitz.Rect(invocation.bbox))
+        return True
     found = _find_app_object_annot(model, request.page_num, request.object_id, request.object_kind)
     if found is None:
         return False
@@ -806,6 +851,8 @@ def delete_object(model: PDFModel, request: DeleteObjectRequest) -> bool:
         except Exception:
             pass
         _delete_app_object_annots(model, request.page_num, request.object_id, expected_kind="image")
+        # R6-01: a deleted image must not survive as a recoverable orphan xref.
+        _purge_deleted_content(model, request.page_num - 1, old_rect)
         return True
     if payload["kind"] != "textbox":
         return False
@@ -813,6 +860,8 @@ def delete_object(model: PDFModel, request: DeleteObjectRequest) -> bool:
     _redact_and_restore_textbox_region(model, page, old_rect, request.object_id)
     _delete_app_object_annots(model, request.page_num, request.object_id, expected_kind="textbox")
     model.block_manager.rebuild_page(request.page_num - 1, model.doc)
+    # R6-01: deleted text must not survive as a recoverable orphan xref — purge now.
+    _purge_deleted_content(model, request.page_num - 1, old_rect)
     return True
 
 def resize_object(model: PDFModel, request: ResizeObjectRequest) -> bool:

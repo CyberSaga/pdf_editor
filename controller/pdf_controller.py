@@ -110,6 +110,9 @@ from controller.print_coordinator import (  # noqa: E402
 class OptimizePdfCopyRequest:
     output_path: str
     options: object
+    # Session selected at dispatch; the worker optimizes THIS tab even if the active tab
+    # changes before/while it runs (R5-03 / Codex F1). None falls back to the active session.
+    session_id: str | None = None
 
 
 class _OptimizePdfCopyWorker(QObject):
@@ -127,6 +130,7 @@ class _OptimizePdfCopyWorker(QObject):
             result = self._model.save_optimized_copy(
                 self._request.output_path,
                 self._request.options,
+                session_id=self._request.session_id,
             )
             self.succeeded.emit(result)
         except Exception as exc:
@@ -166,7 +170,6 @@ from controller.ocr_coordinator import (  # noqa: E402
 # R3.2: the async search subsystem (worker, bridge, orchestration + state) lives in
 # controller/search_coordinator.py. _SearchWorker/_SearchBridge are re-exported here so
 # `from controller.pdf_controller import _SearchWorker, _SearchBridge` stays valid.
-from controller.thumbnail_coordinator import ThumbnailCoordinator  # noqa: E402
 from controller.search_coordinator import (  # noqa: E402
     SearchCoordinator,
     _SearchBridge,  # noqa: F401  (re-export for backward compatibility)
@@ -188,7 +191,6 @@ class PDFController:
         self._optimize_paused_session_id: str | None = None
         self._ocr_coordinator = OcrCoordinator(self)
         self._search_coordinator = SearchCoordinator(self)
-        self._thumbnail_coordinator = ThumbnailCoordinator(self)
         self._load_gen_by_session: dict[str, int] = {}
         self._thumb_gen_by_session: dict[str, int] = {}
         self._render_gen_by_session: dict[str, int] = {}
@@ -226,7 +228,6 @@ class PDFController:
             self._optimize_worker_bridge.thread_finished.connect(self._on_optimize_thread_finished)
         self._ocr_coordinator.connect_bridge()
         self._search_coordinator.connect_bridge()
-        self._thumbnail_coordinator.connect_bridge()
         if not self._signals_connected:
             self._connect_signals()
             self._signals_connected = True
@@ -1187,7 +1188,12 @@ class PDFController:
         # The worker calls `PDFModel.save_optimized_copy(...)` (facade); optimizer internals live in `model/pdf_optimizer.py`.
         self._optimize_paused_session_id = self.model.get_active_session_id()
         self._pause_session_background_loading(self._optimize_paused_session_id)
-        request = OptimizePdfCopyRequest(output_path=output_path, options=options)
+        # Bind the request to the tab active at dispatch (R5-03 / Codex F1).
+        request = OptimizePdfCopyRequest(
+            output_path=output_path,
+            options=options,
+            session_id=self._optimize_paused_session_id,
+        )
         thread = QThread(self.view)
         worker = _OptimizePdfCopyWorker(self.model, request)
         worker.moveToThread(thread)
@@ -1324,6 +1330,12 @@ class PDFController:
         if sid == self.model.get_active_session_id():
             self._capture_current_ui_state()
         self.model.close_session(sid)
+        # R4-03 fix: release the departing session's decrypted worker-snapshot bytes.
+        # The cache holds a full doc.tobytes() (plaintext for an encrypted doc); leaving
+        # it after the session is gone keeps decrypted content alive in memory. Guarded by
+        # session id so other tabs' cached snapshots survive.
+        if self._worker_snapshot_cache and self._worker_snapshot_cache[0] == sid:
+            self._invalidate_worker_snapshot_cache()
         self._session_ui_state.pop(sid, None)
         self._fullscreen_session_snapshots.pop(sid, None)
         self._load_gen_by_session.pop(sid, None)
@@ -2244,11 +2256,10 @@ class PDFController:
             or not self.model.doc
         ):
             return
-        # R4.3: offload large, overlay-free rebuilds to a background worker (renders off
-        # snapshot bytes, never the live doc). Returns True only when it owns the range.
-        coordinator = getattr(self, "_thumbnail_coordinator", None)
-        if coordinator is not None and coordinator.try_start(start, session_id, gen, end_limit):
-            return
+        # R4 repair: thumbnails render synchronously in bounded batches on the GUI thread.
+        # The async coordinator (R4.3) was removed — it could paint a cancelled session's
+        # queued batch into the newly-active tab (R4-01). The _thumb_gen_by_session guard
+        # above plus the per-batch QTimer chain below make cross-paint impossible here.
         n = end_limit if end_limit is not None else len(self.model.doc)
         end = min(start + THUMB_BATCH_SIZE, n)
         colorspace = self._fitz_colorspace_for_session(session_id)

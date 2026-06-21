@@ -16,6 +16,7 @@ flags. See refactor-state.md (R5.4) for the experiment.
 
 from __future__ import annotations
 
+import fnmatch
 import shutil
 import subprocess
 import sys
@@ -29,9 +30,37 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # Prefixes that must never appear in a distributable artifact's member list.
 _DEV_TREES = ("scripts/", "test_scripts/")
 
+# Concrete dev/test package names a discovery pattern must never match (dotted, as
+# setuptools sees them). Includes a sub-package so `scripts.fusion*`-style globs are caught.
+_FORBIDDEN_PACKAGES = (
+    "scripts",
+    "scripts.fusion_schemas",
+    "test_scripts",
+    "docs",
+    "plans",
+)
+
 
 def _offending_members(names: list[str]) -> list[str]:
     return sorted(n for n in names if n.startswith(_DEV_TREES))
+
+
+def _discovery_violations(include: list[str]) -> list[str]:
+    """Discovery patterns that would ship a forbidden dev/test package.
+
+    setuptools `packages.find.include` patterns are fnmatch globs over dotted package
+    names, so we evaluate them against concrete forbidden names rather than string-stripping
+    (R5-06: a bare `*`/`**` find-all stripped to "" silently passed the old prefix check).
+    """
+    violations: list[str] = []
+    for pattern in include:
+        norm = pattern.strip()
+        if norm.rstrip("*.") == "":
+            violations.append(pattern)  # find-all: discovers every top-level package
+            continue
+        if any(fnmatch.fnmatch(pkg, norm) for pkg in _FORBIDDEN_PACKAGES):
+            violations.append(pattern)
+    return violations
 
 
 def _load_pyproject() -> dict:
@@ -62,16 +91,26 @@ def test_offending_predicate_flags_dev_trees() -> None:
 # ── wheel discovery is an allow-list (omission excludes scripts/test_scripts) ─
 
 
+def test_discovery_validator_rejects_find_all_and_dev_trees() -> None:
+    """R5-06 teeth: the validator must flag a find-all pattern and any dev-tree glob.
+
+    The old guard stripped trailing `*`/`.` and checked the remaining prefix, so `'*'`
+    became `''` and slipped through. These cases pin the corrected semantics.
+    """
+    assert _discovery_violations(["controller*", "model*", "*"]), "a find-all '*' must be flagged"
+    assert _discovery_violations(["**"]), "a recursive find-all '**' must be flagged"
+    assert _discovery_violations(["scripts*"]), "an explicit scripts* glob must be flagged"
+    assert _discovery_violations(["test_scripts"]), "test_scripts must be flagged"
+    # A correct production-only allow-list has no violations.
+    assert _discovery_violations(["controller*", "model*", "utils*", "view*", "src*"]) == []
+
+
 def test_pyproject_wheel_discovery_is_allowlist() -> None:
     data = _load_pyproject()
     include = data["tool"]["setuptools"]["packages"]["find"]["include"]
     assert isinstance(include, list) and include, "packages.find.include must be a non-empty allow-list"
-    # No discovery pattern may match a dev/test tree.
-    for pattern in include:
-        head = pattern.rstrip("*").rstrip(".")
-        assert not head.startswith(("scripts", "test_scripts", "docs")), (
-            f"discovery pattern {pattern!r} would ship a dev/test tree"
-        )
+    violations = _discovery_violations(include)
+    assert violations == [], f"discovery patterns would ship dev/test trees: {violations}"
     # The production packages must still be discoverable (guards an over-prune regression).
     assert any(p.startswith("controller") for p in include)
     assert any(p.startswith("model") for p in include)

@@ -255,6 +255,191 @@ def test_save_optimized_copy_preserves_encryption(tmp_path: Path) -> None:
         model.close()
 
 
+def test_optimized_copy_keeps_user_auth_as_user_not_owner(tmp_path: Path) -> None:
+    """R5-02: a source opened with a restricted *user* password must not be promoted to
+    owner access in the optimized copy (the old code wrote owner_pw == user_pw)."""
+    from model.pdf_model import PDFModel
+
+    source = _make_encrypted_pdf(tmp_path / "user-source.pdf", user_pw="secret", owner_pw="ownerpw")
+    # Sanity: the fixture is a genuine user/owner split.
+    probe = fitz.open(str(source))
+    try:
+        assert probe.authenticate("secret") == 2, "fixture user password should auth as user (2)"
+    finally:
+        probe.close()
+    probe2 = fitz.open(str(source))
+    try:
+        assert probe2.authenticate("ownerpw") in (4, 6), "fixture owner password should auth as owner"
+    finally:
+        probe2.close()
+
+    output = tmp_path / "user-optimized.pdf"
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source), password="secret")  # user-level auth (auth_level == 2)
+        model.save_optimized_copy(str(output), model.preset_optimize_options("平衡"))
+    finally:
+        model.close()
+
+    out = fitz.open(str(output))
+    try:
+        assert out.needs_pass, "optimized copy of an encrypted source must stay protected"
+        level = out.authenticate("secret")
+        assert level == 2, (
+            f"user credential must authenticate as user (2) in the copy, got {level} — "
+            f"R5-02 promotion (owner_pw == user_pw)"
+        )
+        assert not (int(out.permissions) & int(fitz.PDF_PERM_MODIFY)), (
+            "user-level copy must not grant modify permission (permission mask promoted)"
+        )
+    finally:
+        out.close()
+
+
+def test_optimized_copy_uses_descriptor_captured_before_background(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """R5-03: encryption is decided from an immutable descriptor captured up front, not
+    from live model state read after the (background) optimize completes."""
+    from model.pdf_model import PDFModel
+
+    source = _make_encrypted_pdf(tmp_path / "race-source.pdf", user_pw="secret", owner_pw="ownerpw")
+    output = tmp_path / "race-optimized.pdf"
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source), password="secret")
+        # Simulate an active-session change landing AFTER the working doc is written but
+        # before re-encryption: mutate the live password the buggy code reads at the end.
+        original_save = model._save_optimized_working_doc
+
+        def _save_then_switch(working_doc, dest, opts):
+            original_save(working_doc, dest, opts)
+            model.password = "intruder-pw"
+
+        monkeypatch.setattr(model, "_save_optimized_working_doc", _save_then_switch)
+        model.save_optimized_copy(str(output), model.preset_optimize_options("平衡"))
+    finally:
+        model.close()
+
+    out = fitz.open(str(output))
+    try:
+        assert out.authenticate("secret") != 0, (
+            "copy must open with the ORIGINAL password captured before the switch (R5-03)"
+        )
+    finally:
+        out.close()
+    out2 = fitz.open(str(output))
+    try:
+        assert out2.authenticate("intruder-pw") == 0, (
+            "copy must NOT be encrypted with the switched-in live password (R5-03 race)"
+        )
+    finally:
+        out2.close()
+
+
+def test_optimized_copy_failure_leaves_no_plaintext_at_output(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """R5-04: if re-encryption fails, the destination must not be left holding plaintext."""
+    import model.pdf_optimizer as optimizer_mod
+    from model.pdf_model import PDFModel
+
+    source = _make_encrypted_pdf(tmp_path / "fail-source.pdf", user_pw="secret", owner_pw="ownerpw")
+    output = tmp_path / "fail-optimized.pdf"
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("injected encryption failure")
+
+    monkeypatch.setattr(optimizer_mod, "reapply_source_encryption", _boom)
+
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source), password="secret")
+        with pytest.raises(optimizer_mod.PdfOptimizeError):
+            model.save_optimized_copy(str(output), model.preset_optimize_options("平衡"))
+    finally:
+        model.close()
+
+    assert not output.exists(), (
+        "a failed encrypted optimize must not leave a plaintext file at the output path (R5-04)"
+    )
+
+
+def test_optimize_binds_to_passed_session_not_active(tmp_path: Path) -> None:
+    """R5-03 (Codex F1/F2): optimize must read the *requested* session's document, not
+    whichever tab is active when the background worker runs."""
+    from model.pdf_model import PDFModel
+
+    a = _make_pdf(tmp_path / "A.pdf", ["AAAA-doc-A-content"])
+    b = _make_pdf(tmp_path / "B.pdf", ["BBBB-doc-B-content"])
+    output = tmp_path / "bound-optimized.pdf"
+
+    model = PDFModel()
+    try:
+        a_sid = model.open_pdf(str(a))
+        b_sid = model.open_pdf(str(b), append=True)  # B becomes active
+        assert model.get_active_session_id() == b_sid
+        # Request optimization of A while B is the active tab.
+        model.save_optimized_copy(
+            str(output), model.preset_optimize_options("平衡"), session_id=a_sid
+        )
+    finally:
+        model.close()
+
+    doc = fitz.open(str(output))
+    try:
+        text = "".join(page.get_text() for page in doc)
+        assert "AAAA-doc-A-content" in text, "optimize must use the requested session A's content"
+        assert "BBBB-doc-B-content" not in text, "optimize leaked the active session B's content"
+    finally:
+        doc.close()
+
+
+def test_optimize_preserves_owner_only_encryption(tmp_path: Path) -> None:
+    """R5-02 (Codex F3): an owner-password-only source (blank user password, restricted
+    permissions) must not become an unprotected, unrestricted optimized copy."""
+    from model.pdf_model import PDFModel
+
+    src = tmp_path / "owner-only.pdf"
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), "restricted", fontsize=12, fontname="helv")
+    doc.save(
+        str(src),
+        encryption=fitz.PDF_ENCRYPT_AES_256,
+        owner_pw="ownerpw",
+        user_pw="",  # blank user password -> opens without a prompt, but copy is restricted
+        permissions=int(fitz.PDF_PERM_PRINT),  # copy/modify NOT granted
+    )
+    doc.close()
+
+    probe = fitz.open(str(src))
+    try:
+        assert not probe.needs_pass, "owner-only source should open without a password"
+        assert (probe.metadata or {}).get("encryption"), "fixture must actually be encrypted"
+    finally:
+        probe.close()
+
+    output = tmp_path / "owner-only-optimized.pdf"
+    model = PDFModel()
+    try:
+        model.open_pdf(str(src))  # no password needed
+        model.save_optimized_copy(str(output), model.preset_optimize_options("平衡"))
+    finally:
+        model.close()
+
+    res = fitz.open(str(output))
+    try:
+        assert (res.metadata or {}).get("encryption"), (
+            "owner-only encryption must be preserved in the optimized copy (R5-02)"
+        )
+        assert not (int(res.permissions) & int(fitz.PDF_PERM_COPY)), (
+            "the copy restriction must survive optimization"
+        )
+    finally:
+        res.close()
+
+
 def test_save_optimized_copy_avoids_live_doc_tobytes_for_clean_session(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -721,7 +906,7 @@ def test_start_optimize_pdf_copy_runs_work_in_background(mvc, monkeypatch, tmp_p
         staticmethod(lambda *args, **kwargs: (str(output), "PDF (*.pdf)")),
     )
 
-    def fake_save_optimized_copy(path: str, _options):
+    def fake_save_optimized_copy(path: str, _options, session_id=None):
         time.sleep(0.25)
         shutil.copy2(str(current), path)
         return PdfOptimizationResult(
@@ -766,7 +951,7 @@ def test_start_optimize_pdf_copy_cancels_active_background_loading(mvc, monkeypa
         staticmethod(lambda *args, **kwargs: (str(output), "PDF (*.pdf)")),
     )
 
-    def fake_save_optimized_copy(path: str, _options):
+    def fake_save_optimized_copy(path: str, _options, session_id=None):
         time.sleep(0.25)
         shutil.copy2(str(current), path)
         return PdfOptimizationResult(
@@ -809,7 +994,7 @@ def test_start_optimize_pdf_copy_completion_message_uses_human_units(mvc, monkey
         staticmethod(lambda *args, **kwargs: (str(output), "PDF (*.pdf)")),
     )
 
-    def fake_save_optimized_copy(path: str, _options):
+    def fake_save_optimized_copy(path: str, _options, session_id=None):
         shutil.copy2(str(current), path)
         return PdfOptimizationResult(
             output_path=path,
@@ -864,7 +1049,7 @@ def test_large_file_optimize_submission_keeps_progress_dialog_responsive(
         staticmethod(lambda *args, **kwargs: (str(output), "PDF (*.pdf)")),
     )
 
-    def fake_save_optimized_copy(path: str, _options):
+    def fake_save_optimized_copy(path: str, _options, session_id=None):
         time.sleep(0.35)
         shutil.copy2(str(current), path)
         return PdfOptimizationResult(
