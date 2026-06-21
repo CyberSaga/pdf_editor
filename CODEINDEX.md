@@ -96,6 +96,11 @@
   - `scripts/codex_session_guard.py`
   - `scripts/completion_gate.py`
   - `scripts/fusion.py`
+  - `scripts/fusion_cli.py`
+  - `scripts/fusion_eval.py`
+  - `scripts/fusion_providers.py`
+  - `scripts/fusion_runtime.py`
+  - `scripts/fusion_transcripts.py`
   - `scripts/gate_anchor.py`
   - `scripts/manual_visual_edit_check.py`
   - `scripts/ux_signoff_agent.py`
@@ -134,6 +139,12 @@
   - `test_scripts/test_feature_conflict.py`
   - `test_scripts/test_font_fix.py`
   - `test_scripts/test_fullscreen_transitions.py`
+  - `test_scripts/test_fusion_cli.py`
+  - `test_scripts/test_fusion_eval.py`
+  - `test_scripts/test_fusion_pipeline.py`
+  - `test_scripts/test_fusion_providers.py`
+  - `test_scripts/test_fusion_routing.py`
+  - `test_scripts/test_fusion_transcripts.py`
   - `test_scripts/test_geometry.py`
   - `test_scripts/test_headless_merge.py`
   - `test_scripts/test_image_objects_gui.py`
@@ -145,6 +156,7 @@
   - `test_scripts/test_linux_driver_overrides.py`
   - `test_scripts/test_macos_menu.py`
   - `test_scripts/test_main_startup_behavior.py`
+  - `test_scripts/test_merge_composition.py`
   - `test_scripts/test_multi_tab_plan.py`
   - `test_scripts/test_native_image_discovery.py`
   - `test_scripts/test_native_pdf_images_model.py`
@@ -193,6 +205,7 @@
   - `test_scripts/test_print_speed.py`
   - `test_scripts/test_print_subprocess_helper.py`
   - `test_scripts/test_print_subprocess_runner.py`
+  - `test_scripts/test_print_watermarks.py`
   - `test_scripts/test_printing_pipeline.py`
   - `test_scripts/test_qt_bridge_layout.py`
   - `test_scripts/test_qt_pixmap_colorspaces.py`
@@ -229,6 +242,8 @@
   - `test_scripts/test_text_extraction_line_joining.py`
   - `test_scripts/test_text_normalization.py`
   - `test_scripts/test_text_selection.py`
+  - `test_scripts/test_text_selection_bounds.py`
+  - `test_scripts/test_text_selection_cleanup_guard.py`
   - `test_scripts/test_text_selection_extraction.py`
   - `test_scripts/test_theme_and_icons.py`
   - `test_scripts/test_thumbnail_async.py`
@@ -245,6 +260,7 @@
   - `test_scripts/test_week1_model_regressions.py`
   - `test_scripts/test_win_driver_properties.py`
   - `test_scripts/test_win_print_fixes.py`
+  - `test_scripts/test_worker_bridge_slots.py`
   - `test_scripts/test_worker_snapshot_cache.py`
   - `test_scripts/test_xref_repair.py`
   - `test_scripts/validate_optimized_pdf.py`
@@ -421,6 +437,27 @@
 
 ### `scripts/fusion.py`
 **Functions:** `_gemini_cmd` (L52), `run_gemini_cli` (L57), `run_openai` (L82), `run_gemini_dual` (L100), `run_openai_gemini` (L119), `synthesize` (L161), `build_prompt` (L181), `_divider` (L196), `main` (L203)
+
+### `scripts/fusion_cli.py`
+**Functions:** `build_parser` (L31), `build_context` (L50), `panel_calls_for_profile` (L75), `resolve_executable` (L88), `build_live_pipeline` (L102), `_jsonable` (L116), `_write_json` (L124), `write_artifacts` (L131), `exit_code_for_status` (L208), `_new_run_dir` (L212), `main` (L217)
+
+### `scripts/fusion_eval.py`
+**Classes:** `EvalCase` (L13), `EvalScore` (L20)
+**Functions:** `score_answer` (L27)
+
+### `scripts/fusion_providers.py`
+**Classes:** `ExecResult` (L43), `ProviderResult` (L52), `Executor` (L67), `SubprocessExecutor` (L89), `CodexAdapter` (L154), `AntigravityAdapter` (L216), `ClaudeAdapter` (L307)
+**Functions:** `validate_subscription_environment` (L36), `_terminate_process_tree` (L77), `_status` (L143)
+**Methods (12):** `usable`, `run`, `__init__`, `run`, `__init__`, `_command`, `call`, `call_json`, `__init__`, `call`, `__init__`, `call`
+
+### `scripts/fusion_runtime.py`
+**Classes:** `Route` (L16), `RiskLevel` (L21), `TaskKind` (L27), `RouteDecision` (L51), `InsufficientCandidatesError` (L60), `PanelCall` (L65), `Candidate` (L72), `PanelAttempt` (L80), `PanelRun` (L87), `PipelineOutcome` (L93), `FusionPipeline` (L275)
+**Functions:** `_optional_text` (L106), `parse_route_decision` (L114), `apply_route_policy` (L137), `run_panel_detailed` (L168), `run_panel` (L197), `blinded_candidate_payload` (L210), `_request_text` (L217), `_router_prompt` (L227), `_judge_prompt` (L236), `_synthesis_prompt` (L248), `verify_synthesis` (L266)
+**Methods (2):** `__init__`, `run`
+
+### `scripts/fusion_transcripts.py`
+**Classes:** `TranscriptError` (L11), `TranscriptStamp` (L16), `ExtractedResponse` (L22)
+**Functions:** `_paths` (L30), `snapshot_transcripts` (L34), `changed_transcripts` (L45), `_records` (L58), `extract_response` (L77)
 
 ### `scripts/gate_anchor.py`
 
@@ -612,6 +649,28 @@
 
 ### `test_scripts/test_fullscreen_transitions.py`
 
+### `test_scripts/test_fusion_cli.py`
+**Functions:** `_decision` (L23), `_candidate` (L34), `_fusion_outcome` (L39), `test_parser_exposes_selective_routing_and_panel_profiles` (L62), `test_script_help_runs_from_repository_root` (L82), `test_force_route_flags_are_mutually_exclusive` (L96), `test_build_context_marks_files_and_stdin_untrusted` (L103), `test_build_context_rejects_missing_file` (L114), `test_panel_profile_standard_is_two_claude_and_two_antigravity` (L119), `test_panel_profile_lean_is_one_of_each` (L132), `test_resolve_antigravity_uses_official_localappdata_install` (L143), `test_write_artifacts_persists_route_candidates_judge_and_verification` (L156), `test_write_artifacts_preserves_failed_panel_attempt` (L173), `test_exit_code_maps_pipeline_status` (L196), `test_main_runs_injected_pipeline_and_prints_report` (L200), `test_main_rejects_api_key_environment` (L233), `test_main_rejects_nonpositive_timeout` (L244)
+
+### `test_scripts/test_fusion_eval.py`
+**Functions:** `test_eval_rewards_required_coverage_and_valid_links` (L4), `test_eval_penalizes_unsafe_claims_and_missing_coverage` (L22), `test_eval_can_compare_stored_direct_and_fused_answers` (L36)
+
+### `test_scripts/test_fusion_pipeline.py`
+**Classes:** `CandidateAdapter` (L19), `FakeCodex` (L128)
+**Functions:** `test_panel_runs_four_independent_candidates_concurrently` (L41), `test_pipeline_type_hints_resolve_at_runtime` (L60), `test_blinded_payload_excludes_provider_identity` (L64), `test_panel_requires_two_usable_candidates` (L77), `test_panel_detailed_preserves_failed_attempt_metadata` (L87), `_panel_calls` (L152), `test_pipeline_returns_direct_codex_answer_without_panel` (L156), `test_pipeline_runs_panel_judge_and_separate_synthesizer` (L171), `test_pipeline_degrades_to_claude_self_fusion_when_antigravity_fails` (L197), `test_pipeline_stops_on_judge_or_synthesis_failure` (L227), `test_pipeline_marks_call_id_leak_as_degraded_verification` (L243)
+**Methods (5):** `__init__`, `call`, `__init__`, `call_json`, `call`
+
+### `test_scripts/test_fusion_providers.py`
+**Classes:** `FakeExecutor` (L18)
+**Functions:** `test_subscription_environment_rejects_every_provider_api_key` (L29), `test_codex_adapter_uses_ephemeral_read_only_exec_and_stdin` (L34), `test_codex_adapter_removes_api_keys_from_child_environment` (L61), `test_codex_adapter_rejects_empty_success_output` (L72), `test_codex_adapter_classifies_auth_failure` (L85), `test_codex_adapter_parses_structured_json` (L95), `test_codex_adapter_rejects_invalid_structured_json` (L107), `test_antigravity_adapter_recovers_empty_stdout_from_matching_transcript` (L120), `test_antigravity_adapter_prefers_future_nonempty_stdout` (L167), `test_antigravity_default_executor_uses_neutral_temp_workspace` (L183), `test_antigravity_adapter_fails_when_stdout_and_transcript_are_missing` (L195), `test_claude_adapter_uses_subscription_read_only_print_mode_and_stdin` (L210), `test_claude_adapter_rejects_empty_output` (L234)
+**Methods (2):** `__init__`, `run`
+
+### `test_scripts/test_fusion_routing.py`
+**Functions:** `test_router_schema_is_closed_and_requires_routing_fields` (L21), `test_parse_route_decision_accepts_valid_conditional_payloads` (L56), `test_parse_route_decision_rejects_invalid_conditional_payloads` (L83), `test_high_risk_kinds_force_fusion` (L98), `test_force_fusion_overrides_low_risk_direct_route` (L114), `test_force_direct_is_diagnostic_override` (L126), `test_force_flags_are_mutually_exclusive` (L141)
+
+### `test_scripts/test_fusion_transcripts.py`
+**Functions:** `_transcript` (L18), `test_extract_response_selects_completed_model_answer_after_matching_input` (L22), `test_extract_response_uses_last_completed_model_answer` (L33), `test_extract_response_rejects_matching_multiple_conversations` (L50), `test_extract_response_rejects_incomplete_answer` (L65), `test_extract_response_rejects_malformed_jsonl` (L77), `test_changed_transcripts_returns_only_new_or_modified_files` (L86)
+
 ### `test_scripts/test_geometry.py`
 **Functions:** `test_clamp_inside_page_unchanged` (L9), `test_clamp_overflow_right` (L14), `test_clamp_overflow_bottom` (L19), `test_clamp_degenerate_is_nonempty` (L24), `test_rect_from_points_basic` (L29), `test_rect_from_points_multiple` (L34), `test_rect_union_empty` (L40), `test_rect_union_single` (L44), `test_rect_union_two` (L49), `test_rect_union_three` (L54), `test_overlap_ratio_no_overlap` (L59), `test_overlap_ratio_full_contain` (L63), `test_overlap_ratio_partial` (L68), `test_overlap_ratio_empty_rect` (L74)
 
@@ -652,6 +711,9 @@
 
 ### `test_scripts/test_main_startup_behavior.py`
 **Functions:** `_send_drop` (L25), `_make_pdf` (L35), `_cleanup_startup` (L52), `test_empty_launch_keeps_backend_detached_until_document_request` (L63), `test_cli_open_path_keeps_controller_attached_before_opening_documents` (L81), `test_pdf_view_emits_shell_ready_before_lazy_panel_hydration` (L102), `test_empty_launch_keeps_heavy_panels_lazy_until_pdf_open` (L139), `test_lazy_shell_hydrates_panels_when_user_opens_search_tab` (L168), `test_empty_launch_buffers_dropped_pdf_paths_until_controller_attaches` (L188), `test_empty_launch_buffers_multi_drop_pdf_paths_in_order_until_controller_attaches` (L220), `test_cli_open_builds_placeholder_geometry_before_background_rasterization` (L255), `test_cli_open_defers_annotation_and_watermark_sidebar_scans` (L272), `test_change_scale_does_not_rerender_every_page_in_continuous_mode` (L308), `test_reset_empty_ui_tolerates_lazy_shell_without_heavy_panels` (L337), `test_empty_launch_cancelled_password_prompt_returns_to_empty_shell` (L358), `test_panel_helpers_do_not_emit_sidebar_reload_signals` (L389), `test_watermark_mutations_reload_sidebar_once` (L408), `test_show_page_schedules_visible_render_once_in_continuous_mode` (L450), `test_rebuild_continuous_scene_schedules_visible_render_once` (L472), `test_render_active_session_prioritizes_visible_render_before_background_loading` (L494), `test_initial_high_quality_render_starts_background_loading_once` (L546), `test_schedule_visible_render_coalesces_pending_batches` (L576)
+
+### `test_scripts/test_merge_composition.py`
+**Functions:** `_make_pdf` (L36), `_page_texts` (L46), `model_with_current` (L51), `test_compose_without_open_document_raises` (L61), `test_compose_current_source_inserts_live_snapshot` (L70), `test_compose_file_source_inserts_foreign_pages` (L79), `test_compose_preserves_list_order_across_mixed_sources` (L91), `test_compose_skips_unknown_kind_and_pathless_file` (L106), `test_compose_empty_sources_yields_empty_document` (L121)
 
 ### `test_scripts/test_multi_tab_plan.py`
 **Classes:** `_FakeEvent` (L175)
@@ -828,6 +890,9 @@
 **Functions:** `_ensure_app` (L26), `_pump_until` (L33), `test_runner_emits_stalled_after_silence` (L124), `test_runner_maps_terminated_process_to_helper_terminated_error` (L147), `test_runner_logs_startup_error_and_uses_sys_executable` (L174), `test_runner_heartbeat_events_prevent_false_stall` (L209)
 **Methods (14):** `__init__`, `__call__`, `advance`, `__init__`, `start`, `state`, `setWorkingDirectory`, `setProcessEnvironment`, `kill`, `readAllStandardOutput`, `readAllStandardError`, `push_stdout_event`, `push_stderr_text`, `emit_finished`
 
+### `test_scripts/test_print_watermarks.py`
+**Functions:** `_make_pdf` (L34), `model_with_doc` (L44), `test_no_watermarks_returns_empty_list` (L53), `test_added_watermark_surfaces_core_fields` (L57), `test_unicode_text_survives_round_trip` (L69), `test_returned_structure_is_a_deep_copy` (L77)
+
 ### `test_scripts/test_printing_pipeline.py`
 **Classes:** `BenchmarkResult` (L37)
 **Functions:** `_normalize_text` (L44), `_build_sample_pdf` (L48), `_render_page_gray` (L84), `_page_similarity_score` (L96), `_text_similarity` (L106), `_benchmark_naive` (L126), `_benchmark_on_demand` (L146), `main` (L167)
@@ -955,6 +1020,12 @@
 ### `test_scripts/test_text_selection.py`
 **Functions:** `_make_text_pdf` (L20), `_first_run` (L28), `test_get_chars_in_run_returns_per_character_boxes` (L35), `test_same_run_drag_selects_only_character_range` (L53), `test_same_run_drag_is_order_independent` (L82), `test_cross_run_same_line_clips_both_boundaries` (L101), `test_multi_run_selection_fetches_rawdict_once` (L136), `test_multi_line_drag_partial_first_full_middle_partial_last` (L178)
 
+### `test_scripts/test_text_selection_bounds.py`
+**Functions:** `_make_text_pdf` (L32), `model_with_text` (L42), `test_bounds_none_when_no_document` (L51), `test_bounds_none_for_out_of_range_page` (L59), `test_bounds_encloses_selected_line` (L64), `test_bounds_none_when_rect_misses_all_text` (L76), `test_run_reopen_anchors_round_trips_through_session` (L81)
+
+### `test_scripts/test_text_selection_cleanup_guard.py`
+**Functions:** `qapp` (L37), `view` (L45), `_add_rect` (L55), `test_dangling_state_is_real` (L61), `test_clear_text_selection_survives_scene_clear` (L72), `test_clear_extra_rects_survives_scene_clear` (L85), `test_clear_removes_live_items_from_scene` (L96)
+
 ### `test_scripts/test_text_selection_extraction.py`
 **Functions:** `test_manager_owns_the_text_selection_verbs` (L28), `test_manager_holds_view_backref` (L33), `test_pdfview_keeps_delegating_wrappers_and_lazy_accessor` (L38)
 
@@ -1014,6 +1085,9 @@
 **Classes:** `PyFakeHandle` (L57), `_FakeDispatcher` (L393), `_WindowsLikePrinter` (L823)
 **Functions:** `_ensure_app` (L61), `_make_single_page_pdf` (L68), `_ok_result` (L76), `_install_ctypes_dialog` (L85), `test_open_printer_properties_does_not_call_setprinter` (L109), `test_open_printer_properties_returns_base64_devmode` (L120), `test_print_pdf_applies_devmode_job_scoped_and_restores` (L132), `test_devmode_buffer_injected_at_submission_survives_preview_and_json` (L185), `test_devmode_buffer_cleared_when_printer_switches` (L230), `test_mixed_layout_pdf_splits_into_two_jobs` (L269), `test_uniform_layout_pdf_stays_single_job` (L297), `test_windows_caps_raster_dpi_at_150_but_keeps_lower` (L328), `test_pdf_output_path_is_not_split_or_capped` (L363), `test_finding1_explicit_paper_preserved_when_orientation_auto` (L424), `test_finding2_collated_multicopy_mixed_layout_uses_document_order` (L460), `test_finding2_uncollated_multicopy_mixed_layout_groups_copies_per_page` (L501), `test_finding2_uniform_layout_multicopy_stays_single_job` (L539), `test_finding3_pending_devmode_survives_recoverable_range_error` (L574), `test_finding4_denied_apply_skips_restore_and_still_prints` (L631), `test_finding6_partial_failure_reports_already_spooled` (L684), `test_finding6_first_group_failure_returns_plain_result` (L715), `test_finding11_malformed_devmode_b64_falls_through_to_split` (L739), `test_finding7_buffer_only_props_do_not_reload_defaults` (L778), `test_set_page_layout_actually_applies_page_size` (L852), `test_set_page_layout_applies_size_on_real_printer` (L871)
 **Methods (11):** `__init__`, `get_default_printer`, `resolve_page_indices_for_count`, `supports_printer_properties_dialog`, `open_printer_properties`, `get_printer_preferences`, `__init__`, `pageLayout`, `setPageLayout`, `setPageSize`, `setPageOrientation`
+
+### `test_scripts/test_worker_bridge_slots.py`
+**Functions:** `qapp` (L41), `test_print_bridge_forward_prepared_reemits_same_job` (L48), `test_print_bridge_forward_progress_and_failed` (L60), `test_print_bridge_notify_thread_finished_fires_once` (L75), `test_optimize_bridge_forward_succeeded_reemits_same_result` (L85), `test_optimize_bridge_forward_failed_reemits_same_exc` (L97), `test_ocr_bridge_forward_status_preserves_gen_and_message` (L108), `test_ocr_bridge_forward_page_done_preserves_payload` (L118), `test_ocr_bridge_forward_progress_preserves_four_ints` (L132)
 
 ### `test_scripts/test_worker_snapshot_cache.py`
 **Functions:** `_counter_bytes` (L25), `_minimal_controller` (L36), `test_cache_hit_on_unedited_doc_serializes_once` (L51), `test_render_revision_bump_invalidates_cache` (L62), `test_no_active_session_bypasses_cache` (L73), `test_ocr_apply_invalidates_worker_snapshot_cache` (L85)
@@ -1095,7 +1169,7 @@
 **Methods (35):** `any_change`, `__init__`, `_trigger`, `_editor_widget`, `_handle_editor_undo`, `_handle_editor_redo`, `eventFilter`, `keyPressEvent`, `focusOutEvent`, `__init__`, `_pixel_dims`, `_to_qimage_dimensions`, `render`, `__init__`, `keyPressEvent`, `configure_render_context`, `_schedule_preview`, `_mutated_preview_has_visible_ink`, `_regenerate_preview`, `paintEvent` …
 
 ### `view/text_selection.py`
-**Classes:** `TextSelectionManager` (L34)
+**Classes:** `TextSelectionManager` (L38)
 **Methods (13):** `__init__`, `_selected_text_has_context`, `_start_text_selection`, `_update_text_selection`, `_finalize_text_selection`, `_selection_doc_rect_to_scene`, `_clear_text_selection_extra_rects`, `_render_text_selection_line_rects`, `_clear_text_selection`, `_resolve_text_info_for_doc_rect`, `_resolve_text_info_for_context_menu_pos`, `_select_all_text_on_current_page`, `_copy_selected_text_to_clipboard`
 
 ### `view/theme.py`
@@ -1123,6 +1197,9 @@
 - `model/tools/ocr_tool.py` → `model/pdf_model.py`
 - `model/tools/search_tool.py` → `model/pdf_model.py`
 - `model/tools/watermark_tool.py` → `model/pdf_model.py`
+- `scripts/fusion_cli.py` → `scripts/fusion_providers.py`, `scripts/fusion_runtime.py`
+- `scripts/fusion_providers.py` → `scripts/fusion_transcripts.py`
+- `scripts/fusion_runtime.py` → `scripts/fusion_providers.py`
 - `scripts/manual_visual_edit_check.py` → `controller/pdf_controller.py`, `model/pdf_model.py`, `view/pdf_view.py`
 - `src/printing/helper_main.py` → `model/tools/watermark_tool.py`
 - `src/printing/pdf_renderer.py` → `utils/helpers.py`, `utils/render_limits.py`
@@ -1154,6 +1231,12 @@
 - `test_scripts/test_empty_text_edit.py` → `controller/pdf_controller.py`, `model/edit_commands.py`, `model/pdf_model.py`
 - `test_scripts/test_feature_conflict.py` → `model/edit_commands.py`, `model/pdf_model.py`
 - `test_scripts/test_font_fix.py` → `model/pdf_model.py`
+- `test_scripts/test_fusion_cli.py` → `scripts/__init__.py`, `scripts/fusion_providers.py`, `scripts/fusion_runtime.py`
+- `test_scripts/test_fusion_eval.py` → `scripts/fusion_eval.py`
+- `test_scripts/test_fusion_pipeline.py` → `scripts/fusion_providers.py`, `scripts/fusion_runtime.py`
+- `test_scripts/test_fusion_providers.py` → `scripts/fusion_providers.py`
+- `test_scripts/test_fusion_routing.py` → `scripts/fusion_runtime.py`
+- `test_scripts/test_fusion_transcripts.py` → `scripts/fusion_transcripts.py`
 - `test_scripts/test_geometry.py` → `model/geometry.py`
 - `test_scripts/test_headless_merge.py` → `model/headless_merge.py`, `model/pdf_model.py`
 - `test_scripts/test_image_objects_gui.py` → `view/pdf_view.py`
@@ -1164,6 +1247,7 @@
 - `test_scripts/test_linux_driver_overrides.py` → `src/printing/base_driver.py`, `src/printing/platforms/linux_driver.py`
 - `test_scripts/test_macos_menu.py` → `view/pdf_view.py`
 - `test_scripts/test_main_startup_behavior.py` → `controller/pdf_controller.py`, `main.py`, `model/pdf_model.py`, `view/pdf_view.py`
+- `test_scripts/test_merge_composition.py` → `model/pdf_model.py`
 - `test_scripts/test_multi_tab_plan.py` → `controller/pdf_controller.py`, `model/pdf_model.py`, `view/pdf_view.py`, `view/text_editing.py`
 - `test_scripts/test_native_image_discovery.py` → `model/object_requests.py`, `model/pdf_content_ops.py`, `model/pdf_model.py`
 - `test_scripts/test_native_pdf_images_model.py` → `model/object_requests.py`, `model/pdf_content_ops.py`, `model/pdf_model.py`
@@ -1211,6 +1295,7 @@
 - `test_scripts/test_print_speed.py` → `src/printing/base_driver.py`, `src/printing/qt_bridge.py`
 - `test_scripts/test_print_subprocess_helper.py` → `src/printing/base_driver.py`, `src/printing/errors.py`, `src/printing/helper_main.py`, `src/printing/helper_protocol.py`, `src/printing/messages.py`
 - `test_scripts/test_print_subprocess_runner.py` → `src/printing/base_driver.py`, `src/printing/errors.py`, `src/printing/helper_protocol.py`, `src/printing/subprocess_runner.py`
+- `test_scripts/test_print_watermarks.py` → `model/pdf_model.py`
 - `test_scripts/test_printing_pipeline.py` → `src/printing/__init__.py`, `src/printing/pdf_renderer.py`
 - `test_scripts/test_qt_bridge_layout.py` → `src/printing/__init__.py`, `src/printing/base_driver.py`, `src/printing/layout.py`, `src/printing/page_selection.py`
 - `test_scripts/test_qt_pixmap_colorspaces.py` → `src/printing/pdf_renderer.py`, `utils/helpers.py`
@@ -1243,6 +1328,8 @@
 - `test_scripts/test_text_extraction_line_joining.py` → `model/pdf_model.py`, `model/text_block.py`
 - `test_scripts/test_text_normalization.py` → `model/text_normalization.py`
 - `test_scripts/test_text_selection.py` → `model/pdf_model.py`
+- `test_scripts/test_text_selection_bounds.py` → `model/pdf_model.py`
+- `test_scripts/test_text_selection_cleanup_guard.py` → `view/pdf_view.py`
 - `test_scripts/test_text_selection_extraction.py` → `view/pdf_view.py`, `view/text_selection.py`
 - `test_scripts/test_theme_and_icons.py` → `utils/preferences.py`, `utils/theme_ids.py`, `view/icons.py`, `view/pdf_view.py`, `view/theme.py`
 - `test_scripts/test_thumbnail_async.py` → `controller/pdf_controller.py`
@@ -1258,6 +1345,7 @@
 - `test_scripts/test_week1_model_regressions.py` → `model/pdf_model.py`, `model/text_block.py`
 - `test_scripts/test_win_driver_properties.py` → `src/printing/platforms/__init__.py`
 - `test_scripts/test_win_print_fixes.py` → `src/printing/base_driver.py`, `src/printing/helper_protocol.py`, `src/printing/platforms/win_driver.py`, `src/printing/print_dialog.py`, `src/printing/qt_bridge.py`
+- `test_scripts/test_worker_bridge_slots.py` → `controller/ocr_coordinator.py`, `controller/pdf_controller.py`, `controller/print_coordinator.py`
 - `test_scripts/test_worker_snapshot_cache.py` → `controller/ocr_coordinator.py`, `controller/pdf_controller.py`
 - `test_scripts/test_xref_repair.py` → `model/pdf_model.py`
 - `utils/preferences.py` → `model/tools/ocr_types.py`, `utils/app_identity.py`, `utils/theme_ids.py`

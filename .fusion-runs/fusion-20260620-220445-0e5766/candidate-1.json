@@ -1,0 +1,10 @@
+{
+  "candidate_id": "candidate-1",
+  "provider": "antigravity",
+  "sample": 0,
+  "status": "ok",
+  "returncode": 0,
+  "duration_seconds": 19.125,
+  "stderr": "",
+  "source_path": "C:\\Users\\jiang\\.gemini\\antigravity-cli\\brain\\ae7df935-7696-4114-adee-0e7cf9cf51de\\.system_generated\\logs\\transcript_full.jsonl"
+}

@@ -1,0 +1,34 @@
+{
+  "consensus": [
+    "No concrete introduced bug survives the strict >=80 confidence threshold for final-range `89770be^..a7e7734`.",
+    "Both candidates converge on the `PDFView.__new__`/property-forwarder concern, but the trusted dossier and source shape say the forwarders use lazy `_ensure_*_manager()` accessors, so the proposed failure scenario does not hold."
+  ],
+  "contradictions": [
+    "Candidate 1 and Candidate 2 claim the 43 `PDFView` property pairs directly access manager fields and bypass lazy creation. This contradicts dossier fact (2): lazy ensure accessors support `__new__` doubles, and the implementation pattern calls `_ensure_object_selection_manager()` / `_ensure_text_selection_manager()` in the property bodies.",
+    "Candidate 2 claims coordinator state desynchronization from writes landing on coordinator instances. This contradicts dossier fact (1): coordinator bodies are equivalent after intentional controller-read mapping, and the moved runtime state is intentionally owned by the coordinators behind controller facades.",
+    "The text-selection dangling-wrapper concern is contradicted by dossier fact (4): the old try/except path swallowed the relevant `RuntimeError`; later `shiboken6.isValid` cleanup is style hardening, not a crash fix."
+  ],
+  "unique_insights": [
+    "Candidate 2 raises a plausible class of extraction bug: writes to moved state can desynchronize if later reads still target the facade object. But no specific stale controller read is identified, and the trusted audit says the relocation/facade mapping is consistent.",
+    "Candidate 1 adds no surviving insight beyond the shared property-forwarder hypothesis."
+  ],
+  "unsupported_claims": [
+    "`PDFView` properties bypass lazy manager construction on `__new__` doubles: unsupported and contradicted by the dossier/source pattern.",
+    "Coordinator state is written to the wrong object: unsupported; the moved state belongs on the coordinator, while controller-owned dependencies are accessed through `self._c`.",
+    "Private-helper dynamic-dispatch loss is a bug: unsupported by dossier fact (3), which preserves model/text-edit dynamic dispatch and finds no subclass/monkeypatch contract for private helper dispatch points.",
+    "Pending-edits omission is introduced or correctness-affecting: unsupported by dossier fact (5), which marks it pre-existing and optional optimization-only.",
+    "Generic missing-test complaints are unsupported by dossier fact (6)."
+  ],
+  "missing_coverage": [
+    "Neither candidate applies final-range semantics rigorously; they infer bugs from refactor shape without showing a net-new failing caller at `a7e7734`.",
+    "Neither candidate addresses the dossier’s negative evidence for private-helper dispatch, dangling-wrapper cleanup, pending_edits, or structural-test adequacy.",
+    "Neither candidate supplies a concrete production or test path that remains valid after the lazy-accessor and coordinator-facade facts are applied."
+  ],
+  "recommended_outline": [
+    "Verdict: no issue survives >=80 confidence.",
+    "Reject shared `PDFView` property-forwarder claim: lazy ensure accessors preserve `__new__` double support.",
+    "Reject coordinator desynchronization claim: runtime state relocation is intentional and no stale controller read is shown.",
+    "Reject other named concerns under dossier facts: private dispatch, text-selection cleanup, property overhead, pending_edits, and generic test coverage.",
+    "Do not report any concrete introduced bug for this range."
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "status": "failed",
+  "route": "unknown",
+  "decision": null,
+  "warnings": [],
+  "errors": [
+    "router: Codex structured call failed with status error"
+  ]
+}

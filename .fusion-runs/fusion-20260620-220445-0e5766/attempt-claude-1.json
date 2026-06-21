@@ -1,0 +1,9 @@
+{
+  "provider": "claude",
+  "sample": 1,
+  "status": "error",
+  "returncode": 1,
+  "duration_seconds": 4.7189999999973224,
+  "stderr": "",
+  "source_path": null
+}

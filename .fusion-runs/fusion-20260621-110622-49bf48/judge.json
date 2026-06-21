@@ -1,0 +1,33 @@
+{
+  "consensus": [
+    "A is verified at `model/edit_commands.py` lines 643-652. The change from `set[int]`/`id(chunk)` to `set[bytes]` dedupes by byte value, so equal but separately allocated resident buffers are counted once. Trigger: undo stack contains distinct snapshot chunks with identical contents. Severity: Medium to High. Confidence: High.",
+    "B is verified at `controller/thumbnail_coordinator.py` lines 53-54 and 228-239, with causality through `try_start()` updating `self._session_id` at line 204. The worker signal carries only `gen`, while generations are per-session and can collide after a tab switch. Trigger: stale queued or late batch from old session arrives after a new async thumbnail run updates coordinator session state. Severity: High. Confidence: High."
+  ],
+  "contradictions": [
+    "Candidate 1 rates A Medium; Candidate 2 rates A High. The undercount is certain, but OOM is an extrapolation from budget bypass and document size, not directly proven by the diff.",
+    "Candidate 2 treats QImage use-after-free as verified, but `pixmap_to_qimage()` is outside the compact diff. Without knowing whether it deep-copies, this is unsupported.",
+    "Candidate 2 treats worker deletion/thread-affinity as high-confidence using lines 188-201, but the stronger changed-line concern is actually `cancel()` lines 214-224 dropping `_worker`/`_thread` before thread completion. Candidate 2’s stated mechanism is plausible but not fully proven from those cited lines alone."
+  ],
+  "unique_insights": [
+    "Candidate 1 gives the cleanest B causality: `cancel()` is not synchronous, `self._session_id` can be overwritten for the new session, and the old batch can pass validation if `gen` collides.",
+    "Candidate 2 correctly adds that stale Qt queued signals alone are enough for B; the old worker does not need to keep rendering after cancellation.",
+    "Candidate 2 surfaces two follow-up risks: QObject lifecycle around thread shutdown and possible shallow QImage buffers. Both need more evidence before being accepted as severe findings."
+  ],
+  "unsupported_claims": [
+    "Candidate 2’s OOM crash claim for A is not directly established; the supported claim is resident memory budget undercount and delayed eviction.",
+    "Candidate 2’s QImage memory corruption claim depends on unseen helper behavior.",
+    "Candidate 2’s exact worker-deletion explanation overstates confidence; Qt/PySide ownership and deferred-delete ordering need verification."
+  ],
+  "missing_coverage": [
+    "Neither candidate cites `controller/thumbnail_coordinator.py` line 204, where `_session_id` is overwritten, though it is central to B.",
+    "Neither candidate notes that `finished = Signal(int)` at line 54 also omits `session_id`; `_on_finished()` is currently no-op, so this is not severe today but preserves the weak identity contract.",
+    "Potential additional severe defect: `cancel()` at lines 214-224 clears `_worker` and `_thread` before the old thread has finished, contradicting the file’s own lifecycle comment. Trigger: cancel an in-flight worker during tab switch/new async rebuild. Severity: Medium-High if PySide drops the last Python owner while QObject affinity remains the worker thread. Confidence: Medium.",
+    "No other severe defect is proven solely from the compact diff. The QImage lifetime issue should be listed only as a follow-up check against `pixmap_to_qimage()`."
+  ],
+  "recommended_outline": [
+    "Finding A: `model/edit_commands.py` 643-652; verified; equal-content distinct `bytes` chunks undercount resident memory; severity Medium/High; confidence High.",
+    "Finding B: `controller/thumbnail_coordinator.py` 53-54, 204, 228-239; verified; missing `session_id` plus mutable coordinator session and per-session generation collision can paint stale thumbnails into the new tab; severity High; confidence High.",
+    "Additional finding to consider: `controller/thumbnail_coordinator.py` 214-224; cancel drops references before thread finish; lifecycle crash risk; severity Medium-High; confidence Medium.",
+    "Reject unsupported/style noise: comments, thresholds, and QImage lifetime claims unless the helper implementation proves shallow buffers."
+  ]
+}
