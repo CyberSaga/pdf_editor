@@ -26,12 +26,12 @@ The available panel on this machine:
 
 | Pass | Model | Lens | How invoked |
 |------|-------|------|-------------|
-| A | Gemini | Correctness / architecture | `scripts/fusion.py` (automatic) |
-| B | Gemini | Simplification / efficiency | `scripts/fusion.py` (automatic) |
+| A | Gemini (via `agy`) | Correctness / architecture | `scripts/fusion.py` (automatic) |
+| B | Gemini (via `agy`) | Simplification / efficiency | `scripts/fusion.py` (automatic) |
 | C | Codex (OpenAI o3) | Implementation / second opinion | `/codex:rescue` in Claude Code |
-| Judge | Gemini | Synthesis | `scripts/fusion.py` (automatic) |
+| Judge | Gemini (via `agy`) | Synthesis | `scripts/fusion.py` (automatic) |
 
-**Two-model fusion** (Gemini dual-lens only) yields a measured +6.7
+**Two-model fusion** (agy dual-lens only) yields a measured +6.7
 point jump. **Three-model fusion** (adding Codex) adds a third
 vendor's training perspective — different blind spots, different
 strengths — pushing closer to Fable 5's 69.0%.
@@ -40,11 +40,11 @@ strengths — pushing closer to Fable 5's 69.0%.
 
 ## 2. The Tools
 
-### 2.1 `scripts/fusion.py` — Gemini Dual-Lens (automated)
+### 2.1 `scripts/fusion.py` — Antigravity (`agy`) Dual-Lens (automated)
 
-Runs two Gemini CLI calls in parallel with contrasting system prompts,
-then synthesizes both outputs via a third Gemini call. Fully automated,
-no API key needed.
+Runs two Antigravity CLI (`agy`) calls in parallel with contrasting system prompts,
+then synthesizes both outputs via a third `agy` call. Fully automated,
+no API key needed — uses Google OAuth subscription auth (`agy` must be logged in).
 
 ```
 --file PATH       Include a source file as context (repeatable)
@@ -70,7 +70,7 @@ than same-model self-fusion.
 ### 2.3 Invocation Patterns
 
 ```powershell
-# Two-model fusion (Gemini dual-lens, everyday use)
+# Two-model fusion (agy dual-lens, everyday use)
 .venv\Scripts\python.exe scripts/fusion.py "Find the top 5 issues" `
     --file model/pdf_model.py
 
@@ -99,7 +99,7 @@ This is the full workflow for approaching Fable 5 quality. Use it for
 high-stakes reviews (pre-commit on core modules, design decisions,
 security-sensitive changes).
 
-### Step 1 — Run Gemini dual-lens
+### Step 1 — Run agy dual-lens
 
 ```powershell
 .venv\Scripts\python.exe scripts/fusion.py "<PROMPT>" --file <FILE> --no-synthesize
@@ -177,6 +177,9 @@ Run these before touching a module.
 
 **Three-model upgrade:** Run the same prompt through `/codex:rescue`
 with the file content pasted, then synthesize per Section 3.
+
+> **Prerequisite:** `agy` must be installed and logged in via Google OAuth.
+> See `docs/fusion-cli-manual.md` → Prerequisites for setup commands.
 
 ### 4.2 Ruff violation triage
 
@@ -379,7 +382,7 @@ Use fusion for **analysis and design decisions**. Use the actual tools
 
 # === Three-model (high-stakes) ===
 
-# Step 1: Gemini dual-lens (save raw output)
+# Step 1: agy dual-lens (save raw output)
 .venv\Scripts\python.exe scripts/fusion.py "<PROMPT>" --file <FILE> --no-synthesize
 
 # Step 2: Run /codex:rescue with same prompt and file content
@@ -390,7 +393,7 @@ Use fusion for **analysis and design decisions**. Use the actual tools
      === Pass A === <GEMINI_A> === Pass B === <GEMINI_B> === Pass C === <CODEX>"
 
 # === Design decisions ===
-# Step 1: fusion.py with --no-synthesize
+# Step 1: fusion.py with --no-synthesize (uses agy internally)
 # Step 2: /codex:rescue with same prompt
 # Step 3: Synthesize competing designs from all three
 ```

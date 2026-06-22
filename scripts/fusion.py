@@ -1,11 +1,12 @@
 """
 DIY Fusion — multi-model synthesis tool.
 
-Default mode (gemini-only, no API key needed):
-    Calls Gemini twice with contrasting analytical lenses, then synthesizes.
+Default mode (agy, no API key needed):
+    Calls Antigravity CLI (agy) twice with contrasting analytical lenses,
+    then synthesizes via a third agy call.
 
 OpenAI mode (requires OPENAI_API_KEY env var):
-    Calls OpenAI + Gemini in parallel, then synthesizes with Gemini as judge.
+    Calls OpenAI + agy in parallel, then synthesizes with agy as judge.
 
 Usage:
     python scripts/fusion.py "your prompt"
@@ -20,17 +21,24 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
 import textwrap
 import threading
 from pathlib import Path
 
+# Ensure the repo root is on sys.path so `scripts.fusion_providers` is importable
+# whether this script is invoked as `python scripts/fusion.py` or `-m scripts.fusion`.
+_REPO_ROOT = Path(__file__).parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-GEMINI_CLI_TIMEOUT = 180  # seconds
+from scripts.fusion_providers import AntigravityAdapter
+
+
+AGY_TIMEOUT = 180  # seconds
 OPENAI_MODEL_DEFAULT = "gpt-4o"
 
-# Contrasting lenses for gemini-only mode — each biases toward a different
+# Contrasting lenses for agy dual-lens mode — each biases toward a different
 # type of finding so the two passes surface different issues.
 _LENS_A = (
     "You are a strict code reviewer focused on CORRECTNESS and ARCHITECTURE. "
@@ -46,35 +54,21 @@ _LENS_B = (
     "Be specific — name the exact function/line. Ignore correctness."
 )
 
-
-# ── gemini runner ─────────────────────────────────────────────────────────────
-
-def _gemini_cmd() -> str:
-    # On Windows, npm installs gemini as gemini.cmd — subprocess can't resolve .ps1
-    return "gemini.cmd" if sys.platform == "win32" else "gemini"
+_agy = AntigravityAdapter("agy")
 
 
-def run_gemini_cli(prompt: str, system: str | None = None) -> str:
+# ── agy runner ────────────────────────────────────────────────────────────────
+
+def run_agy(prompt: str, system: str | None = None) -> str:
     full_prompt = f"{system}\n\n{prompt}" if system else prompt
-    try:
-        result = subprocess.run(
-            [_gemini_cmd()],
-            input=full_prompt,
-            capture_output=True,
-            text=True,
-            timeout=GEMINI_CLI_TIMEOUT,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if result.returncode != 0:
-            return f"[ERROR] Gemini CLI exited {result.returncode}: {result.stderr.strip()}"
-        return result.stdout.strip()
-    except FileNotFoundError:
-        return f"[ERROR] `{_gemini_cmd()}` not found in PATH."
-    except subprocess.TimeoutExpired:
-        return f"[ERROR] Gemini CLI timed out after {GEMINI_CLI_TIMEOUT}s"
-    except Exception as e:
-        return f"[ERROR] Gemini CLI failed: {e}"
+    result = _agy.call(full_prompt, timeout=AGY_TIMEOUT)
+    if result.status == "ok":
+        return result.stdout
+    if result.status == "timeout":
+        return f"[ERROR] agy timed out after {AGY_TIMEOUT}s"
+    if result.status == "auth":
+        return "[ERROR] agy auth failed — run `agy` and complete Google OAuth login"
+    return f"[ERROR] agy failed (rc={result.returncode}): {result.stderr or '(no stderr)'}"
 
 
 # ── openai runner ─────────────────────────────────────────────────────────────
@@ -97,15 +91,15 @@ def run_openai(prompt: str, model: str) -> str:
 
 # ── parallel runners ──────────────────────────────────────────────────────────
 
-def run_gemini_dual(prompt: str) -> tuple[str, str]:
-    """Two Gemini calls in parallel with contrasting lenses."""
+def run_agy_dual(prompt: str) -> tuple[str, str]:
+    """Two agy calls in parallel with contrasting lenses."""
     results: dict[str, str] = {}
 
     def task_a() -> None:
-        results["a"] = run_gemini_cli(prompt, system=_LENS_A)
+        results["a"] = run_agy(prompt, system=_LENS_A)
 
     def task_b() -> None:
-        results["b"] = run_gemini_cli(prompt, system=_LENS_B)
+        results["b"] = run_agy(prompt, system=_LENS_B)
 
     t_a = threading.Thread(target=task_a)
     t_b = threading.Thread(target=task_b)
@@ -116,15 +110,15 @@ def run_gemini_dual(prompt: str) -> tuple[str, str]:
     return results["a"], results["b"]
 
 
-def run_openai_gemini(prompt: str, model: str) -> tuple[str, str]:
-    """OpenAI + Gemini in parallel."""
+def run_openai_agy(prompt: str, model: str) -> tuple[str, str]:
+    """OpenAI + agy in parallel."""
     results: dict[str, str] = {}
 
     def task_a() -> None:
         results["a"] = run_openai(prompt, model)
 
     def task_b() -> None:
-        results["b"] = run_gemini_cli(prompt)
+        results["b"] = run_agy(prompt)
 
     t_a = threading.Thread(target=task_a)
     t_b = threading.Thread(target=task_b)
@@ -173,7 +167,7 @@ def synthesize(
         original_prompt=original_prompt,
     )
     print("\n[judge] Synthesizing...", flush=True)
-    return run_gemini_cli(judge_prompt)
+    return run_agy(judge_prompt)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -202,14 +196,14 @@ def _divider(label: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="DIY Fusion: two-model synthesis via Gemini CLI",
+        description="DIY Fusion: two-model synthesis via Antigravity CLI (agy)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             Examples:
-              # Gemini-only mode (default, no API key needed):
+              # agy dual-lens mode (default, no API key needed):
               python scripts/fusion.py "Find refactoring opportunities" --file model/pdf_model.py
 
-              # OpenAI + Gemini mode (requires OPENAI_API_KEY):
+              # OpenAI + agy mode (requires OPENAI_API_KEY):
               python scripts/fusion.py "Review for ruff violations" --file view/pdf_view.py --openai
 
               # Pipe file content via stdin:
@@ -222,7 +216,7 @@ def main() -> None:
     parser.add_argument("--stdin", action="store_true",
                         help="Read additional context from stdin")
     parser.add_argument("--openai", action="store_true",
-                        help="Use OpenAI as model A instead of a second Gemini pass "
+                        help="Use OpenAI as model A instead of a second agy pass "
                              "(requires OPENAI_API_KEY environment variable)")
     parser.add_argument("--model-a", default=OPENAI_MODEL_DEFAULT, metavar="MODEL",
                         help=f"OpenAI model for --openai mode (default: {OPENAI_MODEL_DEFAULT})")
@@ -230,7 +224,6 @@ def main() -> None:
                         help="Print both raw outputs without the synthesis step")
     args = parser.parse_args()
 
-    # Validate openai mode
     if args.openai and not os.environ.get("OPENAI_API_KEY"):
         print("[error] --openai requires OPENAI_API_KEY to be set in your environment.", file=sys.stderr)
         print("        Set it with:  $env:OPENAI_API_KEY = 'sk-...'", file=sys.stderr)
@@ -240,14 +233,14 @@ def main() -> None:
 
     if args.openai:
         label_a = f"OpenAI {args.model_a}"
-        label_b = "Gemini CLI"
+        label_b = "agy (Antigravity / Gemini)"
         print(f"[fusion] Running {label_a} + {label_b} in parallel...", flush=True)
-        output_a, output_b = run_openai_gemini(full_prompt, args.model_a)
+        output_a, output_b = run_openai_agy(full_prompt, args.model_a)
     else:
-        label_a = "Gemini — correctness/architecture lens"
-        label_b = "Gemini — simplification/efficiency lens"
-        print("[fusion] Running two Gemini passes in parallel...", flush=True)
-        output_a, output_b = run_gemini_dual(full_prompt)
+        label_a = "agy — correctness/architecture lens"
+        label_b = "agy — simplification/efficiency lens"
+        print("[fusion] Running two agy passes in parallel...", flush=True)
+        output_a, output_b = run_agy_dual(full_prompt)
 
     print(_divider(f"Pass A — {label_a}"))
     print(output_a)
