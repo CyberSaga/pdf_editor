@@ -270,7 +270,9 @@ class PrintCoordinator:
             extra = {**(getattr(normalized_options, "extra_options", {}) or {}), "render_colorspace": profile}
             normalized_options = dataclass_replace(normalized_options, extra_options=extra)
 
-        pdf_bytes = self._c.capture_worker_snapshot_bytes()
+        # Printing is an external handoff.  Unlike search/OCR snapshots, a
+        # destructive-edit session must prune orphan xrefs before dispatch.
+        pdf_bytes = self._c.model.capture_print_snapshot_bytes()
         # R5.1: capture_worker_snapshot_bytes decrypts; if the source needs a password,
         # carry it so the worker re-encrypts the on-disk temp and the helper can re-auth.
         doc = getattr(self._c.model, "doc", None)

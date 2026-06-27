@@ -90,6 +90,28 @@ def test_merge_session_keeps_current_entry_locked_and_appends_new_files() -> Non
     assert session.remove_selected([0]) == []
 
 
+def test_save_merged_copy_uses_model_external_persistence_policy(
+    mvc, monkeypatch, tmp_path: Path
+) -> None:
+    model, _view, controller = mvc
+    current = _make_pdf(tmp_path / "Current.pdf", ["current page"])
+    output = tmp_path / "merged.pdf"
+    controller.open_pdf(str(current))
+    _pump_events(100)
+
+    calls: list[tuple[int, Path]] = []
+
+    def _save(doc, path, *, sanitize=None):
+        calls.append((len(doc), Path(path)))
+        doc.save(str(path), garbage=4)
+
+    monkeypatch.setattr(model, "save_external_document", _save)
+    monkeypatch.setattr(controller, "open_pdf", lambda _path: None)
+    controller.save_ordered_sources_as_new([{"source_kind": "current"}], str(output))
+
+    assert calls == [(1, output)]
+
+
 def test_start_merge_pdfs_seeds_dialog_with_current_document(mvc, monkeypatch, tmp_path: Path) -> None:
     _model, _view, controller = mvc
     current = _make_pdf(tmp_path / "Current.pdf", ["alpha"])

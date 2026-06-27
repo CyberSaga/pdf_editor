@@ -247,13 +247,9 @@ def test_open_damaged_owner_only_pdf_keeps_encryption() -> None:
             reopened.close()
 
 
-def test_encrypted_doc_survives_periodic_gc() -> None:
-    # Same root cause as the save paths: the live-editing GC
-    # (_maybe_garbage_collect, every 20 edits) round-trips the doc through
-    # tobytes(), whose encryption default is NONE(1) — without encryption=KEEP it
-    # silently decrypts the *live* document in memory, so a later save would drop
-    # the password even though the save paths themselves preserve it. Uses a
-    # healthy (undamaged) encrypted file: this bug is independent of xref repair.
+def test_encrypted_doc_survives_periodic_light_cleanup() -> None:
+    # Periodic edit maintenance is page-local only; secure full GC now belongs at
+    # persistence.  The maintenance pass must leave the authenticated handle intact.
     with tempfile.TemporaryDirectory() as tmp:
         enc = Path(tmp) / "enc.pdf"
         enc.write_bytes(_encrypted_pdf_bytes(user_pw="user-pw"))
@@ -263,10 +259,10 @@ def test_encrypted_doc_survives_periodic_gc() -> None:
             model.open_pdf(str(enc), password="user-pw")
             assert _is_encrypted(model.doc)
 
-            model.edit_count = 20  # trigger the full-GC round-trip branch
+            model.edit_count = 20
             model._maybe_garbage_collect()
 
-            _assert_live_doc_encrypted_and_usable(model, context="periodic GC")
+            _assert_live_doc_encrypted_and_usable(model, context="periodic cleanup")
         finally:
             model.close()
 
@@ -368,6 +364,11 @@ def test_live_doc_roundtrips_preserve_encryption() -> None:
     live_receivers = {"self.doc", "model.doc", "self._model.doc"}
     allowlist = {
         ("pdf_model.py", "capture_worker_snapshot_bytes"),
+        # External print handoff is deliberately decrypted in memory because
+        # the print worker re-applies source encryption before writing its
+        # helper input.  Unlike the generic snapshot, this path uses garbage=4
+        # whenever destructive edits have latched secure persistence.
+        ("pdf_model.py", "capture_print_snapshot_bytes"),
         ("pdf_optimizer.py", "current_document_size_bytes"),
         ("pdf_optimizer.py", "build_working_doc_for_optimized_copy"),
     }

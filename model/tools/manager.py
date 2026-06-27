@@ -113,7 +113,8 @@ class ToolManager:
         if not has_overlay:
             # encryption=KEEP mirrors PDFModel._save_doc: save() defaults to
             # NONE(1), which would silently decrypt protected documents.
-            self._model.doc.save(str(dest), garbage=0, encryption=fitz.PDF_ENCRYPT_KEEP)
+            garbage = 4 if self._model.secure_save_required else 0
+            self._model.doc.save(str(dest), garbage=garbage, encryption=fitz.PDF_ENCRYPT_KEEP)
             return
 
         tmp_doc = fitz.open()
@@ -124,7 +125,7 @@ class ToolManager:
                 for ext in self._extensions:
                     if ext.needs_page_overlay(session_id, page_num, "print"):
                         ext.apply_page_overlay(session_id, page_num, tmp_doc[page_idx], "print")
-            tmp_doc.save(str(dest), garbage=0)
+            tmp_doc.save(str(dest), garbage=4 if self._model.secure_save_required else 0)
         finally:
             tmp_doc.close()
 

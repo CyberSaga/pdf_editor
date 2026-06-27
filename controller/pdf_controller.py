@@ -3,6 +3,7 @@ from __future__ import annotations
 import difflib
 import io
 import logging
+import secrets
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,7 +11,15 @@ from pathlib import Path
 import fitz
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
-from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QProgressDialog
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFileDialog,
+    QInputDialog,
+    QLineEdit,
+    QMessageBox,
+    QProgressDialog,
+)
 
 from model.color_profile import ColorProfile, safe_to_fitz_colorspace
 from model.edit_commands import AddTextboxCommand, EditTextCommand, EditTextResult, SnapshotCommand
@@ -23,6 +32,7 @@ from model.object_requests import (
     ResizeObjectRequest,
     RotateObjectRequest,
 )
+from model import pdf_optimizer
 from model.pdf_model import PDFModel
 from utils.helpers import pixmap_to_qimage, pixmap_to_qpixmap, show_error
 from view.pdf_view import EditTextRequest, MoveTextRequest, PDFView, ViewportAnchor
@@ -48,8 +58,6 @@ from src.printing.messages import (
     PRINT_TERMINATING_MESSAGE as CLEAN_PRINT_TERMINATING_MESSAGE,
 )
 
-THUMB_BATCH_SIZE = 10
-THUMB_BATCH_INTERVAL_MS = 30
 INDEX_BATCH_SIZE = 5
 INDEX_BATCH_INTERVAL_MS = 50
 FIRST_PAGE_PREVIEW_SCALE = 0.25
@@ -104,15 +112,19 @@ from controller.print_coordinator import (  # noqa: E402
     _PrintSubmissionWorker,  # noqa: F401  (re-export for backward compatibility)
     _PrintWorkerBridge,  # noqa: F401  (re-export for backward compatibility)
 )
+from controller.thumbnail_coordinator import (  # noqa: E402
+    ThumbnailCoordinator,
+    ThumbnailFileSource,
+    ThumbnailRequest,
+)
 
 
 @dataclass(frozen=True)
 class OptimizePdfCopyRequest:
     output_path: str
     options: object
-    # Session selected at dispatch; the worker optimizes THIS tab even if the active tab
-    # changes before/while it runs (R5-03 / Codex F1). None falls back to the active session.
-    session_id: str | None = None
+    source: pdf_optimizer.OptimizeSourceSnapshot
+    credentials: pdf_optimizer.OptimizeOutputCredentials | None = None
 
 
 class _OptimizePdfCopyWorker(QObject):
@@ -127,10 +139,12 @@ class _OptimizePdfCopyWorker(QObject):
 
     def run(self) -> None:
         try:
-            result = self._model.save_optimized_copy(
+            result = pdf_optimizer.save_optimized_copy_from_snapshot(
+                self._model,
+                self._request.source,
                 self._request.output_path,
                 self._request.options,
-                session_id=self._request.session_id,
+                credentials=self._request.credentials,
             )
             self.succeeded.emit(result)
         except Exception as exc:
@@ -189,8 +203,16 @@ class PDFController:
         self._optimize_worker: _OptimizePdfCopyWorker | None = None
         self._optimize_worker_bridge: _OptimizeWorkerBridge | None = None
         self._optimize_paused_session_id: str | None = None
+        self._optimize_close_pending = False
         self._ocr_coordinator = OcrCoordinator(self)
         self._search_coordinator = SearchCoordinator(self)
+        self._thumbnail_coordinator = ThumbnailCoordinator(
+            source_resolver=self._resolve_thumbnail_file_source,
+            live_renderer=self._render_live_thumbnail,
+            batch_consumer=self._consume_thumbnail_images,
+            identity_matches=self._thumbnail_identity_matches,
+            parent=self.view,
+        )
         self._load_gen_by_session: dict[str, int] = {}
         self._thumb_gen_by_session: dict[str, int] = {}
         self._render_gen_by_session: dict[str, int] = {}
@@ -918,6 +940,7 @@ class PDFController:
             self._refresh_document_tabs()
             return
         # An in-flight search reads the active session's doc — stop it before switching.
+        self._thumbnail_coordinator.cancel(active)
         self._cancel_search()
         self._capture_current_ui_state()
         if self.view.text_editor:
@@ -1070,7 +1093,7 @@ class PDFController:
     def save_ordered_sources_as_new(self, ordered_sources: list[dict], output_path: str) -> None:
         merged_doc = self.model.compose_merged_document(ordered_sources)
         try:
-            merged_doc.save(output_path, garbage=0)
+            self.model.save_external_document(merged_doc, output_path)
         finally:
             merged_doc.close()
         self.open_pdf(output_path)
@@ -1180,6 +1203,41 @@ class PDFController:
         if action is not None:
             action.setEnabled(not busy)
 
+    def _prompt_optimize_output_credentials(
+        self, source: pdf_optimizer.OptimizeSourceSnapshot
+    ) -> tuple[bool, pdf_optimizer.OptimizeOutputCredentials | None]:
+        enc = source.encryption
+        if enc is None or not enc.should_encrypt:
+            return True, None
+        if enc.auth_level == 6:
+            return True, pdf_optimizer.credentials_for_encryption(enc, None)
+
+        role = "擁有者" if enc.auth_level in (2, None) else "使用者"
+        generated = secrets.token_urlsafe(24)
+        password, accepted = QInputDialog.getText(
+            self.view,
+            "設定最佳化副本密碼",
+            f"請設定新的{role}密碼（可編輯預設強密碼）：",
+            QLineEdit.Password,
+            generated,
+        )
+        if not accepted:
+            return False, None
+        if not password:
+            if enc.auth_level is None:
+                show_error(self.view, "擁有者與使用者密碼不可同時留白。")
+                return False, None
+            confirmed = QMessageBox.question(
+                self.view,
+                "確認留白密碼",
+                "留白會讓對應角色不需要密碼即可開啟副本。確定要繼續嗎？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirmed != QMessageBox.Yes:
+                return False, None
+        return True, pdf_optimizer.credentials_for_encryption(enc, password)
+
     def _start_optimize_submission(self, output_path: str, options: object) -> None:
         bridge = self._optimize_worker_bridge
         if bridge is None:
@@ -1187,12 +1245,20 @@ class PDFController:
         # Background scene/index batches for the active tab can dominate large-PDF optimize latency.
         # The worker calls `PDFModel.save_optimized_copy(...)` (facade); optimizer internals live in `model/pdf_optimizer.py`.
         self._optimize_paused_session_id = self.model.get_active_session_id()
+        source = pdf_optimizer.capture_optimize_source(
+            self.model, self._optimize_paused_session_id
+        )
+        accepted, credentials = self._prompt_optimize_output_credentials(source)
+        if not accepted:
+            self._optimize_paused_session_id = None
+            return
         self._pause_session_background_loading(self._optimize_paused_session_id)
         # Bind the request to the tab active at dispatch (R5-03 / Codex F1).
         request = OptimizePdfCopyRequest(
             output_path=output_path,
             options=options,
-            session_id=self._optimize_paused_session_id,
+            source=source,
+            credentials=credentials,
         )
         thread = QThread(self.view)
         worker = _OptimizePdfCopyWorker(self.model, request)
@@ -1224,6 +1290,8 @@ class PDFController:
 
     def _on_optimize_copy_succeeded(self, result) -> None:
         self._hide_optimize_progress_dialog()
+        if self._optimize_close_pending:
+            return
         self.open_pdf(result.output_path)
         original_size = self._format_size_units(result.original_bytes)
         optimized_size = self._format_size_units(result.optimized_bytes)
@@ -1241,6 +1309,8 @@ class PDFController:
 
     def _on_optimize_copy_failed(self, exc) -> None:
         self._hide_optimize_progress_dialog()
+        if self._optimize_close_pending:
+            return
         # Model raises PdfOptimizeError with a complete user-facing message;
         # re-wrapping here doubled the "最佳化 PDF 失敗:" prefix.
         logger.error("最佳化 PDF 失敗: %s", exc)
@@ -1251,6 +1321,9 @@ class PDFController:
         self._optimize_worker = None
         self._optimize_paused_session_id = None
         self._set_optimize_ui_busy(False)
+        if self._optimize_close_pending:
+            self._optimize_close_pending = False
+            self.view.close()
 
     def on_tab_changed(self, index: int):
         sid = self.model.get_session_id_by_index(index)
@@ -1325,6 +1398,7 @@ class PDFController:
         if not self._confirm_close_session(sid):
             return
         # Cancel in-flight background readers before closing the doc.
+        self._thumbnail_coordinator.cancel(sid)
         self.cancel_ocr()
         self._cancel_search()
         if sid == self.model.get_active_session_id():
@@ -1587,22 +1661,19 @@ class PDFController:
     def delete_object(self, request: DeleteObjectRequest) -> None:
         if isinstance(request, BatchDeleteObjectsRequest):
             before = self.model._capture_doc_snapshot()
-            affected_pages: list[int] = []
-            changed = False
-            for ref in request.objects:
-                single = DeleteObjectRequest(
+            deletes = [
+                DeleteObjectRequest(
                     object_id=ref.object_id,
                     object_kind=ref.object_kind,
                     page_num=ref.page_num,
                 )
-                if self.model.delete_object(single):
-                    changed = True
-                    affected_pages.append(int(ref.page_num))
-            if not changed:
+                for ref in request.objects
+            ]
+            if not self.model.delete_objects_atomic(deletes):
                 return
             self._invalidate_active_render_state()
             after = self.model._capture_doc_snapshot()
-            pages = sorted(set(affected_pages))
+            pages = sorted({int(item.page_num) for item in deletes})
             cmd = SnapshotCommand(
                 model=self.model,
                 command_type="delete_object_batch",
@@ -2256,20 +2327,56 @@ class PDFController:
             or not self.model.doc
         ):
             return
-        # R4 repair: thumbnails render synchronously in bounded batches on the GUI thread.
-        # The async coordinator (R4.3) was removed — it could paint a cancelled session's
-        # queued batch into the newly-active tab (R4-01). The _thumb_gen_by_session guard
-        # above plus the per-batch QTimer chain below make cross-paint impossible here.
+        # The coordinator carries token + session + generation on every result, so a
+        # cancelled session can never paint into the newly active tab.
         n = end_limit if end_limit is not None else len(self.model.doc)
-        end = min(start + THUMB_BATCH_SIZE, n)
-        colorspace = self._fitz_colorspace_for_session(session_id)
-        thumbs = [pixmap_to_qpixmap(self.model.get_thumbnail(i + 1, colorspace=colorspace)) for i in range(start, end)]
-        self.view.update_thumbnail_batch(start, thumbs)
-        if end < n:
-            QTimer.singleShot(
-                THUMB_BATCH_INTERVAL_MS,
-                lambda e=end, sid=session_id, g=gen, el=end_limit: self._schedule_thumbnail_batch(e, sid, g, el),
-            )
+        self._thumbnail_coordinator.request(
+            session_id,
+            gen,
+            start,
+            n,
+            self._color_profile_for_session(session_id),
+        )
+
+    def _thumbnail_identity_matches(self, session_id: str, generation: int) -> bool:
+        return (
+            self.model.get_active_session_id() == session_id
+            and self._thumb_gen_by_session.get(session_id) == generation
+            and bool(self.model.doc)
+        )
+
+    def _resolve_thumbnail_file_source(
+        self,
+        request: ThumbnailRequest,
+    ) -> ThumbnailFileSource | None:
+        if self.model.get_active_session_id() != request.session_id:
+            return None
+        if self.model.session_has_unsaved_changes(request.session_id):
+            return None
+        meta = self.model.get_session_meta(request.session_id) or {}
+        source_path = meta.get("saved_path") or meta.get("path")
+        if not source_path:
+            return None
+        try:
+            stat = Path(source_path).stat()
+        except OSError:
+            return None
+        return ThumbnailFileSource(
+            path=str(source_path),
+            size=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            password=self.model.password,
+        )
+
+    def _render_live_thumbnail(self, page_index: int, color_profile: str) -> QImage:
+        pixmap = self.model.get_thumbnail(
+            page_index + 1,
+            colorspace=self._fitz_colorspace_for_profile(color_profile),
+        )
+        return pixmap_to_qimage(pixmap)
+
+    def _consume_thumbnail_images(self, start: int, images: list[QImage]) -> None:
+        self.view.update_thumbnail_batch(start, [QPixmap.fromImage(image) for image in images])
 
     def _schedule_index_batch(self, start: int, session_id: str, gen: int):
         if (
@@ -2768,8 +2875,16 @@ class PDFController:
         return self._save_session_with_dialog(session_id)
 
     def handle_app_close(self, event) -> None:
+        self._thumbnail_coordinator.cancel()
+        if not self._thumbnail_coordinator.wait_for_done(1000):
+            event.ignore()
+            return
         if self._has_active_print_submission():
             self._print_coordinator.begin_close_pending()
+            event.ignore()
+            return
+        if self._has_active_optimize_submission():
+            self._optimize_close_pending = True
             event.ignore()
             return
 

@@ -906,7 +906,7 @@ def test_start_optimize_pdf_copy_runs_work_in_background(mvc, monkeypatch, tmp_p
         staticmethod(lambda *args, **kwargs: (str(output), "PDF (*.pdf)")),
     )
 
-    def fake_save_optimized_copy(path: str, _options, session_id=None):
+    def fake_save_optimized_copy(_model, _snapshot, path: str, _options, credentials=None):
         time.sleep(0.25)
         shutil.copy2(str(current), path)
         return PdfOptimizationResult(
@@ -919,7 +919,10 @@ def test_start_optimize_pdf_copy_runs_work_in_background(mvc, monkeypatch, tmp_p
             applied_summary=["平衡"],
         )
 
-    monkeypatch.setattr(model, "save_optimized_copy", fake_save_optimized_copy)
+    monkeypatch.setattr(
+        "controller.pdf_controller.pdf_optimizer.save_optimized_copy_from_snapshot",
+        fake_save_optimized_copy,
+    )
 
     start = time.time()
     controller.start_optimize_pdf_copy()
@@ -951,7 +954,7 @@ def test_start_optimize_pdf_copy_cancels_active_background_loading(mvc, monkeypa
         staticmethod(lambda *args, **kwargs: (str(output), "PDF (*.pdf)")),
     )
 
-    def fake_save_optimized_copy(path: str, _options, session_id=None):
+    def fake_save_optimized_copy(_model, _snapshot, path: str, _options, credentials=None):
         time.sleep(0.25)
         shutil.copy2(str(current), path)
         return PdfOptimizationResult(
@@ -964,7 +967,10 @@ def test_start_optimize_pdf_copy_cancels_active_background_loading(mvc, monkeypa
             applied_summary=["平衡"],
         )
 
-    monkeypatch.setattr(model, "save_optimized_copy", fake_save_optimized_copy)
+    monkeypatch.setattr(
+        "controller.pdf_controller.pdf_optimizer.save_optimized_copy_from_snapshot",
+        fake_save_optimized_copy,
+    )
 
     controller.start_optimize_pdf_copy()
 
@@ -994,7 +1000,7 @@ def test_start_optimize_pdf_copy_completion_message_uses_human_units(mvc, monkey
         staticmethod(lambda *args, **kwargs: (str(output), "PDF (*.pdf)")),
     )
 
-    def fake_save_optimized_copy(path: str, _options, session_id=None):
+    def fake_save_optimized_copy(_model, _snapshot, path: str, _options, credentials=None):
         shutil.copy2(str(current), path)
         return PdfOptimizationResult(
             output_path=path,
@@ -1006,7 +1012,10 @@ def test_start_optimize_pdf_copy_completion_message_uses_human_units(mvc, monkey
             applied_summary=["撟唾﹛"],
         )
 
-    monkeypatch.setattr(model, "save_optimized_copy", fake_save_optimized_copy)
+    monkeypatch.setattr(
+        "controller.pdf_controller.pdf_optimizer.save_optimized_copy_from_snapshot",
+        fake_save_optimized_copy,
+    )
 
     controller.start_optimize_pdf_copy()
     _pump_events(500)
@@ -1049,7 +1058,7 @@ def test_large_file_optimize_submission_keeps_progress_dialog_responsive(
         staticmethod(lambda *args, **kwargs: (str(output), "PDF (*.pdf)")),
     )
 
-    def fake_save_optimized_copy(path: str, _options, session_id=None):
+    def fake_save_optimized_copy(_model, _snapshot, path: str, _options, credentials=None):
         time.sleep(0.35)
         shutil.copy2(str(current), path)
         return PdfOptimizationResult(
@@ -1062,7 +1071,10 @@ def test_large_file_optimize_submission_keeps_progress_dialog_responsive(
             applied_summary=["平衡"],
         )
 
-    monkeypatch.setattr(model, "save_optimized_copy", fake_save_optimized_copy)
+    monkeypatch.setattr(
+        "controller.pdf_controller.pdf_optimizer.save_optimized_copy_from_snapshot",
+        fake_save_optimized_copy,
+    )
 
     start = time.time()
     controller.start_optimize_pdf_copy()

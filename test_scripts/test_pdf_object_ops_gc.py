@@ -29,7 +29,6 @@ import tempfile
 from pathlib import Path
 
 import fitz
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -71,12 +70,8 @@ def _xref_streams_contain(doc: fitz.Document, needle: bytes) -> bool:
     return False
 
 
-def test_repeated_moves_trigger_gc_reclaim() -> None:
-    """25 textbox moves must trigger at least one orphan-xref reclamation.
-
-    RED at HEAD: ``move_object`` never bumps ``edit_count``, so GC never runs and
-    ``xref_length`` increases monotonically (zero drops).
-    """
+def test_repeated_moves_do_not_run_live_full_gc(monkeypatch) -> None:
+    """Interactive transforms track edits but defer full GC to persistence."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "moves.pdf"
         _make_pdf(path)
@@ -84,12 +79,15 @@ def test_repeated_moves_trigger_gc_reclaim() -> None:
         try:
             model.open_pdf(str(path))
             model.add_textbox(1, fitz.Rect(50, 70, 180, 110), "BOX", font="cjk", size=14, color=(0, 0, 0))
-            initial = model.doc.xref_length()
             hit = model.get_object_info_at_point(1, fitz.Point(80, 90))
             assert hit is not None
             oid, kind = hit.object_id, hit.object_kind
+            monkeypatch.setattr(
+                model,
+                "_roundtrip_live_doc",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("live GC forbidden")),
+            )
 
-            series: list[int] = []
             for i in range(25):
                 x0 = 40 + (i % 5) * 20
                 y0 = 60 + (i % 3) * 20
@@ -103,25 +101,14 @@ def test_repeated_moves_trigger_gc_reclaim() -> None:
                     )
                 )
                 assert ok is True
-                series.append(model.doc.xref_length())
 
-            drops = sum(1 for i in range(len(series) - 1) if series[i + 1] < series[i])
-            assert drops >= 1, (
-                f"xref_length never dropped over 25 moves (series={series}) — the "
-                f"garbage=4 round-trip never ran; object-ops bypassed GC bookkeeping (R6-01)"
-            )
-            assert series[-1] < initial * 40, (
-                f"xref_length unbounded: end={series[-1]} initial={initial} (series={series})"
-            )
+            assert model.edit_count >= 25
         finally:
             model.close()
 
 
-def test_repeated_rotates_trigger_gc_reclaim() -> None:
-    """25 textbox rotations must trigger at least one orphan-xref reclamation.
-
-    RED at HEAD for the same reason as moves: ``rotate_object`` bypasses GC bookkeeping.
-    """
+def test_repeated_rotates_do_not_run_live_full_gc(monkeypatch) -> None:
+    """Rotations must not cause synchronous whole-document round trips."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "rotates.pdf"
         _make_pdf(path)
@@ -129,12 +116,15 @@ def test_repeated_rotates_trigger_gc_reclaim() -> None:
         try:
             model.open_pdf(str(path))
             model.add_textbox(1, fitz.Rect(50, 70, 180, 110), "BOX", font="cjk", size=14, color=(0, 0, 0))
-            initial = model.doc.xref_length()
             hit = model.get_object_info_at_point(1, fitz.Point(80, 90))
             assert hit is not None
             oid, kind = hit.object_id, hit.object_kind
+            monkeypatch.setattr(
+                model,
+                "_roundtrip_live_doc",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("live GC forbidden")),
+            )
 
-            series: list[int] = []
             for _ in range(25):
                 ok = model.rotate_object(
                     RotateObjectRequest(
@@ -145,27 +135,14 @@ def test_repeated_rotates_trigger_gc_reclaim() -> None:
                     )
                 )
                 assert ok is True
-                series.append(model.doc.xref_length())
 
-            drops = sum(1 for i in range(len(series) - 1) if series[i + 1] < series[i])
-            assert drops >= 1, (
-                f"xref_length never dropped over 25 rotations (series={series}) — "
-                f"rotate_object bypassed GC bookkeeping (R6-01)"
-            )
-            assert series[-1] < initial * 40, (
-                f"xref_length unbounded: end={series[-1]} initial={initial} (series={series})"
-            )
+            assert model.edit_count >= 25
         finally:
             model.close()
 
 
 def test_delete_text_absent_from_all_xref_streams() -> None:
-    """Deleting a textbox must purge its text from every xref (no orphan recovery).
-
-    RED at HEAD: the redacted text survives as an orphan xref and is recoverable from a
-    naive (``garbage=0``) save. The fix forces an immediate ``garbage=4`` round-trip so
-    the live document no longer carries the orphan.
-    """
+    """Secure persistence must remove deleted text from every output xref."""
     canary = b"CANARY-12345"
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "delete.pdf"
@@ -185,9 +162,8 @@ def test_delete_text_absent_from_all_xref_streams() -> None:
             assert ok is True
 
             out = Path(tmp) / "deleted.pdf"
-            # garbage=0: do NOT let the save itself scrub orphans — we are testing that the
-            # live document already dropped them at delete time.
-            model.doc.save(str(out), garbage=0)
+            # Sanitization belongs at persistence, not in the interactive delete path.
+            model.save_as(str(out))
         finally:
             model.close()
 
@@ -200,12 +176,8 @@ def test_delete_text_absent_from_all_xref_streams() -> None:
             raw.close()
 
 
-def test_delete_object_fails_closed_when_purge_gc_fails(monkeypatch) -> None:
-    """Codex F4: a failed post-delete orphan purge must NOT report delete success.
-
-    Confidentiality is the whole point of the immediate purge; silently swallowing a
-    round-trip failure would leave deleted content recoverable while returning True.
-    """
+def test_delete_object_defers_full_gc_to_secure_persistence(monkeypatch) -> None:
+    """Deletion latches secure persistence without invoking the legacy live GC path."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "failclosed.pdf"
         _make_pdf(path)
@@ -221,17 +193,16 @@ def test_delete_object_fails_closed_when_purge_gc_fails(monkeypatch) -> None:
 
             monkeypatch.setattr(model, "_roundtrip_live_doc", _raise)
 
-            with pytest.raises(Exception):
-                model.delete_object(
-                    DeleteObjectRequest(object_id=hit.object_id, object_kind=hit.object_kind, page_num=1)
-                )
+            assert model.delete_object(
+                DeleteObjectRequest(object_id=hit.object_id, object_kind=hit.object_kind, page_num=1)
+            ) is True
+            assert model.secure_save_required is True
         finally:
             model.close()
 
 
-def test_native_image_delete_purges_immediately(monkeypatch) -> None:
-    """Codex F5: deleting a native image must trigger the immediate garbage=4 purge so
-    the removed XObject is not recoverable from orphan xrefs."""
+def test_native_image_delete_sets_secure_latch_without_live_gc(monkeypatch) -> None:
+    """Native-image deletion uses the same persistence-boundary sanitization contract."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "native.pdf"
         doc = fitz.open()
@@ -262,7 +233,8 @@ def test_native_image_delete_purges_immediately(monkeypatch) -> None:
                 DeleteObjectRequest(object_id=hit.object_id, object_kind=hit.object_kind, page_num=1)
             )
             assert ok is True
-            assert calls, "native-image delete must force an immediate garbage=4 round-trip (Codex F5)"
+            assert calls == []
+            assert model.secure_save_required is True
         finally:
             model.close()
 

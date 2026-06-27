@@ -21,7 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 # Dev tooling only. Platform/feature extras (e.g. pikepdf) stay in
 # optional-requirements.txt; OCR extras stay in ocr-requirements.txt.
-dev = ["ruff", "mypy", "pytest", "pytest-cov"]
+dev = ["build", "setuptools>=64", "wheel", "ruff", "mypy", "pytest", "pytest-cov"]
 
 [tool.setuptools]
 # Flat top-level layout: explicit discovery so editable install works without

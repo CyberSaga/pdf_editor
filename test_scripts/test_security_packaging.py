@@ -17,9 +17,9 @@ flags. See refactor-state.md (R5.4) for the experiment.
 from __future__ import annotations
 
 import fnmatch
-import shutil
 import subprocess
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -129,32 +129,51 @@ def test_manifest_prunes_dev_trees() -> None:
 # ── real artifact: build the wheel and assert no dev tree shipped ────────────
 
 
-def test_built_wheel_excludes_dev_trees(tmp_path: Path) -> None:
-    """Best-effort real build. Skips (does not fail) if the build backend/network
-    is unavailable, so an offline runner degrades to the hermetic config guards above."""
+def test_built_wheel_and_sdist_exclude_dev_trees(tmp_path: Path) -> None:
+    """Build both authoritative artifacts; build/tooling failures fail closed."""
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "-w", str(tmp_path)],
+            [
+                sys.executable,
+                "-m",
+                "build",
+                "--wheel",
+                "--sdist",
+                "--no-isolation",
+                "--outdir",
+                str(tmp_path),
+            ],
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
             timeout=300,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:  # pragma: no cover - env dependent
-        pytest.skip(f"wheel build could not run: {exc}")
+        pytest.fail(f"distribution build could not run: {exc}")
 
-    # setuptools writes build/ into the project root (gitignored); keep the tree tidy.
-    shutil.rmtree(REPO_ROOT / "build", ignore_errors=True)
-
-    if result.returncode != 0:
-        pytest.skip(f"wheel build unavailable (rc={result.returncode}): {result.stderr.strip()[-300:]}")
+    assert result.returncode == 0, (
+        f"distribution build failed (rc={result.returncode}):\n"
+        f"{result.stdout[-1000:]}\n{result.stderr[-1000:]}"
+    )
 
     wheels = list(tmp_path.glob("*.whl"))
-    assert wheels, "pip wheel reported success but produced no .whl"
+    sdists = list(tmp_path.glob("*.tar.gz"))
+    assert len(wheels) == 1, "build must produce exactly one wheel"
+    assert len(sdists) == 1, "build must produce exactly one sdist"
     with zipfile.ZipFile(wheels[0]) as zf:
-        names = zf.namelist()
+        wheel_names = zf.namelist()
+    with tarfile.open(sdists[0], "r:gz") as tf:
+        sdist_names = [member.name for member in tf.getmembers()]
 
-    offending = _offending_members(names)
-    assert not offending, f"dev/test trees leaked into the built wheel: {offending}"
+    wheel_offending = _offending_members(wheel_names)
+    sdist_offending = _offending_members(
+        [name.split("/", 1)[1] if "/" in name else name for name in sdist_names]
+    )
+    assert not wheel_offending, f"dev/test trees leaked into the built wheel: {wheel_offending}"
+    assert not sdist_offending, f"dev/test trees leaked into the built sdist: {sdist_offending}"
     # Sanity: the production packages are actually present.
-    assert any(n.startswith("model/") for n in names), "wheel is missing the model package"
+    assert any(n.startswith("model/") for n in wheel_names), "wheel is missing the model package"
+    assert any(
+        (name.split("/", 1)[1] if "/" in name else name).startswith("model/")
+        for name in sdist_names
+    ), "sdist is missing the model package"

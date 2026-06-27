@@ -17,6 +17,7 @@ import io
 import json
 import logging
 import os
+import secrets
 import shutil
 import sys
 import uuid
@@ -123,6 +124,37 @@ class PdfOptimizeError(RuntimeError):
     without pikepdf) or when a fatal pipeline failure occurs. The message string is
     already user-readable Chinese text; callers should not re-wrap it.
     """
+
+
+@dataclass(frozen=True)
+class OptimizeOutputCredentials:
+    """Immutable credentials chosen for an encrypted optimized copy."""
+
+    owner_password: str
+    user_password: str
+
+    def __post_init__(self) -> None:
+        if not self.owner_password and not self.user_password:
+            raise PdfOptimizeError("owner and user passwords cannot both be blank")
+
+
+@dataclass(frozen=True)
+class OptimizeSourceSnapshot:
+    """Source identity and data frozen on the caller (GUI) thread.
+
+    Exactly one of ``source_path`` and ``source_bytes`` is populated.  A path snapshot
+    includes its stat identity and authentication descriptor; a memory snapshot already
+    contains all pending document/tool changes and therefore needs no live model reads.
+    """
+
+    session_id: str
+    source_path: str | None
+    source_size: int
+    source_mtime_ns: int | None
+    source_bytes: bytes | None
+    overlay_metadata: tuple[str, ...]
+    encryption: EncryptionDescriptor | None
+    secure_save_required: bool
 
 
 def _init_image_rewrite_worker(source_path: str) -> None:
@@ -879,8 +911,130 @@ def _capture_encryption_descriptor(
     return EncryptionDescriptor(session_id, password, method, permissions, auth_level, True)
 
 
+def _freeze_overlay_metadata(model: PDFModel, session_id: str) -> tuple[str, ...]:
+    """Return a deep, immutable diagnostic copy of pending save overlays."""
+    watermark = getattr(getattr(model, "tools", None), "watermark", None)
+    by_session = getattr(watermark, "_watermarks_by_session", {})
+    values = by_session.get(session_id, []) if isinstance(by_session, dict) else []
+    return tuple(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        for value in values
+    )
+
+
+def capture_optimize_source(model: PDFModel, session_id: str | None) -> OptimizeSourceSnapshot:
+    """Validate and freeze one exact session before background dispatch."""
+    resolved_sid = session_id if session_id is not None else model.get_active_session_id()
+    if not resolved_sid:
+        raise PdfOptimizeError("optimize source session is missing")
+    session = model._sessions_by_id.get(resolved_sid)
+    if session is None or session.doc is None or getattr(session.doc, "is_closed", False):
+        raise PdfOptimizeError(f"optimize source session is closed or missing: {resolved_sid}")
+
+    doc = session.doc
+    encryption = _capture_encryption_descriptor(model, resolved_sid)
+    secure_required = bool(getattr(session, "secure_save_required", False))
+    overlay_metadata = _freeze_overlay_metadata(model, resolved_sid)
+    dirty = bool(model.session_has_unsaved_changes(resolved_sid))
+    source_path = Path(session.original_path).resolve()
+    doc_name = getattr(doc, "name", "") or ""
+    path_matches = False
+    try:
+        path_matches = bool(doc_name) and Path(doc_name).resolve() == source_path
+    except OSError:
+        path_matches = False
+
+    if not dirty and path_matches and source_path.is_file():
+        stat = source_path.stat()
+        return OptimizeSourceSnapshot(
+            session_id=resolved_sid,
+            source_path=str(source_path),
+            source_size=int(stat.st_size),
+            source_mtime_ns=int(stat.st_mtime_ns),
+            source_bytes=None,
+            overlay_metadata=overlay_metadata,
+            encryption=encryption,
+            secure_save_required=secure_required,
+        )
+
+    # Clone first: save preparation may embed overlays and must never touch the live doc.
+    cloned = fitz.open("pdf", doc.tobytes(garbage=0, no_new_id=1))
+    prepared: fitz.Document | None = None
+    try:
+        prepared = model.tools.prepare_doc_for_save(resolved_sid, cloned)
+        captured_doc = prepared if prepared is not None else cloned
+        payload = captured_doc.tobytes(garbage=0, no_new_id=1)
+    finally:
+        if prepared is not None and prepared is not cloned:
+            prepared.close()
+        cloned.close()
+    return OptimizeSourceSnapshot(
+        session_id=resolved_sid,
+        source_path=None,
+        source_size=len(payload),
+        source_mtime_ns=None,
+        source_bytes=bytes(payload),
+        overlay_metadata=overlay_metadata,
+        encryption=encryption,
+        secure_save_required=secure_required,
+    )
+
+
+def credentials_for_encryption(
+    enc: EncryptionDescriptor, counterpart_password: str | None
+) -> OptimizeOutputCredentials:
+    """Preserve the known role while applying a user-selected counterpart."""
+    known = enc.password or ""
+    if enc.auth_level == 2:
+        return OptimizeOutputCredentials(
+            owner_password=counterpart_password or "", user_password=known
+        )
+    if enc.auth_level == 6:
+        return OptimizeOutputCredentials(owner_password=known, user_password=known)
+    if enc.auth_level == 4:
+        return OptimizeOutputCredentials(
+            owner_password=known, user_password=counterpart_password or ""
+        )
+    return OptimizeOutputCredentials(
+        owner_password=counterpart_password or "", user_password=""
+    )
+
+
+def default_output_credentials(enc: EncryptionDescriptor) -> OptimizeOutputCredentials | None:
+    """Compatibility default; UI callers should supply an explicitly confirmed choice."""
+    if not enc.should_encrypt:
+        return None
+    generated = secrets.token_urlsafe(24)
+    return credentials_for_encryption(enc, generated)
+
+
+def _open_optimize_snapshot(snapshot: OptimizeSourceSnapshot) -> fitz.Document:
+    if snapshot.source_path is not None:
+        path = Path(snapshot.source_path)
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            raise PdfOptimizeError("captured optimize source file is no longer available") from exc
+        if int(stat.st_size) != snapshot.source_size or int(stat.st_mtime_ns) != snapshot.source_mtime_ns:
+            raise PdfOptimizeError("captured optimize source file changed after dispatch")
+        doc = fitz.open(str(path))
+        enc = snapshot.encryption
+        if doc.needs_pass:
+            password = enc.password if enc is not None else None
+            if not password or doc.authenticate(password) == 0:
+                doc.close()
+                raise PdfOptimizeError("captured optimize source password is invalid")
+        return doc
+    if snapshot.source_bytes is None:
+        raise PdfOptimizeError("captured optimize source contains no data")
+    return fitz.open("pdf", snapshot.source_bytes)
+
+
 def reapply_source_encryption(
-    enc: EncryptionDescriptor, source_path: str | Path, dest_path: str | Path
+    enc: EncryptionDescriptor,
+    source_path: str | Path,
+    dest_path: str | Path,
+    credentials: OptimizeOutputCredentials | None = None,
 ) -> None:
     """Encrypt the (plaintext) optimized file at ``source_path`` into ``dest_path``.
 
@@ -902,15 +1056,11 @@ def reapply_source_encryption(
     """
     if not enc.should_encrypt:
         raise PdfOptimizeError("無法保留來源加密：缺少有效的加密描述。")
-    if enc.auth_level == 2:  # authenticated as USER — must not become owner in the copy
-        user_pw = enc.password or ""
-        owner_pw = uuid.uuid4().hex
-    elif enc.auth_level in (4, 6):  # owner / both: retained credential is the owner password
-        owner_pw = enc.password or uuid.uuid4().hex
-        user_pw = enc.password or ""
-    else:  # owner-only encrypted source opened without a password (R5-02 blank-user case)
-        owner_pw = uuid.uuid4().hex
-        user_pw = ""
+    selected = credentials or default_output_credentials(enc)
+    if selected is None:
+        raise PdfOptimizeError("encrypted output credentials are missing")
+    owner_pw = selected.owner_password
+    user_pw = selected.user_password
     reopened = fitz.open(str(source_path))
     try:
         reopened.save(
@@ -924,32 +1074,20 @@ def reapply_source_encryption(
         reopened.close()
 
 
-def save_optimized_copy(
+def save_optimized_copy_from_snapshot(
     model: PDFModel,
+    snapshot: OptimizeSourceSnapshot,
     new_path: str,
     options: PdfOptimizeOptions | None = None,
-    session_id: str | None = None,
+    credentials: OptimizeOutputCredentials | None = None,
 ) -> PdfOptimizationResult:
-    if not model.doc:
-        raise RuntimeError("沒有可最佳化的 PDF")
-
-    # R5-03 / Codex F1: bind to the session selected at dispatch, NOT whichever tab is
-    # active when this (background) worker runs. Every read below resolves this id.
-    active_sid = session_id if session_id is not None else model.get_active_session_id()
-    canonical_new = model._canonicalize_path(new_path)
-    current_meta = model.get_session_meta(active_sid) if active_sid else None
-    current_canonical = model._canonicalize_path(current_meta["path"]) if current_meta and current_meta.get("path") else None
-    existing_sid = model._path_to_session_id.get(canonical_new)
-    if existing_sid is not None or (current_canonical and canonical_new == current_canonical):
-        raise RuntimeError("最佳化副本必須使用新的輸出路徑，且不能覆蓋已開啟的檔案。")
-
     resolved_options = model._normalize_optimize_options(options or model.preset_optimize_options("平衡"))
-    optimize_source_path = model._resolve_file_backed_optimize_source(active_sid)
-    original_bytes = model._current_document_size_bytes(active_sid)
-    # R5-03: snapshot the source's encryption state up front, bound to active_sid, so the
-    # re-encryption decision below never depends on live model state read after this point.
-    enc = _capture_encryption_descriptor(model, active_sid)
-    working_doc = model._build_working_doc_for_optimized_copy(active_sid)
+    optimize_source_path = Path(snapshot.source_path) if snapshot.source_path else None
+    original_bytes = snapshot.source_size
+    enc = snapshot.encryption or EncryptionDescriptor(
+        snapshot.session_id, None, fitz.PDF_ENCRYPT_NONE, -1, None, False
+    )
+    working_doc = _open_optimize_snapshot(snapshot)
     image_usage = collect_image_usage(working_doc) if resolved_options.optimize_images else {}
     temp_plain = Path(model.temp_dir.name) / f"optimized_{uuid.uuid4()}.pdf"
     temp_enc: Path | None = None
@@ -961,21 +1099,32 @@ def save_optimized_copy(
             original_bytes=original_bytes,
             image_usage=image_usage,
         )
-        model._save_optimized_working_doc(working_doc, temp_plain, resolved_options)
+        if snapshot.secure_save_required:
+            save_kwargs = model._fast_save_kwargs(resolved_options)
+            save_kwargs["garbage"] = 4
+            working_doc.save(str(temp_plain), **save_kwargs)
+            if model._requires_post_save_packaging(resolved_options):
+                model._postprocess_optimized_pdf_with_pikepdf(temp_plain, resolved_options)
+        else:
+            model._save_optimized_working_doc(working_doc, temp_plain, resolved_options)
         Path(new_path).parent.mkdir(parents=True, exist_ok=True)
+        out = Path(new_path)
+        sibling_stage = out.with_name(f".{out.stem}_opt_{uuid.uuid4().hex}.pdf")
         if enc.should_encrypt:
             # R5-04 fail-closed: encrypt into a destination-directory staging file and
             # install it atomically — new_path NEVER holds the transient plaintext. The
             # sibling staging keeps os.replace on the same filesystem (atomic). R5.5: the
             # working doc was rebuilt from decrypted bytes, so this restores protection.
-            out = Path(new_path)
-            temp_enc = out.with_name(f".{out.stem}_enc_{uuid.uuid4().hex}.pdf")
-            reapply_source_encryption(enc, temp_plain, temp_enc)
+            temp_enc = sibling_stage
+            reapply_source_encryption(enc, temp_plain, temp_enc, credentials)
             os.replace(str(temp_enc), str(new_path))
             temp_enc = None  # consumed by os.replace; do not unlink in finally
         else:
-            # Unencrypted source: install the optimized plaintext directly (cross-fs safe).
-            shutil.move(str(temp_plain), str(new_path))
+            # Stage beside the destination, then atomically install.
+            shutil.copy2(str(temp_plain), str(sibling_stage))
+            temp_enc = sibling_stage
+            os.replace(str(temp_enc), str(new_path))
+            temp_enc = None
         optimized_bytes = Path(new_path).stat().st_size
         bytes_saved = max(0, original_bytes - optimized_bytes)
         summary: list[str] = [resolved_options.preset]
@@ -1011,7 +1160,27 @@ def save_optimized_copy(
         working_doc.close()
 
 
+def save_optimized_copy(
+    model: PDFModel,
+    new_path: str,
+    options: PdfOptimizeOptions | None = None,
+    session_id: str | None = None,
+    credentials: OptimizeOutputCredentials | None = None,
+) -> PdfOptimizationResult:
+    """Compatibility facade which freezes the exact session synchronously."""
+    snapshot = capture_optimize_source(model, session_id)
+    canonical_new = model._canonicalize_path(new_path)
+    source_canonical = model._canonicalize_path(snapshot.source_path) if snapshot.source_path else None
+    if canonical_new == source_canonical or model._path_to_session_id.get(canonical_new) is not None:
+        raise RuntimeError("最佳化副本必須使用新的輸出路徑，且不能覆蓋已開啟的檔案。")
+    return save_optimized_copy_from_snapshot(
+        model, snapshot, new_path, options, credentials=credentials
+    )
+
+
 __all__ = [
+    "OptimizeOutputCredentials",
+    "OptimizeSourceSnapshot",
     "PdfAuditItem",
     "PdfAuditReport",
     "PdfOptimizationResult",
@@ -1022,8 +1191,10 @@ __all__ = [
     "build_pdf_audit_report",
     "build_working_doc_for_optimized_copy",
     "can_use_parallel_image_rewrite",
+    "capture_optimize_source",
     "collect_extracted_images",
     "current_document_size_bytes",
+    "credentials_for_encryption",
     "fast_save_kwargs",
     "image_rewrite_settings",
     "make_active_audit_cache_key",
@@ -1039,6 +1210,7 @@ __all__ = [
     "rewrite_images_serially",
     "rewrite_images_with_pillow",
     "save_optimized_copy",
+    "save_optimized_copy_from_snapshot",
     "save_optimized_working_doc",
     "xref_size_bytes",
 ]

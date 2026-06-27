@@ -61,6 +61,8 @@ PdfOptimizeOptions = pdf_optimizer.PdfOptimizeOptions
 PdfAuditItem = pdf_optimizer.PdfAuditItem
 PdfAuditReport = pdf_optimizer.PdfAuditReport
 PdfOptimizationResult = pdf_optimizer.PdfOptimizationResult
+OptimizeSourceSnapshot = pdf_optimizer.OptimizeSourceSnapshot
+OptimizeOutputCredentials = pdf_optimizer.OptimizeOutputCredentials
 
 # Resource guards for untrusted PDFs (CWE-400 uncontrolled resource consumption,
 # CWE-409 decompression bomb). A crafted document with an enormous file size,
@@ -199,6 +201,10 @@ class DocumentSession:
     # 4=owner, 6=both, None=unencrypted / no password barrier. Lets the optimize
     # pipeline preserve the source's auth role instead of promoting user->owner (R5-02).
     auth_level: int | None = None
+    # Destructive edits may leave recoverable orphan xrefs in the live in-memory
+    # document.  Once latched, every persistent / external serialization must do
+    # a full garbage=4 rewrite.  Deliberately conservative: undo does not clear it.
+    secure_save_required: bool = False
     block_manager: TextBlockManager = field(default_factory=TextBlockManager)
     command_manager: CommandManager = field(default_factory=CommandManager)
     pending_edits: list = field(default_factory=list)
@@ -219,6 +225,7 @@ class PDFModel:
         self._legacy_block_manager: TextBlockManager = TextBlockManager()
         self._legacy_command_manager: CommandManager = CommandManager()
         self._legacy_edit_count: int = 0
+        self._legacy_secure_save_required: bool = False
         self._legacy_pending_edits: list = []
         self._legacy_run_reopen_anchors: dict[str, fitz.Rect] = {}
         self._legacy_run_reopen_anchor_sizes: dict[str, float] = {}
@@ -419,6 +426,19 @@ class PDFModel:
             session.saved_path = value
         else:
             self._legacy_saved_path = value
+
+    @property
+    def secure_save_required(self) -> bool:
+        session = self._active_session()
+        return session.secure_save_required if session else self._legacy_secure_save_required
+
+    @secure_save_required.setter
+    def secure_save_required(self, value: bool) -> None:
+        session = self._active_session()
+        if session:
+            session.secure_save_required = bool(value)
+        else:
+            self._legacy_secure_save_required = bool(value)
 
     @property
     def password(self) -> str | None:
@@ -1096,7 +1116,12 @@ class PDFModel:
             logger.debug("臨時目錄已清理")
             self.temp_dir = None
 
-    def delete_pages(self, pages: list[int]) -> list[int]:
+    def delete_pages(
+        self,
+        pages: list[int],
+        *,
+        transaction_snapshot: bytes | None = None,
+    ) -> list[int]:
         """
         Delete pages (1-based) and return the actual deleted pages (1-based, sorted).
 
@@ -1124,16 +1149,31 @@ class PDFModel:
                 normalized.append(page_num)
 
         actual_deleted_pages = sorted(set(normalized))
+        if not actual_deleted_pages:
+            return []
         deleted_page_idxs = [page_num - 1 for page_num in actual_deleted_pages]
-        for page_num in sorted(actual_deleted_pages, reverse=True):
-            self.doc.delete_page(page_num - 1)
-        # Preserve unaffected cache entries; shifted survivors become stale until demanded.
-        self.block_manager.shift_after_delete(deleted_page_idxs)
-        if self.doc and deleted_page_idxs:
-            # Keep the page nearest the deletion immediately usable for existing callers.
-            anchor_idx = min(deleted_page_idxs[0], len(self.doc) - 1)
-            if anchor_idx >= 0:
-                self.block_manager.rebuild_page(anchor_idx, self.doc)
+        before = transaction_snapshot if transaction_snapshot is not None else self._capture_doc_snapshot()
+        pending_before = list(self.pending_edits)
+        edit_count_before = self.edit_count
+        secure_before = self.secure_save_required
+        try:
+            for page_num in sorted(actual_deleted_pages, reverse=True):
+                self.doc.delete_page(page_num - 1)
+            # Preserve unaffected cache entries; shifted survivors become stale until demanded.
+            self.block_manager.shift_after_delete(deleted_page_idxs)
+            if self.doc and deleted_page_idxs:
+                # Keep the page nearest the deletion immediately usable for existing callers.
+                anchor_idx = min(deleted_page_idxs[0], len(self.doc) - 1)
+                if anchor_idx >= 0:
+                    self.block_manager.rebuild_page(anchor_idx, self.doc)
+        except Exception:
+            self._restore_doc_from_snapshot(before)
+            self.pending_edits = pending_before
+            self.edit_count = edit_count_before
+            self.secure_save_required = secure_before
+            self.block_manager.build_index(self.doc)
+            raise
+        self.secure_save_required = True
         return actual_deleted_pages
 
     def rotate_pages(self, pages: list[int], degrees: int) -> list[int]:
@@ -1242,7 +1282,7 @@ class PDFModel:
                     logger.debug(f"匯出PDF頁面: {page_num}")
                 else:
                     logger.warning(f"匯出PDF時略過無效頁碼: {page_num}")
-            new_doc.save(output_path)
+            self.save_external_document(new_doc, output_path)
         finally:
             new_doc.close()
 
@@ -2245,6 +2285,9 @@ class PDFModel:
     def delete_object(self, request: DeleteObjectRequest) -> bool:
         return pdf_object_ops.delete_object(self, request)
 
+    def delete_objects_atomic(self, requests: list[DeleteObjectRequest]) -> bool:
+        return pdf_object_ops.delete_objects_atomic(self, requests)
+
     def resize_object(self, request: ResizeObjectRequest) -> bool:
         return pdf_object_ops.resize_object(self, request)
 
@@ -2389,6 +2432,18 @@ class PDFModel:
             raise RuntimeError("沒有開啟的 PDF 文件")
         return self.doc.tobytes(garbage=0, no_new_id=1, encryption=fitz.PDF_ENCRYPT_NONE)
 
+    def capture_print_snapshot_bytes(self) -> bytes:
+        """Capture print input, pruning destructive-edit orphans when required."""
+        if not self.doc:
+            raise RuntimeError("沒有開啟的 PDF 文件")
+        if not self.secure_save_required:
+            return self.capture_worker_snapshot_bytes()
+        return self.doc.tobytes(
+            garbage=4,
+            no_new_id=1,
+            encryption=fitz.PDF_ENCRYPT_NONE,
+        )
+
     @staticmethod
     def preset_optimize_options(preset: str) -> PdfOptimizeOptions:
         return pdf_optimizer.preset_optimize_options(preset)
@@ -2525,11 +2580,36 @@ class PDFModel:
         new_path: str,
         options: PdfOptimizeOptions | None = None,
         session_id: str | None = None,
+        credentials: OptimizeOutputCredentials | None = None,
     ) -> PdfOptimizationResult:
         # Optimize-copy is a strict "write a new file" workflow.
         # Implementation is delegated so `PDFModel` does not become an optimizer grab-bag.
         # session_id binds the job to its source tab (R5-03); None = active session.
-        return pdf_optimizer.save_optimized_copy(self, new_path, options, session_id)
+        return pdf_optimizer.save_optimized_copy(
+            self,
+            new_path,
+            options,
+            session_id,
+            credentials=credentials,
+        )
+
+    def capture_optimize_source(self, session_id: str) -> OptimizeSourceSnapshot:
+        return pdf_optimizer.capture_optimize_source(self, session_id)
+
+    def save_optimized_copy_from_snapshot(
+        self,
+        snapshot: OptimizeSourceSnapshot,
+        new_path: str,
+        options: PdfOptimizeOptions | None = None,
+        credentials: OptimizeOutputCredentials | None = None,
+    ) -> PdfOptimizationResult:
+        return pdf_optimizer.save_optimized_copy_from_snapshot(
+            self,
+            snapshot,
+            new_path,
+            options,
+            credentials=credentials,
+        )
 
     def _restore_doc_from_snapshot(self, snapshot_bytes: bytes) -> None:
         """用 bytes 快照替換整份文件（SnapshotCommand undo/redo 時呼叫）。
@@ -2616,6 +2696,69 @@ class PDFModel:
         doc.save(
             target, garbage=garbage, incremental=incremental, encryption=fitz.PDF_ENCRYPT_KEEP
         )
+
+    def _atomic_full_save(
+        self,
+        doc: fitz.Document,
+        path: str | Path,
+        *,
+        garbage: int = 4,
+        replace_live_handle: bool = False,
+    ) -> None:
+        """Validate a same-directory full rewrite before atomically installing it.
+
+        Keeping the staging file beside the destination preserves the atomicity
+        guarantee of ``os.replace``.  The live handle is closed only after the
+        staged file has been serialized and reopened successfully; if replacement
+        then fails, the original file is reopened and the editing session survives.
+        """
+        target = Path(path).resolve()
+        stage = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.tmp.pdf")
+        live_was_closed = False
+        try:
+            self._save_doc(doc, str(stage), garbage=max(4, int(garbage)), incremental=False)
+            probe = fitz.open(str(stage))
+            try:
+                if probe.needs_pass:
+                    password = self.password
+                    if password is None or probe.authenticate(password) == 0:
+                        raise RuntimeError("staged PDF could not be re-authenticated")
+                # Force the xref/page tree to be read before the original is touched.
+                len(probe)
+            finally:
+                probe.close()
+
+            if replace_live_handle:
+                self.doc.close()
+                live_was_closed = True
+            try:
+                os.replace(str(stage), str(target))
+            except Exception:
+                if live_was_closed:
+                    self.doc = self._reopen_doc_after_save(str(target))
+                    live_was_closed = False
+                raise
+            if live_was_closed:
+                self.doc = self._reopen_doc_after_save(str(target))
+        finally:
+            try:
+                stage.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("unable to remove staged save %s: %s", stage, exc)
+
+    def save_external_document(
+        self,
+        doc: fitz.Document,
+        path: str | Path,
+        *,
+        sanitize: bool | None = None,
+    ) -> None:
+        """Persist an exported/merged document under the active security policy."""
+        must_sanitize = self.secure_save_required if sanitize is None else bool(sanitize)
+        if must_sanitize:
+            self._atomic_full_save(doc, path, garbage=4)
+        else:
+            self._save_doc(doc, str(path))
 
     def _repair_active_doc_in_memory(self, garbage: int = 1) -> bool:
         """Try to repair current doc by round-tripping bytes and reopen in memory."""
@@ -2812,28 +2955,17 @@ class PDFModel:
 
     def _maybe_garbage_collect(self) -> None:
         """
-        分層垃圾回收策略（Phase 6）：
-          - 每 5 次編輯：呼叫 apply_pending_redactions()（輕量，clean_contents）
-          - 每 20 次編輯：tobytes(garbage=4) + 重新載入（完整 GC，清孤立 xref）
-        閾值從 10 提高到 20，降低 live editing 時的全量序列化頻率。
+        Interactive maintenance performs page-local ``clean_contents`` only.
+
+        Whole-document garbage=4 rewrites are deliberately deferred to the
+        persistence boundary: doing them here blocks the GUI, rebuilds the full
+        text index, and renumbers xrefs while object markers are live.
         """
         if self.edit_count <= 0:
             return
         # 輕量層：每 5 次清理 content stream
         if self.edit_count % 5 == 0:
             self.apply_pending_redactions()
-        # 完整層：每 20 次重建文件以清孤立物件
-        if self.edit_count % 20 == 0:
-            try:
-                # 經 _roundtrip_live_doc 統一保留加密並重新驗證（tobytes 的
-                # encryption 預設為 NONE(1)，否則會在編輯途中默默解密記憶體中的文件）。
-                self._roundtrip_live_doc(garbage=4, deflate=True)
-                self.block_manager.build_index(self.doc)
-                logger.info(
-                    f"完整 GC 完成（第 {self.edit_count} 次編輯後），已重新載入文件"
-                )
-            except Exception as e:
-                logger.warning(f"完整 GC 失敗，繼續使用現有文件: {e}")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Push-Down 輔助方法：換行溢出時保留並推移下方文字塊
@@ -2979,6 +3111,15 @@ class PDFModel:
         doc_name_resolved = Path(self.doc.name).resolve() if self.doc.name else None
         saving_over_open_file = doc_name_resolved is not None and path_resolved == doc_name_resolved
 
+        if self.secure_save_required:
+            self._atomic_full_save(
+                self.doc,
+                path,
+                garbage=4,
+                replace_live_handle=saving_over_open_file,
+            )
+            return
+
         if saving_over_open_file:
             # 先寫入暫存檔，關閉 doc 後再覆蓋原檔，最後重新開啟
             temp_save = Path(self.temp_dir.name) / f"save_{uuid.uuid4()}.pdf"
@@ -3108,6 +3249,7 @@ class PDFModel:
         can_incr = getattr(self.doc, "can_save_incrementally", None)
         use_incremental = (
             self.use_incremental_save
+            and not self.secure_save_required
             and is_save_back_to_original
             and can_incr
             and self.doc.can_save_incrementally()
@@ -3129,7 +3271,16 @@ class PDFModel:
                 self._full_save_to_path(new_path)
             else:
                 # 若目標路徑為目前開啟的檔案，先寫暫存再覆蓋，避免 Windows Permission denied
-                if doc_name_resolved is not None and new_path_resolved == doc_name_resolved:
+                if self.secure_save_required:
+                    self._atomic_full_save(
+                        doc_to_save,
+                        new_path,
+                        garbage=4,
+                        replace_live_handle=(
+                            doc_name_resolved is not None and new_path_resolved == doc_name_resolved
+                        ),
+                    )
+                elif doc_name_resolved is not None and new_path_resolved == doc_name_resolved:
                     temp_save = Path(self.temp_dir.name) / f"save_{uuid.uuid4()}.pdf"
                     self._save_doc(doc_to_save, str(temp_save))
                     self.doc.close()

@@ -2,15 +2,16 @@
 
 App-object / native-image manipulation extracted out of PDFModel as free functions
 (``def fn(model: PDFModel, ...)``), mirroring ``model/pdf_optimizer.py``. PDFModel keeps
-1-line delegating wrappers for the public verbs. Bodies are moved verbatim (only
-``self`` -> ``model``); the undo-snapshot boundary stays with the controller (these
-functions never call ``_capture_*``/``_restore_*``), and there are no ``.save``/``.tobytes``
-on the live doc (the encryption AST guard scans all of model/).
+1-line delegating wrappers for the public verbs. The controller owns undo snapshots;
+destructive operations additionally use a private snapshot for atomic rollback. There are
+no direct ``.save``/``.tobytes`` calls on the live doc (the encryption AST guard scans
+all of model/).
 """
 
 from __future__ import annotations
 
 import html as _html_mod
+import hashlib
 import json
 import logging
 import math
@@ -199,25 +200,79 @@ def _find_app_image_invocation(
     page_num: int,
     xref: int,
     expected_rect: fitz.Rect,
+    *,
+    image_digest: str | None = None,
+    expected_rotation: float = 0.0,
 ) -> NativeImageInvocation | None:
-    """Find the content-stream placement for an app-inserted image by xref + expected rect.
-
-    When the same image xref has multiple placements (same image reused), we pick the
-    one whose bounding box is closest to expected_rect.
-    """
+    """Resolve an app image without treating its garbage-collectable xref as identity."""
     invocations = discover_native_image_invocations(model.doc, page_num)
-    candidates = [inv for inv in invocations if inv.xref == xref and inv.cm_operator_index is not None]
-    if not candidates:
-        return None
-    if len(candidates) == 1:
-        return candidates[0]
-    er = expected_rect
+    usable = [inv for inv in invocations if inv.cm_operator_index is not None]
+    er = fitz.Rect(expected_rect)
 
     def _rect_dist(inv: NativeImageInvocation) -> float:
         b = inv.bbox
         return sum(abs(a - b_) for a, b_ in zip([b.x0, b.y0, b.x1, b.y1], [er.x0, er.y0, er.x1, er.y1]))
 
-    return min(candidates, key=_rect_dist)
+    def _rotation_matches(inv: NativeImageInvocation) -> bool:
+        delta = (float(inv.rotation) - float(expected_rotation) + 180.0) % 360.0 - 180.0
+        return abs(delta) <= 1.0
+
+    xref_candidates = [inv for inv in usable if inv.xref == xref]
+    if xref_candidates:
+        if image_digest:
+            verified = [
+                inv for inv in xref_candidates
+                if _image_xref_digest(model, inv.xref) == image_digest
+            ]
+            if verified:
+                return min(verified, key=_rect_dist)
+        else:
+            positioned = [
+                inv for inv in xref_candidates
+                if _rect_dist(inv) <= 2.0 and _rotation_matches(inv)
+            ]
+            if positioned:
+                return min(positioned, key=_rect_dist)
+
+    geometric = [inv for inv in usable if _rect_dist(inv) <= 2.0 and _rotation_matches(inv)]
+    if image_digest:
+        matches = [inv for inv in geometric if _image_xref_digest(model, inv.xref) == image_digest]
+        return matches[0] if len(matches) == 1 else None
+    return geometric[0] if len(geometric) == 1 else None
+
+
+def _image_xref_digest(model: PDFModel, xref: int) -> str | None:
+    try:
+        stream = model.doc.xref_stream(int(xref))
+    except Exception:
+        return None
+    return hashlib.sha256(stream).hexdigest() if stream else None
+
+
+def _resolve_marker_image_invocation(
+    model: PDFModel,
+    page_num: int,
+    payload: dict,
+    expected_rect: fitz.Rect,
+) -> NativeImageInvocation | None:
+    recorded_xref = int(payload.get("xref", 0) or 0)
+    invocation = _find_app_image_invocation(
+        model,
+        page_num,
+        recorded_xref,
+        expected_rect,
+        image_digest=payload.get("image_digest"),
+        expected_rotation=float(payload.get("rotation", 0)) % 360,
+    )
+    if invocation is None:
+        return None
+    if invocation.xref != recorded_xref or not payload.get("image_digest"):
+        digest = _image_xref_digest(model, invocation.xref)
+        if digest is None:
+            return None
+        payload["xref"] = int(invocation.xref)
+        payload["image_digest"] = digest
+    return invocation
 
 def _remove_native_image_invocation(model: PDFModel, invocation: NativeImageInvocation) -> bool:
     page = model.doc[invocation.page_num - 1]
@@ -336,6 +391,7 @@ def _create_image_object_marker(
     visual_rect: fitz.Rect,
     *,
     xref: int,
+    image_digest: str,
     rotation: int,
     object_id: str | None = None,
 ) -> str:
@@ -351,6 +407,7 @@ def _create_image_object_marker(
         "rect": [float(visual_rect.x0), float(visual_rect.y0), float(visual_rect.x1), float(visual_rect.y1)],
         "rotation": int(rotation) % 360,
         "xref": int(xref),
+        "image_digest": image_digest,
     }
     marker.set_border(width=0)
     marker.set_colors(stroke=None, fill=None)
@@ -376,10 +433,14 @@ def add_image_object(
     page = model.doc[page_num - 1]
     rect = fitz.Rect(visual_rect)
     xref = int(page.insert_image(rect, stream=image_bytes, rotate=int(rotation) % 360, overlay=True))
+    image_digest = _image_xref_digest(model, xref)
+    if image_digest is None:
+        raise RuntimeError("Inserted image stream could not be fingerprinted")
     object_id = _create_image_object_marker(model, 
         page_num,
         rect,
         xref=xref,
+        image_digest=image_digest,
         rotation=int(rotation) % 360,
     )
     model.pending_edits.append({"page_idx": page_num - 1, "rect": fitz.Rect(rect)})
@@ -605,38 +666,9 @@ def _redact_and_restore_textbox_region(model: PDFModel, page: fitz.Page, rect: f
         model.tools.annotation._restore_annots(page, filtered_annots)
 
 def _register_mutation(model: PDFModel, page_idx: int, rect: fitz.Rect) -> None:
-    """Register a content-rewriting mutation for layered GC tracking.
-
-    Mirrors the bookkeeping the text-edit path performs (``pdf_text_edit`` ~L1275):
-    append to ``pending_edits`` (drives the every-5-edits ``clean_contents``) and bump
-    ``edit_count`` (drives the every-20-edits ``garbage=4`` orphan-xref round-trip via
-    ``_maybe_garbage_collect``). The textbox move/rotate branches redact-and-reinsert page
-    content but previously skipped this, so their orphan xrefs were never reclaimed —
-    unbounded ``xref_length`` growth over repeated transforms (R6-01 / R3.4).
-    """
+    """Track a rewrite without performing a live full-document GC."""
     model.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(rect)})
     model.edit_count += 1
-    model._maybe_garbage_collect()
-
-
-def _purge_deleted_content(model: PDFModel, page_idx: int, rect: fitz.Rect) -> None:
-    """Immediately reclaim orphan xrefs after a destructive delete (confidentiality).
-
-    A redaction removes content from the *current* content stream but leaves the
-    pre-redaction stream as an orphan xref — byte-for-byte recoverable from the saved file
-    until a ``garbage=4`` round-trip prunes it. Deletes therefore force the full GC
-    immediately rather than waiting for the 20-edit batch threshold that is tuned for
-    (non-destructive) text edits.
-
-    Fail-closed (Codex F4): a round-trip failure PROPAGATES. The immediate purge is the
-    confidentiality guarantee of a delete, so a failure must surface as a failed operation
-    rather than be swallowed — otherwise ``delete_object`` would return success while the
-    deleted content stays recoverable in orphan xrefs.
-    """
-    model.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(rect)})
-    model.edit_count += 1
-    model._roundtrip_live_doc(garbage=4, deflate=True)
-    model.block_manager.build_index(model.doc)
 
 
 def move_object(model: PDFModel, request: MoveObjectRequest) -> bool:
@@ -673,7 +705,7 @@ def move_object(model: PDFModel, request: MoveObjectRequest) -> bool:
         rotation = float(payload.get("rotation", 0)) % 360
         if not xref:
             return False
-        invocation = _find_app_image_invocation(model, request.source_page, xref, old_rect)
+        invocation = _resolve_marker_image_invocation(model, request.source_page, payload, old_rect)
         if invocation is None:
             return False
         if not _rewrite_native_image_matrix(model, invocation, dest_rect, rotation):
@@ -772,13 +804,13 @@ def rotate_object(model: PDFModel, request: RotateObjectRequest) -> bool:
         xref = int(payload.get("xref", 0) or 0)
         if not xref:
             return False
-        invocation = _find_app_image_invocation(model, request.page_num, xref, rect)
+        invocation = _resolve_marker_image_invocation(model, request.page_num, payload, rect)
         if invocation is None:
             return False
         if request.absolute_rotation is not None:
             if not _rotate_native_image_absolute(model, invocation, request.absolute_rotation):
                 return False
-            updated = _find_app_image_invocation(model, request.page_num, xref, rect)
+            updated = _resolve_marker_image_invocation(model, request.page_num, payload, rect)
             new_bbox = fitz.Rect(updated.bbox) if updated is not None else rect
             payload["rotation"] = float(request.absolute_rotation) % 360
             payload["rect"] = [float(new_bbox.x0), float(new_bbox.y0), float(new_bbox.x1), float(new_bbox.y1)]
@@ -825,44 +857,104 @@ def rotate_object(model: PDFModel, request: RotateObjectRequest) -> bool:
     _register_mutation(model, request.page_num - 1, old_rect)
     return True
 
-def delete_object(model: PDFModel, request: DeleteObjectRequest) -> bool:
+def _delete_object_impl(model: PDFModel, request: DeleteObjectRequest) -> bool:
     if request.object_kind == "native_image":
         invocation = _find_native_image_invocation(model, request.page_num, request.object_id)
         if invocation is None:
             return False
         if not _remove_native_image_invocation(model, invocation):
             return False
-        # R6-01 / Codex F5: a deleted native image must not survive as a recoverable
-        # orphan xref — purge immediately, same as the app-image/textbox delete branches.
-        _purge_deleted_content(model, request.page_num - 1, fitz.Rect(invocation.bbox))
         return True
     found = _find_app_object_annot(model, request.page_num, request.object_id, request.object_kind)
     if found is None:
         return False
     page, annot, payload = found
     if payload["kind"] == "rect":
+        marker_rect = fitz.Rect(annot.rect)
         page.delete_annot(annot)
+        _register_mutation(model, request.page_num - 1, marker_rect)
         return True
     if payload["kind"] == "image":
         old_rect = fitz.Rect(payload.get("rect") or annot.rect)
-        try:
-            page.add_redact_annot(old_rect)
-            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
-        except Exception:
-            pass
-        _delete_app_object_annots(model, request.page_num, request.object_id, expected_kind="image")
-        # R6-01: a deleted image must not survive as a recoverable orphan xref.
-        _purge_deleted_content(model, request.page_num - 1, old_rect)
+        page.add_redact_annot(old_rect)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
+        restored = _find_app_object_annot(model, request.page_num, request.object_id, "image")
+        if restored is not None:
+            restored[0].delete_annot(restored[1])
+        _register_mutation(model, request.page_num - 1, old_rect)
         return True
     if payload["kind"] != "textbox":
         return False
     old_rect = fitz.Rect(payload["rect"])
     _redact_and_restore_textbox_region(model, page, old_rect, request.object_id)
-    _delete_app_object_annots(model, request.page_num, request.object_id, expected_kind="textbox")
+    restored = _find_app_object_annot(model, request.page_num, request.object_id, "textbox")
+    if restored is not None:
+        restored[0].delete_annot(restored[1])
     model.block_manager.rebuild_page(request.page_num - 1, model.doc)
-    # R6-01: deleted text must not survive as a recoverable orphan xref — purge now.
-    _purge_deleted_content(model, request.page_num - 1, old_rect)
+    _register_mutation(model, request.page_num - 1, old_rect)
     return True
+
+
+def _restore_delete_transaction(
+    model: PDFModel,
+    snapshot: bytes,
+    pending_edits: list,
+    edit_count: int,
+    secure_save_required: bool,
+) -> None:
+    model._restore_doc_from_snapshot(snapshot)
+    model.pending_edits = pending_edits
+    model.edit_count = edit_count
+    model.secure_save_required = secure_save_required
+    try:
+        model.block_manager.build_index(model.doc)
+    except Exception:
+        logger.exception("Failed to refresh text index after delete transaction rollback")
+
+
+def _ordered_delete_requests(requests: list[DeleteObjectRequest]) -> list[DeleteObjectRequest]:
+    """Keep native-image occurrence IDs stable by deleting highest occurrences first."""
+    native: list[DeleteObjectRequest] = []
+    others: list[DeleteObjectRequest] = []
+    for request in requests:
+        (native if request.object_kind == "native_image" else others).append(request)
+
+    def _native_key(request: DeleteObjectRequest) -> tuple[int, int]:
+        try:
+            occurrence = int(str(request.object_id).rsplit(":", 1)[-1])
+        except ValueError:
+            occurrence = -1
+        return (int(request.page_num), occurrence)
+
+    native.sort(key=_native_key, reverse=True)
+    return [*native, *others]
+
+
+def delete_objects_atomic(model: PDFModel, requests: list[DeleteObjectRequest]) -> bool:
+    """Delete all requested objects as one document-and-bookkeeping transaction."""
+    if not requests:
+        return False
+    snapshot = model._capture_doc_snapshot()
+    pending_edits = list(model.pending_edits)
+    edit_count = int(model.edit_count)
+    secure_save_required = bool(model.secure_save_required)
+    try:
+        for request in _ordered_delete_requests(list(requests)):
+            if not _delete_object_impl(model, request):
+                _restore_delete_transaction(
+                    model, snapshot, pending_edits, edit_count, secure_save_required
+                )
+                return False
+    except Exception:
+        _restore_delete_transaction(model, snapshot, pending_edits, edit_count, secure_save_required)
+        raise
+    model.secure_save_required = True
+    return True
+
+
+def delete_object(model: PDFModel, request: DeleteObjectRequest) -> bool:
+    return delete_objects_atomic(model, [request])
+
 
 def resize_object(model: PDFModel, request: ResizeObjectRequest) -> bool:
     # Resize is modeled as a move with a new destination rect on the same page.

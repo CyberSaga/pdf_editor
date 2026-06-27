@@ -1,4 +1,4 @@
-# Source-distribution (sdist) contents — defense-in-depth.
+# Source-distribution (sdist) contents - defense-in-depth.
 #
 # The wheel already excludes everything outside the production packages via
 # [tool.setuptools.packages.find] in pyproject.toml (include = controller*,

@@ -1,4 +1,4 @@
-"""R4 repair — the async thumbnail coordinator is removed; rendering is synchronous.
+"""Thumbnail regression coverage retained from the R4 coordinator removal.
 
 R4.3 (commit 60c36fc) offloaded large overlay-free thumbnail rebuilds to a background
 ``ThumbnailCoordinator``/``_ThumbnailWorker``. The review (R4-01…R4-04) found four
@@ -6,12 +6,12 @@ structural defects in that path: a cancelled session's queued batch could paint 
 newly-active tab (the ``batch_ready`` signal carried only ``(gen, start_index, images)``
 and ``gen`` collides across sessions), the snapshot capture serialised on the GUI thread,
 the decrypted snapshot survived tab close, and the sync fallback left the old worker
-running. The fix removes the coordinator entirely and returns thumbnail rendering to the
-pre-R4.3 synchronous bounded-batch scheduler, which cannot cross-paint by construction.
+running. The replacement design keeps those regressions closed with immutable job identity,
+file-backed workers, and a one-page-per-event-turn live fallback.
 
-These tests pin the post-removal contract:
-  1. the coordinator module no longer exists;
-  2. ``_schedule_thumbnail_batch`` paints synchronously and never consults a coordinator;
+These tests now pin the replacement coordinator contract:
+  1. the coordinator module is importable;
+  2. ``_schedule_thumbnail_batch`` delegates without rendering inline;
   3. closing a tab releases that session's decrypted worker-snapshot bytes (R4-03);
   4. a stale generation token still drops late batches (cross-paint guard).
 """
@@ -21,8 +21,6 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -35,44 +33,34 @@ from unittest.mock import MagicMock  # noqa: E402
 from controller.pdf_controller import PDFController  # noqa: E402
 
 
-def test_thumbnail_coordinator_module_removed() -> None:
-    """The whole async coordinator module is gone — importing it must fail."""
-    with pytest.raises(ModuleNotFoundError):
-        import controller.thumbnail_coordinator  # noqa: F401
+def test_thumbnail_coordinator_module_available() -> None:
+    from controller.thumbnail_coordinator import ThumbnailCoordinator
+
+    assert ThumbnailCoordinator is not None
 
 
-def test_schedule_thumbnail_batch_paints_synchronously_ignoring_coordinator(monkeypatch) -> None:
-    """``_schedule_thumbnail_batch`` renders inline and never delegates off-thread.
-
-    A stub coordinator whose ``try_start`` would "own" the range (the HEAD behaviour)
-    must be ignored: the synchronous path always paints via ``view.update_thumbnail_batch``.
-    RED against HEAD, where ``try_start`` is consulted and returns True so nothing paints.
-    """
-    monkeypatch.setattr("controller.pdf_controller.pixmap_to_qpixmap", lambda pix: pix)
+def test_schedule_thumbnail_batch_delegates_without_inline_render() -> None:
 
     controller = PDFController.__new__(PDFController)
     model = MagicMock()
     model.doc = MagicMock()
-    model.doc.__len__ = lambda self=None: 8  # <= THUMB_BATCH_SIZE: one batch, no follow-up timer
+    model.doc.__len__ = lambda self=None: 8
     model.get_active_session_id = MagicMock(return_value="sid-1")
     model.get_thumbnail = MagicMock(return_value=object())
     controller.model = model
     controller.view = MagicMock()
     controller._thumb_gen_by_session = {"sid-1": 0}
-    controller._fitz_colorspace_for_session = MagicMock(return_value=None)
+    controller._color_profile_for_session = MagicMock(return_value="srgb")
 
     # A coordinator that, under HEAD, would claim the range and suppress the sync paint.
     coordinator = MagicMock()
-    coordinator.try_start = MagicMock(return_value=True)
     controller._thumbnail_coordinator = coordinator
 
     controller._schedule_thumbnail_batch(0, "sid-1", 0)
 
-    coordinator.try_start.assert_not_called()
-    controller.view.update_thumbnail_batch.assert_called_once()
-    start_arg, thumbs_arg = controller.view.update_thumbnail_batch.call_args[0]
-    assert start_arg == 0
-    assert len(thumbs_arg) == 8
+    coordinator.request.assert_called_once_with("sid-1", 0, 0, 8, "srgb")
+    model.get_thumbnail.assert_not_called()
+    controller.view.update_thumbnail_batch.assert_not_called()
 
 
 def _close_ready_controller(sid: str = "sid-1") -> tuple[PDFController, dict]:
@@ -105,6 +93,7 @@ def _close_ready_controller(sid: str = "sid-1") -> tuple[PDFController, dict]:
 
     controller.cancel_ocr = MagicMock()
     controller._cancel_search = MagicMock()
+    controller._thumbnail_coordinator = MagicMock()
     controller._capture_current_ui_state = MagicMock()
     controller._refresh_document_tabs = MagicMock()
     controller._reset_empty_ui = MagicMock()
@@ -123,6 +112,7 @@ def test_close_session_clears_worker_snapshot_cache() -> None:
 
     controller.on_tab_close_requested(0)
 
+    controller._thumbnail_coordinator.cancel.assert_called_once_with("sid-1")
     assert controller._worker_snapshot_cache is None
 
 

@@ -113,8 +113,23 @@ class WatermarkTool(ToolExtension):
             self._write_watermarks_embed(doc, [])
             return None
 
-        tmp_doc = fitz.open()
-        tmp_doc.insert_pdf(doc)
+        # ``fitz.open(); insert_pdf(doc)`` creates an unencrypted container, so
+        # a later save(encryption=KEEP) would faithfully keep *no* encryption.
+        # Clone through KEEP instead, preserving the original encryption
+        # dictionary and permissions while still avoiding live-doc mutation.
+        tmp_doc = fitz.open(
+            "pdf",
+            doc.tobytes(
+                garbage=0,
+                no_new_id=1,
+                encryption=fitz.PDF_ENCRYPT_KEEP,
+            ),
+        )
+        if tmp_doc.needs_pass:
+            password = self._model.password
+            if password is None or tmp_doc.authenticate(password) == 0:
+                tmp_doc.close()
+                raise RuntimeError("Unable to authenticate encrypted watermark save clone")
         self.apply_watermarks_to_document(tmp_doc, watermarks)
         self._write_watermarks_embed(tmp_doc, watermarks)
         return tmp_doc

@@ -10,8 +10,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from controller.pdf_controller import PDFController
-from model.object_requests import BatchDeleteObjectsRequest, BatchMoveObjectsRequest, DeleteObjectRequest, MoveObjectRequest, ObjectRef, RotateObjectRequest
+from controller.pdf_controller import PDFController  # noqa: E402
+from model.object_requests import (  # noqa: E402
+    BatchDeleteObjectsRequest,
+    BatchMoveObjectsRequest,
+    DeleteObjectRequest,
+    MoveObjectRequest,
+    ObjectRef,
+    RotateObjectRequest,
+)
 
 
 class _FakeCommandManager:
@@ -41,6 +48,10 @@ class _FakeModel:
 
     def delete_object(self, request):
         self.calls.append(("delete", request))
+        return True
+
+    def delete_objects_atomic(self, requests):
+        self.calls.append(("delete_atomic", list(requests)))
         return True
 
     def get_object_info_at_point(self, page_num: int, point: fitz.Point):
@@ -116,7 +127,15 @@ def test_controller_records_snapshot_for_batch_delete_object() -> None:
 
     PDFController.delete_object(controller, batch)
 
-    # Must apply deletes and record exactly one snapshot command for the whole batch.
-    assert ("delete", DeleteObjectRequest("obj-1", "rect", 1)) in controller.model.calls
-    assert ("delete", DeleteObjectRequest("obj-2", "textbox", 1)) in controller.model.calls
+    # The controller must cross the model boundary once so a mid-batch failure can
+    # restore the entire batch rather than leaving a partial deletion behind.
+    assert controller.model.calls == [
+        (
+            "delete_atomic",
+            [
+                DeleteObjectRequest("obj-1", "rect", 1),
+                DeleteObjectRequest("obj-2", "textbox", 1),
+            ],
+        )
+    ]
     assert len(controller.model.command_manager.recorded) == 1
