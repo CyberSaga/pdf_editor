@@ -2,6 +2,16 @@
 
 這是一個以 Python + Qt 開發的桌面 PDF 編輯器。
 
+## 安全性相關性
+
+CyberSagaPDF 會透過 PyMuPDF、PySide6、選用 OCR 相依套件、暫存檔、影像處理、
+列印流程與 PDF 最佳化功能處理本機 PDF 文件與相關資產。由於 PDF 可能包含複雜
+結構與不受信任的輸入，安全審查對檔案解析、相依套件使用、文件處理、暫存檔安全
+與桌面工作流程可靠性都很重要。
+
+本專案由 CyberSaga GitHub 帳號公開維護，repository owner 有權管理並掃描此
+repository。安全政策與漏洞回報範圍請見 `SECURITY.md`。
+
 ## 主要能力
 
 - 開啟與儲存 PDF
@@ -30,6 +40,8 @@
 - 功能行為：`docs/FEATURES.md`
 - 架構與邊界：`docs/ARCHITECTURE.md`
 - 問題歷程與修正：`docs/solutions.md`
+- 安全政策：`SECURITY.md`
+- 貢獻指南：`CONTRIBUTING.md`
 - 測試腳本索引：`test_scripts/TEST_SCRIPTS.md`
 
 ## 環境需求

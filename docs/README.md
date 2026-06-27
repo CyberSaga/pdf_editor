@@ -4,6 +4,19 @@ Desktop PDF editor written in Python with a Qt UI. The app identity is
 **CyberSagaPDF** (taskbar name/icon, settings namespace); preferences from the
 older `pdf_editor` namespace migrate automatically on first run.
 
+## Security Relevance
+
+CyberSagaPDF processes local PDF documents and related assets through PyMuPDF,
+PySide6, optional OCR dependencies, temporary files, image handling, printing
+workflows, and PDF optimization. Because PDFs can contain complex structures and
+untrusted inputs, security review is important for file parsing, dependency
+usage, document handling, temporary-file safety, and desktop workflow
+reliability.
+
+The project is publicly maintained under the CyberSaga GitHub account, and the
+repository owner is authorized to administer and scan this repository. See
+`SECURITY.md` for the security policy and vulnerability reporting scope.
+
 ## 1. Core Capabilities
 
 - Open and save PDFs
@@ -34,6 +47,8 @@ older `pdf_editor` namespace migrate automatically on first run.
 - Architecture and boundaries: `docs/ARCHITECTURE.md`
 - Issue history and fixes: `docs/solutions.md`
 - Doc update methodology (contributors): `docs/Methodology_for_Writing_Docs.md`
+- Security policy: `SECURITY.md`
+- Contribution guide: `CONTRIBUTING.md`
 - Test script index: `test_scripts/TEST_SCRIPTS.md`
 
 ## 3. Requirements
