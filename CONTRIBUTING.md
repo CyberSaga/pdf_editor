@@ -45,8 +45,8 @@ Run coverage when changing model, controller, or view behavior:
 - Add or update tests for bug fixes and behavior changes.
 - Update documentation when changing workflows, dependencies, shortcuts, printing,
   OCR, optimization, or security-relevant behavior.
-- Avoid committing generated build artifacts, private PDFs, local environment
-  files, or large test outputs.
+- Avoid committing private PDFs, local environment files, 
+  generated build artifacts, or large test outputs.
 
 ## Security-Sensitive Changes
 

@@ -17,6 +17,14 @@ reliability.
 The project is publicly maintained under the CyberSaga GitHub account. The
 repository owner is authorized to administer and scan this repository.
 
+## Security and CI
+
+The repository includes a GitHub Actions CI workflow for dependency and security
+checks. Core and optional Python requirements are audited with `pip-audit`, OCR
+dependencies are isolated in `ocr-requirements.txt`, and security-focused
+regression tests cover dependency floors and OCR weight handling. The project
+also documents supported versions and vulnerability reporting in `SECURITY.md`.
+
 ## Core Capabilities
 
 - Open and save PDFs
