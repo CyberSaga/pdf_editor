@@ -73,3 +73,7 @@ build/
 .coverage.*
 coverage*.json
 htmlcov/
+
+# Codegraph generated outputs (regenerate via indexer.py / report_gen.py)
+.codegraph/CODEINDEX.md
+.codegraph/CODEGRAPH_REPORT.md
