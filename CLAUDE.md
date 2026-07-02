@@ -161,3 +161,10 @@ python .codegraph/indexer.py
 ```
 
 Exclude patterns are in `.codegraphignore` (gitignore-style). Schema details in `.codegraph/README.md`.
+
+## 11. Orchestration workflow  
+You (Fable) are the orchestrator. Plan, decompose, synthesize.  
+Reasoning-heavy phases → deep-reasoner  
+Mechanical work → fast-worker  
+Codex (/codex:rescue --background) is a cracked engineer on par with deep-reasoner, from a different perspective. Treat as a peer, not a reviewer.  
+High-stakes decisions: task Opus + Codex on the same problem in parallel, synthesize the best of both, without showing either the other's answer. Keep your own context clean.   
