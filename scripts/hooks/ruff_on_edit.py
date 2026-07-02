@@ -73,10 +73,21 @@ def main() -> int:
         )
         return 1
 
-    if result.returncode != 0 and result.stdout.strip():
+    if result.returncode == 0:
+        return 0
+    # ruff check contract: 1 = violations found (findings on stdout),
+    # 2+ = tool/config error. Anything but a clean lint-findings case is a
+    # broken lint check and must be surfaced, not swallowed.
+    if result.returncode == 1 and result.stdout.strip():
         print(f"ruff findings in {path.name}:\n{result.stdout.strip()}", file=sys.stderr)
         return 2
-    return 0
+    detail = result.stderr.strip() or result.stdout.strip() or "(no output)"
+    print(
+        f"ruff_on_edit hook: ruff exited {result.returncode} without findings — "
+        f"this edit was NOT lint-checked.\n{detail}",
+        file=sys.stderr,
+    )
+    return 1
 
 
 if __name__ == "__main__":
