@@ -6,9 +6,9 @@ name: CI
 # over the declared requirement files and FAILS the build on any known advisory.
 # `lint` and `test` are wired in too, but their blocking scope is deliberately
 # scoped to what is green today:
-#   * ruff is advisory because the repo still carries 113 tracked legacy violations
-#     (CLAUDE.md s3.1) that are being cleaned up gradually; new code is held to zero
-#     in review.
+#   * ruff blocks on all selected rules except the remaining import-order backlog
+#     (91 E402 findings after the first-stage cleanup), which is being cleaned up
+#     separately.
 #   * the test job blocks on the import-light dependency/F9 security regression suite;
 #     the full pytest run needs the heavy optional + platform-specific stack
 #     (surya/torch, win32print, pyautogui) and is run locally, surfaced here as an
@@ -53,7 +53,7 @@ jobs:
         run: pip-audit -r ocr-requirements.txt --progress-spinner off
 
   lint:
-    name: ruff (advisory)
+    name: ruff (blocking, excluding E402 backlog)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,9 +62,8 @@ jobs:
           python-version: "3.10"
       - name: Install ruff
         run: python -m pip install --upgrade pip ruff
-      - name: ruff check (advisory until the 113-violation legacy backlog is cleared)
-        continue-on-error: true
-        run: ruff check . --output-format=github
+      - name: ruff check (blocking except E402)
+        run: ruff check . --ignore E402 --output-format=github
 
   test:
     name: Security regression tests

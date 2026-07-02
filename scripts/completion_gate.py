@@ -11,6 +11,7 @@ artifact capturing this specific run's evidence (subprocess exit codes, git HEAD
 timestamps, artifact digests).  Presence and validity of this file is the
 durable completion proof; pasted stdout alone is supplemental.
 """
+
 from __future__ import annotations
 import argparse
 import hashlib
@@ -21,25 +22,27 @@ import time
 import uuid
 from pathlib import Path
 
-REPO_ROOT    = Path(__file__).parent.parent
-MARKER_PATH  = REPO_ROOT / "test_artifacts" / ".gate_passed"
+REPO_ROOT = Path(__file__).parent.parent
+MARKER_PATH = REPO_ROOT / "test_artifacts" / ".gate_passed"
 SIGNOFF_PATH = REPO_ROOT / "test_artifacts" / "signoff.json"
-PROOF_PATH   = REPO_ROOT / "test_artifacts" / ".completion_proof.json"
+PROOF_PATH = REPO_ROOT / "test_artifacts" / ".completion_proof.json"
 
 # Reuse the strict _git_head() from verify_no_jump — raises RuntimeError,
 # NEVER returns "unknown" or a stale value.
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
-from verify_no_jump import _git_head   # noqa: E402
+from verify_no_jump import _git_head  # noqa: E402
 
 
 def _sha256(path: Path) -> str:
-    h = hashlib.sha256(); h.update(path.read_bytes()); return h.hexdigest()
+    h = hashlib.sha256()
+    h.update(path.read_bytes())
+    return h.hexdigest()
 
 
 def _run(cmd: list[str]) -> int:
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"[completion-gate] Running: {' '.join(cmd)}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     return subprocess.run(cmd, cwd=REPO_ROOT).returncode
 
 
@@ -81,17 +84,22 @@ def main(skip_signoff: bool = False) -> int:
     for script in _REQUIRED_TRACKED:
         r = subprocess.run(
             ["git", "ls-files", "--error-unmatch", script],
-            cwd=REPO_ROOT, capture_output=True,
+            cwd=REPO_ROOT,
+            capture_output=True,
         )
         if r.returncode != 0:
             not_tracked.append(script)
     if not_tracked:
-        print("\n[completion-gate] FAIL — required gate files are NOT committed to git:")
+        print(
+            "\n[completion-gate] FAIL — required gate files are NOT committed to git:"
+        )
         for s in not_tracked:
             print(f"  {s}")
         print("  Commit all scripts before re-running this command.")
         return 1
-    print(f"[completion-gate] Confirmed {len(_REQUIRED_TRACKED)} gate files tracked in git")
+    print(
+        f"[completion-gate] Confirmed {len(_REQUIRED_TRACKED)} gate files tracked in git"
+    )
 
     # Step 0a: Hash-pin the test files and gate scripts that encode the
     # acceptance thresholds (0.5px geometry, 1% pixel diff, 1px floor) and
@@ -115,14 +123,14 @@ def main(skip_signoff: bool = False) -> int:
     # intentionally one-directional (gate → gate_anchor → hook) to avoid an
     # unsolvable SHA-256 fixed-point cycle that mutual pinning would create.
     _PINNED_HASHES: dict[str, str] = {
-        "test_scripts/test_no_jump_editor_geometry.py":   "407a95fc7a395111ad24321a08736903d9f8f3cc1b4904af235a7e1284df843c",
-        "test_scripts/test_text_editing_fidelity_suite.py": "e78f07bba51757444acefa5cec12bd9734fda5227465f3dfb2345762be8942fb",
-        "test_scripts/test_completion_proof_hook.py":     "7f40c39fbf9033a57db048bf544957df3a5cb8ef97d2aa1ea7c9e984a318bd96",
-        "scripts/verify_no_jump.py":                      "a037795ff0f9dd7b6a6f86131e21b1c8f1b54706128f5831e55233668834fe42",
-        "scripts/check_gate_passed.py":                   "b539b3ceba8ac51b0cd287ed52387e5a1041e300171ec935a2d22b84f7c1838d",
-        "scripts/codex_session_guard.py":                 "7b50b60331ee1fb5b9849a79fee5966fcfd584980ae7a37d78b1acb305b4cfb2",
-        "scripts/ux_signoff_agent.py":                    "40d4cc6ff03246c15e6c86e4787c39ec7a884d7c75c2fa6f577dbdf65d7f9cc6",
-        "scripts/gate_anchor.py":                         "792b98925af76420ee921e9746cf1b9fcb4319ad225fd99a332bc5c6e737f949",
+        "test_scripts/test_no_jump_editor_geometry.py": "407a95fc7a395111ad24321a08736903d9f8f3cc1b4904af235a7e1284df843c",
+        "test_scripts/test_text_editing_fidelity_suite.py": "50c4459ff11f64edc2ba396a142e5b77977384b98bc1e5388511dadcdc22fdbb",
+        "test_scripts/test_completion_proof_hook.py": "7f40c39fbf9033a57db048bf544957df3a5cb8ef97d2aa1ea7c9e984a318bd96",
+        "scripts/verify_no_jump.py": "a037795ff0f9dd7b6a6f86131e21b1c8f1b54706128f5831e55233668834fe42",
+        "scripts/check_gate_passed.py": "7fb9f6e27fc66271bfc60b2fb0cad7d0291630ff51950f4044362663eab90e61",
+        "scripts/codex_session_guard.py": "7b50b60331ee1fb5b9849a79fee5966fcfd584980ae7a37d78b1acb305b4cfb2",
+        "scripts/ux_signoff_agent.py": "40d4cc6ff03246c15e6c86e4787c39ec7a884d7c75c2fa6f577dbdf65d7f9cc6",
+        "scripts/gate_anchor.py": "792b98925af76420ee921e9746cf1b9fcb4319ad225fd99a332bc5c6e737f949",
     }
     hash_mismatches: list[str] = []
     for rel, expected in _PINNED_HASHES.items():
@@ -133,9 +141,7 @@ def main(skip_signoff: bool = False) -> int:
         actual = _sha256(path)
         if actual != expected:
             hash_mismatches.append(
-                f"  {rel}:\n"
-                f"    expected: {expected}\n"
-                f"    actual:   {actual}"
+                f"  {rel}:\n    expected: {expected}\n    actual:   {actual}"
             )
     if hash_mismatches:
         print(
@@ -154,7 +160,9 @@ def main(skip_signoff: bool = False) -> int:
             "(hash-pinning section).  Then re-run this command."
         )
         return 1
-    print(f"[completion-gate] Confirmed {len(_PINNED_HASHES)} pinned-hash files match expected SHA-256")
+    print(
+        f"[completion-gate] Confirmed {len(_PINNED_HASHES)} pinned-hash files match expected SHA-256"
+    )
 
     # Step 0b: Parse .claude/settings.json and confirm the stop hook is still wired.
     # Tracking the settings file is necessary but not sufficient — the hook command
@@ -175,7 +183,9 @@ def main(skip_signoff: bool = False) -> int:
                 "  Restore the hook entry before re-running."
             )
             return 1
-        print("[completion-gate] Stop hook registration verified in .claude/settings.json")
+        print(
+            "[completion-gate] Stop hook registration verified in .claude/settings.json"
+        )
     except (json.JSONDecodeError, OSError) as exc:
         print(f"\n[completion-gate] FAIL — cannot read .claude/settings.json: {exc}")
         return 1
@@ -187,18 +197,21 @@ def main(skip_signoff: bool = False) -> int:
     # makes mutual SHA-256 pinning mathematically unsolvable.
     try:
         import importlib.util as _ilu
+
         _anchor_spec = _ilu.spec_from_file_location(
             "gate_anchor", REPO_ROOT / "scripts" / "gate_anchor.py"
         )
         _anchor_mod = _ilu.module_from_spec(_anchor_spec)  # type: ignore[arg-type]
-        _anchor_spec.loader.exec_module(_anchor_mod)        # type: ignore[union-attr]
+        _anchor_spec.loader.exec_module(_anchor_mod)  # type: ignore[union-attr]
         _expected_hook_hash: str = _anchor_mod._HOOK_HASH
     except Exception as exc:
         print(f"\n[completion-gate] FAIL — cannot load gate_anchor.py: {exc}")
         return 1
     _hook_path = REPO_ROOT / "scripts" / "check_completion_proof_hook.py"
     if not _hook_path.exists():
-        print("\n[completion-gate] FAIL — check_completion_proof_hook.py is missing on disk")
+        print(
+            "\n[completion-gate] FAIL — check_completion_proof_hook.py is missing on disk"
+        )
         return 1
     _actual_hook_hash = _sha256(_hook_path)
     if _actual_hook_hash != _expected_hook_hash:
@@ -238,33 +251,43 @@ def main(skip_signoff: bool = False) -> int:
 
     # .gate_passed MUST exist.  signoff.json only required when signoff was not skipped.
     if not MARKER_PATH.exists():
-        print("\n[completion-gate] FAIL — .gate_passed missing when writing proof — "
-              "filesystem was mutated after gate run"); return 1
+        print(
+            "\n[completion-gate] FAIL — .gate_passed missing when writing proof — "
+            "filesystem was mutated after gate run"
+        )
+        return 1
     if not skip_signoff and not SIGNOFF_PATH.exists():
-        print("\n[completion-gate] FAIL — signoff.json missing when writing proof — "
-              "filesystem was mutated after gate run"); return 1
+        print(
+            "\n[completion-gate] FAIL — signoff.json missing when writing proof — "
+            "filesystem was mutated after gate run"
+        )
+        return 1
 
     # Verify .gate_passed's recorded commit matches HEAD (final sanity check)
     try:
         marker = json.loads(MARKER_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        print(f"\n[completion-gate] FAIL — .gate_passed is not valid JSON: {exc}"); return 1
+        print(f"\n[completion-gate] FAIL — .gate_passed is not valid JSON: {exc}")
+        return 1
     if marker.get("git_commit") != head:
-        print(f"\n[completion-gate] FAIL — .gate_passed git_commit "
-              f"({str(marker.get('git_commit',''))[:12]}…) != HEAD ({head[:12]}…)"); return 1
+        print(
+            f"\n[completion-gate] FAIL — .gate_passed git_commit "
+            f"({str(marker.get('git_commit', ''))[:12]}…) != HEAD ({head[:12]}…)"
+        )
+        return 1
 
     proof = {
-        "status":                      "PASSED",
-        "completion_gate_version":     "1.0",
-        "invocation_id":               invocation_id,  # must match stdout
-        "git_commit":                  head,
-        "started_at":                  started_at,
-        "finished_at":                 time.time(),
-        "verify_no_jump_exit_code":    gate_rc,   # 0 — verified above
+        "status": "PASSED",
+        "completion_gate_version": "1.0",
+        "invocation_id": invocation_id,  # must match stdout
+        "git_commit": head,
+        "started_at": started_at,
+        "finished_at": time.time(),
+        "verify_no_jump_exit_code": gate_rc,  # 0 — verified above
         "check_gate_passed_exit_code": check_rc,  # 0 — verified above
-        "gate_passed_digest":          _sha256(MARKER_PATH),
-        "signoff_digest":              "SKIPPED" if skip_signoff else _sha256(SIGNOFF_PATH),
-        "tracked_scripts":             _REQUIRED_TRACKED,  # auditable: all were git-tracked at proof time
+        "gate_passed_digest": _sha256(MARKER_PATH),
+        "signoff_digest": "SKIPPED" if skip_signoff else _sha256(SIGNOFF_PATH),
+        "tracked_scripts": _REQUIRED_TRACKED,  # auditable: all were git-tracked at proof time
     }
     PROOF_PATH.write_text(json.dumps(proof, indent=2), encoding="utf-8")
 
@@ -272,13 +295,20 @@ def main(skip_signoff: bool = False) -> int:
     try:
         written = json.loads(PROOF_PATH.read_text(encoding="utf-8"))
     except Exception as exc:
-        print(f"\n[completion-gate] FAIL — proof write/read back failed: {exc}"); return 1
+        print(f"\n[completion-gate] FAIL — proof write/read back failed: {exc}")
+        return 1
     if written.get("invocation_id") != invocation_id:
-        print("\n[completion-gate] FAIL — proof invocation_id mismatch after write"); return 1
+        print("\n[completion-gate] FAIL — proof invocation_id mismatch after write")
+        return 1
     if written.get("git_commit") != head:
-        print("\n[completion-gate] FAIL — proof git_commit mismatch after write"); return 1
-    if written.get("verify_no_jump_exit_code") != 0 or written.get("check_gate_passed_exit_code") != 0:
-        print("\n[completion-gate] FAIL — proof exit codes invalid after write"); return 1
+        print("\n[completion-gate] FAIL — proof git_commit mismatch after write")
+        return 1
+    if (
+        written.get("verify_no_jump_exit_code") != 0
+        or written.get("check_gate_passed_exit_code") != 0
+    ):
+        print("\n[completion-gate] FAIL — proof exit codes invalid after write")
+        return 1
 
     print("\n[completion-gate] BOTH COMMANDS PASSED — no-jump goal is resolved")
     print(f"[completion-gate] Proof written and validated: {PROOF_PATH}")
@@ -289,7 +319,10 @@ def main(skip_signoff: bool = False) -> int:
 
 if __name__ == "__main__":
     _ap = argparse.ArgumentParser()
-    _ap.add_argument("--skip-signoff", action="store_true",
-                     help="Skip the UX signoff step (for environments without OPENAI_API_KEY)")
+    _ap.add_argument(
+        "--skip-signoff",
+        action="store_true",
+        help="Skip the UX signoff step (for environments without OPENAI_API_KEY)",
+    )
     _args = _ap.parse_args()
     sys.exit(main(skip_signoff=_args.skip_signoff))

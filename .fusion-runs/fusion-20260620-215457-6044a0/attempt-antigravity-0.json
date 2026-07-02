@@ -1,9 +1,0 @@
-{
-  "provider": "antigravity",
-  "sample": 0,
-  "status": "error",
-  "returncode": null,
-  "duration_seconds": 0.07800000000133878,
-  "stderr": "[WinError 206] 檔名或副檔名太長。",
-  "source_path": null
-}

@@ -1,4 +1,4 @@
-﻿"""
+"""
 test_drag_move.py -- drag-move text box feature test
 =====================================================
 Test coverage:
@@ -15,6 +15,7 @@ Test coverage:
 Usage:
   python test_scripts/test_drag_move.py
 """
+
 import difflib
 import io
 import os
@@ -40,22 +41,45 @@ sys.path.insert(0, str(ROOT))
 from model.pdf_model import PDFModel
 
 SAMPLE_DIR = ROOT / "test_files" / "sample-files-main"
-VERA_DIR   = ROOT / "test_files" / "veraPDF-corpus-staging"
+VERA_DIR = ROOT / "test_files" / "veraPDF-corpus-staging"
 
 VERA_REPRESENTATIVE = [
-    VERA_DIR / "PDF_A-1b" / "6.1 File structure" / "6.1.2 File header" / "veraPDF test suite 6-1-2-t01-pass-a.pdf",
-    VERA_DIR / "PDF_A-1b" / "6.1 File structure" / "6.1.12 Implementation limits" / "veraPDF test suite 6-1-12-t03-fail-b.pdf",
+    VERA_DIR
+    / "PDF_A-1b"
+    / "6.1 File structure"
+    / "6.1.2 File header"
+    / "veraPDF test suite 6-1-2-t01-pass-a.pdf",
+    VERA_DIR
+    / "PDF_A-1b"
+    / "6.1 File structure"
+    / "6.1.12 Implementation limits"
+    / "veraPDF test suite 6-1-12-t03-fail-b.pdf",
     VERA_DIR / "TWG test files" / "TWG test suite A005-pdfa1-fail-b.pdf",
     VERA_DIR / "TWG test files" / "TWG test suite A009-pdfa1-fail-b.pdf",
-    VERA_DIR / "Isartor test files" / "PDFA-1b" / "6.3 Fonts" / "6.3.4 Embedded font programs" / "isartor-6-3-4-t01-fail-b.pdf",
-    VERA_DIR / "PDF_A-2b" / "6.2 Graphics" / "6.2.10 Transparency" / "veraPDF test suite 6-2-10-t01-fail-a.pdf",
+    VERA_DIR
+    / "Isartor test files"
+    / "PDFA-1b"
+    / "6.3 Fonts"
+    / "6.3.4 Embedded font programs"
+    / "isartor-6-3-4-t01-fail-b.pdf",
+    VERA_DIR
+    / "PDF_A-2b"
+    / "6.2 Graphics"
+    / "6.2.10 Transparency"
+    / "veraPDF test suite 6-2-10-t01-fail-a.pdf",
 ]
 
 
 _LIGATURE_MAP = {
-    '\ufb00': 'ff', '\ufb01': 'fi', '\ufb02': 'fl',
-    '\ufb03': 'ffi', '\ufb04': 'ffl', '\ufb05': 'st', '\ufb06': 'st',
+    "\ufb00": "ff",
+    "\ufb01": "fi",
+    "\ufb02": "fl",
+    "\ufb03": "ffi",
+    "\ufb04": "ffl",
+    "\ufb05": "st",
+    "\ufb06": "st",
 }
+
 
 def _norm(text):
     for lig, rep in _LIGATURE_MAP.items():
@@ -190,25 +214,43 @@ def test_A_basic_move(result):
                 result.skip("A-basic-move", "no text block")
                 return
             old_rect, text = found
-            new_rect = fitz.Rect(old_rect.x0, old_rect.y0 + 300, old_rect.x1, old_rect.y1 + 300)
+            new_rect = fitz.Rect(
+                old_rect.x0, old_rect.y0 + 300, old_rect.x1, old_rect.y1 + 300
+            )
             _do_move(model, 0, old_rect, text, new_rect)
             page = model.doc[0]
             at_new = _text_exists_at(page, new_rect, text)
-            old_clip = page.get_text("text", clip=fitz.Rect(old_rect.x0, old_rect.y0 - 5,
-                                                             old_rect.x1, old_rect.y1 + 5)).strip()
+            old_clip = page.get_text(
+                "text",
+                clip=fitz.Rect(
+                    old_rect.x0, old_rect.y0 - 5, old_rect.x1, old_rect.y1 + 5
+                ),
+            ).strip()
             at_old = len(old_clip) > 0
             ms = (time.perf_counter() - t0) * 1000
             if at_new and not at_old:
                 result.ok("A-basic-move", ms)
             elif not at_new:
-                result.fail("A-basic-move", f"text not at new pos. clip={page.get_text('text',clip=new_rect).strip()[:40]!r}", ms)
+                result.fail(
+                    "A-basic-move",
+                    f"text not at new pos. clip={page.get_text('text', clip=new_rect).strip()[:40]!r}",
+                    ms,
+                )
             else:
-                result.fail("A-basic-move", f"old pos still has text: {old_clip[:40]!r}", ms)
+                result.fail(
+                    "A-basic-move", f"old pos still has text: {old_clip[:40]!r}", ms
+                )
         finally:
-            try: os.unlink(tmp)
-            except Exception: pass
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
     except Exception:
-        result.error("A-basic-move", traceback.format_exc()[-400:], (time.perf_counter() - t0) * 1000)
+        result.error(
+            "A-basic-move",
+            traceback.format_exc()[-400:],
+            (time.perf_counter() - t0) * 1000,
+        )
 
 
 def test_B_move_and_edit(result):
@@ -228,11 +270,18 @@ def test_B_move_and_edit(result):
                 return
             old_rect, text = found
             new_text = "MOVED_AND_EDITED: updated content"
-            new_rect = fitz.Rect(old_rect.x0, old_rect.y0 + 250, old_rect.x1, old_rect.y1 + 250)
+            new_rect = fitz.Rect(
+                old_rect.x0, old_rect.y0 + 250, old_rect.x1, old_rect.y1 + 250
+            )
             model.edit_text(
-                page_num=1, rect=old_rect, new_text=new_text,
-                font="helv", size=12, color=(0, 0, 0),
-                original_text=text, new_rect=new_rect,
+                page_num=1,
+                rect=old_rect,
+                new_text=new_text,
+                font="helv",
+                size=12,
+                color=(0, 0, 0),
+                original_text=text,
+                new_rect=new_rect,
             )
             page = model.doc[0]
             at_new = _text_exists_at(page, new_rect, new_text, tolerance=0.5)
@@ -240,12 +289,22 @@ def test_B_move_and_edit(result):
             if at_new:
                 result.ok("B-move-and-edit", ms)
             else:
-                result.fail("B-move-and-edit", f"new text not at new pos. page={page.get_text('text')[:100]!r}", ms)
+                result.fail(
+                    "B-move-and-edit",
+                    f"new text not at new pos. page={page.get_text('text')[:100]!r}",
+                    ms,
+                )
         finally:
-            try: os.unlink(tmp)
-            except Exception: pass
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
     except Exception:
-        result.error("B-move-and-edit", traceback.format_exc()[-400:], (time.perf_counter() - t0) * 1000)
+        result.error(
+            "B-move-and-edit",
+            traceback.format_exc()[-400:],
+            (time.perf_counter() - t0) * 1000,
+        )
 
 
 def test_C_moved_block_not_lost(result):
@@ -269,22 +328,35 @@ def test_C_moved_block_not_lost(result):
             full_text = model.doc[0].get_text("text")
             norm_text = _norm(text)
             import difflib as _dl
+
             norm_full = _norm(full_text)
             if len(norm_text) < 5 or norm_text[:20] in norm_full:
                 found_in_full = True
             else:
-                ratio = _dl.SequenceMatcher(None, norm_text[:30], norm_full[:200]).ratio()
+                ratio = _dl.SequenceMatcher(
+                    None, norm_text[:30], norm_full[:200]
+                ).ratio()
                 found_in_full = ratio >= 0.4
             ms = (time.perf_counter() - t0) * 1000
             if found_in_full:
                 result.ok("C-not-lost", ms)
             else:
-                result.fail("C-not-lost", f"moved text not found on page. text[:20]={text[:20]!r}", ms)
+                result.fail(
+                    "C-not-lost",
+                    f"moved text not found on page. text[:20]={text[:20]!r}",
+                    ms,
+                )
         finally:
-            try: os.unlink(tmp)
-            except Exception: pass
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
     except Exception:
-        result.error("C-not-lost", traceback.format_exc()[-400:], (time.perf_counter() - t0) * 1000)
+        result.error(
+            "C-not-lost",
+            traceback.format_exc()[-400:],
+            (time.perf_counter() - t0) * 1000,
+        )
 
 
 def test_D_other_block_not_lost(result):
@@ -299,9 +371,14 @@ def test_D_other_block_not_lost(result):
             model.open_pdf(tmp)
             model.block_manager.build_index(model.doc)
             blocks = model.doc[0].get_text("dict", flags=0)["blocks"]
-            tblocks = [(fitz.Rect(b["bbox"]),
-                        "".join(s["text"] for ln in b["lines"] for s in ln["spans"]))
-                       for b in blocks if b["type"] == 0]
+            tblocks = [
+                (
+                    fitz.Rect(b["bbox"]),
+                    "".join(s["text"] for ln in b["lines"] for s in ln["spans"]),
+                )
+                for b in blocks
+                if b["type"] == 0
+            ]
             if len(tblocks) < 2:
                 result.skip("D-other-not-lost", "< 2 text blocks")
                 return
@@ -316,12 +393,22 @@ def test_D_other_block_not_lost(result):
             if b_ok:
                 result.ok("D-other-not-lost", ms)
             else:
-                result.fail("D-other-not-lost", f"block B lost after moving A. B={text_b[:30]!r}", ms)
+                result.fail(
+                    "D-other-not-lost",
+                    f"block B lost after moving A. B={text_b[:30]!r}",
+                    ms,
+                )
         finally:
-            try: os.unlink(tmp)
-            except Exception: pass
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
     except Exception:
-        result.error("D-other-not-lost", traceback.format_exc()[-400:], (time.perf_counter() - t0) * 1000)
+        result.error(
+            "D-other-not-lost",
+            traceback.format_exc()[-400:],
+            (time.perf_counter() - t0) * 1000,
+        )
 
 
 def test_E_vertical_move(result):
@@ -340,20 +427,32 @@ def test_E_vertical_move(result):
                 result.skip("E-vertical-move", "no text block")
                 return
             old_rect, text = found
-            new_rect = fitz.Rect(max(old_rect.x0 - 100, 10), old_rect.y0 + 150,
-                                  max(old_rect.x1 - 100, 60), old_rect.y1 + 150)
+            new_rect = fitz.Rect(
+                max(old_rect.x0 - 100, 10),
+                old_rect.y0 + 150,
+                max(old_rect.x1 - 100, 60),
+                old_rect.y1 + 150,
+            )
             _do_move(model, 0, old_rect, text, new_rect)
             full_text = model.doc[0].get_text("text").strip()
             ms = (time.perf_counter() - t0) * 1000
             if full_text:
                 result.ok("E-vertical-move", ms)
             else:
-                result.fail("E-vertical-move", "page text completely gone after move", ms)
+                result.fail(
+                    "E-vertical-move", "page text completely gone after move", ms
+                )
         finally:
-            try: os.unlink(tmp)
-            except Exception: pass
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
     except Exception:
-        result.error("E-vertical-move", traceback.format_exc()[-400:], (time.perf_counter() - t0) * 1000)
+        result.error(
+            "E-vertical-move",
+            traceback.format_exc()[-400:],
+            (time.perf_counter() - t0) * 1000,
+        )
 
 
 def test_F_boundary_clamp(result):
@@ -381,17 +480,29 @@ def test_F_boundary_clamp(result):
                 # When new_rect is completely outside page, model may fall back to
                 # original position (clamp) or raise if text doesn't fit.
                 # Both are acceptable behaviors for out-of-bounds input.
-                if "??????" in str(inner) or "???" in str(inner) or "rollback" in str(inner).lower():
+                if (
+                    "??????" in str(inner)
+                    or "???" in str(inner)
+                    or "rollback" in str(inner).lower()
+                ):
                     ms = (time.perf_counter() - t0) * 1000
                     result.ok("F-boundary-clamp (graceful-rollback)", ms)
                 else:
                     ms = (time.perf_counter() - t0) * 1000
-                    result.fail("F-boundary-clamp", f"unexpected exception: {inner}", ms)
+                    result.fail(
+                        "F-boundary-clamp", f"unexpected exception: {inner}", ms
+                    )
         finally:
-            try: os.unlink(tmp)
-            except Exception: pass
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
     except Exception:
-        result.error("F-boundary-clamp", traceback.format_exc()[-400:], (time.perf_counter() - t0) * 1000)
+        result.error(
+            "F-boundary-clamp",
+            traceback.format_exc()[-400:],
+            (time.perf_counter() - t0) * 1000,
+        )
 
 
 def test_G_sample_files(result):
@@ -436,15 +547,22 @@ def test_G_sample_files(result):
         except Exception as e:
             ms = (time.perf_counter() - t0) * 1000
             err = str(e)
-            known = ["password", "encrypted", "ratio=0.2", "ratio=0.3", "ratio=0.1",
-                     "ratio=0.0", "ratio=0.4"]
+            known = [
+                "password",
+                "encrypted",
+                "ratio=0.2",
+                "ratio=0.3",
+                "ratio=0.1",
+                "ratio=0.0",
+                "ratio=0.4",
+            ]
             if any(k in err for k in known):
                 result.skip(case_name, "known limitation: " + err[:60])
             else:
                 result.error(case_name, err[:120], ms)
         finally:
             try:
-                if hasattr(model, 'doc') and model.doc:
+                if hasattr(model, "doc") and model.doc:
                     model.doc.close()
             except Exception:
                 pass
@@ -489,7 +607,7 @@ def test_H_vera_files(result):
             result.error(case_name, str(e)[:120], ms)
         finally:
             try:
-                if hasattr(model, 'doc') and model.doc:
+                if hasattr(model, "doc") and model.doc:
                     model.doc.close()
             except Exception:
                 pass
@@ -513,7 +631,9 @@ def test_I_logic_simulation(result):
                 result.skip("I-logic-single-move", "no text block")
                 return
             old_rect, text = found
-            new_rect = fitz.Rect(old_rect.x0, old_rect.y0 + 200, old_rect.x1, old_rect.y1 + 200)
+            new_rect = fitz.Rect(
+                old_rect.x0, old_rect.y0 + 200, old_rect.x1, old_rect.y1 + 200
+            )
             _do_move(model, 0, old_rect, text, new_rect)
             after_text = model.doc[0].get_text("text")
             bc = len(_norm(before_text))
@@ -523,12 +643,20 @@ def test_I_logic_simulation(result):
             if chars_ok:
                 result.ok("I-logic-single-move", ms)
             else:
-                result.fail("I-logic-single-move", f"char count dropped: {bc}->{ac}", ms)
+                result.fail(
+                    "I-logic-single-move", f"char count dropped: {bc}->{ac}", ms
+                )
         finally:
-            try: os.unlink(tmp)
-            except Exception: pass
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
     except Exception:
-        result.error("I-logic-single-move", traceback.format_exc()[-400:], (time.perf_counter() - t0) * 1000)
+        result.error(
+            "I-logic-single-move",
+            traceback.format_exc()[-400:],
+            (time.perf_counter() - t0) * 1000,
+        )
 
     # Scenario 2: moving A doesn't lose B
     t0 = time.perf_counter()
@@ -542,9 +670,14 @@ def test_I_logic_simulation(result):
             model2.open_pdf(tmp2)
             model2.block_manager.build_index(model2.doc)
             blocks = model2.doc[0].get_text("dict", flags=0)["blocks"]
-            tblocks = [(fitz.Rect(b["bbox"]),
-                        "".join(s["text"] for ln in b["lines"] for s in ln["spans"]))
-                       for b in blocks if b["type"] == 0]
+            tblocks = [
+                (
+                    fitz.Rect(b["bbox"]),
+                    "".join(s["text"] for ln in b["lines"] for s in ln["spans"]),
+                )
+                for b in blocks
+                if b["type"] == 0
+            ]
             if len(tblocks) < 2:
                 result.skip("I-logic-no-overwrite-loss", "< 2 blocks")
                 return
@@ -558,12 +691,20 @@ def test_I_logic_simulation(result):
             if b_survived:
                 result.ok("I-logic-no-overwrite-loss", ms)
             else:
-                result.fail("I-logic-no-overwrite-loss", f"block B lost. B={text_b[:30]!r}", ms)
+                result.fail(
+                    "I-logic-no-overwrite-loss", f"block B lost. B={text_b[:30]!r}", ms
+                )
         finally:
-            try: os.unlink(tmp2)
-            except Exception: pass
+            try:
+                os.unlink(tmp2)
+            except Exception:
+                pass
     except Exception:
-        result.error("I-logic-no-overwrite-loss", traceback.format_exc()[-400:], (time.perf_counter() - t0) * 1000)
+        result.error(
+            "I-logic-no-overwrite-loss",
+            traceback.format_exc()[-400:],
+            (time.perf_counter() - t0) * 1000,
+        )
 
 
 def print_report(groups):
@@ -576,21 +717,29 @@ def print_report(groups):
     sep = "=" * 72
     print(sep)
     print("Drag-Move Text Box Feature Test Report")
-    print("Time: " + time.strftime('%Y-%m-%d %H:%M:%S'))
+    print("Time: " + time.strftime("%Y-%m-%d %H:%M:%S"))
     print(sep)
     print()
-    print(f"{'Concept':<42} {'OK':>4} {'FAIL':>5} {'ERR':>5} {'SKIP':>5} {'Rate':>7} {'Time':>7}")
+    print(
+        f"{'Concept':<42} {'OK':>4} {'FAIL':>5} {'ERR':>5} {'SKIP':>5} {'Rate':>7} {'Time':>7}"
+    )
     print("-" * 72)
     for g in groups:
-        print(f"{g.name:<42} {g.passed:>4} {g.failed:>5} {g.errors:>5} {g.skipped:>5} "
-              f"{g.pass_rate:>6.1f}% {g.elapsed:>6.2f}s")
+        print(
+            f"{g.name:<42} {g.passed:>4} {g.failed:>5} {g.errors:>5} {g.skipped:>5} "
+            f"{g.pass_rate:>6.1f}% {g.elapsed:>6.2f}s"
+        )
     print("-" * 72)
     total_elapsed = sum(g.elapsed for g in groups)
-    print(f"{'Total':<42} {total_passed:>4} {total_failed:>5} {total_errors:>5} {total_skipped:>5} "
-          f"{overall_rate:>6.1f}% {total_elapsed:>6.2f}s")
+    print(
+        f"{'Total':<42} {total_passed:>4} {total_failed:>5} {total_errors:>5} {total_skipped:>5} "
+        f"{overall_rate:>6.1f}% {total_elapsed:>6.2f}s"
+    )
     print()
 
-    has_failures = any(c["status"] in ("FAIL", "ERROR") for g in groups for c in g.cases)
+    has_failures = any(
+        c["status"] in ("FAIL", "ERROR") for g in groups for c in g.cases
+    )
     if has_failures:
         print(sep)
         print("Failure/Error Details")
@@ -615,12 +764,18 @@ def print_report(groups):
         print("  2. Add undo/redo coverage for drag-move operations.")
         print("  3. Consider visual drag feedback (border color change).")
     else:
-        fail_pct = (total_failed + total_errors) / effective * 100 if effective > 0 else 0
+        fail_pct = (
+            (total_failed + total_errors) / effective * 100 if effective > 0 else 0
+        )
         if fail_pct <= 10:
-            print(f"Pass rate {overall_rate:.1f}% with minor failures ({total_failed + total_errors} cases).")
+            print(
+                f"Pass rate {overall_rate:.1f}% with minor failures ({total_failed + total_errors} cases)."
+            )
             print("Core functionality stable. Review failures above.")
         else:
-            print(f"Pass rate {overall_rate:.1f}% ? failure rate too high ({fail_pct:.1f}%).")
+            print(
+                f"Pass rate {overall_rate:.1f}% ? failure rate too high ({fail_pct:.1f}%)."
+            )
             print("NOT recommended as stable. Fix per root causes above.")
     print(sep)
 
@@ -664,7 +819,11 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     report_path = OUTPUT_DIR / "drag_move_test_report.txt"
     import contextlib
-    with open(str(report_path), "w", encoding="utf-8") as f, contextlib.redirect_stdout(f):
+
+    with (
+        open(str(report_path), "w", encoding="utf-8") as f,
+        contextlib.redirect_stdout(f),
+    ):
         print_report(groups)
     print(f"\nReport saved to: {report_path}")
 

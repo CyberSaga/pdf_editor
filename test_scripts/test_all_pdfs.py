@@ -1,4 +1,4 @@
-﻿"""
+"""
 test_all_pdfs.py — 全 test_files 目錄 PDF 批次測試
 ====================================================
 測試策略（三層）：
@@ -17,6 +17,7 @@ test_all_pdfs.py — 全 test_files 目錄 PDF 批次測試
   test_outputs/error_log.txt   — 所有錯誤與異常的詳細記錄
   終端機 stdout   — 進度概覽 + 最終統計
 """
+
 import io
 import sys
 import time
@@ -31,7 +32,7 @@ if sys.platform == "win32" and __name__ == "__main__":
 
 import logging
 
-logging.disable(logging.CRITICAL)   # 批次測試期間關閉所有 log，避免大量 I/O
+logging.disable(logging.CRITICAL)  # 批次測試期間關閉所有 log，避免大量 I/O
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -44,7 +45,7 @@ from model.pdf_model import PDFModel
 # 設定
 # ──────────────────────────────────────────────────────────────────
 TEST_FILES_ROOT = ROOT / "test_files"
-ERROR_LOG       = OUTPUT_DIR / "error_log.txt"
+ERROR_LOG = OUTPUT_DIR / "error_log.txt"
 
 # 已知密碼表：{檔名（小寫）→ 密碼}
 # 支援 user password（開啟密碼）與 owner password（權限密碼）。
@@ -60,18 +61,20 @@ NO_EDIT_DIRS = {"veraPDF-corpus-staging"}
 # Layer 3 edit_text 使用的替換文字
 EDIT_TEXT_SAMPLE = "Phase 7 batch test edit"
 
+
 # ──────────────────────────────────────────────────────────────────
 # 結果分類
 # ──────────────────────────────────────────────────────────────────
 class Result:
-    OK           = "OK"
-    SKIP_ENC     = "SKIP_ENCRYPTED"
+    OK = "OK"
+    SKIP_ENC = "SKIP_ENCRYPTED"
     SKIP_NO_TEXT = "SKIP_NO_TEXT"
-    SKIP_EDIT    = "SKIP_EDIT_DISABLED"
-    EXPECTED_FAIL= "EXPECTED_FAIL"
-    ERR_OPEN     = "ERR_OPEN"
-    ERR_INDEX    = "ERR_INDEX"
-    ERR_EDIT     = "ERR_EDIT"
+    SKIP_EDIT = "SKIP_EDIT_DISABLED"
+    EXPECTED_FAIL = "EXPECTED_FAIL"
+    ERR_OPEN = "ERR_OPEN"
+    ERR_INDEX = "ERR_INDEX"
+    ERR_EDIT = "ERR_EDIT"
+
 
 # ──────────────────────────────────────────────────────────────────
 # 輔助：判斷 PDF 所在頂層子目錄
@@ -83,11 +86,16 @@ def _top_subdir(pdf_path: Path) -> str:
     except ValueError:
         return ""
 
+
 def _is_no_edit(pdf_path: Path) -> bool:
     return _top_subdir(pdf_path) in NO_EDIT_DIRS
 
+
 def _get_password(pdf_path: Path) -> str | None:
-    return KNOWN_PASSWORDS.get(pdf_path.name.lower()) or KNOWN_PASSWORDS.get(pdf_path.name)
+    return KNOWN_PASSWORDS.get(pdf_path.name.lower()) or KNOWN_PASSWORDS.get(
+        pdf_path.name
+    )
+
 
 # ──────────────────────────────────────────────────────────────────
 # 單檔測試
@@ -101,8 +109,13 @@ def test_one_pdf(pdf_path: Path, error_lines: list) -> dict:
     """
     rel = str(pdf_path.relative_to(TEST_FILES_ROOT))
     result = {
-        "path": rel, "layer1": None, "layer2": None, "layer3": None,
-        "pages": 0, "text_blocks": 0, "duration_ms": 0.0,
+        "path": rel,
+        "layer1": None,
+        "layer2": None,
+        "layer3": None,
+        "pages": 0,
+        "text_blocks": 0,
+        "duration_ms": 0.0,
     }
     t0 = time.perf_counter()
     model = PDFModel()
@@ -116,8 +129,13 @@ def test_one_pdf(pdf_path: Path, error_lines: list) -> dict:
             result["layer1"] = Result.OK
         except Exception as e:
             err_str = str(e)
-            _enc_keywords = ("encrypted", "password", "authenticate", "needs_pass",
-                             "closed or encrypted")
+            _enc_keywords = (
+                "encrypted",
+                "password",
+                "authenticate",
+                "needs_pass",
+                "closed or encrypted",
+            )
             is_enc_err = any(kw in err_str.lower() for kw in _enc_keywords)
             if is_enc_err and not password:
                 # 無已知密碼 → 跳過
@@ -127,7 +145,9 @@ def test_one_pdf(pdf_path: Path, error_lines: list) -> dict:
             elif is_enc_err and password:
                 # 有密碼但仍失敗（密碼錯誤）
                 result["layer1"] = Result.SKIP_ENC
-                error_lines.append(f"[SKIP_ENCRYPTED] {rel} | 密碼驗證失敗 ({password})")
+                error_lines.append(
+                    f"[SKIP_ENCRYPTED] {rel} | 密碼驗證失敗 ({password})"
+                )
                 return _finalize(result, t0, model)
             else:
                 result["layer1"] = Result.ERR_OPEN
@@ -141,8 +161,7 @@ def test_one_pdf(pdf_path: Path, error_lines: list) -> dict:
         # open_pdf 已呼叫 build_index，此處確認索引正常
         try:
             total_blocks = sum(
-                len(model.block_manager.get_blocks(i))
-                for i in range(result["pages"])
+                len(model.block_manager.get_blocks(i)) for i in range(result["pages"])
             )
             result["text_blocks"] = total_blocks
             result["layer2"] = Result.OK
@@ -205,11 +224,13 @@ def _try_edit(model: PDFModel, rel: str, error_lines: list) -> str:
             return Result.OK
         except RuntimeError as e:
             err = str(e)[:120]
-            error_lines.append(f"[ERR_EDIT] {rel} | p{page_idx+1} RuntimeError: {err}")
+            error_lines.append(
+                f"[ERR_EDIT] {rel} | p{page_idx + 1} RuntimeError: {err}"
+            )
             return Result.ERR_EDIT
         except Exception as e:
             error_lines.append(
-                f"[ERR_EDIT] {rel} | p{page_idx+1} UNEXPECTED: {str(e)[:120]}"
+                f"[ERR_EDIT] {rel} | p{page_idx + 1} UNEXPECTED: {str(e)[:120]}"
             )
             return Result.ERR_EDIT
     return Result.SKIP_NO_TEXT
@@ -230,19 +251,26 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     pdfs = collect_pdfs()
     total = len(pdfs)
-    print(f"\n{'='*65}")
+    print(f"\n{'=' * 65}")
     print(f"  test_all_pdfs — 批次測試 {total} 個 PDF 檔案")
     print(f"  error_log → {ERROR_LOG.name}")
-    print(f"{'='*65}\n")
+    print(f"{'=' * 65}\n")
 
     # 統計
-    counts = {r: 0 for r in (
-        Result.OK, Result.SKIP_ENC, Result.SKIP_NO_TEXT,
-        Result.SKIP_EDIT, Result.EXPECTED_FAIL,
-        Result.ERR_OPEN, Result.ERR_INDEX, Result.ERR_EDIT,
-    )}
+    counts = {
+        r: 0
+        for r in (
+            Result.OK,
+            Result.SKIP_ENC,
+            Result.SKIP_NO_TEXT,
+            Result.SKIP_EDIT,
+            Result.EXPECTED_FAIL,
+            Result.ERR_OPEN,
+            Result.ERR_INDEX,
+            Result.ERR_EDIT,
+        )
+    }
     error_lines: list[str] = []
-    layer3_errors: list[str] = []
     total_ms = 0.0
     slow_files: list[str] = []
 
@@ -253,9 +281,7 @@ def main():
         total_ms += r["duration_ms"]
 
         # 最終狀態取最嚴重的層次
-        final = (
-            r["layer3"] or r["layer2"] or r["layer1"] or Result.ERR_OPEN
-        )
+        final = r["layer3"] or r["layer2"] or r["layer1"] or Result.ERR_OPEN
         # 若任何層是 ERR，以 ERR 為主
         for layer in ("layer1", "layer2", "layer3"):
             v = r[layer]
@@ -272,11 +298,15 @@ def main():
             elapsed = time.perf_counter() - t_start
             pct = idx / total * 100
             ok_n = counts[Result.OK]
-            err_n = counts[Result.ERR_OPEN] + counts[Result.ERR_INDEX] + counts[Result.ERR_EDIT]
+            err_n = (
+                counts[Result.ERR_OPEN]
+                + counts[Result.ERR_INDEX]
+                + counts[Result.ERR_EDIT]
+            )
             print(
                 f"  [{idx:4d}/{total}] {pct:5.1f}%  "
                 f"OK={ok_n}  ERR={err_n}  "
-                f"跳過={counts[Result.SKIP_ENC]+counts[Result.SKIP_NO_TEXT]+counts[Result.SKIP_EDIT]}  "
+                f"跳過={counts[Result.SKIP_ENC] + counts[Result.SKIP_NO_TEXT] + counts[Result.SKIP_EDIT]}  "
                 f"耗時 {elapsed:.0f}s"
             )
 
@@ -286,21 +316,21 @@ def main():
     with open(ERROR_LOG, "w", encoding="utf-8") as f:
         f.write(f"test_all_pdfs error log — {total} 個 PDF\n")
         f.write(f"測試時間：{time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"{'='*65}\n\n")
+        f.write(f"{'=' * 65}\n\n")
         if error_lines:
             f.write("\n".join(error_lines))
             f.write("\n")
         else:
             f.write("（無錯誤）\n")
         if slow_files:
-            f.write(f"\n{'─'*65}\n超過 2s 的檔案：\n")
+            f.write(f"\n{'─' * 65}\n超過 2s 的檔案：\n")
             for s in slow_files:
                 f.write(f"  {s}\n")
 
     # ── 終端機報告 ──
-    print(f"\n{'='*65}")
+    print(f"\n{'=' * 65}")
     print(f"  批次測試完成  共 {total} 個 PDF，耗時 {total_elapsed:.1f}s")
-    print(f"{'─'*65}")
+    print(f"{'─' * 65}")
     print(f"  OK（全部通過）：{counts[Result.OK]}")
     print(f"  SKIP_ENCRYPTED：{counts[Result.SKIP_ENC]}")
     print(f"  SKIP_NO_TEXT   ：{counts[Result.SKIP_NO_TEXT]}")
@@ -308,14 +338,16 @@ def main():
     print(f"  ERR_OPEN       ：{counts[Result.ERR_OPEN]}")
     print(f"  ERR_INDEX      ：{counts[Result.ERR_INDEX]}")
     print(f"  ERR_EDIT       ：{counts[Result.ERR_EDIT]}")
-    print(f"{'─'*65}")
-    total_err = counts[Result.ERR_OPEN] + counts[Result.ERR_INDEX] + counts[Result.ERR_EDIT]
+    print(f"{'─' * 65}")
+    total_err = (
+        counts[Result.ERR_OPEN] + counts[Result.ERR_INDEX] + counts[Result.ERR_EDIT]
+    )
     print(f"  總錯誤數：{total_err}")
     if total_err == 0:
         print("\n  所有可開啟的 PDF 均通過測試 ✓")
     else:
         print(f"\n  詳細錯誤已記錄至 {ERROR_LOG.name}，請查閱後修正。")
-    print(f"{'='*65}\n")
+    print(f"{'=' * 65}\n")
     return 0 if total_err == 0 else 1
 
 

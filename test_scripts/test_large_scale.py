@@ -1,4 +1,4 @@
-﻿"""
+"""
 test_large_scale.py — Phase 7 大規模測試
 =========================================
 目標：
@@ -13,6 +13,7 @@ test_large_scale.py — Phase 7 大規模測試
   python test_large_scale.py --rounds 50 --pages 100  # 預設值
   python test_large_scale.py --rounds 10 --pages 20   # 快速冒煙測試
 """
+
 import argparse
 import io
 import os
@@ -58,6 +59,7 @@ EDIT_TEXTS = [
     "Patched: fi fl ﬁ ligature & ampersand & test {i}",
 ]
 
+
 # ──────────────────────────────────────────────────────────────────
 # PDF 生成工具
 # ──────────────────────────────────────────────────────────────────
@@ -74,12 +76,14 @@ def _build_large_pdf(n_pages: int) -> bytes:
     for i in range(n_pages):
         page = doc.new_page(width=595, height=842)
 
-        is_scan_sim = (i % 15 == 14)   # 第 15、30、45... 頁模擬掃描頁
-        is_vertical = (i % 10 == 9)    # 第 10、20、30... 頁含垂直文字
+        is_scan_sim = i % 15 == 14  # 第 15、30、45... 頁模擬掃描頁
+        is_vertical = i % 10 == 9  # 第 10、20、30... 頁含垂直文字
 
         if is_scan_sim:
             # 掃描頁：只放一個圖形佔位，無文字
-            page.draw_rect(fitz.Rect(72, 72, 523, 770), color=(0.9, 0.9, 0.9), fill=(0.9, 0.9, 0.9))
+            page.draw_rect(
+                fitz.Rect(72, 72, 523, 770), color=(0.9, 0.9, 0.9), fill=(0.9, 0.9, 0.9)
+            )
             continue
 
         # 水平文字塊
@@ -89,7 +93,7 @@ def _build_large_pdf(n_pages: int) -> bytes:
             sample = HORIZONTAL_SAMPLES[(i * 3 + j) % len(HORIZONTAL_SAMPLES)]
             page.insert_text(
                 (72, y),
-                f"P{i+1}-B{j+1}: {sample}",
+                f"P{i + 1}-B{j + 1}: {sample}",
                 fontsize=11,
                 fontname="helv",
             )
@@ -100,7 +104,7 @@ def _build_large_pdf(n_pages: int) -> bytes:
             vbox = fitz.Rect(540, 100, 560, 400)
             page.insert_textbox(
                 vbox,
-                f"垂直 P{i+1} Vertical Text",
+                f"垂直 P{i + 1} Vertical Text",
                 fontsize=9,
                 fontname="helv",
                 rotate=90,
@@ -142,7 +146,11 @@ class Metrics:
 
     @property
     def avg_ms(self) -> float:
-        return (sum(self.durations) / len(self.durations) * 1000) if self.durations else 0.0
+        return (
+            (sum(self.durations) / len(self.durations) * 1000)
+            if self.durations
+            else 0.0
+        )
 
     @property
     def max_ms(self) -> float:
@@ -158,11 +166,11 @@ class Metrics:
 
     def report(self) -> str:
         lines = [
-            f"\n{'═'*60}",
+            f"\n{'═' * 60}",
             f"  測試場景：{self.label}",
-            f"{'─'*60}",
+            f"{'─' * 60}",
             f"  嘗試次數：{self.attempts}  (成功 {self.success_count} / 跳過 {self.skips} / 錯誤 {len(self.errors)})",
-            f"  消失率（驗證失敗 / 嘗試）：{self.error_rate*100:.1f}%",
+            f"  消失率（驗證失敗 / 嘗試）：{self.error_rate * 100:.1f}%",
         ]
         if self.durations:
             lines += [
@@ -179,18 +187,18 @@ class Metrics:
         if self.undo_ok + self.undo_fail > 0:
             total_ur = self.undo_ok + self.undo_fail
             lines.append(
-                f"  Undo 成功率：{self.undo_ok}/{total_ur} ({self.undo_ok/total_ur*100:.0f}%)"
+                f"  Undo 成功率：{self.undo_ok}/{total_ur} ({self.undo_ok / total_ur * 100:.0f}%)"
             )
         if self.redo_ok + self.redo_fail > 0:
             total_rr = self.redo_ok + self.redo_fail
             lines.append(
-                f"  Redo 成功率：{self.redo_ok}/{total_rr} ({self.redo_ok/total_rr*100:.0f}%)"
+                f"  Redo 成功率：{self.redo_ok}/{total_rr} ({self.redo_ok / total_rr * 100:.0f}%)"
             )
         if self.errors:
             lines.append("  錯誤清單（前 5）：")
             for e in self.errors[:5]:
                 lines.append(f"    · {e[:90]}")
-        lines.append(f"{'═'*60}")
+        lines.append(f"{'═' * 60}")
         return "\n".join(lines)
 
 
@@ -240,7 +248,7 @@ def run_random_edits(
 
         new_text_tmpl = EDIT_TEXTS[edit_num % len(EDIT_TEXTS)]
         new_text = new_text_tmpl.format(i=edit_num + 1)
-        rect = fitz.Rect(blk.layout_rect)   # 副本，避免後續被修改
+        rect = fitz.Rect(blk.layout_rect)  # 副本，避免後續被修改
         font = blk.font if blk.font else "helv"
         size = max(8, int(blk.size) if blk.size else 11)
         color = blk.color if blk.color else (0.0, 0.0, 0.0)
@@ -272,7 +280,7 @@ def run_random_edits(
             if verbose and (edit_num % 10 == 0 or elapsed > 0.3):
                 print(
                     f"    [{edit_num:02d}/{rounds}] p{page_num} "
-                    f"{elapsed*1000:.0f}ms {status}  "
+                    f"{elapsed * 1000:.0f}ms {status}  "
                     f"edit_count={model.edit_count}"
                     f"  undo_stack={len(model.command_manager._undo_stack)}"
                 )
@@ -287,7 +295,9 @@ def run_random_edits(
             metrics.errors.append(err_msg)
             edit_num += 1
             if verbose:
-                print(f"    [{edit_num:02d}/{rounds}] ERROR {elapsed*1000:.0f}ms: {str(e)[:60]}")
+                print(
+                    f"    [{edit_num:02d}/{rounds}] ERROR {elapsed * 1000:.0f}ms: {str(e)[:60]}"
+                )
             # 更新 pool（block rect 可能已改變）
             pool = _random_blocks(model, rng)
             pool_idx = 0
@@ -366,12 +376,14 @@ def run_vertical_text_test(metrics_v: Metrics, n_pages: int) -> None:
     for i in range(6):
         page = doc.new_page(width=595, height=842)
         # 正常水平文字
-        page.insert_text((72, 80), f"水平文字第 {i+1} 頁", fontsize=11, fontname="helv")
+        page.insert_text(
+            (72, 80), f"水平文字第 {i + 1} 頁", fontsize=11, fontname="helv"
+        )
         # 垂直文字
         vbox = fitz.Rect(540, 80, 560, 400)
         page.insert_textbox(
             vbox,
-            f"垂直欄位 Page {i+1}",
+            f"垂直欄位 Page {i + 1}",
             fontsize=9,
             fontname="helv",
             rotate=90,
@@ -387,8 +399,12 @@ def run_vertical_text_test(metrics_v: Metrics, n_pages: int) -> None:
     rng = random.Random(77)
     try:
         model.open_pdf(tmp)
-        print(f"  頁數={len(model.doc)}, 文字塊數={sum(len(model.block_manager.get_blocks(i)) for i in range(len(model.doc)))}")
-        run_random_edits(model, rounds=6, metrics=metrics_v, rng=rng, test_undo=True, verbose=True)
+        print(
+            f"  頁數={len(model.doc)}, 文字塊數={sum(len(model.block_manager.get_blocks(i)) for i in range(len(model.doc)))}"
+        )
+        run_random_edits(
+            model, rounds=6, metrics=metrics_v, rng=rng, test_undo=True, verbose=True
+        )
     finally:
         model.close()
         try:
@@ -425,7 +441,7 @@ def run_scan_page_test() -> bool:
         model.open_pdf(tmp)
         # 嘗試在掃描頁（page 2）上編輯任意 rect
         fake_rect = fitz.Rect(72, 80, 300, 100)
-        result = model.edit_text(
+        model.edit_text(
             page_num=2,
             rect=fake_rect,
             new_text="This should be skipped",
@@ -470,7 +486,9 @@ def run_real_pdf_test(metrics_r: Metrics) -> None:
             len(model.block_manager.get_blocks(i)) for i in range(n_pages)
         )
         print(f"  頁數={n_pages}, 文字塊數={total_blocks}")
-        run_random_edits(model, rounds=5, metrics=metrics_r, rng=rng, test_undo=True, verbose=True)
+        run_random_edits(
+            model, rounds=5, metrics=metrics_r, rng=rng, test_undo=True, verbose=True
+        )
     except Exception as e:
         metrics_r.errors.append(f"open/run failed: {e}")
         print(f"  [ERROR] {e}")
@@ -529,10 +547,10 @@ def run_clean_contents_bench(pdf_bytes: bytes, rounds: int) -> tuple[int, int]:
 # 主流程
 # ──────────────────────────────────────────────────────────────────
 def main(rounds: int = 50, n_pages: int = 100, seed: int = 2026) -> int:
-    print(f"\n{'#'*65}")
+    print(f"\n{'#' * 65}")
     print("  Phase 7 大規模測試")
     print(f"  頁數={n_pages}，隨機編輯={rounds} 次，seed={seed}")
-    print(f"{'#'*65}\n")
+    print(f"{'#' * 65}\n")
 
     rng = random.Random(seed)
     all_pass = True
@@ -541,7 +559,9 @@ def main(rounds: int = 50, n_pages: int = 100, seed: int = 2026) -> int:
     print(f"[1/6] 建立 {n_pages} 頁合成 PDF...")
     t_build = time.perf_counter()
     pdf_bytes = _build_large_pdf(n_pages)
-    print(f"  完成，大小 {len(pdf_bytes):,} bytes，耗時 {(time.perf_counter()-t_build)*1000:.0f}ms")
+    print(
+        f"  完成，大小 {len(pdf_bytes):,} bytes，耗時 {(time.perf_counter() - t_build) * 1000:.0f}ms"
+    )
 
     # ── 2. 主壓測（50 次隨機多頁編輯）──────────────────────────
     print(f"\n[2/6] 主壓測：{rounds} 次隨機多頁編輯...")
@@ -555,18 +575,25 @@ def main(rounds: int = 50, n_pages: int = 100, seed: int = 2026) -> int:
     try:
         model_main.open_pdf(tmp_main)
         n_editable_pages = sum(
-            1 for i in range(len(model_main.doc))
+            1
+            for i in range(len(model_main.doc))
             if model_main.block_manager.get_blocks(i)
         )
         total_blocks = sum(
             len(model_main.block_manager.get_blocks(i))
             for i in range(len(model_main.doc))
         )
-        print(f"  開啟成功：{len(model_main.doc)} 頁，可編輯頁 {n_editable_pages}，共 {total_blocks} 個文字塊")
+        print(
+            f"  開啟成功：{len(model_main.doc)} 頁，可編輯頁 {n_editable_pages}，共 {total_blocks} 個文字塊"
+        )
 
         run_random_edits(
-            model_main, rounds=rounds, metrics=metrics_main,
-            rng=rng, test_undo=True, verbose=True
+            model_main,
+            rounds=rounds,
+            metrics=metrics_main,
+            rng=rng,
+            test_undo=True,
+            verbose=True,
         )
     except Exception as e:
         metrics_main.errors.append(f"FATAL: {e}")
@@ -603,7 +630,9 @@ def main(rounds: int = 50, n_pages: int = 100, seed: int = 2026) -> int:
         delta = sb - sa
         pct = delta / sb * 100
         sym = "✓" if delta >= 0 else "⚠"
-        print(f"  {sym} 壓縮前 {sb:,} → 壓縮後 {sa:,} bytes  縮減 {delta:+,} bytes ({pct:+.1f}%)")
+        print(
+            f"  {sym} 壓縮前 {sb:,} → 壓縮後 {sa:,} bytes  縮減 {delta:+,} bytes ({pct:+.1f}%)"
+        )
     else:
         print("  [SKIP] 無足夠文字塊")
 
@@ -613,9 +642,9 @@ def main(rounds: int = 50, n_pages: int = 100, seed: int = 2026) -> int:
     run_real_pdf_test(metrics_real)
 
     # ── 報告 ─────────────────────────────────────────────────────
-    print("\n" + "="*65)
+    print("\n" + "=" * 65)
     print("  Phase 7 測試報告")
-    print("="*65)
+    print("=" * 65)
     print(metrics_main.report())
     print(metrics_vert.report())
     if metrics_real.attempts > 0 or REAL_PDF_PATH.exists():
@@ -627,7 +656,9 @@ def main(rounds: int = 50, n_pages: int = 100, seed: int = 2026) -> int:
     # ── apply_pending_redactions ──
     if sb > 0:
         delta = sb - sa
-        print(f"  apply_pending_redactions 縮減：{delta:+,} bytes ({delta/sb*100:+.1f}%)")
+        print(
+            f"  apply_pending_redactions 縮減：{delta:+,} bytes ({delta / sb * 100:+.1f}%)"
+        )
 
     # ── 整體判定 ──
     undo_total = metrics_main.undo_ok + metrics_main.undo_fail
@@ -635,15 +666,15 @@ def main(rounds: int = 50, n_pages: int = 100, seed: int = 2026) -> int:
         undo_rate = metrics_main.undo_ok / undo_total * 100
         undo_ok_flag = undo_rate >= 90
     else:
-        undo_rate = None      # N/A：沒有 undo 被觸發（pool 太小或 stack 為空）
-        undo_ok_flag = True   # 不算失敗
+        undo_rate = None  # N/A：沒有 undo 被觸發（pool 太小或 stack 為空）
+        undo_ok_flag = True  # 不算失敗
 
     main_ok = (
-        metrics_main.error_rate < 0.05                                     # 消失率 < 5%
-        and (metrics_main.avg_ms < 300 or not metrics_main.durations)      # 平均 < 300ms
-        and undo_ok_flag                                                    # undo 率 ≥ 90% or N/A
+        metrics_main.error_rate < 0.05  # 消失率 < 5%
+        and (metrics_main.avg_ms < 300 or not metrics_main.durations)  # 平均 < 300ms
+        and undo_ok_flag  # undo 率 ≥ 90% or N/A
     )
-    vert_ok = metrics_vert.error_rate < 0.20     # 垂直文字允許較高錯誤率
+    vert_ok = metrics_vert.error_rate < 0.20  # 垂直文字允許較高錯誤率
 
     stable = all_pass and main_ok and vert_ok and scan_ok
 
@@ -653,13 +684,19 @@ def main(rounds: int = 50, n_pages: int = 100, seed: int = 2026) -> int:
         else "N/A (no undo triggered)  ✓"
     )
 
-    print(f"\n{'─'*65}")
-    print(f"  主壓測消失率：{metrics_main.error_rate*100:.1f}%  {'✓ <5%' if metrics_main.error_rate < 0.05 else '✗ >=5%'}")
-    print(f"  主壓測平均耗時：{metrics_main.avg_ms:.0f}ms  {'✓ <300ms' if metrics_main.avg_ms < 300 else '✗ >=300ms'}")
+    print(f"\n{'─' * 65}")
+    print(
+        f"  主壓測消失率：{metrics_main.error_rate * 100:.1f}%  {'✓ <5%' if metrics_main.error_rate < 0.05 else '✗ >=5%'}"
+    )
+    print(
+        f"  主壓測平均耗時：{metrics_main.avg_ms:.0f}ms  {'✓ <300ms' if metrics_main.avg_ms < 300 else '✗ >=300ms'}"
+    )
     print(f"  Undo 成功率：{undo_str}")
-    print(f"  垂直文字消失率：{metrics_vert.error_rate*100:.1f}%  {'✓ <20%' if metrics_vert.error_rate < 0.20 else '✗ >=20%'}")
+    print(
+        f"  垂直文字消失率：{metrics_vert.error_rate * 100:.1f}%  {'✓ <20%' if metrics_vert.error_rate < 0.20 else '✗ >=20%'}"
+    )
     print(f"  掃描頁 graceful：{'✓' if scan_ok else '✗'}")
-    print(f"{'─'*65}")
+    print(f"{'─' * 65}")
 
     if stable:
         print("\n  ✓✓✓ 所有指標達標 — 專案狀態：STABLE（可視為穩定版本）✓✓✓")
@@ -674,7 +711,7 @@ def main(rounds: int = 50, n_pages: int = 100, seed: int = 2026) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phase 7 大規模測試")
     parser.add_argument("--rounds", type=int, default=50, help="主壓測編輯次數")
-    parser.add_argument("--pages",  type=int, default=100, help="合成 PDF 頁數")
-    parser.add_argument("--seed",   type=int, default=2026, help="隨機種子")
+    parser.add_argument("--pages", type=int, default=100, help="合成 PDF 頁數")
+    parser.add_argument("--seed", type=int, default=2026, help="隨機種子")
     args = parser.parse_args()
     sys.exit(main(rounds=args.rounds, n_pages=args.pages, seed=args.seed))

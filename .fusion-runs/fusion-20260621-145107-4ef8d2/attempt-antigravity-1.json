@@ -1,9 +1,0 @@
-{
-  "provider": "antigravity",
-  "sample": 1,
-  "status": "ok",
-  "returncode": 0,
-  "duration_seconds": 41.25,
-  "stderr": "",
-  "source_path": "C:\\Users\\jiang\\.gemini\\antigravity-cli\\brain\\f0b1db01-1ca1-4445-ac64-bebdfe29e802\\.system_generated\\logs\\transcript_full.jsonl"
-}

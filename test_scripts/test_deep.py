@@ -1,4 +1,4 @@
-﻿"""
+"""
 test_deep.py — PDF 編輯器深度壓力測試
 ======================================
 測試 10 大場景：
@@ -18,6 +18,7 @@ test_deep.py — PDF 編輯器深度壓力測試
   python test_deep.py --quick          # 快速模式（每個測試減少次數）
   python test_deep.py --output report.txt   # 指定報告輸出路徑
 """
+
 import argparse
 import io
 import os
@@ -54,9 +55,9 @@ from model.pdf_model import PDFModel
 TEST_FILES_ROOT = _ROOT / "test_files"
 if not TEST_FILES_ROOT.exists():
     TEST_FILES_ROOT = Path(__file__).parent / "test_files"
-SAMPLE_DIR      = TEST_FILES_ROOT / "sample-files-main"
-VERA_DIR        = TEST_FILES_ROOT / "veraPDF-corpus-staging"
-REPORT_DEFAULT  = _OUTPUT_DIR / "deep_test_report.txt"
+SAMPLE_DIR = TEST_FILES_ROOT / "sample-files-main"
+VERA_DIR = TEST_FILES_ROOT / "veraPDF-corpus-staging"
+REPORT_DEFAULT = _OUTPUT_DIR / "deep_test_report.txt"
 
 KNOWN_PASSWORDS = {
     "encrypted.pdf": "kanbanery",
@@ -71,7 +72,7 @@ EXTREME_INPUTS = [
     # 特殊符號密集
     "!@#$%^&*()_+[]{}|;':\",./<>?\\~`±§©®™€£¥°·×÷",
     "← → ↑ ↓ ↔ ↕ ⇐ ⇒ ⇑ ⇓ ♠ ♣ ♥ ♦ ★ ☆ ✓ ✗ ✦ ✧",
-    "\x00\x01\x02\x03<script>alert(1)</script>",     # 控制字元 + XSS
+    "\x00\x01\x02\x03<script>alert(1)</script>",  # 控制字元 + XSS
     # CJK 密集
     "漢字テスト한국어테스트：" + "中文日文韓文混排" * 30,
     # RTL 混排
@@ -107,6 +108,7 @@ class TestCase:
     detail: str = ""
     error: str = ""
 
+
 @dataclass
 class TestSuite:
     id: str
@@ -116,16 +118,25 @@ class TestSuite:
     end_ms: float = 0.0
 
     @property
-    def total(self) -> int: return len(self.cases)
+    def total(self) -> int:
+        return len(self.cases)
+
     @property
-    def passed(self) -> int: return sum(1 for c in self.cases if c.passed)
+    def passed(self) -> int:
+        return sum(1 for c in self.cases if c.passed)
+
     @property
-    def failed(self) -> int: return self.total - self.passed
+    def failed(self) -> int:
+        return self.total - self.passed
+
     @property
     def pass_rate(self) -> float:
         return self.passed / self.total * 100 if self.total else 0
+
     @property
-    def total_ms(self) -> float: return self.end_ms - self.start_ms
+    def total_ms(self) -> float:
+        return self.end_ms - self.start_ms
+
     @property
     def avg_ms(self) -> float:
         return sum(c.duration_ms for c in self.cases) / self.total if self.total else 0
@@ -137,8 +148,10 @@ class TestSuite:
 def _ms() -> float:
     return time.perf_counter() * 1000
 
+
 def _get_password(path: Path) -> str | None:
     return KNOWN_PASSWORDS.get(path.name.lower())
+
 
 def _open_model(pdf_path: Path) -> PDFModel | None:
     """開啟 PDF，回傳 PDFModel 或 None（若失敗）。"""
@@ -147,9 +160,12 @@ def _open_model(pdf_path: Path) -> PDFModel | None:
         model.open_pdf(str(pdf_path), password=_get_password(pdf_path))
         return model
     except Exception:
-        try: model.close()
-        except Exception: pass
+        try:
+            model.close()
+        except Exception:
+            pass
         return None
+
 
 def _first_editable_block(model: PDFModel):
     """找第一個有文字的 TextBlock，回傳 (page_idx, block) 或 (None, None)。"""
@@ -159,8 +175,10 @@ def _first_editable_block(model: PDFModel):
                 return pi, blk
     return None, None
 
-def _do_edit(model: PDFModel, page_idx: int, blk, new_text: str,
-             record_cmd: bool = False) -> bool:
+
+def _do_edit(
+    model: PDFModel, page_idx: int, blk, new_text: str, record_cmd: bool = False
+) -> bool:
     """
     對指定 block 執行 edit_text。
     record_cmd=True 時透過 EditTextCommand 執行（支援 undo/redo）。
@@ -197,6 +215,7 @@ def _do_edit(model: PDFModel, page_idx: int, blk, new_text: str,
     except Exception:
         return False
 
+
 def _collect_sample_pdfs(max_count: int = 32) -> list[Path]:
     """收集 sample-files-main 的 PDF，跳過已知加密且無密碼的。"""
     pdfs = []
@@ -217,6 +236,7 @@ def _collect_sample_pdfs(max_count: int = 32) -> list[Path]:
             break
     return pdfs
 
+
 def _collect_vera_pdfs(max_count: int = 8) -> list[Path]:
     """從 veraPDF 目錄收集代表性 PDF。"""
     pdfs = []
@@ -230,8 +250,7 @@ def _collect_vera_pdfs(max_count: int = 8) -> list[Path]:
                 continue
             # 需要有文字才加入
             has_text = any(
-                doc[i].get_text("text").strip()
-                for i in range(min(3, len(doc)))
+                doc[i].get_text("text").strip() for i in range(min(3, len(doc)))
             )
             doc.close()
             if has_text:
@@ -265,12 +284,13 @@ def run_t1_repeated_edits(pdfs: list[Path], quick: bool) -> TestSuite:
         fail = 0
         first_err = ""
         for i in range(repeat_count):
-            txt = NORMAL_TEXTS[i % len(NORMAL_TEXTS)].format(i=i+1)
+            txt = NORMAL_TEXTS[i % len(NORMAL_TEXTS)].format(i=i + 1)
             # 重新 find block（每次 edit 後 block 可能更新）
             blocks = model.block_manager.get_blocks(pi)
             if not blocks:
                 fail += 1
-                if not first_err: first_err = f"第{i}次後 block 消失"
+                if not first_err:
+                    first_err = f"第{i}次後 block 消失"
                 break
             current_blk = blocks[0]
             ok = _do_edit(model, pi, current_blk, txt)
@@ -278,20 +298,23 @@ def run_t1_repeated_edits(pdfs: list[Path], quick: bool) -> TestSuite:
                 success += 1
             else:
                 fail += 1
-                if not first_err: first_err = f"第{i}次 edit 失敗"
+                if not first_err:
+                    first_err = f"第{i}次 edit 失敗"
 
         elapsed = _ms() - t0
-        passed = (fail == 0)
-        detail = f"成功={success}/{repeat_count}，avg={elapsed/repeat_count:.1f}ms/次"
+        passed = fail == 0
+        detail = f"成功={success}/{repeat_count}，avg={elapsed / repeat_count:.1f}ms/次"
         if first_err:
             detail += f"，首次錯誤：{first_err}"
-        suite.cases.append(TestCase(
-            name=pdf_path.name,
-            passed=passed,
-            duration_ms=elapsed,
-            detail=detail,
-            error=first_err,
-        ))
+        suite.cases.append(
+            TestCase(
+                name=pdf_path.name,
+                passed=passed,
+                duration_ms=elapsed,
+                detail=detail,
+                error=first_err,
+            )
+        )
         model.close()
 
     suite.end_ms = _ms()
@@ -324,7 +347,8 @@ def run_t2_undo_redo(pdfs: list[Path], quick: bool) -> TestSuite:
             executed = 0
             for i in range(edits_per_round):
                 blocks = model.block_manager.get_blocks(pi)
-                if not blocks: break
+                if not blocks:
+                    break
                 curr_blk = blocks[0]
                 txt = f"Undo-test round={rnd} edit={i}"
                 if _do_edit(model, pi, curr_blk, txt, record_cmd=True):
@@ -339,8 +363,10 @@ def run_t2_undo_redo(pdfs: list[Path], quick: bool) -> TestSuite:
             undone = 0
             while model.command_manager.can_undo():
                 ok = model.command_manager.undo()
-                if ok: undone += 1
-                else: break
+                if ok:
+                    undone += 1
+                else:
+                    break
 
             if undone != undo_count:
                 errors.append(f"輪{rnd}: undo 預期={undo_count} 實際={undone}")
@@ -356,8 +382,10 @@ def run_t2_undo_redo(pdfs: list[Path], quick: bool) -> TestSuite:
             redone = 0
             while model.command_manager.can_redo():
                 ok = model.command_manager.redo()
-                if ok: redone += 1
-                else: break
+                if ok:
+                    redone += 1
+                else:
+                    break
 
             if redone != redo_count:
                 errors.append(f"輪{rnd}: redo 預期={redo_count} 實際={redone}")
@@ -371,14 +399,16 @@ def run_t2_undo_redo(pdfs: list[Path], quick: bool) -> TestSuite:
                 model.command_manager.undo()
 
         elapsed = _ms() - t0
-        passed = (len(errors) == 0)
-        suite.cases.append(TestCase(
-            name=pdf_path.name,
-            passed=passed,
-            duration_ms=elapsed,
-            detail=f"{rounds}輪×{edits_per_round}次 edit，undo/redo 循環",
-            error="; ".join(errors[:3]) if errors else "",
-        ))
+        passed = len(errors) == 0
+        suite.cases.append(
+            TestCase(
+                name=pdf_path.name,
+                passed=passed,
+                duration_ms=elapsed,
+                detail=f"{rounds}輪×{edits_per_round}次 edit，undo/redo 循環",
+                error="; ".join(errors[:3]) if errors else "",
+            )
+        )
         model.close()
 
     suite.end_ms = _ms()
@@ -413,8 +443,7 @@ def run_t3_extreme_inputs(pdfs: list[Path], quick: bool) -> TestSuite:
             try:
                 # 清理控制字元（避免 fitz 崩潰）
                 safe_text = "".join(
-                    c for c in extreme_text
-                    if c == '\n' or ord(c) >= 32 or c == '\t'
+                    c for c in extreme_text if c == "\n" or ord(c) >= 32 or c == "\t"
                 )
                 if not safe_text.strip():
                     safe_text = "EMPTY_AFTER_CLEAN"
@@ -429,7 +458,7 @@ def run_t3_extreme_inputs(pdfs: list[Path], quick: bool) -> TestSuite:
                     original_text=curr_blk.text,
                 )
                 passed = True
-                detail = f"輸入{idx+1}: len={len(safe_text)}, OK"
+                detail = f"輸入{idx + 1}: len={len(safe_text)}, OK"
                 error = ""
             except RuntimeError as e:
                 err_str = str(e)
@@ -437,24 +466,26 @@ def run_t3_extreme_inputs(pdfs: list[Path], quick: bool) -> TestSuite:
                 # 模型已自動回滾（非 crash），標記為「預期回滾」而非失敗
                 if "difflib.ratio" in err_str and len(safe_text) > 400:
                     passed = True
-                    detail = f"輸入{idx+1}: len={len(safe_text)}, EXPECTED_ROLLBACK（超長文字保護機制）"
+                    detail = f"輸入{idx + 1}: len={len(safe_text)}, EXPECTED_ROLLBACK（超長文字保護機制）"
                     error = ""
                 else:
                     passed = False
-                    detail = f"輸入{idx+1}: len={len(extreme_text)}, FAIL"
+                    detail = f"輸入{idx + 1}: len={len(extreme_text)}, FAIL"
                     error = err_str[:120]
             except Exception as e:
                 passed = False
-                detail = f"輸入{idx+1}: len={len(extreme_text)}, FAIL"
+                detail = f"輸入{idx + 1}: len={len(extreme_text)}, FAIL"
                 error = str(e)[:120]
 
-            suite.cases.append(TestCase(
-                name=f"{pdf_path.name}[input{idx+1}]",
-                passed=passed,
-                duration_ms=_ms() - t0,
-                detail=detail,
-                error=error,
-            ))
+            suite.cases.append(
+                TestCase(
+                    name=f"{pdf_path.name}[input{idx + 1}]",
+                    passed=passed,
+                    duration_ms=_ms() - t0,
+                    detail=detail,
+                    error=error,
+                )
+            )
 
         model.close()
 
@@ -494,22 +525,26 @@ def run_t4_multipage_ops(pdfs: list[Path], quick: bool) -> TestSuite:
             for pi in range(min(3, len(model.doc))):
                 blks = model.block_manager.get_blocks(pi)
                 if blks and blks[0].text.strip():
-                    before = model._capture_doc_snapshot()
-                    ok = _do_edit(model, pi, blks[0], f"Multipage-edit p{pi+1}", record_cmd=True)
-                    after = model._capture_doc_snapshot()
+                    model._capture_doc_snapshot()
+                    ok = _do_edit(
+                        model, pi, blks[0], f"Multipage-edit p{pi + 1}", record_cmd=True
+                    )
+                    model._capture_doc_snapshot()
                     if ok:
                         edit_pages.append(pi + 1)
 
             # 純圖片 PDF 沒有文字可編輯，屬預期情境（非失敗）
             if not edit_pages:
                 model.close()
-                suite.cases.append(TestCase(
-                    name=pdf_path.name,
-                    passed=True,
-                    duration_ms=_ms() - t0,
-                    detail=f"SKIP：純圖片 PDF，無可編輯文字（原始頁數={n_pages_orig}）",
-                    error="",
-                ))
+                suite.cases.append(
+                    TestCase(
+                        name=pdf_path.name,
+                        passed=True,
+                        duration_ms=_ms() - t0,
+                        detail=f"SKIP：純圖片 PDF，無可編輯文字（原始頁數={n_pages_orig}）",
+                        error="",
+                    )
+                )
                 continue
 
             # Step B: 旋轉第 1 頁
@@ -548,7 +583,6 @@ def run_t4_multipage_ops(pdfs: list[Path], quick: bool) -> TestSuite:
                     errors.append(f"刪頁後頁數異常: {len(model.doc)}")
 
             # Step D: Undo 所有操作，驗證頁面數量復原
-            undo_count = model.command_manager.undo_count
             while model.command_manager.can_undo():
                 model.command_manager.undo()
 
@@ -560,13 +594,15 @@ def run_t4_multipage_ops(pdfs: list[Path], quick: bool) -> TestSuite:
             errors.append(f"意外錯誤: {str(e)[:100]}")
 
         elapsed = _ms() - t0
-        suite.cases.append(TestCase(
-            name=pdf_path.name,
-            passed=(len(errors) == 0),
-            duration_ms=elapsed,
-            detail=f"原始頁數={n_pages_orig}，編輯頁={edit_pages}，undo 全部後頁數={len(model.doc)}",
-            error="; ".join(errors[:3]) if errors else "",
-        ))
+        suite.cases.append(
+            TestCase(
+                name=pdf_path.name,
+                passed=(len(errors) == 0),
+                duration_ms=elapsed,
+                detail=f"原始頁數={n_pages_orig}，編輯頁={edit_pages}，undo 全部後頁數={len(model.doc)}",
+                error="; ".join(errors[:3]) if errors else "",
+            )
+        )
         model.close()
 
     suite.end_ms = _ms()
@@ -595,7 +631,9 @@ def run_t5_annotation_coexist(pdfs: list[Path], quick: bool) -> TestSuite:
             # ── 新增 FreeText 註解 ──
             annot_pt = fitz.Point(page_rect.x0 + 50, page_rect.y0 + 50)
             try:
-                xref = model.tools.annotation.add_annotation(1, annot_pt, "深度測試：FreeText 註解")
+                xref = model.tools.annotation.add_annotation(
+                    1, annot_pt, "深度測試：FreeText 註解"
+                )
                 if xref <= 0:
                     errors.append("add_annotation 回傳無效 xref")
             except Exception as e:
@@ -616,27 +654,33 @@ def run_t5_annotation_coexist(pdfs: list[Path], quick: bool) -> TestSuite:
             # ── 新增高亮 ──
             try:
                 highlight_rect = fitz.Rect(
-                    page_rect.x0 + 60, page_rect.y0 + 60,
-                    page_rect.x0 + 200, page_rect.y0 + 80
+                    page_rect.x0 + 60,
+                    page_rect.y0 + 60,
+                    page_rect.x0 + 200,
+                    page_rect.y0 + 80,
                 )
-                model.tools.annotation.add_highlight(1, highlight_rect, (1.0, 1.0, 0.0, 0.5))
+                model.tools.annotation.add_highlight(
+                    1, highlight_rect, (1.0, 1.0, 0.0, 0.5)
+                )
             except Exception as e:
                 errors.append(f"add_highlight 失敗: {str(e)[:80]}")
 
             # ── 確認 get_all_annotations ──
-            all_annots = model.tools.annotation.get_all_annotations()
+            model.tools.annotation.get_all_annotations()
 
         except Exception as e:
             errors.append(f"意外錯誤: {str(e)[:100]}")
 
         elapsed = _ms() - t0
-        suite.cases.append(TestCase(
-            name=pdf_path.name,
-            passed=(len(errors) == 0),
-            duration_ms=elapsed,
-            detail=f"頁面含 {len(list(model.doc[0].annots()))} 個 annot",
-            error="; ".join(errors[:3]) if errors else "",
-        ))
+        suite.cases.append(
+            TestCase(
+                name=pdf_path.name,
+                passed=(len(errors) == 0),
+                duration_ms=elapsed,
+                detail=f"頁面含 {len(list(model.doc[0].annots()))} 個 annot",
+                error="; ".join(errors[:3]) if errors else "",
+            )
+        )
         model.close()
 
     suite.end_ms = _ms()
@@ -681,7 +725,7 @@ def run_t6_structural_then_edit(pdfs: list[Path], quick: bool) -> TestSuite:
             model.block_manager.rebuild_page(0, model.doc)
 
             # ── Sub-test B: 插入空白頁後編輯原有頁面 ──
-            model.insert_blank_page(1)   # 在第一頁前插入空白頁
+            model.insert_blank_page(1)  # 在第一頁前插入空白頁
             if len(model.doc) != n_orig + 1:
                 errors.append(f"insert_blank_page 後頁數異常: {len(model.doc)}")
 
@@ -701,13 +745,15 @@ def run_t6_structural_then_edit(pdfs: list[Path], quick: bool) -> TestSuite:
             errors.append(f"意外錯誤: {str(e)[:100]}")
 
         elapsed = _ms() - t0
-        suite.cases.append(TestCase(
-            name=pdf_path.name,
-            passed=(len(errors) == 0),
-            duration_ms=elapsed,
-            detail=f"原始頁={n_orig}，操作後頁={len(model.doc)}",
-            error="; ".join(errors[:3]) if errors else "",
-        ))
+        suite.cases.append(
+            TestCase(
+                name=pdf_path.name,
+                passed=(len(errors) == 0),
+                duration_ms=elapsed,
+                detail=f"原始頁={n_orig}，操作後頁={len(model.doc)}",
+                error="; ".join(errors[:3]) if errors else "",
+            )
+        )
         model.close()
 
     suite.end_ms = _ms()
@@ -744,7 +790,7 @@ def run_t7_memory_pressure(pdfs: list[Path], quick: bool) -> TestSuite:
                     errors.append(f"第{i}次: block 消失")
                     break
                 curr_blk = blocks[0]
-                txt = NORMAL_TEXTS[i % len(NORMAL_TEXTS)].format(i=i+1)
+                txt = NORMAL_TEXTS[i % len(NORMAL_TEXTS)].format(i=i + 1)
                 ok = _do_edit(model, pi, curr_blk, txt)
                 if not ok:
                     errors.append(f"第{i}次 edit 失敗")
@@ -764,21 +810,23 @@ def run_t7_memory_pressure(pdfs: list[Path], quick: bool) -> TestSuite:
 
         # 記憶體增長分析
         mem_growth = "N/A"
-        mem_concern = False
         if len(peak_mb_list) >= 2:
             growth = peak_mb_list[-1] - peak_mb_list[0]
-            mem_growth = f"{growth:+.1f}MB ({peak_mb_list[0]:.1f}→{peak_mb_list[-1]:.1f})"
+            mem_growth = (
+                f"{growth:+.1f}MB ({peak_mb_list[0]:.1f}→{peak_mb_list[-1]:.1f})"
+            )
             if growth > 200:  # 超過 200MB 增長視為警告
-                mem_concern = True
                 errors.append(f"記憶體增長過大: {growth:.1f}MB")
 
-        suite.cases.append(TestCase(
-            name=pdf_path.name,
-            passed=(len(errors) == 0),
-            duration_ms=elapsed,
-            detail=f"{iteration_count}次 edit，記憶體峰值增長={mem_growth}，avg={elapsed/iteration_count:.1f}ms",
-            error="; ".join(errors[:3]) if errors else "",
-        ))
+        suite.cases.append(
+            TestCase(
+                name=pdf_path.name,
+                passed=(len(errors) == 0),
+                duration_ms=elapsed,
+                detail=f"{iteration_count}次 edit，記憶體峰值增長={mem_growth}，avg={elapsed / iteration_count:.1f}ms",
+                error="; ".join(errors[:3]) if errors else "",
+            )
+        )
         model.close()
 
     suite.end_ms = _ms()
@@ -794,16 +842,18 @@ def run_t8_edge_cases(pdfs: list[Path], quick: bool) -> TestSuite:
 
     # Sub-test 8.1: 最小 PDF（1頁但無文字）
     def test_empty_content_pdf():
-        t0 = _ms()
         try:
             doc = fitz.open()
             doc.new_page(width=595, height=842)  # 1頁空白（無文字）
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
                 tmp = f.name
-            doc.save(tmp); doc.close()
+            doc.save(tmp)
+            doc.close()
             model = PDFModel()
             model.open_pdf(tmp)
-            blocks = sum(len(model.block_manager.get_blocks(i)) for i in range(len(model.doc)))
+            blocks = sum(
+                len(model.block_manager.get_blocks(i)) for i in range(len(model.doc))
+            )
             model.close()
             os.unlink(tmp)
             return True, f"1頁無文字 PDF，blocks={blocks}", ""
@@ -815,14 +865,14 @@ def run_t8_edge_cases(pdfs: list[Path], quick: bool) -> TestSuite:
 
     # Sub-test 8.2: 極小頁面（1pt x 1pt）
     def test_tiny_page():
-        t0 = _ms()
         try:
             doc = fitz.open()
             page = doc.new_page(width=1, height=1)
             page.insert_text((0, 0.8), "X", fontsize=0.5)
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
                 tmp = f.name
-            doc.save(tmp); doc.close()
+            doc.save(tmp)
+            doc.close()
             model = PDFModel()
             model.open_pdf(tmp)
             pi, blk = _first_editable_block(model)
@@ -841,14 +891,14 @@ def run_t8_edge_cases(pdfs: list[Path], quick: bool) -> TestSuite:
 
     # Sub-test 8.3: 極大頁面（A0）
     def test_large_page():
-        t0 = _ms()
         try:
             doc = fitz.open()
             page = doc.new_page(width=2384, height=3370)  # A0
             page.insert_text((100, 200), "Large page test content", fontsize=24)
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
                 tmp = f.name
-            doc.save(tmp); doc.close()
+            doc.save(tmp)
+            doc.close()
             model = PDFModel()
             model.open_pdf(tmp)
             pi, blk = _first_editable_block(model)
@@ -881,16 +931,26 @@ def run_t8_edge_cases(pdfs: list[Path], quick: bool) -> TestSuite:
                 color=(0, 0, 0),
                 original_text=None,
             )
-            suite.cases.append(TestCase(
-                f"{pdf_path.name}[無效rect]", True, _ms()-t0,
-                "edit_text(rect=0,0,0,0) graceful 無 crash", ""
-            ))
+            suite.cases.append(
+                TestCase(
+                    f"{pdf_path.name}[無效rect]",
+                    True,
+                    _ms() - t0,
+                    "edit_text(rect=0,0,0,0) graceful 無 crash",
+                    "",
+                )
+            )
         except Exception as e:
             # 拋例外也可接受，但不能 crash/hang
-            suite.cases.append(TestCase(
-                f"{pdf_path.name}[無效rect]", True, _ms()-t0,
-                "edit_text(rect=0,0,0,0) 拋例外（可接受）", str(e)[:60]
-            ))
+            suite.cases.append(
+                TestCase(
+                    f"{pdf_path.name}[無效rect]",
+                    True,
+                    _ms() - t0,
+                    "edit_text(rect=0,0,0,0) 拋例外（可接受）",
+                    str(e)[:60],
+                )
+            )
         model.close()
 
     # Sub-test 8.5: edit_text 頁碼超出範圍
@@ -908,20 +968,35 @@ def run_t8_edge_cases(pdfs: list[Path], quick: bool) -> TestSuite:
                 size=11,
                 color=(0, 0, 0),
             )
-            suite.cases.append(TestCase(
-                f"{pdf_path.name}[頁碼超界]", True, _ms()-t0,
-                "page=9999 無 crash", ""
-            ))
+            suite.cases.append(
+                TestCase(
+                    f"{pdf_path.name}[頁碼超界]",
+                    True,
+                    _ms() - t0,
+                    "page=9999 無 crash",
+                    "",
+                )
+            )
         except (IndexError, RuntimeError, ValueError) as e:
-            suite.cases.append(TestCase(
-                f"{pdf_path.name}[頁碼超界]", True, _ms()-t0,
-                "page=9999 拋例外（可接受）", str(e)[:60]
-            ))
+            suite.cases.append(
+                TestCase(
+                    f"{pdf_path.name}[頁碼超界]",
+                    True,
+                    _ms() - t0,
+                    "page=9999 拋例外（可接受）",
+                    str(e)[:60],
+                )
+            )
         except Exception as e:
-            suite.cases.append(TestCase(
-                f"{pdf_path.name}[頁碼超界]", False, _ms()-t0,
-                "page=9999 意外錯誤", str(e)[:60]
-            ))
+            suite.cases.append(
+                TestCase(
+                    f"{pdf_path.name}[頁碼超界]",
+                    False,
+                    _ms() - t0,
+                    "page=9999 意外錯誤",
+                    str(e)[:60],
+                )
+            )
         model.close()
 
     # Sub-test 8.6: undo 超過堆疊（空堆疊 undo）
@@ -933,16 +1008,26 @@ def run_t8_edge_cases(pdfs: list[Path], quick: bool) -> TestSuite:
         try:
             model.command_manager.clear()
             result = model.command_manager.undo()  # 應回傳 False
-            passed = (result == False)
-            suite.cases.append(TestCase(
-                f"{pdf_path.name}[空堆疊undo]", passed, _ms()-t0,
-                f"空 undo 堆疊呼叫 undo() → {result}", ""
-            ))
+            passed = result is False
+            suite.cases.append(
+                TestCase(
+                    f"{pdf_path.name}[空堆疊undo]",
+                    passed,
+                    _ms() - t0,
+                    f"空 undo 堆疊呼叫 undo() → {result}",
+                    "",
+                )
+            )
         except Exception as e:
-            suite.cases.append(TestCase(
-                f"{pdf_path.name}[空堆疊undo]", False, _ms()-t0,
-                "空堆疊 undo 意外拋例外", str(e)[:60]
-            ))
+            suite.cases.append(
+                TestCase(
+                    f"{pdf_path.name}[空堆疊undo]",
+                    False,
+                    _ms() - t0,
+                    "空堆疊 undo 意外拋例外",
+                    str(e)[:60],
+                )
+            )
         model.close()
 
     suite.end_ms = _ms()
@@ -975,7 +1060,7 @@ def run_t9_performance(pdfs: list[Path], quick: bool) -> TestSuite:
             if not blocks:
                 break
             curr_blk = blocks[0]
-            txt = NORMAL_TEXTS[i % len(NORMAL_TEXTS)].format(i=i+1)
+            txt = NORMAL_TEXTS[i % len(NORMAL_TEXTS)].format(i=i + 1)
             t0 = _ms()
             ok = _do_edit(model, pi, curr_blk, txt)
             elapsed = _ms() - t0
@@ -989,7 +1074,6 @@ def run_t9_performance(pdfs: list[Path], quick: bool) -> TestSuite:
 
         avg = sum(timings) / len(timings)
         mx = max(timings)
-        mn = min(timings)
         # P95
         sorted_t = sorted(timings)
         p95 = sorted_t[int(len(sorted_t) * 0.95)]
@@ -1003,14 +1087,16 @@ def run_t9_performance(pdfs: list[Path], quick: bool) -> TestSuite:
         elif slow > sample_count * 0.3:
             bottleneck = f"[SLOW: {slow}次>500ms]"
 
-        passed = (avg < 2000)  # 平均 <2s 視為通過
-        suite.cases.append(TestCase(
-            name=pdf_path.name,
-            passed=passed,
-            duration_ms=sum(timings),
-            detail=f"n={len(timings)} avg={avg:.0f}ms max={mx:.0f}ms p95={p95:.0f}ms {bottleneck}",
-            error="" if passed else f"avg={avg:.0f}ms 超過 2000ms 門檻",
-        ))
+        passed = avg < 2000  # 平均 <2s 視為通過
+        suite.cases.append(
+            TestCase(
+                name=pdf_path.name,
+                passed=passed,
+                duration_ms=sum(timings),
+                detail=f"n={len(timings)} avg={avg:.0f}ms max={mx:.0f}ms p95={p95:.0f}ms {bottleneck}",
+                error="" if passed else f"avg={avg:.0f}ms 超過 2000ms 門檻",
+            )
+        )
         model.close()
 
     # 全局統計
@@ -1019,13 +1105,15 @@ def run_t9_performance(pdfs: list[Path], quick: bool) -> TestSuite:
         global_avg = sum(all_flat) / len(all_flat)
         global_p95 = sorted(all_flat)[int(len(all_flat) * 0.95)]
         global_max = max(all_flat)
-        suite.cases.append(TestCase(
-            name="[全局統計]",
-            passed=True,
-            duration_ms=sum(all_flat),
-            detail=f"總樣本={len(all_flat)} global_avg={global_avg:.0f}ms p95={global_p95:.0f}ms max={global_max:.0f}ms",
-            error="",
-        ))
+        suite.cases.append(
+            TestCase(
+                name="[全局統計]",
+                passed=True,
+                duration_ms=sum(all_flat),
+                detail=f"總樣本={len(all_flat)} global_avg={global_avg:.0f}ms p95={global_p95:.0f}ms max={global_max:.0f}ms",
+                error="",
+            )
+        )
 
     suite.end_ms = _ms()
     return suite
@@ -1067,7 +1155,9 @@ def run_t10_visual_output(pdfs: list[Path], quick: bool) -> TestSuite:
             if not ok:
                 errors.append("edit_text 失敗")
                 model.close()
-                suite.cases.append(TestCase(pdf_path.name, False, _ms()-t0, "", errors[0]))
+                suite.cases.append(
+                    TestCase(pdf_path.name, False, _ms() - t0, "", errors[0])
+                )
                 continue
 
             # 擷取編輯後 pixmap
@@ -1086,17 +1176,14 @@ def run_t10_visual_output(pdfs: list[Path], quick: bool) -> TestSuite:
             # 重開儲存後的 PDF，驗證可開啟
             model2 = PDFModel()
             model2.open_pdf(tmp_out)
-            n_blocks2 = sum(
-                len(model2.block_manager.get_blocks(i))
-                for i in range(len(model2.doc))
-            )
+            sum(len(model2.block_manager.get_blocks(i)) for i in range(len(model2.doc)))
             model2.close()
 
             # 驗證儲存後可獲得 pixmap
             model3 = PDFModel()
             model3.open_pdf(tmp_out)
             pix_saved = model3.get_page_pixmap(pi + 1, scale=0.5)
-            saved_bytes = pix_saved.tobytes("png")
+            pix_saved.tobytes("png")
             model3.close()
 
             os.unlink(tmp_out)
@@ -1111,13 +1198,15 @@ def run_t10_visual_output(pdfs: list[Path], quick: bool) -> TestSuite:
             errors.append(f"意外錯誤: {str(e)[:100]}")
 
         elapsed = _ms() - t0
-        suite.cases.append(TestCase(
-            name=pdf_path.name,
-            passed=(len(errors) == 0),
-            duration_ms=elapsed,
-            detail=f"before/after pixmap 不同={'是' if not errors else '否'}，save_as 成功",
-            error="; ".join(errors[:3]) if errors else "",
-        ))
+        suite.cases.append(
+            TestCase(
+                name=pdf_path.name,
+                passed=(len(errors) == 0),
+                duration_ms=elapsed,
+                detail=f"before/after pixmap 不同={'是' if not errors else '否'}，save_as 成功",
+                error="; ".join(errors[:3]) if errors else "",
+            )
+        )
         model.close()
 
     suite.end_ms = _ms()
@@ -1134,7 +1223,7 @@ def generate_report(suites: list[TestSuite], total_ms: float) -> str:
     lines.append("=" * W)
     lines.append("  PDF 編輯器深度測試報告")
     lines.append(f"  生成時間：{time.strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append(f"  總耗時：{total_ms/1000:.1f}s")
+    lines.append(f"  總耗時：{total_ms / 1000:.1f}s")
     lines.append("=" * W)
 
     total_cases = sum(s.total for s in suites)
@@ -1149,24 +1238,28 @@ def generate_report(suites: list[TestSuite], total_ms: float) -> str:
     lines.append(f"  整體通過率: {overall_rate:.1f}%")
 
     # 各套件摘要
-    lines.append(f"\n{'─'*W}")
+    lines.append(f"\n{'─' * W}")
     lines.append("【各套件摘要】")
-    lines.append(f"  {'ID':<5} {'套件名稱':<35} {'通過':<6} {'失敗':<6} {'通過率':<8} {'耗時'}")
-    lines.append(f"  {'─'*5} {'─'*35} {'─'*6} {'─'*6} {'─'*8} {'─'*8}")
+    lines.append(
+        f"  {'ID':<5} {'套件名稱':<35} {'通過':<6} {'失敗':<6} {'通過率':<8} {'耗時'}"
+    )
+    lines.append(f"  {'─' * 5} {'─' * 35} {'─' * 6} {'─' * 6} {'─' * 8} {'─' * 8}")
     for s in suites:
         flag = "✓" if s.failed == 0 else "✗"
         lines.append(
             f"  {s.id:<5} {s.name[:35]:<35} {s.passed:<6} {s.failed:<6} "
-            f"{s.pass_rate:6.1f}%  {s.total_ms/1000:.2f}s  {flag}"
+            f"{s.pass_rate:6.1f}%  {s.total_ms / 1000:.2f}s  {flag}"
         )
 
     # 各套件詳細
     for s in suites:
-        lines.append(f"\n{'═'*W}")
+        lines.append(f"\n{'═' * W}")
         lines.append(f"【{s.id}】{s.name}")
-        lines.append(f"  通過率：{s.passed}/{s.total} ({s.pass_rate:.1f}%)  "
-                     f"avg={s.avg_ms:.0f}ms  總耗時={s.total_ms/1000:.2f}s")
-        lines.append(f"{'─'*W}")
+        lines.append(
+            f"  通過率：{s.passed}/{s.total} ({s.pass_rate:.1f}%)  "
+            f"avg={s.avg_ms:.0f}ms  總耗時={s.total_ms / 1000:.2f}s"
+        )
+        lines.append(f"{'─' * W}")
 
         # 失敗案例優先顯示
         failed_cases = [c for c in s.cases if not c.passed]
@@ -1176,19 +1269,24 @@ def generate_report(suites: list[TestSuite], total_ms: float) -> str:
             lines.append(f"  ── 失敗案例 ({len(failed_cases)}個) ──")
             for c in failed_cases:
                 lines.append(f"  [FAIL] {c.name}")
-                if c.detail: lines.append(f"         → {c.detail}")
-                if c.error:  lines.append(f"         錯誤: {c.error}")
+                if c.detail:
+                    lines.append(f"         → {c.detail}")
+                if c.error:
+                    lines.append(f"         錯誤: {c.error}")
 
         if passed_cases:
             lines.append(f"  ── 通過案例 ({len(passed_cases)}個) ──")
             for c in passed_cases[:10]:  # 最多顯示10個
                 lines.append(f"  [OK]   {c.name}  ({c.duration_ms:.0f}ms)")
-                if c.detail: lines.append(f"         → {c.detail}")
+                if c.detail:
+                    lines.append(f"         → {c.detail}")
             if len(passed_cases) > 10:
-                lines.append(f"         ... 另有 {len(passed_cases)-10} 個通過案例（省略）")
+                lines.append(
+                    f"         ... 另有 {len(passed_cases) - 10} 個通過案例（省略）"
+                )
 
     # 根因分析
-    lines.append(f"\n{'═'*W}")
+    lines.append(f"\n{'═' * W}")
     lines.append("【根因分析與建議】")
     all_errors = []
     for s in suites:
@@ -1204,7 +1302,7 @@ def generate_report(suites: list[TestSuite], total_ms: float) -> str:
             lines.append(f"    → {err}")
 
     # 穩定性結論
-    lines.append(f"\n{'═'*W}")
+    lines.append(f"\n{'═' * W}")
     lines.append("【穩定性結論】")
     if overall_rate >= 95:
         verdict = "✅ 可視為穩定版本"
@@ -1231,7 +1329,7 @@ def generate_report(suites: list[TestSuite], total_ms: float) -> str:
     for r in recommendations:
         lines.append(f"  {r}")
 
-    lines.append(f"\n{'='*W}")
+    lines.append(f"\n{'=' * W}")
     return "\n".join(lines)
 
 
@@ -1247,16 +1345,16 @@ def main():
 
     only_set = set(args.only.upper().split(",")) if args.only else set()
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"  PDF 編輯器深度測試 — {'快速模式' if args.quick else '完整模式'}")
     print(f"  報告路徑：{args.output}")
-    print(f"{'='*70}\n")
+    print(f"{'=' * 70}\n")
 
     # 收集測試 PDF
     print("  正在收集測試檔案...")
     sample_pdfs = _collect_sample_pdfs(32)
-    vera_pdfs   = _collect_vera_pdfs(8)
-    all_pdfs    = sample_pdfs + vera_pdfs
+    vera_pdfs = _collect_vera_pdfs(8)
+    all_pdfs = sample_pdfs + vera_pdfs
     print(f"  sample-files-main: {len(sample_pdfs)} 個")
     print(f"  veraPDF 代表檔:    {len(vera_pdfs)} 個")
     print(f"  合計:              {len(all_pdfs)} 個\n")
@@ -1267,16 +1365,24 @@ def main():
 
     # 執行測試套件
     runners = [
-        ("T1",  "T1: 連續重複編輯",    lambda: run_t1_repeated_edits(all_pdfs, args.quick)),
-        ("T2",  "T2: Undo/Redo 循環",  lambda: run_t2_undo_redo(all_pdfs, args.quick)),
-        ("T3",  "T3: 極端輸入",        lambda: run_t3_extreme_inputs(all_pdfs, args.quick)),
-        ("T4",  "T4: 多頁操作組合",    lambda: run_t4_multipage_ops(all_pdfs, args.quick)),
-        ("T5",  "T5: 註解共存",        lambda: run_t5_annotation_coexist(all_pdfs, args.quick)),
-        ("T6",  "T6: 結構改變後編輯",  lambda: run_t6_structural_then_edit(all_pdfs, args.quick)),
-        ("T7",  "T7: 記憶體壓力",      lambda: run_t7_memory_pressure(all_pdfs, args.quick)),
-        ("T8",  "T8: 異常邊界",        lambda: run_t8_edge_cases(all_pdfs, args.quick)),
-        ("T9",  "T9: 效能分佈",        lambda: run_t9_performance(all_pdfs, args.quick)),
-        ("T10", "T10: 視覺輸出驗證",   lambda: run_t10_visual_output(all_pdfs, args.quick)),
+        ("T1", "T1: 連續重複編輯", lambda: run_t1_repeated_edits(all_pdfs, args.quick)),
+        ("T2", "T2: Undo/Redo 循環", lambda: run_t2_undo_redo(all_pdfs, args.quick)),
+        ("T3", "T3: 極端輸入", lambda: run_t3_extreme_inputs(all_pdfs, args.quick)),
+        ("T4", "T4: 多頁操作組合", lambda: run_t4_multipage_ops(all_pdfs, args.quick)),
+        ("T5", "T5: 註解共存", lambda: run_t5_annotation_coexist(all_pdfs, args.quick)),
+        (
+            "T6",
+            "T6: 結構改變後編輯",
+            lambda: run_t6_structural_then_edit(all_pdfs, args.quick),
+        ),
+        ("T7", "T7: 記憶體壓力", lambda: run_t7_memory_pressure(all_pdfs, args.quick)),
+        ("T8", "T8: 異常邊界", lambda: run_t8_edge_cases(all_pdfs, args.quick)),
+        ("T9", "T9: 效能分佈", lambda: run_t9_performance(all_pdfs, args.quick)),
+        (
+            "T10",
+            "T10: 視覺輸出驗證",
+            lambda: run_t10_visual_output(all_pdfs, args.quick),
+        ),
     ]
 
     suites: list[TestSuite] = []
@@ -1292,17 +1398,22 @@ def main():
         except Exception as e:
             # 整個 suite 崩潰
             suite = TestSuite(id=tid, name=desc)
-            suite.cases.append(TestCase(
-                name="[CRASH]", passed=False, duration_ms=0,
-                detail="", error=str(e)[:200]
-            ))
+            suite.cases.append(
+                TestCase(
+                    name="[CRASH]",
+                    passed=False,
+                    duration_ms=0,
+                    detail="",
+                    error=str(e)[:200],
+                )
+            )
         te = time.perf_counter()
         suite.end_ms = _ms()
         if suite.start_ms == 0:
             suite.start_ms = te * 1000 - suite.total_ms
         suites.append(suite)
         flag = "✓" if suite.failed == 0 else f"✗({suite.failed}失敗)"
-        print(f" {flag}  [{te-ts:.1f}s]  {suite.passed}/{suite.total}")
+        print(f" {flag}  [{te - ts:.1f}s]  {suite.passed}/{suite.total}")
 
     total_ms = _ms() - t_global_start
 
@@ -1312,16 +1423,16 @@ def main():
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(report, encoding="utf-8")
 
-    print(f"\n{'─'*70}")
+    print(f"\n{'─' * 70}")
     # 快速摘要
-    total_cases  = sum(s.total for s in suites)
+    total_cases = sum(s.total for s in suites)
     total_passed = sum(s.passed for s in suites)
     total_failed = sum(s.failed for s in suites)
     overall_rate = total_passed / total_cases * 100 if total_cases else 0
     print(f"  總案例：{total_cases}  通過：{total_passed}  失敗：{total_failed}")
-    print(f"  整體通過率：{overall_rate:.1f}%  總耗時：{total_ms/1000:.1f}s")
+    print(f"  整體通過率：{overall_rate:.1f}%  總耗時：{total_ms / 1000:.1f}s")
     print(f"  詳細報告：{output_path}")
-    print(f"{'='*70}\n")
+    print(f"{'=' * 70}\n")
 
     return 0 if total_failed == 0 else 1
 

@@ -1,9 +1,10 @@
-﻿"""
+"""
 50 rounds text-preservation test
 - Horizontal: real PDFs from test_files/sample-files-main
 - Vertical:   synthetic PDFs with rotate=90 insert_htmlbox columns
 Loss criterion: any non-target block text missing after edit -> LOSS
 """
+
 import logging
 import os
 import random
@@ -24,9 +25,9 @@ from model.pdf_model import PDFModel
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _OUTPUT_DIR = os.path.join(_SCRIPT_DIR, "test_outputs")
-SAMPLE_DIR   = os.path.join(_ROOT, "test_files", "sample-files-main")
+SAMPLE_DIR = os.path.join(_ROOT, "test_files", "sample-files-main")
 ROUNDS_HORIZ = 50
-ROUNDS_VERT  = 50
+ROUNDS_VERT = 50
 KNOWN_PW = {
     "libreoffice-writer-password.pdf": "permissionpassword",
     "encrypted.pdf": "kanbanery",
@@ -50,44 +51,59 @@ WRAP_V = [
 # ?? data classes ???????????????????????????????????????????????????????????????
 @dataclass
 class Issue:
-    round_no:    int
-    kind:        str
-    pdf_path:    str
-    page_num:    int
+    round_no: int
+    kind: str
+    pdf_path: str
+    page_num: int
     edited_text: str
-    new_text:    str
-    lost_text:   str
-    error_msg:   str = ""
+    new_text: str
+    lost_text: str
+    error_msg: str = ""
+
 
 @dataclass
 class RoundResult:
-    round_no:    int
-    kind:        str
-    pdf_path:    str
-    page_num:    int
-    status:      str   # OK | LOSS | SKIP | ERROR
+    round_no: int
+    kind: str
+    pdf_path: str
+    page_num: int
+    status: str  # OK | LOSS | SKIP | ERROR
     duration_ms: float = 0.0
-    issues:      list  = field(default_factory=list)
+    issues: list = field(default_factory=list)
 
 
 # ?? helpers ????????????????????????????????????????????????????????????????????
-_RE_WS = re.compile(r'\s+')
-_LIG   = {'\ufb01':'fi', '\ufb02':'fl', '\ufb00':'ff',
-          '\ufb03':'ffi', '\ufb04':'ffl', '\ufb05':'st', '\ufb06':'st',
-          '\u2019':chr(39), '\u2018':chr(39),
-          '\u201c':chr(34), '\u201d':chr(34),
-          '\u2013':'-', '\u2014':'-', '\u2026':'...'}
+_RE_WS = re.compile(r"\s+")
+_LIG = {
+    "\ufb01": "fi",
+    "\ufb02": "fl",
+    "\ufb00": "ff",
+    "\ufb03": "ffi",
+    "\ufb04": "ffl",
+    "\ufb05": "st",
+    "\ufb06": "st",
+    "\u2019": chr(39),
+    "\u2018": chr(39),
+    "\u201c": chr(34),
+    "\u201d": chr(34),
+    "\u2013": "-",
+    "\u2014": "-",
+    "\u2026": "...",
+}
+
 
 def _norm(t: str) -> str:
     for k, v in _LIG.items():
         t = t.replace(k, v)
-    return _RE_WS.sub('', t).lower()
+    return _RE_WS.sub("", t).lower()
+
 
 def _safe_text(page: fitz.Page) -> str:
     try:
         return page.get_text("text")
     except Exception:
         return ""
+
 
 # PDFs known to cause MuPDF/C-level crashes during text extraction
 SKIP_PDFS = {
@@ -97,6 +113,7 @@ SKIP_PDFS = {
     "annotated_pdf.pdf",
 }
 
+
 def _all_pdfs() -> list:
     paths = []
     for root, _, files in os.walk(SAMPLE_DIR):
@@ -105,21 +122,26 @@ def _all_pdfs() -> list:
                 paths.append(os.path.join(root, f))
     return sorted(paths)
 
+
 def _open(path: str) -> PDFModel | None:
     m = PDFModel()
     try:
         m.open_pdf(path, password=KNOWN_PW.get(os.path.basename(path)))
         return m
     except Exception:
-        try: m.close()
-        except: pass
+        try:
+            m.close()
+        except Exception:
+            pass
         return None
+
 
 def _safe_blocks(model: PDFModel, page_idx: int) -> list:
     try:
         return model.block_manager.get_blocks(page_idx)
     except Exception:
         return []
+
 
 def _pre_snap(model: PDFModel, page_idx: int, target_id: str) -> list:
     blocks = _safe_blocks(model, page_idx)
@@ -132,6 +154,7 @@ def _pre_snap(model: PDFModel, page_idx: int, target_id: str) -> list:
             result.append(n)
     return result
 
+
 def _check_loss(model: PDFModel, page_idx: int, pre: list) -> list:
     """
     Lenient check: a pre-block is 'lost' only if less than 80% of its text
@@ -140,6 +163,7 @@ def _check_loss(model: PDFModel, page_idx: int, pre: list) -> list:
     """
     try:
         import difflib
+
         raw = _norm(_safe_text(model.doc[page_idx]))
         lost = []
         for n in pre:
@@ -156,15 +180,18 @@ def _check_loss(model: PDFModel, page_idx: int, pre: list) -> list:
     except Exception:
         return []
 
+
 def _pick_horiz(model: PDFModel):
     """Return (page_idx, TextBlock) with >=2 non-empty horiz blocks on page."""
     candidates = []
     for pi in range(len(model.doc)):
         try:
             blks = _safe_blocks(model, pi)
-            ne = [b for b in blks
-                  if b.text.strip() and len(b.text.strip()) > 5
-                  and not b.is_vertical]
+            ne = [
+                b
+                for b in blks
+                if b.text.strip() and len(b.text.strip()) > 5 and not b.is_vertical
+            ]
             if len(ne) < 2:
                 continue
             for b in ne:
@@ -174,7 +201,7 @@ def _pick_horiz(model: PDFModel):
     if not candidates:
         return None, None
     candidates.sort(key=lambda x: len(x[1].text), reverse=True)
-    pool = candidates[:min(10, len(candidates))]
+    pool = candidates[: min(10, len(candidates))]
     return random.choice(pool)
 
 
@@ -189,9 +216,11 @@ def horiz_round(rno: int, pdfs: list) -> RoundResult:
         try:
             cpi, ctb = _pick_horiz(m)
         except Exception:
-            m.close(); continue
+            m.close()
+            continue
         if cpi is None:
-            m.close(); continue
+            m.close()
+            continue
         model, chosen, pi, tb = m, path, cpi, ctb
         break
 
@@ -221,40 +250,67 @@ def horiz_round(rno: int, pdfs: list) -> RoundResult:
 
     issues = []
     if lost:
-        for l in lost:
-            issues.append(Issue(rno,"HORIZONTAL",chosen,pi+1,
-                                tb.text[:60],new_text[:60],l[:80],err))
+        for lost_text in lost:
+            issues.append(
+                Issue(
+                    rno,
+                    "HORIZONTAL",
+                    chosen,
+                    pi + 1,
+                    tb.text[:60],
+                    new_text[:60],
+                    lost_text[:80],
+                    err,
+                )
+            )
     if err and not lost:
-        return RoundResult(rno,"HORIZONTAL",chosen,pi+1,"ERROR",dur,
-                           [Issue(rno,"HORIZONTAL",chosen,pi+1,
-                                  tb.text[:60],new_text[:60],"",err)])
+        return RoundResult(
+            rno,
+            "HORIZONTAL",
+            chosen,
+            pi + 1,
+            "ERROR",
+            dur,
+            [
+                Issue(
+                    rno,
+                    "HORIZONTAL",
+                    chosen,
+                    pi + 1,
+                    tb.text[:60],
+                    new_text[:60],
+                    "",
+                    err,
+                )
+            ],
+        )
     if lost:
-        return RoundResult(rno,"HORIZONTAL",chosen,pi+1,"LOSS",dur,issues)
-    return RoundResult(rno,"HORIZONTAL",chosen,pi+1,"OK",dur)
+        return RoundResult(rno, "HORIZONTAL", chosen, pi + 1, "LOSS", dur, issues)
+    return RoundResult(rno, "HORIZONTAL", chosen, pi + 1, "OK", dur)
 
 
 # ?? vertical synthetic PDF + round ???????????????????????????????????????????
 def _make_vert_pdf(seed: int) -> bytes:
     """3 vertical columns (rotate=90) + 1 horizontal reference block."""
     labels = [
-        ["Vertical Block One",   "Column Entry Alpha", "Text Column First"],
-        ["Another Vertical Col", "Column Entry Beta",  "Text Column Second"],
-        ["Third Column Entry",   "Column Entry Gamma", "Text Column Third"],
+        ["Vertical Block One", "Column Entry Alpha", "Text Column First"],
+        ["Another Vertical Col", "Column Entry Beta", "Text Column Second"],
+        ["Third Column Entry", "Column Entry Gamma", "Text Column Third"],
     ]
-    doc  = fitz.open()
+    doc = fitz.open()
     page = doc.new_page(width=500, height=600)
-    css  = "span { font-size: 13pt; white-space: pre-wrap; }"
+    css = "span { font-size: 13pt; white-space: pre-wrap; }"
     for ci in range(3):
-        txt  = labels[ci][seed % 3]
-        x    = 30 + ci * 80
+        txt = labels[ci][seed % 3]
+        x = 30 + ci * 80
         rect = fitz.Rect(x, 50, x + 65, 420)
         try:
-            page.insert_htmlbox(rect, f"<span>{txt}</span>",
-                                css=css, rotate=90)
+            page.insert_htmlbox(rect, f"<span>{txt}</span>", css=css, rotate=90)
         except Exception:
             pass
-    page.insert_text(fitz.Point(50, 540),
-                     "Horizontal reference line at bottom", fontsize=11)
+    page.insert_text(
+        fitz.Point(50, 540), "Horizontal reference line at bottom", fontsize=11
+    )
     data = doc.tobytes()
     doc.close()
     return data
@@ -270,33 +326,46 @@ def vert_round(rno: int, tmp_dir: str) -> RoundResult:
     try:
         model.open_pdf(tmp)
     except Exception as e:
-        try: model.close()
-        except: pass
-        if os.path.exists(tmp): os.remove(tmp)
-        return RoundResult(rno,"VERTICAL",tmp,-1,"ERROR",0,
-                           [Issue(rno,"VERTICAL",tmp,-1,"","","",str(e)[:200])])
+        try:
+            model.close()
+        except Exception:
+            pass
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        return RoundResult(
+            rno,
+            "VERTICAL",
+            tmp,
+            -1,
+            "ERROR",
+            0,
+            [Issue(rno, "VERTICAL", tmp, -1, "", "", "", str(e)[:200])],
+        )
 
     pi = 0
     try:
-        blks  = _safe_blocks(model, pi)
-        verts = [b for b in blks
-                 if b.is_vertical and b.text.strip()
-                 and len(b.text.strip()) > 3]
-        total = [b for b in blks
-                 if b.text.strip() and len(b.text.strip()) > 3]
+        blks = _safe_blocks(model, pi)
+        verts = [
+            b
+            for b in blks
+            if b.is_vertical and b.text.strip() and len(b.text.strip()) > 3
+        ]
+        total = [b for b in blks if b.text.strip() and len(b.text.strip()) > 3]
     except Exception:
         model.close()
-        if os.path.exists(tmp): os.remove(tmp)
-        return RoundResult(rno,"VERTICAL",tmp,-1,"SKIP")
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        return RoundResult(rno, "VERTICAL", tmp, -1, "SKIP")
 
     if not verts or len(total) < 2:
         model.close()
-        if os.path.exists(tmp): os.remove(tmp)
-        return RoundResult(rno,"VERTICAL",tmp,-1,"SKIP")
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        return RoundResult(rno, "VERTICAL", tmp, -1, "SKIP")
 
-    tb       = random.choice(verts)
+    tb = random.choice(verts)
     new_text = WRAP_V[(rno - 1) % len(WRAP_V)]
-    pre      = _pre_snap(model, pi, tb.block_id)
+    pre = _pre_snap(model, pi, tb.block_id)
 
     t0 = time.perf_counter()
     err = ""
@@ -316,20 +385,48 @@ def vert_round(rno: int, tmp_dir: str) -> RoundResult:
 
     lost = _check_loss(model, pi, pre)
     model.close()
-    if os.path.exists(tmp): os.remove(tmp)
+    if os.path.exists(tmp):
+        os.remove(tmp)
 
     issues = []
     if lost:
-        for l in lost:
-            issues.append(Issue(rno,"VERTICAL","[synthetic]",pi+1,
-                                tb.text[:60],new_text[:60],l[:80],err))
+        for lost_text in lost:
+            issues.append(
+                Issue(
+                    rno,
+                    "VERTICAL",
+                    "[synthetic]",
+                    pi + 1,
+                    tb.text[:60],
+                    new_text[:60],
+                    lost_text[:80],
+                    err,
+                )
+            )
     if err and not lost:
-        return RoundResult(rno,"VERTICAL","[synthetic]",pi+1,"ERROR",dur,
-                           [Issue(rno,"VERTICAL","[synthetic]",pi+1,
-                                  tb.text[:60],new_text[:60],"",err)])
+        return RoundResult(
+            rno,
+            "VERTICAL",
+            "[synthetic]",
+            pi + 1,
+            "ERROR",
+            dur,
+            [
+                Issue(
+                    rno,
+                    "VERTICAL",
+                    "[synthetic]",
+                    pi + 1,
+                    tb.text[:60],
+                    new_text[:60],
+                    "",
+                    err,
+                )
+            ],
+        )
     if lost:
-        return RoundResult(rno,"VERTICAL","[synthetic]",pi+1,"LOSS",dur,issues)
-    return RoundResult(rno,"VERTICAL","[synthetic]",pi+1,"OK",dur)
+        return RoundResult(rno, "VERTICAL", "[synthetic]", pi + 1, "LOSS", dur, issues)
+    return RoundResult(rno, "VERTICAL", "[synthetic]", pi + 1, "OK", dur)
 
 
 # ?? main ???????????????????????????????????????????????????????????????????????
@@ -344,53 +441,60 @@ def main():
     all_res: list[RoundResult] = []
 
     # ?? horizontal 50 rounds ????????????????????????????
-    print(f"\n{'='*64}")
+    print(f"\n{'=' * 64}")
     print(f"?????? {ROUNDS_HORIZ} ?")
-    print(f"{'='*64}")
+    print(f"{'=' * 64}")
     for r in range(1, ROUNDS_HORIZ + 1):
         res = horiz_round(r, list(pdfs))
         all_res.append(res)
-        ic = {"OK":"?","LOSS":"?","SKIP":"?","ERROR":"?"}.get(res.status,"?")
-        nm = os.path.basename(res.pdf_path) if res.pdf_path!="N/A" else "N/A"
-        print(f"  H{r:02d} [{ic} {res.status:<5}] {nm:<44} "
-              f"p{res.page_num:>2} {res.duration_ms:7.1f}ms", flush=True)
+        ic = {"OK": "?", "LOSS": "?", "SKIP": "?", "ERROR": "?"}.get(res.status, "?")
+        nm = os.path.basename(res.pdf_path) if res.pdf_path != "N/A" else "N/A"
+        print(
+            f"  H{r:02d} [{ic} {res.status:<5}] {nm:<44} "
+            f"p{res.page_num:>2} {res.duration_ms:7.1f}ms",
+            flush=True,
+        )
 
     # ?? vertical 50 rounds ??????????????????????????????
-    print(f"\n{'='*64}")
+    print(f"\n{'=' * 64}")
     print(f"?????? {ROUNDS_VERT} ?")
-    print(f"{'='*64}")
+    print(f"{'=' * 64}")
     for r in range(1, ROUNDS_VERT + 1):
         res = vert_round(r, tmp_dir)
         all_res.append(res)
-        ic = {"OK":"?","LOSS":"?","SKIP":"?","ERROR":"?"}.get(res.status,"?")
-        print(f"  V{r:02d} [{ic} {res.status:<5}] synthetic_vertical_pdf"
-              f"                  p{res.page_num:>2} {res.duration_ms:7.1f}ms",
-              flush=True)
+        ic = {"OK": "?", "LOSS": "?", "SKIP": "?", "ERROR": "?"}.get(res.status, "?")
+        print(
+            f"  V{r:02d} [{ic} {res.status:<5}] synthetic_vertical_pdf"
+            f"                  p{res.page_num:>2} {res.duration_ms:7.1f}ms",
+            flush=True,
+        )
 
-    try: shutil.rmtree(tmp_dir)
-    except: pass
+    try:
+        shutil.rmtree(tmp_dir)
+    except Exception:
+        pass
 
     # ?? stats ??????????????????????????????????????????
     def stats(rs):
-        ok = sum(1 for r in rs if r.status=="OK")
-        lo = sum(1 for r in rs if r.status=="LOSS")
-        er = sum(1 for r in rs if r.status=="ERROR")
-        sk = sum(1 for r in rs if r.status=="SKIP")
-        ds = [r.duration_ms for r in rs if r.status in ("OK","LOSS","ERROR")]
-        av = sum(ds)/len(ds) if ds else 0
+        ok = sum(1 for r in rs if r.status == "OK")
+        lo = sum(1 for r in rs if r.status == "LOSS")
+        er = sum(1 for r in rs if r.status == "ERROR")
+        sk = sum(1 for r in rs if r.status == "SKIP")
+        ds = [r.duration_ms for r in rs if r.status in ("OK", "LOSS", "ERROR")]
+        av = sum(ds) / len(ds) if ds else 0
         mx = max(ds) if ds else 0
-        return ok,lo,er,sk,av,mx
+        return ok, lo, er, sk, av, mx
 
-    hr = [r for r in all_res if r.kind=="HORIZONTAL"]
-    vr = [r for r in all_res if r.kind=="VERTICAL"]
-    h_ok,h_lo,h_er,h_sk,h_av,h_mx = stats(hr)
-    v_ok,v_lo,v_er,v_sk,v_av,v_mx = stats(vr)
+    hr = [r for r in all_res if r.kind == "HORIZONTAL"]
+    vr = [r for r in all_res if r.kind == "VERTICAL"]
+    h_ok, h_lo, h_er, h_sk, h_av, h_mx = stats(hr)
+    v_ok, v_lo, v_er, v_sk, v_av, v_mx = stats(vr)
     total_loss = h_lo + v_lo
-    total_err  = h_er + v_er
+    total_err = h_er + v_er
 
-    print(f"\n{'='*64}")
+    print(f"\n{'=' * 64}")
     print("??????")
-    print(f"{'='*64}")
+    print(f"{'=' * 64}")
     print(f"  {'':12} {'??':>7} {'??':>7}")
     print(f"  {'OK':12} {h_ok:>7} {v_ok:>7}")
     print(f"  {'LOSS(??)':12} {h_lo:>7} {v_lo:>7}")
@@ -407,8 +511,8 @@ def main():
         print(f"  ? LOSS {total_loss} ???? issue_report.txt?")
 
     # ?? write report ???????????????????????????????????
-    all_iss   = [i for r in all_res for i in r.issues]
-    loss_iss  = [i for i in all_iss if i.lost_text]
+    all_iss = [i for r in all_res for i in r.issues]
+    loss_iss = [i for i in all_iss if i.lost_text]
     error_iss = [i for i in all_iss if not i.lost_text and i.error_msg]
 
     os.makedirs(_OUTPUT_DIR, exist_ok=True)
@@ -429,8 +533,12 @@ def main():
         f.write("??????\n")
         hdr = f"  {'??':<10} {'OK':>5} {'LOSS':>5} {'ERROR':>6} {'SKIP':>5} {'avg_ms':>8} {'max_ms':>8}\n"
         f.write(hdr)
-        f.write(f"  {'??':<10} {h_ok:>5} {h_lo:>5} {h_er:>6} {h_sk:>5} {h_av:>8.1f} {h_mx:>8.1f}\n")
-        f.write(f"  {'??':<10} {v_ok:>5} {v_lo:>5} {v_er:>6} {v_sk:>5} {v_av:>8.1f} {v_mx:>8.1f}\n")
+        f.write(
+            f"  {'??':<10} {h_ok:>5} {h_lo:>5} {h_er:>6} {h_sk:>5} {h_av:>8.1f} {h_mx:>8.1f}\n"
+        )
+        f.write(
+            f"  {'??':<10} {v_ok:>5} {v_lo:>5} {v_er:>6} {v_sk:>5} {v_av:>8.1f} {v_mx:>8.1f}\n"
+        )
         f.write(f"  LOSS ??  ?{total_loss} ?\n")
         f.write(f"  ERROR ?? ?{total_err} ?\n\n")
 
@@ -477,5 +585,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(0 if main() == 0 else 1)
-
-

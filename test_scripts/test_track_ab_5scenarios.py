@@ -9,6 +9,7 @@ Scenario 3: 編輯框預覽位置 vs 最終落地位置一致性
 Scenario 4: 多次連續編輯 + undo/redo → viewport 文字狀態正確
 Scenario 5: 多行段落樣式繼承 → 字型/大小/顏色穩定
 """
+
 import io
 import logging
 import sys
@@ -35,15 +36,27 @@ logger = logging.getLogger("test_5scenarios")
 # Helper: PDF fixture builder
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _make_paragraph_pdf(path: str) -> None:
     """Three lines of text at (72, 100/120/140), then a trailing block at (72, 200)."""
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
-    page.insert_text((72, 100), "Line-A: The quick brown fox.", fontsize=12, fontname="helv")
-    page.insert_text((72, 120), "Line-B: jumps over the lazy dog.", fontsize=12, fontname="helv")
-    page.insert_text((72, 140), "Line-C: Pack my box with five dozen liquor jugs.", fontsize=12, fontname="helv")
+    page.insert_text(
+        (72, 100), "Line-A: The quick brown fox.", fontsize=12, fontname="helv"
+    )
+    page.insert_text(
+        (72, 120), "Line-B: jumps over the lazy dog.", fontsize=12, fontname="helv"
+    )
+    page.insert_text(
+        (72, 140),
+        "Line-C: Pack my box with five dozen liquor jugs.",
+        fontsize=12,
+        fontname="helv",
+    )
     # trailing block that should be displaced when middle text grows
-    page.insert_text((72, 200), "Trailing-block: should shift down", fontsize=12, fontname="helv")
+    page.insert_text(
+        (72, 200), "Trailing-block: should shift down", fontsize=12, fontname="helv"
+    )
     doc.save(path, garbage=0)
     doc.close()
 
@@ -66,10 +79,17 @@ def _make_multiline_style_pdf(path: str) -> None:
     # Line 2: small, black
     page.insert_text((72, 140), "Body: Normal text here.", fontsize=12, fontname="helv")
     # Line 3: different color (red)
-    page.insert_text((72, 170), "Note: important warning.", fontsize=10, fontname="helv",
-                     color=(1.0, 0.0, 0.0))
+    page.insert_text(
+        (72, 170),
+        "Note: important warning.",
+        fontsize=10,
+        fontname="helv",
+        color=(1.0, 0.0, 0.0),
+    )
     # Adjacent block that must survive edits to earlier text
-    page.insert_text((72, 250), "Footer: do not touch me.", fontsize=12, fontname="helv")
+    page.insert_text(
+        (72, 250), "Footer: do not touch me.", fontsize=12, fontname="helv"
+    )
     doc.save(path, garbage=0)
     doc.close()
 
@@ -89,12 +109,14 @@ def _make_consecutive_edit_pdf(path: str) -> None:
 # Helper: text extraction & comparison
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _page_text(model: PDFModel, page_idx: int = 0) -> str:
     return model.doc[page_idx].get_text("text")
 
 
 def _norm(t: str) -> str:
     import re
+
     return re.sub(r"\s+", " ", t).strip()
 
 
@@ -116,12 +138,25 @@ def _find_run(model: PDFModel, page_idx: int, text_probe: str):
     return None
 
 
-def _edit(model, target, new_text, *, font=None, size=None, color=None,
-          original_text=None, new_rect=None, target_span_id=None, target_mode=None):
+def _edit(
+    model,
+    target,
+    new_text,
+    *,
+    font=None,
+    size=None,
+    color=None,
+    original_text=None,
+    new_rect=None,
+    target_span_id=None,
+    target_mode=None,
+):
     """Wrapper around model.edit_text with sensible defaults."""
     model.edit_text(
         page_num=1,
-        rect=target.layout_rect if hasattr(target, "layout_rect") else fitz.Rect(target.bbox),
+        rect=target.layout_rect
+        if hasattr(target, "layout_rect")
+        else fitz.Rect(target.bbox),
         new_text=new_text,
         font=font or target.font or "helv",
         size=int(size or target.size or 12),
@@ -136,6 +171,7 @@ def _edit(model, target, new_text, *, font=None, size=None, color=None,
 # ─────────────────────────────────────────────────────────────────────────────
 # Scenario 1: Mid-paragraph edit — subsequent text displaced correctly
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def scenario_1_displacement(tmpdir: str) -> tuple[bool, str]:
     """Edit middle line to a longer text; trailing block must shift down, not be deleted."""
@@ -196,12 +232,16 @@ def scenario_1_displacement(tmpdir: str) -> tuple[bool, str]:
             )
 
     model.close()
-    return True, "OK — new text present, trailing block preserved, no accidental deletion"
+    return (
+        True,
+        "OK — new text present, trailing block preserved, no accidental deletion",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Scenario 2: Same-height / shortened replacement — must not silent-no-op
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def scenario_2_no_silent_noop(tmpdir: str) -> tuple[bool, str]:
     """Replace 'Hello World' with 'Hi' (shorter). Must actually change, not silently fail."""
@@ -221,7 +261,10 @@ def scenario_2_no_silent_noop(tmpdir: str) -> tuple[bool, str]:
 
     page_text = _page_text(model)
     if "Hi" not in page_text:
-        return False, f"'Hi' not found on page after edit (silent no-op). Page text: {page_text[:200]}"
+        return (
+            False,
+            f"'Hi' not found on page after edit (silent no-op). Page text: {page_text[:200]}",
+        )
     # The original "Hello World" should be gone (or at least replaced)
     if "Hello World" in page_text:
         return False, "Original 'Hello World' still present — edit was a no-op"
@@ -260,6 +303,7 @@ def scenario_2b_same_length(tmpdir: str) -> tuple[bool, str]:
 # Scenario 3: Edit box preview position vs final landing position
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def scenario_3_position_consistency(tmpdir: str) -> tuple[bool, str]:
     """After editing text in-place (no drag), the new text bbox should be near the original rect."""
     pdf_path = str(Path(tmpdir) / "s3.pdf")
@@ -288,9 +332,15 @@ def scenario_3_position_consistency(tmpdir: str) -> tuple[bool, str]:
     dx = abs(new_rect.x0 - original_rect.x0)
     dy = abs(new_rect.y0 - original_rect.y0)
     if dx > 5.0:
-        return False, f"x0 drift too large: {original_rect.x0:.1f} → {new_rect.x0:.1f} (Δ={dx:.1f})"
+        return (
+            False,
+            f"x0 drift too large: {original_rect.x0:.1f} → {new_rect.x0:.1f} (Δ={dx:.1f})",
+        )
     if dy > 5.0:
-        return False, f"y0 drift too large: {original_rect.y0:.1f} → {new_rect.y0:.1f} (Δ={dy:.1f})"
+        return (
+            False,
+            f"y0 drift too large: {original_rect.y0:.1f} → {new_rect.y0:.1f} (Δ={dy:.1f})",
+        )
 
     model.close()
     return True, f"OK — position drift x={dx:.1f}, y={dy:.1f} (both < 5pt)"
@@ -300,6 +350,7 @@ def scenario_3_position_consistency(tmpdir: str) -> tuple[bool, str]:
 # Scenario 4: Multiple consecutive edits + undo/redo state correctness
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def scenario_4_consecutive_undo_redo(tmpdir: str) -> tuple[bool, str]:
     """Edit 3 blocks in sequence, then undo all 3, then redo all 3.
     After undo, original text should be restored; after redo, edits should be back."""
@@ -308,8 +359,6 @@ def scenario_4_consecutive_undo_redo(tmpdir: str) -> tuple[bool, str]:
 
     model = PDFModel()
     model.open_pdf(pdf_path)
-
-    original_page_text = _page_text(model)
 
     # Perform 3 sequential edits through CommandManager
     edits = [
@@ -357,7 +406,7 @@ def scenario_4_consecutive_undo_redo(tmpdir: str) -> tuple[bool, str]:
     # Undo all 3
     for i in range(3):
         if not model.command_manager.can_undo():
-            return False, f"Cannot undo step {i+1}/3"
+            return False, f"Cannot undo step {i + 1}/3"
         model.command_manager.undo()
         model.block_manager.rebuild_page(0, model.doc)
 
@@ -366,12 +415,15 @@ def scenario_4_consecutive_undo_redo(tmpdir: str) -> tuple[bool, str]:
     for orig_probe, _ in edits:
         probe = orig_probe.split(":")[1].strip()
         if probe not in after_undo:
-            return False, f"After undo, original '{probe}' not found. Page: {after_undo[:300]}"
+            return (
+                False,
+                f"After undo, original '{probe}' not found. Page: {after_undo[:300]}",
+            )
 
     # Redo all 3
     for i in range(3):
         if not model.command_manager.can_redo():
-            return False, f"Cannot redo step {i+1}/3"
+            return False, f"Cannot redo step {i + 1}/3"
         model.command_manager.redo()
         model.block_manager.rebuild_page(0, model.doc)
 
@@ -389,6 +441,7 @@ def scenario_4_consecutive_undo_redo(tmpdir: str) -> tuple[bool, str]:
 # ─────────────────────────────────────────────────────────────────────────────
 # Scenario 5: Multi-line style inheritance
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def scenario_5_style_inheritance(tmpdir: str) -> tuple[bool, str]:
     """Edit body text without touching title or footer.
@@ -451,6 +504,7 @@ def scenario_5_style_inheritance(tmpdir: str) -> tuple[bool, str]:
 # Harder edge cases: dense paragraphs, htmlbox content, CJK, same-block edit
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _make_dense_paragraph_pdf(path: str) -> None:
     """Create PDF with htmlbox multi-line paragraph (like real editing would produce)."""
     doc = fitz.open()
@@ -458,21 +512,26 @@ def _make_dense_paragraph_pdf(path: str) -> None:
     # First paragraph via htmlbox — more realistic than insert_text
     html = (
         '<p style="font-size:11pt;line-height:1.4">'
-        'Alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo '
-        'lima mike november oscar papa quebec romeo sierra tango uniform victor '
-        'whiskey xray yankee zulu.</p>'
+        "Alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo "
+        "lima mike november oscar papa quebec romeo sierra tango uniform victor "
+        "whiskey xray yankee zulu.</p>"
     )
     css = "* { font-family: Helvetica; }"
     page.insert_htmlbox(fitz.Rect(72, 72, 520, 200), html, css=css)
     # Second paragraph right below
     html2 = (
         '<p style="font-size:11pt;line-height:1.4">'
-        'Second paragraph: this should survive any edit to the first paragraph above. '
-        'It contains important content that must not be accidentally redacted.</p>'
+        "Second paragraph: this should survive any edit to the first paragraph above. "
+        "It contains important content that must not be accidentally redacted.</p>"
     )
     page.insert_htmlbox(fitz.Rect(72, 210, 520, 320), html2, css=css)
     # Third block far below
-    page.insert_text((72, 400), "Footer sentinel: must survive all edits.", fontsize=10, fontname="helv")
+    page.insert_text(
+        (72, 400),
+        "Footer sentinel: must survive all edits.",
+        fontsize=10,
+        fontname="helv",
+    )
     doc.save(path, garbage=0)
     doc.close()
 
@@ -583,7 +642,9 @@ def scenario_3b_position_after_longer_edit(tmpdir: str) -> tuple[bool, str]:
         return False, "Setup: cannot find target"
 
     original_rect = fitz.Rect(target.layout_rect)
-    much_longer = "Hello World — this text is now significantly longer to test position stability"
+    much_longer = (
+        "Hello World — this text is now significantly longer to test position stability"
+    )
     try:
         _edit(model, target, much_longer, target_mode="run")
     except Exception as e:
@@ -641,7 +702,9 @@ def scenario_4b_edit_same_block_twice(tmpdir: str) -> tuple[bool, str]:
 
     # Second edit on same block
     try:
-        _edit(model, target2, "Second Edit", target_mode="run", original_text="First Edit")
+        _edit(
+            model, target2, "Second Edit", target_mode="run", original_text="First Edit"
+        )
     except Exception as e:
         model.close()
         return False, f"Second edit raised: {e}"
@@ -695,6 +758,7 @@ def scenario_5b_cjk_mixed_edit(tmpdir: str) -> tuple[bool, str]:
 # Stress tests: multi-run block, real-world-like content, protected span replay
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _make_multirun_block_pdf(path: str) -> None:
     """Multi-run paragraph: mixed fonts in a tight cluster.
     Simulates a real PDF where one block has multiple styled spans."""
@@ -707,9 +771,13 @@ def _make_multirun_block_pdf(path: str) -> None:
     page.insert_text((72, y + 20), "Title: ", fontsize=12, fontname="helv")
     page.insert_text((120, y + 20), "Senior Engineer", fontsize=12, fontname="helv")
     page.insert_text((72, y + 40), "Dept: ", fontsize=12, fontname="helv")
-    page.insert_text((120, y + 40), "Research and Development", fontsize=12, fontname="helv")
+    page.insert_text(
+        (120, y + 40), "Research and Development", fontsize=12, fontname="helv"
+    )
     # Independent block far below
-    page.insert_text((72, 300), "Independent block: do not touch", fontsize=12, fontname="helv")
+    page.insert_text(
+        (72, 300), "Independent block: do not touch", fontsize=12, fontname="helv"
+    )
     doc.save(path, garbage=0)
     doc.close()
 
@@ -748,9 +816,14 @@ def scenario_1c_multirun_edit_single_run(tmpdir: str) -> tuple[bool, str]:
         return False, "Setup: cannot find 'Smith' run"
 
     try:
-        _edit(model, run, "Doe",
-              target_span_id=run.span_id, target_mode="run",
-              original_text=run.text)
+        _edit(
+            model,
+            run,
+            "Doe",
+            target_span_id=run.span_id,
+            target_mode="run",
+            original_text=run.text,
+        )
     except Exception as e:
         model.close()
         return False, f"edit_text raised: {e}"
@@ -796,9 +869,14 @@ def scenario_1d_tightly_packed_lines(tmpdir: str) -> tuple[bool, str]:
         return False, "Setup: cannot find '3:' run"
 
     try:
-        _edit(model, run, "EDITED",
-              target_span_id=run.span_id, target_mode="run",
-              original_text=run.text)
+        _edit(
+            model,
+            run,
+            "EDITED",
+            target_span_id=run.span_id,
+            target_mode="run",
+            original_text=run.text,
+        )
     except Exception as e:
         model.close()
         return False, f"edit_text raised: {e}"
@@ -841,7 +919,13 @@ def scenario_4c_rapid_consecutive_same_block(tmpdir: str) -> tuple[bool, str]:
             return False, f"Cannot find '{prev_text}' for edit to '{new_text}'"
         try:
             # Use paragraph mode — this is what the real UI does when editing a block
-            _edit(model, target, new_text, target_mode="paragraph", original_text=prev_text)
+            _edit(
+                model,
+                target,
+                new_text,
+                target_mode="paragraph",
+                original_text=prev_text,
+            )
         except Exception as e:
             model.close()
             return False, f"Edit to '{new_text}' raised: {e}"
@@ -890,14 +974,17 @@ def scenario_real_pdf_edit(tmpdir: str) -> tuple[bool, str]:
     # Capture original state
     orig_page_text = _page_text(model)
     original_text = target_run.text.strip()
-    snapshot = model._capture_page_snapshot(0)
-
     # Edit: append " [EDITED]" to the run
     new_text = original_text + " [EDITED]"
     try:
-        _edit(model, target_run, new_text,
-              target_span_id=target_run.span_id, target_mode="run",
-              original_text=target_run.text)
+        _edit(
+            model,
+            target_run,
+            new_text,
+            target_span_id=target_run.span_id,
+            target_mode="run",
+            original_text=target_run.text,
+        )
     except RuntimeError as e:
         # Verification rollback is acceptable for real PDFs
         if "驗證失敗" in str(e) or "verification failed" in str(e):
@@ -909,7 +996,10 @@ def scenario_real_pdf_edit(tmpdir: str) -> tuple[bool, str]:
     after_text = _page_text(model)
     if "[EDITED]" not in after_text:
         model.close()
-        return False, f"Edited text not found in real PDF. Original run: {original_text[:30]!r}"
+        return (
+            False,
+            f"Edited text not found in real PDF. Original run: {original_text[:30]!r}",
+        )
 
     # Verify: other content should not have been mass-deleted
     # Simple heuristic: page text length should not have decreased dramatically
@@ -976,8 +1066,12 @@ def scenario_8_verification_sensitivity(tmpdir: str) -> tuple[bool, str]:
     pdf_path = str(Path(tmpdir) / "s8.pdf")
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
-    page.insert_text((72, 100), "The quick brown fox jumps over the lazy dog.",
-                     fontsize=12, fontname="helv")
+    page.insert_text(
+        (72, 100),
+        "The quick brown fox jumps over the lazy dog.",
+        fontsize=12,
+        fontname="helv",
+    )
     doc.save(pdf_path, garbage=0)
     doc.close()
 
@@ -1015,7 +1109,10 @@ def scenario_8_verification_sensitivity(tmpdir: str) -> tuple[bool, str]:
 
 SCENARIOS = [
     ("S1a: Mid-paragraph displacement (insert_text)", scenario_1_displacement),
-    ("S1b: Dense paragraph displacement (htmlbox)", scenario_1b_dense_paragraph_displacement),
+    (
+        "S1b: Dense paragraph displacement (htmlbox)",
+        scenario_1b_dense_paragraph_displacement,
+    ),
     ("S1c: Multi-run block single-run edit", scenario_1c_multirun_edit_single_run),
     ("S1d: Tightly packed lines edit", scenario_1d_tightly_packed_lines),
     ("S2a: Shortened replacement no-op", scenario_2_no_silent_noop),
@@ -1051,6 +1148,7 @@ def main():
             except Exception as e:
                 ok, msg = False, f"Unhandled exception: {e}"
                 import traceback
+
                 traceback.print_exc()
             status = "PASS" if ok else "FAIL"
             if ok:
