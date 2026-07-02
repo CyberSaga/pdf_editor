@@ -21,7 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 # Dev tooling only. Platform/feature extras (e.g. pikepdf) stay in
 # optional-requirements.txt; OCR extras stay in ocr-requirements.txt.
-dev = ["build", "setuptools>=64", "wheel", "ruff", "mypy", "pytest", "pytest-cov"]
+dev = ["build", "setuptools>=64", "wheel", "ruff", "mypy", "pytest", "pytest-cov", "import-linter"]
 
 [tool.setuptools]
 # Flat top-level layout: explicit discovery so editable install works without
@@ -54,6 +54,46 @@ ignore_missing_imports = true
 # name". explicit_package_bases anchors module names at the repo root.
 namespace_packages = true
 explicit_package_bases = true
+
+[tool.importlinter]
+# S4 (2026-07-02): CI-enforceable form of CLAUDE.md §2's layer rules. Advisory
+# in CI until the known violations below are cleared, then flips to blocking.
+root_packages = ["model", "controller", "view", "utils"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Model must not import Controller or View"
+type = "forbidden"
+source_modules = ["model"]
+forbidden_modules = ["controller", "view"]
+
+[[tool.importlinter.contracts]]
+name = "Utils must not import Controller, View, or Model"
+type = "forbidden"
+source_modules = ["utils"]
+forbidden_modules = ["controller", "view", "model"]
+
+[[tool.importlinter.contracts]]
+name = "Model stays Qt-free (never imports PySide6)"
+type = "forbidden"
+source_modules = ["model"]
+forbidden_modules = ["PySide6"]
+# utils is allowed PySide6.QtCore/QtNetwork (e.g. single_instance.py's lock
+# file); the narrower "utils must not import QtWidgets" rule is CI-enforced
+# via grep in ci.yml because import-linter can't forbid an external
+# package's submodule. KNOWN VIOLATION (tracked in TODOS.md):
+# utils/helpers.py imports QMessageBox.
+
+[[tool.importlinter.contracts]]
+name = "View must not import Model directly (signals only)"
+type = "forbidden"
+source_modules = ["view"]
+forbidden_modules = ["model"]
+# KNOWN VIOLATIONS (tracked in TODOS.md): view/dialogs/{audit,ocr,optimize}.py,
+# view/object_selection.py, view/pdf_view.py, view/text_editing.py import
+# model types/functions directly. Some are DTO/type imports (arguably fine);
+# view/dialogs/optimize.py calling PDFModel.preset_optimize_options() and
+# view/dialogs/ocr.py calling is_device_available() are real boundary crossings.
 
 [tool.pytest.ini_options]
 testpaths = ["test_scripts"]

@@ -34,6 +34,10 @@ App identity is **CyberSagaPDF** (org `CyberSaga`): `main.py` sets the Windows A
 
 ## 2. Layer Responsibilities
 
+**CI enforcement (2026-07-02):** the boundaries below are checked by `.github/workflows/ci.yml`'s `layer-boundaries`
+job — `[tool.importlinter]` in `pyproject.toml` (advisory until the known violations in `TODOS.md` clear) plus a
+blocking `threading.Thread` grep over `view/`+`controller/`.
+
 ### 2.1 Model (`model/pdf_model.py`)
 
 Model owns document correctness and persistence behavior. It manages sessions (`DocumentSession`), document handles (`fitz.Document`), text hit-testing, text edit transactions, add-text insertion, save/save-as pipeline, and snapshot helpers used by history commands.

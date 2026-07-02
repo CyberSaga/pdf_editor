@@ -17,6 +17,22 @@
 - [~] **R4.1 — Overlay render cache: EVALUATED → DEFERRED.** Disproportionate risk for a watermark-only conditional gain. Full rationale: `plans/refactor-R4-performance-deferrals.md`. Revisit only if watermarked scroll-after-edit latency becomes a measured bottleneck.
 - [ ] **MVC routing of merge-dialog page counting.** The view-layer `fitz.open()` calls in `pdf_view.py` (merge dialog page-count probe) should route through a controller/model utility to respect layer boundaries.
 
+## Open -- Layer boundary violations (S4 import-linter, added 2026-07-02)
+
+`lint-imports` (`.github/workflows/ci.yml` → `layer-boundaries`) runs advisory-only until these clear, then flips to blocking:
+
+- [ ] **`utils/preferences.py` imports `model.tools.ocr_types`.** Utils importing Model inverts the intended
+  bottom-of-stack position of `utils/`. Either move `ocr_types` to `utils/` (if it's really a shared type) or move
+  the OCR preference logic that needs it into `controller/`/`model/`.
+- [ ] **`utils/helpers.py` imports `PySide6.QtWidgets.QMessageBox`.** Utils showing a message box directly bypasses
+  the View layer; callers should raise/return and let View show the dialog.
+- [ ] **View importing Model directly** (`view/dialogs/audit.py`, `view/dialogs/ocr.py`, `view/dialogs/optimize.py`,
+  `view/object_selection.py`, `view/pdf_view.py`, `view/text_editing.py`). Most are DTO/type imports (arguably
+  acceptable — request/response dataclasses aren't mutation calls), but `view/dialogs/optimize.py` calling
+  `PDFModel.preset_optimize_options()` and `view/dialogs/ocr.py` calling `is_device_available()` are real boundary
+  crossings that should route through `controller/`. Triage: split the DTO imports (allow) from the direct calls
+  (route through controller) before flipping the CI contract to blocking.
+
 ## Open -- Security dependency hygiene (from F2/F9 patch work; updated 2026-06-05)
 
 See `docs/history/reports/0607-implementation-notes.md` for the full F1-F9 patch log.
