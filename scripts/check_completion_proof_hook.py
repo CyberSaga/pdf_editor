@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """Claude/Codex Stop hook — validates .completion_proof.json before allowing completion.
 
-Registered in .claude/settings.json as a Stop hook.  Claude Code runs this
+*** OPT-IN CAMPAIGN TOOLING — NOT REGISTERED ***
+Unregistered from .claude/settings.json on 2026-07-02: its gate plan file
+(plans/2026-05-05-no-jump-editor-geometry-gate.md) never existed in git, so the
+hook no-oped on every Stop event while still paying a python+git subprocess
+spawn each time.  If a future completion-gate campaign needs it, re-register it
+as a Stop hook AND point GOAL_FILE at a gate plan file that is actually
+committed — note Layer 7 re-runs the full test suite on every Stop while armed.
+
+Original contract (when registered as a Stop hook): Claude Code runs this
 script automatically when the assistant is about to stop responding.  Exit 0
 allows the response; exit 1 blocks it and prints the reason to stderr.
 

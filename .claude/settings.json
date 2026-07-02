@@ -1,12 +1,12 @@
 {
   "hooks": {
-    "Stop": [
+    "PostToolUse": [
       {
-        "matcher": "",
+        "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/check_completion_proof_hook.py"
+            "command": "python scripts/hooks/ruff_on_edit.py"
           }
         ]
       }

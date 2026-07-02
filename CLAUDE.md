@@ -45,7 +45,11 @@ mypy model/ utils/            # type-check (gradual — strict on new modules)
 pytest                        # test suite
 ```
 
-New code must pass `ruff check` with zero violations. The **production layers** (`model/ controller/ view/ utils/ main.py src/`) are ruff-clean as of R1 (2026-06-15). Remaining violations (**193**, all in `test_scripts/` and `scripts/`; the baseline was 238, not the earlier-quoted 240, measured with ruff default rules E4/E7/E9+F, E501 not selected) are tracked for a gradual per-file cleanup.
+New code must pass `ruff check` with zero violations. The **production layers** (`model/ controller/ view/ utils/ main.py src/`) stay ruff-clean; remaining violations live in `test_scripts/` and `scripts/` and are tracked for gradual per-file cleanup. Run `ruff check .` for current status — do not trust cached counts.
+
+> **pytest via `.venv\Scripts\python.exe -m pytest`** — the system Python has a
+> different PyMuPDF version and masks runtime-only bugs. Never run bare `pytest`
+> for verification.
 
 > **mypy on this machine:** a stray `__init__.py` in the PARENT directory
 > (`C:\Users\jiang\Documents\python programs\__init__.py`) makes mypy walk above the
@@ -53,13 +57,14 @@ New code must pass `ruff check` with zero violations. The **production layers** 
 > `pyproject.toml` sets `explicit_package_bases = true` to anchor module names at the
 > repo root; invoke mypy via the project venv: `.venv\Scripts\python.exe -m mypy model/ utils/`.
 
-## 4. Context Loading Protocol
+## 4. Context Loading Protocol (grep-first)
 
-At the start of any session involving structural changes or new features:
+**Grep first, read second, bulk-read never (~10k token doc cap per session).** Never read `docs/ARCHITECTURE.md`, `docs/PITFALLS.md`, `TODOS.md`, or `CODEINDEX.md` end-to-end. Load only what the task touches:
 
-1. Read `docs/ARCHITECTURE.md` — understand current module responsibilities and API contracts.
-2. Read `docs/PITFALLS.md` — check for known failure modes in the area you are about to touch.
-3. Read `TODOS.md` — check priority/dependency before starting new work.
+1. **API contracts:** codegraph queries (§10) for the symbols you'll touch.
+2. **Pitfalls:** `docs/PITFALLS_INDEX.md` (regen: `python scripts/build_pitfalls_index.py`), else `rg "^## |\*\*Area:\*\*" docs/PITFALLS.md`; read only matched entries by line offset.
+3. **Architecture:** `rg "^#" docs/ARCHITECTURE.md`, read only the relevant section.
+4. **TODOS:** grep for the feature area.
 
 Do not make assumptions about module APIs without reading the relevant source file first.
 
@@ -93,7 +98,7 @@ Before committing a structural change (new module, refactor, dependency change):
 
 After completing any non-trivial task:
 
-1. **Update `docs/PITFALLS.md`** with any non-obvious failure modes discovered (e.g. Qt threading gotchas, PyMuPDF quirks, PySide6 signal issues).
+1. **Update `docs/PITFALLS.md`** with any non-obvious failure modes discovered (e.g. Qt threading gotchas, PyMuPDF quirks, PySide6 signal issues), then regenerate the index: `python scripts/build_pitfalls_index.py`.
 2. **Update `docs/ARCHITECTURE.md`** if module structure, public APIs, or responsibilities changed.
 3. **Update `TODOS.md`** — mark completed items, add new items discovered during implementation.
 
@@ -126,6 +131,7 @@ For tasks larger than a single function change:
 1. Write `plans/<feature-name>.md` with: goal, affected modules, step list, open questions.
 2. Update the plan as you go — record decisions made and dead ends hit.
 3. On completion, move the plan to `plans/archive/` and summarize the key architectural decision in `docs/ARCHITECTURE.md`.
+4. Finished plans are `git mv`-ed to `plans/archive/` in the completion commit — **never deleted**.
 
 ## 9. Known Pitfall Areas
 
@@ -152,9 +158,6 @@ python .codegraph/query.py explore <symbol> [N]  # BFS traversal to depth N (def
 
 All commands output compact JSON.
 
-**Full inventory (one read):**
-Read `CODEINDEX.md` — complete symbol map + import graph for all 202 source files.
-
 **Re-index after structural changes:**
 ```
 python .codegraph/indexer.py
@@ -162,9 +165,22 @@ python .codegraph/indexer.py
 
 Exclude patterns are in `.codegraphignore` (gitignore-style). Schema details in `.codegraph/README.md`.
 
-## 11. Orchestration workflow  
-You (Fable) are the orchestrator. Plan, decompose, synthesize.  
-Reasoning-heavy phases → deep-reasoner  
-Mechanical work → fast-worker  
-Codex (/codex:rescue --background) is a cracked engineer on par with deep-reasoner, from a different perspective. Treat as a peer, not a reviewer.  
-High-stakes decisions: task Opus + Codex on the same problem in parallel, synthesize the best of both, without showing either the other's answer. Keep your own context clean.   
+## 11. Orchestration Workflow
+
+You are the orchestrator: plan, decompose, synthesize. Delegate via the Agent tool:
+
+- **`deep-reasoner`** (`.claude/agents/`) — read-only analysis, root-cause work, architecture reasoning. No edit tools.
+- **`fast-worker`** (`.claude/agents/`) — mechanical, fully-specified execution: bulk renames, boilerplate, applying a decided diff.
+- **Codex** (`/codex:rescue --background`) — a cracked engineer on par with deep-reasoner, from a different perspective. Treat as a peer, not a reviewer.
+- High-stakes decisions: task deep-reasoner + Codex on the same problem independently; synthesize the best of both without showing either the other's answer. Keep your own context clean.
+
+**Dispatch subagents serially** — parallel bursts trip the session limit; run one at a time so only the in-flight agent dies.
+
+## 12. Model Policy
+
+Default session model is **Sonnet 5**. Switch deliberately, not reactively:
+
+- Planning / architecture / hard debugging → **Fable 5** (explicit switch or plan mode)
+- Implementation → **Sonnet 5** (default, no switch)
+- Mechanical bulk edits → **Haiku** via `fast-worker`
+- Reviews → **codex plugin** (spends OpenAI quota, not Claude limits — the rate-limit hedge)
