@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 DB = ROOT / ".codegraph" / "graph.db"
-OUTPUT = ROOT / "CODEGRAPH_REPORT.md"
+OUTPUT = ROOT / ".codegraph" / "CODEGRAPH_REPORT.md"
 
 
 def main() -> None:

@@ -1,6 +1,6 @@
 """Toolbar icon loading and the action-text -> PNG-filename mapping.
 
-Icons live in ``appearance_design/function_icons/`` as numbered PNGs. The
+Icons live in ``docs/design/function_icons/`` as numbered PNGs. The
 toolbar actions are created with Traditional-Chinese labels, so the mapping is
 keyed on that label text and :func:`load_icon` takes a label (not a filename).
 
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_APPEARANCE_DIR: Path = Path(__file__).resolve().parents[1] / "appearance_design"
+_APPEARANCE_DIR: Path = Path(__file__).resolve().parents[1] / "docs" / "design"
 
 ICON_DIR: Path = _APPEARANCE_DIR / "function_icons"
 

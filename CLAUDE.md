@@ -59,7 +59,7 @@ New code must pass `ruff check` with zero violations. The **production layers** 
 
 ## 4. Context Loading Protocol (grep-first)
 
-**Grep first, read second, bulk-read never (~10k token doc cap per session).** Never read `docs/ARCHITECTURE.md`, `docs/PITFALLS.md`, `TODOS.md`, or `CODEINDEX.md` end-to-end. Load only what the task touches:
+**Grep first, read second, bulk-read never (~10k token doc cap per session).** Never read `docs/ARCHITECTURE.md`, `docs/PITFALLS.md`, `TODOS.md`, or `.codegraph/CODEINDEX.md` end-to-end. Load only what the task touches:
 
 1. **API contracts:** codegraph queries (§10) for the symbols you'll touch.
 2. **Pitfalls:** `docs/PITFALLS_INDEX.md` (regen: `python scripts/build_pitfalls_index.py`), else `rg "^## |\*\*Area:\*\*" docs/PITFALLS.md`; read only matched entries by line offset.

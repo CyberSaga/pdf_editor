@@ -69,4 +69,4 @@ Edit `.codegraphignore` at project root (gitignore syntax). Default exclusions:
 | `query.py`     | query CLI — agents call this for targeted lookups |
 | `graph.db`     | SQLite database (created by indexer)             |
 | `README.md`    | this file                                        |
-| `../CODEINDEX.md` | pre-built static symbol inventory (project root) |
+| `CODEINDEX.md` | pre-built static symbol inventory |

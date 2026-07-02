@@ -24,7 +24,7 @@ from view.theme import (
 
 # The 20 token keys every palette must define for build_qss().
 # accent_line / hover_strong / shadow are brand tokens lifted verbatim from
-# appearance_design/colors.css (they were documented there but never plumbed
+# docs/design/colors.css (they were documented there but never plumbed
 # into the QSS); they back focus rings, tab hover, and chrome elevation.
 _TOKEN_KEYS = {
     "bg", "surface", "sunken", "elev",
@@ -203,7 +203,7 @@ def test_meadow_bg_matches_meadow_green_hue():
 
 
 def test_accent_line_values_from_colors_css():
-    # Lifted verbatim from --color-accent-line in appearance_design/colors.css
+    # Lifted verbatim from --color-accent-line in docs/design/colors.css
     # (palette preservation: no invented hues).
     assert ALPINE_SNOW["accent_line"] == "#b9aee2"
     assert GLIMMERING_GLACIER["accent_line"] == "#8ec8e6"

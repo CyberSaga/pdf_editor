@@ -37,7 +37,7 @@
 
 .PARAMETER IconPath
     Path to the .ico used for the file/app icon. Defaults to the vendored
-    appearance_design\app_icon.ico. Pass another path to use a different icon.
+    docs\design\app_icon.ico. Pass another path to use a different icon.
 
 .PARAMETER SimulateMidwayFailure
     TEST ONLY. Throw partway through registration (after the first key block) to
@@ -50,7 +50,7 @@
 [CmdletBinding()]
 param(
     [switch]$Unregister,
-    [string]$IconPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'appearance_design\app_icon.ico'),
+    [string]$IconPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'docs\design\app_icon.ico'),
     [switch]$SimulateMidwayFailure
 )
 

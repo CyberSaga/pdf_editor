@@ -16,7 +16,7 @@ Document intake now supports both explicit open and drag-and-drop:
 ## 1.1 App Identity and Windows Shell Integration
 
 The app is branded **CyberSagaPDF**:
-- Window/taskbar identity: `main.py` sets AppUserModelID `CyberSaga.CyberSagaPDF` and the application icon (`appearance_design/app_icon.ico`), so the taskbar shows the app's own name/icon instead of a generic Python entry.
+- Window/taskbar identity: `main.py` sets AppUserModelID `CyberSaga.CyberSagaPDF` and the application icon (`docs/design/app_icon.ico`), so the taskbar shows the app's own name/icon instead of a generic Python entry.
 - Preferences live under the `CyberSaga/CyberSagaPDF` QSettings namespace. On first run after upgrading from the old `pdf_editor` namespace, each known preference key (theme, OCR device/languages) that is missing in the new namespace is migrated from the legacy store; keys the user has already set in the new namespace are never overwritten.
 - Single-instance forwarding works across the rename: a second launch first tries the current per-user server name, then falls back to the legacy `pdf_editor` server name, so opening a file from the shell still lands in an already-running older instance instead of spawning a duplicate window.
 - Optional `.pdf` file association on Windows: `scripts/windows_file_association.ps1` registers a current-user-only (HKCU, no admin) "CyberSagaPDF" handler with its own launcher copy and icon, validates required assets before touching anything, snapshots prior managed keys and restores them on any failure, and never modifies the OS-protected UserChoice default (the user confirms the default with one click). `-Unregister` removes everything the script created.

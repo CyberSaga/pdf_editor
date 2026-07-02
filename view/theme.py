@@ -1,6 +1,6 @@
 """Theme tokens, the global QSS builder, and the status-bar theme switcher.
 
-Translates the selected blocks of ``appearance_design/colors.css`` into a single
+Translates the selected blocks of ``docs/design/colors.css`` into a single
 QSS string that is applied **once at the QApplication level** (so top-level
 QMenu context menus and modal QDialogs inherit it, not just the main window),
 and exposes a persistent switcher widget for the status-bar corner.
@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from utils.theme_ids import DEFAULT_THEME_ID, VALID_THEME_IDS
 
 # Token name -> hex/rgba value, translated from the alpine-snow block of
-# appearance_design/colors.css.
+# docs/design/colors.css.
 ALPINE_SNOW: dict[str, str] = {
     "bg": "#f0ecfa",
     "surface": "#fafafc",
@@ -518,7 +518,7 @@ else:
 
         Used by :class:`QGraphicsDropShadowEffect` to elevate the top chrome.
         The hue is the ``shadow`` brand token (from the ``--shadow-*`` colours in
-        ``appearance_design/colors.css``). Unknown names fall back to the default.
+        ``docs/design/colors.css``). Unknown names fall back to the default.
         """
         meta = THEME_REGISTRY.get(theme_name) or THEME_REGISTRY[_DEFAULT_THEME]
         return _parse_qcolor(meta.tokens["shadow"])

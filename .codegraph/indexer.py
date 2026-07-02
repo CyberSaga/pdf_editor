@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent.resolve()
 DB_PATH = ROOT / ".codegraph" / "graph.db"
 IGNORE_FILE = ROOT / ".codegraphignore"
-CODEINDEX_PATH = ROOT / "CODEINDEX.md"
+CODEINDEX_PATH = ROOT / ".codegraph" / "CODEINDEX.md"
 
 
 # ---------------------------------------------------------------------------
