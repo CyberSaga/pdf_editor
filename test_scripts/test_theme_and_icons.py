@@ -641,3 +641,26 @@ def test_straighten_action_warns_about_size_growth(qapp):
         assert "極致壓縮" in tooltip
     finally:
         view.deleteLater()
+
+
+# ---------------------------------------------------------------------------
+# Packaging guard: runtime icon assets must exist on disk
+# ---------------------------------------------------------------------------
+
+
+def test_app_icon_exists():
+    from view.icons import APP_ICON_PATH
+
+    assert APP_ICON_PATH.is_file(), f"app icon missing: {APP_ICON_PATH}"
+
+
+def test_all_mapped_toolbar_icons_exist():
+    from view.icons import ACTION_ICON_MAP, ICON_DIR
+
+    assert ICON_DIR.is_dir(), f"icon directory missing: {ICON_DIR}"
+    missing = [
+        name
+        for name in ACTION_ICON_MAP.values()
+        if not (ICON_DIR / name).is_file()
+    ]
+    assert not missing, f"missing icon files: {missing}"

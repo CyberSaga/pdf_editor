@@ -1,6 +1,6 @@
 """Toolbar icon loading and the action-text -> PNG-filename mapping.
 
-Icons live in ``docs/design/function_icons/`` as numbered PNGs. The
+Icons live in ``view/resources/function_icons/`` as numbered PNGs. The
 toolbar actions are created with Traditional-Chinese labels, so the mapping is
 keyed on that label text and :func:`load_icon` takes a label (not a filename).
 
@@ -13,13 +13,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_APPEARANCE_DIR: Path = Path(__file__).resolve().parents[1] / "docs" / "design"
+_RESOURCES_DIR: Path = Path(__file__).resolve().parent / "resources"
 
-ICON_DIR: Path = _APPEARANCE_DIR / "function_icons"
+ICON_DIR: Path = _RESOURCES_DIR / "function_icons"
 
 # Application/window icon (title bar, taskbar). A multi-resolution .ico so Qt
 # can pick the right size per DPI.
-APP_ICON_PATH: Path = _APPEARANCE_DIR / "app_icon.ico"
+APP_ICON_PATH: Path = _RESOURCES_DIR / "app_icon.ico"
 
 # Action label text -> PNG filename (33 ribbon actions).
 ACTION_ICON_MAP: dict[str, str] = {

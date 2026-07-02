@@ -34,6 +34,9 @@ py-modules = ["main"]
 include = ["controller*", "model*", "utils*", "view*", "src*"]
 namespaces = true
 
+[tool.setuptools.package-data]
+view = ["resources/*.ico", "resources/function_icons/*.png"]
+
 [tool.ruff]
 target-version = "py39"
 
