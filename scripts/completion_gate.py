@@ -130,7 +130,7 @@ def main(skip_signoff: bool = False) -> int:
         "scripts/check_gate_passed.py": "7fb9f6e27fc66271bfc60b2fb0cad7d0291630ff51950f4044362663eab90e61",
         "scripts/codex_session_guard.py": "7b50b60331ee1fb5b9849a79fee5966fcfd584980ae7a37d78b1acb305b4cfb2",
         "scripts/ux_signoff_agent.py": "40d4cc6ff03246c15e6c86e4787c39ec7a884d7c75c2fa6f577dbdf65d7f9cc6",
-        "scripts/gate_anchor.py": "792b98925af76420ee921e9746cf1b9fcb4319ad225fd99a332bc5c6e737f949",
+        "scripts/gate_anchor.py": "139b3e1531f1473c0241ffdccbc22d38bce326a599ac91a9e46bd402cd98c9b1",
     }
     hash_mismatches: list[str] = []
     for rel, expected in _PINNED_HASHES.items():

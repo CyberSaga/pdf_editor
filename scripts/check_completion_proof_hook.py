@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Claude/Codex Stop hook — validates .completion_proof.json before allowing completion.
 
-*** OPT-IN CAMPAIGN TOOLING — NOT REGISTERED ***
-Unregistered from .claude/settings.json on 2026-07-02: its gate plan file
-(plans/2026-05-05-no-jump-editor-geometry-gate.md) never existed in git, so the
-hook no-oped on every Stop event while still paying a python+git subprocess
-spawn each time.  If a future completion-gate campaign needs it, re-register it
-as a Stop hook AND point GOAL_FILE at a gate plan file that is actually
-committed — note Layer 7 re-runs the full test suite on every Stop while armed.
-
-Original contract (when registered as a Stop hook): Claude Code runs this
+Registered in .claude/settings.json as a Stop hook.  Claude Code runs this
 script automatically when the assistant is about to stop responding.  Exit 0
 allows the response; exit 1 blocks it and prints the reason to stderr.
+
+Re-registered 2026-07-03 (was briefly unregistered 2026-07-02 during the setup
+optimization campaign): unregistering it left scripts/completion_gate.py
+permanently unable to pass its own Step 0b invariant check (it hard-requires
+this hook to be wired into .claude/settings.json), breaking the gate for any
+future no-jump-style campaign. Its GOAL_FILE
+(plans/2026-05-05-no-jump-editor-geometry-gate.md) has never existed in git,
+so Layer 1's goal-mode guard makes every invocation an immediate exit 0 — one
+git ls-files subprocess, not the full test suite. Layer 7 (full pytest re-run)
+only fires once a real .completion_proof.json is present, which requires a
+tracked goal file to ever exist in the first place.
 
 Enforcement logic (layered, each layer catches a distinct attack class):
   1. Goal-mode guard: if the gate plan file does not exist AND was never committed

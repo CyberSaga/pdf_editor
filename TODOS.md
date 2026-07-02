@@ -17,6 +17,26 @@
 - [~] **R4.1 — Overlay render cache: EVALUATED → DEFERRED.** Disproportionate risk for a watermark-only conditional gain. Full rationale: `plans/refactor-R4-performance-deferrals.md`. Revisit only if watermarked scroll-after-edit latency becomes a measured bottleneck.
 - [ ] **MVC routing of merge-dialog page counting.** The view-layer `fitz.open()` calls in `pdf_view.py` (merge dialog page-count probe) should route through a controller/model utility to respect layer boundaries.
 
+## Resolved -- Completion-gate trust chain (2026-07-03, Codex adversarial-review finding)
+
+Phase 1 of the setup-optimization campaign (2026-07-02) unregistered the `Stop` hook and, separately, edited
+`check_completion_proof_hook.py`'s header comment without cascading the SHA-256 update through
+`gate_anchor.py` → `completion_gate.py`'s `_PINNED_HASHES`. Net effect: `scripts/completion_gate.py` could no
+longer pass its own Step 0b (missing Stop-hook registration) or Step 0c (stale pinned hash) invariant checks —
+a permanently broken trust chain, caught by `codex:adversarial-review --base pre-optimization-2026-07-02`.
+
+Fixed by re-registering the Stop hook in `.claude/settings.json` (alongside the Phase-1 `PostToolUse` ruff
+hook) and re-cascading the hash chain (`check_completion_proof_hook.py` → `gate_anchor.py._HOOK_HASH` →
+`completion_gate.py._PINNED_HASHES['scripts/gate_anchor.py']`). Verified: the hook still exits 0 in ~90ms
+(its `GOAL_FILE`, `plans/2026-05-05-no-jump-editor-geometry-gate.md`, has never been committed to git, so
+Layer 1's goal-mode guard short-circuits), Steps 0/0a/0b/0c of `completion_gate.py` now pass, and
+`test_scripts/test_completion_proof_hook.py` is green (18 passed, 1 skipped).
+
+- [ ] **Open follow-up:** `gate_anchor.py`'s own maintenance doc says "document the change in
+  `plans/2026-05-05-no-jump-editor-geometry-gate.md`" — that file has never existed in git (a pre-existing gap
+  predating this campaign, not introduced by it). Documented here instead. If a future no-jump-style campaign
+  revives that plan file, reconcile this history into it.
+
 ## Open -- Layer boundary violations (S4 import-linter, added 2026-07-02)
 
 `lint-imports` (`.github/workflows/ci.yml` → `layer-boundaries`) runs advisory-only until these clear, then flips to blocking:

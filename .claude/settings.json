@@ -10,6 +10,16 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/check_completion_proof_hook.py"
+          }
+        ]
+      }
     ]
   }
 }
