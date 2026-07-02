@@ -169,7 +169,7 @@ Exclude patterns are in `.codegraphignore` (gitignore-style). Schema details in 
 
 You are the orchestrator: plan, decompose, synthesize. Delegate via the Agent tool:
 
-- **`deep-reasoner`** (`.claude/agents/`) — read-only analysis, root-cause work, architecture reasoning. No edit tools.
+- **`deep-reasoner`** (`.claude/agents/`) — read-only analysis, root-cause work, architecture reasoning. Read/Grep/Glob only (no shell): run codegraph/git commands yourself and paste the output into its prompt.
 - **`fast-worker`** (`.claude/agents/`) — mechanical, fully-specified execution: bulk renames, boilerplate, applying a decided diff.
 - **Codex** (`/codex:rescue --background`) — a cracked engineer on par with deep-reasoner, from a different perspective. Treat as a peer, not a reviewer.
 - High-stakes decisions: task deep-reasoner + Codex on the same problem independently; synthesize the best of both without showing either the other's answer. Keep your own context clean.
