@@ -39,7 +39,9 @@ Layer 1's goal-mode guard short-circuits), Steps 0/0a/0b/0c of `completion_gate.
 
 ## Open -- Layer boundary violations (S4 import-linter, added 2026-07-02)
 
-`lint-imports` (`.github/workflows/ci.yml` → `layer-boundaries`) runs advisory-only until these clear, then flips to blocking:
+`lint-imports` (`.github/workflows/ci.yml` → `layer-boundaries`) is now split: `model-no-controller-view` and
+`model-no-qt` are **blocking** (no violations). The `utils-no-controller-view-model` and `view-no-model` contracts
+below run advisory-only until these clear, then flip to blocking too:
 
 - [ ] **`utils/preferences.py` imports `model.tools.ocr_types`.** Utils importing Model inverts the intended
   bottom-of-stack position of `utils/`. Either move `ocr_types` to `utils/` (if it's really a shared type) or move

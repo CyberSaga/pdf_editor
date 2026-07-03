@@ -56,24 +56,29 @@ namespace_packages = true
 explicit_package_bases = true
 
 [tool.importlinter]
-# S4 (2026-07-02): CI-enforceable form of CLAUDE.md §2's layer rules. Advisory
-# in CI until the known violations below are cleared, then flips to blocking.
+# S4 (2026-07-02): CI-enforceable form of CLAUDE.md §2's layer rules.
+# model-no-controller-view and model-no-qt are blocking in CI (clean, no known
+# violations). utils-no-controller-view-model and view-no-model are advisory
+# until the known violations below are cleared, then flip to blocking too.
 root_packages = ["model", "controller", "view", "utils"]
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
+id = "model-no-controller-view"
 name = "Model must not import Controller or View"
 type = "forbidden"
 source_modules = ["model"]
 forbidden_modules = ["controller", "view"]
 
 [[tool.importlinter.contracts]]
+id = "utils-no-controller-view-model"
 name = "Utils must not import Controller, View, or Model"
 type = "forbidden"
 source_modules = ["utils"]
 forbidden_modules = ["controller", "view", "model"]
 
 [[tool.importlinter.contracts]]
+id = "model-no-qt"
 name = "Model stays Qt-free (never imports PySide6)"
 type = "forbidden"
 source_modules = ["model"]
@@ -85,6 +90,7 @@ forbidden_modules = ["PySide6"]
 # utils/helpers.py imports QMessageBox.
 
 [[tool.importlinter.contracts]]
+id = "view-no-model"
 name = "View must not import Model directly (signals only)"
 type = "forbidden"
 source_modules = ["view"]

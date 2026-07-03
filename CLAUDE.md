@@ -22,7 +22,7 @@ View  →(signals)→  Controller  →  Model  →  ToolManager
 - ToolManager handles annotation/watermark/search/OCR extensions only; it does not own sessions.
 - `main.py` is the only file that instantiates all three layers together.
 
-**Enforced by CI** (`.github/workflows/ci.yml` → `layer-boundaries` job, `[tool.importlinter]` in `pyproject.toml`): Model↛Controller/View, Utils↛Controller/View/Model, Model↛PySide6, and a `threading.Thread` grep over `view/`+`controller/`. The `lint-imports` step is **advisory** (known pre-existing violations tracked in `TODOS.md`) — it flips to blocking once those are cleared, at which point "Violation = CI failure" is literally true. The threading grep is already blocking. Do not propose new architecture that crosses these boundaries.
+**Enforced by CI** (`.github/workflows/ci.yml` → `layer-boundaries` job, `[tool.importlinter]` in `pyproject.toml`): Model↛Controller/View, Utils↛Controller/View/Model, Model↛PySide6, and a `threading.Thread` grep over `view/`+`controller/`. `lint-imports` is split into two steps: `model-no-controller-view` and `model-no-qt` are **blocking** (no known violations); `utils-no-controller-view-model` and `view-no-model` are **advisory** (known pre-existing violations tracked in `TODOS.md`) — that pair flips to blocking once those are cleared. The threading grep is already blocking. Do not propose new architecture that crosses these boundaries; new code must not add violations to the advisory pair either.
 
 ## 3. Coding Standards
 

@@ -5,10 +5,11 @@ Registered in .claude/settings.json. Reads the hook payload from stdin,
 extracts the edited file path, and runs `ruff check` on it.
 
 Exit codes (Claude Code hook contract):
-  0 — clean file, non-Python file, or nothing to check
+  0 — clean file, or a well-formed payload identifying a non-Python file
   2 — ruff findings; stderr is fed back to the agent to fix at edit time
-  1 — hook could not run ruff (missing toolchain, timeout); stderr warns the
-      user so a broken lint gate is visible instead of silently fail-open
+  1 — hook could not run ruff (missing toolchain, timeout), or the hook
+      payload itself was corrupt/malformed; stderr warns the user so a
+      broken lint gate is visible instead of silently fail-open
 
 Toolchain pinning: prefers the repo venv's ruff (.venv/Scripts/ruff.exe or
 .venv/bin/ruff) so results match `ruff check .` in CI regardless of PATH;
@@ -39,10 +40,24 @@ def main() -> int:
     try:
         # utf-8-sig: tolerate a BOM (PowerShell pipes prepend one)
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-        return 0
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+        print(
+            f"ruff_on_edit hook: hook input format corrupted ({exc.__class__.__name__}), "
+            f"lint defenses may fail — this edit was NOT lint-checked.",
+            file=sys.stderr,
+        )
+        return 1
 
-    file_path = (payload.get("tool_input") or {}).get("file_path", "")
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict) or "file_path" not in tool_input:
+        print(
+            "ruff_on_edit hook: hook input format corrupted, lint defenses may fail — "
+            "this edit was NOT lint-checked.",
+            file=sys.stderr,
+        )
+        return 1
+
+    file_path = tool_input.get("file_path", "")
     if not file_path or not file_path.endswith(".py"):
         return 0
     path = Path(file_path)
