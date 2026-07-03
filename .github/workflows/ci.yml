@@ -13,6 +13,9 @@ name: CI
 #     the full pytest run needs the heavy optional + platform-specific stack
 #     (surya/torch, win32print, pyautogui) and is run locally, surfaced here as an
 #     advisory step.
+#
+# All tool/dependency installs are pinned via constraints-ci.txt to the
+# maintainer's .venv versions (except pip-audit — see that file's header).
 
 on:
   push:
@@ -41,6 +44,7 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libcups2-dev
       - name: Install pip-audit
+        # Deliberately unconstrained: the auditor must use a current advisory DB.
         run: python -m pip install --upgrade pip pip-audit
       - name: Audit core + optional requirements (BLOCKING)
         # Exits non-zero on any known advisory -> fails the build.
@@ -61,7 +65,7 @@ jobs:
         with:
           python-version: "3.10"
       - name: Install ruff
-        run: python -m pip install --upgrade pip ruff
+        run: python -m pip install --upgrade pip && python -m pip install ruff -c constraints-ci.txt
       - name: ruff check (blocking except E402)
         run: ruff check . --ignore E402 --output-format=github
 
@@ -74,7 +78,7 @@ jobs:
         with:
           python-version: "3.10"
       - name: Install import-linter
-        run: python -m pip install --upgrade pip import-linter
+        run: python -m pip install --upgrade pip && python -m pip install import-linter -c constraints-ci.txt
       - name: lint-imports (blocking; contracts with no known violations)
         run: lint-imports --config pyproject.toml --contract model-no-controller-view --contract model-no-qt
       - name: lint-imports (advisory; known violations tracked in TODOS.md)
@@ -104,8 +108,10 @@ jobs:
       - name: Install core + test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python -m pip install pytest packaging
+          python -m pip install -r requirements.txt -c constraints-ci.txt
+          python -m pip install pytest packaging -c constraints-ci.txt
+      - name: Show resolved environment (pin visibility)
+        run: python -m pip list
       - name: Dependency + OCR-weight security regression suite (BLOCKING)
         run: |
           pytest -q \
