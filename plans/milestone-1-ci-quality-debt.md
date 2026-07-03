@@ -17,6 +17,13 @@
 
 One PR = one reviewable unit. Standard validation applies to every PR in addition to the listed commands: `.venv\Scripts\python.exe -m pytest -q` (full local suite), `ruff check .`, and a green CI run on the PR branch.
 
+### PR-0 (unplanned prerequisite) — `fix: restore green baseline`
+
+- **Discovered during PR-1 validation:** the baseline was red twice over. (a) CI's windows-latest pip-audit leg had failed on every run since 2026-06-14 — commit `559d92f` added a CJK comment to `optional-requirements.txt` and pip-audit's parser falls back to cp1252 on Windows, crashing on byte `0x81`. (b) `test_app_close_waits_for_optimizer_worker` had failed locally since `310f6ca` gave `handle_app_close` a `wait_for_done` call the test stub lacked.
+- **Fix:** ASCII-rewritten comment + `wait_for_done` stub; new blocking guard test `test_scripts/test_security_requirements_encoding.py` (all requirement/constraint files must be pure ASCII); pitfall recorded in `docs/PITFALLS.md`.
+- **PR:** #10 — merges BEFORE PR-1 (#9); #9 then picks up main.
+- **Status:** open, all CI checks green (2026-07-03).
+
 ### PR-1 — `ci: pin CI dependency environment to .venv versions`
 
 - **Scope:** Add `constraints-ci.txt` capturing `.venv` truth (`PyMuPDF==1.27.1`, `PySide6==6.10.2`, `Pillow==12.2.0`, plus numpy/pytest/pytest-cov/tooling exact versions from `pip freeze`). Project-dependency and tool install steps in ci.yml become `pip install ... -c constraints-ci.txt`. Add a `pip list` visibility step to the test job. `pip-audit` itself stays deliberately unconstrained (the auditor needs a current advisory DB). No test or code changes.
@@ -25,7 +32,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `.venv\Scripts\python.exe -m pip freeze` to source the pins; CI log shows PyMuPDF 1.27.1.
 - **Acceptance:** all existing jobs green; CI versions now match `.venv` by policy, not by luck.
 - **Rollback risk:** **Low** — CI-only; revert restores floor-resolution behavior.
-- **Status:** in progress (2026-07-03).
+- **Status:** open as PR #9 (2026-07-03); pins verified on CI (test job resolved PyMuPDF 1.27.1 / PySide6 6.10.2 / Pillow 12.2.0 / numpy 2.2.6 / pytest 9.0.3). Awaiting #10 merge, then a main merge to go fully green.
 
 ### PR-2 — `test: register pytest marker scheme and mark hardware-bound tests`
 
