@@ -1,4 +1,4 @@
-# CI dependency constraints — pins CI to the versions the maintainer's .venv
+# CI dependency constraints -- pins CI to the versions the maintainer's .venv
 # actually runs (PyMuPDF 1.27.1 stack), so CI failures reflect code, not
 # dependency drift. Source of truth: `.venv\Scripts\python.exe -m pip freeze`.
 #
@@ -7,7 +7,7 @@
 #     upgrades the local .venv (see plans/milestone-1-ci-quality-debt.md).
 #   * A constraints file only binds packages that are actually installed;
 #     entries here never cause anything to be installed.
-#   * pip-audit is deliberately NOT pinned anywhere — the auditor needs a
+#   * pip-audit is deliberately NOT pinned anywhere -- the auditor needs a
 #     current advisory database to be useful.
 
 # Core runtime (requirements.txt)
