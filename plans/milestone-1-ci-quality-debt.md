@@ -104,7 +104,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `lint-imports` clean on the flipped contract; `test_ocr_types.py` + preferences tests; full suite.
 - **Acceptance:** utils contract blocking + green; no caller left importing the moved helper from utils.
 - **Rollback risk:** **Medium** — import moves ripple across layers, but the shim keeps old `ocr_types` imports alive, and CI now catches misses.
-- **Status:** in review (branch `refactor/pr8-utils-contract`).
+- **Status:** in review as PR #17 (branch `refactor/pr8-utils-contract`).
 
 ### PR-9 — `refactor: route view dialog model calls through controller; flip view contract blocking`
 
