@@ -52,7 +52,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** CI run on the PR; download artifacts, record pass/fail/skip per OS.
 - **Acceptance:** both legs execute to completion (even if red) and never block merge.
 - **Rollback risk:** **None** — advisory job; deleting it restores status quo.
-- **Status:** in review as PR #12 (opened 2026-07-04).
+- **Status:** merged 2026-07-04 as PR #12 (squash b617c78). First-run data recorded in the PR-10 section below and in a comment on #12.
 
 ### PR-4 — `test: remove redundant import preambles from pytest-only files (E402 part 1)`
 
@@ -123,6 +123,9 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Acceptance:** stable pass count documented in the PR description; zero unexplained failures on the windows leg.
 - **Rollback risk:** **None** — test-selection changes only.
 - **Status:** pending (needs ≥1 week of PR-3 artifacts).
+- **Advisory data so far** (first run, 2026-07-04, run 28692814887; details in the #12 comment):
+  - windows-latest completed in 1m51s: 16 failed / 1547 passed / 33 skipped / 1 deselected. Failure clusters: 13× `test_no_jump_editor_geometry.py` + `test_core_interaction_audit.py` (+ probably `test_performance_script_runner.py`) fail — not skip — when the gitignored `test_files/*.pdf` fixtures are absent → `needs_fixtures` candidates; `test_security_packaging.py::test_built_wheel_and_sdist_exclude_dev_trees` is a REAL Windows console-encoding bug (charmap encode in the subprocess build; same class as the known local cp950 flake) → fix, don't mark.
+  - ubuntu-latest segfaulted (exit 139) at ~90% through the suite (Qt offscreen teardown crash class predicted in the milestone risks). Needs junit/bisect isolation; ubuntu stays advisory.
 
 ### PR-11 — `ci: flip Windows functional suite to blocking; measure coverage`
 

@@ -11,16 +11,10 @@ Also absorbs the pure-function checks previously in test_print_dialog_logic.py
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 from PySide6.QtCore import QMarginsF, QRectF
 from PySide6.QtGui import QPageLayout, QPageSize
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 from src.printing import qt_bridge as qtb
 from src.printing.base_driver import PrintJobOptions

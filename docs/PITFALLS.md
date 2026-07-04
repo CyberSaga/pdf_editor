@@ -1404,3 +1404,12 @@
 **Cause:** pip-audit's `pip_requirements_parser.auto_decode` (like pip's own) falls back to the locale codepage when a requirements file has no BOM. GitHub Windows runners use cp1252, and several bytes inside UTF-8 CJK sequences (e.g. `0x81`) are undefined in cp1252, so a Traditional-Chinese comment crashes the parse outright. Linux never reproduces it (UTF-8 locale).
 **Fix:** Keep every `*requirements*.txt` / `constraints*.txt` at the repo root pure ASCII. Guarded by `test_scripts/test_security_requirements_encoding.py`, which runs in the blocking CI security suite on every PR.
 **File:** `optional-requirements.txt`, `test_scripts/test_security_requirements_encoding.py`
+
+---
+
+## Orphaned print-helper processes poison later full-suite runs
+**Area:** `test_scripts/` print stack / local dev machine state
+**Symptom:** A full-suite run intermittently fails a print test on a status-bar-restore assertion (`test_print_controller_flow.py::test_stalled_print_helper_can_be_terminated_without_closing_main_window`) or hard-segfaults with Windows fatal exception `0x80040155` (REGDB_E_CLASSNOTREG) inside `raster_print_pdf` during `test_print_speed.py` — while the same files pass in isolation and the diff under test touches nothing related.
+**Cause:** A suite run that crashes or is killed mid-way can leave print-helper `python` subprocesses alive. They keep the Windows print/COM stack engaged, and later runs race against them (stalled-status leakage, COM registration errors).
+**Fix:** Before judging a red suite run, check for orphaned `python` processes (`Get-Process | Where-Object { $_.ProcessName -match 'python' }`), kill them, and rerun. Two consecutive clean runs after the kill confirmed the suite itself was green.
+**File:** procedural (no code change); observed 2026-07-04 while validating the PR-4 E402 cleanup

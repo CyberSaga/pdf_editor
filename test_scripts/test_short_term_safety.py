@@ -1,19 +1,11 @@
 from __future__ import annotations
 
 import logging
-import os
-import sys
 import tempfile
 from pathlib import Path
 
 import fitz
 import pytest
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QApplication
