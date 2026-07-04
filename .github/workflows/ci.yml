@@ -15,10 +15,13 @@ name: CI
 #     the full pytest run needs the heavy optional + platform-specific stack
 #     (surya/torch, win32print, pyautogui) and is run locally, surfaced here as an
 #     advisory step.
-#   * `test-functional` is a new, fully advisory cross-platform matrix job
-#     (windows-latest + ubuntu-latest) that runs the broader pytest suite to
-#     gather stabilization data ahead of the blocking flip planned in
-#     plans/milestone-1-ci-quality-debt.md (PR-10/11).
+#   * `test-functional` is a cross-platform matrix job (windows-latest +
+#     ubuntu-latest) that runs the broader pytest suite. As of PR-11
+#     (plans/milestone-1-ci-quality-debt.md), the windows-latest leg is
+#     BLOCKING (flipped on the strength of 3 consecutive green PR-10 runs);
+#     ubuntu-latest stays advisory pending the Qt offscreen-teardown SIGBUS,
+#     issue #19. The windows leg also collects advisory coverage numbers
+#     (`--cov-fail-under=0`) ahead of PR-12's evidence-based coverage gate.
 #   * `typecheck` runs `mypy model/ utils/` and is BLOCKING (PR-7): the former
 #     `self.doc`-is-`Any | None` design gaps were resolved via typed local binds
 #     plus a handful of runtime-inert casts/annotations, so `mypy model/ utils/`
@@ -147,11 +150,23 @@ jobs:
         run: pytest -q test_scripts/test_security_*.py
 
   test-functional:
-    name: Functional suite (advisory — data-gathering for the blocking flip, see plans/milestone-1-ci-quality-debt.md PR-10/11)
+    # NOTE: the name is double-quoted at the YAML level — the "#19" inside a
+    # plain (unquoted) scalar starts a YAML comment (space + '#'), truncating
+    # the ${{ }} expression and breaking workflow parsing outright.
+    name: "Functional suite (${{ matrix.os == 'windows-latest' && 'windows - BLOCKING' || 'ubuntu - advisory, issue #19' }})"
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            # Advisory coverage numbers on the (now blocking) windows leg.
+            # `--cov-fail-under=0` overrides pyproject.toml's fail_under=75 so a
+            # low/incomplete CI number cannot fail this job yet -- PR-12 sets the
+            # real evidence-based gate from the TOTAL this captures.
+            cov_args: "--cov --cov-report=term --cov-report=xml --cov-fail-under=0"
+          - os: ubuntu-latest
+            cov_args: ""
     runs-on: ${{ matrix.os }}
     env:
       QT_QPA_PLATFORM: offscreen
@@ -167,7 +182,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r optional-requirements.txt -c constraints-ci.txt
-          python -m pip install pytest packaging -c constraints-ci.txt
+          python -m pip install pytest packaging pytest-cov -c constraints-ci.txt
           # build/setuptools/wheel aren't in constraints-ci.txt (constraint/
           # requirement files stay untouched here) but test_security_packaging.py's
           # real-artifact test (`python -m build --no-isolation`) needs them on
@@ -177,20 +192,30 @@ jobs:
           python -m pip install "build==1.5.0" "setuptools==82.0.1" "wheel==0.47.0"
       - name: Show resolved environment (pin visibility)
         run: python -m pip list
-      - name: Run functional suite (advisory; never blocks merge)
+      - name: Run functional suite (windows-latest BLOCKING; ubuntu-latest advisory)
         # Gitignored test_files/ fixtures are absent on CI, so fixture-dependent
         # tests are deselected via needs_fixtures (PR-10); they still run
         # locally where test_files/ exists. local_only (real hardware) tests
-        # are deselected on every leg. windows-latest is the blocking-flip
-        # candidate (PR-11); ubuntu-latest stays advisory pending the Qt
-        # offscreen-teardown segfault issue (see TODOS.md).
-        continue-on-error: true
+        # are deselected on every leg. windows-latest flipped to BLOCKING in
+        # PR-11 on the strength of 3 consecutive green PR-10 runs (1553 passed /
+        # 33 skipped / 15 deselected / 0 failed, stable); ubuntu-latest stays
+        # advisory pending the Qt offscreen-teardown SIGBUS, issue #19 --
+        # continue-on-error is conditional on matrix.os so only the ubuntu
+        # leg's failures are swallowed.
+        continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
         timeout-minutes: 40
-        run: python -m pytest -q -m "not local_only and not needs_fixtures" --junitxml=pytest-report.xml
+        run: python -m pytest -q -m "not local_only and not needs_fixtures" --junitxml=pytest-report.xml ${{ matrix.cov_args }}
       - name: Upload junit report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pytest-report-${{ matrix.os }}
           path: pytest-report.xml
+          if-no-files-found: warn
+      - name: Upload coverage.xml (windows leg; advisory numbers, see PR-12)
+        if: always() && matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml-windows
+          path: coverage.xml
           if-no-files-found: warn
