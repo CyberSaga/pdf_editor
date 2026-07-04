@@ -125,7 +125,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** 3 consecutive fully-green windows-latest advisory runs with a stable pass count.
 - **Acceptance:** stable pass count documented in the PR description; zero unexplained failures on the windows leg.
 - **Rollback risk:** **None** — test-selection changes only.
-- **Status:** in review as PR #TBD (branch `ci/pr10-advisory-triage`).
+- **Status:** in review as PR #20 (branch `ci/pr10-advisory-triage`).
 - **Deviation from original schedule:** the plan called for ≥1 week of PR-3 advisory artifacts before starting PR-10. The user authorized starting PR-10 early (2026-07-04) on the strength of 4 consecutive stable advisory `test-functional` runs on `main` (same failure clusters, same counts each time) instead of waiting out the full week.
 - **Advisory data so far** (first run, 2026-07-04, run 28692814887; details in the #12 comment):
   - windows-latest completed in 1m51s: 16 failed / 1547 passed / 33 skipped / 1 deselected. Failure clusters: 13× `test_no_jump_editor_geometry.py` + `test_core_interaction_audit.py` (+ probably `test_performance_script_runner.py`) fail — not skip — when the gitignored `test_files/*.pdf` fixtures are absent → `needs_fixtures` candidates; `test_security_packaging.py::test_built_wheel_and_sdist_exclude_dev_trees` is a REAL Windows console-encoding bug (charmap encode in the subprocess build; same class as the known local cp950 flake) → fix, don't mark.
