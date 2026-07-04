@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fitz  # PyMuPDF
-from PySide6.QtWidgets import QMessageBox
 
 
 def parse_pages(input_str: str, total_pages: int) -> list[int]:
@@ -21,11 +20,6 @@ def parse_pages(input_str: str, total_pages: int) -> list[int]:
             if 1 <= page <= total_pages:
                 pages.add(page)
     return sorted(pages)
-
-
-def show_error(parent, message: str) -> None:
-    """Show an error message."""
-    QMessageBox.critical(parent, "錯誤", message)
 
 
 def pixmap_to_qimage(pix: fitz.Pixmap):

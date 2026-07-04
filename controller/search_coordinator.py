@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 import fitz
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
-from utils.helpers import show_error
+from view.message_boxes import show_error
 
 if TYPE_CHECKING:
     from controller.pdf_controller import PDFController

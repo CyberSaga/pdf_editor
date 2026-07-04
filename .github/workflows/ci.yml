@@ -106,10 +106,10 @@ jobs:
       - name: Install import-linter
         run: python -m pip install --upgrade pip && python -m pip install import-linter -c constraints-ci.txt
       - name: lint-imports (blocking; contracts with no known violations)
-        run: lint-imports --config pyproject.toml --contract model-no-controller-view --contract model-no-qt
-      - name: lint-imports (advisory; known violations tracked in TODOS.md)
+        run: lint-imports --config pyproject.toml --contract model-no-controller-view --contract model-no-qt --contract utils-no-controller-view-model
+      - name: lint-imports (advisory; view-no-model, cleared in the next PR)
         continue-on-error: true
-        run: lint-imports --config pyproject.toml --contract utils-no-controller-view-model --contract view-no-model
+        run: lint-imports --config pyproject.toml --contract view-no-model
       - name: No threading.Thread in view/ or controller/ (blocking)
         # PySide6 threading rule (CLAUDE.md §3, §9): UI-adjacent code must use
         # QThread + signals, not raw threading.Thread.

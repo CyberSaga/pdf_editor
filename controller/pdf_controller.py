@@ -34,7 +34,8 @@ from model.object_requests import (
 )
 from model import pdf_optimizer
 from model.pdf_model import PDFModel
-from utils.helpers import pixmap_to_qimage, pixmap_to_qpixmap, show_error
+from utils.helpers import pixmap_to_qimage, pixmap_to_qpixmap
+from view.message_boxes import show_error
 from view.pdf_view import EditTextRequest, MoveTextRequest, PDFView, ViewportAnchor
 from src.printing.messages import (
     PRINT_CLOSING_MESSAGE as CLEAN_PRINT_CLOSING_MESSAGE,

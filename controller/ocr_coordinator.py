@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import QProgressDialog
 
-from utils.helpers import show_error
+from view.message_boxes import show_error
 from view.pdf_view import PDFView
 
 if TYPE_CHECKING:

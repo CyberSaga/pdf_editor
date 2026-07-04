@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Iterable, Protocol
 
-from model.tools.ocr_types import OcrDevice, OcrLanguage
 from utils.app_identity import APP as _APP, LEGACY_APP as _LEGACY_APP, LEGACY_ORG as _LEGACY_ORG, ORG as _ORG
+from utils.ocr_types import OcrDevice, OcrLanguage
 from utils.theme_ids import DEFAULT_THEME_ID, VALID_THEME_IDS
 
 logger = logging.getLogger(__name__)
