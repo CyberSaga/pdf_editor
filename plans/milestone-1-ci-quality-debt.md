@@ -72,22 +72,23 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `ruff check . --select E402 --no-cache` → 0; spot-run 3 hybrid files as plain scripts; full suite.
 - **Acceptance:** lint job blocking with E402 included, green; script-mode invocation still works.
 - **Rollback risk:** **Medium** for script-mode regressions (affects only manual runners, not pytest or the app); revert is simple.
-- **Status:** in review as PR #14 (branch `test/pr5-e402-bootstrap-flip`).
+- **Status:** merged 2026-07-04 as PR #14 (squash fe748d9).
 
 ### PR-6 — `types: mypy quick-wins + advisory CI typecheck job`
 
 - **Scope:** Fix the ~20 mechanical mypy errors: `Image.NEAREST/BICUBIC → Image.Resampling.*` (`pdf_model.py:3173,3209`; Pillow floor 12.2.0 makes this safe), `Counter[str]`/`set[int]` annotations (`text_block_parsing.py`, `utils/helpers.py`), `FitZColorspace` TypeAlias (`color_profile.py`), `bytes(QByteArray) → .data()` (`single_instance.py:132,247`), implicit-Optional defaults (`pdf_model.py:3062`, `pdf_text_edit.py:1177`), `ocr_weights.py` Mapping params, `edit_commands.py:170` return annotation. Add advisory `typecheck` CI job (`mypy model/ utils/`, `continue-on-error: true`).
-- **Files:** `model/pdf_model.py`, `model/text_block_parsing.py`, `model/color_profile.py`, `model/tools/ocr_weights.py`, `model/pdf_text_edit.py`, `model/edit_commands.py`, `utils/single_instance.py`, `utils/helpers.py`, `.github/workflows/ci.yml`.
+  - **Deviation from this split (recorded during execution):** `utils/helpers.py:38`'s `QImage.Format.Format_RGBA8888/RGB888` enum-qualification and the remaining bare-list/set annotation stragglers (`search_tool.py:39`, `annotation_tool.py:99,135`, `helpers.py:9`) landed here in PR-6 instead of PR-7, since they were equally mechanical annotation-only fixes; `pdf_content_ops.py`'s int/float assignment fix stayed in PR-7 as planned. Also, `single_instance.py:132,247` kept the original `bytes(socket.readAll())  # type: ignore[call-overload]` form rather than switching to `.data()`, because the isolation test suite's `_FakeSocket.readAll()` test double returns plain `bytes` (no `.data()` method) — switching would have been a real behavior/compatibility change, not the intended mechanical one. And `edit_commands.py:170`'s fix is a `# type: ignore[override]` on `EditTextCommand.execute` (not a base-class signature change), because `test_edit_command_execute_contract_stays_optional_for_non_edit_text_commands` pins `EditCommand.execute`'s return annotation to `None`.
+- **Files:** `model/pdf_model.py`, `model/text_block_parsing.py`, `model/color_profile.py`, `model/tools/ocr_weights.py`, `model/pdf_text_edit.py`, `model/edit_commands.py`, `utils/single_instance.py`, `utils/helpers.py`, `model/tools/search_tool.py`, `model/tools/annotation_tool.py`, `.github/workflows/ci.yml`, `pyproject.toml`.
 - **Model:** Sonnet 5.
-- **Validation:** `.venv\Scripts\python.exe -m mypy model/ utils/` (67 → ≤ ~45); full suite; app smoke launch.
+- **Validation:** `.venv\Scripts\python.exe -m mypy model/ utils/` (67 → 43); full suite (1576 passed / 21 skipped / 0 failed, unchanged); app smoke launch.
 - **Acceptance:** only annotation/enum-form changes — no behavior change; advisory typecheck job visible on CI.
-- **Rollback risk:** **Low** — the Pillow Resampling rename is the only runtime-touching line.
-- **Status:** pending.
+- **Rollback risk:** **Low** — the Pillow Resampling rename and `QImage.Format` qualification are the only runtime-touching lines, both enum-value-identical.
+- **Status:** in review as PR #15 (branch `types/pr6-mypy-quick-wins`).
 
 ### PR-7 — `types: eliminate doc-None dereferences; flip mypy blocking`
 
-- **Scope:** Add `PDFModel._require_doc() -> fitz.Document` (raises, matching the existing zh-TW error-message style); convert the ~27 flagged `self.doc` dereferences in `pdf_model.py`/`pdf_object_ops.py`; fix stragglers (`ocr_tool.py` ×5, `annotation_tool.py` ×2, `search_tool.py` ×1, `pdf_content_ops.py` int→float, `utils/helpers.py:38` `QImage.Format.Format_RGBA8888` enum form). When local mypy = 0, remove `continue-on-error` from the typecheck job in the same PR.
-- **Files:** `model/pdf_model.py`, `model/pdf_object_ops.py`, `model/pdf_content_ops.py`, `model/tools/ocr_tool.py`, `model/tools/annotation_tool.py`, `model/tools/search_tool.py`, `utils/helpers.py`, `.github/workflows/ci.yml`.
+- **Scope:** Add `PDFModel._require_doc() -> fitz.Document` (raises, matching the existing zh-TW error-message style); convert the ~27 flagged `self.doc` dereferences in `pdf_model.py`/`pdf_object_ops.py`; fix stragglers (`ocr_tool.py` ×5, `pdf_content_ops.py` int→float). `utils/helpers.py:38`'s `QImage.Format.Format_RGBA8888` enum form and the `annotation_tool.py`/`search_tool.py` list-annotation stragglers moved to PR-6 (see that PR's deviation note) — dropped from this scope. When local mypy = 0, remove `continue-on-error` from the typecheck job in the same PR.
+- **Files:** `model/pdf_model.py`, `model/pdf_object_ops.py`, `model/pdf_content_ops.py`, `model/tools/ocr_tool.py`, `.github/workflows/ci.yml`.
 - **Model:** Fable 5 designs the `_require_doc` guard semantics (which sites may legitimately see `None` vs. impossible states); Opus 4.6 applies the many-site conversion; codex review before merge.
 - **Validation:** `.venv\Scripts\python.exe -m mypy model/ utils/` → 0; full suite; targeted no-document tests (operations on a closed/never-opened model must raise the same error as before).
 - **Acceptance:** mypy job blocking + green; error behavior for None-doc paths byte-identical to before.

@@ -3059,7 +3059,7 @@ class PDFModel:
     def edit_text(self, page_num: int, rect: fitz.Rect, new_text: str,
                   font: str = "helv", size: float = 12.0,
                   color: tuple = (0.0, 0.0, 0.0),
-                  original_text: str = None,
+                  original_text: str | None = None,
                   vertical_shift_left: bool = True,
                   new_rect: fitz.Rect = None,
                   target_span_id: str | None = None,
@@ -3170,7 +3170,7 @@ class PDFModel:
         steps = int(round((2.0 * max_angle) / max(1e-6, step))) + 1
         for i in range(steps):
             angle = -max_angle + i * step
-            rotated = img.rotate(angle, resample=Image.NEAREST, expand=False, fillcolor=0)
+            rotated = img.rotate(angle, resample=Image.Resampling.NEAREST, expand=False, fillcolor=0)
             row_sums = np.asarray(rotated, dtype=np.float64).sum(axis=1)
             score = float(np.var(row_sums))
             if score > best_score:
@@ -3206,7 +3206,7 @@ class PDFModel:
         # the pixel data, so holding pix through the rotation+save is dead weight.
         del pix
         straightened = img.rotate(
-            angle, resample=Image.BICUBIC, expand=False, fillcolor=(255, 255, 255)
+            angle, resample=Image.Resampling.BICUBIC, expand=False, fillcolor=(255, 255, 255)
         )
         buf = io.BytesIO()
         straightened.save(buf, format="PNG")

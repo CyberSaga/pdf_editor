@@ -167,10 +167,19 @@ class EditTextCommand(EditCommand):
     def _snapshot_chunks(self) -> tuple[bytes, ...]:
         return (self._page_snapshot_bytes,)
 
-    def execute(self) -> bool:
+    def execute(self) -> bool:  # type: ignore[override]
         """
         執行文字編輯：直接委派給 model.edit_text()。
         快照已在 CommandManager.execute() 建構本物件時事先擷取，此處不重複。
+
+        Intentional LSP widening: EditCommand.execute() is annotated -> None
+        (test_edit_command_execute_contract_stays_optional_for_non_edit_text_commands
+        pins that), but this override returns bool so CommandManager can detect
+        a no-op edit (False) and skip the undo-stack record — see
+        test_edit_text_command_execute_annotation_is_bool. The `is False` check
+        in CommandManager.execute()/redo() treats every other subclass's None
+        return as "recordable", so the wider return type is safe at every call
+        site; only mypy's strict override variance objects.
         """
         self.result = self._model.edit_text(
             self._page_num,

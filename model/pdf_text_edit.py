@@ -1174,7 +1174,7 @@ def _resolve_effective_target_mode(
 def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
               font: str = "helv", size: float = 12.0,
               color: tuple = (0.0, 0.0, 0.0),
-              original_text: str = None,
+              original_text: str | None = None,
               vertical_shift_left: bool = True,
               new_rect: fitz.Rect = None,
               target_span_id: str | None = None,
