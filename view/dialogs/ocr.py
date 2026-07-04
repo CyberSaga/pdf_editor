@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -16,13 +17,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from model.tools.ocr_types import (
+from utils.ocr_types import (
     OcrDevice,
     OcrLanguage,
     OcrRequest,
     parse_page_range,
 )
-from model.tools.ocr_tool import is_device_available
 from utils.preferences import UserPreferences
 
 logger = logging.getLogger(__name__)
@@ -52,11 +52,14 @@ class OcrDialog(QDialog):
         total_pages: int = 1,
         current_page: int = 1,
         preferences: UserPreferences | None = None,
+        *,
+        device_available: Callable[[str], bool],
     ) -> None:
         super().__init__(parent)
         self._total_pages = max(1, int(total_pages))
         self._current_page = min(max(1, int(current_page)), self._total_pages)
         self._preferences = preferences or UserPreferences()
+        self._device_available = device_available
         self._language_checkboxes: dict[str, QCheckBox] = {}
         self._request: OcrRequest | None = None
 
@@ -109,14 +112,14 @@ class OcrDialog(QDialog):
         combo_model = self.device_combo.model()
         for value, label in _DEVICE_LABELS:
             self.device_combo.addItem(label, value)
-            available = is_device_available(value)
+            available = self._device_available(value)
             item = combo_model.item(self.device_combo.count() - 1) if hasattr(combo_model, "item") else None
             if item is not None and not available:
                 item.setEnabled(False)
                 item.setToolTip("此裝置目前不可用 (torch 不支援)")
 
         stored = self._preferences.get_ocr_device()
-        if not is_device_available(stored):
+        if not self._device_available(stored):
             stored = OcrDevice.AUTO.value
         device_idx = self.device_combo.findData(stored)
         if device_idx >= 0:
@@ -200,7 +203,7 @@ class OcrDialog(QDialog):
             self.validation_label.setText("請完成頁面與語言設定")
             return
         device = self.device_combo.currentData() or OcrDevice.AUTO.value
-        if not is_device_available(device):
+        if not self._device_available(device):
             device = OcrDevice.AUTO.value
         try:
             self._preferences.set_ocr_device(device)

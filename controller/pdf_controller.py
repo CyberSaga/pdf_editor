@@ -34,6 +34,7 @@ from model.object_requests import (
 )
 from model import pdf_optimizer
 from model.pdf_model import PDFModel
+from model.tools.ocr_tool import is_device_available
 from utils.helpers import pixmap_to_qimage, pixmap_to_qpixmap
 from view.message_boxes import show_error
 from view.pdf_view import EditTextRequest, MoveTextRequest, PDFView, ViewportAnchor
@@ -1152,6 +1153,7 @@ class PDFController:
             self.view,
             audit_provider=self.model.build_pdf_audit_report,
             capabilities=self.model.optimize_capabilities(),
+            preset_options=PDFModel.preset_optimize_options,
         )
         if dialog.exec() != QDialog.Accepted:
             return
@@ -2209,6 +2211,11 @@ class PDFController:
     def cancel_ocr(self) -> None:
         """Facade: cancel any in-flight OCR run (delegates to the coordinator)."""
         self._ocr_coordinator.cancel_ocr()
+
+    def is_device_available(self, device: str) -> bool:
+        """Facade: expose OCR device availability probing to the view (PR-9:
+        keeps view/dialogs/ocr.py from importing model.tools.ocr_tool directly)."""
+        return is_device_available(device)
 
     def undo(self):
         """

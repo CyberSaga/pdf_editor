@@ -62,9 +62,10 @@ platform = "win32"
 
 [tool.importlinter]
 # S4 (2026-07-02): CI-enforceable form of CLAUDE.md §2's layer rules.
-# model-no-controller-view and model-no-qt are blocking in CI (clean, no known
-# violations). utils-no-controller-view-model and view-no-model are advisory
-# until the known violations below are cleared, then flip to blocking too.
+# All four contracts are BLOCKING in CI as of PR-9 (2026-07-04): the utils
+# violation was cleared in PR-8, the view behavior calls were routed through
+# controller injection in PR-9, and the remaining DTO-only view imports are
+# permitted via the view-no-model contract's ignore_imports allowlist below.
 root_packages = ["model", "controller", "view", "utils"]
 include_external_packages = true
 
@@ -100,11 +101,21 @@ name = "View must not import Model directly (signals only)"
 type = "forbidden"
 source_modules = ["view"]
 forbidden_modules = ["model"]
-# KNOWN VIOLATIONS (tracked in TODOS.md): view/dialogs/{audit,ocr,optimize}.py,
-# view/object_selection.py, view/pdf_view.py, view/text_editing.py import
-# model types/functions directly. Some are DTO/type imports (arguably fine);
-# view/dialogs/optimize.py calling PDFModel.preset_optimize_options() and
-# view/dialogs/ocr.py calling is_device_available() are real boundary crossings.
+# PR-9 (2026-07-04): behavior calls (PDFModel.preset_optimize_options(),
+# is_device_available()) were routed through PDFController injection, so this
+# contract is now BLOCKING. The remaining imports below are pure DTO/type
+# imports with no model mutation surface, so they are explicitly permitted here
+# rather than routed:
+ignore_imports = [
+    # Pure DTO imports, no model mutation surface (PR-9 decision):
+    # request payloads carried by View->Controller signals
+    "view.object_selection -> model.object_requests",
+    "view.pdf_view -> model.object_requests",
+    "view.text_editing -> model.edit_requests",
+    # options/report dataclasses consumed/produced by dialogs
+    "view.dialogs.optimize -> model.pdf_optimizer",
+    "view.dialogs.audit -> model.pdf_optimizer",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["test_scripts"]

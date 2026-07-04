@@ -15,7 +15,7 @@
 ### Audit remediation deferrals (2026-06-10)
 
 - [~] **R4.1 — Overlay render cache: EVALUATED → DEFERRED.** Disproportionate risk for a watermark-only conditional gain. Full rationale: `plans/refactor-R4-performance-deferrals.md`. Revisit only if watermarked scroll-after-edit latency becomes a measured bottleneck.
-- [ ] **MVC routing of merge-dialog page counting.** The view-layer `fitz.open()` calls in `pdf_view.py` (merge dialog page-count probe) should route through a controller/model utility to respect layer boundaries.
+- [x] **MVC routing of merge-dialog page counting.** The view-layer `fitz.open()` calls in `pdf_view.py` (merge dialog page-count probe) should route through a controller/model utility to respect layer boundaries. **Resolved (R2.3, predates PR-9):** `PDFController.resolve_insert_source_file()` is the routed path; `view/pdf_view.py` has zero `fitz.open(...)` calls (confirmed by `test_scripts/test_layer_boundaries.py`'s exact-count allowlist, which only permits `view/text_editing.py`'s scratch doc).
 
 ## Resolved -- Completion-gate trust chain (2026-07-03, Codex adversarial-review finding)
 
@@ -37,11 +37,11 @@ Layer 1's goal-mode guard short-circuits), Steps 0/0a/0b/0c of `completion_gate.
   predating this campaign, not introduced by it). Documented here instead. If a future no-jump-style campaign
   revives that plan file, reconcile this history into it.
 
-## Open -- Layer boundary violations (S4 import-linter, added 2026-07-02)
+## Resolved -- Layer boundary violations (S4 import-linter, added 2026-07-02)
 
-`lint-imports` (`.github/workflows/ci.yml` → `layer-boundaries`) is now split: `model-no-controller-view`,
-`model-no-qt`, and (as of PR-8) `utils-no-controller-view-model` are **blocking** (no violations). The
-`view-no-model` contract below still runs advisory-only until it clears, then flips to blocking too:
+`lint-imports` (`.github/workflows/ci.yml` → `layer-boundaries`) now runs all four contracts as a single
+**blocking** step: `model-no-controller-view`, `model-no-qt`, `utils-no-controller-view-model` (PR-8), and
+`view-no-model` (PR-9). No known violations remain.
 
 - [x] **`utils/preferences.py` imports `model.tools.ocr_types`.** Utils importing Model inverts the intended
   bottom-of-stack position of `utils/`. Either move `ocr_types` to `utils/` (if it's really a shared type) or move
@@ -50,12 +50,15 @@ Layer 1's goal-mode guard short-circuits), Steps 0/0a/0b/0c of `completion_gate.
 - [x] **`utils/helpers.py` imports `PySide6.QtWidgets.QMessageBox`.** Utils showing a message box directly bypasses
   the View layer; callers should raise/return and let View show the dialog. **Resolved (PR-8):** moved
   `show_error` to `view/message_boxes.py`; all callers updated.
-- [ ] **View importing Model directly** (`view/dialogs/audit.py`, `view/dialogs/ocr.py`, `view/dialogs/optimize.py`,
-  `view/object_selection.py`, `view/pdf_view.py`, `view/text_editing.py`). Most are DTO/type imports (arguably
-  acceptable — request/response dataclasses aren't mutation calls), but `view/dialogs/optimize.py` calling
-  `PDFModel.preset_optimize_options()` and `view/dialogs/ocr.py` calling `is_device_available()` are real boundary
-  crossings that should route through `controller/`. Triage: split the DTO imports (allow) from the direct calls
-  (route through controller) before flipping the CI contract to blocking.
+- [x] **View importing Model directly** (`view/dialogs/audit.py`, `view/dialogs/ocr.py`, `view/dialogs/optimize.py`,
+  `view/object_selection.py`, `view/pdf_view.py`, `view/text_editing.py`). **Resolved (PR-9, 2026-07-04):** the two
+  real boundary crossings were routed through controller injection — `view/dialogs/ocr.py::OcrDialog` takes a
+  required `device_available` callable (view forwards to `PDFController.is_device_available`, new facade over
+  `model.tools.ocr_tool.is_device_available`), and `view/dialogs/optimize.py::OptimizePdfDialog` takes a required
+  `preset_options` callable (`PDFController.start_optimize_pdf_copy()` passes `PDFModel.preset_optimize_options`).
+  The remaining DTO/type imports (`model.object_requests`, `model.edit_requests`, `model.pdf_optimizer`) have no
+  mutation surface and are permitted via `ignore_imports` on the `view-no-model` contract in `pyproject.toml`,
+  each with a comment justifying the permit. `view-no-model` is now blocking.
 
 ## Open -- Security dependency hygiene (from F2/F9 patch work; updated 2026-06-05)
 

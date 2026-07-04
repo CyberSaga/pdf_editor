@@ -86,3 +86,51 @@ def test_view_layer_has_no_unsanctioned_fitz_open() -> None:
         "(geometry value-types are fine; document handles are not). Update R2.3 "
         f"and the allowlist together if intentional. Mismatches: {offenders}"
     )
+
+
+# PR-9 (2026-07-04, codex review follow-up): import-linter's view-no-model
+# `ignore_imports` allowlist is MODULE-edge based, so a future behavior import
+# from a permitted module (e.g. `from model.pdf_optimizer import
+# save_optimized_copy` in a dialog) would slip through the contract silently.
+# This guard pins the permitted edges down to the exact NAMES a view file may
+# import from model — anything new must be added here deliberately.
+_VIEW_MODEL_IMPORT_NAME_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
+    ("view/dialogs/optimize.py", "model.pdf_optimizer"): frozenset({"PdfOptimizeOptions"}),
+    ("view/dialogs/audit.py", "model.pdf_optimizer"): frozenset({"PdfAuditReport"}),
+    ("view/object_selection.py", "model.object_requests"): frozenset(
+        {"BatchDeleteObjectsRequest", "DeleteObjectRequest", "ObjectRef", "RotateObjectRequest"}
+    ),
+    ("view/pdf_view.py", "model.object_requests"): frozenset(
+        {"BatchMoveObjectsRequest", "InsertImageObjectRequest", "MoveObjectRequest", "ResizeObjectRequest"}
+    ),
+    ("view/text_editing.py", "model.edit_requests"): frozenset(
+        {"EditTextRequest", "MoveTextRequest"}
+    ),
+}
+
+
+def test_view_model_imports_are_dto_names_only() -> None:
+    offenders: list[str] = []
+    for path in _py_files("view"):
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] == "model":
+                        offenders.append(f"{rel}:{node.lineno} import {alias.name} (bare module import)")
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if node.level == 0 and module.split(".")[0] == "model":
+                    allowed = _VIEW_MODEL_IMPORT_NAME_ALLOWLIST.get((rel, module))
+                    if allowed is None:
+                        offenders.append(f"{rel}:{node.lineno} from {module} (module edge not allowlisted)")
+                        continue
+                    for alias in node.names:
+                        if alias.name not in allowed:
+                            offenders.append(f"{rel}:{node.lineno} from {module} import {alias.name}")
+    assert not offenders, (
+        "view/ may import only the pinned DTO names from model (CLAUDE.md §2; "
+        "pyproject view-no-model ignore_imports is module-edge based, this guard "
+        f"adds name granularity). Offenders: {offenders}"
+    )
