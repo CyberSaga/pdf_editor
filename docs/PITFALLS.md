@@ -1413,3 +1413,25 @@
 **Cause:** A suite run that crashes or is killed mid-way can leave print-helper `python` subprocesses alive. They keep the Windows print/COM stack engaged, and later runs race against them (stalled-status leakage, COM registration errors).
 **Fix:** Before judging a red suite run, check for orphaned `python` processes (`Get-Process | Where-Object { $_.ProcessName -match 'python' }`), kill them, and rerun. Two consecutive clean runs after the kill confirmed the suite itself was green.
 **File:** procedural (no code change); observed 2026-07-04 while validating the PR-4 E402 cleanup
+
+---
+
+## Subprocess text I/O silently depends on the caller's locale, not the child's
+
+**Area:** `test_scripts/` — any test that `subprocess.run(...)` a script/tool and reads its stdout/stderr
+**Symptom:** Two distinct failure shapes from the same root cause, seen while triaging PR-10's advisory `test-functional` data:
+  1. `test_performance_script_runner.py::test_performance_script_runs_from_repo_root` failed on windows-latest CI (never on ubuntu) with the *child* process (`test_performance.py`) raising `UnicodeEncodeError: 'charmap' codec can't encode characters ... Phase 6 效能測試` — the child's own `print()` of zh-TW status text crashed before the parent ever read anything.
+  2. `test_security_packaging.py::test_built_wheel_and_sdist_exclude_dev_trees` has a known local flake: `subprocess.run(..., text=True)` decodes the child's pipes using `locale.getpreferredencoding()`, which is `cp950` (Traditional Chinese Big5) on the maintainer's machine — a `UnicodeDecodeError` there if the build tool's own output isn't Big5-representable.
+**Cause:** Neither the parent's `subprocess.run` call nor the child process pin an explicit encoding. On Windows, a captured (non-tty) child stdout falls back to the *process* locale codepage (cp1252 on GitHub's windows-latest runners) for the child's own `print()`/`sys.stdout` calls unless `PYTHONIOENCODING`/`PYTHONUTF8` is set in its `env`; separately, the *parent's* `text=True` decode of the captured bytes uses `locale.getpreferredencoding()` on whichever machine runs the test, not a fixed encoding. This is the same encoding-class bug as the `optional-requirements.txt` cp1252 pitfall above, just at the subprocess-I/O layer instead of the file-parsing layer.
+**Fix:** Pin encodings explicitly on both sides of any `subprocess.run` a test spawns: pass `env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}` so the *child's* own text output can't hit an undefined-codepage crash, and read captured output with an explicit `encoding="utf-8", errors="replace"` (or manually `.decode("utf-8", errors="replace")` on `bytes` output) rather than bare `text=True`, so the *parent's* decode doesn't depend on whatever locale happens to be active on the machine running the test.
+**File:** `test_scripts/test_performance_script_runner.py`, `test_scripts/test_security_packaging.py`
+
+---
+
+## CI's `test-functional` job never installed `build`/`setuptools`/`wheel`
+
+**Area:** `.github/workflows/ci.yml` (`test-functional` job) / `test_scripts/test_security_packaging.py`
+**Symptom:** `test_built_wheel_and_sdist_exclude_dev_trees` failed on every sampled `test-functional` CI run (both windows-latest and ubuntu-latest) with `AssertionError: distribution build failed (rc=1): ... No module named build` — easy to misdiagnose as an encoding bug (see previous entry) because the CI traceback's outer assertion message shape looks similar, but the actual `stderr` payload is just a missing-module error, not a decode crash.
+**Cause:** `build`/`setuptools`/`wheel` are declared in `pyproject.toml`'s `dev` optional-dependency extra, which only gets installed locally via `pip install -e ".[dev]"`. The `test-functional` CI step installs `requirements.txt` + `optional-requirements.txt` + `pytest packaging` — never the `dev` extra — so `python -m build` (which this test invokes as a subprocess) doesn't exist in that job's environment at all.
+**Fix:** Install `build`/`setuptools`/`wheel` explicitly in the `test-functional` step, version-pinned inline to match the maintainer's `.venv` (`build==1.5.0`, `setuptools==82.0.1`, `wheel==0.47.0`) rather than adding them to `constraints-ci.txt` (that file only binds packages installed by other steps' `-c` flags; adding entries there wouldn't install anything).
+**File:** `.github/workflows/ci.yml`

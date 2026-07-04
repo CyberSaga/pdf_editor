@@ -168,14 +168,25 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r optional-requirements.txt -c constraints-ci.txt
           python -m pip install pytest packaging -c constraints-ci.txt
+          # build/setuptools/wheel aren't in constraints-ci.txt (constraint/
+          # requirement files stay untouched here) but test_security_packaging.py's
+          # real-artifact test (`python -m build --no-isolation`) needs them on
+          # PATH; pin inline to the maintainer's .venv versions so this step
+          # doesn't drift independently of constraints-ci.txt. Previously
+          # missing entirely -> "No module named build" failed every CI run.
+          python -m pip install "build==1.5.0" "setuptools==82.0.1" "wheel==0.47.0"
       - name: Show resolved environment (pin visibility)
         run: python -m pip list
       - name: Run functional suite (advisory; never blocks merge)
         # Gitignored test_files/ fixtures are absent on CI, so fixture-dependent
-        # tests self-skip; local_only (real hardware) tests are deselected.
+        # tests are deselected via needs_fixtures (PR-10); they still run
+        # locally where test_files/ exists. local_only (real hardware) tests
+        # are deselected on every leg. windows-latest is the blocking-flip
+        # candidate (PR-11); ubuntu-latest stays advisory pending the Qt
+        # offscreen-teardown segfault issue (see TODOS.md).
         continue-on-error: true
         timeout-minutes: 40
-        run: python -m pytest -q -m "not local_only" --junitxml=pytest-report.xml
+        run: python -m pytest -q -m "not local_only and not needs_fixtures" --junitxml=pytest-report.xml
       - name: Upload junit report
         if: always()
         uses: actions/upload-artifact@v4

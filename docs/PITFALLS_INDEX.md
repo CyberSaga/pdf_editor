@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 155 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 157 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -160,3 +160,5 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1392 | Packaging guard accepted a find-all `*` discovery pattern (R5-06) | `test_scripts/test_security_packaging.py` |
 | 1401 | Windows pip-audit crashes on non-ASCII bytes in requirement files | CI (`dependency-audit` job) / requirement files |
 | 1410 | Orphaned print-helper processes poison later full-suite runs | `test_scripts/` print stack / local dev machine state |
+| 1419 | Subprocess text I/O silently depends on the caller's locale, not the child's | `test_scripts/` — any test that `subprocess.run(...)` a script/tool and reads its stdout/stderr |
+| 1431 | CI's `test-functional` job never installed `build`/`setuptools`/`wheel` | `.github/workflows/ci.yml` (`test-functional` job) / `test_scripts/test_security_packaging.py` |

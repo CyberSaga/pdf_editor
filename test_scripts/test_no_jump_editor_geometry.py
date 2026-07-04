@@ -498,6 +498,7 @@ def test_geometry_negative_control_wrong_font_size(qapp, font_case):
 REPO_ROOT = Path(__file__).parent.parent
 
 
+@pytest.mark.needs_fixtures
 def test_click_to_edit_real_geometry_pipeline(qapp):
     """AC 2 end-to-end: real PDF + real geometry pipeline → PreviewBackedInlineTextEditor.
 
@@ -732,6 +733,7 @@ def _assert_rect_drift_within(
     )
 
 
+@pytest.mark.needs_fixtures
 @pytest.mark.parametrize("pdf_filename,pdf_slug", QTEST_E2E_CASES)
 def test_click_to_edit_qtest_integration(qapp, pdf_filename, pdf_slug):
     """AC 2 full-stack: real QTest click drives the complete click-to-edit transition.
@@ -985,6 +987,7 @@ def test_click_to_edit_qtest_integration(qapp, pdf_filename, pdf_slug):
 # ── AC 5 (Cycle 22): mutation stability — type then delete must restore ──────
 
 
+@pytest.mark.needs_fixtures
 @pytest.mark.parametrize("pdf_filename,pdf_slug", QTEST_E2E_CASES)
 def test_click_to_edit_then_insert_then_delete_stays_stable(
     qapp, pdf_filename, pdf_slug
@@ -1179,6 +1182,7 @@ def test_click_to_edit_then_insert_then_delete_stays_stable(
     )
 
 
+@pytest.mark.needs_fixtures
 @pytest.mark.parametrize("pdf_filename,pdf_slug", QTEST_E2E_CASES)
 def test_click_to_edit_continuous_insertions_then_delete_stays_stable(
     qapp, pdf_filename, pdf_slug
@@ -1365,6 +1369,7 @@ def test_click_to_edit_continuous_insertions_then_delete_stays_stable(
     )
 
 
+@pytest.mark.needs_fixtures
 @pytest.mark.parametrize("pdf_filename,pdf_slug", QTEST_E2E_CASES)
 def test_reopen_same_textbox_cycles_do_not_cumulate_shrink(
     qapp, pdf_filename, pdf_slug

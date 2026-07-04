@@ -145,7 +145,17 @@ def test_built_wheel_and_sdist_exclude_dev_trees(tmp_path: Path) -> None:
             ],
             cwd=str(REPO_ROOT),
             capture_output=True,
-            text=True,
+            # Explicit UTF-8 decode, not `text=True`: bare `text=True` decodes
+            # the child's pipes using locale.getpreferredencoding() (e.g.
+            # cp950 on a Traditional-Chinese Windows box), and this repo's
+            # build output/paths can carry non-ASCII (zh-TW comments/strings)
+            # that isn't representable there -> UnicodeDecodeError inside
+            # subprocess.run's internal pipe-reader threads before this test
+            # ever sees a return code. Decoding as UTF-8 with replacement
+            # makes the read robust regardless of host locale (see
+            # docs/PITFALLS.md: subprocess text I/O + Windows locale codepages).
+            encoding="utf-8",
+            errors="replace",
             timeout=300,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:  # pragma: no cover - env dependent
