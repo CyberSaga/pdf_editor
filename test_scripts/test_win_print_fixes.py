@@ -868,6 +868,7 @@ def test_set_page_layout_actually_applies_page_size() -> None:
     assert printer.size_setter_used, "must use the dedicated page-size setter"
 
 
+@pytest.mark.local_only
 def test_set_page_layout_applies_size_on_real_printer() -> None:
     """Faithful regression on the real GDI path (skipped without a Windows printer)."""
     if sys.platform != "win32":

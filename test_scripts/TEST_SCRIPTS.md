@@ -112,6 +112,24 @@ python test_scripts/test_1pdf_horizontal.py --gui --save out.pdf
 | `test_unified_undo.py` | script | Unified undo stack scenario validation (delete/edit/undo/redo) | `python test_scripts/test_unified_undo.py` |
 | `validate_optimized_pdf.py` | script | Multi-parser integrity validation for an optimized PDF (fitz + pikepdf + pypdf) | `python test_scripts/validate_optimized_pdf.py test_files/2024_ASHRAE_content.pdf` |
 
+## Pytest markers
+
+`pyproject.toml` (`[tool.pytest.ini_options]`) registers a fixed marker scheme with `addopts = "--strict-markers"`, so a typo'd or unregistered marker is a collection error, not a silent no-op.
+
+| Marker | Meaning |
+|---|---|
+| `local_only` | Needs real local hardware (physical printer/screen); never selected in CI |
+| `windows_only` | Requires Windows-specific APIs or drivers; skipped/deselected on other OSes |
+| `needs_fixtures` | Depends on gitignored `test_files/` fixture PDFs; self-skips when absent |
+| `ocr_heavy` | Exercises the heavy OCR stack (surya/torch); excluded from standard runs |
+
+CI (and anyone reproducing the CI selection locally) excludes hardware-bound tests with:
+```bash
+pytest -m "not local_only"
+```
+
+Currently only `test_win_print_fixes.py::test_set_page_layout_applies_size_on_real_printer` carries `local_only`; the other three markers are registered for later triage passes and are not yet applied to any test.
+
 ## Output Notes
 
 - Several script runners generate artifacts under `test_scripts/test_outputs/` (for example reports or exported PDFs).

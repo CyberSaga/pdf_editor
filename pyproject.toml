@@ -103,6 +103,15 @@ forbidden_modules = ["model"]
 
 [tool.pytest.ini_options]
 testpaths = ["test_scripts"]
+# Marker scheme (M1 PR-2). --strict-markers makes an unregistered/typo'd marker a
+# collection error instead of a silent no-op.
+addopts = "--strict-markers"
+markers = [
+    "local_only: needs real local hardware (physical printer/screen); never selected in CI",
+    "windows_only: requires Windows-specific APIs or drivers; skipped/deselected on other OSes",
+    "needs_fixtures: depends on gitignored test_files/ fixture PDFs; self-skips when absent",
+    "ocr_heavy: exercises the heavy OCR stack (surya/torch); excluded from standard runs",
+]
 
 [tool.coverage.run]
 # R6.3 (2026-06-18): coverage scoped to the three production layers the R-series

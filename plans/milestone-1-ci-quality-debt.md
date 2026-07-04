@@ -22,7 +22,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Discovered during PR-1 validation:** the baseline was red twice over. (a) CI's windows-latest pip-audit leg had failed on every run since 2026-06-14 — commit `559d92f` added a CJK comment to `optional-requirements.txt` and pip-audit's parser falls back to cp1252 on Windows, crashing on byte `0x81`. (b) `test_app_close_waits_for_optimizer_worker` had failed locally since `310f6ca` gave `handle_app_close` a `wait_for_done` call the test stub lacked.
 - **Fix:** ASCII-rewritten comment + `wait_for_done` stub; new blocking guard test `test_scripts/test_security_requirements_encoding.py` (all requirement/constraint files must be pure ASCII); pitfall recorded in `docs/PITFALLS.md`.
 - **PR:** #10 — merges BEFORE PR-1 (#9); #9 then picks up main.
-- **Status:** open, all CI checks green (2026-07-03).
+- **Status:** merged 2026-07-04 as PR #10.
 
 ### PR-1 — `ci: pin CI dependency environment to .venv versions`
 
@@ -32,7 +32,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `.venv\Scripts\python.exe -m pip freeze` to source the pins; CI log shows PyMuPDF 1.27.1.
 - **Acceptance:** all existing jobs green; CI versions now match `.venv` by policy, not by luck.
 - **Rollback risk:** **Low** — CI-only; revert restores floor-resolution behavior.
-- **Status:** open as PR #9 (2026-07-03); pins verified on CI (test job resolved PyMuPDF 1.27.1 / PySide6 6.10.2 / Pillow 12.2.0 / numpy 2.2.6 / pytest 9.0.3). Awaiting #10 merge, then a main merge to go fully green.
+- **Status:** merged 2026-07-04 as PR #9 (squash 5abfab7); pins verified on CI (test job resolved PyMuPDF 1.27.1 / PySide6 6.10.2 / Pillow 12.2.0 / numpy 2.2.6 / pytest 9.0.3).
 
 ### PR-2 — `test: register pytest marker scheme and mark hardware-bound tests`
 
@@ -42,7 +42,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `.venv\Scripts\python.exe -m pytest --markers`; `... -m "not local_only" --collect-only -q` (count ≈ full suite minus marked).
 - **Acceptance:** no `PytestUnknownMarkWarning`; collection counts documented in the PR description.
 - **Rollback risk:** **Low** — markers are additive; nothing changes for unmarked tests.
-- **Status:** pending.
+- **Status:** in review as PR #11 (opened 2026-07-04).
 
 ### PR-3 — `ci: add advisory cross-platform functional test job`
 
