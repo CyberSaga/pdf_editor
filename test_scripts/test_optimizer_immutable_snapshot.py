@@ -258,7 +258,9 @@ def test_app_close_waits_for_optimizer_worker() -> None:
 
     calls: list[str] = []
     controller = PDFController.__new__(PDFController)
-    controller._thumbnail_coordinator = SimpleNamespace(cancel=lambda: None)
+    controller._thumbnail_coordinator = SimpleNamespace(
+        cancel=lambda: None, wait_for_done=lambda timeout_ms: True
+    )
     controller._print_coordinator = SimpleNamespace(
         has_active_job=lambda: False, begin_close_pending=lambda: None
     )

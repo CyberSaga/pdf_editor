@@ -1395,3 +1395,12 @@
 **Cause:** Prefix-string matching cannot model setuptools' fnmatch-glob discovery semantics; a find-all reduces to the empty string and slips through.
 **Fix:** Evaluate each include pattern with `fnmatch` against concrete forbidden package names (`scripts`, `scripts.fusion_schemas`, `test_scripts`, `docs`, `plans`) and reject any pattern that strips to empty (`*`/`**`). Keep a teeth test asserting the validator flags `*`/`scripts*`.
 **File:** `test_scripts/test_security_packaging.py`
+
+---
+
+## Windows pip-audit crashes on non-ASCII bytes in requirement files
+**Area:** CI (`dependency-audit` job) / requirement files
+**Symptom:** The windows-latest pip-audit leg fails in seconds with `UnicodeDecodeError: 'charmap' codec can't decode byte 0x81` while *parsing* `optional-requirements.txt`; the ubuntu leg stays green. Main was red this way from 2026-06-14 to 2026-07-03 without anyone noticing the cause.
+**Cause:** pip-audit's `pip_requirements_parser.auto_decode` (like pip's own) falls back to the locale codepage when a requirements file has no BOM. GitHub Windows runners use cp1252, and several bytes inside UTF-8 CJK sequences (e.g. `0x81`) are undefined in cp1252, so a Traditional-Chinese comment crashes the parse outright. Linux never reproduces it (UTF-8 locale).
+**Fix:** Keep every `*requirements*.txt` / `constraints*.txt` at the repo root pure ASCII. Guarded by `test_scripts/test_security_requirements_encoding.py`, which runs in the blocking CI security suite on every PR.
+**File:** `optional-requirements.txt`, `test_scripts/test_security_requirements_encoding.py`
