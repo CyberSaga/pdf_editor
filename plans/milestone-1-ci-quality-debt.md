@@ -94,7 +94,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `.venv\Scripts\python.exe -m mypy model/ utils/` → 0; full suite; targeted no-document tests (operations on a closed/never-opened model must raise the same error as before).
 - **Acceptance:** mypy job blocking + green; error behavior for None-doc paths byte-identical to before.
 - **Rollback risk:** **Medium** — touches many model call sites; a wrong guard could turn a soft no-op into a raise. Mitigated by per-file revert-ability and no-document regression tests.
-- **Status:** in review as PR #16 (branch `types/pr7-mypy-zero-flip`).
+- **Status:** merged 2026-07-04 as PR #16 (squash c9b14c4; codex-reviewed: APPROVE WITH FOLLOW-UPS, docstring follow-up applied pre-merge).
 
 ### PR-8 — `refactor: fix utils layer violations; flip utils import contract blocking`
 
@@ -104,7 +104,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `lint-imports` clean on the flipped contract; `test_ocr_types.py` + preferences tests; full suite.
 - **Acceptance:** utils contract blocking + green; no caller left importing the moved helper from utils.
 - **Rollback risk:** **Medium** — import moves ripple across layers, but the shim keeps old `ocr_types` imports alive, and CI now catches misses.
-- **Status:** pending.
+- **Status:** in review (branch `refactor/pr8-utils-contract`).
 
 ### PR-9 — `refactor: route view dialog model calls through controller; flip view contract blocking`
 

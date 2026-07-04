@@ -79,9 +79,10 @@ from view.object_selection import (  # noqa: E402
     ObjectSelectionManager,
     absolute_rotation_from_drag,  # noqa: F401  (re-export for pdf_view.absolute_rotation_from_drag)
 )
-from utils.helpers import parse_pages, show_error
+from utils.helpers import parse_pages
 from utils.preferences import UserPreferences
 from view.icons import load_icon
+from view.message_boxes import show_error
 from view.theme import THEME_REGISTRY, ThemeSwitcherWidget, build_qss, shadow_color
 from view.text_editing import (
     _DEFAULT_EDITOR_MASK_COLOR,

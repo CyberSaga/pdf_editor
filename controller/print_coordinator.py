@@ -43,7 +43,7 @@ from src.printing.messages import (
 )
 from src.printing.print_dialog import UnifiedPrintDialog
 from src.printing.subprocess_runner import PrintSubprocessRunner
-from utils.helpers import show_error
+from view.message_boxes import show_error
 
 if TYPE_CHECKING:
     from controller.pdf_controller import PDFController

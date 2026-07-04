@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from model.pdf_model import PDFModel
 from model.pdf_optimizer import PdfOptimizeOptions
-from utils.helpers import show_error
+from view.message_boxes import show_error
 
 from .audit import PdfAuditReportDialog
 

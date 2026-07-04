@@ -39,15 +39,17 @@ Layer 1's goal-mode guard short-circuits), Steps 0/0a/0b/0c of `completion_gate.
 
 ## Open -- Layer boundary violations (S4 import-linter, added 2026-07-02)
 
-`lint-imports` (`.github/workflows/ci.yml` → `layer-boundaries`) is now split: `model-no-controller-view` and
-`model-no-qt` are **blocking** (no violations). The `utils-no-controller-view-model` and `view-no-model` contracts
-below run advisory-only until these clear, then flip to blocking too:
+`lint-imports` (`.github/workflows/ci.yml` → `layer-boundaries`) is now split: `model-no-controller-view`,
+`model-no-qt`, and (as of PR-8) `utils-no-controller-view-model` are **blocking** (no violations). The
+`view-no-model` contract below still runs advisory-only until it clears, then flips to blocking too:
 
-- [ ] **`utils/preferences.py` imports `model.tools.ocr_types`.** Utils importing Model inverts the intended
+- [x] **`utils/preferences.py` imports `model.tools.ocr_types`.** Utils importing Model inverts the intended
   bottom-of-stack position of `utils/`. Either move `ocr_types` to `utils/` (if it's really a shared type) or move
-  the OCR preference logic that needs it into `controller/`/`model/`.
-- [ ] **`utils/helpers.py` imports `PySide6.QtWidgets.QMessageBox`.** Utils showing a message box directly bypasses
-  the View layer; callers should raise/return and let View show the dialog.
+  the OCR preference logic that needs it into `controller/`/`model/`. **Resolved (PR-8):** moved to
+  `utils/ocr_types.py` with a re-export shim left at `model/tools/ocr_types.py`.
+- [x] **`utils/helpers.py` imports `PySide6.QtWidgets.QMessageBox`.** Utils showing a message box directly bypasses
+  the View layer; callers should raise/return and let View show the dialog. **Resolved (PR-8):** moved
+  `show_error` to `view/message_boxes.py`; all callers updated.
 - [ ] **View importing Model directly** (`view/dialogs/audit.py`, `view/dialogs/ocr.py`, `view/dialogs/optimize.py`,
   `view/object_selection.py`, `view/pdf_view.py`, `view/text_editing.py`). Most are DTO/type imports (arguably
   acceptable — request/response dataclasses aren't mutation calls), but `view/dialogs/optimize.py` calling
