@@ -111,6 +111,7 @@ jobs:
           pytest -q \
             test_scripts/test_security_pillow_floor.py \
             test_scripts/test_security_ocr_requirements.py \
+            test_scripts/test_security_requirements_encoding.py \
             test_scripts/test_security_ocr_weights.py
       - name: Full security suite (advisory; needs the heavy optional/platform stack)
         continue-on-error: true
