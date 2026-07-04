@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-import sys
 import tempfile
 from pathlib import Path
 
 import fitz
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from model.pdf_model import PDFModel
 from model.text_block import EditableSpan, TextBlockManager

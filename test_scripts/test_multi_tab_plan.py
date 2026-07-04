@@ -1,4 +1,3 @@
-import sys
 import time
 from pathlib import Path
 
@@ -8,10 +7,6 @@ from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QListView, QMenu
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from controller.pdf_controller import PDFController
 from model.pdf_model import PDFModel

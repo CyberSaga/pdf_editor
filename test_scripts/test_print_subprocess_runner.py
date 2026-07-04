@@ -11,16 +11,12 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, QProcess, QProcessEnvironment, Signal
 from PySide6.QtWidgets import QApplication
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
 from src.printing.base_driver import PrintJobOptions
 from src.printing.errors import PrintHelperTerminatedError
 from src.printing.helper_protocol import PrintHelperJob
 from src.printing.subprocess_runner import PrintSubprocessRunner
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _ensure_app() -> QApplication:
