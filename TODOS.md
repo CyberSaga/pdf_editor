@@ -82,6 +82,16 @@ Reconciled via file split: `surya-ocr` + `torch` in `ocr-requirements.txt`; core
 - [ ] **Revisit the OCR stack when surya-ocr relaxes its pins.** When a surya release ships `pillow>=12.2` support and a transformers floor in the 5.x line, merge `ocr-requirements.txt` back and drop the residual-risk note.
 - [ ] **F9 bundle distribution** — ship a vetted weights bundle and populate `WEIGHTS_MANIFEST` with its published SHA256 digests so `PDF_EDITOR_OCR_WEIGHTS_DIR` works out of the box. See `docs/ocr-weights-verification.md`.
 
+## CI advisory findings (PR-10, 2026-07-04)
+
+- [ ] **ubuntu-latest `test-functional` leg segfaults (Bus error, intermittent).** Crashes inside
+  `test_scripts/test_page_deskew_scope.py::test_controller_straightens_batch_as_single_undo` at a
+  `qapp.processEvents()` call (~49-58% through the suite), native Qt/PyMuPDF/PIL interaction under
+  offscreen rendering; doesn't reproduce on every run (2 of 4 sampled runs completed cleanly). Stays
+  advisory (`continue-on-error: true`) until root-caused. See GitHub issue
+  https://github.com/CyberSaga/pdf_editor/issues/19 for full evidence and next steps (bisect via
+  `--deselect`, junit artifact comparison across runs, core dump analysis).
+
 ## Future Object Follow-Ups
 
 - Any remaining object-manipulation polish that needs its own child plan.

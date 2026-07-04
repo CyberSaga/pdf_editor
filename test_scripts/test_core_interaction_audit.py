@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from test_scripts.core_interaction_audit import (
     AuditPlan,
     AuditScenario,
@@ -13,6 +15,7 @@ from test_scripts.core_interaction_audit import (
 )
 
 
+@pytest.mark.needs_fixtures
 def test_default_core_interaction_plan_uses_three_existing_fixtures() -> None:
     repo_root = Path(__file__).resolve().parents[1]
 
