@@ -82,16 +82,22 @@ Reconciled via file split: `surya-ocr` + `torch` in `ocr-requirements.txt`; core
 - [ ] **Revisit the OCR stack when surya-ocr relaxes its pins.** When a surya release ships `pillow>=12.2` support and a transformers floor in the 5.x line, merge `ocr-requirements.txt` back and drop the residual-risk note.
 - [ ] **F9 bundle distribution** — ship a vetted weights bundle and populate `WEIGHTS_MANIFEST` with its published SHA256 digests so `PDF_EDITOR_OCR_WEIGHTS_DIR` works out of the box. See `docs/ocr-weights-verification.md`.
 
-## CI coverage baseline (PR-11, 2026-07-05)
+## CI coverage baseline (PR-11, 2026-07-05) -- gate enforced in PR-12
 
-- CI coverage baseline (PR-11, 2026-07-05): 78% windows-latest functional leg (local: 79%).
+- [x] **Evidence-based coverage gate (PR-12).** CI coverage baseline (PR-11, 2026-07-05): 78%
+  windows-latest functional leg, stable across 3 consecutive runs (local: 79%).
   CI detail: 15385 stmts / 3354 missed, 1553 passed / 33 skipped / 15 deselected / 0 failed
   (run 28712396725). Local detail: 15385 stmts / 3292 missed.
   Measured by the now-blocking windows `test-functional` leg via
-  `--cov --cov-report=term --cov-report=xml --cov-fail-under=0` (the explicit 0 keeps the
-  number advisory). The CI figure is lower than local because fixture-dependent
-  (`needs_fixtures`) tests don't run there. PR-12 sets the real `--cov-fail-under` gate from
-  this number (CI-measured minus 2, rounded down — see plans/milestone-1-ci-quality-debt.md).
+  `--cov --cov-report=term --cov-report=xml --cov-fail-under=0` (the explicit 0 kept the
+  number advisory pending this PR). The CI figure is lower than local because fixture-dependent
+  (`needs_fixtures`) tests don't run there.
+  PR-12 removes the `--cov-fail-under=0` override from the windows leg's cov args, so
+  `pyproject.toml`'s existing `[tool.coverage.report] fail_under = 75` now governs on CI —
+  one number, one source of truth, three points of headroom against the CI-measured 78%
+  baseline. (Deviation from the original plan note below this line, which proposed
+  CI-measured-minus-2: 75 was already the configured threshold and already has real
+  headroom, so it was left as-is rather than raised, per PR-12 design decision.)
 
 ## CI advisory findings (PR-10, 2026-07-04)
 

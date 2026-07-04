@@ -36,3 +36,8 @@ grimp==3.14
 mypy==2.1.0
 mypy_extensions==1.1.0
 typing_extensions==4.15.0
+
+# Packaging toolchain (test_security_packaging real-artifact test)
+build==1.5.0
+setuptools==82.0.1
+wheel==0.47.0
