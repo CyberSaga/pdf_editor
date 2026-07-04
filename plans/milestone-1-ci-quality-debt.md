@@ -72,7 +72,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `ruff check . --select E402 --no-cache` → 0; spot-run 3 hybrid files as plain scripts; full suite.
 - **Acceptance:** lint job blocking with E402 included, green; script-mode invocation still works.
 - **Rollback risk:** **Medium** for script-mode regressions (affects only manual runners, not pytest or the app); revert is simple.
-- **Status:** in review (branch `test/pr5-e402-bootstrap-flip`; PR number to follow).
+- **Status:** in review as PR #14 (branch `test/pr5-e402-bootstrap-flip`).
 
 ### PR-6 — `types: mypy quick-wins + advisory CI typecheck job`
 
