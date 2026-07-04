@@ -146,11 +146,13 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** blocking windows job green on this PR and one subsequent PR.
 - **Acceptance:** functional regressions now block merges; CI coverage baseline captured.
 - **Rollback risk:** **Low** — one-line flip back to advisory if unexpected flake emerges (then fix the flake, don't stay advisory).
-- **Status:** in review (branch `ci/pr11-windows-blocking-coverage`; PR number recorded on open).
+- **Status:** in review as PR #21 (branch `ci/pr11-windows-blocking-coverage`).
 - **Measured coverage:** local `-m "not local_only and not needs_fixtures"` run with
   `--cov --cov-report=term --cov-fail-under=0`: 1565 passed / 21 skipped / 15 deselected / 0 failed,
-  TOTAL **79%** (15385 stmts / 3292 missed). CI windows-latest TOTAL: TBD (recorded here + TODOS.md
-  once the PR's first blocking run reports).
+  TOTAL **79%** (15385 stmts / 3292 missed). CI windows-latest TOTAL: **78%** (15385 stmts / 3354
+  missed; 1553 passed / 33 skipped / 15 deselected / 0 failed, run 28712396725 — blocking leg green
+  on its first run). Same-run bonus evidence: the ubuntu advisory leg hit the issue-#19 segfault
+  (exit 139) and the job still passed — `continue-on-error` isolation confirmed live.
 - **Implementation notes:** `continue-on-error` made conditional (`${{ matrix.os == 'ubuntu-latest' }}`);
   job display name labels the legs via the GitHub-expressions ternary idiom (`&&`/`||`):
   `windows - BLOCKING` / `ubuntu - advisory, issue #19`. Coverage args injected per-OS through a
