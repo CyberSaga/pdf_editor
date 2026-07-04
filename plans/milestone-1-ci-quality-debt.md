@@ -83,7 +83,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `.venv\Scripts\python.exe -m mypy model/ utils/` (67 → 43); full suite (1576 passed / 21 skipped / 0 failed, unchanged); app smoke launch.
 - **Acceptance:** only annotation/enum-form changes — no behavior change; advisory typecheck job visible on CI.
 - **Rollback risk:** **Low** — the Pillow Resampling rename and `QImage.Format` qualification are the only runtime-touching lines, both enum-value-identical.
-- **Status:** in review (PR number to follow in a follow-up commit).
+- **Status:** in review as PR #15 (branch `types/pr6-mypy-quick-wins`).
 
 ### PR-7 — `types: eliminate doc-None dereferences; flip mypy blocking`
 
