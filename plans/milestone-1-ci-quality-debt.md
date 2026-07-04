@@ -115,7 +115,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `lint-imports` — all 4 contracts blocking + clean; dialog workflow tests (`test_pdf_optimize_workflow.py`, `test_ocr_dialog.py`, `test_ocr_controller_flow.py`, `test_ocr_view_entry.py`, merge tests); full suite; offscreen smoke script constructing both dialogs with injected callables.
 - **Acceptance:** all import contracts blocking and green; dialogs behave identically.
 - **Rollback risk:** **Medium** — changes user-visible dialog wiring; covered by existing workflow tests, revert straightforward.
-- **Status:** in review (branch `refactor/pr9-view-contract`); PR number recorded after `gh pr create`.
+- **Status:** in review as PR #18 (branch `refactor/pr9-view-contract`); awaiting codex review before merge.
 
 ### PR-10 — `ci: stabilize functional suite from advisory triage`
 
