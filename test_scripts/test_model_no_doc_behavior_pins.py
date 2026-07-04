@@ -4,7 +4,16 @@ These tests deliberately PIN CURRENT CRASH BEHAVIOR of the model when no
 document is open. PR-7 replaces the flagged `self.doc`/`model.doc` accesses
 with typed local binds (`doc: fitz.Document = self.doc`) purely to satisfy
 mypy; the runtime semantics — including the exact exception raised when the
-doc is None — must stay byte-identical. These pins prove that.
+doc is None — must stay byte-identical.
+
+Coverage note (codex review follow-up): these are THREE REPRESENTATIVE pins
+(one per failure shape: TypeError via public export_pages, TypeError via public
+edit_text, guarded False via _repair_active_doc_in_memory) — not an exhaustive
+pin of all 26 refactored sites. The remaining sites (_restore_doc_from_snapshot,
+_roundtrip_live_doc, _full_save_to_path, _render_page_gray_array,
+_image_xref_digest, native-image object helpers) are internal, reachable only
+behind caller guards, and were verified byte-identical by diff review (codex
+adversarial pass, 2026-07-04) rather than pinned here.
 
 They assert on CRASH behavior on purpose. The current no-doc failure modes are
 heterogeneous (TypeError here, silent no-op elsewhere), which is exactly why a
