@@ -13,6 +13,10 @@ name: CI
 #     the full pytest run needs the heavy optional + platform-specific stack
 #     (surya/torch, win32print, pyautogui) and is run locally, surfaced here as an
 #     advisory step.
+#   * `test-functional` is a new, fully advisory cross-platform matrix job
+#     (windows-latest + ubuntu-latest) that runs the broader pytest suite to
+#     gather stabilization data ahead of the blocking flip planned in
+#     plans/milestone-1-ci-quality-debt.md (PR-10/11).
 #
 # All tool/dependency installs are pinned via constraints-ci.txt to the
 # maintainer's .venv versions (except pip-audit — see that file's header).
@@ -122,3 +126,41 @@ jobs:
       - name: Full security suite (advisory; needs the heavy optional/platform stack)
         continue-on-error: true
         run: pytest -q test_scripts/test_security_*.py
+
+  test-functional:
+    name: Functional suite (advisory — data-gathering for the blocking flip, see plans/milestone-1-ci-quality-debt.md PR-10/11)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install Qt offscreen runtime libs + CUPS headers (pycups build dep)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libcups2-dev
+      - name: Install core + optional + test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r optional-requirements.txt -c constraints-ci.txt
+          python -m pip install pytest packaging -c constraints-ci.txt
+      - name: Show resolved environment (pin visibility)
+        run: python -m pip list
+      - name: Run functional suite (advisory; never blocks merge)
+        # Gitignored test_files/ fixtures are absent on CI, so fixture-dependent
+        # tests self-skip; local_only (real hardware) tests are deselected.
+        continue-on-error: true
+        timeout-minutes: 40
+        run: python -m pytest -q -m "not local_only" --junitxml=pytest-report.xml
+      - name: Upload junit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-report-${{ matrix.os }}
+          path: pytest-report.xml
+          if-no-files-found: warn
