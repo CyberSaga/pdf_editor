@@ -35,7 +35,7 @@ from model.object_requests import (
 from model import pdf_optimizer
 from model.pdf_model import PDFModel
 from model.tools.ocr_tool import is_device_available
-from utils.helpers import pixmap_to_qimage, pixmap_to_qpixmap
+from utils.helpers import pixmap_to_qimage  # SMOKE-TRIPWIRE (c): pixmap_to_qpixmap import removed; call sites below now reference an undefined name
 from view.message_boxes import show_error
 from view.pdf_view import EditTextRequest, MoveTextRequest, PDFView, ViewportAnchor
 from src.printing.messages import (

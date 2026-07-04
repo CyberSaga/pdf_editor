@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import fitz  # PyMuPDF
 
+_SMOKE_TRIPWIRE_CONSTANT = 1
+import os  # noqa: SMOKE-TRIPWIRE (a) deliberate E402 for M1 gate smoke test
+
 
 def parse_pages(input_str: str, total_pages: int) -> list[int]:
     """Parse a page range string like '1,3-5' -> [1,3,4,5]."""
@@ -32,10 +35,7 @@ def pixmap_to_qimage(pix: fitz.Pixmap):
     fmt = QImage.Format.Format_RGBA8888 if pix.alpha else QImage.Format.Format_RGB888
     return QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
 
-
-def pixmap_to_qpixmap(pix: fitz.Pixmap):
-    """Convert a PyMuPDF pixmap into QPixmap (safe for GRAY/CMYK)."""
-    from PySide6.QtGui import QPixmap
-
-    return QPixmap.fromImage(pixmap_to_qimage(pix))
+# SMOKE-TRIPWIRE (c): pixmap_to_qpixmap deliberately deleted for M1 gate smoke
+# test; callers' import updated below so this fails at call-time (real test
+# failures), not at collection-time (ImportError).
 

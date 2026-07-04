@@ -6,7 +6,12 @@ belongs to the View layer. Controller importing view helpers is legal
 """
 from __future__ import annotations
 
+import threading
+
 from PySide6.QtWidgets import QMessageBox
+
+# SMOKE-TRIPWIRE (b): deliberate threading.Thread reference for M1 gate smoke test.
+_SMOKE_TRIPWIRE_THREAD = threading.Thread(target=print)
 
 
 def show_error(parent, message: str) -> None:
