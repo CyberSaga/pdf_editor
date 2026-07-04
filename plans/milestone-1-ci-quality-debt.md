@@ -42,7 +42,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `.venv\Scripts\python.exe -m pytest --markers`; `... -m "not local_only" --collect-only -q` (count ≈ full suite minus marked).
 - **Acceptance:** no `PytestUnknownMarkWarning`; collection counts documented in the PR description.
 - **Rollback risk:** **Low** — markers are additive; nothing changes for unmarked tests.
-- **Status:** in review as PR #11 (opened 2026-07-04).
+- **Status:** merged 2026-07-04 as PR #11 (squash 91acf3f).
 
 ### PR-3 — `ci: add advisory cross-platform functional test job`
 
@@ -52,7 +52,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** CI run on the PR; download artifacts, record pass/fail/skip per OS.
 - **Acceptance:** both legs execute to completion (even if red) and never block merge.
 - **Rollback risk:** **None** — advisory job; deleting it restores status quo.
-- **Status:** pending.
+- **Status:** in review (opened 2026-07-04).
 
 ### PR-4 — `test: remove redundant import preambles from pytest-only files (E402 part 1)`
 
