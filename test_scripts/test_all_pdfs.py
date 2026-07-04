@@ -18,11 +18,16 @@ test_all_pdfs.py — 全 test_files 目錄 PDF 批次測試
   終端機 stdout   — 進度概覽 + 最終統計
 """
 
+import _bootstrap  # noqa: F401
 import io
 import sys
 import time
 import traceback
 from pathlib import Path
+
+import logging
+
+from model.pdf_model import PDFModel
 
 # Script-style batch runner; keep out of pytest auto-collection.
 __test__ = False
@@ -30,16 +35,12 @@ __test__ = False
 if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-import logging
-
 logging.disable(logging.CRITICAL)  # 批次測試期間關閉所有 log，避免大量 I/O
 
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = SCRIPT_DIR / "test_outputs"
-sys.path.insert(0, str(ROOT))
-from model.pdf_model import PDFModel
 
 # ──────────────────────────────────────────────────────────────────
 # 設定

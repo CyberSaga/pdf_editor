@@ -62,7 +62,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `ruff check test_scripts --select E402 --no-cache` (count drops to hybrid files only); full local suite pass count unchanged.
 - **Acceptance:** zero E402 in pytest-only files; identical suite results before/after.
 - **Rollback risk:** **Low–medium** — import-order side effects possible in principle; mitigated because conftest guarantees env/path before collection. Revert is trivial (test-only diff).
-- **Status:** pending.
+- **Status:** merged 2026-07-04 as PR #13 (squash 5a6dc51).
 
 ### PR-5 — `test: bootstrap module for hybrid scripts; flip E402 blocking (E402 part 2)`
 
@@ -72,7 +72,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `ruff check . --select E402 --no-cache` → 0; spot-run 3 hybrid files as plain scripts; full suite.
 - **Acceptance:** lint job blocking with E402 included, green; script-mode invocation still works.
 - **Rollback risk:** **Medium** for script-mode regressions (affects only manual runners, not pytest or the app); revert is simple.
-- **Status:** pending.
+- **Status:** in review as PR #14 (branch `test/pr5-e402-bootstrap-flip`).
 
 ### PR-6 — `types: mypy quick-wins + advisory CI typecheck job`
 

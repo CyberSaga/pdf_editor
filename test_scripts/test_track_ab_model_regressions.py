@@ -6,6 +6,7 @@ Coverage:
 2. Move-only paragraph edit should preserve per-run colors.
 3. Missing protected span validation should report span IDs.
 """
+import _bootstrap  # noqa: F401
 import io
 import sys
 import tempfile
@@ -13,18 +14,14 @@ from pathlib import Path
 
 import fitz
 
+from model.pdf_model import PDFModel
+from model.text_block import EditableSpan
+
 # Script-style integration runner; keep out of pytest auto-collection.
 __test__ = False
 
 if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from model.pdf_model import PDFModel
-from model.text_block import EditableSpan
 
 
 def _norm(model: PDFModel, text: str) -> str:

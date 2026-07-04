@@ -8,6 +8,7 @@ test_feature_conflict.py — 功能與衝突驗證
 - 輸出：每個概念的通過率、耗時、失敗案例與根本成因分析；穩定性結論與建議。
 """
 
+import _bootstrap  # noqa: F401
 import io
 import os
 import sys
@@ -16,28 +17,27 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import logging
+
+import fitz
+
+from model.edit_commands import EditTextCommand, SnapshotCommand
+from model.pdf_model import PDFModel
+
 if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-
-import logging
 
 logging.disable(logging.CRITICAL)
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = SCRIPT_DIR / "test_outputs"
-sys.path.insert(0, str(ROOT))
 
 TEST_FILES_ROOT = ROOT / "test_files"
 if not TEST_FILES_ROOT.exists():
     TEST_FILES_ROOT = Path(__file__).resolve().parent / "test_files"
 SAMPLE_DIR = TEST_FILES_ROOT / "sample-files-main"
 REPORT_PATH = OUTPUT_DIR / "feature_conflict_test_report.txt"
-
-import fitz
-
-from model.edit_commands import EditTextCommand, SnapshotCommand
-from model.pdf_model import PDFModel
 
 KNOWN_PASSWORDS = {
     "encrypted.pdf": "kanbanery",

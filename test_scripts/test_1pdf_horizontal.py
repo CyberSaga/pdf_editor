@@ -4,18 +4,15 @@
 1. 索引路徑：直接用 index 的 block rect（與 model 內部一致）
 2. GUI 路徑：用 get_text_info_at_point 取得 rect（模擬使用者點擊）
 """
+import _bootstrap  # noqa: F401
 import io
 import sys
 from pathlib import Path
 
+from model.pdf_model import PDFModel
+
 if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from model.pdf_model import PDFModel
 
 
 def run_horizontal_edit_and_verify(use_gui_flow: bool = False, save_output: str = None) -> int:

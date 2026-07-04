@@ -3,8 +3,12 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QApplication
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -12,11 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from PySide6.QtWidgets import QApplication
-
 
 @pytest.fixture(scope="session")
 def qapp() -> QApplication:
+    from PySide6.QtWidgets import QApplication
+
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
@@ -31,6 +35,8 @@ def _reset_app_stylesheet():
     global stylesheet active; leaked QSS gives QTextEdit subclasses padding that
     shifts pixel-diff comparisons in later rendering tests.
     """
+    from PySide6.QtWidgets import QApplication
+
     app = QApplication.instance()
     before_stylesheet = app.styleSheet() if app is not None else ""
     yield

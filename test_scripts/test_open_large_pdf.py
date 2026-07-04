@@ -11,22 +11,20 @@ test_open_large_pdf.py — 超大 PDF 開檔壓力測試（headless）
   python test_scripts/test_open_large_pdf.py --path path/to/large.pdf
   python test_scripts/test_open_large_pdf.py --path test_scripts/test_outputs/large_stress.pdf
 """
+import _bootstrap  # noqa: F401
 import argparse
 import sys
 import time
 from pathlib import Path
+
+from model.pdf_model import PDFModel
 
 if sys.platform == "win32" and __name__ == "__main__":
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 # 確保可 import 專案模組（專案根目錄 + test_scripts）
-_root = Path(__file__).resolve().parent.parent
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(_root))
-sys.path.insert(0, str(SCRIPT_DIR))
-
-from model.pdf_model import PDFModel
 
 OUTPUT_DIR = SCRIPT_DIR / "test_outputs"
 DEFAULT_LARGE_PDF = OUTPUT_DIR / "large_stress.pdf"

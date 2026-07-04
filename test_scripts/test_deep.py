@@ -19,6 +19,7 @@ test_deep.py — PDF 編輯器深度壓力測試
   python test_deep.py --output report.txt   # 指定報告輸出路徑
 """
 
+import _bootstrap  # noqa: F401
 import argparse
 import io
 import os
@@ -30,24 +31,24 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import logging
+
+import fitz
+
+from model.edit_commands import EditTextCommand, SnapshotCommand
+from model.pdf_model import PDFModel
+
 # Script-style stress runner; keep out of pytest auto-collection.
 __test__ = False
 
 if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-import logging
-
 logging.disable(logging.CRITICAL)
-
-import fitz
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _OUTPUT_DIR = _SCRIPT_DIR / "test_outputs"
-sys.path.insert(0, str(_ROOT))
-from model.edit_commands import EditTextCommand, SnapshotCommand
-from model.pdf_model import PDFModel
 
 # ──────────────────────────────────────────────────────────────
 # 設定

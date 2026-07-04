@@ -8,9 +8,9 @@ Checks:
 
 from __future__ import annotations
 
+import _bootstrap  # noqa: F401
 import gc
 import os
-import sys
 import tempfile
 import time
 import tracemalloc
@@ -21,16 +21,11 @@ from pathlib import Path
 import fitz
 from PIL import Image, ImageChops
 
-# Ensure repository root is importable when script is launched from test_scripts.
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+from src.printing import PrintDispatcher, PrintJobOptions
+from src.printing.pdf_renderer import PDFRenderer
 
 # Headless-friendly Qt backend for CI/terminal runs.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-from src.printing import PrintDispatcher, PrintJobOptions
-from src.printing.pdf_renderer import PDFRenderer
 
 
 @dataclass

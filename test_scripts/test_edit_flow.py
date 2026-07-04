@@ -2,6 +2,7 @@
 自動化測試：建立含文字的 PDF、開啟、執行 edit_text，驗證完整流程
 用以確認優化後的 model 穩定、準確運作
 """
+import _bootstrap  # noqa: F401
 import io
 import sys
 import tempfile
@@ -9,14 +10,10 @@ from pathlib import Path
 
 import fitz
 
+from model.pdf_model import PDFModel
+
 if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from model.pdf_model import PDFModel
 
 
 def create_test_pdf(path: str) -> None:

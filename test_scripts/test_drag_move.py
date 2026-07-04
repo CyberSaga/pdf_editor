@@ -16,6 +16,7 @@ Usage:
   python test_scripts/test_drag_move.py
 """
 
+import _bootstrap  # noqa: F401
 import difflib
 import io
 import os
@@ -25,20 +26,19 @@ import time
 import traceback
 from pathlib import Path
 
+import fitz
+
+from model.pdf_model import PDFModel
+
 # Script-style integration runner; keep out of pytest auto-collection.
 __test__ = False
 
 if sys.platform == "win32" and __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-import fitz
-
 ROOT = Path(__file__).parent.parent
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = SCRIPT_DIR / "test_outputs"
-sys.path.insert(0, str(ROOT))
-
-from model.pdf_model import PDFModel
 
 SAMPLE_DIR = ROOT / "test_files" / "sample-files-main"
 VERA_DIR = ROOT / "test_files" / "veraPDF-corpus-staging"

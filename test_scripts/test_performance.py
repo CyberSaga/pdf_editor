@@ -12,19 +12,14 @@ test_performance.py — Phase 6 效能測試
   python test_performance.py
   python test_performance.py --rounds 50    # 自訂編輯次數
 """
+import _bootstrap  # noqa: F401
 import argparse
 import os
-import sys
 import tempfile
 import time
 
 import fitz
 
-# 確保 import 路徑
-SCRIPT_DIR = os.path.dirname(__file__)
-REPO_ROOT = os.path.dirname(SCRIPT_DIR)
-sys.path.insert(0, SCRIPT_DIR)
-sys.path.insert(0, REPO_ROOT)
 from model.pdf_model import PDFModel
 
 
