@@ -62,9 +62,10 @@ platform = "win32"
 
 [tool.importlinter]
 # S4 (2026-07-02): CI-enforceable form of CLAUDE.md §2's layer rules.
-# model-no-controller-view and model-no-qt are blocking in CI (clean, no known
-# violations). utils-no-controller-view-model and view-no-model are advisory
-# until the known violations below are cleared, then flip to blocking too.
+# All four contracts are BLOCKING in CI as of PR-9 (2026-07-04): the utils
+# violation was cleared in PR-8, the view behavior calls were routed through
+# controller injection in PR-9, and the remaining DTO-only view imports are
+# permitted via the view-no-model contract's ignore_imports allowlist below.
 root_packages = ["model", "controller", "view", "utils"]
 include_external_packages = true
 
