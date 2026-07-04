@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -15,7 +17,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from model.pdf_model import PDFModel
 from model.pdf_optimizer import PdfOptimizeOptions
 from view.message_boxes import show_error
 
@@ -23,10 +24,18 @@ from .audit import PdfAuditReportDialog
 
 
 class OptimizePdfDialog(QDialog):
-    def __init__(self, parent=None, audit_provider=None, capabilities: dict[str, bool] | None = None):
+    def __init__(
+        self,
+        parent=None,
+        audit_provider=None,
+        capabilities: dict[str, bool] | None = None,
+        *,
+        preset_options: Callable[[str], PdfOptimizeOptions],
+    ):
         super().__init__(parent)
         self.audit_provider = audit_provider
         self._capabilities = capabilities or {}
+        self._preset_options = preset_options
         self._applying_preset = False
         self.setWindowTitle("優化 PDF")
         self.resize(560, 680)
@@ -223,7 +232,7 @@ class OptimizePdfDialog(QDialog):
             self._applying_preset = False
 
     def _apply_preset(self, preset: str) -> None:
-        options = PDFModel.preset_optimize_options(preset)
+        options = self._preset_options(preset)
         self._applying_preset = True
         try:
             self.preset_combo.setCurrentText(options.preset)

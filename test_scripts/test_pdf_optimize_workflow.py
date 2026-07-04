@@ -136,9 +136,10 @@ def mvc(monkeypatch, qapp):
 
 
 def test_optimize_dialog_defaults_to_balanced_and_switches_to_custom(qapp) -> None:
+    from model.pdf_model import PDFModel
     from view.pdf_view import OptimizePdfDialog
 
-    dialog = OptimizePdfDialog()
+    dialog = OptimizePdfDialog(preset_options=PDFModel.preset_optimize_options)
 
     assert dialog.preset_combo.currentText() == "平衡"
     assert dialog.image_target_dpi_suffix.text() == "dpi"
@@ -1185,9 +1186,13 @@ def test_optimize_copy_error_is_not_double_prefixed(tmp_path: Path, monkeypatch)
 
 
 def test_optimize_dialog_capability_gate_disables_and_unchecks(qapp) -> None:
+    from model.pdf_model import PDFModel
     from view.pdf_view import OptimizePdfDialog
 
-    dialog = OptimizePdfDialog(capabilities={"linearize": False, "object_streams": False})
+    dialog = OptimizePdfDialog(
+        capabilities={"linearize": False, "object_streams": False},
+        preset_options=PDFModel.preset_optimize_options,
+    )
 
     assert dialog.linearize_checkbox.isEnabled() is False
     assert dialog.linearize_checkbox.isChecked() is False
@@ -1204,9 +1209,13 @@ def test_optimize_dialog_capability_gate_disables_and_unchecks(qapp) -> None:
 
 
 def test_optimize_dialog_preset_cannot_recheck_gated_checkbox(qapp) -> None:
+    from model.pdf_model import PDFModel
     from view.pdf_view import OptimizePdfDialog
 
-    dialog = OptimizePdfDialog(capabilities={"linearize": False, "object_streams": False})
+    dialog = OptimizePdfDialog(
+        capabilities={"linearize": False, "object_streams": False},
+        preset_options=PDFModel.preset_optimize_options,
+    )
 
     dialog.preset_combo.setCurrentText("極致壓縮")
 
@@ -1218,9 +1227,10 @@ def test_optimize_dialog_preset_cannot_recheck_gated_checkbox(qapp) -> None:
 
 
 def test_optimize_dialog_without_capabilities_keeps_packaging_controls_enabled(qapp) -> None:
+    from model.pdf_model import PDFModel
     from view.pdf_view import OptimizePdfDialog
 
-    dialog = OptimizePdfDialog()
+    dialog = OptimizePdfDialog(preset_options=PDFModel.preset_optimize_options)
 
     assert dialog.linearize_checkbox.isEnabled() is True
     assert dialog.object_streams_checkbox.isEnabled() is True

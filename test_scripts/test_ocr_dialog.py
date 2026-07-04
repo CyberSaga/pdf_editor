@@ -29,15 +29,19 @@ def _make_prefs(**overrides) -> UserPreferences:
     return prefs
 
 
+def _always_available(_device: str) -> bool:
+    return True
+
+
 def test_dialog_defaults_to_current_page(qapp):
-    dialog = OcrDialog(total_pages=10, current_page=3, preferences=_make_prefs())
+    dialog = OcrDialog(total_pages=10, current_page=3, preferences=_make_prefs(), device_available=_always_available)
     assert dialog.current_page_radio.isChecked()
     assert not dialog.custom_range_edit.isEnabled()
     dialog.deleteLater()
 
 
 def test_dialog_switching_to_custom_enables_range_edit(qapp):
-    dialog = OcrDialog(total_pages=10, current_page=3, preferences=_make_prefs())
+    dialog = OcrDialog(total_pages=10, current_page=3, preferences=_make_prefs(), device_available=_always_available)
     dialog.custom_radio.setChecked(True)
     qapp.processEvents()
     assert dialog.custom_range_edit.isEnabled()
@@ -45,7 +49,7 @@ def test_dialog_switching_to_custom_enables_range_edit(qapp):
 
 
 def test_dialog_custom_range_with_multi_lang_produces_request(qapp):
-    dialog = OcrDialog(total_pages=10, current_page=3, preferences=_make_prefs())
+    dialog = OcrDialog(total_pages=10, current_page=3, preferences=_make_prefs(), device_available=_always_available)
     dialog.custom_radio.setChecked(True)
     dialog.custom_range_edit.setText("1,3-5,9")
     dialog.set_language_checked(OcrLanguage.ENGLISH.value, True)
@@ -60,7 +64,9 @@ def test_dialog_custom_range_with_multi_lang_produces_request(qapp):
 
 
 def test_dialog_current_page_option_returns_current_index(qapp):
-    dialog = OcrDialog(total_pages=10, current_page=7, preferences=_make_prefs(languages=["en"]))
+    dialog = OcrDialog(
+        total_pages=10, current_page=7, preferences=_make_prefs(languages=["en"]), device_available=_always_available
+    )
     dialog.accept()
     request = dialog.get_request()
     assert request is not None
@@ -68,7 +74,9 @@ def test_dialog_current_page_option_returns_current_index(qapp):
 
 
 def test_dialog_whole_document_returns_all_pages(qapp):
-    dialog = OcrDialog(total_pages=4, current_page=1, preferences=_make_prefs(languages=["en"]))
+    dialog = OcrDialog(
+        total_pages=4, current_page=1, preferences=_make_prefs(languages=["en"]), device_available=_always_available
+    )
     dialog.all_radio.setChecked(True)
     qapp.processEvents()
     dialog.accept()
@@ -78,7 +86,9 @@ def test_dialog_whole_document_returns_all_pages(qapp):
 
 
 def test_dialog_invalid_range_disables_ok(qapp):
-    dialog = OcrDialog(total_pages=10, current_page=1, preferences=_make_prefs(languages=["en"]))
+    dialog = OcrDialog(
+        total_pages=10, current_page=1, preferences=_make_prefs(languages=["en"]), device_available=_always_available
+    )
     dialog.custom_radio.setChecked(True)
     dialog.custom_range_edit.setText("abc")
     qapp.processEvents()
@@ -88,7 +98,9 @@ def test_dialog_invalid_range_disables_ok(qapp):
 
 
 def test_dialog_validation_clears_when_range_fixed(qapp):
-    dialog = OcrDialog(total_pages=10, current_page=1, preferences=_make_prefs(languages=["en"]))
+    dialog = OcrDialog(
+        total_pages=10, current_page=1, preferences=_make_prefs(languages=["en"]), device_available=_always_available
+    )
     dialog.custom_radio.setChecked(True)
     dialog.custom_range_edit.setText("abc")
     qapp.processEvents()
@@ -102,13 +114,17 @@ def test_dialog_validation_clears_when_range_fixed(qapp):
 
 
 def test_dialog_reject_returns_none(qapp):
-    dialog = OcrDialog(total_pages=10, current_page=1, preferences=_make_prefs(languages=["en"]))
+    dialog = OcrDialog(
+        total_pages=10, current_page=1, preferences=_make_prefs(languages=["en"]), device_available=_always_available
+    )
     dialog.reject()
     assert dialog.get_request() is None
 
 
 def test_dialog_no_languages_selected_disables_ok(qapp):
-    dialog = OcrDialog(total_pages=10, current_page=1, preferences=_make_prefs(languages=["en"]))
+    dialog = OcrDialog(
+        total_pages=10, current_page=1, preferences=_make_prefs(languages=["en"]), device_available=_always_available
+    )
     dialog.set_language_checked("en", False)
     qapp.processEvents()
     ok_button = dialog.button_box.button(QDialogButtonBox.Ok)
@@ -117,7 +133,7 @@ def test_dialog_no_languages_selected_disables_ok(qapp):
 
 def test_dialog_seeds_device_from_preferences(qapp):
     prefs = _make_prefs(device="cuda", languages=["en"])
-    dialog = OcrDialog(total_pages=10, current_page=1, preferences=prefs)
+    dialog = OcrDialog(total_pages=10, current_page=1, preferences=prefs, device_available=_always_available)
     assert dialog.device_combo.currentData() in ("auto", "cuda")
 
 
@@ -125,7 +141,7 @@ def test_dialog_persists_device_choice_to_preferences(qapp):
     store = _FakeStore()
     prefs = UserPreferences(store=store)
     prefs.set_ocr_languages(["en"])
-    dialog = OcrDialog(total_pages=10, current_page=1, preferences=prefs)
+    dialog = OcrDialog(total_pages=10, current_page=1, preferences=prefs, device_available=_always_available)
     # Select a different device.
     cuda_index = dialog.device_combo.findData("cuda")
     assert cuda_index >= 0
@@ -138,7 +154,7 @@ def test_dialog_persists_device_choice_to_preferences(qapp):
 
 def test_dialog_request_carries_device(qapp):
     prefs = _make_prefs(device="cpu", languages=["en"])
-    dialog = OcrDialog(total_pages=5, current_page=1, preferences=prefs)
+    dialog = OcrDialog(total_pages=5, current_page=1, preferences=prefs, device_available=_always_available)
     dialog.accept()
     request = dialog.get_request()
     assert request is not None
@@ -147,7 +163,7 @@ def test_dialog_request_carries_device(qapp):
 
 def test_dialog_pre_checks_languages_from_preferences(qapp):
     prefs = _make_prefs(languages=["zh-Hant", "ja"])
-    dialog = OcrDialog(total_pages=5, current_page=1, preferences=prefs)
+    dialog = OcrDialog(total_pages=5, current_page=1, preferences=prefs, device_available=_always_available)
     assert not dialog.is_language_checked("en")
     assert dialog.is_language_checked("zh-Hant")
     assert dialog.is_language_checked("ja")
@@ -156,9 +172,12 @@ def test_dialog_pre_checks_languages_from_preferences(qapp):
 def test_dialog_disables_cuda_and_mps_when_unavailable(qapp, monkeypatch):
     import view.dialogs.ocr as ocr_mod
 
-    monkeypatch.setattr(ocr_mod, "is_device_available", lambda d: d in ("auto", "cpu"))
-
-    dialog = ocr_mod.OcrDialog(total_pages=3, current_page=1, preferences=_make_prefs(languages=["en"]))
+    dialog = ocr_mod.OcrDialog(
+        total_pages=3,
+        current_page=1,
+        preferences=_make_prefs(languages=["en"]),
+        device_available=lambda d: d in ("auto", "cpu"),
+    )
     model = dialog.device_combo.model()
     cuda_idx = dialog.device_combo.findData("cuda")
     mps_idx = dialog.device_combo.findData("mps")
@@ -175,8 +194,9 @@ def test_dialog_default_falls_back_when_stored_pref_unavailable(qapp, monkeypatc
     """If saved preference is CUDA but CUDA is unavailable, dialog selects auto."""
     import view.dialogs.ocr as ocr_mod
 
-    monkeypatch.setattr(ocr_mod, "is_device_available", lambda d: d in ("auto", "cpu"))
     prefs = _make_prefs(device="cuda", languages=["en"])
-    dialog = ocr_mod.OcrDialog(total_pages=3, current_page=1, preferences=prefs)
+    dialog = ocr_mod.OcrDialog(
+        total_pages=3, current_page=1, preferences=prefs, device_available=lambda d: d in ("auto", "cpu")
+    )
     assert dialog.device_combo.currentData() == "auto"
     dialog.deleteLater()

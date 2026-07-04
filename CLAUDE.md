@@ -22,7 +22,7 @@ View  →(signals)→  Controller  →  Model  →  ToolManager
 - ToolManager handles annotation/watermark/search/OCR extensions only; it does not own sessions.
 - `main.py` is the only file that instantiates all three layers together.
 
-**Enforced by CI** (`.github/workflows/ci.yml` → `layer-boundaries` job, `[tool.importlinter]` in `pyproject.toml`): Model↛Controller/View, Utils↛Controller/View/Model, Model↛PySide6, and a `threading.Thread` grep over `view/`+`controller/`. `lint-imports` is split into two steps: `model-no-controller-view` and `model-no-qt` are **blocking** (no known violations); `utils-no-controller-view-model` and `view-no-model` are **advisory** (known pre-existing violations tracked in `TODOS.md`) — that pair flips to blocking once those are cleared. The threading grep is already blocking. Do not propose new architecture that crosses these boundaries; new code must not add violations to the advisory pair either.
+**Enforced by CI** (`.github/workflows/ci.yml` → `layer-boundaries` job, `[tool.importlinter]` in `pyproject.toml`): Model↛Controller/View, Utils↛Controller/View/Model, Model↛PySide6, View↛Model, and a `threading.Thread` grep over `view/`+`controller/`. `lint-imports` runs a single blocking step covering all four contracts (`model-no-controller-view`, `model-no-qt`, `utils-no-controller-view-model` flipped in PR-8, `view-no-model` flipped in PR-9) — none have known violations. The `view-no-model` contract permits a short `ignore_imports` allowlist for pure DTO/type imports (request payloads, options/report dataclasses); see the contract's comment in `pyproject.toml`. The threading grep is already blocking. Do not propose new architecture that crosses these boundaries.
 
 ## 3. Coding Standards
 

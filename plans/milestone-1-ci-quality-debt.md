@@ -104,17 +104,18 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `lint-imports` clean on the flipped contract; `test_ocr_types.py` + preferences tests; full suite.
 - **Acceptance:** utils contract blocking + green; no caller left importing the moved helper from utils.
 - **Rollback risk:** **Medium** — import moves ripple across layers, but the shim keeps old `ocr_types` imports alive, and CI now catches misses.
-- **Status:** in review as PR #17 (branch `refactor/pr8-utils-contract`).
+- **Status:** merged 2026-07-04 as PR #17 (squash 7e0cad5).
 
 ### PR-9 — `refactor: route view dialog model calls through controller; flip view contract blocking`
 
-- **Scope:** Route `view/dialogs/optimize.py` (preset options) and `view/dialogs/ocr.py` (device availability) through `controller/pdf_controller.py`, following the existing dialog-wiring pattern. Add `PDFController.count_pdf_pages(path)` so `view/pdf_view.py` drops its merge-dialog `fitz.open()` probe. Permit remaining DTO-only imports via `ignore_imports` under the `view-no-model` contract with justification comments. Flip `view-no-model` blocking; delete the advisory lint-imports step entirely. Update `docs/ARCHITECTURE.md` + TODOS.md in the same commit (CLAUDE.md §5.3).
-- **Files:** `view/dialogs/optimize.py`, `view/dialogs/ocr.py`, `view/pdf_view.py`, `controller/pdf_controller.py`, `pyproject.toml`, `.github/workflows/ci.yml`, `docs/ARCHITECTURE.md`, `TODOS.md`.
+- **Scope:** Route `view/dialogs/optimize.py` (preset options) and `view/dialogs/ocr.py` (device availability) through `controller/pdf_controller.py`, following the existing dialog-wiring pattern. Permit remaining DTO-only imports via `ignore_imports` under the `view-no-model` contract with justification comments. Flip `view-no-model` blocking; delete the advisory lint-imports step entirely. Update `docs/ARCHITECTURE.md` + TODOS.md in the same commit (CLAUDE.md §5.3).
+- **Deviation from original scope (discovered during red-light triage):** the planned `PDFController.count_pdf_pages(path)` addition was dropped — R2.3 already routed the merge-dialog page-count probe through `PDFController.resolve_insert_source_file()` and `view/pdf_view.py` has zero `fitz.open(...)` calls left (verified via `test_scripts/test_layer_boundaries.py`'s exact-count allowlist). TODOS.md's stale "MVC routing of merge-dialog page counting" item is checked off in this PR as a byproduct.
+- **Files:** `view/dialogs/optimize.py`, `view/dialogs/ocr.py`, `view/pdf_view.py`, `controller/pdf_controller.py`, `pyproject.toml`, `.github/workflows/ci.yml`, `docs/ARCHITECTURE.md`, `TODOS.md`, `CLAUDE.md`, `test_scripts/test_ocr_dialog.py`, `test_scripts/test_pdf_optimize_workflow.py`.
 - **Model:** Fable 5 reviews the boundary design (what crosses via controller vs. permitted DTO); Sonnet 5 implements; codex review before merge.
-- **Validation:** `lint-imports` — all 4 contracts blocking + clean; dialog workflow tests (`test_pdf_optimize_workflow.py`, `test_ocr_dialog.py`, `test_ocr_controller_flow.py`, merge tests); app smoke: open merge + optimize + OCR dialogs.
+- **Validation:** `lint-imports` — all 4 contracts blocking + clean; dialog workflow tests (`test_pdf_optimize_workflow.py`, `test_ocr_dialog.py`, `test_ocr_controller_flow.py`, `test_ocr_view_entry.py`, merge tests); full suite; offscreen smoke script constructing both dialogs with injected callables.
 - **Acceptance:** all import contracts blocking and green; dialogs behave identically.
 - **Rollback risk:** **Medium** — changes user-visible dialog wiring; covered by existing workflow tests, revert straightforward.
-- **Status:** pending.
+- **Status:** in review (branch `refactor/pr9-view-contract`); PR number recorded after `gh pr create`.
 
 ### PR-10 — `ci: stabilize functional suite from advisory triage`
 

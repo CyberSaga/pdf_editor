@@ -4878,11 +4878,21 @@ class PDFView(QMainWindow):
             parent=self,
             total_pages=max(1, int(self.total_pages)),
             current_page=current,
+            device_available=self._ocr_device_available,
         )
         if dialog.exec():
             request = dialog.get_request()
             if request is not None:
                 self.sig_start_ocr.emit(request)
+
+    def _ocr_device_available(self, device: str) -> bool:
+        """Route the OCR dialog's device probe through the controller (CLAUDE.md
+        §2: view must not import model.tools.ocr_tool directly, PR-9)."""
+        controller = getattr(self, "controller", None)
+        prober = getattr(controller, "is_device_available", None)
+        if callable(prober):
+            return bool(prober(device))
+        return True
 
     def update_ocr_availability(self, available: bool, tooltip: str = "") -> None:
         action = getattr(self, "ocr_action", None)
