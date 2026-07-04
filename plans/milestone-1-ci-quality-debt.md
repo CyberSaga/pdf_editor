@@ -125,7 +125,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** 3 consecutive fully-green windows-latest advisory runs with a stable pass count.
 - **Acceptance:** stable pass count documented in the PR description; zero unexplained failures on the windows leg.
 - **Rollback risk:** **None** — test-selection changes only.
-- **Status:** in review as PR #20 (branch `ci/pr10-advisory-triage`).
+- **Status:** merged 2026-07-05 as PR #20 (squash cb1126f).
 - **Deviation from original schedule:** the plan called for ≥1 week of PR-3 advisory artifacts before starting PR-10. The user authorized starting PR-10 early (2026-07-04) on the strength of 4 consecutive stable advisory `test-functional` runs on `main` (same failure clusters, same counts each time) instead of waiting out the full week.
 - **Advisory data so far** (first run, 2026-07-04, run 28692814887; details in the #12 comment):
   - windows-latest completed in 1m51s: 16 failed / 1547 passed / 33 skipped / 1 deselected. Failure clusters: 13× `test_no_jump_editor_geometry.py` + `test_core_interaction_audit.py` (+ probably `test_performance_script_runner.py`) fail — not skip — when the gitignored `test_files/*.pdf` fixtures are absent → `needs_fixtures` candidates; `test_security_packaging.py::test_built_wheel_and_sdist_exclude_dev_trees` is a REAL Windows console-encoding bug (charmap encode in the subprocess build; same class as the known local cp950 flake) → fix, don't mark.
@@ -146,7 +146,20 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** blocking windows job green on this PR and one subsequent PR.
 - **Acceptance:** functional regressions now block merges; CI coverage baseline captured.
 - **Rollback risk:** **Low** — one-line flip back to advisory if unexpected flake emerges (then fix the flake, don't stay advisory).
-- **Status:** pending.
+- **Status:** in review (branch `ci/pr11-windows-blocking-coverage`; PR number recorded on open).
+- **Measured coverage:** local `-m "not local_only and not needs_fixtures"` run with
+  `--cov --cov-report=term --cov-fail-under=0`: 1565 passed / 21 skipped / 15 deselected / 0 failed,
+  TOTAL **79%** (15385 stmts / 3292 missed). CI windows-latest TOTAL: TBD (recorded here + TODOS.md
+  once the PR's first blocking run reports).
+- **Implementation notes:** `continue-on-error` made conditional (`${{ matrix.os == 'ubuntu-latest' }}`);
+  job display name labels the legs via the GitHub-expressions ternary idiom (`&&`/`||`):
+  `windows - BLOCKING` / `ubuntu - advisory, issue #19`. Coverage args injected per-OS through a
+  `matrix.include` `cov_args` field (windows only); `pytest-cov` added to the constrained install line
+  (pins already in constraints-ci.txt); `coverage.xml` uploaded as `coverage-xml-windows`.
+  One local flake observed during validation: a background full-suite coverage run had 4
+  subprocess-spawning tests fail with child exit 0xC0000142 (STATUS_DLL_INIT_FAILED, empty output);
+  a clean foreground rerun and isolated reruns all pass — transient local resource pressure, not a
+  coverage-instrumentation incompatibility. Watch item for the CI legs.
 
 ### PR-12 — `ci: enforce evidence-based coverage gate`
 

@@ -82,6 +82,15 @@ Reconciled via file split: `surya-ocr` + `torch` in `ocr-requirements.txt`; core
 - [ ] **Revisit the OCR stack when surya-ocr relaxes its pins.** When a surya release ships `pillow>=12.2` support and a transformers floor in the 5.x line, merge `ocr-requirements.txt` back and drop the residual-risk note.
 - [ ] **F9 bundle distribution** — ship a vetted weights bundle and populate `WEIGHTS_MANIFEST` with its published SHA256 digests so `PDF_EDITOR_OCR_WEIGHTS_DIR` works out of the box. See `docs/ocr-weights-verification.md`.
 
+## CI coverage baseline (PR-11, 2026-07-05)
+
+- CI coverage baseline (PR-11, 2026-07-05): TBD% windows-latest functional leg (local: 79%).
+  Measured by the now-blocking windows `test-functional` leg via
+  `--cov --cov-report=term --cov-report=xml --cov-fail-under=0` (the explicit 0 keeps the
+  number advisory). The CI figure is lower than local because fixture-dependent
+  (`needs_fixtures`) tests don't run there. PR-12 sets the real `--cov-fail-under` gate from
+  this number (CI-measured minus 2, rounded down — see plans/milestone-1-ci-quality-debt.md).
+
 ## CI advisory findings (PR-10, 2026-07-04)
 
 - [ ] **ubuntu-latest `test-functional` leg segfaults (Bus error, intermittent).** Crashes inside
