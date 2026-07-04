@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 import logging
-from typing import TYPE_CHECKING, Callable, Iterable
+from typing import TYPE_CHECKING, Any, Callable, Iterable, cast
 
 import fitz
 
@@ -118,8 +118,8 @@ class _SuryaAdapter:
     def __init__(self, device: str) -> None:
         self._requested_device = device
         self._resolved_device: str | None = None
-        self._detector = None
-        self._recognizer = None
+        self._detector: Any = None
+        self._recognizer: Any = None
 
     @property
     def device(self) -> str:
@@ -191,7 +191,7 @@ class _SuryaAdapter:
             confidence = getattr(line, "confidence", None)
             out.append(
                 (
-                    tuple(float(v) for v in bbox),
+                    cast(tuple[float, float, float, float], tuple(float(v) for v in bbox)),
                     str(text),
                     float(confidence) if confidence is not None else 0.0,
                 )
@@ -270,7 +270,7 @@ class OcrTool(ToolExtension):
         # Local import avoids a module-load cycle between pdf_model and the tools.
         from model.pdf_model import _safe_render_scale
 
-        adapter = _create_surya_adapter(device)
+        adapter: _SuryaAdapter | None = _create_surya_adapter(device)
         render_scale = float(OCR_RENDER_SCALE)
         results: dict[int, list[OcrSpan]] = {}
         try:
@@ -302,7 +302,9 @@ class OcrTool(ToolExtension):
                     )
                 image = _pixmap_to_image(pix)
                 try:
-                    raw_spans = adapter.ocr(image, lang_list)
+                    # inert cast: adapter is non-None here (set to None only in the finally, after the loop);
+                    # mypy re-widens it to the declared union inside the loop body - runtime object unchanged
+                    raw_spans = cast(_SuryaAdapter, adapter).ocr(image, lang_list)
                 except Exception as exc:
                     logger.exception("Surya OCR failed on page %s", page_num)
                     raise RuntimeError(f"Surya OCR 在第 {page_num} 頁失敗: {exc}") from exc

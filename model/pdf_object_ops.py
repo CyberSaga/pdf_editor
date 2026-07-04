@@ -17,7 +17,7 @@ import logging
 import math
 import uuid
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import fitz
 
@@ -125,10 +125,12 @@ def _rewrite_native_image_matrix(
     destination_rect: fitz.Rect,
     rotation: float,
 ) -> bool:
-    page = model.doc[invocation.page_num - 1]
+    # typed bind; callers guarantee an open doc here (native image rewrite path) - runtime behavior identical if None
+    doc: fitz.Document = model.doc
+    page = doc[invocation.page_num - 1]
     if invocation.cm_operator_index is None:
         return False
-    stream = model.doc.xref_stream(invocation.stream_xref)
+    stream = doc.xref_stream(invocation.stream_xref)
     tokens, operators = parse_operators(stream)
     if invocation.cm_operator_index >= len(operators):
         return False
@@ -190,7 +192,7 @@ def _rewrite_native_image_matrix(
             fitz.Rect(destination_rect), page, rot
         )
     new_stream = replace_operator_operands(tokens, cm_operator, new_operands)
-    model.doc.update_stream(invocation.stream_xref, new_stream)
+    doc.update_stream(invocation.stream_xref, new_stream)
     model.pending_edits.append({"page_idx": invocation.page_num - 1, "rect": fitz.Rect(destination_rect)})
     model.edit_count += 1
     return True
@@ -243,7 +245,9 @@ def _find_app_image_invocation(
 
 def _image_xref_digest(model: PDFModel, xref: int) -> str | None:
     try:
-        stream = model.doc.xref_stream(int(xref))
+        # typed bind inside the try; the except still swallows AttributeError if doc is None - reachable-shape identical
+        doc: fitz.Document = model.doc
+        stream = doc.xref_stream(int(xref))
     except Exception:
         return None
     return hashlib.sha256(stream).hexdigest() if stream else None
@@ -275,8 +279,10 @@ def _resolve_marker_image_invocation(
     return invocation
 
 def _remove_native_image_invocation(model: PDFModel, invocation: NativeImageInvocation) -> bool:
-    page = model.doc[invocation.page_num - 1]
-    stream = model.doc.xref_stream(invocation.stream_xref)
+    # typed bind; callers guarantee an open doc here (native image removal path) - runtime behavior identical if None
+    doc: fitz.Document = model.doc
+    page = doc[invocation.page_num - 1]
+    stream = doc.xref_stream(invocation.stream_xref)
     tokens, operators = parse_operators(stream)
     if invocation.do_operator_index >= len(operators):
         return False
@@ -294,7 +300,7 @@ def _remove_native_image_invocation(model: PDFModel, invocation: NativeImageInvo
     elif invocation.cm_operator_index is not None and invocation.cm_operator_index < len(operators):
         start_token = operators[invocation.cm_operator_index].operand_start
     new_stream = remove_operator_range(tokens, start_token, end_token)
-    model.doc.update_stream(invocation.stream_xref, new_stream)
+    doc.update_stream(invocation.stream_xref, new_stream)
     name_bytes = f"/{invocation.xobject_name}".encode("latin-1")
     # A form-nested image is named in the form's own resources and drawn from
     # the form's single stream; a page-level image may be drawn from several
@@ -306,11 +312,11 @@ def _remove_native_image_invocation(model: PDFModel, invocation: NativeImageInvo
         scan_streams = [int(xref) for xref in page.get_contents() if int(xref) > 0]
         owner_xref = invocation.resource_owner_xref or page.xref
     still_referenced = any(
-        name_bytes in model.doc.xref_stream(int(xref)) for xref in scan_streams
+        name_bytes in doc.xref_stream(int(xref)) for xref in scan_streams
     )
     if not still_referenced:
         try:
-            model.doc.xref_set_key(owner_xref, f"Resources/XObject/{invocation.xobject_name}", "null")
+            doc.xref_set_key(owner_xref, f"Resources/XObject/{invocation.xobject_name}", "null")
         except Exception:
             pass
     model.pending_edits.append({"page_idx": invocation.page_num - 1, "rect": fitz.Rect(invocation.bbox)})
@@ -362,7 +368,7 @@ def _create_textbox_object_marker(
         raise ValueError(f"無效頁碼: {page_num}")
     page = model.doc[page_num - 1]
     marker = page.add_rect_annot(fitz.Rect(visual_rect))
-    payload = {
+    payload: dict[str, Any] = {
         "version": _APP_OBJECT_VERSION,
         "kind": "textbox",
         "object_id": object_id or str(uuid.uuid4()),
@@ -399,7 +405,7 @@ def _create_image_object_marker(
         raise ValueError(f"無效頁碼: {page_num}")
     page = model.doc[page_num - 1]
     marker = page.add_rect_annot(fitz.Rect(visual_rect))
-    payload = {
+    payload: dict[str, Any] = {
         "version": _APP_OBJECT_VERSION,
         "kind": "image",
         "object_id": object_id or str(uuid.uuid4()),
@@ -753,8 +759,10 @@ def _rotate_native_image_absolute(
     """Rotate a (non-form) native image to an absolute angle about its centre."""
     if invocation.is_form_nested or invocation.cm_operator_index is None:
         return False
-    page = model.doc[invocation.page_num - 1]
-    stream = model.doc.xref_stream(invocation.stream_xref)
+    # typed bind; callers guarantee an open doc here (native image rotate path) - runtime behavior identical if None
+    doc: fitz.Document = model.doc
+    page = doc[invocation.page_num - 1]
+    stream = doc.xref_stream(invocation.stream_xref)
     tokens, operators = parse_operators(stream)
     if invocation.cm_operator_index >= len(operators):
         return False
@@ -775,7 +783,7 @@ def _rotate_native_image_absolute(
         page_height,
     )
     new_stream = replace_operator_operands(tokens, cm_operator, new_operands)
-    model.doc.update_stream(invocation.stream_xref, new_stream)
+    doc.update_stream(invocation.stream_xref, new_stream)
     model.pending_edits.append({"page_idx": invocation.page_num - 1, "rect": fitz.Rect(invocation.bbox)})
     model.edit_count += 1
     return True

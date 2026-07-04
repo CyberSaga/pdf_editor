@@ -1206,7 +1206,9 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
     _t0 = time.perf_counter()  # Phase 6: 效能計時
     page_idx = page_num - 1
     model.ensure_page_index_built(page_num)
-    page = model.doc[page_idx]
+    # typed bind; callers guarantee an open doc here (edit path) - runtime behavior identical if None
+    doc: fitz.Document = model.doc
+    page = doc[page_idx]
     page_rect = page.rect
     rollback_flag = False
     resolved_target_span_id = target_span_id

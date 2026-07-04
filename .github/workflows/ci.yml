@@ -19,10 +19,10 @@ name: CI
 #     (windows-latest + ubuntu-latest) that runs the broader pytest suite to
 #     gather stabilization data ahead of the blocking flip planned in
 #     plans/milestone-1-ci-quality-debt.md (PR-10/11).
-#   * `typecheck` runs `mypy model/ utils/` and is advisory: the remaining
-#     errors are all pre-existing `self.doc`-is-`Any | None` design gaps
-#     (pdf_model.py/pdf_object_ops.py/ocr_tool.py/pdf_content_ops.py) slated
-#     for the PR-7 doc-None cleanup, at which point this job flips blocking.
+#   * `typecheck` runs `mypy model/ utils/` and is BLOCKING (PR-7): the former
+#     `self.doc`-is-`Any | None` design gaps were resolved via typed local binds
+#     plus a handful of runtime-inert casts/annotations, so `mypy model/ utils/`
+#     is now clean and must stay that way.
 #
 # All tool/dependency installs are pinned via constraints-ci.txt to the
 # maintainer's .venv versions (except pip-audit — see that file's header).
@@ -80,7 +80,7 @@ jobs:
         run: ruff check . --output-format=github
 
   typecheck:
-    name: mypy model/ utils/ (advisory until the doc-None cleanup lands)
+    name: mypy model/ utils/ (blocking)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -92,8 +92,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -c constraints-ci.txt
           python -m pip install mypy -c constraints-ci.txt
-      - name: mypy (advisory; blocking flip lands with the doc-None cleanup PR)
-        continue-on-error: true
+      - name: mypy model/ utils/ (blocking)
         run: python -m mypy model/ utils/
 
   layer-boundaries:
