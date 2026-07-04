@@ -6,9 +6,11 @@ name: CI
 # over the declared requirement files and FAILS the build on any known advisory.
 # `lint` and `test` are wired in too, but their blocking scope is deliberately
 # scoped to what is green today:
-#   * ruff blocks on all selected rules except the remaining import-order backlog
-#     (91 E402 findings after the first-stage cleanup), which is being cleaned up
-#     separately.
+#   * ruff blocks on the full selected rule set. The E402 import-order backlog
+#     (91 findings) was cleared in two PRs: preamble removal (repo-root
+#     sys.path inserts collapsed into a single pattern) followed by the
+#     test_scripts/_bootstrap.py module (hybrid script/pytest path bootstrap) —
+#     E402 now blocks like every other selected rule.
 #   * the test job blocks on the import-light dependency/F9 security regression suite;
 #     the full pytest run needs the heavy optional + platform-specific stack
 #     (surya/torch, win32print, pyautogui) and is run locally, surfaced here as an
@@ -61,7 +63,7 @@ jobs:
         run: pip-audit -r ocr-requirements.txt --progress-spinner off
 
   lint:
-    name: ruff (blocking, excluding E402 backlog)
+    name: ruff (blocking)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,8 +72,8 @@ jobs:
           python-version: "3.10"
       - name: Install ruff
         run: python -m pip install --upgrade pip && python -m pip install ruff -c constraints-ci.txt
-      - name: ruff check (blocking except E402)
-        run: ruff check . --ignore E402 --output-format=github
+      - name: ruff check (blocking, full rule set)
+        run: ruff check . --output-format=github
 
   layer-boundaries:
     name: Layer boundaries (CLAUDE.md §2 — advisory until clean, see TODOS.md)

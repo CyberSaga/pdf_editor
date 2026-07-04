@@ -10,6 +10,7 @@ Scenario 4: 多次連續編輯 + undo/redo → viewport 文字狀態正確
 Scenario 5: 多行段落樣式繼承 → 字型/大小/顏色穩定
 """
 
+import _bootstrap  # noqa: F401
 import io
 import logging
 import sys
@@ -18,15 +19,11 @@ from pathlib import Path
 
 import fitz
 
-if sys.platform == "win32" and __name__ == "__main__":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 from model.edit_commands import EditTextCommand
 from model.pdf_model import PDFModel
+
+if sys.platform == "win32" and __name__ == "__main__":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("test_5scenarios")

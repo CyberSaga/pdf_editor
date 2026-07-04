@@ -2,21 +2,18 @@
 使用 1.pdf、2.pdf、when I was young I.pdf 測試 PDF 編輯器
 驗證：開啟、建立索引、擷取文字、執行編輯
 """
+import _bootstrap  # noqa: F401
 import io
 import sys
 from pathlib import Path
+
+from model.pdf_model import PDFModel
 
 # Script-style smoke runner; keep out of pytest auto-collection.
 __test__ = False
 
 if sys.platform == 'win32' and __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from model.pdf_model import PDFModel
 
 PDF_FILES = [
     "1.pdf",

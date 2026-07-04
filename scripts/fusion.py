@@ -32,7 +32,8 @@ _REPO_ROOT = Path(__file__).parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from scripts.fusion_providers import AntigravityAdapter
+# Justification: entry-point script; sys.path bootstrap above must precede scripts.* imports.
+from scripts.fusion_providers import AntigravityAdapter  # noqa: E402
 
 
 AGY_TIMEOUT = 180  # seconds

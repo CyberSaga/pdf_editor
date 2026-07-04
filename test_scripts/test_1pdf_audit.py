@@ -1,20 +1,17 @@
 ﻿"""
 稽核 1.pdf：檢查頁面尺寸、文字塊位置、編輯後輸出
 """
+import _bootstrap  # noqa: F401
 import io
 import sys
 from pathlib import Path
 
-if sys.platform == 'win32' and __name__ == '__main__':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 import fitz
 
 from model.pdf_model import PDFModel
+
+if sys.platform == 'win32' and __name__ == '__main__':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 
 def audit_1pdf():
