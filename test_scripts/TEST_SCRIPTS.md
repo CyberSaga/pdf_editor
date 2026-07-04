@@ -123,12 +123,29 @@ python test_scripts/test_1pdf_horizontal.py --gui --save out.pdf
 | `needs_fixtures` | Depends on gitignored `test_files/` fixture PDFs; self-skips when absent |
 | `ocr_heavy` | Exercises the heavy OCR stack (surya/torch); excluded from standard runs |
 
-CI (and anyone reproducing the CI selection locally) excludes hardware-bound tests with:
+CI (and anyone reproducing the CI selection locally) excludes hardware-bound and fixture-dependent tests with:
 ```bash
-pytest -m "not local_only"
+pytest -m "not local_only and not needs_fixtures"
 ```
 
-Currently only `test_win_print_fixes.py::test_set_page_layout_applies_size_on_real_printer` carries `local_only`; the other three markers are registered for later triage passes and are not yet applied to any test.
+Currently `test_win_print_fixes.py::test_set_page_layout_applies_size_on_real_printer` carries `local_only`; `test_core_interaction_audit.py` and `test_no_jump_editor_geometry.py` carry `needs_fixtures` (gitignored `test_files/` fixtures are absent on CI runners, so those tests self-skip locally when fixtures are present but are deselected outright on CI). `windows_only` and `ocr_heavy` are registered for later triage passes and are not yet applied to any test.
+
+## Continuous Integration
+
+`.github/workflows/ci.yml` is the source of truth; this section summarizes what it runs and how to reproduce a given leg locally. See the workflow's own header comment for the full gate list (ruff, mypy, 4 import-linter contracts + threading grep, the security regression suite).
+
+- **`test-functional` (windows-latest — BLOCKING):** runs the full marker-filtered suite with coverage instrumentation:
+  ```powershell
+  $env:QT_QPA_PLATFORM='offscreen'
+  .venv\Scripts\python.exe -m pytest -q -m "not local_only and not needs_fixtures" --cov --cov-report=term --cov-report=xml
+  ```
+  This leg is blocking on both test outcomes and coverage: `pyproject.toml`'s `[tool.coverage.report] fail_under = 75` gates the run (as of PR-12 — no CI-side override). Evidence basis: three consecutive PR-11 CI runs measured a stable TOTAL coverage of 78% on this leg (local `.venv` measures 79%), so 75% carries three points of real headroom.
+- **`test-functional` (ubuntu-latest — advisory):** same marker selection, no coverage flags; `continue-on-error: true` pending the Qt offscreen-teardown SIGBUS tracked in issue #19. Failures here are surfaced in the check run but do not block merge.
+- **Reproducing the CI selection locally:** the `-m "not local_only and not needs_fixtures"` filter is what differs from a plain local run — locally you normally want `needs_fixtures` tests included (they self-skip only when `test_files/` is absent), so only pass the filter when you specifically want CI-equivalent scope:
+  ```bash
+  QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest -q -m "not local_only and not needs_fixtures"
+  ```
+- **Full local run (recommended for real verification):** omit the marker filter entirely and let `needs_fixtures` tests run against the real `test_files/` corpus — see Quick Start above.
 
 ## Output Notes
 

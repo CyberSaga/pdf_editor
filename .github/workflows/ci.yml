@@ -2,30 +2,40 @@ name: CI
 
 # Continuous integration for the PDF editor.
 #
-# The headline gate (Task 4 / finding F2) is `dependency-audit`: it runs pip-audit
-# over the declared requirement files and FAILS the build on any known advisory.
-# `lint` and `test` are wired in too, but their blocking scope is deliberately
-# scoped to what is green today:
-#   * ruff blocks on the full selected rule set. The E402 import-order backlog
-#     (91 findings) was cleared in two PRs: preamble removal (repo-root
+# Milestone 1 (plans/milestone-1-ci-quality-debt.md) final state: every gate
+# below is BLOCKING except the two explicitly carved out as advisory.
+#   * `dependency-audit` (Task 4 / finding F2) runs pip-audit over the declared
+#     requirement files and FAILS the build on any known advisory. The
+#     ocr-requirements.txt leg stays advisory (surya-ocr's transitive
+#     Pillow/transformers pins have no current upstream fix; see TODOS.md).
+#   * `lint` blocks on the full selected ruff rule set. The E402 import-order
+#     backlog (91 findings) was cleared in two PRs: preamble removal (repo-root
 #     sys.path inserts collapsed into a single pattern) followed by the
 #     test_scripts/_bootstrap.py module (hybrid script/pytest path bootstrap) —
 #     E402 now blocks like every other selected rule.
-#   * the test job blocks on the import-light dependency/F9 security regression suite;
-#     the full pytest run needs the heavy optional + platform-specific stack
-#     (surya/torch, win32print, pyautogui) and is run locally, surfaced here as an
-#     advisory step.
+#   * `typecheck` runs `mypy model/ utils/` and is BLOCKING (PR-7): the former
+#     `self.doc`-is-`Any | None` design gaps were resolved via typed local binds
+#     plus a handful of runtime-inert casts/annotations, so `mypy model/ utils/`
+#     is now clean and must stay that way.
+#   * `layer-boundaries` blocks on all four import-linter contracts
+#     (model-no-controller-view, model-no-qt, utils-no-controller-view-model,
+#     view-no-model) plus the threading.Thread grep over view/+controller/.
+#   * `test` blocks on the import-light dependency/F9 security regression
+#     suite; the full pytest run needs the heavy optional + platform-specific
+#     stack (surya/torch, win32print, pyautogui) and is run locally, surfaced
+#     here as an advisory step.
 #   * `test-functional` is a cross-platform matrix job (windows-latest +
 #     ubuntu-latest) that runs the broader pytest suite. As of PR-11
 #     (plans/milestone-1-ci-quality-debt.md), the windows-latest leg is
 #     BLOCKING (flipped on the strength of 3 consecutive green PR-10 runs);
 #     ubuntu-latest stays advisory pending the Qt offscreen-teardown SIGBUS,
-#     issue #19. The windows leg also collects advisory coverage numbers
-#     (`--cov-fail-under=0`) ahead of PR-12's evidence-based coverage gate.
-#   * `typecheck` runs `mypy model/ utils/` and is BLOCKING (PR-7): the former
-#     `self.doc`-is-`Any | None` design gaps were resolved via typed local binds
-#     plus a handful of runtime-inert casts/annotations, so `mypy model/ utils/`
-#     is now clean and must stay that way.
+#     issue #19. As of PR-12, the windows leg also gates on coverage: the
+#     `--cov-fail-under=0` override that shipped with PR-11 (to surface an
+#     advisory number safely) is removed, so pyproject.toml's
+#     `[tool.coverage.report] fail_under = 75` now governs on CI too — one
+#     number, one source of truth. Evidence: three consecutive PR-11 CI runs
+#     measured TOTAL coverage at a stable 78% (local .venv measures 79%),
+#     giving 75% three points of headroom against real, CI-measured signal.
 #
 # All tool/dependency installs are pinned via constraints-ci.txt to the
 # maintainer's .venv versions (except pip-audit — see that file's header).
@@ -160,11 +170,11 @@ jobs:
         os: [windows-latest, ubuntu-latest]
         include:
           - os: windows-latest
-            # Advisory coverage numbers on the (now blocking) windows leg.
-            # `--cov-fail-under=0` overrides pyproject.toml's fail_under=75 so a
-            # low/incomplete CI number cannot fail this job yet -- PR-12 sets the
-            # real evidence-based gate from the TOTAL this captures.
-            cov_args: "--cov --cov-report=term --cov-report=xml --cov-fail-under=0"
+            # Coverage gate (PR-12): pyproject.toml's [tool.coverage.report]
+            # fail_under=75 now governs this leg -- no override here. Evidence:
+            # PR-11's 3 consecutive green runs measured a stable 78% TOTAL on
+            # CI (local .venv measures 79%), so 75% has real headroom.
+            cov_args: "--cov --cov-report=term --cov-report=xml"
           - os: ubuntu-latest
             cov_args: ""
     runs-on: ${{ matrix.os }}
@@ -183,13 +193,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r optional-requirements.txt -c constraints-ci.txt
           python -m pip install pytest packaging pytest-cov -c constraints-ci.txt
-          # build/setuptools/wheel aren't in constraints-ci.txt (constraint/
-          # requirement files stay untouched here) but test_security_packaging.py's
-          # real-artifact test (`python -m build --no-isolation`) needs them on
-          # PATH; pin inline to the maintainer's .venv versions so this step
-          # doesn't drift independently of constraints-ci.txt. Previously
-          # missing entirely -> "No module named build" failed every CI run.
-          python -m pip install "build==1.5.0" "setuptools==82.0.1" "wheel==0.47.0"
+          # test_security_packaging.py's real-artifact test (`python -m build
+          # --no-isolation`) needs build/setuptools/wheel on PATH; pinned in
+          # constraints-ci.txt (Packaging toolchain section) to the
+          # maintainer's .venv versions so CI doesn't drift independently.
+          # Previously missing entirely -> "No module named build" failed
+          # every CI run.
+          python -m pip install build setuptools wheel -c constraints-ci.txt
       - name: Show resolved environment (pin visibility)
         run: python -m pip list
       - name: Run functional suite (windows-latest BLOCKING; ubuntu-latest advisory)
