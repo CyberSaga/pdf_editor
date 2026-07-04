@@ -52,7 +52,7 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** CI run on the PR; download artifacts, record pass/fail/skip per OS.
 - **Acceptance:** both legs execute to completion (even if red) and never block merge.
 - **Rollback risk:** **None** — advisory job; deleting it restores status quo.
-- **Status:** in review (opened 2026-07-04).
+- **Status:** in review as PR #12 (opened 2026-07-04).
 
 ### PR-4 — `test: remove redundant import preambles from pytest-only files (E402 part 1)`
 
