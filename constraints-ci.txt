@@ -1,0 +1,38 @@
+# CI dependency constraints -- pins CI to the versions the maintainer's .venv
+# actually runs (PyMuPDF 1.27.1 stack), so CI failures reflect code, not
+# dependency drift. Source of truth: `.venv\Scripts\python.exe -m pip freeze`.
+#
+# Rules:
+#   * Update this file ONLY in a deliberate dependency-bump PR that also
+#     upgrades the local .venv (see plans/milestone-1-ci-quality-debt.md).
+#   * A constraints file only binds packages that are actually installed;
+#     entries here never cause anything to be installed.
+#   * pip-audit is deliberately NOT pinned anywhere -- the auditor needs a
+#     current advisory database to be useful.
+
+# Core runtime (requirements.txt)
+PyMuPDF==1.27.1
+PySide6==6.10.2
+PySide6_Addons==6.10.2
+PySide6_Essentials==6.10.2
+shiboken6==6.10.2
+Pillow==12.2.0
+numpy==2.2.6
+
+# Optional runtime (optional-requirements.txt)
+pikepdf==10.8.0
+pypdf==6.13.2
+
+# Test toolchain
+pytest==9.0.3
+pytest-cov==7.1.0
+coverage==7.14.1
+packaging==26.0
+
+# Lint / typecheck / layer-boundary toolchain
+ruff==0.15.16
+import-linter==2.12
+grimp==3.14
+mypy==2.1.0
+mypy_extensions==1.1.0
+typing_extensions==4.15.0
