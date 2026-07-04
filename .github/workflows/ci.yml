@@ -150,7 +150,10 @@ jobs:
         run: pytest -q test_scripts/test_security_*.py
 
   test-functional:
-    name: Functional suite (${{ matrix.os == 'windows-latest' && 'windows - BLOCKING' || 'ubuntu - advisory, issue #19' }})
+    # NOTE: the name is double-quoted at the YAML level — the "#19" inside a
+    # plain (unquoted) scalar starts a YAML comment (space + '#'), truncating
+    # the ${{ }} expression and breaking workflow parsing outright.
+    name: "Functional suite (${{ matrix.os == 'windows-latest' && 'windows - BLOCKING' || 'ubuntu - advisory, issue #19' }})"
     strategy:
       fail-fast: false
       matrix:
