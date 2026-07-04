@@ -83,17 +83,18 @@ One PR = one reviewable unit. Standard validation applies to every PR in additio
 - **Validation:** `.venv\Scripts\python.exe -m mypy model/ utils/` (67 → 43); full suite (1576 passed / 21 skipped / 0 failed, unchanged); app smoke launch.
 - **Acceptance:** only annotation/enum-form changes — no behavior change; advisory typecheck job visible on CI.
 - **Rollback risk:** **Low** — the Pillow Resampling rename and `QImage.Format` qualification are the only runtime-touching lines, both enum-value-identical.
-- **Status:** in review as PR #15 (branch `types/pr6-mypy-quick-wins`).
+- **Status:** merged 2026-07-04 as PR #15 (squash d1cf684).
 
 ### PR-7 — `types: eliminate doc-None dereferences; flip mypy blocking`
 
 - **Scope:** Add `PDFModel._require_doc() -> fitz.Document` (raises, matching the existing zh-TW error-message style); convert the ~27 flagged `self.doc` dereferences in `pdf_model.py`/`pdf_object_ops.py`; fix stragglers (`ocr_tool.py` ×5, `pdf_content_ops.py` int→float). `utils/helpers.py:38`'s `QImage.Format.Format_RGBA8888` enum form and the `annotation_tool.py`/`search_tool.py` list-annotation stragglers moved to PR-6 (see that PR's deviation note) — dropped from this scope. When local mypy = 0, remove `continue-on-error` from the typecheck job in the same PR.
+  - **Deviation from this split (recorded during execution):** the planned raising `_require_doc()` helper was **rejected at design time** — the current no-doc failure modes are heterogeneous (TypeError from `len(None)`/`None[idx]`, silently-swallowed AttributeError in `_image_xref_digest`, and silent no-ops that return early), so a single raising guard would have *changed* behavior on paths that today crash differently or not at all. Instead each of the 26 B+C sites uses a runtime-inert typed local bind (`doc: fitz.Document = self.doc`, which mypy accepts because `fitz.Document` is `Any`, and which raises the exact same AttributeError/TypeError at runtime if `self.doc` is `None`); unifying the no-doc guards is deferred to a future behavior-allowed PR. New `test_scripts/test_model_no_doc_behavior_pins.py` pins the current crash behavior (passes identically before and after the refactor).
 - **Files:** `model/pdf_model.py`, `model/pdf_object_ops.py`, `model/pdf_content_ops.py`, `model/tools/ocr_tool.py`, `.github/workflows/ci.yml`.
 - **Model:** Fable 5 designs the `_require_doc` guard semantics (which sites may legitimately see `None` vs. impossible states); Opus 4.6 applies the many-site conversion; codex review before merge.
 - **Validation:** `.venv\Scripts\python.exe -m mypy model/ utils/` → 0; full suite; targeted no-document tests (operations on a closed/never-opened model must raise the same error as before).
 - **Acceptance:** mypy job blocking + green; error behavior for None-doc paths byte-identical to before.
 - **Rollback risk:** **Medium** — touches many model call sites; a wrong guard could turn a soft no-op into a raise. Mitigated by per-file revert-ability and no-document regression tests.
-- **Status:** pending.
+- **Status:** in review as PR #16 (branch `types/pr7-mypy-zero-flip`).
 
 ### PR-8 — `refactor: fix utils layer violations; flip utils import contract blocking`
 

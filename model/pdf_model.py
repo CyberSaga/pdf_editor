@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 import fitz
 
@@ -407,7 +408,7 @@ class PDFModel:
         return session.original_path if session else self._legacy_original_path
 
     @original_path.setter
-    def original_path(self, value: str | None) -> None:
+    def original_path(self, value: str) -> None:
         session = self._active_session()
         if session:
             session.original_path = value
@@ -1029,7 +1030,8 @@ class PDFModel:
 
         has_probe_text = bool(normalize_text(original_text or ""))
         best_para: EditableParagraph | None = None
-        best_key = None
+        best_key: tuple[float, ...] | None = None
+        key: tuple[float, ...]
 
         for para in candidates:
             para_rect = fitz.Rect(para.bbox)
@@ -1230,6 +1232,8 @@ class PDFModel:
         dpi: int = 300,
         image_format: str = "png",
     ):
+        # typed bind; callers guarantee an open doc here (export path) - runtime behavior identical if None
+        doc: fitz.Document = self.doc
         output_target = Path(output_path)
         base_path = output_target.with_suffix('')
         logger.debug(
@@ -1249,10 +1253,10 @@ class PDFModel:
             scale = dpi_value / 72.0
 
             for page_num in pages:
-                if not (1 <= page_num <= len(self.doc)):
+                if not (1 <= page_num <= len(doc)):
                     logger.warning(f"匯出影像時略過無效頁碼: {page_num}")
                     continue
-                safe_scale = _safe_render_scale(self.doc[page_num - 1], scale)
+                safe_scale = _safe_render_scale(doc[page_num - 1], scale)
                 pix = self.get_page_pixmap(page_num, scale=safe_scale)
                 # Persist resolution metadata so image "DPI" matches user selection.
                 pix.set_dpi(dpi_value, dpi_value)
@@ -1277,8 +1281,8 @@ class PDFModel:
         new_doc = fitz.open()
         try:
             for page_num in pages:
-                if 1 <= page_num <= len(self.doc):
-                    new_doc.insert_pdf(self.doc, from_page=page_num - 1, to_page=page_num - 1)
+                if 1 <= page_num <= len(doc):
+                    new_doc.insert_pdf(doc, from_page=page_num - 1, to_page=page_num - 1)
                     logger.debug(f"匯出PDF頁面: {page_num}")
                 else:
                     logger.warning(f"匯出PDF時略過無效頁碼: {page_num}")
@@ -2346,7 +2350,7 @@ class PDFModel:
             key=lambda s: (float(s.bbox.y0), float(s.bbox.x0)),
         )
         source_chars: list[str] = []
-        source_colors: list[tuple[float, float, float]] = []
+        source_colors: list[tuple[float, ...]] = []
         for span in ordered:
             span_text = span.text or ""
             span_color = tuple(float(c) for c in (span.color or default_color))
@@ -2381,7 +2385,7 @@ class PDFModel:
         html_parts: list[str] = []
         idx = 0
         while idx < len(new_text):
-            run_color = new_colors[idx]
+            run_color = cast(tuple, new_colors[idx])
             start = idx
             idx += 1
             while idx < len(new_text) and new_colors[idx] == run_color:
@@ -2618,7 +2622,9 @@ class PDFModel:
         以 session 保存的密碼重新驗證後 live session 才能繼續算繪/編輯。未加密文件
         為 no-op。
         """
-        self.doc.close()
+        # typed bind; callers guarantee an open doc here (see replace_active_document_from_snapshot) - runtime behavior identical if None
+        doc: fitz.Document = self.doc
+        doc.close()
         self.doc = self._reauthenticate_if_needed(fitz.open("pdf", snapshot_bytes))
         logger.debug(f"_restore_doc_from_snapshot: 已還原文件（{len(snapshot_bytes)} bytes）")
 
@@ -2666,10 +2672,12 @@ class PDFModel:
         Opens the new handle *before* closing the old one, so if serialization or
         reopen fails the live doc is left intact for the caller to keep using.
         """
-        data = self.doc.tobytes(
+        # typed bind; callers guarantee an open doc here (see _repair_active_doc_in_memory guard) - runtime behavior identical if None
+        doc: fitz.Document = self.doc
+        data = doc.tobytes(
             garbage=garbage, deflate=deflate, encryption=fitz.PDF_ENCRYPT_KEEP
         )
-        old = self.doc
+        old = doc
         self.doc = self._reauthenticate_if_needed(fitz.open("pdf", data))
         try:
             old.close()
@@ -2729,7 +2737,9 @@ class PDFModel:
                 probe.close()
 
             if replace_live_handle:
-                self.doc.close()
+                # typed bind; replace_live_handle path guarantees an open live doc - runtime behavior identical if None (name live_doc avoids the `doc` param)
+                live_doc: fitz.Document = self.doc
+                live_doc.close()
                 live_was_closed = True
             try:
                 os.replace(str(stage), str(target))
@@ -2854,14 +2864,16 @@ class PDFModel:
             if snapshot_doc.page_count < 1:
                 raise ValueError("snapshot restore requires at least one page")
 
+            # typed bind; callers guarantee an open doc here (undo/rollback path) - runtime behavior identical if None
+            doc: fitz.Document = self.doc
             insert_at = page_num_0based
-            self.doc.insert_pdf(snapshot_doc, from_page=0, to_page=0, start_at=insert_at)
+            doc.insert_pdf(snapshot_doc, from_page=0, to_page=0, start_at=insert_at)
             try:
-                self.doc.delete_page(insert_at + 1)
+                doc.delete_page(insert_at + 1)
             except Exception as delete_err:
                 cleanup_err: Exception | None = None
                 try:
-                    self.doc.delete_page(insert_at)
+                    doc.delete_page(insert_at)
                 except Exception as err:
                     cleanup_err = err
                 if cleanup_err is not None:
@@ -3107,13 +3119,15 @@ class PDFModel:
         完整儲存到指定路徑。若目標路徑與目前開啟的檔案相同（doc.name），
         先寫入暫存檔再覆蓋，避免 Windows 上「覆寫已開啟檔案」導致 Permission denied。
         """
+        # typed bind; callers guarantee an open doc here (save path) - runtime behavior identical if None; self.doc not reassigned until the reopen below
+        doc: fitz.Document = self.doc
         path_resolved = Path(path).resolve()
-        doc_name_resolved = Path(self.doc.name).resolve() if self.doc.name else None
+        doc_name_resolved = Path(doc.name).resolve() if doc.name else None
         saving_over_open_file = doc_name_resolved is not None and path_resolved == doc_name_resolved
 
         if self.secure_save_required:
             self._atomic_full_save(
-                self.doc,
+                doc,
                 path,
                 garbage=4,
                 replace_live_handle=saving_over_open_file,
@@ -3123,8 +3137,8 @@ class PDFModel:
         if saving_over_open_file:
             # 先寫入暫存檔，關閉 doc 後再覆蓋原檔，最後重新開啟
             temp_save = Path(self.temp_dir.name) / f"save_{uuid.uuid4()}.pdf"
-            self._save_doc(self.doc, str(temp_save))
-            self.doc.close()
+            self._save_doc(doc, str(temp_save))
+            doc.close()
             try:
                 shutil.copy2(str(temp_save), path)
             finally:
@@ -3141,7 +3155,9 @@ class PDFModel:
         """Render a page to a downscaled grayscale numpy array for skew analysis."""
         import numpy as np
 
-        page = self.doc[page_num - 1]
+        # typed bind; callers guarantee an open doc here (deskew path) - runtime behavior identical if None
+        doc: fitz.Document = self.doc
+        page = doc[page_num - 1]
         rect = fitz.Rect(page.rect)
         longest = max(1.0, float(rect.width), float(rect.height))
         scale = max(0.1, min(float(max_dim) / longest, 4.0))

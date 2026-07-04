@@ -328,7 +328,7 @@ def discover_native_image_invocations(doc: fitz.Document, page_num: int) -> list
             cm_index = last_cm_by_depth[-1]
             cm_values = _cm_values_from_operands(operators[cm_index].operands) if cm_index is not None else None
             bbox: fitz.Rect | None = None
-            rotation = 0
+            rotation = 0.0
             if cm_values is not None:
                 bbox = _bbox_from_stream_cm(
                     cm_values,
@@ -504,7 +504,7 @@ def serialize_tokens(tokens: list[ContentToken]) -> bytes:
     return b"\n".join(token.raw for token in tokens) + b"\n"
 
 
-def fitz_rect_to_stream_cm(rect: fitz.Rect, page: fitz.Page, rotation: int) -> list[bytes]:
+def fitz_rect_to_stream_cm(rect: fitz.Rect, page: fitz.Page, rotation: float) -> list[bytes]:
     bbox = fitz.Rect(rect)
     width = float(bbox.width)
     height = float(bbox.height)
@@ -532,7 +532,7 @@ def form_rect_to_stream_cm(
     destination_rect: fitz.Rect,
     current_cm_values: tuple[float, float, float, float, float, float],
     current_page_bbox: fitz.Rect,
-    rotation: int,
+    rotation: float,
 ) -> list[bytes] | None:
     """Build a new ``cm`` for an image drawn inside a Form XObject.
 
