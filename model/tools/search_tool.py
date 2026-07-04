@@ -36,7 +36,7 @@ class SearchTool(ToolExtension):
         return self.search_page_in_doc(self._model.doc, page_num, query)
 
     def search_text(self, query: str):
-        results = []
+        results: list[tuple[int, str, object]] = []
         if not self._model.doc:
             return results
         for i in range(len(self._model.doc)):

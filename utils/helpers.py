@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QMessageBox
 
 def parse_pages(input_str: str, total_pages: int) -> list[int]:
     """Parse a page range string like '1,3-5' -> [1,3,4,5]."""
-    pages = set()
+    pages: set[int] = set()
     for raw_part in input_str.split(","):
         part = raw_part.strip()
         if not part:
@@ -35,7 +35,7 @@ def pixmap_to_qimage(pix: fitz.Pixmap):
     if not pix.alpha and pix.colorspace is not None and pix.colorspace.n in {1, 4}:
         pix = fitz.Pixmap(fitz.csRGB, pix)
 
-    fmt = QImage.Format_RGBA8888 if pix.alpha else QImage.Format_RGB888
+    fmt = QImage.Format.Format_RGBA8888 if pix.alpha else QImage.Format.Format_RGB888
     return QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
 
 

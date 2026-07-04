@@ -54,6 +54,11 @@ ignore_missing_imports = true
 # name". explicit_package_bases anchors module names at the repo root.
 namespace_packages = true
 explicit_package_bases = true
+# Determinism: CI runs on ubuntu but the app is developed/shipped on Windows;
+# pinning platform keeps CI's sys.platform narrowing identical to the local
+# baseline (the local dev venv is already win32 + Python 3.10).
+python_version = "3.10"
+platform = "win32"
 
 [tool.importlinter]
 # S4 (2026-07-02): CI-enforceable form of CLAUDE.md §2's layer rules.

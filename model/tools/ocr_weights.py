@@ -28,6 +28,7 @@ import hashlib
 import logging
 import os
 import sys
+from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -91,14 +92,14 @@ def sha256_file(path: str | os.PathLike[str], *, chunk_size: int = 1 << 20) -> s
     return digest.hexdigest()
 
 
-def resolve_weights_dir(env: dict[str, str] | None = None) -> Path | None:
+def resolve_weights_dir(env: Mapping[str, str] | None = None) -> Path | None:
     """Return the configured local bundle directory, or ``None`` if unset."""
     environ = os.environ if env is None else env
     raw = (environ.get(WEIGHTS_DIR_ENV) or "").strip()
     return Path(raw) if raw else None
 
 
-def pinned_checkpoints(env: dict[str, str] | None = None) -> dict[str, str]:
+def pinned_checkpoints(env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Return the checkpoint map to enforce, applying the optional revision override."""
     environ = os.environ if env is None else env
     resolved = dict(PINNED_CHECKPOINTS)
@@ -143,7 +144,7 @@ def verify_weights_dir(
 
 
 def _apply_settings(
-    checkpoints: dict[str, str], environ: dict[str, str], *, offline: bool
+    checkpoints: dict[str, str], environ: MutableMapping[str, str], *, offline: bool
 ) -> None:
     """Push checkpoint values into ``environ`` and any live surya settings.
 

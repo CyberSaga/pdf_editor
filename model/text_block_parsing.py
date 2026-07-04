@@ -569,8 +569,8 @@ def _build_paragraphs(
             continue
 
         bbox = fitz.Rect(block_runs[0].bbox)
-        font_counter = Counter()
-        color_counter = Counter()
+        font_counter: Counter[str] = Counter()
+        color_counter: Counter[tuple] = Counter()
         size_sum = 0.0
         size_count = 0
         for run in block_runs[1:]:
@@ -680,8 +680,8 @@ def _compose_merged_vertical_paragraph(
 
     bbox = fitz.Rect(ordered[0].bbox)
     run_ids: list[str] = []
-    font_counter = Counter()
-    color_counter = Counter()
+    font_counter: Counter[str] = Counter()
+    color_counter: Counter[tuple] = Counter()
     size_weighted = 0.0
     weight_total = 0
     line_start = ordered[0].line_start

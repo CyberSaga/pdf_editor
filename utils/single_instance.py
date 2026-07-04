@@ -129,7 +129,11 @@ def _handle_socket_message(
         buffer = raw_buffer
     else:
         buffer = b""
-    buffer += bytes(socket.readAll())
+    # PySide6's stub for QByteArray omits the buffer-protocol/__bytes__ overload
+    # bytes() actually accepts at runtime; tests double `readAll()` with a plain
+    # `bytes` return too, so this must stay a `bytes(...)` conversion (not
+    # `.data()`, which plain `bytes` objects don't have).
+    buffer += bytes(socket.readAll())  # type: ignore[call-overload]
     if b"\n" not in buffer:
         socket.setProperty("payload_buffer", buffer)
         return
@@ -244,7 +248,7 @@ def send_to_running_instance(
         _service_local_server(name)
         if not _wait_for_ready_read(socket, timeout_ms):
             return False
-        ack = bytes(socket.readAll()).strip()
+        ack = bytes(socket.readAll()).strip()  # type: ignore[call-overload]
         return ack.startswith(b"1")
     finally:
         socket.abort()

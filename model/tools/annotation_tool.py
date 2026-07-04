@@ -96,7 +96,7 @@ class AnnotationTool(ToolExtension):
         return annot.xref
 
     def get_all_annotations(self) -> list[dict]:
-        results = []
+        results: list[dict] = []
         if not self._model.doc:
             return results
 
@@ -132,7 +132,7 @@ class AnnotationTool(ToolExtension):
         logger.debug("註解可見性設定為: %s", visible)
 
     def _save_overlapping_annots(self, page: fitz.Page, redact_rect: fitz.Rect) -> list:
-        saved = []
+        saved: list[dict] = []
         try:
             annot_iter = list(page.annots())
         except Exception as exc:
