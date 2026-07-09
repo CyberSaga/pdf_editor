@@ -1552,6 +1552,12 @@ class PDFModel:
     def get_thumbnail(self, page_num: int, colorspace: fitz.Colorspace | None = None) -> fitz.Pixmap:
         return self.get_page_pixmap(page_num, scale=0.2, colorspace=colorspace)
 
+    def get_page_label(self, page_num: int) -> str:
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            raise ValueError(f"無效頁碼: {page_num}")
+        label = self.doc[page_num - 1].get_label()
+        return label if label else str(page_num)
+
     def build_print_snapshot(self, dest: Path) -> None:
         """Write the print-input PDF directly to ``dest`` (avoids a full in-memory copy)."""
         self.tools.build_print_snapshot(dest)

@@ -1211,6 +1211,170 @@ class TextEditManager:
         editor.setProperty("mask_debug_metrics", mask_debug)
         self._last_mask_signature = signature
 
+    def _capture_frozen_first_frame(
+        self,
+        *,
+        scaled_rect: fitz.Rect,
+        y0: float,
+        pos_x: float,
+        pos_y: float,
+        editor_width_px: int,
+        editor_height_px: int,
+        normalized_rotation: int,
+    ) -> QImage | None:
+        graphics_view = getattr(self._view, "graphics_view", None)
+        if graphics_view is None or not hasattr(graphics_view, "viewport"):
+            return None
+        try:
+            # rotation 0/180: the editor's pre-rotation rect IS the PDF
+            # bbox; grab it directly.
+            #
+            # rotation 90/270: the editor's local paint space is SWAPPED
+            # and the scene rotates the proxy at display time. Grab the
+            # axis-aligned PDF bbox and COUNTER-rotate the bytes so that,
+            # after the proxy's setRotation, the widget's local paint
+            # lands back on the correct PDF pixels. Without this the grab
+            # samples the empty page margin and the editor opens blank.
+            # Gate: test_click_to_edit_qtest_integration[
+            #         test-vertical-texts.pdf-vertical].
+            if normalized_rotation in (90, 270):
+                bbox_tl = graphics_view.mapFromScene(QPointF(
+                    float(scaled_rect.x0),
+                    float(y0 + scaled_rect.y0),
+                ))
+                bbox_grab = QRect(
+                    int(bbox_tl.x()),
+                    int(bbox_tl.y()),
+                    max(1, int(round(scaled_rect.width))),
+                    max(1, int(round(scaled_rect.height))),
+                )
+                raw_img = (
+                    graphics_view.viewport().grab(bbox_grab)
+                    .toImage()
+                    .convertToFormat(QImage.Format_RGBA8888)
+                )
+                from PySide6.QtGui import QTransform
+
+                counter = -90.0 if normalized_rotation == 90 else 90.0
+                return raw_img.transformed(QTransform().rotate(counter))
+            else:
+                vp_top_left = graphics_view.mapFromScene(QPointF(float(pos_x), float(pos_y)))
+                grab_rect = QRect(
+                    int(vp_top_left.x()),
+                    int(vp_top_left.y()),
+                    max(1, int(editor_width_px)),
+                    max(1, int(editor_height_px)),
+                )
+                return (
+                    graphics_view.viewport().grab(grab_rect)
+                    .toImage()
+                    .convertToFormat(QImage.Format_RGBA8888)
+                )
+        except (RuntimeError, ValueError, AttributeError, TypeError) as exc:
+            logger.debug("frozen-frame grab failed: %s", exc)
+            return None
+
+    def _compute_preview_line_height(
+        self,
+        page_idx: int,
+        cluster_span_ids: list[str] | None,
+    ) -> tuple[float, list | None]:
+        line_ht = 0.0
+        member_spans = None
+        if not cluster_span_ids:
+            return line_ht, member_spans
+        try:
+            model_ref = getattr(getattr(self._view, "controller", None), "model", None)
+            if model_ref is None:
+                return line_ht, member_spans
+            bm = model_ref.block_manager
+            spans = [bm.find_span_by_id(page_idx, sid) for sid in cluster_span_ids]
+            spans = [s for s in spans if s is not None]
+            if spans:
+                member_spans = spans
+                ordered = sorted(spans, key=lambda s: float(s.bbox.y0))
+                if len(ordered) >= 2:
+                    advances = [
+                        abs(float(ordered[i + 1].bbox.y0) - float(ordered[i].bbox.y0))
+                        for i in range(len(ordered) - 1)
+                        if abs(float(ordered[i + 1].bbox.y0) - float(ordered[i].bbox.y0)) > 0.5
+                    ]
+                    if advances:
+                        line_ht = sorted(advances)[len(advances) // 2]
+                if line_ht <= 0:
+                    heights = [float(s.bbox.height) for s in spans if s.bbox.height > 0]
+                    if heights:
+                        line_ht = max(heights)
+        except Exception:
+            line_ht = 0.0
+        return line_ht, member_spans
+
+    def _sync_font_combo_state(self, font_name: str, font_size: float) -> None:
+        view = self._view
+        size_str = _format_font_size(font_size)
+        if view.text_size.findText(size_str) == -1:
+            view.text_size.addItem(size_str)
+            items = sorted(
+                (view.text_size.itemText(i) for i in range(view.text_size.count())),
+                key=lambda item: _parse_font_size_str(item) or 0.0,
+            )
+            view.text_size.clear()
+            view.text_size.addItems(items)
+        view.text_size.setCurrentText(size_str)
+        normalized_font = view._qt_font_to_pdf(font_name)
+        view._set_text_font_by_pdf(normalized_font)
+        view._editing_initial_font_name = normalized_font
+        view._editing_initial_size = float(font_size)
+        view._editing_current_pdf_size = float(font_size)
+        if not hasattr(view, "editing_font_name"):
+            view.editing_font_name = normalized_font
+        if not getattr(view, "_edit_font_size_connected", False):
+            view.text_size.currentTextChanged.connect(view._on_edit_font_size_changed)
+            view._edit_font_size_connected = True
+        if not getattr(view, "_edit_font_family_connected", False):
+            view.text_font.currentIndexChanged.connect(view._on_edit_font_family_changed)
+            view._edit_font_family_connected = True
+
+    def _install_editor_in_scene(
+        self,
+        editor: PreviewBackedInlineTextEditor,
+        pos_x: float,
+        pos_y: float,
+        normalized_rotation: int,
+        initial_frame: QImage | None,
+    ) -> None:
+        view = self._view
+        view.text_editor = view.scene.addWidget(editor)
+        view.text_editor.setPos(round(pos_x), round(pos_y))
+        if hasattr(view.text_editor, "setTransformOriginPoint"):
+            view.text_editor.setTransformOriginPoint(0.0, 0.0)
+        if hasattr(view.text_editor, "setRotation"):
+            view.text_editor.setRotation(float(normalized_rotation))
+        if initial_frame is not None:
+            editor.freeze_first_frame(initial_frame)
+        self.refresh_text_editor_mask_color()
+        view._editor_shortcut_forwarder = _EditorShortcutForwarder(view)
+        if isinstance(view._editor_shortcut_forwarder, QObject):
+            editor.installEventFilter(view._editor_shortcut_forwarder)
+        editor.focus_out_requested.connect(view._schedule_finalize_on_focus_change)
+        document = editor.document() if hasattr(editor, "document") else None
+        refresh_undo_redo = getattr(view, "_refresh_undo_redo_action_state", None)
+        if document is not None and callable(refresh_undo_redo):
+            try:
+                document.undoAvailable.connect(refresh_undo_redo)
+                document.redoAvailable.connect(refresh_undo_redo)
+            except (TypeError, RuntimeError):
+                logger.debug("editor undo/redo signal hookup skipped")
+        if callable(refresh_undo_redo):
+            refresh_undo_redo()
+        else:
+            view._set_document_undo_redo_enabled(False)
+        view._set_edit_focus_guard(True)
+        sync_panel = getattr(view, "_sync_text_property_panel_state", None)
+        if callable(sync_panel):
+            sync_panel()
+        editor.setFocus()
+
     def create_text_editor(
         self,
         rect: fitz.Rect,
@@ -1280,61 +1444,15 @@ class TextEditManager:
             pos_x = float(scaled_rect.x0)
             pos_y = float(y0 + scaled_rect.y1)
 
-        initial_frame = None
-        graphics_view = getattr(view, "graphics_view", None)
-        if graphics_view is not None and hasattr(graphics_view, "viewport"):
-            try:
-                # ──────────────────────────────────────────────────────────
-                # CRITICAL — frozen-frame capture point.
-                #
-                # rotation 0/180: the editor's pre-rotation rect IS the PDF
-                # bbox; grab it directly.
-                #
-                # rotation 90/270: the editor's local paint space is SWAPPED
-                # and the scene rotates the proxy at display time. Grab the
-                # axis-aligned PDF bbox and COUNTER-rotate the bytes so that,
-                # after the proxy's setRotation, the widget's local paint
-                # lands back on the correct PDF pixels. Without this the grab
-                # samples the empty page margin and the editor opens blank.
-                # Gate: test_click_to_edit_qtest_integration[
-                #         test-vertical-texts.pdf-vertical].
-                # ──────────────────────────────────────────────────────────
-                if normalized_rotation in (90, 270):
-                    bbox_tl = graphics_view.mapFromScene(QPointF(
-                        float(scaled_rect.x0),
-                        float(y0 + scaled_rect.y0),
-                    ))
-                    bbox_grab = QRect(
-                        int(bbox_tl.x()),
-                        int(bbox_tl.y()),
-                        max(1, int(round(scaled_rect.width))),
-                        max(1, int(round(scaled_rect.height))),
-                    )
-                    raw_img = (
-                        graphics_view.viewport().grab(bbox_grab)
-                        .toImage()
-                        .convertToFormat(QImage.Format_RGBA8888)
-                    )
-                    from PySide6.QtGui import QTransform
-
-                    counter = -90.0 if normalized_rotation == 90 else 90.0
-                    initial_frame = raw_img.transformed(QTransform().rotate(counter))
-                else:
-                    vp_top_left = graphics_view.mapFromScene(QPointF(float(pos_x), float(pos_y)))
-                    grab_rect = QRect(
-                        int(vp_top_left.x()),
-                        int(vp_top_left.y()),
-                        max(1, int(editor_width_px)),
-                        max(1, int(editor_height_px)),
-                    )
-                    initial_frame = (
-                        graphics_view.viewport().grab(grab_rect)
-                        .toImage()
-                        .convertToFormat(QImage.Format_RGBA8888)
-                    )
-            except (RuntimeError, ValueError, AttributeError, TypeError) as exc:
-                logger.debug("frozen-frame grab failed: %s", exc)
-                initial_frame = None
+        initial_frame = self._capture_frozen_first_frame(
+            scaled_rect=scaled_rect,
+            y0=y0,
+            pos_x=pos_x,
+            pos_y=pos_y,
+            editor_width_px=editor_width_px,
+            editor_height_px=editor_height_px,
+            normalized_rotation=normalized_rotation,
+        )
 
         if self._preview_renderer is None:
             controller = getattr(view, "controller", None)
@@ -1366,34 +1484,9 @@ class TextEditManager:
         editor.setLineWrapMode(QTextEdit.WidgetWidth)
         editor.setWordWrapMode(QTextOption.WrapAnywhere)
 
-        # Derive preview line_height from the cluster spans so the editor's CSS
-        # leading matches the commit path's leading exactly.
-        line_ht_for_preview = 0.0
-        member_spans_for_preview = None
-        if cluster_span_ids:
-            try:
-                model_ref = getattr(getattr(view, "controller", None), "model", None)
-                if model_ref is not None:
-                    bm = model_ref.block_manager
-                    spans = [bm.find_span_by_id(page_idx, sid) for sid in cluster_span_ids]
-                    spans = [s for s in spans if s is not None]
-                    if spans:
-                        member_spans_for_preview = spans
-                        ordered = sorted(spans, key=lambda s: float(s.bbox.y0))
-                        if len(ordered) >= 2:
-                            advances = [
-                                abs(float(ordered[i + 1].bbox.y0) - float(ordered[i].bbox.y0))
-                                for i in range(len(ordered) - 1)
-                                if abs(float(ordered[i + 1].bbox.y0) - float(ordered[i].bbox.y0)) > 0.5
-                            ]
-                            if advances:
-                                line_ht_for_preview = sorted(advances)[len(advances) // 2]
-                        if line_ht_for_preview <= 0:
-                            heights = [float(s.bbox.height) for s in spans if s.bbox.height > 0]
-                            if heights:
-                                line_ht_for_preview = max(heights)
-            except Exception:
-                line_ht_for_preview = 0.0
+        line_ht_for_preview, member_spans_for_preview = self._compute_preview_line_height(
+            page_idx, cluster_span_ids,
+        )
 
         editor.configure_render_context(
             font_name=font_name,
@@ -1406,60 +1499,9 @@ class TextEditManager:
             line_height=line_ht_for_preview,
         )
 
-        size_str = _format_font_size(font_size)
-        if view.text_size.findText(size_str) == -1:
-            view.text_size.addItem(size_str)
-            items = sorted(
-                (view.text_size.itemText(i) for i in range(view.text_size.count())),
-                key=lambda item: _parse_font_size_str(item) or 0.0,
-            )
-            view.text_size.clear()
-            view.text_size.addItems(items)
-        view.text_size.setCurrentText(size_str)
-        normalized_font = view._qt_font_to_pdf(font_name)
-        view._set_text_font_by_pdf(normalized_font)
-        view._editing_initial_font_name = normalized_font
-        view._editing_initial_size = float(font_size)
-        view._editing_current_pdf_size = float(font_size)
-        if not hasattr(view, "editing_font_name"):
-            view.editing_font_name = normalized_font
-        if not getattr(view, "_edit_font_size_connected", False):
-            view.text_size.currentTextChanged.connect(view._on_edit_font_size_changed)
-            view._edit_font_size_connected = True
-        if not getattr(view, "_edit_font_family_connected", False):
-            view.text_font.currentIndexChanged.connect(view._on_edit_font_family_changed)
-            view._edit_font_family_connected = True
+        self._sync_font_combo_state(font_name, font_size)
 
-        view.text_editor = view.scene.addWidget(editor)
-        view.text_editor.setPos(round(pos_x), round(pos_y))
-        if hasattr(view.text_editor, "setTransformOriginPoint"):
-            view.text_editor.setTransformOriginPoint(0.0, 0.0)
-        if hasattr(view.text_editor, "setRotation"):
-            view.text_editor.setRotation(float(normalized_rotation))
-        if initial_frame is not None:
-            editor.freeze_first_frame(initial_frame)
-        self.refresh_text_editor_mask_color()
-        view._editor_shortcut_forwarder = _EditorShortcutForwarder(view)
-        if isinstance(view._editor_shortcut_forwarder, QObject):
-            editor.installEventFilter(view._editor_shortcut_forwarder)
-        editor.focus_out_requested.connect(view._schedule_finalize_on_focus_change)
-        document = editor.document() if hasattr(editor, "document") else None
-        refresh_undo_redo = getattr(view, "_refresh_undo_redo_action_state", None)
-        if document is not None and callable(refresh_undo_redo):
-            try:
-                document.undoAvailable.connect(refresh_undo_redo)
-                document.redoAvailable.connect(refresh_undo_redo)
-            except (TypeError, RuntimeError):
-                logger.debug("editor undo/redo signal hookup skipped")
-        if callable(refresh_undo_redo):
-            refresh_undo_redo()
-        else:
-            view._set_document_undo_redo_enabled(False)
-        view._set_edit_focus_guard(True)
-        sync_panel = getattr(view, "_sync_text_property_panel_state", None)
-        if callable(sync_panel):
-            sync_panel()
-        editor.setFocus()
+        self._install_editor_in_scene(editor, pos_x, pos_y, normalized_rotation, initial_frame)
 
     def on_edit_font_family_changed(self, *_) -> None:
         view = self._view

@@ -635,6 +635,7 @@ class CommandManager:
             evicted += 1
             total_bytes = self._unique_byte_total()
         if evicted:
+            self._saved_stack_size = max(0, self._saved_stack_size - evicted)
             logger.debug(
                 "CommandManager: evicted %s oldest undo commands to enforce byte budget=%s (remaining=%s bytes)",
                 evicted,

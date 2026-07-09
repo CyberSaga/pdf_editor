@@ -172,11 +172,6 @@ class ThumbnailCoordinator(QObject):
         worker.failed.connect(self._worker_failed)
         worker.finished.connect(thread.quit)
         worker.finished.connect(self._worker_finished)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(
-            lambda token=request.token: QTimer.singleShot(0, lambda: self._thread_finished(token))
-        )
-        thread.finished.connect(thread.deleteLater)
         self._threads[request.token] = (thread, worker)
         thread.start()
 
@@ -239,6 +234,10 @@ class ThumbnailCoordinator(QObject):
     ) -> None:
         if succeeded and self._is_current(token, session_id, generation):
             self._active = None
+        QTimer.singleShot(0, lambda tok=token: self._thread_finished(tok))
 
     def _thread_finished(self, token: str) -> None:
-        self._threads.pop(token, None)
+        entry = self._threads.pop(token, None)
+        if entry is not None:
+            thread, _worker = entry
+            thread.wait(1000)
