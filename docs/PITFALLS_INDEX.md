@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 161 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 162 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -166,3 +166,4 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1456 | Pruning an XObject resource: `/fzImg1` is a prefix of `/fzImg10`, and `/Resources` is inheritable | `model/pdf_object_ops.py` (`_remove_native_image_invocation`) |
 | 1468 | A "fail safe" that refuses to act can strand the object it was protecting | `model/pdf_object_ops.py` (`_delete_object_impl` image branch), and any resolve-then-act path |
 | 1480 | Rolling back a transaction that changed nothing closes the live `fitz.Document` | `model/pdf_object_ops.py` (`delete_objects_atomic`), `model/pdf_model.py` (`_restore_doc_from_snapshot`) |
+| 1490 | The print path wrote two plaintext temps, and `capture_print_snapshot_bytes` is always decrypted | `controller/print_coordinator.py`, `src/printing/*` (R5-01) |

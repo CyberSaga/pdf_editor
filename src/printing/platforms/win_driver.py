@@ -14,12 +14,12 @@ import zlib
 from ctypes import wintypes
 from typing import Any
 
-import fitz
 from PySide6.QtPrintSupport import QPrinterInfo
 
 from ..base_driver import PrinterDevice, PrinterDriver, PrintJobOptions, PrintJobResult
 from ..errors import PrinterUnavailableError, PrintJobSubmissionError
 from ..layout import match_standard_paper_size, resolve_orientation
+from ..pdf_renderer import PdfSource, open_pdf_source
 from ..qt_bridge import raster_print_pdf
 
 try:
@@ -335,6 +335,27 @@ class WindowsPrinterDriver(PrinterDriver):
         page_indices: list[int],
         options: PrintJobOptions,
     ) -> PrintJobResult:
+        return self._print_pdf_source(pdf_path, page_indices, options)
+
+    def print_pdf_from_bytes(
+        self,
+        pdf_bytes: bytes,
+        page_indices: list[int],
+        options: PrintJobOptions,
+    ) -> PrintJobResult:
+        """R5-01: the whole Windows route runs from memory — no document temp.
+
+        Both the geometry classification pass and the rasteriser accept bytes, and
+        QPrinter only ever sees rendered QImages, so nothing downstream needs a path.
+        """
+        return self._print_pdf_source(pdf_bytes, page_indices, options)
+
+    def _print_pdf_source(
+        self,
+        pdf_source: PdfSource,
+        page_indices: list[int],
+        options: PrintJobOptions,
+    ) -> PrintJobResult:
         # normalized() is idempotent and applied at each public boundary; raster
         # helpers below receive an already-normalized copy and need not redo it.
         normalized = options.normalized()
@@ -349,20 +370,20 @@ class WindowsPrinterDriver(PrinterDriver):
             job_bytes = _decode_devmode_b64(devmode_b64)
             if job_bytes:
                 return self._print_with_scoped_devmode(
-                    pdf_path, page_indices, normalized, job_bytes
+                    pdf_source, page_indices, normalized, job_bytes
                 )
-        return self._raster_split_or_direct(pdf_path, page_indices, normalized)
+        return self._raster_split_or_direct(pdf_source, page_indices, normalized)
 
     def _raster_split_or_direct(
         self,
-        pdf_path: str,
+        pdf_source: PdfSource,
         page_indices: list[int],
         normalized: PrintJobOptions,
     ) -> PrintJobResult:
         # Virtual-printer PDF output: Qt's PDF writer honours per-page layout and
         # there is no spooler bloat, so keep the original single-pass, full-DPI path.
         if normalized.output_pdf_path:
-            return raster_print_pdf(pdf_path, page_indices, normalized)
+            return raster_print_pdf(pdf_source, page_indices, normalized)
 
         # P4: cap effective raster DPI so the GDI/EMF spool stays small.
         if normalized.dpi > _WIN_MAX_RASTER_DPI:
@@ -377,12 +398,12 @@ class WindowsPrinterDriver(PrinterDriver):
         # prints as one job; "auto" on either axis means each page may need its own
         # media, so we split (P2/P3).
         if normalized.paper_size != "auto" and normalized.orientation != "auto":
-            return raster_print_pdf(pdf_path, page_indices, normalized)
-        return self._split_by_layout(pdf_path, page_indices, normalized)
+            return raster_print_pdf(pdf_source, page_indices, normalized)
+        return self._split_by_layout(pdf_source, page_indices, normalized)
 
     def _split_by_layout(
         self,
-        pdf_path: str,
+        pdf_source: PdfSource,
         page_indices: list[int],
         normalized: PrintJobOptions,
     ) -> PrintJobResult:
@@ -391,11 +412,12 @@ class WindowsPrinterDriver(PrinterDriver):
         # explicit orientation choice unchanged, so leaving paper fixed here lets the
         # user pin paper while still auto-rotating per page (finding #1).
         explicit_paper = normalized.paper_size if normalized.paper_size != "auto" else None
-        # This is a lightweight geometry-only pass (fitz.open parses the xref, it does
-        # not render). The per-group renderer re-opens the document for rasterising;
-        # the two concerns are kept separate deliberately. Classifying every page up
-        # front also means a malformed PDF fails here, before anything is spooled.
-        doc = fitz.open(pdf_path)
+        # This is a lightweight geometry-only pass (parsing the xref, not rendering).
+        # The per-group renderer re-opens the document for rasterising; the two concerns
+        # are kept separate deliberately. Classifying every page up front also means a
+        # malformed PDF fails here, before anything is spooled. R5-01: open_pdf_source
+        # accepts the in-memory bytes, so this pass needs no file either.
+        doc = open_pdf_source(pdf_source)
         try:
             groups: list[tuple[tuple[str, str], list[int]]] = []
             cur_layout: tuple[str, str] | None = None
@@ -420,11 +442,11 @@ class WindowsPrinterDriver(PrinterDriver):
         finally:
             doc.close()
 
-        return self._print_layout_groups(pdf_path, groups, normalized)
+        return self._print_layout_groups(pdf_source, groups, normalized)
 
     def _print_layout_groups(
         self,
-        pdf_path: str,
+        pdf_source: PdfSource,
         groups: list[tuple[tuple[str, str], list[int]]],
         normalized: PrintJobOptions,
     ) -> PrintJobResult:
@@ -461,7 +483,7 @@ class WindowsPrinterDriver(PrinterDriver):
                     copies=per_group_copies,
                     collate=group_collate,
                 )
-                result = raster_print_pdf(pdf_path, pages, group_opts)
+                result = raster_print_pdf(pdf_source, pages, group_opts)
                 if not result.success:
                     if spooled > 0:
                         return PrintJobResult(
@@ -484,7 +506,7 @@ class WindowsPrinterDriver(PrinterDriver):
 
     def _print_with_scoped_devmode(
         self,
-        pdf_path: str,
+        pdf_source: PdfSource,
         page_indices: list[int],
         normalized: PrintJobOptions,
         job_bytes: bytes,
@@ -503,7 +525,7 @@ class WindowsPrinterDriver(PrinterDriver):
         fields; its paper/orientation are intentionally superseded.
         """
         if win32print is None or _DOCUMENT_PROPERTIES_W is None:
-            return self._raster_split_or_direct(pdf_path, page_indices, normalized)
+            return self._raster_split_or_direct(pdf_source, page_indices, normalized)
 
         printer_name = normalized.printer_name or ""
         handle = None
@@ -546,7 +568,7 @@ class WindowsPrinterDriver(PrinterDriver):
             )
 
         try:
-            return self._raster_split_or_direct(pdf_path, page_indices, normalized)
+            return self._raster_split_or_direct(pdf_source, page_indices, normalized)
         finally:
             if applied and original_buf is not None and handle is not None:
                 # Surface a failed restore instead of swallowing it: a silent failure

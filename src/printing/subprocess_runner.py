@@ -19,6 +19,11 @@ from .helper_protocol import PrintHelperJob, parse_helper_event
 
 logger = logging.getLogger(__name__)
 
+# R5-01: hand Qt at most one chunk at a time so the peak stdin buffer is bounded by the
+# chunk size, not by the document size. QProcess.write() never blocks (QIODevice buffers
+# internally), so there is no pipe-buffer deadlock to fear — only memory.
+_STDIN_CHUNK_BYTES = 1 << 20  # 1 MiB
+
 
 class PrintSubprocessRunner(QObject):
     """Launch and monitor the helper subprocess."""
@@ -41,6 +46,7 @@ class PrintSubprocessRunner(QObject):
         monotonic: Callable[[], float] = time.monotonic,
         parent: QObject | None = None,
         helper_password: str | None = None,
+        pdf_bytes: bytes | None = None,
     ) -> None:
         super().__init__(parent)
         self.job = job
@@ -48,8 +54,14 @@ class PrintSubprocessRunner(QObject):
         self._python_executable = python_executable or sys.executable
         self._provided_work_dir = work_dir
         # R5.1: handed to the helper via the process environment (in-memory, not job.json)
-        # so it can re-authenticate an encrypted input.pdf for rasterization.
+        # so it can re-authenticate an encrypted input.pdf on the protocol-v1 file path.
+        # The default fileless path supplies no password: the piped bytes are plaintext,
+        # so there is nothing to authenticate and no credential in the child's env.
         self._helper_password = helper_password
+        # R5-01: the document, streamed to the child's stdin instead of written to disk.
+        self._pdf_bytes = pdf_bytes
+        self._stdin_offset = 0
+        self._stdin_inflight = 0
         self._owned_temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._process: QProcess | None = None
         self._stdout_buffer = ""
@@ -130,6 +142,61 @@ class PrintSubprocessRunner(QObject):
         # R5-05: the QProcess now owns the environment (incl. PDF_EDITOR_PRINT_PASSWORD);
         # drop our copy immediately so the credential does not live as long as the runner.
         self._helper_password = None
+        self._begin_stdin_stream()
+
+    def _begin_stdin_stream(self) -> None:
+        """Stream the document into the child's stdin, chunk by chunk (R5-01).
+
+        No-ops when the caller supplied no bytes (protocol-v1 file path) or when the
+        injected process fake lacks the QProcess write surface — the same
+        ``getattr``/``callable`` guard style ``_configure_process_context`` uses.
+        """
+        if self._pdf_bytes is None or self._process is None:
+            return
+        write = getattr(self._process, "write", None)
+        close_write = getattr(self._process, "closeWriteChannel", None)
+        if not callable(write) or not callable(close_write):
+            logger.debug("Process object cannot stream stdin; skipping document write.")
+            self._pdf_bytes = None
+            return
+        bytes_written = getattr(self._process, "bytesWritten", None)
+        if bytes_written is not None and hasattr(bytes_written, "connect"):
+            bytes_written.connect(self._on_stdin_bytes_written)
+        self._stdin_offset = 0
+        self._stdin_inflight = 0
+        self._write_next_stdin_chunk()
+
+    def _write_next_stdin_chunk(self) -> None:
+        payload = self._pdf_bytes
+        if payload is None or self._process is None:
+            return
+        if self._termination_requested:
+            # The user killed the job mid-stream: stop feeding a dying process and drop
+            # the decrypted payload immediately.
+            self._pdf_bytes = None
+            return
+        if self._stdin_offset >= len(payload):
+            self._finish_stdin_stream()
+            return
+        chunk = payload[self._stdin_offset : self._stdin_offset + _STDIN_CHUNK_BYTES]
+        self._stdin_offset += len(chunk)
+        self._stdin_inflight += len(chunk)
+        self._process.write(chunk)
+
+    def _on_stdin_bytes_written(self, count: int) -> None:
+        # Only queue the next chunk once Qt has flushed everything we handed it, so at
+        # most one chunk is buffered at a time.
+        self._stdin_inflight = max(0, self._stdin_inflight - int(count))
+        if self._stdin_inflight == 0:
+            self._write_next_stdin_chunk()
+
+    def _finish_stdin_stream(self) -> None:
+        if self._process is not None:
+            close_write = getattr(self._process, "closeWriteChannel", None)
+            if callable(close_write):
+                close_write()  # the child's read() needs EOF to return
+        # Drop the decrypted document as soon as it is on the wire (R5-05 discipline).
+        self._pdf_bytes = None
 
     def terminate(self) -> None:
         self._termination_requested = True
@@ -233,6 +300,8 @@ class PrintSubprocessRunner(QObject):
 
     def _cleanup(self) -> None:
         self._process = None
+        # R5-01: never outlive the job holding decrypted document bytes.
+        self._pdf_bytes = None
         if self._owned_temp_dir is not None:
             self._owned_temp_dir.cleanup()
             self._owned_temp_dir = None

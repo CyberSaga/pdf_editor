@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import contextlib
+import logging
+import os
 import shutil
 import subprocess
+import tempfile
+from collections.abc import Iterator
 
 from PySide6.QtPrintSupport import QPrinterInfo
 
 from ..base_driver import PrinterDevice, PrinterDriver, PrintJobOptions, PrintJobResult
 from ..errors import PrinterUnavailableError, PrintJobSubmissionError
 from ..qt_bridge import raster_print_pdf
+
+logger = logging.getLogger(__name__)
 
 try:
     import cups  # type: ignore
@@ -213,13 +220,8 @@ class LinuxPrinterDriver(PrinterDriver):
             message=out or "Submitted print job via lp.",
         )
 
-    def print_pdf(
-        self,
-        pdf_path: str,
-        page_indices: list[int],
-        options: PrintJobOptions,
-    ) -> PrintJobResult:
-        normalized = options.normalized()
+    @staticmethod
+    def _direct_path_allowed(normalized: PrintJobOptions) -> bool:
         requires_exact_page_order = (
             normalized.page_subset != "all" or normalized.reverse_order
         )
@@ -227,7 +229,7 @@ class LinuxPrinterDriver(PrinterDriver):
         requires_fixed_layout = bool(
             {"paper_size", "orientation"} & set(normalized.override_fields)
         )
-        direct_path_allowed = (
+        return (
             normalized.transport in ("auto", "direct_pdf")
             and normalized.output_pdf_path is None
             and not requires_exact_page_order
@@ -235,12 +237,51 @@ class LinuxPrinterDriver(PrinterDriver):
             and not requires_fixed_layout
         )
 
-        if direct_path_allowed and self.supports_direct_pdf:
+    def _submit_direct(self, pdf_path: str, normalized: PrintJobOptions) -> PrintJobResult | None:
+        """Try the CUPS/lp direct-PDF routes. Returns None when neither is available."""
+        if self._cups_connection() is not None:
+            return self._submit_via_cups(pdf_path, normalized)
+        if shutil.which("lp") is not None:
+            return self._submit_via_lp(pdf_path, normalized)
+        return None
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _materialized_pdf(pdf_bytes: bytes) -> Iterator[str]:
+        """The one documented R5-01 residual: CUPS/lp need a real file.
+
+        ``conn.printFile`` and the ``lp`` CLI hand the path to the CUPS filter chain,
+        which must parse and rasterise it — so this temp cannot be encrypted, because
+        the consumer needs plaintext. It is minimised instead: created here inside the
+        driver (not in the dispatcher), so it exists only across the submission call;
+        owner-only (``NamedTemporaryFile`` is 0600 on POSIX); unlinked in ``finally``.
+
+        Windows never reaches this code — its route is fully fileless.
+        """
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(pdf_bytes)
+            temp_path = tmp.name
+        try:
+            yield temp_path
+        finally:
             try:
-                if self._cups_connection() is not None:
-                    return self._submit_via_cups(pdf_path, normalized)
-                if shutil.which("lp") is not None:
-                    return self._submit_via_lp(pdf_path, normalized)
+                os.unlink(temp_path)
+            except OSError as exc:
+                logger.debug("Failed to remove direct-print temp %s: %s", temp_path, exc)
+
+    def print_pdf(
+        self,
+        pdf_path: str,
+        page_indices: list[int],
+        options: PrintJobOptions,
+    ) -> PrintJobResult:
+        normalized = options.normalized()
+
+        if self._direct_path_allowed(normalized) and self.supports_direct_pdf:
+            try:
+                result = self._submit_direct(pdf_path, normalized)
+                if result is not None:
+                    return result
             except Exception as exc:
                 if normalized.transport == "direct_pdf":
                     raise PrintJobSubmissionError(
@@ -249,3 +290,27 @@ class LinuxPrinterDriver(PrinterDriver):
 
         # Fallback route: reliable raster stream into Qt print backend.
         return raster_print_pdf(pdf_path, page_indices, normalized)
+
+    def print_pdf_from_bytes(
+        self,
+        pdf_bytes: bytes,
+        page_indices: list[int],
+        options: PrintJobOptions,
+    ) -> PrintJobResult:
+        """R5-01: raster route is fileless; only CUPS/lp materialise a scoped temp."""
+        normalized = options.normalized()
+
+        if self._direct_path_allowed(normalized) and self.supports_direct_pdf:
+            try:
+                with self._materialized_pdf(pdf_bytes) as temp_path:
+                    result = self._submit_direct(temp_path, normalized)
+                    if result is not None:
+                        return result
+            except Exception as exc:
+                if normalized.transport == "direct_pdf":
+                    raise PrintJobSubmissionError(
+                        f"Direct print failed: {exc}"
+                    ) from exc
+
+        # Fallback route: rasterise straight from memory — no file at any point.
+        return raster_print_pdf(pdf_bytes, page_indices, normalized)

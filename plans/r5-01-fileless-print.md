@@ -1,6 +1,9 @@
 # R5-01 — Fileless Print Path
 
-**Status: DRAFT — awaiting user sign-off before any implementation.**
+**Status: APPROVED — design checkpoint resolved 2026-07-10 (Milestone 2, PR-17).**
+The open questions in §10 are answered in §11, which is the binding record. §11 **overrides**
+§4.3's and §10.3's leaning on re-encrypting the CUPS/lp temp: that idea is unsound and is
+rejected with evidence.
 
 ---
 
@@ -355,3 +358,99 @@ Each step writes failing tests first. Key red-light scenarios:
    the driver-scoped temp be re-encrypted (matching the current R5.1 behavior)?
    This adds complexity to the driver. Leaning yes — defense in depth; the
    encryption code already exists in `_encode_input_bytes`.
+
+---
+
+## 11. Resolved design (2026-07-10) — binding
+
+### 11.1 The load-bearing fact: the print bytes are *always already decrypted*
+
+`PDFModel.capture_print_snapshot_bytes` (`model/pdf_model.py:2445-2455`) returns
+`doc.tobytes(..., encryption=fitz.PDF_ENCRYPT_NONE)` on **both** of its branches, and its
+non-destructive branch delegates to `capture_worker_snapshot_bytes` (`:2439-2443`), which
+does the same. So the coordinator holds plaintext from the moment the user clicks Print,
+whatever the source document's encryption.
+
+Everything downstream follows from that:
+
+- The R5.1 re-encryption (`_encode_input_bytes`) exists **only** because those plaintext
+  bytes were about to be written to a file. Remove the file and the re-encryption has
+  nothing to protect.
+- The helper then has nothing to authenticate, so `PDF_EDITOR_PRINT_PASSWORD` no longer
+  needs to be set in the child's environment. That is a *second*, unplanned security win:
+  a same-user process can read another process's environment block on Windows, whereas an
+  anonymous pipe between parent and child is not addressable from outside the pair.
+
+### 11.2 Q1 — transport: **stdin**, chunked, with flow control
+
+Confirmed. `QProcess.write()` never blocks (it is a `QIODevice` with an internal buffer),
+so the Windows 4 KB-pipe deadlock in §7 cannot occur — the GUI event loop drains the
+child's stdout throughout. The real cost of a single `write(payload)` is *memory*: Qt
+would buffer a second full copy of the document.
+
+So the runner writes in 1 MiB chunks, sending chunk *k+1* only once `bytesWritten` has
+acknowledged chunk *k*. Peak extra memory is one chunk, not one document. The reference to
+the payload is dropped the moment the last chunk is queued (mirrors the R5-05 credential
+discipline). Fakes injected via `process_factory` are detected with `getattr`/`callable`
+guards, the pattern `_configure_process_context` already uses.
+
+### 11.3 Q2 — Steps 1+2 bundle: **yes**, and widen rather than duplicate
+
+Bundled. Deviation from §4.2: instead of adding parallel `*_from_bytes` methods to
+`PDFRenderer`, the existing `get_page_count` / `iter_page_images` / `render_all_to_images`
+**widen** their first parameter to `str | bytes` and route through one
+`open_pdf_source(source)` helper (`fitz.open("pdf", source)` for bytes, `fitz.open(source)`
+for a path). Every existing caller keeps working unchanged, and there is one code path to
+test rather than two that can drift. `raster_print_pdf` widens the same way.
+
+The `PrinterDriver` contract does gain a real second method, `print_pdf_from_bytes`,
+because the two are genuinely different for CUPS/lp:
+
+- `PrinterDriver.print_pdf_from_bytes` — **default** implementation writes a scoped temp
+  and delegates to `print_pdf`, so any driver that does not opt in keeps working.
+- `WindowsPrinterDriver` overrides it: bytes thread through `_raster_split_or_direct` →
+  `_split_by_layout` (`fitz.open("pdf", bytes)` for the geometry pass) → `raster_print_pdf`.
+  **Zero disk contact.** This is the only path this app's users exercise.
+- `LinuxPrinterDriver` overrides it: the raster fallback is fileless; only the CUPS/lp
+  direct-PDF route materialises a temp, scoped inside the driver method.
+
+### 11.4 Q3 — re-encrypting the CUPS/lp temp: **NO. The leaning was unsound.**
+
+`conn.printFile(printer, path, ...)` and `lp <path>` hand the file to the CUPS filter
+chain, which must *parse and rasterise* it. An AES-256-encrypted PDF with a user password
+is not renderable by `pdftoraster` without that password, which CUPS has no way to obtain.
+Re-encrypting the temp would not harden the direct path — **it would break it**, turning
+every encrypted-source Linux print into a spooler error.
+
+Resolution: the CUPS/lp temp stays plaintext, because the tool that consumes it requires
+plaintext. It is instead minimised:
+
+- created inside `LinuxPrinterDriver`, not in the dispatcher, so it exists only across the
+  `printFile` / `subprocess.run` call rather than the whole driver dispatch;
+- `NamedTemporaryFile` already creates with mode `0600` on POSIX (owner-only);
+- unlinked in a `finally`.
+
+Documented as the one remaining residual, in `docs/PITFALLS.md`. Note this affects Linux
+and macOS only; on Windows — the platform this app targets — **no document bytes touch
+disk at any point** after this PR.
+
+### 11.5 Consequences for the R5.1 tests
+
+`test_scripts/test_print_encrypted_input.py` currently asserts that `work_dir/input.pdf`
+*exists and is encrypted*. That file is the vulnerability. Those assertions are replaced by
+the strictly stronger contract: **no document file is created at all**, for encrypted and
+unencrypted sources alike. R5.1's "Option A" is subsumed, not regressed.
+
+`PrintSubprocessRunner`'s `helper_password` parameter and the two R5-05 tests that pin its
+clearing are **kept**: the legacy `input_pdf_path` branch of the helper protocol survives
+for rollback (§7's "version the protocol" mitigation), and if anything ever feeds the
+helper an encrypted file again, the credential discipline is still there. Production simply
+stops supplying a password, because production no longer writes a file.
+
+### 11.6 Protocol versioning
+
+`PrintHelperJob.input_pdf_path` becomes `str | None = None`, and `to_json_dict` omits the
+key when unset. The helper's rule: **`input_pdf_path` present → read that file (legacy);
+absent → read the document from stdin.** Rolling PR-17 back is therefore a coordinator-side
+change only; an old helper reading a new `job.json` fails loudly on the missing key rather
+than silently printing nothing.

@@ -4,8 +4,25 @@
 
 ### R5-01 / Codex F6 (from post-campaign repair, 2026-06-21)
 
-- [ ] **R5-01 fileless print path.** Eliminate the transient plaintext temp during the driver call (page-streamed
-  raster or password-aware driver boundary) + avoid the duplicate full-document copies. Large redesign.
+- [x] **R5-01 fileless print path — Resolved (PR-17, 2026-07-10).** Both plaintext temps are gone.
+  `capture_print_snapshot_bytes` always returns `PDF_ENCRYPT_NONE` bytes, so *both* temps held a fully
+  decrypted copy of the document at rest.
+  - `work_dir/input.pdf` (coordinator): the document now rides the helper subprocess's **stdin**, written
+    in 1 MiB chunks with `bytesWritten` flow control. `job.json` carries options + watermarks only.
+  - the dispatcher's `NamedTemporaryFile`: `PrintDispatcher.print_pdf_bytes` now calls the new
+    `PrinterDriver.print_pdf_from_bytes`. `WindowsPrinterDriver` overrides it, so on Windows **no document
+    bytes touch disk at any point**. `PDFRenderer`/`raster_print_pdf` accept `str | bytes`.
+  - Bonus: because the piped bytes are already plaintext, the helper has nothing to authenticate, so the
+    R5.1 re-encryption and the `PDF_EDITOR_PRINT_PASSWORD` **environment variable are gone from the
+    production path** (a process env block is readable by same-user processes; an anonymous pipe is not).
+  - Duplicate copies: 5 stops (bytes → input.pdf → helper read → temp → renderer read) reduced to 2.
+  - **Residual, accepted:** the Linux/macOS CUPS/lp *direct-PDF* route still materialises one temp, because
+    `conn.printFile` / `lp` hand the path to a filter chain that must parse and rasterise it. It cannot be
+    encrypted (the consumer needs plaintext), so it is instead driver-scoped, `0600`, and unlinked in a
+    `finally`. Windows never reaches that code. Documented in `docs/PITFALLS.md`.
+  - Design: `plans/r5-01-fileless-print.md` §11. Tests: `test_scripts/test_print_fileless.py` (+ rewritten
+    `test_print_encrypted_input.py`, `test_print_dispatcher_real_sink.py`,
+    `test_security_dispatcher_temp_cleanup.py`).
 - [ ] **Codex F6 — in-flight worker decrypted-bytes lifetime.** `cancel_ocr`/`_cancel_search` are non-blocking by
   design, so a search/OCR worker can hold its snapshot `_doc_bytes` briefly after a tab closes. A blocking join
   would regress responsiveness (intentional non-blocking cancel); the live doc is decrypted in RAM regardless, and

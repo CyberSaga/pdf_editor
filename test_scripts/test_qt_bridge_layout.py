@@ -127,7 +127,7 @@ def test_raster_print_per_page_layout_receives_correct_rects(monkeypatch) -> Non
     )
 
     result = qtb.raster_print_pdf(
-        pdf_path="dummy.pdf",
+        pdf_source="dummy.pdf",
         page_indices=[0, 1, 2],
         options=PrintJobOptions(printer_name="Printer A", dpi=300, paper_size="auto", orientation="auto"),
         renderer=SimpleNamespace(
@@ -158,7 +158,7 @@ def test_raster_print_single_auto_page_calls_layout_once(monkeypatch) -> None:
     )
 
     result = qtb.raster_print_pdf(
-        pdf_path="dummy.pdf",
+        pdf_source="dummy.pdf",
         page_indices=[0],
         options=PrintJobOptions(printer_name="Printer A", dpi=300),
         renderer=_UniformRenderer(),
