@@ -72,10 +72,19 @@ See `docs/history/reports/0607-implementation-notes.md` for the full F1-F9 patch
 
 Reconciled via file split: `surya-ocr` + `torch` in `ocr-requirements.txt`; core image features floor at `Pillow>=12.2.0` in `optional-requirements.txt`. Locked by `test_security_pillow_floor.py` and `test_security_ocr_requirements.py`.
 
-### Deployment env remediation
+### Deployment env remediation — Resolved (PR-13, 2026-07-10)
 
-- [ ] **Upgrade the build-env (`.venv`) Pillow to >=12.2.0 and rebuild.** The PyInstaller build env still has Pillow 12.1.1 (5 image-parser CVEs). The declared floor is already 12.2.0 for fresh installs; the existing `.venv` needs a pip upgrade + PyInstaller rebuild.
-- [ ] **Refresh build tooling** (`pip 21.2.3`, `setuptools 57.4.0`) in the `.venv` — old but not bundled, low risk; update for build hygiene.
+- [x] **Upgrade the build-env (`.venv`) Pillow to >=12.2.0.** Done. `.venv` measures **Pillow 12.2.0**
+  (the 5 image-parser CVEs are remediated); `constraints-ci.txt` pins the same version, so CI and the
+  build env agree by policy. The upgrade landed as a side effect of M1 PR-1's constraints capture.
+- [x] **Refresh build tooling** in the `.venv`. Done: **pip 26.1.2**, **setuptools 82.0.1**, **wheel 0.47.0**
+  (were pip 21.2.3 / setuptools 57.4.0). `constraints-ci.txt` pins setuptools/wheel.
+- [~] **PyInstaller rebuild: DEFERRED to the distribution track.** There is no `.spec` file anywhere in
+  the repo and no build recipe to rebuild from (`build/` is an untracked distutils artifact, not a
+  PyInstaller output). PyInstaller 6.19.0 + `pyinstaller-hooks-contrib` are installed in `.venv`, but
+  authoring the spec is distribution work the roadmap already parks under "Later candidates"
+  (packaged-EXE embedded icon + PyInstaller spec). The CVE remediation above does not depend on it:
+  a future build picks up the patched `.venv` automatically.
 
 ### Remaining open items
 
