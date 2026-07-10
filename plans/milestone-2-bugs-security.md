@@ -4,7 +4,33 @@ Expanded 2026-07-05 from the roadmap section in `this-is-my-own-parallel-donut.m
 Milestone 1 acceptance (closeout: `docs/history/# Milestone 1 Closeout — CI & Quality De.md`,
 HEAD `dc4146d`). PR numbering continues M1's plan-side sequence (M1 = PR-0…PR-12).
 
-**Status: PLANNING APPROVED PENDING — no implementation until the user signs off on this plan.**
+**Status: EXECUTED 2026-07-10.** All six PRs implemented in one session (PR-13 → PR-18), with the
+maintainer explicitly waiving the §4 hard stop ("run straight through") and electing to close B4 as
+env-verified with the PyInstaller rebuild deferred (no `.spec` exists in-repo).
+
+Outcome summary, and where this plan proved wrong:
+- **B1 was bigger than triaged.** `apply_redactions` is geometric, so deleting an app-image also destroyed
+  *text* and *line art* under its rect, not just overlapping images (measured: `"UNDER THE IMAGE"` → `"AGE"`).
+- **B1's `_register_mutation` instruction was wrong** (§4.3 below said "keep both"); it would double-count
+  `edit_count`. See `plans/b1-delete-app-image-invocation-removal.md` §4.
+- **Adversarial review found six real bugs**, all reproduced and fixed — see
+  `plans/b1-delete-app-image-invocation-removal.md` §10.1-§10.6. Two in the shared
+  `_remove_native_image_invocation` helper (prefix-colliding XObject names; `xref_set_key` fabricating a
+  shadowing `/Resources` on inheriting pages), and four in the new delete branch and its transaction:
+  undeletable "zombie" markers created by the fail-safe itself, a `ValueError` on a corrupt payload xref
+  reaching an uncaught Qt slot, an `if not xref` guard strictly stronger than the resolver it gated, and an
+  unconditional snapshot rollback that closed the live `fitz.Document` on a zero-mutation delete.
+  A seventh finding (inline-image tokenizer) was assessed as pre-existing and deferred to TODOS.
+  **The mandated codex peer review did not run** — it died on the session agent limit, as did one of the
+  four review lenses. The second lens's output was truncated in its notification and only recovered later
+  from the workflow journal; four of the six fixes came from it. Do not treat B1 as reviewed.
+- **`plans/r5-01-fileless-print.md`'s open question 3 was unsound**: the CUPS/lp temp cannot be re-encrypted,
+  because the filter chain that consumes it must parse plaintext. Corrected in that plan's §11.4.
+- **B3 exited via Exit A**, not the anticipated documented-closure Exit B — see §7 below.
+
+Local verification at close: `1632 passed, 21 skipped, 1 deselected`; `ruff check .` clean; `mypy model/ utils/`
+clean; all four import-linter contracts clean. Baseline before the milestone was `1585 passed` (+47 tests).
+Manual printer validation (§6 checklist) and the codex B1 review remain outstanding.
 
 ---
 
@@ -325,6 +351,34 @@ tests must be in the CI-gated selection (no fixtures needed — synthesized docs
 **Rollback risk. Low-medium (Exit A), None (Exit B).** Cancel-path changes can deadlock or drop
 legitimate results if the generation check is misplaced; the red-light tests + the existing
 cancel-flow tests pin behavior. Single-coordinator diffs, independently revertable.
+
+### 7.1 Exit decision (recorded 2026-07-10): **Exit A — fixed.**
+
+The TODOS framing assumed a race-free clear would need a coordinator↔worker handshake (a weakly-held
+container, a re-validating worker). It does not. The payload has **exactly one writer** if the *worker*
+clears it: `request_cancel()` on the GUI thread only flips a bool, and `_doc_bytes` is touched nowhere
+else. So the mechanism needs no synchronisation and cannot regress the non-blocking cancel — the very
+property the item was afraid of losing.
+
+- `_SearchWorker` drops the reference immediately after `fitz.open("pdf", data)`. Verified that PyMuPDF
+  retains its own reference to the buffer (`sys.getrefcount` → 3 after open) and the `Document` stays
+  fully usable — page count, `get_text`, `search_for` all work after the caller's reference is gone.
+- `_OcrWorker` cannot drop it early (`ocr_pages(doc=...)` needs it on every iteration), so it clears in
+  `run()`'s `finally`. That still bounds the lifetime to `run()` rather than to the QObject's lifetime,
+  which extends past the loop until Qt processes the pending `deleteLater()` — which *is* the F6 exposure.
+
+Found and fixed en route: `_SearchWorker.run()`'s `finally: doc.close()` raised `AttributeError` whenever
+`doc_bytes` was empty, because `doc` was then `None`. Pinned by
+`test_search_worker_with_no_doc_bytes_does_not_crash`.
+
+Residual, accepted and documented: between `request_cancel()` and the worker's next checkpoint the
+in-flight page still holds the bytes, and the live document is decrypted in RAM regardless. Closing that
+requires a blocking join.
+
+Testing note worth keeping: `bytes` is a variable-size type, so it cannot be weak-referenced even via a
+subclass; and pytest's assertion rewriting keeps its own temporaries alive in the frame, which makes
+`sys.getrefcount` deltas unreliable *inside* a test. The tests therefore assert on `vars(worker)`.
+Tests: `test_scripts/test_worker_doc_bytes_lifetime.py` (8 tests).
 
 ---
 

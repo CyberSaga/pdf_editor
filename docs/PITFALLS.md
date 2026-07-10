@@ -1496,3 +1496,15 @@ Two adjacent fixes from the same review: `int(payload.get("xref", 0) or 0)` rais
 
 **Residual (accepted, Linux/macOS only):** the CUPS/lp *direct-PDF* route needs a real file — `conn.printFile` and `lp` pass the path to a filter chain that must parse and rasterise it. That temp **cannot** be re-encrypted, as the original design proposed: the consumer requires plaintext, so encrypting it would break printing rather than harden it. It is instead created inside `LinuxPrinterDriver` (not the dispatcher), so it lives only across the submission call, is `0600` via `NamedTemporaryFile`, and is unlinked in a `finally`.
 **File:** `src/printing/dispatcher.py`, `src/printing/base_driver.py`, `src/printing/pdf_renderer.py`, `src/printing/qt_bridge.py`, `src/printing/platforms/*.py`, `src/printing/helper_main.py`, `src/printing/helper_protocol.py`, `src/printing/subprocess_runner.py`, `controller/print_coordinator.py`; design `plans/r5-01-fileless-print.md` §11
+
+---
+
+## A QThread worker can clear its own decrypted payload race-free — no join needed
+
+**Area:** `controller/search_coordinator.py`, `controller/ocr_coordinator.py` (Codex F6 / B3)
+**Symptom:** `cancel_ocr` / `_cancel_search` are non-blocking: they bump a generation token, set the worker's cancel flag, and return. The worker's `_doc_bytes` — a decrypted snapshot — then stayed reachable not just until the loop's next checkpoint but until Qt processed the pending `deleteLater()`, i.e. an unbounded time after the tab closed.
+**Cause:** The payload was treated as immutable worker state, and the obvious fix (have the GUI thread null it) looks racy, so the item sat deferred as "revisit only if a worker can be made to clear its payload race-free."
+**Fix:** The worker clears it **itself, on its own thread**. `request_cancel()` only flips a bool; the worker thread is the sole writer of `_doc_bytes`, so no synchronisation is required and the non-blocking cancel is untouched. `_SearchWorker` can drop the reference immediately after `fitz.open("pdf", data)` — PyMuPDF retains its own reference to the buffer, so the `Document` remains fully usable (verify with `sys.getrefcount`, not a weakref: `bytes` is variable-size and cannot be weak-referenced even via a subclass). `_OcrWorker` needs the bytes each iteration, so it clears in `run()`'s `finally`.
+
+Two testing gotchas found here: pytest's assertion rewriting keeps its own temporaries alive in the frame, so `sys.getrefcount` deltas are unreliable *inside a test* — assert on `vars(worker)` instead; and `_SearchWorker.run()` had a latent `finally: doc.close()` that raised `AttributeError` whenever `doc_bytes` was empty and `doc` was therefore `None`.
+**File:** `controller/search_coordinator.py`, `controller/ocr_coordinator.py`; tests `test_scripts/test_worker_doc_bytes_lifetime.py`

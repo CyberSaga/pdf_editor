@@ -90,6 +90,13 @@ class _OcrWorker(QObject):
             logger.exception("OCR worker failed")
             self.failed.emit(self._gen, exc)
         finally:
+            # B3 (Codex F6): bound the lifetime of the decrypted snapshot to run() rather
+            # than to this QObject's lifetime, which extends past the loop until Qt
+            # processes the pending deleteLater(). Unlike the search worker we cannot drop
+            # it earlier — ocr_pages() needs the bytes on every iteration — but a cancelled
+            # worker releases here, at its next checkpoint, without the UI thread blocking
+            # on a join. Written on the worker thread; request_cancel() only flips a bool.
+            self._doc_bytes = None
             self.finished.emit()
 
 

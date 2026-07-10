@@ -2,7 +2,7 @@
 
 ## Deferred from prior campaigns
 
-### R5-01 / Codex F6 (from post-campaign repair, 2026-06-21)
+### R5-01 / Codex F6 (from post-campaign repair, 2026-06-21) — Resolved in Milestone 2
 
 - [x] **R5-01 fileless print path — Resolved (PR-17, 2026-07-10).** Both plaintext temps are gone.
   `capture_print_snapshot_bytes` always returns `PDF_ENCRYPT_NONE` bytes, so *both* temps held a fully
@@ -23,11 +23,22 @@
   - Design: `plans/r5-01-fileless-print.md` §11. Tests: `test_scripts/test_print_fileless.py` (+ rewritten
     `test_print_encrypted_input.py`, `test_print_dispatcher_real_sink.py`,
     `test_security_dispatcher_temp_cleanup.py`).
-- [ ] **Codex F6 — in-flight worker decrypted-bytes lifetime.** `cancel_ocr`/`_cancel_search` are non-blocking by
-  design, so a search/OCR worker can hold its snapshot `_doc_bytes` briefly after a tab closes. A blocking join
-  would regress responsiveness (intentional non-blocking cancel); the live doc is decrypted in RAM regardless, and
-  the controller's long-lived cache is already cleared on close (R4-03). Revisit only if a worker can be made to
-  clear its payload race-free on cancel.
+- [x] **Codex F6 — in-flight worker decrypted-bytes lifetime — Resolved (PR-18, 2026-07-10), Exit A.**
+  The old note said "revisit only if a worker can be made to clear its payload race-free on cancel." It can,
+  and the mechanism needs no synchronisation at all: **the worker clears its own `_doc_bytes` on its own
+  thread.** `request_cancel()` (GUI thread) only flips a bool; nothing but the worker thread ever writes the
+  payload, so there is no window to lose and the non-blocking cancel is preserved.
+  - `_SearchWorker` drops the reference immediately after `fitz.open("pdf", ...)` — PyMuPDF holds its own
+    reference to the buffer, so the `Document` stays usable (verified: refcount 3 after open).
+  - `_OcrWorker` needs the bytes on every iteration (`ocr_pages(doc=...)`), so it clears in `run()`'s
+    `finally`. That still bounds the lifetime to `run()` instead of to the QObject's lifetime, which
+    extends past the loop until Qt processes the pending `deleteLater()` — the actual F6 exposure.
+  - Fixed en route: `_SearchWorker.run()` called `doc.close()` unconditionally in a `finally`, crashing with
+    `AttributeError` on the empty-`doc_bytes` fallback path.
+  - **Residual, accepted:** between `request_cancel()` and the worker's next checkpoint, the in-flight page
+    still holds the bytes, and the live document is decrypted in RAM regardless. Removing that needs a
+    blocking join, which would regress the intentional non-blocking cancel.
+  - Tests: `test_scripts/test_worker_doc_bytes_lifetime.py`.
 
 ### Audit remediation deferrals (2026-06-10)
 

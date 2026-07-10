@@ -52,8 +52,16 @@ class _SearchWorker(QObject):
 
     @Slot()
     def run(self) -> None:
+        doc = None
         try:
-            doc = fitz.open("pdf", self._doc_bytes) if self._doc_bytes else None
+            if self._doc_bytes:
+                doc = fitz.open("pdf", self._doc_bytes)
+                # B3 (Codex F6): PyMuPDF keeps its own reference to the buffer, so the
+                # Document stays usable once we let go. Drop the decrypted snapshot now
+                # rather than holding it for the whole page loop. Written on the worker
+                # thread, which is the only thread that ever touches it — cancellation
+                # only flips a bool, so there is no race.
+                self._doc_bytes = None
             try:
                 search_fn = getattr(self._tool, "search_page_in_doc", None)
                 for page_num in range(1, self._total_pages + 1):
@@ -66,11 +74,14 @@ class _SearchWorker(QObject):
                     if hits:
                         self.hits_found.emit(self._gen, page_num, list(hits))
             finally:
-                doc.close()
+                if doc is not None:
+                    doc.close()
         except Exception as exc:
             logger.exception("Search worker failed")
             self.failed.emit(self._gen, exc)
         finally:
+            # Belt and braces: also covers the no-doc fallback path and any early raise.
+            self._doc_bytes = None
             self.finished.emit(self._gen)
 
 
