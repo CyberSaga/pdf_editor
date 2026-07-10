@@ -32,10 +32,25 @@ hook) and re-cascading the hash chain (`check_completion_proof_hook.py` → `gat
 Layer 1's goal-mode guard short-circuits), Steps 0/0a/0b/0c of `completion_gate.py` now pass, and
 `test_scripts/test_completion_proof_hook.py` is green (18 passed, 1 skipped).
 
-- [ ] **Open follow-up:** `gate_anchor.py`'s own maintenance doc says "document the change in
-  `plans/2026-05-05-no-jump-editor-geometry-gate.md`" — that file has never existed in git (a pre-existing gap
-  predating this campaign, not introduced by it). Documented here instead. If a future no-jump-style campaign
-  revives that plan file, reconcile this history into it.
+- [x] **Open follow-up — Resolved (PR-14, 2026-07-10) as documented-here-instead.** `gate_anchor.py`'s
+  maintenance doc (step 5, `scripts/gate_anchor.py:26`) says "document the change in
+  `plans/2026-05-05-no-jump-editor-geometry-gate.md`" — that file has never existed in git (a pre-existing
+  gap predating this campaign, not introduced by it).
+
+  **This TODOS section is that file's stand-in.** Hash-cascade changes are recorded here.
+
+  Two fixes were considered and rejected:
+  - *Edit `gate_anchor.py:26` to point at this file.* Rejected: any content change to `gate_anchor.py`
+    changes its SHA-256, which is pinned in `completion_gate.py._PINNED_HASHES`, forcing a hash re-cascade
+    for a comment edit. Cost/benefit is upside-down.
+  - *Create the missing `plans/2026-05-05-no-jump-editor-geometry-gate.md`.* **Rejected — actively unsafe.**
+    `check_completion_proof_hook.py:120-122` deactivates the Stop-hook gate only while `GOAL_FILE` neither
+    exists on disk nor is tracked in git. Committing that plan file would flip Layer 1's goal-mode guard on
+    and start enforcing Layer 2 (proof/marker/signoff artifacts in `test_artifacts/`) on every Stop event.
+    The dangling pointer is inert; the file it points at is a live tripwire.
+
+  If a future no-jump-style campaign revives that plan file, it must (a) reconcile this history into it and
+  (b) expect the Stop gate to arm itself the moment the file is committed.
 
 ## Resolved -- Layer boundary violations (S4 import-linter, added 2026-07-02)
 
