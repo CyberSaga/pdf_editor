@@ -1673,6 +1673,10 @@ class PDFController:
                 for ref in request.objects
             ]
             if not self.model.delete_objects_atomic(deletes):
+                # A partial batch that rolled back reopened model.doc from the snapshot, so
+                # any cached page/render state now points at a closed document. (A pure
+                # no-op leaves the handle alone, but invalidating twice is harmless.)
+                self._invalidate_active_render_state()
                 return
             self._invalidate_active_render_state()
             after = self.model._capture_doc_snapshot()
@@ -1691,6 +1695,7 @@ class PDFController:
             return
         before = self.model._capture_doc_snapshot()
         if not self.model.delete_object(request):
+            self._invalidate_active_render_state()
             return
         self._invalidate_active_render_state()
         after = self.model._capture_doc_snapshot()

@@ -261,7 +261,202 @@ rect, not just the targeted image."*
 
 ---
 
-## 10. Rollback
+## 10. Adversarial review findings (post-implementation, 2026-07-10)
+
+An adversarial review of the landed diff raised three MAJOR findings against
+`_remove_native_image_invocation` — the helper this PR newly routes app-image deletes
+through. Each was reproduced (or refuted) by measurement rather than accepted on argument.
+
+### 10.1 CONFIRMED — `/fzImg1` substring-matches `/fzImg10`
+
+The retention check was `b"/fzImg1" in doc.xref_stream(x)`. PDF name tokens are delimited,
+so with 11+ images on a page the token `/fzImg10` in a neighbour's stream makes `fzImg1`
+look "still referenced" and its resource entry is never pruned.
+
+**Reproduced:** 12 images, delete `fzImg1` → `page.get_images()` stays at 12.
+
+**Reviewer's stated consequence was wrong.** It claimed the image bytes "survive the
+`garbage=4` secure save … NO garbage level reclaims it". Measured: after `save_as` the
+saved file lists 11 images and `fzImg1` is gone — mupdf's cleaning pass drops resource
+entries no content stream references. **R6-01 held.** The real defect is a live document
+that advertises an image it no longer draws, and an xref that lingers until save.
+
+**Fixed** with `_stream_references_xobject`: match `/name` only when followed by a PDF
+delimiter (§7.2.2 Tables 1-2) or end-of-stream.
+
+### 10.2 CONFIRMED — `xref_set_key` fabricates a shadowing `/Resources`
+
+`/Resources` is inheritable through `/Parent`. On a page that has none of its own,
+PyMuPDF's `insert_image` registers the XObject in the *ancestor* dict, but the removal
+code always pruned at `page.xref`. `xref_set_key` creates every missing link in the path,
+so it wrote a direct `/Resources <</XObject<</fzImg0 null>>>>` onto the page — shadowing
+the inherited dict.
+
+**Reproduced** with a hand-built PDF (PyMuPDF always writes a page-level `/Resources`, so
+the fixture has to be authored by hand): after delete, the page gained
+`dict: <</XObject<</fzImg0 null>>>>` where `xref_get_key` had previously returned `null`,
+and the real entry in the ancestor was never removed.
+
+**Reviewer's predicted consequence — "the page renders broken" — did not occur:** the
+inherited `/Font` no longer resolves through the shadow, but mupdf substitutes a fallback
+font, so text still rendered and `get_text()` was unchanged. The corruption is real
+(a spurious dict, an unpruned entry) but silent rather than catastrophic.
+
+**Fixed** with `_resolve_xobject_resource_owner`: use the page's own `/Resources` when it
+has one containing the name, else walk `/Parent` to the dict that actually holds it, else
+prune nothing (never fabricate). When the owner is an inherited dict, sibling pages share
+it, so the still-referenced scan widens to every page's content streams.
+
+### 10.3 NOT ACTED ON — inline images (`BI … ID … EI`) in the tokenizer
+
+`model/pdf_content_ops.py`'s tokenizer has no `BI/ID/EI` mode, so binary inline-image data
+can lex as operators and a whole-stream re-serialize could corrupt it. Assessed and
+deferred, with reasons:
+
+- It is **pre-existing and not introduced here.** `_rewrite_native_image_matrix`
+  (move/rotate, landed in `c099b28`) and the `native_image` delete branch already
+  re-serialize the same streams through the same tokenizer.
+- The app-image path cannot reach it directly: `insert_image` appends a *fresh* content
+  stream per insert (measured: page `/Contents` grew `[6] → [6,10,12]`), which contains
+  only `q cm /name Do Q`.
+- The reviewer's reachability argument routes through `_redact_and_restore_textbox_region`
+  consolidating page contents first, and even concedes it is unverified whether mupdf's
+  redaction filter re-emits inline images as `BI…EI` at all.
+
+Recorded in TODOS as a separate follow-up rather than smuggled into this PR. Fixing it
+means teaching the tokenizer to treat `ID…EI` as one opaque token — a change to shared
+content-stream machinery that deserves its own red-light suite covering move, rotate and
+both delete branches.
+
+### 10.4 Review process note
+
+Two of the four planned reviewers (a third lens and the codex peer pass) died on the
+session's agent limit — the failure mode CLAUDE.md §11 warns about. The two findings above
+came from the two lenses that completed. The codex adversarial review the milestone plan
+mandates for B1 is therefore **still outstanding**.
+
+---
+
+### 10.5 Second-lens findings (recovered from the workflow journal, 2026-07-10)
+
+The contract-regression lens's output was **truncated in the notification and never read** when the
+findings above were actioned. Recovered from `journal.jsonl`. Verdict: *sound-with-nits*. All
+source-derived (that agent had no shell); **none executed**. Nothing below is fixed yet.
+
+**MAJOR — unresolvable markers are now permanently undeletable "zombies".** §3's fail-safe returns
+`False` *before* the marker deletion at `:901`, so a marker whose invocation cannot be resolved survives
+forever. It stays hit-detectable (hit-testing is annot-payload based and never checks for an invocation),
+still reports `supports_delete=True`, and no verb touches it — move and rotate already failed on this
+population, and **delete was the last one that worked**. The user gets selection handles on an object
+that silently refuses to die. Populations: (a) an external editor stripped the XObject but left our
+hidden marker annot; (b) xref drift + two same-digest candidates within 2.0 pt; (c) payload `xref`
+missing or `0`.
+
+This is the cost of §3 that §3 did not price. Note (a) and (b) want *opposite* behavior: in (a) there
+are no pixels left, so deleting the marker is exactly right; in (b) the pixels exist and deleting the
+marker alone would orphan them. `_find_app_image_invocation` returns `None` for both, so a correct fix
+must distinguish "no candidate at all" (clean up the marker) from "more than one candidate" (fail safe).
+
+**MINOR — the `if not xref: return False` guard is strictly stronger than the resolver it gates.**
+`_find_app_image_invocation` already handles `recorded_xref == 0` (empty `xref_candidates` → geometric
+fallback, `:239-243`), and `_resolve_marker_image_invocation` would backfill `xref` + `image_digest`
+(`:273-278`). The guard forecloses deletes that would otherwise succeed. Whether any shipped document
+carries a version-1 image marker without `xref` is **unverified** (`_APP_OBJECT_VERSION` was never
+bumped, so a pre-`c099b28` payload would pass the version gate).
+
+**MINOR — `int(payload.get("xref", 0) or 0)` raises on a corrupt payload.** `"xref": "abc"` → `ValueError`,
+which `delete_objects_atomic` re-raises after rollback (`:965-967`) and `PDFController.delete_object`
+does not catch (`controller/pdf_controller.py:1692-1694`) — an unhandled exception in a Qt slot.
+
+**MINOR — batch-delete amplification.** One unresolvable app-image in a multi-select rolls back the whole
+batch (`:960-964`). The controller returns before `SnapshotCommand`/`show_page`, and the view has already
+cleared the selection handles, so the user sees the handles vanish and *nothing else happen*: no toast,
+no undo entry, four other objects silently not deleted. Atomicity is the documented design; the silent
+failure is the contract change. `_show_edit_result_feedback` (`controller:1764-1771`) exists for text
+edits and has no analogue here.
+
+**MINOR — a failed delete swaps the live `fitz.Document` without render invalidation.** The rollback runs
+`_restore_doc_from_snapshot`, which closes and reopens the document *even when zero mutations occurred*
+(`pdf_model.py:2624-2635`), while the controller's `False` path skips `_invalidate_active_render_state()`.
+Any cached `fitz.Page` now points at a closed document — the exact class in `PITFALLS.md:1329-1334`.
+Pre-B1 this path was practically unreachable for app-images. Secondary: the restored doc has an empty
+`doc.name`, so the next save silently degrades from incremental to full.
+
+**NIT — marker-deletion failure still returns `True`.** `_delete_app_object_annots` swallows exceptions and
+its count is ignored (`:899-902`), so a failed annot delete after a successful excision reports success.
+
+**Explicitly verified as non-issues by that lens** (worth recording, since §4 argued one of them):
+dropping `_register_mutation` is correct and the double-count reasoning holds; undo/redo is
+snapshot-based and mechanism-agnostic; R6-01's `secure_save_required` latch is honoured at every
+persistence boundary; the caller sweep found only `PDFController.delete_object` and
+`view/object_selection.py`, both of which tolerate `False` without raising.
+
+### 10.6 Fixes applied for §10.5 (2026-07-10)
+
+Red-light first; all three new tests failed before the change and the `ValueError` reproduced verbatim
+(`invalid literal for int() with base 10: 'abc'`). `test_image_objects_model.py` +
+`test_pdf_object_ops_transactional.py`: **28 passed**.
+
+**Zombie markers — FIXED.** §3's fail-safe collapsed two failures that want opposite handling. The delete
+branch now asks `_app_image_invocation_candidates()` (a deliberate *superset* of what the resolver
+accepts) when resolution returns `None`:
+
+- **≥1 candidate → ambiguous.** The pixels exist; we cannot say which placement is ours. Return `False`,
+  exactly as before. Deleting the marker alone would orphan visible content.
+- **0 candidates → orphaned.** Nothing renders this image any more (an external editor stripped the
+  XObject and left our hidden marker). Delete the marker and `_register_mutation`; return `True`.
+
+This preserves the fail-safe where it was actually load-bearing and removes the undeletable object.
+Pinned by `test_delete_orphaned_app_image_marker_cleans_up_the_marker`.
+
+**`ValueError` on a corrupt payload — FIXED at the chokepoint, not per-site.** All four
+`int(payload.get("xref", 0) or 0)` sites now route through `_marker_xref(payload)`, which returns `0` on
+`TypeError`/`ValueError`. `0` is the correct degraded value: `_find_app_image_invocation` reads it as "no
+recorded xref" and falls back to geometry + digest. Move and rotate become crash-safe with **no behavior
+change** — their pre-existing `if not xref: return False` guard now sees `0` and takes the no-op it
+already documented, instead of raising through `delete_objects_atomic`'s re-raise into an uncaught Qt
+slot. Pinned by `test_delete_app_image_with_corrupt_xref_payload_does_not_raise`.
+
+**Over-strong `if not xref` guard in delete — FIXED (delete only).** The guard was strictly stronger than
+the resolver it gated, foreclosing deletes that geometry+digest would have resolved. Removed from the
+delete branch. **Deliberately left in place in `move_object` and the rotate branch**: that guard predates
+B1, no reported bug depends on it, and relaxing it is a behavior change to paths this PR does not
+otherwise touch. Delete is therefore now slightly more permissive than move/rotate on legacy no-xref
+markers, which is the right asymmetry — delete's job on an unresolvable object is cleanup. Pinned by
+`test_delete_app_image_without_xref_in_payload_still_resolves`.
+
+**Marker-deletion failure returning `True` — FIXED.** Both success paths now check
+`_delete_app_object_annots`'s count and return `False` if the marker survived, so the snapshot rollback
+restores the already-rewritten stream rather than leaving a phantom selectable object.
+
+**Stale `fitz.Document` handle on a failed delete — FIXED, at the root cause.** `delete_objects_atomic`
+unconditionally called `_restore_delete_transaction` on any `False`, and that closes and reopens
+`model.doc` from the snapshot. Reproduced: after an ambiguous (zero-mutation) delete, `model.doc` was a
+nameless `Document('pdf', <memory>)` and the previous handle was **closed** — any cached `fitz.Page`
+would raise, the class documented at `PITFALLS.md:1329-1334`, and the empty `doc.name` silently degrades
+the next save from incremental to full.
+
+The rollback is now conditional on the document actually having been touched. Every mutating path bumps
+`model.edit_count`, so comparing it against the transaction's opening value witnesses a mutation by the
+failing request *or* by any earlier one in the batch. A pure no-op leaves the live handle untouched.
+Belt-and-braces: `PDFController.delete_object` now also calls `_invalidate_active_render_state()` on the
+`False` path, because a *genuine* partial-batch rollback still does reopen the document.
+
+Pinned by `test_failed_delete_without_mutation_keeps_the_live_document_handle` (asserts
+`model.doc is doc_before` and `doc.name` survives) and — guarding the optimisation against over-reach —
+`test_failed_batch_delete_after_a_successful_one_still_rolls_back`, which drives a batch whose first
+delete mutates the stream and whose second fails, and asserts the render digest and invocation count are
+restored.
+
+**Still open from §10.5** (recorded, not fixed):
+- *Batch-delete amplification (UX).* One unresolvable app-image still rolls back a whole multi-select. The
+  rollback itself is correct and is the documented atomicity design; what is missing is user feedback on
+  the `False` path (`controller/pdf_controller.py`, both the batch and single branches), for which
+  `_show_edit_result_feedback` is the existing precedent. The view has already cleared the selection
+  handles by then, so today the user sees the handles vanish and nothing else happen. This is a view/UX
+  change, not a correctness one, and it wants a deliberate message rather than a silent no-op.
+
+## 11. Rollback
 
 Single-file production diff; `git revert` restores the redaction path exactly. The bug
 then returns to its known, documented state (collateral destruction on overlap-delete)

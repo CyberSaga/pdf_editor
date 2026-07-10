@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 157 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 161 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -162,3 +162,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1410 | Orphaned print-helper processes poison later full-suite runs | `test_scripts/` print stack / local dev machine state |
 | 1419 | Subprocess text I/O silently depends on the caller's locale, not the child's | `test_scripts/` — any test that `subprocess.run(...)` a script/tool and reads its stdout/stderr |
 | 1431 | CI's `test-functional` job never installed `build`/`setuptools`/`wheel` | `.github/workflows/ci.yml` (`test-functional` job) / `test_scripts/test_security_packaging.py` |
+| 1441 | `apply_redactions` is geometric: it destroys text and line art, not just the targeted image | `model/pdf_object_ops.py` (object delete/move/rotate), any PyMuPDF redaction call |
+| 1456 | Pruning an XObject resource: `/fzImg1` is a prefix of `/fzImg10`, and `/Resources` is inheritable | `model/pdf_object_ops.py` (`_remove_native_image_invocation`) |
+| 1468 | A "fail safe" that refuses to act can strand the object it was protecting | `model/pdf_object_ops.py` (`_delete_object_impl` image branch), and any resolve-then-act path |
+| 1480 | Rolling back a transaction that changed nothing closes the live `fitz.Document` | `model/pdf_object_ops.py` (`delete_objects_atomic`), `model/pdf_model.py` (`_restore_doc_from_snapshot`) |

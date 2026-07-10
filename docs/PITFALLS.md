@@ -1435,3 +1435,52 @@
 **Cause:** `build`/`setuptools`/`wheel` are declared in `pyproject.toml`'s `dev` optional-dependency extra, which only gets installed locally via `pip install -e ".[dev]"`. The `test-functional` CI step installs `requirements.txt` + `optional-requirements.txt` + `pytest packaging` — never the `dev` extra — so `python -m build` (which this test invokes as a subprocess) doesn't exist in that job's environment at all.
 **Fix:** Install `build`/`setuptools`/`wheel` explicitly in the `test-functional` step, version-pinned inline to match the maintainer's `.venv` (`build==1.5.0`, `setuptools==82.0.1`, `wheel==0.47.0`) rather than adding them to `constraints-ci.txt` (that file only binds packages installed by other steps' `-c` flags; adding entries there wouldn't install anything).
 **File:** `.github/workflows/ci.yml`
+
+---
+
+## `apply_redactions` is geometric: it destroys text and line art, not just the targeted image
+
+**Area:** `model/pdf_object_ops.py` (object delete/move/rotate), any PyMuPDF redaction call
+**Symptom:** Deleting one app-inserted image silently destroyed *other* content that merely overlapped its rectangle. Measured on PyMuPDF 1.27.1 with a 320×240 page, image at `(40,40,110,110)`:
+  - an overlapping neighbour image at `(10,10,80,80)` vanished entirely (2 invocations → 0);
+  - text drawn under the image, `"UNDER THE IMAGE"`, came back from `page.get_text()` as `"AGE"` — *partial glyph removal*, so the corruption is not even visible as a whole missing word;
+  - a `draw_line` crossing the rect disappeared (2 drawings → 1).
+**Cause:** `page.add_redact_annot(rect)` + `page.apply_redactions(...)` is defined on **geometry**, not on object identity. It removes every image *touching* the rect (`images=PDF_REDACT_IMAGE_REMOVE`), every glyph whose box intersects it, and — via the `graphics` parameter's default — line art the rect touches. Passing `images=PDF_REDACT_IMAGE_REMOVE` to delete "the image at this rect" reads like an identity operation but is not one. The object-identity layer (`NativeImageInvocation`) exists precisely because a rectangle does not identify an object.
+**Fix:** Never use redaction to delete an identified object. Resolve the object to its content-stream invocation (`_resolve_marker_image_invocation`, digest-verified and xref-drift tolerant) and excise just that `q … cm … /Name Do … Q` token range (`_remove_native_image_invocation`), which also prunes `Resources/XObject/<name>` only when no remaining content stream still names it. If the invocation cannot be resolved uniquely, **fail safe** (return `False`, a no-op) rather than falling back to redaction — the fallback is the data-loss vector. Redaction remains correct only where the intent really is geometric (`_redact_and_restore_textbox_region`, which re-inserts the annots it must preserve).
+
+Corollary for shared xrefs: two images with identical bytes dedupe to **one** image xref under **two** XObject names (`fzImg0`, `fzImg1`) in two content streams. Removing one placement must prune only its own name; the xref stays alive while the other name references it, and is reclaimed by the deferred `garbage=4` save that `secure_save_required` forces.
+**File:** `model/pdf_object_ops.py` (`_delete_object_impl` image branch); design + measurements in `plans/b1-delete-app-image-invocation-removal.md`; regressions in `test_scripts/test_image_objects_model.py`, `test_scripts/test_pdf_object_ops_transactional.py`
+
+---
+
+## Pruning an XObject resource: `/fzImg1` is a prefix of `/fzImg10`, and `/Resources` is inheritable
+
+**Area:** `model/pdf_object_ops.py` (`_remove_native_image_invocation`)
+**Symptom:** Two independent failures when removing an image's content-stream invocation, both in the "is this XObject name still used?" retention check. Found by adversarial review of the B1 change, then reproduced:
+  1. **Prefix collision.** With 11+ images on a page PyMuPDF names them `fzImg0 … fzImg10`. Deleting `fzImg1` left its `/Resources/XObject` entry behind — `page.get_images()` stayed at 12 — because the check was a raw substring test, `b"/fzImg1" in stream`, which the token `/fzImg10` in a *neighbour's* stream satisfies. (`garbage=4` at save still reclaims it, so R6-01 held; the live document was simply wrong.)
+  2. **Inherited `/Resources`.** On a page with no `/Resources` of its own (spec-legal, PDF 1.7 §7.7.3.4 Table 30 — the key is inheritable through `/Parent`), `doc.xref_set_key(page.xref, "Resources/XObject/fzImg0", "null")` **fabricated** a direct `/Resources <</XObject<</fzImg0 null>>>>` on the page. `xref_set_key` creates every missing link in the path. That dict then *shadows* the inherited one, so the page's `/Font` and other XObjects no longer resolve through it. Measured: the page gained `<</XObject<</fzImg0 null>>>>` where it previously had nothing, and the real entry — which `insert_image` had registered in the *ancestor* dict — was never removed.
+**Cause:** (1) PDF name tokens are delimited (§7.2.2, Tables 1-2); a substring test ignores the terminator. (2) `insert_image` uses `pdf_dict_get_inheritable`, so it registers the XObject wherever `/Resources` actually resolves — possibly an ancestor `/Pages` node — while the removal code assumed `page.xref` always owns it.
+**Fix:** Match the name as a whole token (`/name` followed by a delimiter or end-of-stream) via `_stream_references_xobject`. Resolve the owning dict with `_resolve_xobject_resource_owner`: the page's own `/Resources` if it has one containing the name, else walk `/Parent` until the key is found; give up (prune nothing) rather than write a shadowing dict. When the owner is an inherited dict, sibling pages share it, so the still-referenced scan must cover **every** page's content streams, not just this page's.
+**File:** `model/pdf_object_ops.py`; regressions `test_delete_app_image_prunes_prefix_colliding_resource_name`, `test_delete_app_image_does_not_shadow_inherited_resources` in `test_scripts/test_image_objects_model.py`
+
+---
+
+## A "fail safe" that refuses to act can strand the object it was protecting
+
+**Area:** `model/pdf_object_ops.py` (`_delete_object_impl` image branch), and any resolve-then-act path
+**Symptom:** Converting delete from geometric redaction to identity-based invocation removal introduced a fail-safe: if the marker cannot be resolved to a content-stream invocation, return `False` and change nothing. That is correct when the resolution is *ambiguous*. It is wrong when there is **no candidate at all** — the image was already removed by an external editor and only our hidden marker annot survived. The marker then stays hit-detectable (hit-testing reads the annot payload and never checks for an invocation), still reports `supports_delete=True`, and no verb touches it: move and rotate already failed on that population, so delete was the last one that worked. The user gets selection handles on an object that silently refuses to die.
+**Cause:** `_find_app_image_invocation` returns `None` for both "zero candidates" and "more than one candidate", so a single `is None` check collapses two failures that want opposite handling.
+**Fix:** Distinguish them. `_app_image_invocation_candidates()` computes a deliberate *superset* of what the resolver will accept; `≥1` → ambiguous, fail safe (deleting the marker alone would orphan visible pixels); `0` → orphaned, delete the marker and register the mutation. The general lesson: before shipping a fail-safe, ask what the object looks like *after* the safe path runs, and whether any verb can still reach it.
+
+Two adjacent fixes from the same review: `int(payload.get("xref", 0) or 0)` raised `ValueError` on a corrupt or third-party payload (`"xref": "abc"`) straight through `delete_objects_atomic`'s re-raise into an uncaught Qt slot — all four parse sites now go through `_marker_xref()`, which degrades to `0`, exactly the value the geometric+digest fallback wants. And the `if not xref: return False` guard was strictly *stronger* than the resolver it gated (`_find_app_image_invocation` handles `xref == 0` fine and `_resolve_marker_image_invocation` backfills the payload), so it foreclosed deletes that would have succeeded.
+**File:** `model/pdf_object_ops.py`; tests `test_delete_orphaned_app_image_marker_cleans_up_the_marker`, `test_delete_app_image_with_corrupt_xref_payload_does_not_raise`, `test_delete_app_image_without_xref_in_payload_still_resolves`
+
+---
+
+## Rolling back a transaction that changed nothing closes the live `fitz.Document`
+
+**Area:** `model/pdf_object_ops.py` (`delete_objects_atomic`), `model/pdf_model.py` (`_restore_doc_from_snapshot`)
+**Symptom:** A delete that failed *before touching the document* (resolution returned `None`) still ran the snapshot rollback. `_restore_doc_from_snapshot` closes `model.doc` and reopens it from bytes, so a pure no-op swapped the live handle: `model.doc` became a nameless `Document('pdf', <memory>)` and the previous handle was closed. Any cached `fitz.Page` now raises (the stale-handle class documented above), and the reopened document's empty `doc.name` silently degrades the next save from incremental to full.
+**Cause:** `delete_objects_atomic` treated "returned `False`" as "may have mutated". Before the B1 conversion this was practically unreachable for app-images — a marker just found by hit-detection was always found again inside delete — so the cost never showed up.
+**Fix:** Make the rollback conditional on an actual mutation. Every mutating path bumps `model.edit_count`, so comparing it against the transaction's opening value witnesses a mutation by the failing request *or* by any earlier one in the batch. Guard the optimisation with a test that drives a batch whose first delete mutates and whose second fails, and asserts the render digest is restored — otherwise a "skip the rollback" optimisation will eventually skip one that was needed. Controllers should still invalidate render state on the failure path, because a *genuine* partial rollback does reopen the document.
+**File:** `model/pdf_object_ops.py`, `controller/pdf_controller.py`; tests `test_failed_delete_without_mutation_keeps_the_live_document_handle`, `test_failed_batch_delete_after_a_successful_one_still_rolls_back`

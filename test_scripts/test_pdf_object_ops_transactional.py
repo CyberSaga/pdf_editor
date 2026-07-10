@@ -96,24 +96,57 @@ def test_delete_rolls_back_document_and_bookkeeping_when_index_refresh_fails(
         model.close()
 
 
-def test_app_image_redaction_failure_propagates_and_rolls_back(
+def _forbid_redactions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B1: the app-image delete path must never call apply_redactions.
+
+    apply_redactions is geometric — it destroys every image, glyph and stroke the
+    rect touches. Deleting an app-image now strips only its own content-stream
+    invocation. See plans/b1-delete-app-image-invocation-removal.md.
+    """
+
+    def _boom(_page, *_args, **_kwargs):
+        raise AssertionError("app-image delete must not call apply_redactions (B1)")
+
+    monkeypatch.setattr(fitz.Page, "apply_redactions", _boom)
+
+
+def test_app_image_delete_failure_propagates_and_rolls_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A raising document mutation must propagate and leave the doc byte-identical.
+
+    Injects into the invocation-removal call (the mutation the delete now performs)
+    rather than the retired apply_redactions call.
+    """
     model = _open_model(tmp_path)
     try:
         oid = model.add_image_object(1, fitz.Rect(40, 60, 140, 140), _png_bytes())
         before = _render_digest(model)
+        _forbid_redactions(monkeypatch)
 
-        def _fail_redaction(_page, *args, **kwargs):
-            raise RuntimeError("injected redaction failure")
+        def _fail_removal(*_args, **_kwargs):
+            raise RuntimeError("injected invocation-removal failure")
 
-        monkeypatch.setattr(fitz.Page, "apply_redactions", _fail_redaction)
-        with pytest.raises(RuntimeError, match="injected redaction failure"):
+        monkeypatch.setattr(pdf_object_ops, "_remove_native_image_invocation", _fail_removal)
+        with pytest.raises(RuntimeError, match="injected invocation-removal failure"):
             model.delete_object(DeleteObjectRequest(oid, "image", 1))
 
         assert _render_digest(model) == before
         assert model.get_object_info_at_point(1, fitz.Point(60, 80)) is not None
         assert model._active_session().secure_save_required is False
+    finally:
+        model.close()
+
+
+def test_app_image_delete_never_redacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Direct pin of the B1 contract: a successful delete fires no redaction."""
+    model = _open_model(tmp_path)
+    try:
+        oid = model.add_image_object(1, fitz.Rect(40, 60, 140, 140), _png_bytes())
+        _forbid_redactions(monkeypatch)
+
+        assert model.delete_object(DeleteObjectRequest(oid, "image", 1)) is True
+        assert model.get_object_info_at_point(1, fitz.Point(60, 80)) is None
     finally:
         model.close()
 
@@ -142,17 +175,18 @@ def test_batch_delete_is_all_or_nothing(tmp_path: Path, monkeypatch: pytest.Monk
         first = model.add_image_object(1, fitz.Rect(20, 20, 100, 100), _png_bytes())
         second = model.add_image_object(1, fitz.Rect(180, 20, 260, 100), _png_bytes((0, 0, 255)))
         before = _render_digest(model)
-        original = fitz.Page.apply_redactions
+        _forbid_redactions(monkeypatch)
+        original = pdf_object_ops._remove_native_image_invocation
         calls = 0
 
-        def _fail_second(page, *args, **kwargs):
+        def _fail_second(*args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 2:
                 raise RuntimeError("second delete failed")
-            return original(page, *args, **kwargs)
+            return original(*args, **kwargs)
 
-        monkeypatch.setattr(fitz.Page, "apply_redactions", _fail_second)
+        monkeypatch.setattr(pdf_object_ops, "_remove_native_image_invocation", _fail_second)
         with pytest.raises(RuntimeError, match="second delete failed"):
             pdf_object_ops.delete_objects_atomic(
                 model,
@@ -165,6 +199,80 @@ def test_batch_delete_is_all_or_nothing(tmp_path: Path, monkeypatch: pytest.Monk
         assert _render_digest(model) == before
         assert _image_marker(model, first)
         assert _image_marker(model, second)
+        assert model._active_session().secure_save_required is False
+    finally:
+        model.close()
+
+
+def test_failed_delete_without_mutation_keeps_the_live_document_handle(tmp_path: Path) -> None:
+    """A delete that mutated nothing must not close and reopen the document.
+
+    `_restore_delete_transaction` -> `_restore_doc_from_snapshot` closes `model.doc` and
+    reopens it from bytes. Running that on a pure no-op (resolution failed before any stream
+    was touched) swaps the live handle for no reason: any cached `fitz.Page` is now attached
+    to a closed document (docs/PITFALLS.md stale-handle class), and the restored doc has an
+    empty `doc.name`, which silently degrades the next save from incremental to full.
+    """
+    model = _open_model(tmp_path)
+    try:
+        png = _png_bytes()
+        rect = fitz.Rect(40, 60, 140, 140)
+        oid1 = model.add_image_object(1, rect, png)
+        oid2 = model.add_image_object(1, rect, png)
+        assert oid1 != oid2
+
+        # Force the ambiguous-resolution no-op: drift oid2's xref so the geometric+digest
+        # fallback sees two equally-good same-digest twins at the same rect.
+        _rewrite_marker(model, oid2, lambda payload: payload.__setitem__("xref", 999999))
+
+        doc_before = model.doc
+        name_before = model.doc.name
+        render_before = _render_digest(model)
+
+        assert model.delete_object(DeleteObjectRequest(oid2, "image", 1)) is False
+
+        assert model.doc is doc_before, (
+            "a delete that mutated nothing must not swap the live fitz.Document handle"
+        )
+        assert model.doc.name == name_before, "doc.name must survive a no-op delete"
+        assert _render_digest(model) == render_before
+        assert model._active_session().secure_save_required is False
+    finally:
+        model.close()
+
+
+def test_failed_batch_delete_after_a_successful_one_still_rolls_back(tmp_path: Path) -> None:
+    """The skip-restore optimisation must not skip a restore that is actually needed."""
+    model = _open_model(tmp_path)
+    try:
+        first = model.add_image_object(1, fitz.Rect(20, 20, 100, 100), _png_bytes())
+        png = _png_bytes((0, 0, 255))
+        twin_rect = fitz.Rect(180, 20, 260, 100)
+        model.add_image_object(1, twin_rect, png)
+        ambiguous = model.add_image_object(1, twin_rect, png)
+        _rewrite_marker(model, ambiguous, lambda payload: payload.__setitem__("xref", 999999))
+
+        before = _render_digest(model)
+        before_invocations = len(
+            pdf_object_ops.discover_native_image_invocations(model.doc, 1)
+        )
+
+        # `first` deletes cleanly (mutating the stream), then `ambiguous` fails.
+        ok = pdf_object_ops.delete_objects_atomic(
+            model,
+            [
+                DeleteObjectRequest(first, "image", 1),
+                DeleteObjectRequest(ambiguous, "image", 1),
+            ],
+        )
+        assert ok is False
+
+        assert _render_digest(model) == before, "the partial mutation must be rolled back"
+        assert (
+            len(pdf_object_ops.discover_native_image_invocations(model.doc, 1))
+            == before_invocations
+        )
+        assert _image_marker(model, first)
         assert model._active_session().secure_save_required is False
     finally:
         model.close()

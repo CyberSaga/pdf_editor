@@ -136,16 +136,60 @@ Reconciled via file split: `surya-ocr` + `torch` in `ocr-requirements.txt`; core
 ## Future Object Follow-Ups
 
 - Any remaining object-manipulation polish that needs its own child plan.
-- [ ] **Delete app-image: drop `PDF_REDACT_IMAGE_REMOVE`** (`model/pdf_model.py:2204-2213`)
-  - Move/rotate were converted in commit `c099b28` to rewrite placements via
-    `_rewrite_native_image_matrix`, preserving overlapping neighbors.
-  - Delete still calls `page.add_redact_annot(old_rect); page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)`,
-    which can remove overlapping neighbor images and is inconsistent with the new behavior.
-  - Approach: reuse `_find_app_image_invocation` + a native-image "remove invocation" helper
-    (parallel to `_remove_native_image_invocation` at `model/pdf_model.py:2196`) so only the
-    targeted placement is stripped.
-  - Add regression: two overlapping app-images, delete one, assert the other survives
-    (mirror `test_move_overlapping_app_images_both_survive` in `test_scripts/test_image_objects_model.py:180`).
+- [x] **Delete app-image: drop `PDF_REDACT_IMAGE_REMOVE`** — **Resolved (PR-16, 2026-07-10).**
+  The image branch of `_delete_object_impl` (`model/pdf_object_ops.py`, not `pdf_model.py` — the code
+  moved) now resolves the marker to its `NativeImageInvocation` via `_resolve_marker_image_invocation`
+  and strips only that placement via `_remove_native_image_invocation`, matching the move/rotate
+  conversion from `c099b28`. An unresolvable placement fails safe (delete returns `False`, a no-op)
+  rather than falling back to redaction.
+
+  The defect was **larger than this item described**. `apply_redactions` is geometric, so deleting an
+  app-image also destroyed *text* and *line art* under its rect, not only overlapping images (measured:
+  `"UNDER THE IMAGE"` → `"AGE"`). Design + measurements:
+  `plans/b1-delete-app-image-invocation-removal.md`; generalized gotcha in `docs/PITFALLS.md`.
+
+  Regressions added to `test_scripts/test_image_objects_model.py` (all synthesized in-test, so the
+  blocking Windows CI leg runs them): overlapping-neighbour survival, underlying-text preservation,
+  underlying-vector-art preservation, shared-xref neighbour survival, fail-safe on ambiguous
+  resolution, undo restores both, save/reopen persistence. `test_pdf_object_ops_transactional.py`'s
+  two redaction-injection tests were retargeted at the new mutation call and strengthened to assert
+  `apply_redactions` is never invoked on this path.
+
+- [ ] **Content-stream tokenizer has no inline-image (`BI … ID … EI`) mode.**
+  `model/pdf_content_ops.py`'s tokenizer lexes inline-image *binary data* as operators: a `0x25` (`%`) byte
+  starts comment-skipping to end-of-line, `(`/`<` trigger delimited consumption that can run past `EI`, and
+  stray bytes can lex as `q`/`Q`/`Do`, perturbing the q/Q bounds used by `_remove_native_image_invocation`.
+  Any whole-stream re-serialize (`serialize_tokens` joins with `\n`) then mangles the image bytes.
+
+  **Pre-existing, not introduced by PR-16:** `_rewrite_native_image_matrix` (move/rotate, `c099b28`) and the
+  `native_image` delete branch already re-serialize the same streams. The app-image path cannot reach it
+  directly — `insert_image` appends a fresh `q cm /name Do Q` stream per insert. The reachability argument
+  runs through `_redact_and_restore_textbox_region` consolidating page contents first, and it is unverified
+  whether mupdf's redaction filter re-emits inline images as `BI…EI` at all.
+
+  Fix direction: treat `ID … EI` as one opaque byte token, or fail-safe (`return False` before
+  `update_stream`) when a target stream contains `BI`/`ID`. Needs its own red-light suite covering move,
+  rotate, and both delete branches. Raised by adversarial review; see
+  `plans/b1-delete-app-image-invocation-removal.md` §10.3.
+
+- [ ] **B1 codex adversarial review still outstanding.** The milestone plan mandates a codex peer review before
+  merging PR-16. Two of four planned reviewers (one lens + the codex pass) died on the session agent limit
+  (CLAUDE.md §11). The two lenses that completed produced **six** findings; all were reproduced and fixed
+  (`plans/b1-delete-app-image-invocation-removal.md` §10.1-§10.6): resource-name prefix collision,
+  shadowed inherited `/Resources`, undeletable "zombie" markers, `ValueError` on a corrupt payload xref,
+  an over-strong `if not xref` guard, and an unconditional snapshot rollback that closed the live
+  `fitz.Document` on a zero-mutation delete. Run the codex pass before treating B1 as reviewed.
+
+- [ ] **Batch delete gives no feedback when it rolls back.** `delete_objects_atomic` is all-or-nothing by
+  design, so one unresolvable app-image in a multi-select cancels the whole delete. The view has already
+  cleared the selection handles by then, so the user sees the handles vanish and nothing happen — no toast,
+  no undo entry. Add a message on the `False` path of `PDFController.delete_object` (both the batch and
+  single branches); `_show_edit_result_feedback` is the precedent. UX only; correctness is fine.
+
+- [ ] **A no-op delete used to leave `model.doc` renamed.** Fixed for delete (rollback is now conditional on
+  `edit_count` changing), but `_restore_doc_from_snapshot` still yields a doc with an empty `doc.name`,
+  which silently degrades the next save from incremental to full (`model/pdf_model.py:3263-3278`). Any
+  other caller that rolls back a genuine mutation inherits that. Worth a look when touching the save path.
 
 ## Future View Follow-Ups
 
