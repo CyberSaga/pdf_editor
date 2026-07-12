@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import logging
 import platform
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from .base_driver import PrinterDevice, PrinterDriver, PrintJobOptions, PrintJobResult
 from .errors import PrinterUnavailableError, PrintJobSubmissionError
 from .page_selection import resolve_page_indices
-from .pdf_renderer import PDFRenderer
+from .pdf_renderer import PDFRenderer, PdfSource
 from .platforms.linux_driver import LinuxPrinterDriver
 from .platforms.mac_driver import MacPrinterDriver
 from .platforms.win_driver import WindowsPrinterDriver
@@ -85,9 +84,18 @@ class PrintDispatcher:
         page_count = self.renderer.get_page_count(pdf_path)
         return self.resolve_page_indices_for_count(page_count, options)
 
-    def print_pdf_file(self, pdf_path: str, options: PrintJobOptions) -> PrintJobResult:
+    def _preflight(
+        self, pdf_source: PdfSource, options: PrintJobOptions
+    ) -> tuple[PrintJobOptions, list[int]]:
+        """Shared validation for both submission entry points.
+
+        Resolves the page selection against the real page count, ensures a virtual
+        printer's output directory exists, and rejects an offline/stopped printer
+        before anything is handed to the driver.
+        """
         normalized = options.normalized()
-        page_indices = self.resolve_page_indices_for_file(pdf_path, normalized)
+        page_count = self.renderer.get_page_count(pdf_source)
+        page_indices = self.resolve_page_indices_for_count(page_count, normalized)
 
         if normalized.output_pdf_path:
             target_parent = Path(normalized.output_pdf_path).expanduser().resolve().parent
@@ -101,17 +109,21 @@ class PrintDispatcher:
                     f"Printer '{normalized.printer_name}' status is '{status}'."
                 )
 
+        return normalized, page_indices
+
+    def print_pdf_file(self, pdf_path: str, options: PrintJobOptions) -> PrintJobResult:
+        normalized, page_indices = self._preflight(pdf_path, options)
         return self.driver.print_pdf(pdf_path, page_indices, normalized)
 
     def print_pdf_bytes(self, pdf_bytes: bytes, options: PrintJobOptions) -> PrintJobResult:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(pdf_bytes)
-            temp_path = tmp.name
+        """R5-01: hand the bytes straight to the driver — no temp file, ever.
 
-        try:
-            return self.print_pdf_file(temp_path, options)
-        finally:
-            try:
-                Path(temp_path).unlink(missing_ok=True)
-            except Exception as exc:
-                logger.debug("Failed to remove print temp file %s: %s", temp_path, exc)
+        This used to write a plaintext ``NamedTemporaryFile`` and call
+        ``print_pdf_file``. ``capture_print_snapshot_bytes`` always returns
+        ``PDF_ENCRYPT_NONE`` bytes, so that temp was a fully decrypted copy of the
+        document at rest for the duration of the driver call — recoverable afterwards
+        from the filesystem journal. Drivers that genuinely need a path get one from
+        ``PrinterDriver.print_pdf_from_bytes``'s default, scoped to their own call.
+        """
+        normalized, page_indices = self._preflight(pdf_bytes, options)
+        return self.driver.print_pdf_from_bytes(pdf_bytes, page_indices, normalized)

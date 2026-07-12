@@ -117,6 +117,22 @@ class _FakeProcess(QObject):
         self.finished.emit(exit_code, QProcess.ExitStatus.NormalExit)
 
 
+class _FailedStartStreamingProcess(_FakeProcess):
+    """Realistic FailedToStart shape: errorOccurred fires and finished never does."""
+
+    bytesWritten = Signal(int)
+
+    def write(self, data: bytes) -> int:
+        return len(data)
+
+    def closeWriteChannel(self) -> None:
+        pass
+
+    def emit_failed_to_start(self) -> None:
+        self._state = QProcess.ProcessState.NotRunning
+        self.errorOccurred.emit(QProcess.ProcessError.FailedToStart)
+
+
 def test_runner_emits_stalled_after_silence(tmp_path: Path) -> None:
     app = _ensure_app()
     job = PrintHelperJob(
@@ -200,6 +216,37 @@ def test_runner_logs_startup_error_and_uses_sys_executable(tmp_path: Path) -> No
 
     assert _pump_until(app, lambda: bool(failures)), "runner never emitted startup failure"
     assert "failed to start helper" in str(failures[-1])
+
+
+def test_runner_failed_to_start_releases_fileless_payload_and_finishes(tmp_path: Path) -> None:
+    app = _ensure_app()
+    work_dir = tmp_path / "failed-start-job"
+    work_dir.mkdir()
+    payload = b"%PDF-sensitive-decrypted-payload"
+    failures: list[Exception] = []
+    finished: list[bool] = []
+    runner = PrintSubprocessRunner(
+        PrintHelperJob(job_id="failed-start", watermarks=[], options=PrintJobOptions()),
+        process_factory=_FailedStartStreamingProcess,
+        work_dir=str(work_dir),
+        pdf_bytes=payload,
+    )
+    runner.failed.connect(failures.append)
+    runner.finished.connect(lambda: finished.append(True))
+
+    runner.start()
+    process = _FailedStartStreamingProcess.instances[-1]
+    process.emit_failed_to_start()
+
+    assert _pump_until(app, lambda: bool(failures))
+    assert finished == [True], "terminal startup errors must notify the coordinator"
+    assert runner._pdf_bytes is None
+    assert runner._process is None
+    assert not work_dir.exists()
+
+    # A defensive late signal must not duplicate terminal notifications.
+    process.emit_finished(exit_code=1)
+    assert finished == [True]
 
 
 def test_runner_heartbeat_events_prevent_false_stall(tmp_path: Path) -> None:

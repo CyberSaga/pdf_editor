@@ -15,7 +15,7 @@ from .layout import (
     resolve_orientation,
     resolve_paper_size_points,
 )
-from .pdf_renderer import PDFRenderer, RenderedPage
+from .pdf_renderer import PDFRenderer, PdfSource, RenderedPage
 
 _APP_INSTANCE = None
 
@@ -197,12 +197,16 @@ def _draw_page_image(
 
 
 def raster_print_pdf(
-    pdf_path: str,
+    pdf_source: PdfSource,
     page_indices: list[int],
     options: PrintJobOptions,
     renderer: PDFRenderer | None = None,
 ) -> PrintJobResult:
     """Render PDF pages and draw them to QPrinter (OS spooler).
+
+    ``pdf_source`` is a filesystem path **or** the document bytes. The bytes form is
+    the R5-01 fileless path: QPrinter never sees the source, it only receives QImage
+    pages from the renderer, so the source format is invisible to the spooler.
 
     Public boundary: ``options`` may be raw — it is normalized here once and the
     normalized copy is handed to the internal helpers.
@@ -232,7 +236,7 @@ def raster_print_pdf(
 
         requested = (normalized.extra_options or {}).get("render_colorspace") if hasattr(normalized, "extra_options") else None
         renderer = PDFRenderer(colorspace=safe_to_fitz_colorspace(requested))
-    pages_iter = renderer.iter_page_images(pdf_path, page_indices, normalized.dpi)
+    pages_iter = renderer.iter_page_images(pdf_source, page_indices, normalized.dpi)
 
     try:
         first = next(pages_iter)

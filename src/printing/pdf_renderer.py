@@ -14,6 +14,17 @@ from utils.render_limits import safe_render_scale
 
 from .errors import RenderingError
 
+# A print source is either a filesystem path or the document bytes themselves.
+# R5-01: the whole pipeline prefers bytes so no plaintext copy is ever written to disk.
+PdfSource = str | bytes
+
+
+def open_pdf_source(source: PdfSource) -> fitz.Document:
+    """Open a print source from memory (bytes) or from disk (path)."""
+    if isinstance(source, (bytes, bytearray, memoryview)):
+        return fitz.open("pdf", bytes(source))
+    return fitz.open(source)
+
 
 @dataclass
 class RenderedPage:
@@ -38,8 +49,8 @@ class PDFRenderer:
         self._colorspace = colorspace
 
     @staticmethod
-    def get_page_count(pdf_path: str) -> int:
-        doc = fitz.open(pdf_path)
+    def get_page_count(pdf_source: PdfSource) -> int:
+        doc = open_pdf_source(pdf_source)
         try:
             return len(doc)
         finally:
@@ -64,14 +75,14 @@ class PDFRenderer:
 
     def iter_page_images(
         self,
-        pdf_path: str,
+        pdf_source: PdfSource,
         page_indices: list[int],
         dpi: int,
     ) -> Iterator[RenderedPage]:
-        """Stream page images in requested order."""
+        """Stream page images in requested order, from a path or from bytes."""
         zoom = float(dpi) / 72.0
 
-        doc = fitz.open(pdf_path)
+        doc = open_pdf_source(pdf_source)
         cache: OrderedDict[int, fitz.DisplayList] = OrderedDict()
         try:
             for page_index in page_indices:
@@ -101,7 +112,7 @@ class PDFRenderer:
 
     def render_all_to_images(
         self,
-        pdf_path: str,
+        pdf_source: PdfSource,
         page_indices: list[int],
         dpi: int,
     ) -> list[RenderedPage]:
@@ -111,7 +122,7 @@ class PDFRenderer:
         This eagerly stores all page images in memory and is intentionally
         less memory-efficient than iter_page_images().
         """
-        return list(self.iter_page_images(pdf_path, page_indices, dpi))
+        return list(self.iter_page_images(pdf_source, page_indices, dpi))
 
     @staticmethod
     def parse_page_ranges(page_ranges: str | None, total_pages: int) -> list[int]:

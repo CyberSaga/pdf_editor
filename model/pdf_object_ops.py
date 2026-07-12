@@ -226,8 +226,12 @@ def _find_app_image_invocation(
                 inv for inv in xref_candidates
                 if _image_xref_digest(model, inv.xref) == image_digest
             ]
-            if verified:
-                return min(verified, key=_rect_dist)
+            positioned = [
+                inv for inv in verified
+                if _rect_dist(inv) <= 2.0 and _rotation_matches(inv)
+            ]
+            if positioned:
+                return min(positioned, key=_rect_dist)
         else:
             positioned = [
                 inv for inv in xref_candidates
@@ -253,13 +257,64 @@ def _image_xref_digest(model: PDFModel, xref: int) -> str | None:
     return hashlib.sha256(stream).hexdigest() if stream else None
 
 
+def _marker_xref(payload: dict) -> int:
+    """The marker payload's recorded image xref, or 0 when absent/unusable.
+
+    Single parse chokepoint: a corrupt or third-party payload (`"xref": "abc"`) used to
+    raise `ValueError` straight through `delete_objects_atomic`'s re-raise and into an
+    uncaught Qt slot. 0 is the right degraded value — `_find_app_image_invocation` treats it
+    as "no recorded xref" and falls back to geometry + digest.
+    """
+    try:
+        return int(payload.get("xref", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _app_image_invocation_candidates(
+    model: PDFModel,
+    page_num: int,
+    payload: dict,
+    expected_rect: fitz.Rect,
+) -> list[NativeImageInvocation]:
+    """Invocations that could plausibly be this marker's image.
+
+    A deliberate *superset* of what `_find_app_image_invocation` will accept, used only to
+    tell two failures apart when resolution returns None:
+
+      * **zero** candidates — nothing on the page renders this image any more (an external
+        editor stripped the XObject and left our hidden marker behind). The marker is
+        orphaned and must be cleaned up, or it becomes an undeletable zombie.
+      * **more than one** — the pixels exist but we cannot say which placement is ours.
+        Fail safe; deleting the marker alone would orphan visible content.
+    """
+    er = fitz.Rect(expected_rect)
+    candidates: list[NativeImageInvocation] = []
+    for inv in discover_native_image_invocations(model.doc, page_num):
+        if inv.cm_operator_index is None:
+            continue
+        b = inv.bbox
+        rect_distance = sum(
+            abs(a - c)
+            for a, c in zip(
+                [b.x0, b.y0, b.x1, b.y1],
+                [er.x0, er.y0, er.x1, er.y1],
+            )
+        )
+        expected_rotation = float(payload.get("rotation", 0)) % 360
+        rotation_delta = (float(inv.rotation) - expected_rotation + 180.0) % 360.0 - 180.0
+        if rect_distance <= 2.0 and abs(rotation_delta) <= 1.0:
+            candidates.append(inv)
+    return candidates
+
+
 def _resolve_marker_image_invocation(
     model: PDFModel,
     page_num: int,
     payload: dict,
     expected_rect: fitz.Rect,
 ) -> NativeImageInvocation | None:
-    recorded_xref = int(payload.get("xref", 0) or 0)
+    recorded_xref = _marker_xref(payload)
     invocation = _find_app_image_invocation(
         model,
         page_num,
@@ -277,6 +332,79 @@ def _resolve_marker_image_invocation(
         payload["xref"] = int(invocation.xref)
         payload["image_digest"] = digest
     return invocation
+
+# PDF name tokens end at whitespace or a delimiter (PDF 1.7 §7.2.2, Tables 1-2).
+_PDF_NAME_TERMINATORS = frozenset(b"\x00\t\n\x0c\r ()<>[]{}/%")
+
+
+def _stream_references_xobject(stream: bytes, xobject_name: str) -> bool:
+    """True when ``stream`` invokes ``/<xobject_name>`` as a whole name token.
+
+    A raw substring test is wrong: ``b"/fzImg1" in stream`` is satisfied by the token
+    ``/fzImg10``, so deleting the 2nd of 11+ images would leave its resource entry behind.
+    Match only where the name is followed by a delimiter or the end of the stream.
+    """
+    token = f"/{xobject_name}".encode("latin-1")
+    start = 0
+    while True:
+        index = stream.find(token, start)
+        if index < 0:
+            return False
+        end = index + len(token)
+        if end == len(stream) or stream[end] in _PDF_NAME_TERMINATORS:
+            return True
+        start = end
+
+
+def _effective_page_xobject_binding(
+    doc: fitz.Document,
+    page: fitz.Page,
+    xobject_name: str,
+) -> tuple[int, int] | None:
+    """Return the effective resource owner and xref for a page-level XObject name."""
+    key = f"Resources/XObject/{xobject_name}"
+    node = page.xref
+    seen: set[int] = set()
+    while node not in seen:
+        seen.add(node)
+        if doc.xref_get_key(node, "Resources")[0] != "null":
+            kind, value = doc.xref_get_key(node, key)
+            if kind != "xref":
+                return None
+            try:
+                return node, int(str(value).split()[0])
+            except (ValueError, IndexError):
+                return None
+        kind, value = doc.xref_get_key(node, "Parent")
+        if kind != "xref":
+            return None
+        try:
+            node = int(str(value).split()[0])
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
+def _resolve_xobject_resource_owner(
+    doc: fitz.Document, page: fitz.Page, invocation: NativeImageInvocation
+) -> int | None:
+    """The xref of the dict that actually holds ``Resources/XObject/<name>``.
+
+    ``/Resources`` is inheritable: a page may have none of its own and resolve it through
+    its ``/Parent`` chain, in which case PyMuPDF's ``insert_image`` registers the XObject
+    in that *ancestor* dict. Nulling the key on the page would not remove it — worse,
+    ``xref_set_key`` creates every missing link in the path, fabricating a direct
+    ``/Resources`` on the page that SHADOWS the inherited one, so the page's fonts and
+    other XObjects stop resolving. Returns ``None`` when the owner cannot be located.
+    """
+    if invocation.is_form_nested:
+        return invocation.resource_owner_xref or invocation.stream_xref
+
+    binding = _effective_page_xobject_binding(doc, page, invocation.xobject_name)
+    if binding is None or binding[1] != invocation.xref:
+        return None
+    return binding[0]
+
 
 def _remove_native_image_invocation(model: PDFModel, invocation: NativeImageInvocation) -> bool:
     # typed bind; callers guarantee an open doc here (native image removal path) - runtime behavior identical if None
@@ -301,24 +429,38 @@ def _remove_native_image_invocation(model: PDFModel, invocation: NativeImageInvo
         start_token = operators[invocation.cm_operator_index].operand_start
     new_stream = remove_operator_range(tokens, start_token, end_token)
     doc.update_stream(invocation.stream_xref, new_stream)
-    name_bytes = f"/{invocation.xobject_name}".encode("latin-1")
-    # A form-nested image is named in the form's own resources and drawn from
-    # the form's single stream; a page-level image may be drawn from several
-    # page content streams and is named in the page resources.
-    if invocation.is_form_nested:
-        scan_streams = [invocation.stream_xref]
-        owner_xref = invocation.resource_owner_xref or invocation.stream_xref
-    else:
-        scan_streams = [int(xref) for xref in page.get_contents() if int(xref) > 0]
-        owner_xref = invocation.resource_owner_xref or page.xref
-    still_referenced = any(
-        name_bytes in doc.xref_stream(int(xref)) for xref in scan_streams
-    )
-    if not still_referenced:
-        try:
-            doc.xref_set_key(owner_xref, f"Resources/XObject/{invocation.xobject_name}", "null")
-        except Exception:
-            pass
+
+    owner_xref = _resolve_xobject_resource_owner(doc, page, invocation)
+    if owner_xref is not None:
+        # A form-nested image is named in the form's own resources and drawn from the
+        # form's single stream. A page-level image may be drawn from several of the
+        # page's content streams; and when the owner is an *inherited* resources dict,
+        # sibling pages share it, so every page must be cleared before pruning.
+        if invocation.is_form_nested:
+            scan_streams = [invocation.stream_xref]
+        else:
+            scan_streams = [
+                int(xref)
+                for other in doc
+                if _effective_page_xobject_binding(
+                    doc, other, invocation.xobject_name
+                ) == (owner_xref, invocation.xref)
+                for xref in other.get_contents()
+                if int(xref) > 0
+            ]
+        still_referenced = any(
+            _stream_references_xobject(doc.xref_stream(int(xref)), invocation.xobject_name)
+            for xref in scan_streams
+        )
+        if not still_referenced:
+            try:
+                doc.xref_set_key(owner_xref, f"Resources/XObject/{invocation.xobject_name}", "null")
+            except Exception:
+                logger.debug(
+                    "Could not prune XObject resource %s from xref %s",
+                    invocation.xobject_name,
+                    owner_xref,
+                )
     model.pending_edits.append({"page_idx": invocation.page_num - 1, "rect": fitz.Rect(invocation.bbox)})
     model.edit_count += 1
     return True
@@ -707,7 +849,7 @@ def move_object(model: PDFModel, request: MoveObjectRequest) -> bool:
     if payload["kind"] == "image":
         old_rect = fitz.Rect(payload.get("rect") or annot.rect)
         dest_rect = fitz.Rect(request.destination_rect)
-        xref = int(payload.get("xref", 0) or 0)
+        xref = _marker_xref(payload)
         rotation = float(payload.get("rotation", 0)) % 360
         if not xref:
             return False
@@ -809,7 +951,7 @@ def rotate_object(model: PDFModel, request: RotateObjectRequest) -> bool:
         if payload.get("kind") != "image":
             return False
         rect = fitz.Rect(payload.get("rect") or annot.rect)
-        xref = int(payload.get("xref", 0) or 0)
+        xref = _marker_xref(payload)
         if not xref:
             return False
         invocation = _resolve_marker_image_invocation(model, request.page_num, payload, rect)
@@ -883,13 +1025,34 @@ def _delete_object_impl(model: PDFModel, request: DeleteObjectRequest) -> bool:
         _register_mutation(model, request.page_num - 1, marker_rect)
         return True
     if payload["kind"] == "image":
+        # Strip only this image's own content-stream invocation. The old path redacted
+        # the image's rectangle, and apply_redactions is *geometric*: it destroys every
+        # image, glyph and stroke the rectangle touches, not the one object the user
+        # selected. Resolution mirrors move/rotate exactly.
         old_rect = fitz.Rect(payload.get("rect") or annot.rect)
-        page.add_redact_annot(old_rect)
-        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
-        restored = _find_app_object_annot(model, request.page_num, request.object_id, "image")
-        if restored is not None:
-            restored[0].delete_annot(restored[1])
-        _register_mutation(model, request.page_num - 1, old_rect)
+        invocation = _resolve_marker_image_invocation(model, request.page_num, payload, old_rect)
+        if invocation is None:
+            # Two very different failures land here, and they want opposite handling.
+            if _app_image_invocation_candidates(model, request.page_num, payload, old_rect):
+                # Ambiguous: the pixels exist but we cannot say which placement is ours.
+                # Fail safe — deleting the marker alone would orphan visible content, and
+                # redacting is the data-loss vector this whole path exists to remove.
+                return False
+            # Orphaned: nothing renders this image any more (e.g. an external editor
+            # stripped the XObject and left our hidden marker). Clean the marker up rather
+            # than leaving a hit-detectable object that no verb can touch.
+            if not _delete_app_object_annots(model, request.page_num, request.object_id, expected_kind="image"):
+                return False
+            _register_mutation(model, request.page_num - 1, old_rect)
+            return True
+        # _remove_native_image_invocation registers the pending edit + edit_count itself,
+        # so no _register_mutation here (that would double-count).
+        if not _remove_native_image_invocation(model, invocation):
+            return False
+        if not _delete_app_object_annots(model, request.page_num, request.object_id, expected_kind="image"):
+            # The stream was already rewritten; a surviving marker would be a phantom
+            # selectable object. Fail the transaction so the snapshot rollback restores it.
+            return False
         return True
     if payload["kind"] != "textbox":
         return False
@@ -949,9 +1112,17 @@ def delete_objects_atomic(model: PDFModel, requests: list[DeleteObjectRequest]) 
     try:
         for request in _ordered_delete_requests(list(requests)):
             if not _delete_object_impl(model, request):
-                _restore_delete_transaction(
-                    model, snapshot, pending_edits, edit_count, secure_save_required
-                )
+                # Only roll back if the document was actually touched. `_restore_doc_from_snapshot`
+                # closes and reopens `model.doc`, so running it on a pure no-op (resolution failed
+                # before any stream was rewritten) would swap the live handle for nothing: cached
+                # `fitz.Page` objects would point at a closed document, and the restored doc's empty
+                # `doc.name` silently degrades the next save from incremental to full. Every mutating
+                # path bumps `edit_count`, so comparing against the transaction's opening value
+                # witnesses a mutation by this request *or* by any earlier one in the batch.
+                if int(model.edit_count) != edit_count:
+                    _restore_delete_transaction(
+                        model, snapshot, pending_edits, edit_count, secure_save_required
+                    )
                 return False
     except Exception:
         _restore_delete_transaction(model, snapshot, pending_edits, edit_count, secure_save_required)

@@ -12,14 +12,26 @@ from .base_driver import PrintJobOptions
 
 @dataclass
 class PrintHelperJob:
-    """Immutable job payload handed to the helper subprocess."""
+    """Immutable job payload handed to the helper subprocess.
+
+    R5-01 protocol rule: ``input_pdf_path`` present -> the helper reads that file
+    (protocol v1, kept so this change is coordinator-side revertable); absent -> the
+    helper reads the document from **stdin**, and no document bytes ever touch disk.
+
+    The document itself is never serialized here — ``job.json`` carries options and
+    watermarks only.
+    """
 
     job_id: str
-    input_pdf_path: str
     watermarks: list[dict]
     options: PrintJobOptions
+    input_pdf_path: str | None = None
     heartbeat_interval_ms: int = 5000
     metadata: dict[str, Any] = field(default_factory=dict)
+    # In-memory transport for the fileless path: the runner streams these to the helper's
+    # stdin. Never serialized (see to_json_dict) and kept out of repr() so a decrypted
+    # document cannot leak into a log line or a traceback.
+    pdf_bytes: bytes | None = field(default=None, repr=False, compare=False)
 
     def to_json_dict(self) -> dict[str, Any]:
         normalized = self.options.normalized()
@@ -28,25 +40,29 @@ class PrintHelperJob:
             for name in normalized.__dataclass_fields__
         }
         options_payload["override_fields"] = sorted(normalized.override_fields)
-        return {
+        payload: dict[str, Any] = {
             "job_id": self.job_id,
-            "input_pdf_path": self.input_pdf_path,
             "watermarks": list(self.watermarks),
             "options": options_payload,
             "heartbeat_interval_ms": int(self.heartbeat_interval_ms),
             "metadata": dict(self.metadata),
         }
+        # Omit entirely when unset: absence is what selects the stdin transport.
+        if self.input_pdf_path is not None:
+            payload["input_pdf_path"] = self.input_pdf_path
+        return payload
 
     @classmethod
     def from_json_dict(cls, payload: dict[str, Any]) -> PrintHelperJob:
         options_payload = dict(payload.get("options") or {})
         override_fields = set(options_payload.get("override_fields") or set())
         options_payload["override_fields"] = override_fields
+        raw_path = payload.get("input_pdf_path")
         return cls(
             job_id=str(payload["job_id"]),
-            input_pdf_path=str(payload["input_pdf_path"]),
             watermarks=list(payload.get("watermarks") or []),
             options=PrintJobOptions(**options_payload),
+            input_pdf_path=str(raw_path) if raw_path else None,
             heartbeat_interval_ms=int(payload.get("heartbeat_interval_ms", 5000)),
             metadata=dict(payload.get("metadata") or {}),
         )

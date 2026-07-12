@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .layout import (
@@ -12,6 +15,8 @@ from .layout import (
     normalize_scale_percent,
 )
 from .page_selection import normalize_page_subset
+
+logger = logging.getLogger(__name__)
 
 OVERRIDABLE_PRINT_FIELDS = frozenset(
     {"paper_size", "orientation", "duplex", "color_mode"}
@@ -140,6 +145,33 @@ class PrinterDriver(ABC):
         options: PrintJobOptions,
     ) -> PrintJobResult:
         """Submit print job for the given PDF."""
+
+    def print_pdf_from_bytes(
+        self,
+        pdf_bytes: bytes,
+        page_indices: list[int],
+        options: PrintJobOptions,
+    ) -> PrintJobResult:
+        """Submit a print job straight from the document bytes (R5-01, fileless).
+
+        Drivers that can consume bytes override this and never touch disk. The default
+        below preserves compatibility for any driver that only understands a path: it
+        materialises a short-lived temp, delegates to :meth:`print_pdf`, and removes it.
+
+        Overriding is what makes a driver fileless — ``WindowsPrinterDriver`` does, and
+        ``LinuxPrinterDriver`` does for its raster route (its CUPS/lp direct route must
+        hand an external tool a real file, which is the one documented residual).
+        """
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(pdf_bytes)
+            temp_path = tmp.name
+        try:
+            return self.print_pdf(temp_path, page_indices, options)
+        finally:
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except OSError as exc:
+                logger.debug("Failed to remove print temp file %s: %s", temp_path, exc)
 
     def open_printer_properties(self, printer_name: str) -> dict[str, Any] | None:
         """Open native printer properties dialog for the selected printer."""

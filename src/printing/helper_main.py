@@ -24,16 +24,35 @@ from .messages import (
 )
 
 
+def _read_stdin_bytes() -> bytes:
+    """Read the whole document from the parent's stdin pipe (R5-01 transport)."""
+    return sys.stdin.buffer.read()
+
+
+def _load_job_document(job: PrintHelperJob, stdin_reader: Callable[[], bytes]) -> bytes:
+    """Resolve the job's document bytes.
+
+    ``input_pdf_path`` present -> protocol v1, read the file. Absent -> read stdin, so
+    the document never exists on disk.
+    """
+    if job.input_pdf_path:
+        return Path(job.input_pdf_path).read_bytes()
+    pdf_bytes = stdin_reader()
+    if not pdf_bytes:
+        raise PrintingError("列印輸入為空：未從標準輸入取得任何 PDF 內容。")
+    return pdf_bytes
+
+
 def _build_snapshot_bytes(
-    pdf_path: str, watermarks: list[dict], password: str | None = None
+    pdf_bytes: bytes, watermarks: list[dict], password: str | None = None
 ) -> bytes:
-    pdf_bytes = Path(pdf_path).read_bytes()
     doc = fitz.open("pdf", pdf_bytes)
     try:
         if doc.needs_pass:
-            # R5.1: input.pdf is written encrypted; authenticate in-memory so the
-            # printer receives rasterizable (decrypted) bytes. The decryption never
-            # touches disk — only this in-process save below produces the print bytes.
+            # Only reachable on the protocol-v1 file path, where the input may be an
+            # encrypted PDF. The stdin transport carries already-decrypted bytes
+            # (capture_print_snapshot_bytes uses PDF_ENCRYPT_NONE), so no password is
+            # needed — and none is put into this process's environment.
             if not password or doc.authenticate(password) == 0:
                 raise PrintingError("加密的列印輸入需要有效的密碼才能列印。")
         elif not watermarks:
@@ -76,8 +95,10 @@ def run_print_helper(
     *,
     dispatcher: PrintDispatcher | None = None,
     emit: Callable[[dict], None] | None = None,
+    stdin_reader: Callable[[], bytes] | None = None,
 ) -> int:
     emit_event = emit or _stdout_emit
+    read_stdin = stdin_reader or _read_stdin_bytes
     job = PrintHelperJob.read(job_path)
     dispatcher = dispatcher or PrintDispatcher()
     heartbeat_stop: threading.Event | None = None
@@ -92,7 +113,7 @@ def run_print_helper(
             emit_event=emit_event,
         )
         snapshot_bytes = _build_snapshot_bytes(
-            job.input_pdf_path,
+            _load_job_document(job, read_stdin),
             job.watermarks,
             password=os.environ.get("PDF_EDITOR_PRINT_PASSWORD"),
         )
