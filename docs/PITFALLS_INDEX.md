@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 163 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 165 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -168,3 +168,5 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1480 | Rolling back a transaction that changed nothing closes the live `fitz.Document` | `model/pdf_object_ops.py` (`delete_objects_atomic`), `model/pdf_model.py` (`_restore_doc_from_snapshot`) |
 | 1490 | The print path wrote two plaintext temps, and `capture_print_snapshot_bytes` is always decrypted | `controller/print_coordinator.py`, `src/printing/*` (R5-01) |
 | 1502 | A QThread worker can clear its own decrypted payload race-free — no join needed | `controller/search_coordinator.py`, `controller/ocr_coordinator.py` (Codex F6 / B3) |
+| 1514 | XObject identity requires both the resource binding and the placement | `model/pdf_object_ops.py` app-image resolution and resource pruning |
+| 1524 | `QProcess.FailedToStart` has no matching `finished` signal | `src/printing/subprocess_runner.py` |

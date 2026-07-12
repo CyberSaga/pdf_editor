@@ -281,12 +281,15 @@ class PrintSubprocessRunner(QObject):
         logger.error("Print helper process error (%s): %s", error_name, message)
         self._terminal_event_seen = True
         self.failed.emit(PrintJobSubmissionError(message))
+        if error == QProcess.ProcessError.FailedToStart:
+            # Qt does not emit ``finished`` when the child never starts. Complete the
+            # lifecycle here so the coordinator is not left active forever and the
+            # fileless plaintext payload is released.
+            self._finalize_runner_lifecycle()
 
     def _on_finished(self, exit_code: int, _exit_status) -> None:
         if self._finish_handled:
             return
-        self._finish_handled = True
-        self._watchdog.stop()
         if not self._terminal_event_seen:
             self._terminal_event_seen = True
             if self._termination_requested:
@@ -295,6 +298,14 @@ class PrintSubprocessRunner(QObject):
                 detail = self._stderr_buffer.strip()
                 message = detail or f"Print helper exited with code {exit_code}."
                 self.failed.emit(PrintJobSubmissionError(message))
+        self._finalize_runner_lifecycle()
+
+    def _finalize_runner_lifecycle(self) -> None:
+        """Release runner state and notify its owner exactly once."""
+        if self._finish_handled:
+            return
+        self._finish_handled = True
+        self._watchdog.stop()
         self._cleanup()
         self.finished.emit()
 

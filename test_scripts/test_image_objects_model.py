@@ -491,6 +491,44 @@ def test_delete_one_of_two_shared_xref_images_neighbor_survives() -> None:
             model.close()
 
 
+def test_delete_stale_shared_xref_marker_preserves_surviving_placement() -> None:
+    """A stale marker must not retarget another placement of the same image stream."""
+    from model.pdf_object_ops import _remove_native_image_invocation
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "stale_shared_xref_delete.pdf"
+        _make_pdf(path)
+
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            png = _png_bytes()
+            stale_oid = model.add_image_object(1, fitz.Rect(10, 10, 80, 80), png, rotation=0)
+            survivor_oid = model.add_image_object(
+                1, fitz.Rect(150, 150, 220, 220), png, rotation=0
+            )
+
+            invocations = discover_native_image_invocations(model.doc, 1)
+            assert len(invocations) == 2
+            assert invocations[0].xref == invocations[1].xref
+
+            # Simulate an external editor removing the first placement while leaving
+            # pdf_editor's hidden marker annotation behind.
+            assert _remove_native_image_invocation(model, invocations[0]) is True
+            remaining = discover_native_image_invocations(model.doc, 1)
+            assert len(remaining) == 1
+            survivor_bbox = fitz.Rect(remaining[0].bbox)
+
+            assert model.delete_object(DeleteObjectRequest(stale_oid, "image", 1)) is True
+
+            after = discover_native_image_invocations(model.doc, 1)
+            assert len(after) == 1, "deleting a stale marker must not delete its shared-xref neighbour"
+            assert fitz.Rect(after[0].bbox) == survivor_bbox
+            assert set(_image_markers(model)) == {survivor_oid}
+        finally:
+            model.close()
+
+
 def test_delete_app_image_ambiguous_resolution_fails_safely() -> None:
     """Unresolvable placement => delete is a no-op, never a redaction.
 
@@ -620,6 +658,39 @@ def _raw_inherited_resources_pdf() -> bytes:
     return bytes(out)
 
 
+def _raw_two_page_mixed_resources_pdf() -> bytes:
+    """Page 1 inherits resources; page 2 owns an unrelated resource dictionary."""
+    objs = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: (
+            b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 "
+            b"/Resources << >> /MediaBox [0 0 400 400] >>"
+        ),
+        3: b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>",
+        4: b"<< /Length 0 >>\nstream\n\nendstream",
+        5: (
+            b"<< /Type /Page /Parent 2 0 R /Resources << >> "
+            b"/MediaBox [0 0 400 400] /Contents 6 0 R >>"
+        ),
+        6: b"<< /Length 0 >>\nstream\n\nendstream",
+    }
+    out = bytearray(b"%PDF-1.7\n")
+    offsets = {}
+    for num in sorted(objs):
+        offsets[num] = len(out)
+        out += b"%d 0 obj\n" % num + objs[num] + b"\nendobj\n"
+    xref_pos = len(out)
+    out += b"xref\n0 %d\n" % (len(objs) + 1)
+    out += b"0000000000 65535 f \n"
+    for num in sorted(objs):
+        out += b"%010d 00000 n \n" % offsets[num]
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objs) + 1,
+        xref_pos,
+    )
+    return bytes(out)
+
+
 def test_delete_app_image_prunes_prefix_colliding_resource_name() -> None:
     """`/fzImg1` must not be considered "still referenced" because `/fzImg10` exists.
 
@@ -703,6 +774,38 @@ def test_delete_app_image_does_not_shadow_inherited_resources() -> None:
             assert model.doc[0].get_text().strip() == text_before
             assert discover_native_image_invocations(model.doc, 1) == []
             assert model.doc[0].get_images(full=True) == []
+        finally:
+            model.close()
+
+
+def test_delete_inherited_image_ignores_same_name_in_unrelated_page_resources() -> None:
+    """An unrelated page's `/fzImg0` must not retain the deleted inherited binding."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "mixed_resources.pdf"
+        path.write_bytes(_raw_two_page_mixed_resources_pdf())
+
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            target_oid = model.add_image_object(
+                1, fitz.Rect(20, 20, 90, 90), _png_bytes((255, 0, 0)), rotation=0
+            )
+            model.add_image_object(
+                2, fitz.Rect(120, 120, 190, 190), _png_bytes((0, 0, 255)), rotation=0
+            )
+            assert [row[7] for row in model.doc[0].get_images(full=True)] == ["fzImg0"]
+            assert [row[7] for row in model.doc[1].get_images(full=True)] == ["fzImg0"]
+
+            assert model.delete_object(DeleteObjectRequest(target_oid, "image", 1)) is True
+
+            reopened = fitz.open("pdf", model.doc.tobytes(garbage=4))
+            try:
+                assert reopened[0].get_images(full=True) == [], (
+                    "the deleted inherited resource must not survive secure garbage collection"
+                )
+                assert len(reopened[1].get_images(full=True)) == 1
+            finally:
+                reopened.close()
         finally:
             model.close()
 

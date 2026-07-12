@@ -226,8 +226,12 @@ def _find_app_image_invocation(
                 inv for inv in xref_candidates
                 if _image_xref_digest(model, inv.xref) == image_digest
             ]
-            if verified:
-                return min(verified, key=_rect_dist)
+            positioned = [
+                inv for inv in verified
+                if _rect_dist(inv) <= 2.0 and _rotation_matches(inv)
+            ]
+            if positioned:
+                return min(positioned, key=_rect_dist)
         else:
             positioned = [
                 inv for inv in xref_candidates
@@ -284,21 +288,22 @@ def _app_image_invocation_candidates(
       * **more than one** — the pixels exist but we cannot say which placement is ours.
         Fail safe; deleting the marker alone would orphan visible content.
     """
-    recorded_xref = _marker_xref(payload)
-    digest = payload.get("image_digest")
     er = fitz.Rect(expected_rect)
     candidates: list[NativeImageInvocation] = []
     for inv in discover_native_image_invocations(model.doc, page_num):
         if inv.cm_operator_index is None:
             continue
-        if recorded_xref and inv.xref == recorded_xref:
-            candidates.append(inv)
-            continue
-        if digest and _image_xref_digest(model, inv.xref) == digest:
-            candidates.append(inv)
-            continue
         b = inv.bbox
-        if sum(abs(a - c) for a, c in zip([b.x0, b.y0, b.x1, b.y1], [er.x0, er.y0, er.x1, er.y1])) <= 2.0:
+        rect_distance = sum(
+            abs(a - c)
+            for a, c in zip(
+                [b.x0, b.y0, b.x1, b.y1],
+                [er.x0, er.y0, er.x1, er.y1],
+            )
+        )
+        expected_rotation = float(payload.get("rotation", 0)) % 360
+        rotation_delta = (float(inv.rotation) - expected_rotation + 180.0) % 360.0 - 180.0
+        if rect_distance <= 2.0 and abs(rotation_delta) <= 1.0:
             candidates.append(inv)
     return candidates
 
@@ -351,6 +356,35 @@ def _stream_references_xobject(stream: bytes, xobject_name: str) -> bool:
         start = end
 
 
+def _effective_page_xobject_binding(
+    doc: fitz.Document,
+    page: fitz.Page,
+    xobject_name: str,
+) -> tuple[int, int] | None:
+    """Return the effective resource owner and xref for a page-level XObject name."""
+    key = f"Resources/XObject/{xobject_name}"
+    node = page.xref
+    seen: set[int] = set()
+    while node not in seen:
+        seen.add(node)
+        if doc.xref_get_key(node, "Resources")[0] != "null":
+            kind, value = doc.xref_get_key(node, key)
+            if kind != "xref":
+                return None
+            try:
+                return node, int(str(value).split()[0])
+            except (ValueError, IndexError):
+                return None
+        kind, value = doc.xref_get_key(node, "Parent")
+        if kind != "xref":
+            return None
+        try:
+            node = int(str(value).split()[0])
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
 def _resolve_xobject_resource_owner(
     doc: fitz.Document, page: fitz.Page, invocation: NativeImageInvocation
 ) -> int | None:
@@ -366,26 +400,10 @@ def _resolve_xobject_resource_owner(
     if invocation.is_form_nested:
         return invocation.resource_owner_xref or invocation.stream_xref
 
-    key = f"Resources/XObject/{invocation.xobject_name}"
-    if doc.xref_get_key(page.xref, "Resources")[0] != "null":
-        return page.xref if doc.xref_get_key(page.xref, key)[0] != "null" else None
-
-    node = page.xref
-    seen: set[int] = {node}
-    while True:
-        kind, value = doc.xref_get_key(node, "Parent")
-        if kind != "xref":
-            return None
-        try:
-            parent = int(str(value).split()[0])
-        except (ValueError, IndexError):
-            return None
-        if parent in seen:
-            return None
-        seen.add(parent)
-        if doc.xref_get_key(parent, key)[0] != "null":
-            return parent
-        node = parent
+    binding = _effective_page_xobject_binding(doc, page, invocation.xobject_name)
+    if binding is None or binding[1] != invocation.xref:
+        return None
+    return binding[0]
 
 
 def _remove_native_image_invocation(model: PDFModel, invocation: NativeImageInvocation) -> bool:
@@ -420,12 +438,13 @@ def _remove_native_image_invocation(model: PDFModel, invocation: NativeImageInvo
         # sibling pages share it, so every page must be cleared before pruning.
         if invocation.is_form_nested:
             scan_streams = [invocation.stream_xref]
-        elif owner_xref == page.xref:
-            scan_streams = [int(xref) for xref in page.get_contents() if int(xref) > 0]
         else:
             scan_streams = [
                 int(xref)
                 for other in doc
+                if _effective_page_xobject_binding(
+                    doc, other, invocation.xobject_name
+                ) == (owner_xref, invocation.xref)
                 for xref in other.get_contents()
                 if int(xref) > 0
             ]

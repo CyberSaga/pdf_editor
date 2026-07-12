@@ -1508,3 +1508,23 @@ Two adjacent fixes from the same review: `int(payload.get("xref", 0) or 0)` rais
 
 Two testing gotchas found here: pytest's assertion rewriting keeps its own temporaries alive in the frame, so `sys.getrefcount` deltas are unreliable *inside a test* — assert on `vars(worker)` instead; and `_SearchWorker.run()` had a latent `finally: doc.close()` that raised `AttributeError` whenever `doc_bytes` was empty and `doc` was therefore `None`.
 **File:** `controller/search_coordinator.py`, `controller/ocr_coordinator.py`; tests `test_scripts/test_worker_doc_bytes_lifetime.py`
+
+---
+
+## XObject identity requires both the resource binding and the placement
+
+**Area:** `model/pdf_object_ops.py` app-image resolution and resource pruning
+**Symptom:** A stale marker for one of two identical, shared-xref images deleted the surviving placement. Separately, a page with its own unrelated `/fzImg0` prevented an inherited `/fzImg0` from being pruned, so deleted pixels survived `garbage=4`.
+**Cause:** Xref/digest identifies image bytes, not a particular placement, while an XObject name identifies a binding only inside its effective resource dictionary. Treating either value as globally unique conflates independent placements or pages.
+**Fix:** Require marker geometry and rotation even on the xref/digest fast path. For pruning, resolve each page's effective `(resource owner, name -> image xref)` binding and scan only pages bound to the target; stop at the first `/Resources` dictionary because that key is inherited as a whole.
+**File:** `model/pdf_object_ops.py`; tests `test_delete_stale_shared_xref_marker_preserves_surviving_placement`, `test_delete_inherited_image_ignores_same_name_in_unrelated_page_resources`
+
+---
+
+## `QProcess.FailedToStart` has no matching `finished` signal
+
+**Area:** `src/printing/subprocess_runner.py`
+**Symptom:** If the print helper executable could not start, the runner emitted a failure but remained active forever, retained the fileless plaintext payload and work directory, and caused normal application close to be rejected.
+**Cause:** Qt emits `errorOccurred(FailedToStart)` and transitions to `NotRunning`, but does not subsequently emit `finished`; cleanup existed only in the latter handler.
+**Fix:** Route `FailedToStart` through the same idempotent terminal lifecycle as `_on_finished`, clearing the payload/process/work directory and emitting the runner's `finished` signal exactly once.
+**File:** `src/printing/subprocess_runner.py`; test `test_runner_failed_to_start_releases_fileless_payload_and_finishes`

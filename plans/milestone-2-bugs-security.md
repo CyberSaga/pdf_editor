@@ -1,6 +1,6 @@
 # Milestone 2 — Known Bugs & Security Backlog: PR-level Execution Plan
 
-Expanded 2026-07-05 from the roadmap section in `this-is-my-own-parallel-donut.md`, after
+Expanded 2026-07-05 from the roadmap section in `~/.claude/plans/this-is-my-own-parallel-donut.md`, after
 Milestone 1 acceptance (closeout: `docs/history/# Milestone 1 Closeout — CI & Quality De.md`,
 HEAD `dc4146d`). PR numbering continues M1's plan-side sequence (M1 = PR-0…PR-12).
 

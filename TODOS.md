@@ -200,13 +200,11 @@ Reconciled via file split: `surya-ocr` + `torch` in `ocr-requirements.txt`; core
   rotate, and both delete branches. Raised by adversarial review; see
   `plans/b1-delete-app-image-invocation-removal.md` §10.3.
 
-- [ ] **B1 codex adversarial review still outstanding.** The milestone plan mandates a codex peer review before
-  merging PR-16. Two of four planned reviewers (one lens + the codex pass) died on the session agent limit
-  (CLAUDE.md §11). The two lenses that completed produced **six** findings; all were reproduced and fixed
-  (`plans/b1-delete-app-image-invocation-removal.md` §10.1-§10.6): resource-name prefix collision,
-  shadowed inherited `/Resources`, undeletable "zombie" markers, `ValueError` on a corrupt payload xref,
-  an over-strong `if not xref` guard, and an unconditional snapshot rollback that closed the live
-  `fitz.Document` on a zero-mutation delete. Run the codex pass before treating B1 as reviewed.
+- [x] **B1 codex adversarial review completed (2026-07-12).** The resumed Codex pass reproduced and fixed
+  three additional defects: a stale shared-xref marker deleting the surviving placement; an unrelated
+  page's same-named XObject preventing inherited-resource pruning and surviving `garbage=4`; and the
+  fileless print runner retaining plaintext and never finishing after `QProcess.FailedToStart`.
+  Regression coverage lives in `test_image_objects_model.py` and `test_print_subprocess_runner.py`.
 
 - [ ] **Batch delete gives no feedback when it rolls back.** `delete_objects_atomic` is all-or-nothing by
   design, so one unresolvable app-image in a multi-select cancels the whole delete. The view has already
