@@ -509,6 +509,7 @@ class PDFView(QMainWindow):
         self._pending_text_info = None          # 待定狀態下存放的文字塊資訊（drag_pending 且無編輯框時）
         self.current_search_results = []
         self.current_search_index = -1
+        self._last_search_query: str | None = None
         # Inline-editor focus lifecycle guards.
         self._edit_focus_guard_connected = False
         self._edit_focus_check_pending = False
@@ -1544,6 +1545,7 @@ class PDFView(QMainWindow):
         search_layout = QVBoxLayout(self.search_panel)
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("輸入文字搜尋...")
+        self.search_input.textEdited.connect(self._on_search_query_edited)
         self.search_input.returnPressed.connect(self._trigger_search)
         self.search_status_label = QLabel("找到 0 個結果")
         self.search_results_list = QListWidget()
@@ -2262,7 +2264,13 @@ class PDFView(QMainWindow):
             self.thumbnail_list.setViewportMargins(horizontal_margin, 0, horizontal_margin, 0)
             self.thumbnail_list.setSpacing(spacing)
             self.thumbnail_list.setIconSize(QSize(icon_w, icon_h))
-            self.thumbnail_list.setGridSize(QSize(item_w, item_h))
+            grid_size = QSize(item_w, item_h)
+            self.thumbnail_list.setGridSize(grid_size)
+            for index in range(self.thumbnail_list.count()):
+                item = self.thumbnail_list.item(index)
+                if item is not None:
+                    item.setSizeHint(grid_size)
+                    item.setTextAlignment(Qt.AlignHCenter)
             # Hidden QListWidget instances may keep a stale scrollbar range
             # until a layout pass is forced. Refresh explicitly so tests and
             # offscreen open flows still get correct thumbnail scrolling
@@ -4783,11 +4791,22 @@ class PDFView(QMainWindow):
             item.setData(Qt.UserRole, wm.get("id"))
             self.watermark_list_widget.addItem(item)
 
+    def _on_search_query_edited(self, _text: str) -> None:
+        self._last_search_query = None
+
     def _trigger_search(self):
         query = self.search_input.text()
-        if query:
-            self.search_status_label.setText("搜尋中...")
-            self.sig_search.emit(query)
+        if not query:
+            return
+        if query == self._last_search_query:
+            if self.search_status_label.text() == "搜尋中...":
+                return
+            if self.current_search_results:
+                self._navigate_search_next()
+                return
+        self._last_search_query = query
+        self.search_status_label.setText("搜尋中...")
+        self.sig_search.emit(query)
 
     def get_search_ui_state(self) -> dict:
         return {
@@ -4807,6 +4826,7 @@ class PDFView(QMainWindow):
         ):
             self.current_search_results = results
             self.current_search_index = -1
+            self._last_search_query = query if results else None
             return
         self.search_input.setText(query)
         self.display_search_results(results)
@@ -4822,6 +4842,8 @@ class PDFView(QMainWindow):
     def display_search_results(self, results: list[tuple[int, str, fitz.Rect]]):
         self.current_search_results = results
         self.current_search_index = -1
+        search_input = getattr(self, "search_input", None)
+        self._last_search_query = search_input.text() if results and search_input is not None else None
         if (
             getattr(self, "search_results_list", None) is None
             or getattr(self, "search_status_label", None) is None

@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 166 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 168 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -170,4 +170,6 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1502 | A QThread worker can clear its own decrypted payload race-free — no join needed | `controller/search_coordinator.py`, `controller/ocr_coordinator.py` (Codex F6 / B3) |
 | 1514 | XObject identity requires both the resource binding and the placement | `model/pdf_object_ops.py` app-image resolution and resource pruning |
 | 1524 | `QProcess.FailedToStart` has no matching `finished` signal | `src/printing/subprocess_runner.py` |
-| 1534 | Render-quality benchmark must use the profile-scoped quality map | `test_scripts/benchmark_ui_open_render.py`, controller render state |
+| 1534 | PDF font identity must be keyed per-xref, never per-basefont | font handling for the text-commit engine design (`plans/2026-07-14-acrobat-parity-text-commit-engine.md`); any code matching spans to fonts |
+| 1544 | Render-quality benchmark must use the profile-scoped quality map | `test_scripts/benchmark_ui_open_render.py`, controller render state |
+| 1554 | A growing thumbnail icon box does not upscale its source pixmap | thumbnail rendering and layout (`controller/thumbnail_coordinator.py`, `model/pdf_model.py`, `view/pdf_view.py`) |

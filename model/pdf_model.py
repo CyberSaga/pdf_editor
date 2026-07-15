@@ -75,7 +75,11 @@ _MAX_PAGES = 5_000
 # and tests reference ``model.pdf_model._MAX_PIXMAP_PX`` (see docs/PITFALLS.md).
 # It is unused *within* this module, so F401 is suppressed deliberately — do NOT
 # let ``ruff --fix`` strip it (that breaks test_security_pdf_resource_guards).
-from utils.render_limits import _MAX_PIXMAP_PX, safe_render_scale as _safe_render_scale  # noqa: E402, F401
+from utils.render_limits import (  # noqa: E402
+    _MAX_PIXMAP_PX,  # noqa: F401
+    safe_render_scale as _safe_render_scale,
+    thumbnail_render_scale,
+)
 
 
 def _guard_before_open(path: Path) -> None:
@@ -1550,7 +1554,10 @@ class PDFModel:
         )
 
     def get_thumbnail(self, page_num: int, colorspace: fitz.Colorspace | None = None) -> fitz.Pixmap:
-        return self.get_page_pixmap(page_num, scale=0.2, colorspace=colorspace)
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            raise ValueError(f"無效頁碼: {page_num}")
+        scale = thumbnail_render_scale(self.doc[page_num - 1])
+        return self.get_page_pixmap(page_num, scale=scale, colorspace=colorspace)
 
     def get_page_label(self, page_num: int) -> str:
         if not self.doc or page_num < 1 or page_num > len(self.doc):

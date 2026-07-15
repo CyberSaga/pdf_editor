@@ -2330,8 +2330,8 @@ class PDFController:
             QTimer.singleShot(0, lambda s=sid, g=gen, st=start, el=end_limit: self._schedule_thumbnail_batch(st, s, g, el))
         else:
             self.view.set_thumbnail_placeholders(n)
-            start = max(0, min(affected) - 2) if affected else 0
-            QTimer.singleShot(0, lambda s=sid, g=gen, st=start: self._schedule_thumbnail_batch(st, s, g))
+            # Placeholder reset clears every icon, so every row must re-render.
+            QTimer.singleShot(0, lambda s=sid, g=gen: self._schedule_thumbnail_batch(0, s, g))
 
     def _schedule_thumbnail_batch(self, start: int, session_id: str, gen: int, end_limit: int | None = None):
         if (

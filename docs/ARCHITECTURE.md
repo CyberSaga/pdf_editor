@@ -503,9 +503,12 @@ The inline editor must be pixel-faithful to the committed PDF so opening,
 typing, and reopening never visibly shift glyphs. Five cooperating pieces:
 
 - **Shared insert classifier** — `model.pdf_model._classify_insert_path` is the
-  single source of truth for "fast `insert_text`" vs "`insert_htmlbox`". Both
-  the commit path (`_apply_redact_insert`) and the preview path
-  (`PreviewRenderer`) route through it; they cannot diverge.
+  single source of truth for "fast `insert_text`" vs "`insert_htmlbox`" on the
+  **commit** side (`_apply_redact_insert`). *Correction (2026-07-14):* the preview
+  path does **not** consult the classifier — `PreviewRenderer` always renders via
+  `insert_htmlbox`, so preview and a fast-path commit can diverge. The successor
+  preview contract (preview rasterizes the commit engine's output) is specified in
+  `plans/2026-07-14-acrobat-parity-text-commit-engine.md` §4.5.
 - **`PreviewRenderer`** (view) rasterizes proposed content through the *same*
   MuPDF `insert_htmlbox` engine and CSS the commit uses (borrowed from the
   model when present), cached by full arg tuple incl. `line_height`.

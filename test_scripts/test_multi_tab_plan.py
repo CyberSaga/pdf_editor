@@ -521,6 +521,13 @@ def test_06f_thumbnail_layout_caps_width_and_centers_in_wide_sidebar(mvc, tmp_pa
     assert margins.left() == margins.right()
     assert view.thumbnail_list.gridSize().width() <= 280
 
+    item = view.thumbnail_list.item(0)
+    assert item is not None
+    assert item.sizeHint() == view.thumbnail_list.gridSize()
+    assert item.textAlignment() & Qt.AlignHorizontal_Mask == Qt.AlignHCenter
+    actual_icon = item.icon().actualSize(view.thumbnail_list.iconSize())
+    assert actual_icon.width() >= 240
+
 
 def test_07_close_modified_tab_cancel_keeps_tab(mvc, tmp_path, monkeypatch):
     model, _, controller = mvc

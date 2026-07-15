@@ -57,6 +57,7 @@ def test_pdf_model_render_entry_points_forward_colorspace() -> None:
     thumb = model.get_thumbnail(page_num=1, colorspace=fitz.csCMYK)
     assert thumb.colorspace is not None
     assert thumb.colorspace.n == 4
+    assert thumb.width >= 240
 
     snap = model.get_page_snapshot(page_num=1, scale=1.0, colorspace=fitz.csCMYK)
     assert snap.colorspace is not None

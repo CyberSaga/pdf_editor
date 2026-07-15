@@ -250,3 +250,21 @@ Full commands, method, and values: `plans/render-offload.md`.
 - [x] Fix `benchmark_ui_open_render.py` for the profile-scoped quality map.
 - [x] Capture the pre-M3 baseline and seed `plans/render-offload.md`.
 - [ ] Re-run immediately before tranche 3.6 and publish before/after evidence.
+
+## M3 candidate — Acrobat-parity text commit engine (design complete 2026-07-14)
+
+Design: `plans/2026-07-14-acrobat-parity-text-commit-engine.md` (synthesis of two
+independent proposals + corpus font audit). Addresses "font changes / layout jumps
+after edit" — structural ceiling of redact+reinsert, not a regression.
+
+- [x] Diagnosis + root cause (font substitution in `_resolve_font_for_push`; htmlbox
+      re-layout with break-all CSS; push-down moving neighbors; verify checks text only)
+- [x] Spike S1 — font round-trip audit over corpus (embedded TT/Type0: 100% extract+load)
+- [ ] Spike S2 — TextWriter transplant vs append (z-order); decides Tier 1 write strategy
+- [ ] Spike S3 — Identity-H GID stream patch on a representative CJK fixture; decides Tier 0 CID scope
+- [ ] Spike S4 — span→operator mapping ambiguity audit (~20 corpus PDFs, ≥95% bar)
+- [ ] Phase A — font_registry + verify + EditTextResult extension + TEXT_COMMIT_ENGINE flag
+- [ ] Phase A.5 — shadow-classify telemetry (no behavior change)
+- [ ] Phase B — Tier 0 (STREAM_PATCH, Latin) + preview DTO contract + verify_commit_fidelity gate
+- [ ] Phase C — Tier 1 (RESET_ORIGINAL_FONT via TextWriter + LayoutEngine)
+- [ ] Phase D — Identity-H / CJK

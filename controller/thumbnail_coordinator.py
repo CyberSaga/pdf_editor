@@ -12,6 +12,7 @@ from PySide6.QtGui import QImage
 
 from model.color_profile import safe_to_fitz_colorspace
 from utils.helpers import pixmap_to_qimage
+from utils.render_limits import thumbnail_render_scale
 
 
 @dataclass(frozen=True)
@@ -66,7 +67,9 @@ class _ThumbnailWorker(QObject):
             for page_index in range(self._request.start, end):
                 if self._cancelled.is_set() or QThread.currentThread().isInterruptionRequested():
                     break
-                pixmap = doc[page_index].get_pixmap(matrix=fitz.Matrix(0.2, 0.2), colorspace=colorspace)
+                page = doc[page_index]
+                scale = thumbnail_render_scale(page)
+                pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), colorspace=colorspace)
                 image = pixmap_to_qimage(pixmap)
                 if self._cancelled.is_set() or QThread.currentThread().isInterruptionRequested():
                     break

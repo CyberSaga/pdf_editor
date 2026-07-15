@@ -1531,6 +1531,16 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 
 ---
 
+## PDF font identity must be keyed per-xref, never per-basefont
+
+**Area:** font handling for the text-commit engine design (`plans/2026-07-14-acrobat-parity-text-commit-engine.md`); any code matching spans to fonts
+**Symptom:** A glyph-coverage audit reported the document's *own* characters as missing from the document's *own* subset font — false "missing glyph" results.
+**Cause:** One document can carry multiple distinct subset instances sharing a single basefont name (observed: four different `LAAAAA+Consolas` xrefs with disjoint glyph sets). Matching spans to fonts by (subset-stripped) basefont name conflates the instances, so coverage/metric checks run against the wrong font object.
+**Fix:** Track font identity by xref end-to-end (`page.get_fonts(full=True)` xref → `doc.extract_font(xref)` → `fitz.Font(fontbuffer=...)`); use span→xref mapping (texttrace/text-state replay), never name equality.
+**File:** design record in `plans/2026-07-14-acrobat-parity-text-commit-engine.md` §3; audit script (scratchpad `font_roundtrip_audit.py`, to be productized as `scripts/audit_tier_coverage.py`)
+
+---
+
 ## Render-quality benchmark must use the profile-scoped quality map
 
 **Area:** `test_scripts/benchmark_ui_open_render.py`, controller render state
@@ -1538,3 +1548,13 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** `_page_render_quality_by_session` changed from a flat page map to `{session_id: {color_profile: {page_idx: quality}}}`, but the benchmark continued to look up `page_idx` directly under the session.
 **Fix:** Read quality through `PDFController._page_quality_map(session_id)`, which selects the active profile, instead of reaching into `_page_render_quality_by_session` directly. Cover the benchmark helper with a profile-scoped regression test.
 **File:** `test_scripts/benchmark_ui_open_render.py`; test `test_wait_for_quality_reads_active_color_profile_map`
+
+---
+
+## A growing thumbnail icon box does not upscale its source pixmap
+
+**Area:** thumbnail rendering and layout (`controller/thumbnail_coordinator.py`, `model/pdf_model.py`, `view/pdf_view.py`)
+**Symptom:** The sidebar's icon/grid dimensions grew as the splitter widened, but each rendered page image stayed about 120 px wide and appeared surrounded by excessive blank space.
+**Cause:** Both thumbnail render paths used a fixed MuPDF scale of `0.2`. `QIcon.actualSize()` can downscale a larger source, but it does not invent higher-resolution pixels to fill a larger icon box; the item also lacked a full-grid size hint.
+**Fix:** Render both clean-file and live-session thumbnails near the UI's maximum icon width, let QIcon downscale for narrow sidebars, and set each item's size hint/alignment to the computed grid cell.
+**File:** `utils/render_limits.py::thumbnail_render_scale`, `controller/thumbnail_coordinator.py`, `model/pdf_model.py::get_thumbnail`, `view/pdf_view.py::_update_thumbnail_layout_metrics`

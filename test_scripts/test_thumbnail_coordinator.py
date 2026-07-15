@@ -136,6 +136,7 @@ def test_file_worker_uses_captured_path_and_emits_qimages(qapp, tmp_path: Path) 
     assert [start for start, _images in painted] == [0, 1]
     assert all(isinstance(images[0], QImage) for _start, images in painted)
     assert all(not isinstance(images[0], QPixmap) for _start, images in painted)
+    assert all(images[0].width() >= 240 for _start, images in painted)
     coordinator.cancel()
     coordinator.wait_for_done()
 
