@@ -1528,3 +1528,13 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** Qt emits `errorOccurred(FailedToStart)` and transitions to `NotRunning`, but does not subsequently emit `finished`; cleanup existed only in the latter handler.
 **Fix:** Route `FailedToStart` through the same idempotent terminal lifecycle as `_on_finished`, clearing the payload/process/work directory and emitting the runner's `finished` signal exactly once.
 **File:** `src/printing/subprocess_runner.py`; test `test_runner_failed_to_start_releases_fileless_payload_and_finishes`
+
+---
+
+## Render-quality benchmark must use the profile-scoped quality map
+
+**Area:** `test_scripts/benchmark_ui_open_render.py`, controller render state
+**Symptom:** The UI open/render benchmark timed out waiting for a quality that had already been rendered.
+**Cause:** `_page_render_quality_by_session` changed from a flat page map to `{session_id: {color_profile: {page_idx: quality}}}`, but the benchmark continued to look up `page_idx` directly under the session.
+**Fix:** Read quality through `PDFController._page_quality_map(session_id)`, which selects the active profile, instead of reaching into `_page_render_quality_by_session` directly. Cover the benchmark helper with a profile-scoped regression test.
+**File:** `test_scripts/benchmark_ui_open_render.py`; test `test_wait_for_quality_reads_active_color_profile_map`

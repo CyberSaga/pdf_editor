@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 165 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 166 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -170,3 +170,4 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1502 | A QThread worker can clear its own decrypted payload race-free — no join needed | `controller/search_coordinator.py`, `controller/ocr_coordinator.py` (Codex F6 / B3) |
 | 1514 | XObject identity requires both the resource binding and the placement | `model/pdf_object_ops.py` app-image resolution and resource pruning |
 | 1524 | `QProcess.FailedToStart` has no matching `finished` signal | `src/printing/subprocess_runner.py` |
+| 1534 | Render-quality benchmark must use the profile-scoped quality map | `test_scripts/benchmark_ui_open_render.py`, controller render state |

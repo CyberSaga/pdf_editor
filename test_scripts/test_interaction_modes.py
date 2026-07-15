@@ -166,6 +166,28 @@ def _make_view() -> pdf_view.PDFView:
     return view
 
 
+_VIEW_LOCAL_MODES = {"text_edit", "objects"}
+
+
+def test_valid_modes_parity() -> None:
+    """Controller _VALID_MODES must be a subset of View _VALID_MODES,
+    and any View-only modes must be explicitly documented as view-local."""
+    from controller.pdf_controller import PDFController
+
+    view_modes = pdf_view.PDFView._VALID_MODES
+    ctrl_modes = PDFController._VALID_MODES
+
+    assert ctrl_modes <= view_modes, (
+        f"Controller has modes unknown to View: {ctrl_modes - view_modes}"
+    )
+
+    view_only = view_modes - ctrl_modes
+    assert view_only == _VIEW_LOCAL_MODES, (
+        f"Undocumented view-local modes: {view_only - _VIEW_LOCAL_MODES}; "
+        f"missing expected view-local modes: {_VIEW_LOCAL_MODES - view_only}"
+    )
+
+
 def test_f1_shortcut_switches_to_browse_mode(qapp) -> None:
     view = pdf_view.PDFView()
     try:

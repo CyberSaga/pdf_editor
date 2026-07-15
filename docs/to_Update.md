@@ -33,6 +33,6 @@
 
 ## 待釐清（未必是錯誤）：
 * 為何拉正頁面後檔案大小變超大 → 已釐清，要使用者手動最佳化
-* 刪除全部頁面會是什麼操作
+* 刪除全部頁面會是什麼操作 → 已釐清：確認後保留一頁空白佔位頁；插入實際頁面時自動移除佔位頁（M3 tranche 3.3）
 
 the .venv build env still has Pillow 12.1.1 and now-also-needed numpy isn't installed there — so before the next PyInstaller build, run .venv\Scripts\python -m pip install -U "Pillow>=12.2.0" numpy and rebuild, so the shipped artifact matches the secured requirements.txt.

@@ -37,12 +37,12 @@ def _wait_for_quality(startup: dict, session_id: str, page_idx: int, quality: st
     app = startup["app"]
     deadline = time.perf_counter() + timeout_s
     start = time.perf_counter()
-    page_quality = controller._page_render_quality_by_session.get(session_id, {}).get(page_idx)
+    page_quality = controller._page_quality_map(session_id).get(page_idx)
     if page_quality == quality:
         return 0.0
     while time.perf_counter() < deadline:
         app.processEvents()
-        page_quality = controller._page_render_quality_by_session.get(session_id, {}).get(page_idx)
+        page_quality = controller._page_quality_map(session_id).get(page_idx)
         if page_quality == quality:
             return (time.perf_counter() - start) * 1000.0
         time.sleep(0.005)

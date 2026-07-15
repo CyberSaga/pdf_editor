@@ -232,3 +232,21 @@ Reconciled via file split: `surya-ocr` + `torch` in `ocr-requirements.txt`; core
 - Text edit mode focuses on textboxes:
   - Supported: move/rotate/delete/resize/multi-select textboxes, plus editing words.
 - The same object identity layer stays shared across the object and text-edit paths.
+
+## M3 — Performance Baseline (captured 2026-07-15, pre-tranche-3.0)
+
+Full commands, method, and values: `plans/render-offload.md`.
+
+| Metric | Run 1 | Run 2 |
+|---|---:|---:|
+| PDFModel import | 0.245 s | — |
+| PDFModel instantiation | 0.001 s | — |
+| reference fixture| 861.3 ms | 923.7 ms |
+| reference fixture| 18.7 ms | 18.4 ms |
+| complex fixture| 1252.6 ms | 1044.1 ms |
+| complex fixture| 56.8 ms | 52.4 ms |
+| complex fixture| 81991.4 ms | 107464.7 ms |
+
+- [x] Fix `benchmark_ui_open_render.py` for the profile-scoped quality map.
+- [x] Capture the pre-M3 baseline and seed `plans/render-offload.md`.
+- [ ] Re-run immediately before tranche 3.6 and publish before/after evidence.
