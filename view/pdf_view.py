@@ -15,6 +15,7 @@ from PySide6.QtGui import (
     QCloseEvent,
     QColor,
     QCursor,
+    QDoubleValidator,
     QGuiApplication,
     QIcon,
     QKeySequence,
@@ -22,6 +23,7 @@ from PySide6.QtGui import (
     QPixmap,
     QShortcut,
     QTransform,
+    QValidator,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -89,6 +91,7 @@ from view.text_editing import (
     _EditorShortcutForwarder,  # noqa: F401 — re-exported for tests and legacy imports
     _format_font_size,
     _parse_font_size_str,
+    _validated_font_size_input,
     EditTextRequest,  # noqa: F401 — re-exported for controller
     InlineTextEditor,  # noqa: F401 — re-exported for tests and legacy imports
     MoveTextRequest,  # noqa: F401 — re-exported for controller
@@ -108,6 +111,25 @@ logger = logging.getLogger(__name__)
 # Zoom limits shared by all three zoom entry points (wheel, pinch, combo).
 _MAX_VIEW_ZOOM = 4.0   # 400%
 _MIN_VIEW_ZOOM = 0.1   # 10%
+
+
+class _FontSizeInputValidator(QDoubleValidator):
+    """Allow numeric-shaped drafts; strict range/precision checks happen on commit."""
+
+    def validate(self, text: str, pos: int) -> tuple[QValidator.State, str, int]:
+        candidate = str(text)
+        if candidate in {"", "+", "-", ".", "+.", "-."}:
+            return QValidator.State.Intermediate, candidate, pos
+        unsigned = candidate[1:] if candidate[:1] in {"+", "-"} else candidate
+        parts = unsigned.split(".")
+        numeric_shape = len(parts) <= 2 and any(parts) and all(
+            not part or (part.isascii() and part.isdigit()) for part in parts
+        )
+        if not numeric_shape:
+            return QValidator.State.Invalid, candidate, pos
+        if _validated_font_size_input(candidate) is not None:
+            return QValidator.State.Acceptable, candidate, pos
+        return QValidator.State.Intermediate, candidate, pos
 
 
 def _ctrl_tab_direction(key: int, modifiers: Qt.KeyboardModifiers) -> int:
@@ -891,7 +913,13 @@ class PDFView(QMainWindow):
         self.document_tab_bar.setVisible(False)
 
     def _install_document_tab_shortcuts(self) -> None:
-        """Route Ctrl+Tab and Ctrl+Shift+Tab to document tabs only."""
+        """Route document-tab shortcuts without stealing child-widget input."""
+        self._shortcut_close_doc_tab = QShortcut(QKeySequence("Ctrl+W"), self)
+        self._shortcut_close_doc_tab.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self._shortcut_close_doc_tab.activated.connect(self._close_current_document_tab)
+
         self._shortcut_next_doc_tab = QShortcut(QKeySequence("Ctrl+Tab"), self)
         self._shortcut_next_doc_tab.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._shortcut_next_doc_tab.activated.connect(lambda: self._cycle_document_tab(1))
@@ -1658,8 +1686,21 @@ class PDFView(QMainWindow):
         self.text_font.addItem("DFKai-SB", "dfkai-sb")
         self.text_font.setCurrentIndex(0)
         self.text_size = QComboBox()
+        self.text_size.setEditable(True)
+        self.text_size.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.text_size.addItems([str(i) for i in range(8, 30, 2)])
         self.text_size.setCurrentText("12")
+        self._last_valid_text_size_text = "12"
+        self._text_size_input_dirty = False
+        text_size_input = self.text_size.lineEdit()
+        if text_size_input is not None:
+            validator = _FontSizeInputValidator(1.0, 999.9, 1, text_size_input)
+            validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+            text_size_input.setValidator(validator)
+            text_size_input.installEventFilter(self)
+            text_size_input.textEdited.connect(self._on_text_size_input_edited)
+            text_size_input.editingFinished.connect(self._commit_text_size_input)
+        self.text_size.currentIndexChanged.connect(self._on_text_size_preset_changed)
         text_layout.addWidget(QLabel("字型"))
         text_layout.addWidget(self.text_font)
         text_layout.addWidget(QLabel("字級大小 (pt)"))
@@ -2199,6 +2240,18 @@ class PDFView(QMainWindow):
         super().keyPressEvent(event)
 
     def eventFilter(self, obj, event):
+        text_size = getattr(self, "text_size", None)
+        text_size_input = text_size.lineEdit() if text_size is not None else None
+        if obj is text_size_input:
+            if event.type() == QEvent.KeyPress and event.key() in (
+                Qt.Key_Return,
+                Qt.Key_Enter,
+            ):
+                self._commit_text_size_input()
+                event.accept()
+                return True
+            if event.type() == QEvent.FocusOut:
+                self._commit_text_size_input()
         drop_targets = getattr(self, "_drop_target_widgets", ())
         if obj in drop_targets and obj is not self and event.type() in (
             QEvent.DragEnter,
@@ -4336,8 +4389,39 @@ class PDFView(QMainWindow):
     def _on_edit_font_family_changed(self, *_):
         self._ensure_text_edit_manager().on_edit_font_family_changed(*_)
 
+    def _remember_text_size_value(self, size_str: str) -> None:
+        size = _parse_font_size_str(size_str)
+        if size is None or not math.isfinite(size) or not 1.0 <= size <= 999.9:
+            return
+        self._last_valid_text_size_text = str(size_str).strip()
+
+    def _on_text_size_preset_changed(self, index: int) -> None:
+        if index < 0 or self._text_size_input_dirty:
+            return
+        self._remember_text_size_value(self.text_size.itemText(index))
+
+    def _on_text_size_input_edited(self, _text: str) -> None:
+        self._text_size_input_dirty = True
+
+    def _commit_text_size_input(self) -> bool:
+        if not self._text_size_input_dirty:
+            return True
+        size_text = self.text_size.currentText().strip()
+        if _validated_font_size_input(size_text) is None:
+            self.text_size.setEditText(self._last_valid_text_size_text)
+            self._text_size_input_dirty = False
+            return False
+        self.text_size.setEditText(size_text)
+        self._text_size_input_dirty = False
+        self._remember_text_size_value(size_text)
+        self._on_edit_font_size_changed(size_text)
+        return True
+
     def _on_edit_font_size_changed(self, size_str: str):
         """編輯中變更字級時，更新編輯框字型以即時預覽。"""
+        if self._text_size_input_dirty:
+            return
+        self._remember_text_size_value(size_str)
         self._ensure_text_edit_manager().on_edit_font_size_changed(size_str)
 
     def _finalize_text_edit(

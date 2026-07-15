@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 168 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 169 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -173,3 +173,4 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1534 | PDF font identity must be keyed per-xref, never per-basefont | font handling for the text-commit engine design (`plans/2026-07-14-acrobat-parity-text-commit-engine.md`); any code matching spans to fonts |
 | 1544 | Render-quality benchmark must use the profile-scoped quality map | `test_scripts/benchmark_ui_open_render.py`, controller render state |
 | 1554 | A growing thumbnail icon box does not upscale its source pixmap | thumbnail rendering and layout (`controller/thumbnail_coordinator.py`, `model/pdf_model.py`, `view/pdf_view.py`) |
+| 1564 | Editable combo validation must distinguish draft text from committed values | `view/pdf_view.py`, `view/text_editing.py` — font-size control |

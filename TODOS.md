@@ -233,6 +233,16 @@ Reconciled via file split: `surya-ocr` + `torch` in `ocr-requirements.txt`; core
   - Supported: move/rotate/delete/resize/multi-select textboxes, plus editing words.
 - The same object identity layer stays shared across the object and text-edit paths.
 
+## M3 — Tranche 3.1 Quick Wins (completed 2026-07-15)
+
+- [x] Scale and center thumbnail rasters across narrow and wide sidebars.
+- [x] Re-render every thumbnail after page-count changes; keep bounded invalidation for unchanged counts.
+- [x] Make repeated Enter advance completed search results without restarting the search.
+- [x] Add Ctrl+W current-tab close while preserving an empty application window after the final tab.
+- [x] Make the font-size combo editable with one-decimal commit validation and last-valid restoration.
+- Runtime evidence is retained separately from the repository.
+- Completion gates: `1673 passed, 21 skipped`; full Ruff clean; mypy clean across 35 model/utils files.
+
 ## M3 — Performance Baseline (captured 2026-07-15, pre-tranche-3.0)
 
 Full commands, method, and values: `plans/render-offload.md`.

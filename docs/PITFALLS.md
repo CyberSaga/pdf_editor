@@ -1558,3 +1558,13 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** Both thumbnail render paths used a fixed MuPDF scale of `0.2`. `QIcon.actualSize()` can downscale a larger source, but it does not invent higher-resolution pixels to fill a larger icon box; the item also lacked a full-grid size hint.
 **Fix:** Render both clean-file and live-session thumbnails near the UI's maximum icon width, let QIcon downscale for narrow sidebars, and set each item's size hint/alignment to the computed grid cell.
 **File:** `utils/render_limits.py::thumbnail_render_scale`, `controller/thumbnail_coordinator.py`, `model/pdf_model.py::get_thumbnail`, `view/pdf_view.py::_update_thumbnail_layout_metrics`
+
+---
+
+## Editable combo validation must distinguish draft text from committed values
+
+**Area:** `view/pdf_view.py`, `view/text_editing.py` — font-size control
+**Symptom:** Typing a font size could resize the inline editor on every partial keystroke; standard `QDoubleValidator` behavior also blocked `-2`, `1000`, or the second decimal digit before commit, so an attempted invalid value could silently become a different valid value instead of restoring the last valid size.
+**Cause:** Editable `QComboBox.currentTextChanged` fires while the user is still composing text. A normal validator rejects some invalid keystrokes and does not emit `editingFinished` for intermediate input, which makes commit-time restoration unreliable.
+**Fix:** Treat numeric-shaped text as a draft, gate live preview while the line edit is dirty, catch Return/focus-out in the line edit's event filter, and apply a strict one-decimal/range validator only at commit. Invalid commits restore the remembered display text; preset/programmatic changes continue through the existing immediate-preview path.
+**File:** `view/pdf_view.py` (`_FontSizeInputValidator`, `_commit_text_size_input`), `view/text_editing.py` (`_validated_font_size_input`)

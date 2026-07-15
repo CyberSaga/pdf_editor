@@ -1,6 +1,6 @@
 # Milestone 3 — User-Facing Features
 
-**Status:** In progress (tranche 3.0 started 2026-07-15)
+**Status:** In progress (tranches 3.0–3.1 complete as of 2026-07-15)
 
 ## Goal
 
@@ -20,7 +20,7 @@ The detailed authoritative roadmap is maintained outside this repository. This r
 ## Execution order
 
 - [x] **3.0 Pre-flight (2026-07-15):** mode-contract guard; perf baseline; AC-FIX-05 / AC-NEW-10 addenda
-- [ ] **3.1 Quick wins:** thumbnail centering/invalidation, Enter search navigation, Ctrl+W, decimal font size
+- [x] **3.1 Quick wins (2026-07-15):** thumbnail centering/invalidation, Enter search navigation, Ctrl+W, decimal font size
 - [ ] **3.2 platform/print:** paper centering, existing-window raise, fresh-boot print diagnosis, icon scope
 - [ ] **3.3 Page structure:** delete-all placeholder, custom ranges, thumbnail page reorder
 - [ ] **3.4 Shell/tab UX:** 720×520 shell, tab X/context menu, nav keys, MRU
