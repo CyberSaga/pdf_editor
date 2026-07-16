@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import fitz
 from PySide6.QtCore import QMarginsF, QRectF
-from PySide6.QtGui import QPageLayout, QPageSize
+from PySide6.QtGui import QImage, QPageLayout, QPageSize
 from PySide6.QtWidgets import QApplication
 
 from src.printing.base_driver import PrintJobOptions
@@ -244,3 +245,40 @@ def test_print_dialog_paper_combo_offers_a3() -> None:
             assert dialog.paper_combo.findData("a3") >= 0
         finally:
             dialog.close()
+
+
+class _PhysicalPaperPrinter:
+    """Fake printer with an asymmetric printable area inside its paper sheet."""
+
+    def paperRect(self, _unit):
+        return QRectF(0.0, 0.0, 1000.0, 800.0)
+
+    def pageRect(self, _unit):
+        return QRectF(60.0, 40.0, 880.0, 700.0)
+
+
+class _RecordingPainter:
+    def __init__(self) -> None:
+        self.drawn_rect: QRectF | None = None
+
+    def drawImage(self, rect: QRectF, _image: QImage) -> None:
+        self.drawn_rect = QRectF(rect)
+
+
+def test_draw_page_image_centers_against_physical_paper_not_printable_area() -> None:
+    """AC-MOD-04: asymmetric printer margins must not shift physical-paper centering."""
+    painter = _RecordingPainter()
+    rendered = SimpleNamespace(image=QImage(400, 200, QImage.Format.Format_ARGB32))
+
+    qtb._draw_page_image(
+        painter,
+        _PhysicalPaperPrinter(),
+        rendered,
+        PrintJobOptions(scale_mode="actual", fit_to_page=False),
+    )
+
+    assert painter.drawn_rect is not None
+    rect = painter.drawn_rect
+    # The image must be centred in the physical 1000×800 sheet. The old
+    # pageRect-centred result was x=300, y=290 and visibly asymmetric vertically.
+    assert rect == QRectF(300.0, 300.0, 400.0, 200.0)

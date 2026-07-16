@@ -181,7 +181,10 @@ def _draw_page_image(
     rendered: RenderedPage,
     options: PrintJobOptions,
 ) -> None:
-    target_rect = QRectF(printer.pageRect(QPrinter.Unit.DevicePixel))
+    # Center relative to the physical sheet, not its printable rect. On drivers
+    # with asymmetric hardware margins, pageRect() shifts content away from the
+    # paper centre even though the fit math itself is correct.
+    target_rect = QRectF(printer.paperRect(QPrinter.Unit.DevicePixel))
     image = rendered.image
     x, y, width, height = compute_target_draw_rect(
         target_width=target_rect.width(),

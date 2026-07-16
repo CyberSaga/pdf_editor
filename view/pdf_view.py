@@ -16,6 +16,7 @@ from PySide6.QtGui import (
     QColor,
     QCursor,
     QDoubleValidator,
+    QDrag,
     QGuiApplication,
     QIcon,
     QKeySequence,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
     QColorDialog,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -58,6 +60,8 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QToolBar,
     QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -76,6 +80,7 @@ from model.object_requests import (
     MoveObjectRequest,
     ResizeObjectRequest,
 )
+from view.detachable_tab_bar import DetachableTabBar
 from view.text_selection import TextSelectionManager  # noqa: E402
 from view.object_selection import (  # noqa: E402
     ObjectSelectionManager,
@@ -142,6 +147,34 @@ def _ctrl_tab_direction(key: int, modifiers: Qt.KeyboardModifiers) -> int:
     return -1 if (modifiers & Qt.ShiftModifier) else 1
 
 
+def _parse_custom_page_scope(value: str, total_pages: int) -> list[int]:
+    """Validate a 1-based custom scope before delegating normalization to ``parse_pages``."""
+    raw = str(value).strip()
+    if not raw or total_pages <= 0:
+        raise ValueError("empty custom page scope")
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            raise ValueError("empty custom page token")
+        bounds = token.split("-")
+        if len(bounds) == 1:
+            if not bounds[0].isascii() or not bounds[0].isdigit():
+                raise ValueError("invalid custom page token")
+            page = int(bounds[0])
+            if page < 1 or page > total_pages:
+                raise ValueError("custom page outside document")
+            continue
+        if len(bounds) != 2 or any(not bound.isascii() or not bound.isdigit() for bound in bounds):
+            raise ValueError("invalid custom page range")
+        start, end = (int(bound) for bound in bounds)
+        if start < 1 or end > total_pages or start > end:
+            raise ValueError("custom page range outside document")
+    pages = parse_pages(raw, total_pages)
+    if not pages:
+        raise ValueError("empty custom page scope")
+    return pages
+
+
 def compute_object_resize_rect(
     start_rect: fitz.Rect,
     anchor: int,
@@ -150,12 +183,12 @@ def compute_object_resize_rect(
     lock_ar: bool,
     min_size: float = 8.0,
 ) -> fitz.Rect:
-    """Compute a resized rect for a corner-handle drag (doc-space deltas).
+    """Compute a resized rect for a corner or midpoint-handle drag.
 
-    ``anchor`` is the dragged corner: 0=TL, 1=TR, 2=BL, 3=BR — its two owned
-    edges move while the opposite corner stays fixed. Plain drag (``lock_ar``
-    False) resizes freely; ``lock_ar`` True preserves the start rect's aspect
-    ratio about the fixed opposite corner (AC-5).
+    Anchors 0..3 are TL/TR/BL/BR corners. Anchors 4..7 are top/right/
+    bottom/left midpoint handles; they move only their owned edge and ignore
+    aspect-ratio locking. Corner Shift-drag preserves the start ratio about the
+    fixed opposite corner.
     """
     x0, y0, x1, y1 = start_rect.x0, start_rect.y0, start_rect.x1, start_rect.y1
     if anchor == 0:    # TL: move x0, y0
@@ -170,12 +203,20 @@ def compute_object_resize_rect(
         nx0 = min(x0 + dx, x1 - min_size)
         ny1 = max(y1 + dy, y0 + min_size)
         free = fitz.Rect(nx0, y0, x1, ny1)
+    elif anchor == 4:  # top midpoint: move y0 only
+        free = fitz.Rect(x0, min(y0 + dy, y1 - min_size), x1, y1)
+    elif anchor == 5:  # right midpoint: move x1 only
+        free = fitz.Rect(x0, y0, max(x1 + dx, x0 + min_size), y1)
+    elif anchor == 6:  # bottom midpoint: move y1 only
+        free = fitz.Rect(x0, y0, x1, max(y1 + dy, y0 + min_size))
+    elif anchor == 7:  # left midpoint: move x0 only
+        free = fitz.Rect(min(x0 + dx, x1 - min_size), y0, x1, y1)
     else:              # BR: move x1, y1
         nx1 = max(x1 + dx, x0 + min_size)
         ny1 = max(y1 + dy, y0 + min_size)
         free = fitz.Rect(x0, y0, nx1, ny1)
 
-    if not lock_ar:
+    if not lock_ar or anchor >= 4:
         return free
 
     start_w = max(min_size, start_rect.width)
@@ -233,6 +274,134 @@ class _NoCtrlTabTabBar(QTabBar):
         super().keyPressEvent(event)
 
 
+class _ReorderableThumbnailList(QListWidget):
+    """Thumbnail list that performs internal row moves itself and emits the result.
+
+    QListWidget routes internal drops through QListView icon repositioning
+    whenever movement is not Static, which in IconMode moves the icon visually
+    without ever changing model rows — the drop looks accepted but the order
+    never changes. The row move is therefore done explicitly here and Qt's
+    internal-move machinery is never invoked for drops that originate locally.
+    """
+
+    page_reordered = Signal(int, int)
+
+    _DRAG_SCROLL_MARGIN = 48
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setViewMode(QListWidget.IconMode)
+        self.setFlow(QListView.TopToBottom)
+        self.setWrapping(False)
+        self.setMovement(QListView.Static)
+        self.setDragDropMode(QAbstractItemView.InternalMove)
+        self.setDefaultDropAction(Qt.MoveAction)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setResizeMode(QListView.Adjust)
+        self.setAutoScroll(True)
+        self.setAutoScrollMargin(self._DRAG_SCROLL_MARGIN)
+        # QListView.setMovement(Static) disables drop acceptance on the
+        # viewport as a side effect, and setAcceptDrops(True) on the view
+        # does not restore it. Qt delivers real drag events to the viewport,
+        # so without this no OS-level drop ever reaches dropEvent.
+        self.viewport().setAcceptDrops(True)
+
+    def dragEnterEvent(self, event) -> None:
+        # Static movement makes QListView refuse internal moves away from the
+        # source row, so internal drags are accepted here explicitly and never
+        # delegated to Qt's item-view drag logic.
+        if event.source() is self:
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if event.source() is self:
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+        else:
+            super().dragMoveEvent(event)
+        self._auto_scroll_during_drag(event.position().toPoint())
+
+    def _auto_scroll_during_drag(self, pos: QPoint) -> None:
+        """Nudge the scroll position while a drag hovers near the top/bottom edge.
+
+        Qt's built-in drag auto-scroll only reacts within a small margin and
+        stalls when the cursor rests still; this keeps rows beyond the visible
+        viewport reachable during a thumbnail drag.
+        """
+        bar = self.verticalScrollBar()
+        if bar is None or bar.maximum() <= 0:
+            return
+        step = max(1, bar.singleStep())
+        if pos.y() < self._DRAG_SCROLL_MARGIN:
+            bar.setValue(bar.value() - step)
+        elif pos.y() > self.viewport().height() - self._DRAG_SCROLL_MARGIN:
+            bar.setValue(bar.value() + step)
+
+    def startDrag(self, supported_actions) -> None:  # noqa: N802 - Qt override
+        """Run the internal drag without QAbstractItemView's post-exec cleanup.
+
+        When a drag finishes with MoveAction, the base startDrag deletes the
+        still-selected source row via clearOrRemove(). dropEvent has already
+        performed the row move by then, so that cleanup deletes the moved
+        thumbnail. Downgrading the drop action to CopyAction (Qt's own
+        internal-move trick) does not stick here because the synthetic mask
+        is Move-only, so the QDrag is run directly instead.
+        """
+        item = self.currentItem()
+        if item is None:
+            return
+        mime = self.mimeData([item])
+        if mime is None:
+            return
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        rect = self.visualItemRect(item)
+        if rect.isValid():
+            drag.setPixmap(self.viewport().grab(rect))
+            hotspot = self.viewport().mapFromGlobal(QCursor.pos()) - rect.topLeft()
+            if 0 <= hotspot.x() <= rect.width() and 0 <= hotspot.y() <= rect.height():
+                drag.setHotSpot(hotspot)
+        drag.exec(Qt.MoveAction, Qt.MoveAction)
+
+    def dropEvent(self, event) -> None:
+        if event.source() is not self:
+            super().dropEvent(event)
+            return
+        source_row = self.currentRow()
+        destination_row = self._drop_destination_row(event.position().toPoint(), source_row)
+        event.accept()
+        self.setState(QAbstractItemView.NoState)
+        self.viewport().update()
+        if source_row < 0 or destination_row < 0 or destination_row == source_row:
+            return
+        item = self.takeItem(source_row)
+        self.insertItem(destination_row, item)
+        self.setCurrentItem(item)
+        self.page_reordered.emit(source_row, destination_row)
+
+    def _drop_destination_row(self, pos: QPoint, source_row: int) -> int:
+        """Map a drop position to the moved item's final row.
+
+        Scanning row centers (rather than indexAt) keeps drops in the spacing
+        gaps between thumbnails and past the last row well-defined.
+        """
+        if source_row < 0:
+            return -1
+        insert_slot = self.count()
+        for row in range(self.count()):
+            if pos.y() < self.visualItemRect(self.item(row)).center().y():
+                insert_slot = row
+                break
+        if insert_slot > source_row:
+            insert_slot -= 1
+        return insert_slot
+
+
 # Dialog classes are loaded lazily (PEP 562 module __getattr__) so PIL/pikepdf/lxml
 # don't load at startup. Both attribute access and `from view.pdf_view import Name`
 # trigger __getattr__ on first use; the result is cached in globals() afterwards.
@@ -262,7 +431,8 @@ def __getattr__(name: str) -> object:
 
 
 class PDFView(QMainWindow):
-    _VALID_MODES = {"browse", "edit_text", "text_edit", "objects", "add_text", "rect", "highlight", "add_annotation"}
+    _VALID_MODES = {"browse", "edit_text", "text_edit", "objects", "add_text", "rect", "highlight", "underline", "strikeout", "add_annotation"}
+    _COMPACT_SHELL_WIDTH = 900
     _PAGE_SCOPE_CURRENT = "目前頁"
     _PAGE_SCOPE_ALL = "全部"
     _PAGE_SCOPE_ODD = "奇數頁"
@@ -280,6 +450,7 @@ class PDFView(QMainWindow):
         _PAGE_SCOPE_CURRENT,
         _PAGE_SCOPE_ODD,
         _PAGE_SCOPE_EVEN,
+        _PAGE_SCOPE_CUSTOM,
     )
     _AUTOPAN_DEADZONE_PX: float = 12.0
     _AUTOPAN_DIVISOR: float = 8.0
@@ -287,16 +458,23 @@ class PDFView(QMainWindow):
     # --- Existing Signals ---
     sig_open_pdf = Signal(str)
     sig_print_requested = Signal()
+    sig_request_metadata_editor = Signal()
+    sig_update_metadata = Signal(object)
     sig_save_as = Signal(str)
     sig_save = Signal()  # 存回原檔（Ctrl+S，使用增量更新若適用）
     sig_tab_changed = Signal(int)
     sig_tab_close_requested = Signal(int)
+    sig_detach_document_requested = Signal(str, object)
+    sig_reveal_document_requested = Signal(str)
     sig_delete_pages = Signal(list)
     sig_rotate_pages = Signal(list, int)
+    sig_reorder_page = Signal(int, int)
     sig_straighten_pages = Signal(list)
     sig_export_pages = Signal(list, str, bool, int, str)
     sig_add_highlight = Signal(int, object, object)
-    sig_add_rect = Signal(int, object, object, bool)
+    sig_add_underline = Signal(int, object, object)
+    sig_add_strikeout = Signal(int, object, object)
+    sig_add_rect = Signal(int, object, object, object, float)
     sig_edit_text = Signal(object)  # EditTextRequest
     sig_move_text_across_pages = Signal(object)  # MoveTextRequest
     sig_add_textbox = Signal(int, object, str, str, int, tuple)  # page_num, visual_rect, text, font, size, color
@@ -319,9 +497,14 @@ class PDFView(QMainWindow):
 
     # --- New Annotation Signals ---
     sig_add_annotation = Signal(int, object, str)  # page_idx, doc_point (fitz.Point), text
+    sig_update_annotation = Signal(int, int, str)
+    sig_move_annotation = Signal(int, int, object)
+    sig_delete_annotation = Signal(int, int)
     sig_load_annotations = Signal()
     sig_jump_to_annotation = Signal(int) # By xref
     sig_toggle_annotations_visibility = Signal(bool)
+    sig_bookmark_activated = Signal(int)
+    sig_toc_changed = Signal(object)
 
     # --- Snapshot Signal ---
     sig_snapshot_page = Signal(int)
@@ -354,11 +537,15 @@ class PDFView(QMainWindow):
         self._prefs = UserPreferences()
         self._initial_theme = self._prefs.get_theme()
         self.setWindowTitle("視覺化 PDF 編輯器")
-        self.setMinimumSize(1280, 800)
+        self.setMinimumSize(720, 520)
         self.setGeometry(100, 100, 1280, 800)
         self.setAcceptDrops(True)
         self.total_pages = 0
         self.controller = None
+        self._annotation_dtos: list[dict] = []
+        self._toc_signal_block = False
+        self._floating_note = None
+        self._note_marker_drag_state = None
         self._ocr_available = True
         self._ocr_unavailable_tooltip = ""
         self._defer_heavy_panels = defer_heavy_panels
@@ -401,6 +588,7 @@ class PDFView(QMainWindow):
         # --- Main content: QSplitter (Left 260px | Center | Right 280px) ---
         self.main_splitter = QSplitter(Qt.Horizontal)
         self.main_splitter.setAcceptDrops(True)
+        self.main_splitter.setChildrenCollapsible(True)
 
         # Left sidebar: 260px, QTabWidget (縮圖 / 搜尋 / 註解列表 / 浮水印列表)
         self.left_sidebar = QTabWidget()
@@ -463,6 +651,8 @@ class PDFView(QMainWindow):
         self.right_sidebar.setMinimumWidth(240)
         self.right_sidebar.setMaximumWidth(400)
         self.main_splitter.addWidget(self.right_sidebar)
+        self.main_splitter.setCollapsible(0, True)
+        self.main_splitter.setCollapsible(2, True)
 
         # Set splitter sizes: left 260, center flexible, right 280
         self.main_splitter.setSizes([260, 740, 280])  # 1280 total approx
@@ -493,6 +683,9 @@ class PDFView(QMainWindow):
         self.scale = 1.0
         self._left_sidebar_last_width = 260
         self._right_sidebar_last_width = 280
+        self._compact_shell_active = False
+        self._compact_restore_left_sidebar = True
+        self._compact_restore_right_sidebar = True
         # 記錄目前場景內 pixmap 實際渲染時所使用的 scale。
         # self.scale 代表「期望的總縮放」，可能因 wheel zoom 超前於重渲；
         # _render_scale 追蹤已實際渲染進場景的 scale，供座標轉換使用。
@@ -554,6 +747,7 @@ class PDFView(QMainWindow):
         # 連續捲動模式：所有頁面由上到下連結，滑動 scrollbar 切換頁面
         self.continuous_pages = True
         self.page_items: list[QGraphicsPixmapItem] = []
+        self.page_x_positions: list[float] = []
         self.page_y_positions: list[float] = []
         self.page_heights: list[float] = []
         self._page_base_sizes: list[tuple[float, float]] = []
@@ -887,6 +1081,7 @@ class PDFView(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._update_compact_shell_state()
         if self._shell_ready_emitted:
             return
         if self._defer_heavy_panels:
@@ -898,18 +1093,60 @@ class PDFView(QMainWindow):
         # Non-deferred views still announce readiness after the first show turn.
         QTimer.singleShot(0, self._emit_shell_ready_once)
 
+    def _update_compact_shell_state(self) -> None:
+        """Collapse sidebars only while the outer shell is below 900 px wide."""
+        if not hasattr(self, "main_splitter") or getattr(self, "_fullscreen_active", False):
+            return
+        compact = self.width() < self._COMPACT_SHELL_WIDTH
+        if compact == getattr(self, "_compact_shell_active", False):
+            return
+        if compact:
+            self._compact_restore_left_sidebar = not self.left_sidebar_widget.isHidden()
+            self._compact_restore_right_sidebar = not self.right_sidebar.isHidden()
+            sizes = self.main_splitter.sizes()
+            if sizes[0] >= 50:
+                self._left_sidebar_last_width = sizes[0]
+            if sizes[2] >= 50:
+                self._right_sidebar_last_width = sizes[2]
+            self._compact_shell_active = True
+            self.left_sidebar_widget.hide()
+            self.right_sidebar.hide()
+            self._apply_sidebar_sizes(left_width=0, right_width=0)
+            return
+
+        self._compact_shell_active = False
+        left_width = 0
+        right_width = 0
+        if self._compact_restore_left_sidebar:
+            self.left_sidebar_widget.show()
+            left_width = self._resolve_sidebar_width(self._left_sidebar_last_width, 260)
+        if self._compact_restore_right_sidebar:
+            self.right_sidebar.show()
+            right_width = self._resolve_sidebar_width(self._right_sidebar_last_width, 280)
+        self._apply_sidebar_sizes(left_width=left_width, right_width=right_width)
+
     def _build_document_tabs_bar(self):
         """Document-level tab bar for multiple open PDFs."""
-        self.document_tab_bar = QTabBar(self)
+        self.document_tab_bar = DetachableTabBar(self)
         # Styled via the global theme QSS (QTabBar#documentTabBar).
         self.document_tab_bar.setObjectName("documentTabBar")
         self.document_tab_bar.setExpanding(False)
         self.document_tab_bar.setMovable(False)
-        self.document_tab_bar.setTabsClosable(True)
+        # Native close glyphs are style-dependent and can disappear or expose
+        # a tiny hit target. set_document_tabs() installs explicit 20 px buttons.
+        self.document_tab_bar.setTabsClosable(False)
         self.document_tab_bar.setDocumentMode(True)
         self.document_tab_bar.setElideMode(Qt.ElideMiddle)
         self.document_tab_bar.currentChanged.connect(self._on_document_tab_changed)
+        self.document_tab_bar.detach_requested.connect(
+            self.sig_detach_document_requested.emit
+        )
         self.document_tab_bar.tabCloseRequested.connect(self._on_document_tab_close_requested)
+        self.document_tab_bar.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.document_tab_bar.customContextMenuRequested.connect(
+            self._show_document_tab_context_menu
+        )
+        self._document_tab_reveal_available: dict[object, bool] = {}
         self.document_tab_bar.setVisible(False)
 
     def _install_document_tab_shortcuts(self) -> None:
@@ -967,21 +1204,110 @@ class PDFView(QMainWindow):
         try:
             while self.document_tab_bar.count():
                 self.document_tab_bar.removeTab(self.document_tab_bar.count() - 1)
+            self._document_tab_reveal_available.clear()
             for meta in tabs:
                 title = meta.get("display_name") or "未命名"
                 if meta.get("dirty"):
                     title = f"{title} *"
                 idx = self.document_tab_bar.addTab(title)
-                self.document_tab_bar.setTabData(idx, meta.get("id"))
+                session_id = meta.get("id")
+                self._document_tab_reveal_available[session_id] = bool(
+                    meta.get("reveal_available", False)
+                )
+                self.document_tab_bar.setTabData(idx, session_id)
                 self.document_tab_bar.setTabToolTip(idx, meta.get("path") or title)
+                self.document_tab_bar.setTabButton(
+                    idx,
+                    QTabBar.ButtonPosition.RightSide,
+                    self._make_document_tab_close_button(session_id),
+                )
             if tabs:
                 idx = active_index if 0 <= active_index < len(tabs) else 0
                 self.document_tab_bar.setCurrentIndex(idx)
             self.document_tab_bar.setVisible(bool(tabs))
-            self.document_tab_bar.setTabsClosable(bool(tabs))
+            self.document_tab_bar.setTabsClosable(False)
+            self._sync_document_tab_close_buttons()
         finally:
             self.document_tab_bar.blockSignals(False)
             self._doc_tab_signal_block = False
+
+    def _make_document_tab_close_button(self, session_id: object) -> QToolButton:
+        button = QToolButton(self.document_tab_bar)
+        button.setObjectName("documentTabCloseButton")
+        button.setText("×")
+        button.setFixedSize(20, 20)
+        button.setAutoRaise(True)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setToolTip("關閉文件")
+        button.setAccessibleName("關閉文件分頁")
+        button.clicked.connect(
+            lambda _checked=False, sid=session_id: self._close_document_tab_by_session_id(sid)
+        )
+        return button
+
+    def _close_document_tab_by_session_id(self, session_id: object) -> None:
+        for index in range(self.document_tab_bar.count()):
+            if self.document_tab_bar.tabData(index) == session_id:
+                self._on_document_tab_close_requested(index)
+                return
+
+    def _build_document_tab_context_menu(self, index: int) -> QMenu:
+        menu = QMenu(self.document_tab_bar)
+        session_id = (
+            self.document_tab_bar.tabData(index)
+            if 0 <= index < self.document_tab_bar.count()
+            else None
+        )
+        reveal = menu.addAction("開啟檔案所在位置")
+        reveal.setEnabled(
+            session_id is not None
+            and self._document_tab_reveal_available.get(session_id, False)
+        )
+        if session_id is not None:
+            reveal.triggered.connect(
+                lambda _checked=False, sid=session_id: self.sig_reveal_document_requested.emit(
+                    str(sid)
+                )
+            )
+        return menu
+
+    def _show_document_tab_context_menu(self, pos: QPoint) -> None:
+        index = self.document_tab_bar.tabAt(pos)
+        if index < 0:
+            return
+        menu = self._build_document_tab_context_menu(index)
+        menu.exec(self.document_tab_bar.mapToGlobal(pos))
+
+    def _sync_document_tab_close_buttons(self) -> None:
+        current = self.document_tab_bar.currentIndex()
+        for index in range(self.document_tab_bar.count()):
+            button = self.document_tab_bar.tabButton(
+                index, QTabBar.ButtonPosition.RightSide
+            )
+            if button is None:
+                continue
+            button.setProperty("active", index == current)
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+    def set_recent_files(self, entries: list[dict[str, object]]) -> None:
+        self._recent_files_menu.clear()
+        if not entries:
+            empty = self._recent_files_menu.addAction("沒有最近檔案")
+            empty.setEnabled(False)
+            return
+        for entry in entries:
+            path = str(entry.get("path") or "")
+            label = str(entry.get("display_name") or path or "未命名")
+            available = bool(entry.get("available", False))
+            text = label if available else f"{label}（不存在）"
+            action = self._recent_files_menu.addAction(text)
+            action.setToolTip(path)
+            action.setEnabled(available)
+            if available:
+                action.triggered.connect(
+                    lambda _checked=False, candidate=path: self.sig_open_pdf.emit(candidate)
+                )
 
     def set_save_as_default_path(self, path: str | None) -> None:
         candidate = str(path or "").strip()
@@ -993,6 +1319,7 @@ class PDFView(QMainWindow):
         self.set_document_tabs([], -1)
 
     def _on_document_tab_changed(self, index: int) -> None:
+        self._sync_document_tab_close_buttons()
         if self._doc_tab_signal_block:
             return
         if index >= 0:
@@ -1151,12 +1478,17 @@ class PDFView(QMainWindow):
         tb_file = QToolBar()
         self._action_open = tb_file.addAction("開啟", self._open_file)
         self._action_open.setShortcut(QKeySequence("Ctrl+O"))
+        self._recent_files_menu = QMenu("最近檔案", self)
+        self._action_open.setMenu(self._recent_files_menu)
         self._action_print = tb_file.addAction("列印", self._print_document)
         self._action_print.setShortcut(QKeySequence("Ctrl+P"))
         self._action_save = tb_file.addAction("儲存", self._save)
         self._action_save.setShortcut(QKeySequence("Ctrl+S"))
         self._action_save_as = tb_file.addAction("另存新檔", self._save_as)
         self._action_save_as.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self._action_metadata = tb_file.addAction(
+            "文件資訊", self.sig_request_metadata_editor.emit
+        )
         self._action_optimize_copy = tb_file.addAction("另存為最佳化的副本", self._optimize_pdf_copy)
         layout_file = QVBoxLayout(tab_file)
         layout_file.setContentsMargins(4, 0, 0, 0)
@@ -1198,6 +1530,10 @@ class PDFView(QMainWindow):
         tb_edit.addAction(self._action_rect)
         self._action_highlight = self._make_mode_action("螢光筆", "highlight")
         tb_edit.addAction(self._action_highlight)
+        self._action_underline = self._make_mode_action("底線", "underline")
+        tb_edit.addAction(self._action_underline)
+        self._action_strikeout = self._make_mode_action("刪除線", "strikeout")
+        tb_edit.addAction(self._action_strikeout)
         self._action_add_annotation = self._make_mode_action("新增註解", "add_annotation")
         tb_edit.addAction(self._action_add_annotation)
         tb_edit.addAction("插入圖片", self._insert_image_object_from_file_at_current_page)
@@ -1501,6 +1837,8 @@ class PDFView(QMainWindow):
             self._focus_left_sidebar_target()
 
     def toggle_left_sidebar(self) -> None:
+        if self._compact_shell_active:
+            return
         if self.left_sidebar_widget.isVisible():
             left_width = self.main_splitter.sizes()[0]
             if left_width >= 50:
@@ -1516,6 +1854,8 @@ class PDFView(QMainWindow):
         self._focus_left_sidebar_target()
 
     def toggle_right_sidebar(self) -> None:
+        if self._compact_shell_active:
+            return
         if self.right_sidebar.isVisible():
             right_width = self.main_splitter.sizes()[2]
             if right_width >= 50:
@@ -1555,15 +1895,11 @@ class PDFView(QMainWindow):
     def _setup_left_sidebar(self):
         """Left sidebar: QTabWidget with 縮圖 / 搜尋 / 註解列表 / 浮水印列表. 260px."""
         # 縮圖 (default)
-        self.thumbnail_list = QListWidget(self)
-        self.thumbnail_list.setViewMode(QListWidget.IconMode)
-        self.thumbnail_list.setFlow(QListView.TopToBottom)
-        self.thumbnail_list.setWrapping(False)
-        self.thumbnail_list.setMovement(QListView.Static)
-        self.thumbnail_list.setResizeMode(QListView.Adjust)
+        self.thumbnail_list = _ReorderableThumbnailList(self)
         self.thumbnail_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.thumbnail_list.viewport().installEventFilter(self)
         self.thumbnail_list.itemClicked.connect(self._on_thumbnail_clicked)
+        self.thumbnail_list.page_reordered.connect(self._on_thumbnail_reordered)
         self.thumbnail_list.customContextMenuRequested.connect(self._show_thumbnail_context_menu)
         self.left_sidebar.addTab(self.thumbnail_list, "縮圖")
         QTimer.singleShot(0, self._update_thumbnail_layout_metrics)
@@ -1615,6 +1951,27 @@ class PDFView(QMainWindow):
         wm_layout.addLayout(btn_layout)
         self.left_sidebar.addTab(self.watermark_panel, "浮水印列表")
 
+        self.bookmark_panel = QWidget()
+        bookmark_layout = QVBoxLayout(self.bookmark_panel)
+        self.bookmark_tree = QTreeWidget()
+        self.bookmark_tree.setHeaderLabels(["書籤", "頁"])
+        self.bookmark_tree.setEditTriggers(QAbstractItemView.EditKeyPressed)
+        self.bookmark_tree.itemActivated.connect(self._on_bookmark_activated)
+        self.bookmark_tree.itemChanged.connect(self._on_toc_item_changed)
+        bookmark_layout.addWidget(self.bookmark_tree)
+        bookmark_buttons = QHBoxLayout()
+        for label, handler in (
+            ("新增", self._add_bookmark),
+            ("刪除", self._delete_selected_bookmark),
+            ("上移", lambda: self._move_selected_bookmark(-1)),
+            ("下移", lambda: self._move_selected_bookmark(1)),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(handler)
+            bookmark_buttons.addWidget(button)
+        bookmark_layout.addLayout(bookmark_buttons)
+        self.left_sidebar.addTab(self.bookmark_panel, "書籤")
+
     def _setup_property_inspector_placeholder(self):
         self.page_info_card = QWidget()
         page_layout = QVBoxLayout(self.page_info_card)
@@ -1635,15 +1992,36 @@ class PDFView(QMainWindow):
         page_layout.addStretch()
         self.right_stacked_widget.addWidget(self.page_info_card)
 
-        # 矩形設定 (rect mode): Color #0078D4 default, opacity 0-1
+        # 矩形設定 (rect mode): independent stroke/fill + numeric border.
         self.rect_card = QWidget()
         rect_layout = QVBoxLayout(self.rect_card)
         rect_layout.addWidget(QLabel("矩形設定"))
-        self.rect_color = QColor(0, 120, 212, 255)  # #0078D4
-        self.rect_color_btn = QPushButton("矩形顏色")
-        self.rect_color_btn.setStyleSheet("background-color: #0078D4; color: white;")
-        self.rect_color_btn.clicked.connect(self._choose_rect_color)
-        rect_layout.addWidget(self.rect_color_btn)
+        self.rect_stroke_color = QColor(0, 120, 212, 255)
+        self.rect_color = self.rect_stroke_color  # compatibility alias
+        self.rect_stroke_color_btn = QPushButton("邊框顏色")
+        self.rect_color_btn = self.rect_stroke_color_btn  # compatibility alias
+        self.rect_stroke_color_btn.setStyleSheet(
+            "background-color: #0078D4; color: white;"
+        )
+        self.rect_stroke_color_btn.clicked.connect(self._choose_rect_stroke_color)
+        rect_layout.addWidget(self.rect_stroke_color_btn)
+        self.rect_fill_enabled = QCheckBox("填滿")
+        self.rect_fill_enabled.setChecked(False)
+        rect_layout.addWidget(self.rect_fill_enabled)
+        self.rect_fill_color = QColor(0, 120, 212, 255)
+        self.rect_fill_color_btn = QPushButton("填滿顏色")
+        self.rect_fill_color_btn.setStyleSheet(
+            "background-color: #0078D4; color: white;"
+        )
+        self.rect_fill_color_btn.clicked.connect(self._choose_rect_fill_color)
+        rect_layout.addWidget(self.rect_fill_color_btn)
+        rect_layout.addWidget(QLabel("邊框寬度"))
+        self.rect_border_width = QDoubleSpinBox()
+        self.rect_border_width.setRange(0.1, 20.0)
+        self.rect_border_width.setDecimals(1)
+        self.rect_border_width.setSingleStep(0.5)
+        self.rect_border_width.setValue(1.0)
+        rect_layout.addWidget(self.rect_border_width)
         rect_layout.addWidget(QLabel("透明度"))
         self.rect_opacity = QSlider(Qt.Horizontal)
         self.rect_opacity.setRange(0, 100)
@@ -1727,16 +2105,37 @@ class PDFView(QMainWindow):
         self.right_stacked_widget.addWidget(self.text_card)
         self._sync_text_property_panel_state()
 
-    def _choose_rect_color(self):
-        color = QColorDialog.getColor(self.rect_color, self, "選擇矩形顏色")
+    def _choose_rect_stroke_color(self) -> None:
+        color = QColorDialog.getColor(
+            self.rect_stroke_color, self, "選擇邊框顏色"
+        )
         if color.isValid():
-            self.rect_color = color
-            self.rect_opacity.setValue(int(color.alphaF() * 100))
-            self.rect_color_btn.setStyleSheet(f"background-color: {color.name()}; color: white;")
-            self._update_rect_opacity()
+            color.setAlphaF(self.rect_opacity.value() / 100.0)
+            self.rect_stroke_color = color
+            self.rect_color = self.rect_stroke_color
+            self.rect_stroke_color_btn.setStyleSheet(
+                f"background-color: {color.name()}; color: white;"
+            )
 
-    def _update_rect_opacity(self):
-        self.rect_color.setAlphaF(self.rect_opacity.value() / 100.0)
+    def _choose_rect_color(self) -> None:
+        self._choose_rect_stroke_color()
+
+    def _choose_rect_fill_color(self) -> None:
+        color = QColorDialog.getColor(
+            self.rect_fill_color, self, "選擇填滿顏色"
+        )
+        if color.isValid():
+            color.setAlphaF(self.rect_opacity.value() / 100.0)
+            self.rect_fill_color = color
+            self.rect_fill_color_btn.setStyleSheet(
+                f"background-color: {color.name()}; color: white;"
+            )
+
+    def _update_rect_opacity(self) -> None:
+        alpha = self.rect_opacity.value() / 100.0
+        self.rect_stroke_color.setAlphaF(alpha)
+        self.rect_fill_color.setAlphaF(alpha)
+        self.rect_color = self.rect_stroke_color
 
     def _choose_highlight_color(self):
         color = QColorDialog.getColor(self.highlight_color, self, "選擇螢光筆顏色")
@@ -1943,12 +2342,12 @@ class PDFView(QMainWindow):
         self._sync_mode_checked_state(mode)
         self.sig_mode_changed.emit(mode)
 
-        if mode in ['rect', 'highlight', 'add_annotation']:
+        if mode in ['rect', 'highlight', 'underline', 'strikeout', 'add_annotation']:
             self.graphics_view.setDragMode(QGraphicsView.NoDrag)
             self.graphics_view.viewport().setCursor(Qt.CrossCursor)
             if mode == 'rect':
                 self.right_stacked_widget.setCurrentWidget(self.rect_card)
-            elif mode == 'highlight':
+            elif mode in ('highlight', 'underline', 'strikeout'):
                 self.right_stacked_widget.setCurrentWidget(self.highlight_card)
             else:
                 self.right_stacked_widget.setCurrentWidget(self.page_info_card)
@@ -2216,6 +2615,33 @@ class PDFView(QMainWindow):
             return
         self.sig_page_changed.emit(page_num - 1)
 
+    def _handle_canvas_navigation_key(self, event) -> bool:
+        if self.current_mode != "browse" or self.text_editor or self._is_scene_focus_within_editor():
+            return False
+        if event.modifiers() & (
+            Qt.KeyboardModifier.ControlModifier
+            | Qt.KeyboardModifier.AltModifier
+            | Qt.KeyboardModifier.MetaModifier
+        ):
+            return False
+        total = max(0, int(getattr(self, "total_pages", 0)))
+        if total <= 0:
+            return False
+        current = min(max(0, int(self.current_page)), total - 1)
+        targets = {
+            Qt.Key_PageUp: max(0, current - 1),
+            Qt.Key_PageDown: min(total - 1, current + 1),
+            Qt.Key_Home: 0,
+            Qt.Key_End: total - 1,
+        }
+        if event.key() not in targets:
+            return False
+        target = targets[event.key()]
+        if target != current:
+            self.sig_page_changed.emit(target)
+        event.accept()
+        return True
+
     def keyPressEvent(self, event):
         direction = self._tab_shortcut_direction(event.key(), event.modifiers())
         if direction and self._cycle_document_tab(direction):
@@ -2262,10 +2688,22 @@ class PDFView(QMainWindow):
             return self._handle_drag_drop_event(event)
         graphics_view = getattr(self, "graphics_view", None)
         if graphics_view is not None and obj is graphics_view.viewport():
-            if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
-                if self._handle_escape():
+            if event.type() == QEvent.KeyPress:
+                if self._handle_canvas_navigation_key(event):
+                    return True
+                if event.key() == Qt.Key_Escape and self._handle_escape():
                     event.accept()
                     return True
+            if (
+                event.type() == QEvent.MouseButtonDblClick
+                and event.button() == Qt.LeftButton
+                and self.current_mode == "browse"
+                and self._select_numeric_token_at_scene_pos(
+                    graphics_view.mapToScene(event.position().toPoint())
+                )
+            ):
+                event.accept()
+                return True
             if event.type() == QEvent.Leave:
                 if self.current_mode == 'browse':
                     self._reset_browse_hover_cursor()
@@ -2306,10 +2744,14 @@ class PDFView(QMainWindow):
         item_w = min(available_w, max_item_w)
         horizontal_margin = max(0, (available_w - item_w) // 2)
         icon_w = max(96, item_w - 18)
-        # Match icon box height to actual thumbnail aspect ratio to avoid large blank
-        # space inside each cell (especially for landscape pages).
+        # Match icon box height to actual thumbnail aspect ratio while capping
+        # portrait rows only in narrow sidebars. Without the cap, a narrow
+        # sidebar can show only two oversized thumbnails, leaving no practical
+        # in-panel drag target. Wide sidebars preserve the established larger
+        # preview scale.
         aspect = self._thumbnail_icon_aspect_ratio()
-        icon_h = max(88, int(icon_w * aspect))
+        uncapped_icon_h = max(88, int(icon_w * aspect))
+        icon_h = min(120, uncapped_icon_h) if item_w <= 260 else uncapped_icon_h
         # Reserve only minimal label/padding area below the thumbnail.
         item_h = icon_h + 28
         self._thumbnail_layout_updating = True
@@ -2388,6 +2830,17 @@ class PDFView(QMainWindow):
                 item.setIcon(QIcon(pix))
         self._update_thumbnail_layout_metrics()
 
+    def renumber_thumbnail_labels(self, start_index: int, end_index: int) -> None:
+        """Restore visible page-number labels after an internal row move."""
+        if not getattr(self, "thumbnail_list", None):
+            return
+        first = max(0, int(start_index))
+        last = min(self.thumbnail_list.count() - 1, int(end_index))
+        for row in range(first, last + 1):
+            item = self.thumbnail_list.item(row)
+            if item is not None:
+                item.setText(f"頁{row + 1}")
+
     def reset_document_view(self) -> None:
         """Reset canvas/sidebar/search state when no document sessions remain."""
         if self.text_editor:
@@ -2399,6 +2852,7 @@ class PDFView(QMainWindow):
         self._disconnect_scroll_handler()
         self.scene.clear()
         self.page_items.clear()
+        self.page_x_positions.clear()
         self.page_y_positions.clear()
         self.page_heights.clear()
         self._page_base_sizes.clear()
@@ -2554,8 +3008,29 @@ class PDFView(QMainWindow):
         editor_height = float(editor_widget.height()) if editor_widget else 0.0
         return self._scene_y_to_page_index(editor_top_y + (editor_height / 2.0))
 
+    def _page_scene_x(self, page_idx: int) -> float:
+        positions = getattr(self, "page_x_positions", [])
+        if self.continuous_pages and 0 <= page_idx < len(positions):
+            return positions[page_idx]
+        return 0.0
+
+    def _page_scene_y(self, page_idx: int) -> float:
+        positions = getattr(self, "page_y_positions", [])
+        if self.continuous_pages and 0 <= page_idx < len(positions):
+            return positions[page_idx]
+        return 0.0
+
+    def _doc_rect_to_scene_rect(self, page_idx: int, doc_rect: fitz.Rect) -> QRectF:
+        rs = self._render_scale if self._render_scale > 0 else 1.0
+        return QRectF(
+            self._page_scene_x(page_idx) + doc_rect.x0 * rs,
+            self._page_scene_y(page_idx) + doc_rect.y0 * rs,
+            max(1.0, doc_rect.width * rs),
+            max(1.0, doc_rect.height * rs),
+        )
+
     def _scene_pos_to_page_and_doc_point(self, scene_pos: QPointF) -> tuple[int, fitz.Point]:
-        """將場景座標轉為 (頁索引, 文件座標)。連續模式會扣掉頁頂偏移。
+        """將場景座標轉為 (頁索引, 文件座標)。連續模式會扣掉頁面偏移。
         
         注意：scene 座標 = PDF_points × _render_scale（pixmap 實際渲染 scale），
         與 self.scale（UI 期望縮放）可能不同（wheel debounce 尚未重渲時）。
@@ -2563,9 +3038,10 @@ class PDFView(QMainWindow):
         rs = self._render_scale if self._render_scale > 0 else 1.0
         if self.continuous_pages and self.page_y_positions and self.page_heights:
             idx = self._scene_y_to_page_index(scene_pos.y())
-            y0 = self.page_y_positions[idx]
+            x0 = self._page_scene_x(idx)
+            y0 = self._page_scene_y(idx)
             doc_y = (scene_pos.y() - y0) / rs
-            return idx, fitz.Point(scene_pos.x() / rs, doc_y)
+            return idx, fitz.Point((scene_pos.x() - x0) / rs, doc_y)
         return self.current_page, fitz.Point(scene_pos.x() / rs, scene_pos.y() / rs)
 
     def _sync_thumbnail_selection(self):
@@ -2638,6 +3114,7 @@ class PDFView(QMainWindow):
         self._disconnect_scroll_handler()
         self.scene.clear()
         self.page_items.clear()
+        self.page_x_positions.clear()
         self.page_y_positions.clear()
         self.page_heights.clear()
         self._page_base_sizes = list(page_sizes)
@@ -2645,19 +3122,25 @@ class PDFView(QMainWindow):
             return
 
         y = 0.0
-        max_w = 0.0
         target_scale = max(0.1, float(scale))
-        for width_pt, height_pt in page_sizes:
-            width_scene = max(1.0, float(width_pt) * target_scale)
-            height_scene = max(1.0, float(height_pt) * target_scale)
+        scaled_sizes = [
+            (
+                max(1.0, float(width_pt) * target_scale),
+                max(1.0, float(height_pt) * target_scale),
+            )
+            for width_pt, height_pt in page_sizes
+        ]
+        max_w = max(width for width, _height in scaled_sizes)
+        for width_scene, height_scene in scaled_sizes:
+            x = (max_w - width_scene) / 2.0
+            self.page_x_positions.append(x)
             self.page_y_positions.append(y)
             self.page_heights.append(height_scene)
             item = self.scene.addPixmap(self._placeholder_pixmap)
-            item.setPos(0, y)
+            item.setPos(x, y)
             item.setTransform(QTransform.fromScale(width_scene, height_scene))
             item.setTransformationMode(Qt.SmoothTransformation)
             self.page_items.append(item)
-            max_w = max(max_w, width_scene)
             y += height_scene + self.PAGE_GAP
 
         self.scene.setSceneRect(0, 0, max(1, max_w), max(1, y))
@@ -2694,14 +3177,13 @@ class PDFView(QMainWindow):
                     bounding_rect = highlight_rect.rect
                 else:
                     bounding_rect = highlight_rect
-                y0 = self.page_y_positions[page_num] if page_num < len(self.page_y_positions) else 0
-                rx = bounding_rect.x0
-                ry = y0 + bounding_rect.y0
-                rw = bounding_rect.width
-                rh = bounding_rect.height
-                temp_rect_item = self.scene.addRect(rx, ry, rw, rh, QPen(QColor("red"), 2))
-                cx = rx + rw / 2
-                cy = ry + rh / 2
+                scene_rect = self._doc_rect_to_scene_rect(page_num, bounding_rect)
+                temp_rect_item = self.scene.addRect(
+                    scene_rect,
+                    QPen(QColor("red"), 2),
+                )
+                cx = scene_rect.center().x()
+                cy = scene_rect.center().y()
                 self.graphics_view.centerOn(QPointF(cx, cy))
                 QTimer.singleShot(1500, lambda: self.scene.removeItem(temp_rect_item) if temp_rect_item.scene() else None)
             return
@@ -2710,6 +3192,7 @@ class PDFView(QMainWindow):
         self._reset_browse_hover_cursor()
         self.scene.clear()
         self.page_items.clear()
+        self.page_x_positions.clear()
         self.page_y_positions.clear()
         self.page_heights.clear()
         if pix.isNull():
@@ -2732,6 +3215,12 @@ class PDFView(QMainWindow):
     def _on_thumbnail_clicked(self, item):
         row = self.thumbnail_list.row(item)
         self.sig_page_changed.emit(row)
+
+    def _on_thumbnail_reordered(self, source_index: int, destination_index: int) -> None:
+        """Forward an internal thumbnail drop without reaching into the model."""
+        if source_index == destination_index:
+            return
+        self.sig_reorder_page.emit(source_index, destination_index)
 
     def _show_thumbnail_context_menu(self, pos) -> None:
         thumbnail_list = getattr(self, "thumbnail_list", None)
@@ -2910,6 +3399,18 @@ class PDFView(QMainWindow):
             return
         scene_pos = self._event_scene_pos(event)
         if event.button() == Qt.LeftButton:
+            if self.current_mode == "browse":
+                annotation = self._annotation_at_scene_pos(scene_pos)
+                if annotation is not None:
+                    page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
+                    self._note_marker_drag_state = (
+                        annotation,
+                        QPointF(scene_pos),
+                        fitz.Point(doc_point),
+                    )
+                    self._show_floating_note(annotation)
+                    event.accept()
+                    return
             if self.current_mode == 'add_annotation':
                 text, ok = QInputDialog.getMultiLineText(self, "新增註解", "請輸入註解內容:")
                 if ok and text:
@@ -2934,7 +3435,8 @@ class PDFView(QMainWindow):
                     self._object_resize_start_scene_pos = scene_pos
                     self._object_resize_start_doc_rect = fitz.Rect(self._selected_object_info.bbox)
                     self._object_resize_preview_rect = fitz.Rect(self._selected_object_info.bbox)
-                    self._object_resize_handle_anchor = _resize_handle_idx  # 0=TL,1=TR,2=BL,3=BR
+                    # corners 0..3 (TL/TR/BL/BR), edge midpoints 4..7 (T/R/B/L)
+                    self._object_resize_handle_anchor = _resize_handle_idx
                     event.accept()
                     return
                 if (
@@ -3124,7 +3626,9 @@ class PDFView(QMainWindow):
             self._update_rect_preview(self.drawing_start)
             event.accept()
             return
-        if event.button() == Qt.LeftButton and self.current_mode == 'highlight':
+        if event.button() == Qt.LeftButton and self.current_mode in (
+            'highlight', 'underline', 'strikeout'
+        ):
             self.drawing_start = scene_pos
         QGraphicsView.mousePressEvent(self.graphics_view, event)
 
@@ -3134,6 +3638,12 @@ class PDFView(QMainWindow):
             event.accept()
             return
         scene_pos = self._event_scene_pos(event)
+        if (
+            getattr(self, "_note_marker_drag_state", None) is not None
+            and event.buttons() & Qt.LeftButton
+        ):
+            event.accept()
+            return
 
         if self.current_mode in ("objects", "text_edit", "edit_text"):
             if getattr(self, "_object_resize_pending", False) and getattr(self, "_object_resize_start_scene_pos", None) is not None:
@@ -3355,8 +3865,12 @@ class PDFView(QMainWindow):
         except Exception:
             page_w_scene = 595.0 * rs
             page_h_scene = 842.0 * rs
-        y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0.0
-        return QRectF(0.0, y0, max(1.0, page_w_scene), max(1.0, page_h_scene))
+        return QRectF(
+            self._page_scene_x(page_idx),
+            self._page_scene_y(page_idx),
+            max(1.0, page_w_scene),
+            max(1.0, page_h_scene),
+        )
 
     def _clamp_scene_point_to_page(self, scene_pos: QPointF, page_idx: int) -> QPointF:
         page_rect = self._get_page_scene_rect(page_idx)
@@ -3378,6 +3892,29 @@ class PDFView(QMainWindow):
     def _cancel_active_drawing_interactions(self) -> None:
         self._clear_rect_preview()
 
+    def _rect_appearance(self) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float] | None, float]:
+        stroke_qcolor = getattr(self, "rect_stroke_color", None) or getattr(
+            self, "rect_color", QColor(0, 120, 212, 255)
+        )
+        stroke = tuple(float(channel) for channel in stroke_qcolor.getRgbF())
+        fill_control = getattr(self, "rect_fill_enabled", None)
+        fill_enabled = bool(fill_control is not None and fill_control.isChecked())
+        fill_qcolor = getattr(self, "rect_fill_color", stroke_qcolor)
+        fill = (
+            tuple(float(channel) for channel in fill_qcolor.getRgbF())
+            if fill_enabled
+            else None
+        )
+        width_control = getattr(self, "rect_border_width", None)
+        width = float(width_control.value()) if width_control is not None else 1.0
+        return stroke, fill, width
+
+    @staticmethod
+    def _qcolor_from_rgba(color: tuple[float, float, float, float]) -> QColor:
+        result = QColor()
+        result.setRgbF(*color)
+        return result
+
     def _update_rect_preview(self, scene_pos: QPointF) -> None:
         if self.current_mode != "rect" or self.drawing_start is None:
             return
@@ -3387,8 +3924,15 @@ class PDFView(QMainWindow):
 
         end_pos = self._clamp_scene_point_to_page(scene_pos, page_idx)
         rect = QRectF(self.drawing_start, end_pos).normalized()
-        pen = QPen(QColor(220, 38, 38, 210), 1)
-        brush = QBrush(QColor(220, 38, 38, 35))
+        stroke, fill, border_width = self._rect_appearance()
+        pen = QPen(self._qcolor_from_rgba(stroke))
+        rs = self._render_scale if self._render_scale > 0 else 1.0
+        pen.setWidthF(max(0.1, border_width * rs))
+        brush = (
+            QBrush(self._qcolor_from_rgba(fill))
+            if fill is not None
+            else QBrush(Qt.BrushStyle.NoBrush)
+        )
         if self._rect_preview_item is None:
             self._rect_preview_item = self.scene.addRect(rect, pen, brush)
             self._rect_preview_item.setZValue(20)
@@ -3399,11 +3943,12 @@ class PDFView(QMainWindow):
 
     def _scene_rect_to_doc_rect(self, scene_rect: QRectF, page_idx: int) -> fitz.Rect | None:
         rs = self._render_scale if self._render_scale > 0 else 1.0
-        y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0.0
-        x0 = min(scene_rect.left(), scene_rect.right()) / rs
-        x1 = max(scene_rect.left(), scene_rect.right()) / rs
-        y0_doc = (min(scene_rect.top(), scene_rect.bottom()) - y0) / rs
-        y1_doc = (max(scene_rect.top(), scene_rect.bottom()) - y0) / rs
+        page_x0 = self._page_scene_x(page_idx)
+        page_y0 = self._page_scene_y(page_idx)
+        x0 = (min(scene_rect.left(), scene_rect.right()) - page_x0) / rs
+        x1 = (max(scene_rect.left(), scene_rect.right()) - page_x0) / rs
+        y0_doc = (min(scene_rect.top(), scene_rect.bottom()) - page_y0) / rs
+        y1_doc = (max(scene_rect.top(), scene_rect.bottom()) - page_y0) / rs
         rect = fitz.Rect(x0, y0_doc, x1, y1_doc)
         try:
             page_rect = self.controller.get_page_rect(page_idx)
@@ -3475,6 +4020,12 @@ class PDFView(QMainWindow):
     # State attrs + mouse handlers stay here for now (approach X).
     def _selected_text_has_context(self, *args, **kwargs):
         return self._ensure_text_selection_manager()._selected_text_has_context(*args, **kwargs)
+
+    def _select_numeric_token_at_scene_pos(self, *args, **kwargs):
+        return self._ensure_text_selection_manager()._select_numeric_token_at_scene_pos(
+            *args,
+            **kwargs,
+        )
 
     def _start_text_selection(self, *args, **kwargs):
         return self._ensure_text_selection_manager()._start_text_selection(*args, **kwargs)
@@ -3933,10 +4484,8 @@ class PDFView(QMainWindow):
             page_w_scene = 595 * rs
             page_h_scene = 842 * rs
 
-        page_x0 = 0.0
-        page_y0 = (self.page_y_positions[page_idx]
-                   if (self.continuous_pages and page_idx < len(self.page_y_positions))
-                   else 0.0)
+        page_x0 = self._page_scene_x(page_idx)
+        page_y0 = self._page_scene_y(page_idx)
         page_x1 = page_x0 + page_w_scene
         page_y1 = page_y0 + page_h_scene
 
@@ -3968,7 +4517,6 @@ class PDFView(QMainWindow):
         if start_page > end_page:
             return
 
-        rs = self._render_scale if self._render_scale > 0 else 1.0
         outline_pen = QPen(QColor(90, 130, 190, 90), 1)
         if mode == "paragraph":
             outline_pen = QPen(QColor(147, 197, 253, 170), 1)
@@ -3986,21 +4534,11 @@ class PDFView(QMainWindow):
             def _bbox(item):
                 return getattr(item, "bbox", None) or getattr(item, "rect", None)
 
-            y0 = (
-                self.page_y_positions[page_idx]
-                if (self.continuous_pages and page_idx < len(self.page_y_positions))
-                else 0.0
-            )
             for idx, item in enumerate(candidates):
                 rect = _bbox(item)
                 if rect is None:
                     continue
-                scene_rect = QRectF(
-                    float(rect.x0) * rs,
-                    float(y0) + float(rect.y0) * rs,
-                    float(rect.width) * rs,
-                    float(rect.height) * rs,
-                )
+                scene_rect = self._doc_rect_to_scene_rect(page_idx, fitz.Rect(rect))
                 outline_item = self.scene.addRect(scene_rect, outline_pen, outline_brush)
                 outline_item.setZValue(6)
                 key = (int(page_idx), int(idx))
@@ -4030,16 +4568,7 @@ class PDFView(QMainWindow):
             info = self.controller.get_text_info_at_point(page_idx + 1, doc_point)
             if info:
                 doc_rect: fitz.Rect = info.target_bbox
-                y0 = (self.page_y_positions[page_idx]
-                      if (self.continuous_pages and page_idx < len(self.page_y_positions))
-                      else 0.0)
-                rs = self._render_scale if self._render_scale > 0 else 1.0
-                scene_rect = QRectF(
-                    doc_rect.x0 * rs,
-                    y0 + doc_rect.y0 * rs,
-                    doc_rect.width * rs,
-                    doc_rect.height * rs,
-                )
+                scene_rect = self._doc_rect_to_scene_rect(page_idx, doc_rect)
                 pen = QPen(QColor(30, 120, 255, 200), 2)
                 brush = QBrush(QColor(30, 120, 255, 35))
                 if self._hover_highlight_item is None:
@@ -4084,6 +4613,27 @@ class PDFView(QMainWindow):
 
     def _mouse_release(self, event):
         if getattr(self, "_autopan_active", False):
+            event.accept()
+            return
+        if event.button() == Qt.LeftButton and getattr(self, "_note_marker_drag_state", None) is not None:
+            annotation, start_scene, start_doc = self._note_marker_drag_state
+            self._note_marker_drag_state = None
+            end_scene = self._event_scene_pos(event)
+            if (end_scene - start_scene).manhattanLength() >= 4.0:
+                page_idx, end_doc = self._scene_pos_to_page_and_doc_point(end_scene)
+                if page_idx == int(annotation["page_num"]):
+                    rect = fitz.Rect(annotation["rect"])
+                    moved = fitz.Rect(
+                        rect.x0 + end_doc.x - start_doc.x,
+                        rect.y0 + end_doc.y - start_doc.y,
+                        rect.x1 + end_doc.x - start_doc.x,
+                        rect.y1 + end_doc.y - start_doc.y,
+                    )
+                    self.sig_move_annotation.emit(
+                        page_idx,
+                        int(annotation["xref"]),
+                        moved,
+                    )
             event.accept()
             return
         # ── 拖曳移動文字框的放開處理 ──
@@ -4244,32 +4794,45 @@ class PDFView(QMainWindow):
                 if self.text_editor:
                     proxy_pos = self.text_editor.pos()
                     page_idx = getattr(self, '_editing_page_idx', self.current_page)
-                    y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0
+                    x0 = self._page_scene_x(page_idx)
+                    y0 = self._page_scene_y(page_idx)
                     orig = self._editing_original_rect
                     rs = self._render_scale if self._render_scale > 0 else 1.0
                     orig_w = orig.width if orig else 100 / rs
                     orig_h = orig.height if orig else 30 / rs
-                    new_x0 = proxy_pos.x() / rs
+                    new_x0 = (proxy_pos.x() - x0) / rs
                     new_y0 = (proxy_pos.y() - y0) / rs
                     self.editing_rect = fitz.Rect(new_x0, new_y0, new_x0 + orig_w, new_y0 + orig_h)
                     logger.debug(f"文字框拖曳完成，新 rect={self.editing_rect}")
                 return
 
-        if event.button() != Qt.LeftButton or not self.drawing_start or self.current_mode not in ['rect', 'highlight']:
+        markup_modes = ('highlight', 'underline', 'strikeout')
+        if (
+            event.button() != Qt.LeftButton
+            or not self.drawing_start
+            or self.current_mode not in ('rect', *markup_modes)
+        ):
             QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
             return
 
         end_pos = self._event_scene_pos(event)
 
-        if self.current_mode == 'highlight':
+        if self.current_mode in markup_modes:
             rect = QRectF(self.drawing_start, end_pos).normalized()
             cy = (rect.top() + rect.bottom()) / 2
             page_idx = self._scene_y_to_page_index(cy) if (self.continuous_pages and self.page_y_positions) else self.current_page
-            y0 = self.page_y_positions[page_idx] if (self.continuous_pages and page_idx < len(self.page_y_positions)) else 0
-            fitz_rect = fitz.Rect(rect.x() / self.scale, (rect.y() - y0) / self.scale,
-                                  rect.right() / self.scale, (rect.bottom() - y0) / self.scale)
+            fitz_rect = self._scene_rect_to_doc_rect(rect, page_idx)
+            if fitz_rect is None:
+                self.drawing_start = None
+                QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
+                return
             color = self.highlight_color.getRgbF()
-            self.sig_add_highlight.emit(page_idx + 1, fitz_rect, color)
+            signal = {
+                'highlight': self.sig_add_highlight,
+                'underline': self.sig_add_underline,
+                'strikeout': self.sig_add_strikeout,
+            }[self.current_mode]
+            signal.emit(page_idx + 1, fitz_rect, color)
         elif self.current_mode == 'rect':
             page_idx = getattr(self, "_drawing_page_idx", None)
             if page_idx is None:
@@ -4279,9 +4842,14 @@ class PDFView(QMainWindow):
             rect = QRectF(self.drawing_start, end_pos).normalized()
             fitz_rect = self._scene_rect_to_doc_rect(rect, page_idx)
             if fitz_rect is not None:
-                color = self.rect_color.getRgbF()
-                fill = QMessageBox.question(self, "矩形", "是否填滿?") == QMessageBox.Yes
-                self.sig_add_rect.emit(page_idx + 1, fitz_rect, color, fill)
+                stroke, fill, border_width = self._rect_appearance()
+                self.sig_add_rect.emit(
+                    page_idx + 1,
+                    fitz_rect,
+                    stroke,
+                    fill,
+                    border_width,
+                )
 
         self.drawing_start = None
         self._clear_rect_preview()
@@ -4533,6 +5101,14 @@ class PDFView(QMainWindow):
             return dlg.get_password() or None
         return None
 
+    def show_metadata_editor(self, metadata: dict[str, object]) -> None:
+        dialog_type = globals().get("MetadataDialog")
+        if dialog_type is None:
+            from view.dialogs.metadata import MetadataDialog as dialog_type
+        dialog = dialog_type(metadata, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.sig_update_metadata.emit(dialog.metadata_values())
+
     def _save(self):
         """存回原檔（Ctrl+S），若適用則使用增量更新。"""
         if self.text_editor and self.text_editor.widget():
@@ -4604,12 +5180,15 @@ class PDFView(QMainWindow):
             return [page for page in range(1, total + 1) if page % 2 == 0]
         if scope == self._PAGE_SCOPE_CUSTOM:
             pages, ok = QInputDialog.getText(self, "頁碼範圍", "輸入頁碼 (如 1,3-5):")
-            if not ok or not pages:
+            if not ok:
+                return None
+            if not str(pages).strip():
+                show_error(self, "頁碼格式錯誤或超出範圍")
                 return None
             try:
-                return parse_pages(pages, total)
+                return _parse_custom_page_scope(pages, total)
             except ValueError:
-                show_error(self, "頁碼格式錯誤")
+                show_error(self, "頁碼格式錯誤或超出範圍")
                 return None
         return None
 
@@ -4956,7 +5535,154 @@ class PDFView(QMainWindow):
             item.setData(Qt.UserRole, (page_num, rect))
             self.search_results_list.addItem(item)
 
+    def _annotation_at_scene_pos(self, scene_pos: QPointF) -> dict | None:
+        try:
+            page_idx, doc_point = self._scene_pos_to_page_and_doc_point(scene_pos)
+        except Exception:
+            return None
+        for annotation in getattr(self, "_annotation_dtos", []):
+            if (
+                annotation.get("kind") == "note"
+                and int(annotation.get("page_num", -1)) == page_idx
+                and fitz.Rect(annotation.get("rect")).contains(doc_point)
+            ):
+                return annotation
+        return None
+
+    def _show_floating_note(self, annotation: dict) -> None:
+        from view.floating_note import FloatingNote
+
+        existing = self._floating_note
+        if existing is not None:
+            existing.close()
+        note = FloatingNote(annotation, parent=self)
+        note.save_requested.connect(self.sig_update_annotation.emit)
+        note.marker_move_requested.connect(self.sig_move_annotation.emit)
+        note.delete_requested.connect(self.sig_delete_annotation.emit)
+        note.destroyed.connect(
+            lambda _obj=None, widget=note: setattr(self, "_floating_note", None)
+            if self._floating_note is widget
+            else None
+        )
+        marker_rect = self._doc_rect_to_scene_rect(
+            int(annotation["page_num"]),
+            fitz.Rect(annotation["rect"]),
+        )
+        viewport_pos = self.graphics_view.mapFromScene(marker_rect.center())
+        window_pos = self.graphics_view.viewport().mapTo(self, viewport_pos)
+        note.move(window_pos + QPoint(12, 12))
+        note.show()
+        note.raise_()
+        self._floating_note = note
+
+    def populate_toc(self, entries: list[list[object]]) -> None:
+        tree = getattr(self, "bookmark_tree", None)
+        if tree is None:
+            return
+        self._toc_signal_block = True
+        tree.clear()
+        parents: dict[int, QTreeWidgetItem] = {}
+        for level, title, page_num in entries:
+            item = QTreeWidgetItem([str(title), str(page_num)])
+            item.setFlags(item.flags() | Qt.ItemIsEditable)
+            item.setData(0, Qt.UserRole, int(page_num) - 1)
+            parent = parents.get(int(level) - 1)
+            if parent is None:
+                tree.addTopLevelItem(item)
+            else:
+                parent.addChild(item)
+            parents[int(level)] = item
+            for stale_level in [key for key in parents if key > int(level)]:
+                parents.pop(stale_level, None)
+        tree.expandAll()
+        self._toc_signal_block = False
+
+    def _toc_entries_from_tree(self) -> list[list[object]]:
+        entries: list[list[object]] = []
+
+        def visit(item: QTreeWidgetItem, level: int) -> None:
+            page_idx = item.data(0, Qt.UserRole)
+            entries.append([level, item.text(0).strip(), int(page_idx) + 1])
+            for child_index in range(item.childCount()):
+                visit(item.child(child_index), level + 1)
+
+        for index in range(self.bookmark_tree.topLevelItemCount()):
+            visit(self.bookmark_tree.topLevelItem(index), 1)
+        return entries
+
+    def _on_toc_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        if self._toc_signal_block:
+            return
+        if column == 1:
+            try:
+                page_idx = min(max(0, int(item.text(1)) - 1), max(0, self.total_pages - 1))
+            except ValueError:
+                page_idx = int(item.data(0, Qt.UserRole) or 0)
+            self._toc_signal_block = True
+            item.setData(0, Qt.UserRole, page_idx)
+            item.setText(1, str(page_idx + 1))
+            self._toc_signal_block = False
+        if item.text(0).strip():
+            self.sig_toc_changed.emit(self._toc_entries_from_tree())
+
+    def _add_bookmark(self) -> None:
+        title, ok = QInputDialog.getText(self, "新增書籤", "標題:")
+        if not ok or not title.strip():
+            return
+        page_num, ok = QInputDialog.getInt(
+            self,
+            "新增書籤",
+            "頁碼:",
+            min(max(1, self.current_page + 1), max(1, self.total_pages)),
+            1,
+            max(1, self.total_pages),
+        )
+        if not ok:
+            return
+        entries = self._toc_entries_from_tree()
+        entries.append([1, title.strip(), page_num])
+        self.sig_toc_changed.emit(entries)
+
+    def _delete_selected_bookmark(self) -> None:
+        item = self.bookmark_tree.currentItem()
+        if item is None:
+            return
+        parent = item.parent()
+        if parent is None:
+            self.bookmark_tree.takeTopLevelItem(self.bookmark_tree.indexOfTopLevelItem(item))
+        else:
+            parent.takeChild(parent.indexOfChild(item))
+        self.sig_toc_changed.emit(self._toc_entries_from_tree())
+
+    def _move_selected_bookmark(self, delta: int) -> None:
+        item = self.bookmark_tree.currentItem()
+        if item is None or delta not in {-1, 1}:
+            return
+        parent = item.parent()
+        if parent is None:
+            index = self.bookmark_tree.indexOfTopLevelItem(item)
+            target = index + delta
+            if target < 0 or target >= self.bookmark_tree.topLevelItemCount():
+                return
+            moved = self.bookmark_tree.takeTopLevelItem(index)
+            self.bookmark_tree.insertTopLevelItem(target, moved)
+        else:
+            index = parent.indexOfChild(item)
+            target = index + delta
+            if target < 0 or target >= parent.childCount():
+                return
+            moved = parent.takeChild(index)
+            parent.insertChild(target, moved)
+        self.bookmark_tree.setCurrentItem(moved)
+        self.sig_toc_changed.emit(self._toc_entries_from_tree())
+
+    def _on_bookmark_activated(self, item: QTreeWidgetItem, _column: int) -> None:
+        page_idx = item.data(0, Qt.UserRole)
+        if isinstance(page_idx, int):
+            self.sig_bookmark_activated.emit(page_idx)
+
     def populate_annotations_list(self, annotations: list[dict]):
+        self._annotation_dtos = [dict(annotation) for annotation in annotations]
         if getattr(self, "annotation_list", None) is None:
             return
         self.annotation_list.clear()
@@ -5251,6 +5977,7 @@ class PDFView(QMainWindow):
 
     def _resize_event(self, event):
         super().resizeEvent(event)
+        self._update_compact_shell_state()
         self._update_fullscreen_exit_button_geometry()
         self._update_thumbnail_layout_metrics()
         if not self.scene.sceneRect().isValid():

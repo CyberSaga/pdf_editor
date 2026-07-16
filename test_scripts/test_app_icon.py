@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -27,3 +28,15 @@ def test_app_icon_propagates_to_main_window(qapp):
         assert not view.windowIcon().isNull()
     finally:
         view.close()
+
+
+def test_load_app_icon_warns_once_when_configured_asset_is_missing(monkeypatch, tmp_path, caplog) -> None:
+    from view import icons
+
+    missing_icon = tmp_path / "missing-app-icon.ico"
+    monkeypatch.setattr(icons, "APP_ICON_PATH", missing_icon)
+    with caplog.at_level(logging.WARNING, logger="view.icons"):
+        icon = icons.load_app_icon()
+
+    assert icon.isNull()
+    assert caplog.messages == [f"Application icon is unavailable: {missing_icon}"]

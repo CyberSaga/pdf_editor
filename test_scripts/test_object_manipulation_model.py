@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import fitz
+import pytest
 
 from model.object_requests import DeleteObjectRequest, MoveObjectRequest, RotateObjectRequest
 from model.pdf_model import PDFModel
@@ -81,6 +82,88 @@ def test_add_rect_creates_object_metadata_and_hit_detection() -> None:
             assert hit is not None
             assert hit.object_kind == "rect"
             assert hit.supports_rotate is False
+        finally:
+            model.close()
+
+
+def test_rect_appearance_persists_independent_stroke_fill_and_border_width() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "rect_appearance.pdf"
+        output = Path(tmp) / "rect_appearance_saved.pdf"
+        _make_pdf(path)
+
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            model.tools.annotation.add_rect(
+                1,
+                fitz.Rect(20, 90, 120, 150),
+                stroke_color=(1.0, 0.0, 0.0, 0.75),
+                fill_color=(0.0, 1.0, 0.0, 0.75),
+                border_width=2.5,
+            )
+            model.save_as(str(output))
+        finally:
+            model.close()
+
+        reopened = fitz.open(output)
+        try:
+            page = reopened[0]
+            annot = next(page.annots())
+            assert annot.type[1] == "Square"
+            assert annot.colors["stroke"] == pytest.approx([1.0, 0.0, 0.0])
+            assert annot.colors["fill"] == pytest.approx([0.0, 1.0, 0.0])
+            assert annot.border["width"] == pytest.approx(2.5)
+            assert annot.opacity == pytest.approx(0.75, abs=0.01)
+            payload = json.loads(annot.info["content"])
+            assert payload["stroke_color"] == pytest.approx([1.0, 0.0, 0.0, 0.75])
+            assert payload["fill_color"] == pytest.approx([0.0, 1.0, 0.0, 0.75])
+            assert payload["border_width"] == pytest.approx(2.5)
+        finally:
+            reopened.close()
+
+
+def test_rect_no_fill_is_transparent_and_keeps_validated_border() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "rect_no_fill.pdf"
+        _make_pdf(path)
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            model.tools.annotation.add_rect(
+                1,
+                fitz.Rect(20, 90, 120, 150),
+                stroke_color=(0.0, 0.0, 1.0, 1.0),
+                fill_color=None,
+                border_width=3.0,
+            )
+            page = model.doc[0]
+            annot = next(page.annots())
+            assert not annot.colors.get("fill")
+            assert annot.border["width"] == pytest.approx(3.0)
+            payload = json.loads(annot.info["content"])
+            assert payload["fill_color"] is None
+        finally:
+            model.close()
+
+
+@pytest.mark.parametrize("border_width", [-1, 0, 21, float("nan"), "wide"])
+def test_rect_rejects_invalid_border_width_without_mutation(border_width: object) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "rect_bad_border.pdf"
+        _make_pdf(path)
+        model = PDFModel()
+        try:
+            model.open_pdf(str(path))
+            with pytest.raises((TypeError, ValueError)):
+                model.tools.annotation.add_rect(
+                    1,
+                    fitz.Rect(20, 90, 120, 150),
+                    stroke_color=(1.0, 0.0, 0.0, 1.0),
+                    fill_color=None,
+                    border_width=border_width,
+                )
+            assert list(model.doc[0].annots() or []) == []
         finally:
             model.close()
 

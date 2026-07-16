@@ -103,3 +103,19 @@ def test_page_number_input_emits_zero_based_page_and_resets_invalid(qapp) -> Non
     pdf_view.PDFView._on_page_number_input_return_pressed(view)
     assert view.sig_page_changed.calls == [(3,)]
     assert view.page_number_input.text() == "2"
+
+
+def test_delete_and_rotate_scope_choices_include_custom_range() -> None:
+    assert pdf_view.PDFView._PAGE_SCOPE_CUSTOM in pdf_view.PDFView._PAGE_ROTATION_SCOPE_LABELS
+
+
+def test_custom_page_scope_rejects_invalid_or_out_of_range_ranges(monkeypatch) -> None:
+    view = _make_view()
+    errors: list[str] = []
+    monkeypatch.setattr(pdf_view, "show_error", lambda _view, message: errors.append(message))
+
+    for raw in ("", "0", "7", "4-2", "1,,3", "abc"):
+        monkeypatch.setattr(pdf_view.QInputDialog, "getText", lambda *_args, raw=raw, **_kwargs: (raw, True))
+        assert pdf_view.PDFView._pages_for_scope(view, view._PAGE_SCOPE_CUSTOM) is None
+
+    assert len(errors) == 6

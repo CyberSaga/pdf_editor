@@ -35,6 +35,38 @@ if TYPE_CHECKING:
     from view.pdf_view import PDFView
 
 
+_NUMERIC_TOKEN_SEPARATORS = {".", ",", "/"}
+
+
+def numeric_token_bounds(text: str, index: int) -> tuple[int, int] | None:
+    """Return the half-open numeric token containing ``index``."""
+    if not text or index < 0 or index >= len(text):
+        return None
+    if text[index] == "-" and index + 1 < len(text) and text[index + 1].isdigit():
+        index += 1
+    if not (text[index].isdigit() or text[index] in _NUMERIC_TOKEN_SEPARATORS):
+        return None
+
+    allowed = _NUMERIC_TOKEN_SEPARATORS
+    start = index
+    while start > 0 and (text[start - 1].isdigit() or text[start - 1] in allowed):
+        start -= 1
+    end = index + 1
+    while end < len(text) and (text[end].isdigit() or text[end] in allowed):
+        end += 1
+    while start < end and not text[start].isdigit():
+        start += 1
+    while end > start and not text[end - 1].isdigit():
+        end -= 1
+    if start >= end:
+        return None
+    if start > 0 and text[start - 1] == "-":
+        before_minus = text[start - 2] if start >= 2 else ""
+        if not (before_minus.isdigit() or before_minus in allowed):
+            start -= 1
+    return start, end
+
+
 class TextSelectionManager:
     def __init__(self, view: PDFView) -> None:
         self._view = view
@@ -65,6 +97,56 @@ class TextSelectionManager:
             )
         )
 
+
+    def _select_numeric_token_at_scene_pos(self, scene_pos: QPointF) -> bool:
+        if getattr(self._view, "current_mode", "browse") != "browse":
+            return False
+        controller = getattr(self._view, "controller", None)
+        if controller is None:
+            return False
+        try:
+            page_idx, doc_point = self._view._scene_pos_to_page_and_doc_point(scene_pos)
+            context = controller.get_char_context_at_point(page_idx + 1, doc_point)
+        except Exception:
+            return False
+        if context is None:
+            return False
+        text, hit_index, char_rects = context
+        bounds = numeric_token_bounds(text, hit_index)
+        if bounds is None:
+            return False
+        start, end = bounds
+        selected_rects = [fitz.Rect(rect) for rect in char_rects[start:end]]
+        if not selected_rects:
+            return False
+        selected_bounds = fitz.Rect(selected_rects[0])
+        for rect in selected_rects[1:]:
+            selected_bounds.include_rect(rect)
+
+        self._view._clear_text_selection()
+        self._text_selection_page_idx = page_idx
+        self._selected_text_page_idx = page_idx
+        self._selected_text_rect_doc = selected_bounds
+        self._selected_text_cached = text[start:end]
+        self._selected_text_from_drag = False
+        try:
+            self._selected_text_hit_info = controller.get_text_info_at_point(
+                page_idx + 1,
+                doc_point,
+                allow_fallback=False,
+            )
+        except Exception:
+            self._selected_text_hit_info = None
+        pen = QPen(QColor(30, 120, 255, 220), 1)
+        brush = QBrush(QColor(30, 120, 255, 35))
+        self._text_selection_rect_item = self._view.scene.addRect(
+            self._view._doc_rect_to_scene_rect(page_idx, selected_bounds),
+            pen,
+            brush,
+        )
+        self._text_selection_rect_item.setZValue(20)
+        self._view._sync_text_property_panel_state()
+        return True
 
     def _start_text_selection(self, scene_pos: QPointF, page_idx: int) -> None:
         self._view._clear_hover_highlight()
@@ -193,17 +275,8 @@ class TextSelectionManager:
         self._view._sync_text_property_panel_state()
 
     def _selection_doc_rect_to_scene(self, doc_rect: fitz.Rect) -> QRectF:
-        rs = self._view._render_scale if self._view._render_scale > 0 else 1.0
         page_idx = self._text_selection_page_idx or 0
-        y0 = self._view.page_y_positions[page_idx] if (
-            self._view.continuous_pages and page_idx < len(self._view.page_y_positions)
-        ) else 0.0
-        return QRectF(
-            doc_rect.x0 * rs,
-            y0 + doc_rect.y0 * rs,
-            max(1.0, doc_rect.width * rs),
-            max(1.0, doc_rect.height * rs),
-        )
+        return self._view._doc_rect_to_scene_rect(page_idx, doc_rect)
 
     def _clear_text_selection_extra_rects(self) -> None:
         # Mirror ObjectSelectionManager: skip wrappers whose C++ item was already
@@ -328,15 +401,9 @@ class TextSelectionManager:
             self._text_selection_rect_item.setZValue(11)
 
         if self._text_selection_rect_item is not None:
-            rs = self._view._render_scale if self._view._render_scale > 0 else 1.0
-            y0 = self._view.page_y_positions[page_idx] if (
-                self._view.continuous_pages and page_idx < len(self._view.page_y_positions)
-            ) else 0.0
-            scene_rect = QRectF(
-                precise_doc_rect.x0 * rs,
-                y0 + precise_doc_rect.y0 * rs,
-                max(1.0, precise_doc_rect.width * rs),
-                max(1.0, precise_doc_rect.height * rs),
+            scene_rect = self._view._doc_rect_to_scene_rect(
+                page_idx,
+                precise_doc_rect,
             )
             self._text_selection_rect_item.setRect(scene_rect)
             self._text_selection_rect_item.setVisible(True)

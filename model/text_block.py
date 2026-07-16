@@ -113,6 +113,42 @@ class TextBlockManager:
         self._page_state.clear()
         self._page_state.update(remapped_state)
 
+    def shift_after_move(self, source_idx: int, destination_idx: int) -> None:
+        """Remap cached pages after moving one page to its final 0-based destination.
+
+        Every page in the moved interval becomes stale.  The cached content follows
+        its PDF page to the correct key so no unrelated page is lost, but callers
+        must rebuild the stale interval before trusting its text geometry.
+        """
+        if source_idx == destination_idx:
+            return
+
+        first_idx = min(source_idx, destination_idx)
+        last_idx = max(source_idx, destination_idx)
+
+        def remap_page_idx(page_idx: int) -> int:
+            if page_idx == source_idx:
+                return destination_idx
+            if source_idx < destination_idx and source_idx < page_idx <= destination_idx:
+                return page_idx - 1
+            if destination_idx < source_idx and destination_idx <= page_idx < source_idx:
+                return page_idx + 1
+            return page_idx
+
+        for store_name in ("_index", "_span_index", "_paragraph_index", "_run_to_paragraph", "_page_plain_lines"):
+            store = getattr(self, store_name)
+            remapped = {remap_page_idx(page_idx): value for page_idx, value in store.items()}
+            store.clear()
+            store.update(remapped)
+
+        remapped_state = {
+            remap_page_idx(page_idx): state for page_idx, state in self._page_state.items()
+        }
+        for page_idx in range(first_idx, last_idx + 1):
+            remapped_state[page_idx] = "stale"
+        self._page_state.clear()
+        self._page_state.update(remapped_state)
+
     def _build_page_index(self, page_num: int, page: fitz.Page) -> None:
         blocks_raw = page.get_text("dict", flags=0).get("blocks", [])
         raw_blocks = page.get_text("rawdict", flags=0).get("blocks", [])

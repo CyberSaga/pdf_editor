@@ -1427,7 +1427,8 @@ class TextEditManager:
         view.editing_rect = fitz.Rect(rect)
         view._editing_original_rect = fitz.Rect(rect)
         view._editing_origin_page_idx = page_idx
-        y0 = view.page_y_positions[page_idx] if (view.continuous_pages and page_idx < len(view.page_y_positions)) else 0
+        x0 = view._page_scene_x(page_idx)
+        y0 = view._page_scene_y(page_idx)
         display_font_pt = _display_font_pt(font_size, rs)
         qt_font_family = view._pdf_font_to_qt(font_name)
         # Run-level edits: first frame matches the clicked span bbox exactly.
@@ -1453,15 +1454,16 @@ class TextEditManager:
             rotation=rotation,
             content_height_px=content_height_px,
         )
+        pos_x += x0
         if normalized_rotation == 90:
             editor_width_px = max(int(round(scaled_rect.height)), 1)
             editor_height_px = max(int(round(scaled_rect.width)), 1)
-            pos_x = float(scaled_rect.x1)
+            pos_x = float(x0 + scaled_rect.x1)
             pos_y = float(y0 + scaled_rect.y0)
         elif normalized_rotation == 270:
             editor_width_px = max(int(round(scaled_rect.height)), 1)
             editor_height_px = max(int(round(scaled_rect.width)), 1)
-            pos_x = float(scaled_rect.x0)
+            pos_x = float(x0 + scaled_rect.x0)
             pos_y = float(y0 + scaled_rect.y1)
 
         initial_frame = self._capture_frozen_first_frame(

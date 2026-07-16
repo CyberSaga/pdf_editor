@@ -87,6 +87,38 @@ def test_add_highlight_rejects_out_of_range(model_with_text_pdf):
         model_with_text_pdf.tools.annotation.add_highlight(999, rect, (1.0, 1.0, 0.0, 0.5))
 
 
+@pytest.mark.parametrize(
+    ("method_name", "expected_type"),
+    [("add_underline", "Underline"), ("add_strikeout", "StrikeOut")],
+)
+def test_text_markup_methods_create_colored_annotations(
+    model_with_text_pdf,
+    method_name: str,
+    expected_type: str,
+) -> None:
+    method = getattr(model_with_text_pdf.tools.annotation, method_name)
+
+    method(1, fitz.Rect(70, 86, 145, 105), (0.1, 0.2, 0.9, 0.65))
+
+    page = model_with_text_pdf.doc[0]
+    annot = next(page.annots())
+    assert annot.type[1] == expected_type
+    assert annot.colors["stroke"] == pytest.approx([0.1, 0.2, 0.9])
+    assert annot.opacity == pytest.approx(0.65, abs=0.01)
+    assert len(annot.vertices or []) >= 4
+
+
+@pytest.mark.parametrize("method_name", ["add_underline", "add_strikeout"])
+def test_text_markup_methods_reject_page_zero_without_mutation(
+    model_with_text_pdf,
+    method_name: str,
+) -> None:
+    method = getattr(model_with_text_pdf.tools.annotation, method_name)
+    with pytest.raises(ValueError):
+        method(0, fitz.Rect(70, 86, 145, 105), (1.0, 0.0, 0.0, 1.0))
+    assert list(model_with_text_pdf.doc[0].annots() or []) == []
+
+
 def test_add_watermark_nan_angle_sanitized(model_with_text_pdf):
     # Phase 2.5: add_watermark must funnel through _coerce_wm so a NaN angle is
     # stored as the finite default instead of poisoning later rendering math.

@@ -243,9 +243,39 @@ Reconciled via file split: `surya-ocr` + `torch` in `ocr-requirements.txt`; core
 - Runtime evidence is retained separately from the repository.
 - Completion gates: `1673 passed, 21 skipped`; full Ruff clean; mypy clean across 35 model/utils files.
 
+## M3 — Tranche 3.2 Platform and Print (implementation complete 2026-07-15)
+
+- [x] Centre raster output on the physical paper rectangle rather than a potentially asymmetric printable rectangle.
+- [x] Retain the touched-precedence print contract through dialog/options/helper/Qt bridge tests; no code defect reproduced in the cold-start diagnostic path.
+- [x] Grant the already-running Windows instance foreground rights before forwarding a double-click file-open request.
+- [x] Log a nonfatal warning when the configured runtime application icon is unavailable.
+- [ ] Capture manual Windows evidence for cold-first-job print overrides, foreground behavior when minimized/obscured, and the current source-vs-packaged icon scope.
+
+## M3 — Tranche 3.3 Page Structure (complete)
+
+- [x] Add strict, 1-based custom range validation to delete and rotate dialogs; invalid, reversed, blank, and out-of-range values do not emit mutations.
+- [x] Delete all pages transactionally into a single model-side blank placeholder, replacing it when real imported pages arrive and preserving the state over undo/redo.
+- [x] Implement thumbnail drag/drop page reordering with snapshot undo/redo, interval-limited thumbnail refresh, stale-index maintenance, and a compact portrait row cap that keeps three drop targets visible.
+- [x] Make native thumbnail drags reach the viewport, reorder rows without Qt post-drag deletion, and auto-scroll while hovering within 48 px of the top/bottom edge. Real-GUI acceptance used `test_files/test-colored-background.pdf`.
+
+## M3 — Tranche 3.4 Shell and Tab UX (complete)
+
+- [x] Support a real 720×520 outer shell; below 900 px, collapse both sidebars while preserving at least a 360×300 central viewport, then restore prior sidebar visibility at normal widths.
+- [x] Replace style-dependent native tab close glyphs with explicit themed 20×20 `×` controls that delegate to the existing unsaved-tab close pipeline.
+- [x] Add saved-tab `開啟檔案所在位置` context action through a session-id View signal, controller metadata resolution, and argument-list platform launcher.
+- [x] Route PgUp/PgDn/Home/End from the browse canvas to bounded page targets without stealing keys from text inputs or inline editors.
+- [x] Persist a canonical, deduplicated ten-entry recent-file list after successful opens from every existing entry path; show missing entries disabled in the Open menu.
+
+## M3 — Tranche 3.5 Editing Tools (complete)
+
+- [x] Add top/right/bottom/left midpoint resize handles; edge drags change one dimension only, preserve the opposite edge, enforce minimum size, and leave Shift aspect locking corner-only.
+- [x] Replace the rectangle fill confirmation with inspector-owned stroke color, optional independent fill color, validated 0.1–20 pt border width, matching preview, persisted object payload, and snapshot undo/redo.
+- [x] Add underline and strikeout modes through View signals, controller snapshots, and ToolManager-owned PyMuPDF annotation creation.
+- [x] Add a title/author/subject/keywords metadata editor with Qt-free model wrappers, preservation of unedited metadata, dirty-tab refresh, save/reopen persistence, and snapshot undo/redo.
+
 ## M3 — Performance Baseline (captured 2026-07-15, pre-tranche-3.0)
 
-Full commands, method, and values: `plans/render-offload.md`.
+Full commands, method, and values: `plans/archive/2026-07-16-m3-render-offload.md`.
 
 | Metric | Run 1 | Run 2 |
 |---|---:|---:|
@@ -258,8 +288,35 @@ Full commands, method, and values: `plans/render-offload.md`.
 | complex fixture| 81991.4 ms | 107464.7 ms |
 
 - [x] Fix `benchmark_ui_open_render.py` for the profile-scoped quality map.
-- [x] Capture the pre-M3 baseline and seed `plans/render-offload.md`.
-- [ ] Re-run immediately before tranche 3.6 and publish before/after evidence.
+- [x] Capture the pre-M3 baseline and seed `plans/archive/2026-07-16-m3-render-offload.md`.
+- [x] Re-run immediately before tranche 3.6 and publish before/after evidence.
+
+## M3 — Tranche 3.6 Render Offload (render slice implemented 2026-07-16)
+
+- [x] Profile the complex fixture: XREF repair was absent; snapshot capture was ~1.1 s; page-25 display-list plus raster was ~0.45 s.
+- [x] Identify the actual 78–80 s defect as GUI-callback prefetch blocking plus full-document thumbnail contention, not the requested high-quality page raster.
+- [x] Add a one-worker/latest-pending `PageRenderCoordinator` with immutable snapshot bytes, QImage-only results, complete token/session/generation/revision/page/scale/profile/DPR rejection, and bounded cancellation.
+- [x] Keep the immediate low first paint synchronous; offload high and non-immediate low/prefetch rendering; pause and resume thumbnails around foreground candidates.
+- [x] Reduce complex midpoint jump readiness from 78.1/80.1 s to 180.5/167.5 ms; full commands and raw values are in `plans/archive/2026-07-16-m3-render-offload.md`.
+- [x] Center mixed-width continuous pages through shared per-page x/y coordinate helpers and add browse-mode run-local numeric-token double-click selection.
+- [x] M3.6 completion gates: `1788 passed, 21 skipped`; full Ruff clean; mypy clean across 36 model/utils files.
+
+## M3 — Tranche 3.7 Notes and Bookmarks (implementation complete 2026-07-16)
+
+- [x] Create compact standard PDF Text notes; list legacy FreeText read-only; snapshot-back content update, marker move, and delete.
+- [x] Add a main-window-owned frameless `FloatingNote`; popup drag remains UI-only while marker drag persists through a View signal and controller snapshot.
+- [x] Add validated Qt-free TOC get/set APIs and remap bookmark targets across insert, delete/delete-all placeholder, and final-index page moves.
+- [x] Add nested bookmark tree navigation plus add/rename/delete/sibling-reorder requests through the controller-owned TOC snapshot path.
+- [x] M3.7 completion gates: `1800 passed, 21 skipped`; full Ruff clean; mypy clean across 36 model/utils files.
+
+## M3 — Tranche 3.8 Tab Detachment (implementation complete 2026-07-16)
+
+- [x] Add true thresholded tab drag-out through `DetachableTabBar`; clicks/short/in-bar drags do not detach.
+- [x] Transfer repr-safe in-memory snapshot/path/dirty/page/zoom/profile DTOs into an independent MVC triple composed only by `main.py`.
+- [x] Remove the source session only after destination readiness; failed handoff leaves the source intact.
+- [x] Preserve dirty state through a session-local flag and normal save; intentionally start the detached undo stack empty.
+- [x] Final automated gates: `1804 passed, 21 skipped`; full Ruff clean; mypy clean across 36 model/utils files.
+- [ ] Manual acceptance remains: drag saved and dirty tabs into secondary windows, save/reopen, and close both windows independently.
 
 ## M3 candidate — Acrobat-parity text commit engine (design complete 2026-07-14)
 

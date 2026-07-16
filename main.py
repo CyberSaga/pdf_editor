@@ -84,7 +84,46 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
         "view": view,
         "controller": None,
         "single_instance_server": None,
+        "secondary_windows": [],
     }
+
+    def create_detached_window(payload, global_pos) -> bool:
+        from controller.pdf_controller import PDFController
+        from model.pdf_model import PDFModel
+
+        detached_view = PDFView()
+        detached_view.apply_initial_theme()
+        detached_model = PDFModel()
+        session_id = detached_model.import_session_transfer(payload)
+        detached_controller = PDFController(detached_model, detached_view)
+        detached_view.controller = detached_controller
+        detached_controller.activate()
+        detached_controller.set_session_handoff_callback(create_detached_window)
+        state = detached_controller._get_ui_state(session_id)
+        state.current_page = min(payload.current_page, len(detached_model.doc) - 1)
+        state.scale = payload.scale
+        state.color_profile = payload.color_profile
+        detached_controller._refresh_document_tabs()
+        detached_controller._render_active_session(initial_page_idx=state.current_page)
+        context = {
+            "model": detached_model,
+            "view": detached_view,
+            "controller": detached_controller,
+        }
+        startup_ctx["secondary_windows"].append(context)
+
+        def release_context() -> None:
+            detached_model.close()
+            if context in startup_ctx["secondary_windows"]:
+                startup_ctx["secondary_windows"].remove(context)
+
+        detached_view.destroyed.connect(release_context)
+        if hasattr(global_pos, "x") and hasattr(global_pos, "y"):
+            detached_view.move(global_pos)
+        detached_view.show()
+        detached_view.raise_()
+        detached_view.activateWindow()
+        return True
 
     def attach_and_activate_controller() -> Any:
         controller = startup_ctx["controller"]
@@ -97,6 +136,7 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
         controller = PDFController(model, view)
         view.controller = controller
         controller.activate()
+        controller.set_session_handoff_callback(create_detached_window)
         startup_ctx["model"] = model
         startup_ctx["controller"] = controller
         for path in view.drain_pending_open_paths():
@@ -114,6 +154,36 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
             view.showNormal()
         view.raise_()
         view.activateWindow()
+
+    def _try_promote_secondary() -> None:
+        primary_view = startup_ctx["view"]
+        if primary_view.isVisible():
+            return
+        secondaries = startup_ctx["secondary_windows"]
+        if not secondaries:
+            return
+        promoted = secondaries.pop(0)
+        old_model = startup_ctx["model"]
+        if old_model is not None:
+            old_model.close()
+        startup_ctx["view"] = promoted["view"]
+        startup_ctx["model"] = promoted["model"]
+        startup_ctx["controller"] = promoted["controller"]
+        _install_close_promotion(promoted["view"])
+
+    def _install_close_promotion(target_view: Any) -> None:
+        from PySide6.QtCore import QEvent, QObject, QTimer
+
+        class _CloseWatcher(QObject):
+            def eventFilter(self, obj: Any, event: Any) -> bool:
+                if event.type() == QEvent.Close:
+                    QTimer.singleShot(0, _try_promote_secondary)
+                return False
+
+        watcher = _CloseWatcher(target_view)
+        target_view.installEventFilter(watcher)
+
+    _install_close_promotion(view)
 
     view.sig_backend_bootstrap_requested.connect(attach_and_activate_controller)
 

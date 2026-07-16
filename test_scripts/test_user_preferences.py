@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 import pytest
 
 from utils.preferences import UserPreferences
@@ -102,3 +105,52 @@ def test_set_theme_rejects_unknown_value():
 def test_get_theme_recovers_from_corrupt_value():
     prefs = UserPreferences(store=_FakeStore({"ui/theme": "garbage"}))
     assert prefs.get_theme() == "alpine-snow"
+
+
+# --------------------------------------------------------------------------- #
+# Recent files
+# --------------------------------------------------------------------------- #
+
+
+def test_recent_files_are_canonical_deduplicated_and_most_recent_first():
+    prefs = UserPreferences(store=_FakeStore())
+    first = r"C:\Documents\Reports\alpha.pdf"
+    equivalent = r"c:\documents\Reports\folder\..\alpha.pdf"
+
+    assert prefs.add_recent_file(first) is True
+    assert prefs.add_recent_file(r"C:\Documents\beta.pdf") is True
+    assert prefs.add_recent_file(equivalent) is True
+
+    recent = prefs.get_recent_files()
+    assert len(recent) == 2
+    assert recent[0].casefold().endswith(r"documents\reports\alpha.pdf")
+    assert recent[1].casefold().endswith(r"documents\beta.pdf")
+
+
+def test_recent_files_are_limited_to_ten_entries():
+    prefs = UserPreferences(store=_FakeStore())
+    for index in range(12):
+        prefs.add_recent_file(rf"C:\Documents\file-{index}.pdf")
+
+    recent = prefs.get_recent_files()
+    assert len(recent) == 10
+    assert recent[0].endswith("file-11.pdf")
+    assert recent[-1].endswith("file-2.pdf")
+
+
+def test_recent_files_keep_missing_paths_but_exclude_temporary_paths():
+    prefs = UserPreferences(store=_FakeStore())
+    missing = r"C:\Documents\missing.pdf"
+    temp_pdf = str(Path(tempfile.gettempdir()) / "pdf-editor-spool" / "input.pdf")
+
+    assert prefs.add_recent_file(missing) is True
+    assert prefs.add_recent_file(temp_pdf) is False
+    assert prefs.get_recent_files() == [prefs.canonicalize_recent_path(missing)]
+
+
+def test_remove_recent_file_uses_canonical_identity():
+    prefs = UserPreferences(store=_FakeStore())
+    prefs.add_recent_file(r"C:\Documents\folder\alpha.pdf")
+
+    assert prefs.remove_recent_file(r"c:\documents\folder\.\alpha.pdf") is True
+    assert prefs.get_recent_files() == []

@@ -138,3 +138,56 @@ def test_insert_blank_page_returns_actual_insert_position_after_validation(tmp_p
 
     assert inserted_pages == [4]
     assert len(model.doc) == 4
+
+
+def test_delete_all_keeps_a_model_tracked_blank_placeholder_across_undo_redo(tmp_path) -> None:
+    model = PDFModel()
+    model.open_pdf(str(_make_three_page_doc(tmp_path / "three-pages.pdf")))
+
+    before = model._capture_doc_snapshot()
+    before_placeholder = model.blank_placeholder_active
+    deleted_pages = model.delete_pages([1, 2, 3])
+    after = model._capture_doc_snapshot()
+    after_placeholder = model.blank_placeholder_active
+
+    assert deleted_pages == [1, 2, 3]
+    assert len(model.doc) == 1
+    assert model.doc[0].get_text("text").strip() == ""
+    assert after_placeholder is True
+
+    cmd = SnapshotCommand(
+        model,
+        "delete_pages",
+        deleted_pages,
+        before,
+        after,
+        "delete all pages",
+        before_placeholder_active=before_placeholder,
+        after_placeholder_active=after_placeholder,
+    )
+    cmd.undo()
+    assert len(model.doc) == 3
+    assert model.blank_placeholder_active is False
+    cmd.execute()
+    assert len(model.doc) == 1
+    assert model.blank_placeholder_active is True
+
+
+def test_importing_real_pages_replaces_the_blank_placeholder(tmp_path) -> None:
+    source_path = tmp_path / "source.pdf"
+    source_doc = fitz.open()
+    source_page = source_doc.new_page()
+    source_page.insert_text((72, 72), "imported", fontsize=12, fontname="helv")
+    source_doc.save(source_path)
+    source_doc.close()
+
+    model = PDFModel()
+    model.open_pdf(str(_make_three_page_doc(tmp_path / "three-pages.pdf")))
+    model.delete_pages([1, 2, 3])
+
+    inserted_pages = model.insert_pages_from_file(str(source_path), [1], 1)
+
+    assert inserted_pages == [1]
+    assert len(model.doc) == 1
+    assert "imported" in model.doc[0].get_text("text")
+    assert model.blank_placeholder_active is False

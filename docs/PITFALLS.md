@@ -365,6 +365,36 @@
 
 ---
 
+## Centering a page requires updating every scene/document x conversion
+
+**Area:** continuous rendering and interaction geometry (`view/pdf_view.py`, `view/text_selection.py`, `view/object_selection.py`, `view/text_editing.py`)
+**Symptom:** Mixed portrait/landscape pages looked centered, but clicks, selection highlights, object handles, annotation rectangles, or inline editors were horizontally displaced on narrower pages.
+**Cause:** Moving only the page `QGraphicsPixmapItem` introduces a per-page scene x origin. Older code assumed every page began at scene x=0 and converted with `scene_x / render_scale` or `doc_x * render_scale` at many independent sites.
+**Fix:** Store `page_x_positions` parallel to y positions and route all page geometry through `_page_scene_x/_page_scene_y`, `_scene_pos_to_page_and_doc_point`, `_doc_rect_to_scene_rect`, and `_get_page_scene_rect`. Pixmap quality replacement must preserve the placeholder item position. Regression-test text, objects, annotations, and editor placement—not only the visible page image.
+**File:** `view/pdf_view.py`, `view/text_selection.py`, `view/object_selection.py`, `view/text_editing.py`
+
+---
+
+## Structural TOC remapping must start from the pre-operation entries
+
+**Area:** `model/pdf_model.py` page insert/delete/move and TOC APIs
+**Symptom:** Bookmarks drift to the wrong logical content after page operations, or deleted-target bookmarks disappear/change before custom remapping runs.
+**Cause:** PyMuPDF may adjust document navigation structures as pages mutate. Reading `doc.get_toc()` only after the operation loses the original page identity needed to distinguish moved, shifted, and deleted targets.
+**Fix:** Capture normalized TOC entries before the structural mutation, apply the same final-index map used by the page operation, clamp every result to the final page count, then replace the document TOC. Deleted targets map to the nearest surviving original page; delete-all maps to page 1.
+**File:** `model/pdf_model.py`, `test_scripts/test_bookmarks_toc.py`
+
+---
+
+## Tab detachment must be prepare-first and must not share a live document
+
+**Area:** `controller/session_transfer.py`, `controller/pdf_controller.py`, `main.py`
+**Symptom:** A failed detached-window creation loses the source tab, or edits/close/undo in one window corrupt the other window.
+**Cause:** Closing the source before destination readiness is non-atomic; sharing a `fitz.Document`, command manager, or worker across windows violates both PyMuPDF thread safety and MVC lifecycle ownership.
+**Fix:** Transfer immutable snapshot bytes and metadata in a repr-safe DTO, build and activate a fully independent MVC triple in `main.py`, restore UI state, then acknowledge readiness. Only after a true acknowledgment may the source controller close its session. Pre-detach undo history is deliberately not transferred.
+**File:** `controller/session_transfer.py`, `view/detachable_tab_bar.py`, `controller/pdf_controller.py`, `model/pdf_model.py`, `main.py`
+
+---
+
 ## Zoom combo always shows 100%
 
 **Area:** `controller/pdf_controller.py`, `view/pdf_view.py`  
@@ -452,6 +482,17 @@
 **Cause:** Structural ops mark cached pages `"stale"` rather than eagerly rebuilding, so callers that skip `ensure_page_index_built()` read stale data.  
 **Fix:** Always call `model.ensure_page_index_built(page_num)` before any edit or search path.  
 **File:** `model/pdf_model.py`, `model/text_block.py`
+
+---
+
+## PyMuPDF forward page moves use a pre-removal destination
+
+**Area:** `model/pdf_model.py`
+**Symptom:** Dragging page 1 to the visual position after page 3 leaves it after page 2 instead.
+**Cause:** `fitz.Document.move_page(source, destination)` interprets a forward `destination` before removing `source`; the requested final row is therefore one greater than its native insertion index. Moving to the final page uses PyMuPDF's `-1` sentinel rather than `page_count`.
+**Fix:** Keep `PDFModel.move_page()`'s public source/destination contract as final 0-based rows, then translate forward moves to `destination + 1` or `-1` for the final boundary. Mark the entire moved index interval stale and rebuild its destination anchor immediately.
+**File:** `model/pdf_model.py`, `model/text_block.py`
+**Tests:** `test_scripts/test_page_reorder.py`
 
 ---
 
@@ -1098,6 +1139,39 @@
 **File:** `model/tools/manager.py` (`ToolManager.build_print_snapshot`), `controller/pdf_controller.py` (`PrintJobRequest`, `_PrintSubmissionWorker.run`)
 **Tests:** `test_scripts/test_print_snapshot_path.py`, `test_scripts/test_print_controller_flow.py`
 
+## Uncapped portrait thumbnails can make page reordering impractical
+
+**Area:** `view/pdf_view.py`
+**Symptom:** A narrow sidebar displays only two very tall portrait thumbnails, so dragging one page over another requires leaving the sidebar and the internal move cannot complete.
+**Cause:** Thumbnail height was derived only from sidebar width and the source page aspect ratio; portrait pages could create 345 px rows.
+**Fix:** Preserve width-aware scaling but cap thumbnail icon height at 120 px in narrow sidebars, keeping at least three internal-drop targets visible at the real 900×620 shell size. (The earlier 168 px cap appeared sufficient only because the old 800 px minimum height silently enlarged the test window.)
+**File:** `view/pdf_view.py`
+**Tests:** `test_scripts/test_multi_tab_plan.py::test_06c1_thumbnail_rows_keep_three_drop_targets_visible`
+
+---
+
+## QListWidget InternalMove never reorders rows in IconMode with non-Static movement
+
+**Area:** `view/pdf_view.py`
+**Symptom:** Dragging a thumbnail either shows a forbidden cursor and never drops, or appears to reorder but removes the moved thumbnail afterward.
+**Cause:** Three Qt item-view behaviors conflict here. `IconMode` with `Snap`/`Free` repositions icons without changing model rows. Switching to `Static` prevents that, but `setMovement(Static)` silently disables `viewport().acceptDrops()`, while a later `setAcceptDrops(True)` restores only the outer view; native drag events are delivered to the viewport. Finally, inherited `QAbstractItemView.startDrag()` removes the selected source row after a MoveAction completes, even though the custom `dropEvent()` has already relocated that same item.
+**Fix:** Keep Static movement but explicitly restore `viewport().setAcceptDrops(True)`. Accept internal enter/move events in the subclass, compute the destination by scanning row centers, and perform `takeItem`/`insertItem` without calling Qt's internal drop handler. Own the `QDrag` in `startDrag()` so Qt never performs post-exec source-row removal. Nudge the vertical scrollbar within a 48 px edge margin so off-screen rows remain reachable.
+**File:** `view/pdf_view.py` (`_ReorderableThumbnailList`)
+**Tests:** `test_scripts/test_page_reorder.py` (native-delivery configuration, enter/move acceptance, manual drop, custom QDrag ownership, edge auto-scroll); real-GUI verification uses `test_files/test-colored-background.pdf`
+
+---
+
+## Instance-assigned Qt event handlers shadow class overrides
+
+**Area:** `view/pdf_view.py` responsive shell
+**Symptom:** A new `PDFView.resizeEvent()` override is present and lint-clean, but resizing the real/offscreen window never calls it, so compact-shell state does not change.
+**Cause:** `PDFView.__init__()` already assigns `self.resizeEvent = self._resize_event` to preserve the existing scene/fullscreen resize path. The instance attribute shadows the class method entirely.
+**Fix:** Extend the existing `_resize_event()` chokepoint rather than adding a second class-level override. Tests must assert the resulting sidebar visibility after a real `resize()` event, not merely call the helper directly.
+**File:** `view/pdf_view.py`
+**Tests:** `test_scripts/test_shell_tab_ux.py::test_small_shell_collapses_sidebars_and_preserves_canvas`
+
+---
+
 ## Thumbnail invalidation must distinguish count-changed from count-unchanged
 
 **Area:** `controller/pdf_controller.py` (`_invalidate_thumbnails`, `_schedule_thumbnail_batch`), `view/pdf_view.py` (`update_thumbnail_batch`)
@@ -1371,12 +1445,12 @@
 
 ---
 
-## Async thumbnail QThread coordinator was removed (R4) — keep thumbnails synchronous
-**Area:** `controller/pdf_controller.py` (R4-01…R4-04)
-**Symptom:** The R4.3 `ThumbnailCoordinator` could paint a cancelled tab's queued batch into the newly-active tab (the `batch_ready` signal carried only `(gen, start_index, images)` and `gen` collides across sessions), serialized the snapshot on the GUI thread, retained a decrypted snapshot after tab close, and left the old worker running on sync fallback.
-**Cause:** Per-session generation tokens are not globally unique, and the coordinator's session id was a mutable field overwritten by each `try_start`.
-**Fix:** Removed the coordinator entirely; `_schedule_thumbnail_batch` renders synchronously in bounded `QTimer` batches guarded by `_thumb_gen_by_session` (cannot cross-paint by construction). Separately, `on_tab_close_requested` clears `_worker_snapshot_cache` for the departing session (R4-03) so decrypted bytes don't outlive it. Do not reintroduce an async thumbnail path without a globally-unique job token and a close/switch-time cancel+cache-clear.
-**File:** `controller/pdf_controller.py`
+## Async thumbnail identity must include a global token, session, and generation
+**Area:** `controller/thumbnail_coordinator.py`, `controller/pdf_controller.py` (R4-01…R4-04; M3.6 foreground priority)
+**Symptom:** An earlier async thumbnail worker could paint a cancelled tab's queued batch into the newly active tab, retain decrypted snapshot bytes after close, or leave the old worker running when a live fallback was selected. On complex-vector documents, a full-document thumbnail worker could also starve the foreground page render for tens of seconds.
+**Cause:** Per-session generations can collide across tabs; mutable coordinator session state is not immutable job identity; and background raster work needs an explicit foreground-priority contract rather than merely living on another thread.
+**Fix:** Every request/result carries a globally unique token plus session and generation. Clean documents use a verified file-backed worker; dirty/watermarked documents use a one-page-per-event-turn live fallback. Cancellation happens before replacement strategy selection, tab close clears matching decrypted cache bytes, and visible-page rendering cancels/restarts thumbnail work only after foreground visible/prefetch candidates drain.
+**File:** `controller/thumbnail_coordinator.py`, `controller/pdf_controller.py`
 
 ---
 
@@ -1551,6 +1625,16 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 
 ---
 
+## A quality flag is not observable until the render callback yields
+
+**Area:** `controller/pdf_controller.py`, `controller/page_render_coordinator.py`, complex-vector continuous rendering
+**Symptom:** The requested page's high-quality raster completed in about 0.4 seconds, yet the UI benchmark reported 9–80 seconds before that quality became ready and close/tab-switch input stalled.
+**Cause:** `_process_visible_render_batch()` marked the requested page high, then synchronously rendered another low-quality prefetch page in the same GUI callback. One neighboring complex page took 8.3 seconds. Concurrent full-document thumbnail work amplified the delay to 78–80 seconds. Qt could not process the benchmark/input event that observed the already-written quality map until the callback returned.
+**Fix:** Keep only the explicitly requested low first paint synchronous. Dispatch high-quality and non-immediate low/prefetch rasters through a one-worker `PageRenderCoordinator`, process one fallback render per event-loop turn, and pause/resume thumbnail work around foreground candidates. Measure stage timings separately from event-loop-observed readiness; a fast `get_pixmap()` does not prove responsive scheduling.
+**File:** `controller/page_render_coordinator.py`, `controller/pdf_controller.py`, `plans/archive/2026-07-16-m3-render-offload.md`
+
+---
+
 ## A growing thumbnail icon box does not upscale its source pixmap
 
 **Area:** thumbnail rendering and layout (`controller/thumbnail_coordinator.py`, `model/pdf_model.py`, `view/pdf_view.py`)
@@ -1568,3 +1652,44 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** Editable `QComboBox.currentTextChanged` fires while the user is still composing text. A normal validator rejects some invalid keystrokes and does not emit `editingFinished` for intermediate input, which makes commit-time restoration unreliable.
 **Fix:** Treat numeric-shaped text as a draft, gate live preview while the line edit is dirty, catch Return/focus-out in the line edit's event filter, and apply a strict one-decimal/range validator only at commit. Invalid commits restore the remembered display text; preset/programmatic changes continue through the existing immediate-preview path.
 **File:** `view/pdf_view.py` (`_FontSizeInputValidator`, `_commit_text_size_input`), `view/text_editing.py` (`_validated_font_size_input`)
+
+---
+
+## Printable-area centering is not physical-paper centering
+
+**Area:** `src/printing/qt_bridge.py`
+**Symptom:** A PDF looked centred within a printer's printable region but had unequal margins on the physical sheet when hardware margins were asymmetric.
+**Cause:** `QPrinter.pageRect(DevicePixel)` describes the printable area, not the paper sheet; its centre can differ from `paperRect(DevicePixel)`.
+**Fix:** Pass `paperRect(DevicePixel)` to the existing fit/placement calculation in `_draw_page_image()`. Retain normal painter clipping for unprintable edge areas and test with deliberately asymmetric printable margins.
+**File:** `src/printing/qt_bridge.py`; `test_scripts/test_print_layout.py`
+
+---
+
+## Document snapshots must restore blank-placeholder state too
+
+**Area:** `model/pdf_model.py`, `model/edit_commands.py`
+**Symptom:** Undo restored the original page bytes after delete-all, but the active session still treated a subsequently restored real document as a blank placeholder; redo after importing a real page could invert the same state.
+**Cause:** `blank_placeholder_active` is intentionally model/session state rather than serialized PDF metadata, while `SnapshotCommand` previously restored only document bytes.
+**Fix:** Store optional before/after placeholder flags on `SnapshotCommand` and apply the matching flag immediately after its byte snapshot is restored. Controllers capture the flags around delete-all and imported-page replacement commands.
+**File:** `model/pdf_model.py`, `model/edit_commands.py`, `controller/pdf_controller.py`
+
+---
+
+## App-object payload versions are parser contracts, not feature counters
+
+**Area:** `model/tools/annotation_tool.py`, `model/pdf_object_ops.py`
+**Symptom:** A newly created rectangle rendered correctly, but object hit-testing, move, resize, and delete stopped recognizing it.
+**Cause:** Adding appearance fields also changed the embedded payload from version 1 to version 2, while `_load_app_object_payload()` deliberately accepts only `_APP_OBJECT_VERSION == 1`. The new fields were backward-compatible, but the version bump made the whole annotation opaque to object operations.
+**Fix:** Keep payload version 1 when adding optional backward-compatible fields. Only bump the version together with parser migration/compatibility logic and tests covering every object operation.
+**File:** `model/tools/annotation_tool.py`, `model/pdf_object_ops.py`
+**Tests:** `test_scripts/test_object_manipulation_model.py`
+
+---
+
+## PyMuPDF annotations retain their page through the page wrapper
+
+**Area:** PyMuPDF annotation tests
+**Symptom:** Accessing `annot.type`, `annot.border`, or `annot.colors` immediately after `next(doc[0].annots())` raises `FzErrorArgument: annotation not bound to any page`.
+**Cause:** The temporary `doc[0]` page wrapper can be released after the expression, while the annotation wrapper still depends on that page object.
+**Fix:** Keep a strong local page reference for as long as annotation properties are inspected: `page = doc[0]; annot = next(page.annots())`.
+**File:** `test_scripts/test_object_manipulation_model.py`

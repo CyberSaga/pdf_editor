@@ -477,11 +477,26 @@ def build_qss(theme_name: str = _DEFAULT_THEME) -> str:
             color: {t["fg"]};
             border-color: {t["line_strong"]};
         }}
-        QTabBar#documentTabBar::close-button {{
+        QToolButton#documentTabCloseButton {{
+            min-width: 20px;
+            max-width: 20px;
+            min-height: 20px;
+            max-height: 20px;
+            padding: 0;
+            margin: 0;
+            border: none;
             border-radius: 4px;
+            background: transparent;
+            color: {t["fg_muted"]};
+            font-size: 16px;
+            font-weight: 600;
         }}
-        QTabBar#documentTabBar::close-button:hover {{
+        QToolButton#documentTabCloseButton[active="true"] {{
+            color: {t["fg"]};
+        }}
+        QToolButton#documentTabCloseButton:hover {{
             background: {t["pressed"]};
+            color: {t["fg"]};
         }}
     """
 

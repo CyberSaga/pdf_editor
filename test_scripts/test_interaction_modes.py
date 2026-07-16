@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import fitz
+import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -116,6 +117,7 @@ def _make_view() -> pdf_view.PDFView:
     view._render_scale = 1.0
     view.continuous_pages = True
     view.page_y_positions = [0.0]
+    view.page_heights = [500.0]
     view.drawing_start = None
     view._drawing_page_idx = None
     view._rect_preview_item = None
@@ -151,6 +153,8 @@ def _make_view() -> pdf_view.PDFView:
     view.sig_mode_changed = _FakeSignal()
     view.sig_add_rect = _FakeSignal()
     view.sig_add_highlight = _FakeSignal()
+    view.sig_add_underline = _FakeSignal()
+    view.sig_add_strikeout = _FakeSignal()
 
     # Object hit testing and selection helpers.
     view._point_hits_object_rotate_handle = lambda scene_pos: False
@@ -188,6 +192,18 @@ def test_valid_modes_parity() -> None:
     )
 
 
+def test_underline_and_strikeout_modes_have_toolbar_actions(qapp) -> None:
+    view = pdf_view.PDFView()
+    try:
+        assert "underline" in view._VALID_MODES
+        assert "strikeout" in view._VALID_MODES
+        assert view._mode_actions["underline"].text() == "底線"
+        assert view._mode_actions["strikeout"].text() == "刪除線"
+    finally:
+        view.close()
+        view.deleteLater()
+
+
 def test_f1_shortcut_switches_to_browse_mode(qapp) -> None:
     view = pdf_view.PDFView()
     try:
@@ -202,6 +218,20 @@ def test_f1_shortcut_switches_to_browse_mode(qapp) -> None:
         shortcuts[0].activated.emit()
 
         assert view.current_mode == "browse"
+    finally:
+        view.close()
+        view.deleteLater()
+
+
+def test_rect_inspector_exposes_independent_fill_and_border_controls(qapp) -> None:
+    view = pdf_view.PDFView()
+    try:
+        assert view.rect_stroke_color_btn.text() == "邊框顏色"
+        assert view.rect_fill_enabled.isChecked() is False
+        assert view.rect_fill_color_btn.text() == "填滿顏色"
+        assert view.rect_border_width.minimum() == 0.1
+        assert view.rect_border_width.maximum() == 20.0
+        assert view.rect_border_width.value() == 1.0
     finally:
         view.close()
         view.deleteLater()
@@ -238,17 +268,42 @@ def test_rect_release_emits_from_starting_page_and_clears_preview(monkeypatch) -
     monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *args, **kwargs: None)
     monkeypatch.setattr(pdf_view.QGraphicsView, "mouseMoveEvent", lambda *args, **kwargs: None)
     monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *args, **kwargs: None)
-    monkeypatch.setattr(pdf_view.QMessageBox, "question", lambda *args, **kwargs: pdf_view.QMessageBox.No)
 
     pdf_view.PDFView._mouse_press(view, _FakeEvent(10, 10))
     pdf_view.PDFView._mouse_move(view, _FakeEvent(700, 1400))
     preview = view._rect_preview_item
     pdf_view.PDFView._mouse_release(view, _FakeEvent(700, 1400))
 
-    assert view.sig_add_rect.calls == [(1, fitz.Rect(10, 10, 500, 500), (1.0, 0.0, 0.0, 1.0), False)]
+    assert view.sig_add_rect.calls == [
+        (1, fitz.Rect(10, 10, 500, 500), (1.0, 0.0, 0.0, 1.0), None, 1.0)
+    ]
     assert view._rect_preview_item is None
     assert view._drawing_page_idx is None
     assert preview.removed is True
+
+
+@pytest.mark.parametrize(
+    ("mode", "signal_name"),
+    [("underline", "sig_add_underline"), ("strikeout", "sig_add_strikeout")],
+)
+def test_text_markup_drag_emits_selected_page_rect(
+    mode: str,
+    signal_name: str,
+    monkeypatch,
+) -> None:
+    view = _make_view()
+    view.current_mode = mode
+    view.highlight_color = SimpleNamespace(getRgbF=lambda: (0.2, 0.3, 0.9, 0.7))
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *args, **kwargs: None)
+
+    pdf_view.PDFView._mouse_press(view, _FakeEvent(10, 20))
+    pdf_view.PDFView._mouse_release(view, _FakeEvent(80, 40))
+
+    signal = getattr(view, signal_name)
+    assert signal.calls == [
+        (1, fitz.Rect(10, 20, 80, 40), (0.2, 0.3, 0.9, 0.7))
+    ]
 
 
 def test_scene_rebuild_clears_active_rect_drawing_preview() -> None:

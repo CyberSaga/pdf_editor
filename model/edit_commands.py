@@ -344,7 +344,7 @@ class SnapshotCommand(EditCommand):
         )
         model.command_manager.record(cmd)   # ← 用 record，不用 execute
 
-    is_structural：True 表示操作會影響頁數/頁序（delete/insert），
+    is_structural：True 表示操作會影響頁數/頁序（delete/insert/move），
                    Controller 的 undo/redo 需要全量重建縮圖與場景。
     """
 
@@ -352,6 +352,7 @@ class SnapshotCommand(EditCommand):
         "delete_pages",
         "insert_blank_page",
         "insert_pages_from_file",
+        "move_page",
         "merge_pdfs",
         "move_text_across_pages",
     })
@@ -364,6 +365,10 @@ class SnapshotCommand(EditCommand):
         before_bytes: bytes,
         after_bytes: bytes,
         description: str,
+        *,
+        before_placeholder_active: bool | None = None,
+        after_placeholder_active: bool | None = None,
+        index_pages: list[int] | None = None,
     ):
         self._model = model
         self._command_type = command_type
@@ -371,6 +376,9 @@ class SnapshotCommand(EditCommand):
         self._before_bytes = before_bytes
         self._after_bytes = after_bytes
         self._description = description
+        self._before_placeholder_active = before_placeholder_active
+        self._after_placeholder_active = after_placeholder_active
+        self._index_pages = list(index_pages) if index_pages is not None else None
 
     @property
     def description(self) -> str:
@@ -394,15 +402,19 @@ class SnapshotCommand(EditCommand):
     def execute(self) -> None:
         """redo：從 after_bytes 還原文件，並重建 TextBlock 索引。"""
         self._model._restore_doc_from_snapshot(self._after_bytes)
+        if self._after_placeholder_active is not None:
+            self._model._set_blank_placeholder_active(self._after_placeholder_active)
         # Structural redo avoids the old eager full rebuild and only restores the hot pages.
-        self._model.refresh_structural_indexes(self._affected_pages)
+        self._model.refresh_structural_indexes(self._index_pages or self._affected_pages)
         logger.debug(f"SnapshotCommand.execute() [redo]: {self._description}")
 
     def undo(self) -> None:
         """撤銷：從 before_bytes 還原文件，並重建 TextBlock 索引。"""
         self._model._restore_doc_from_snapshot(self._before_bytes)
+        if self._before_placeholder_active is not None:
+            self._model._set_blank_placeholder_active(self._before_placeholder_active)
         # The remaining pages are rebuilt later through the model/controller lazy path.
-        self._model.refresh_structural_indexes(self._affected_pages)
+        self._model.refresh_structural_indexes(self._index_pages or self._affected_pages)
         logger.debug(f"SnapshotCommand.undo(): {self._description}")
 
 
