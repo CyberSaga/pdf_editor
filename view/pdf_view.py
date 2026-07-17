@@ -29,6 +29,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -52,6 +53,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QSlider,
     QSplitter,
     QStackedWidget,
@@ -431,7 +433,7 @@ def __getattr__(name: str) -> object:
 
 
 class PDFView(QMainWindow):
-    _VALID_MODES = {"browse", "edit_text", "text_edit", "objects", "add_text", "rect", "highlight", "underline", "strikeout", "add_annotation"}
+    _VALID_MODES = {"browse", "edit_text", "text_edit", "objects", "add_text", "rect", "highlight", "markup_line", "add_annotation"}
     _COMPACT_SHELL_WIDTH = 900
     _PAGE_SCOPE_CURRENT = "目前頁"
     _PAGE_SCOPE_ALL = "全部"
@@ -545,6 +547,7 @@ class PDFView(QMainWindow):
         self._annotation_dtos: list[dict] = []
         self._toc_signal_block = False
         self._floating_note = None
+        self._floating_note_sid: object | None = None
         self._note_marker_drag_state = None
         self._ocr_available = True
         self._ocr_unavailable_tooltip = ""
@@ -1101,9 +1104,11 @@ class PDFView(QMainWindow):
         if compact == getattr(self, "_compact_shell_active", False):
             return
         if compact:
-            self._compact_restore_left_sidebar = not self.left_sidebar_widget.isHidden()
-            self._compact_restore_right_sidebar = not self.right_sidebar.isHidden()
             sizes = self.main_splitter.sizes()
+            # A splitter handle dragged to 0 width never calls hide(), so isHidden()
+            # alone can't detect that the sidebar was effectively closed by the user.
+            self._compact_restore_left_sidebar = not self.left_sidebar_widget.isHidden() and sizes[0] >= 50
+            self._compact_restore_right_sidebar = not self.right_sidebar.isHidden() and sizes[2] >= 50
             if sizes[0] >= 50:
                 self._left_sidebar_last_width = sizes[0]
             if sizes[2] >= 50:
@@ -1230,6 +1235,7 @@ class PDFView(QMainWindow):
         finally:
             self.document_tab_bar.blockSignals(False)
             self._doc_tab_signal_block = False
+        self._dismiss_floating_note_if_orphaned()
 
     def _make_document_tab_close_button(self, session_id: object) -> QToolButton:
         button = QToolButton(self.document_tab_bar)
@@ -1530,10 +1536,8 @@ class PDFView(QMainWindow):
         tb_edit.addAction(self._action_rect)
         self._action_highlight = self._make_mode_action("螢光筆", "highlight")
         tb_edit.addAction(self._action_highlight)
-        self._action_underline = self._make_mode_action("底線", "underline")
-        tb_edit.addAction(self._action_underline)
-        self._action_strikeout = self._make_mode_action("刪除線", "strikeout")
-        tb_edit.addAction(self._action_strikeout)
+        self._action_markup_line = self._make_mode_action("標記線", "markup_line")
+        tb_edit.addAction(self._action_markup_line)
         self._action_add_annotation = self._make_mode_action("新增註解", "add_annotation")
         tb_edit.addAction(self._action_add_annotation)
         tb_edit.addAction("插入圖片", self._insert_image_object_from_file_at_current_page)
@@ -1836,6 +1840,14 @@ class PDFView(QMainWindow):
         if focus_target:
             self._focus_left_sidebar_target()
 
+    def _ensure_right_sidebar_visible(self) -> None:
+        if self._compact_shell_active or self.right_sidebar.isVisible():
+            return
+        self.right_sidebar.show()
+        self._apply_sidebar_sizes(
+            right_width=self._resolve_sidebar_width(self._right_sidebar_last_width, 280)
+        )
+
     def toggle_left_sidebar(self) -> None:
         if self._compact_shell_active:
             return
@@ -1958,6 +1970,10 @@ class PDFView(QMainWindow):
         self.bookmark_tree.setEditTriggers(QAbstractItemView.EditKeyPressed)
         self.bookmark_tree.itemActivated.connect(self._on_bookmark_activated)
         self.bookmark_tree.itemChanged.connect(self._on_toc_item_changed)
+        self.bookmark_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.bookmark_tree.customContextMenuRequested.connect(
+            self._show_bookmark_context_menu
+        )
         bookmark_layout.addWidget(self.bookmark_tree)
         bookmark_buttons = QHBoxLayout()
         for label, handler in (
@@ -2035,7 +2051,7 @@ class PDFView(QMainWindow):
         rect_layout.addStretch()
         self.right_stacked_widget.addWidget(self.rect_card)
 
-        # 螢光筆顏色 (#FFFF00)
+        # 螢光筆顏色與透明度 (highlight mode only)
         self.highlight_card = QWidget()
         hl_layout = QVBoxLayout(self.highlight_card)
         hl_layout.addWidget(QLabel("螢光筆顏色"))
@@ -2044,8 +2060,56 @@ class PDFView(QMainWindow):
         self.highlight_color_btn.setStyleSheet("background-color: #FFFF00;")
         self.highlight_color_btn.clicked.connect(self._choose_highlight_color)
         hl_layout.addWidget(self.highlight_color_btn)
+        hl_layout.addWidget(QLabel("透明度"))
+        self.highlight_opacity = QSlider(Qt.Horizontal)
+        self.highlight_opacity.setRange(0, 100)
+        self.highlight_opacity.setValue(round(self.highlight_color.alphaF() * 100))
+        self.highlight_opacity.valueChanged.connect(self._update_highlight_opacity)
+        hl_layout.addWidget(self.highlight_opacity)
         hl_layout.addStretch()
         self.right_stacked_widget.addWidget(self.highlight_card)
+
+        # 標記線 (markup_line mode): combined underline/strikeout tool. Each
+        # style remembers its own color/opacity independently (e.g. underline
+        # yellow, strikeout red) so switching styles doesn't clobber the
+        # other's setting. Line width is not adjustable: PyMuPDF's Underline/
+        # StrikeOut annotation subtypes reject set_border() outright (there is
+        # no PDF-level width concept for these types); a width control would
+        # require switching to a generic Line annotation instead, which trades
+        # away semantic underline/strikeout recognition in other PDF readers —
+        # deferred, see TODOS.md.
+        self.markup_line_style = "underline"
+        self.underline_color = QColor(255, 255, 0, 128)
+        self.strikeout_color = QColor(255, 0, 0, 128)
+        self.markup_line_card = QWidget()
+        ml_layout = QVBoxLayout(self.markup_line_card)
+        ml_layout.addWidget(QLabel("標記線設定"))
+        self.markup_line_underline_radio = QRadioButton("底線")
+        self.markup_line_underline_radio.setChecked(True)
+        self.markup_line_strikeout_radio = QRadioButton("刪除線")
+        self.markup_line_style_group = QButtonGroup(self.markup_line_card)
+        self.markup_line_style_group.addButton(self.markup_line_underline_radio)
+        self.markup_line_style_group.addButton(self.markup_line_strikeout_radio)
+        self.markup_line_underline_radio.toggled.connect(
+            lambda checked: checked and self._on_markup_line_style_changed("underline")
+        )
+        self.markup_line_strikeout_radio.toggled.connect(
+            lambda checked: checked and self._on_markup_line_style_changed("strikeout")
+        )
+        ml_layout.addWidget(self.markup_line_underline_radio)
+        ml_layout.addWidget(self.markup_line_strikeout_radio)
+        self.markup_line_color_btn = QPushButton("■ 顏色")
+        self.markup_line_color_btn.setStyleSheet(f"background-color: {self.underline_color.name()};")
+        self.markup_line_color_btn.clicked.connect(self._choose_markup_line_color)
+        ml_layout.addWidget(self.markup_line_color_btn)
+        ml_layout.addWidget(QLabel("透明度"))
+        self.markup_line_opacity = QSlider(Qt.Horizontal)
+        self.markup_line_opacity.setRange(0, 100)
+        self.markup_line_opacity.setValue(round(self.underline_color.alphaF() * 100))
+        self.markup_line_opacity.valueChanged.connect(self._update_markup_line_opacity)
+        ml_layout.addWidget(self.markup_line_opacity)
+        ml_layout.addStretch()
+        self.right_stacked_widget.addWidget(self.markup_line_card)
 
         # 文字設定: Font Source Han Serif TC, size 12pt, checkbox 垂直文字擴展時左移
         self.text_card = QWidget()
@@ -2140,8 +2204,43 @@ class PDFView(QMainWindow):
     def _choose_highlight_color(self):
         color = QColorDialog.getColor(self.highlight_color, self, "選擇螢光筆顏色")
         if color.isValid():
+            color.setAlphaF(self.highlight_opacity.value() / 100.0)
             self.highlight_color = color
             self.highlight_color_btn.setStyleSheet(f"background-color: {color.name()};")
+
+    def _update_highlight_opacity(self) -> None:
+        self.highlight_color.setAlphaF(self.highlight_opacity.value() / 100.0)
+
+    def _markup_line_current_color(self) -> QColor:
+        return self.underline_color if self.markup_line_style == "underline" else self.strikeout_color
+
+    def _refresh_markup_line_controls(self) -> None:
+        """Sync the color button/opacity slider to the currently selected style's
+        independently-remembered color, so switching styles never clobbers the
+        other style's setting."""
+        color = self._markup_line_current_color()
+        self.markup_line_color_btn.setStyleSheet(f"background-color: {color.name()};")
+        blocked = self.markup_line_opacity.blockSignals(True)
+        self.markup_line_opacity.setValue(round(color.alphaF() * 100))
+        self.markup_line_opacity.blockSignals(blocked)
+
+    def _on_markup_line_style_changed(self, style: str) -> None:
+        self.markup_line_style = style
+        self._refresh_markup_line_controls()
+
+    def _choose_markup_line_color(self) -> None:
+        current = self._markup_line_current_color()
+        color = QColorDialog.getColor(current, self, "選擇標記線顏色")
+        if color.isValid():
+            color.setAlphaF(self.markup_line_opacity.value() / 100.0)
+            if self.markup_line_style == "underline":
+                self.underline_color = color
+            else:
+                self.strikeout_color = color
+            self.markup_line_color_btn.setStyleSheet(f"background-color: {color.name()};")
+
+    def _update_markup_line_opacity(self) -> None:
+        self._markup_line_current_color().setAlphaF(self.markup_line_opacity.value() / 100.0)
 
     def _on_text_target_mode_changed(self):
         combo = getattr(self, "text_target_mode_combo", None)
@@ -2226,6 +2325,13 @@ class PDFView(QMainWindow):
             return
 
         current_mode = getattr(self, "current_mode", "browse")
+
+        if current_mode in ("rect", "highlight", "markup_line"):
+            # set_mode() already picked rect_card/highlight_card/markup_line_card
+            # for these modes; this function only arbitrates the text-font panel
+            # vs page_info_card and must not steal the panel back from a mode it
+            # doesn't own.
+            return
 
         if current_mode in ("add_text", "edit_text"):
             stacked.setCurrentWidget(text_card)
@@ -2342,19 +2448,25 @@ class PDFView(QMainWindow):
         self._sync_mode_checked_state(mode)
         self.sig_mode_changed.emit(mode)
 
-        if mode in ['rect', 'highlight', 'underline', 'strikeout', 'add_annotation']:
+        if mode in ['rect', 'highlight', 'markup_line', 'add_annotation']:
             self.graphics_view.setDragMode(QGraphicsView.NoDrag)
             self.graphics_view.viewport().setCursor(Qt.CrossCursor)
             if mode == 'rect':
                 self.right_stacked_widget.setCurrentWidget(self.rect_card)
-            elif mode in ('highlight', 'underline', 'strikeout'):
+                self._ensure_right_sidebar_visible()
+            elif mode == 'highlight':
                 self.right_stacked_widget.setCurrentWidget(self.highlight_card)
+                self._ensure_right_sidebar_visible()
+            elif mode == 'markup_line':
+                self.right_stacked_widget.setCurrentWidget(self.markup_line_card)
+                self._ensure_right_sidebar_visible()
             else:
                 self.right_stacked_widget.setCurrentWidget(self.page_info_card)
         elif mode == 'add_text':
             self.graphics_view.setDragMode(QGraphicsView.NoDrag)
             self.graphics_view.viewport().setCursor(Qt.IBeamCursor)
             self.right_stacked_widget.setCurrentWidget(self.text_card)
+            self._ensure_right_sidebar_visible()
             if not self._add_text_default_font_applied:
                 self._set_text_font_by_pdf(self._add_text_default_pdf_font)
                 if self.text_size.findText(str(self._add_text_default_size)) == -1:
@@ -2363,6 +2475,7 @@ class PDFView(QMainWindow):
                 self._add_text_default_font_applied = True
         elif mode == 'edit_text':
             self.right_stacked_widget.setCurrentWidget(self.text_card)
+            self._ensure_right_sidebar_visible()
             self._draw_all_block_outlines()
             if _prev_mode != 'edit_text':   # only connect on mode transition, not re-entry
                 try:
@@ -2637,7 +2750,11 @@ class PDFView(QMainWindow):
         if event.key() not in targets:
             return False
         target = targets[event.key()]
-        if target != current:
+        # current_page is a viewport-center heuristic (see _on_scroll_changed) and
+        # can drift from the true scroll position, so Home/End always re-emit
+        # rather than trusting a cached match; PageUp/PageDown derive their target
+        # from current directly and stay skip-on-match at their boundary.
+        if event.key() in (Qt.Key_Home, Qt.Key_End) or target != current:
             self.sig_page_changed.emit(target)
         event.accept()
         return True
@@ -3627,9 +3744,15 @@ class PDFView(QMainWindow):
             event.accept()
             return
         if event.button() == Qt.LeftButton and self.current_mode in (
-            'highlight', 'underline', 'strikeout'
+            'highlight', 'markup_line'
         ):
-            self.drawing_start = scene_pos
+            page_idx = self._scene_y_to_page_index(scene_pos.y()) if (self.continuous_pages and self.page_y_positions) else self.current_page
+            page_idx = max(0, min(int(page_idx), max(0, int(getattr(self, "total_pages", 1) or 1) - 1)))
+            self._drawing_page_idx = page_idx
+            self.drawing_start = self._clamp_scene_point_to_page(scene_pos, page_idx)
+            self._update_rect_preview(self.drawing_start)
+            event.accept()
+            return
         QGraphicsView.mousePressEvent(self.graphics_view, event)
 
     def _mouse_move(self, event):
@@ -3660,7 +3783,13 @@ class PDFView(QMainWindow):
                     dy_doc = dy / rs
                     start_rect = fitz.Rect(self._object_resize_start_doc_rect)
                     anchor = getattr(self, "_object_resize_handle_anchor", 3)
-                    lock_ar = bool(event.modifiers() & Qt.ShiftModifier)
+                    # event.modifiers() reflects the modifier state at the OS event's
+                    # generation time, which can lag the live key state during a fast
+                    # drag; querying the live keyboard state too makes Shift-lock
+                    # robust to that staleness without weakening detection otherwise.
+                    lock_ar = bool(event.modifiers() & Qt.ShiftModifier) or bool(
+                        QGuiApplication.keyboardModifiers() & Qt.ShiftModifier
+                    )
                     preview = compute_object_resize_rect(
                         start_rect, anchor, dx_doc, dy_doc, lock_ar
                     )
@@ -3816,7 +3945,7 @@ class PDFView(QMainWindow):
                     self._last_hover_scene_pos = scene_pos
                     self._update_hover_highlight(scene_pos)
 
-        if self.current_mode == 'rect' and self.drawing_start is not None:
+        if self.current_mode in ('rect', 'highlight', 'markup_line') and self.drawing_start is not None:
             self._update_rect_preview(scene_pos)
             event.accept()
             return
@@ -3915,8 +4044,18 @@ class PDFView(QMainWindow):
         result.setRgbF(*color)
         return result
 
+    def _markup_preview_color_source(self) -> QColor | None:
+        if self.current_mode == "highlight":
+            return getattr(self, "highlight_color", None)
+        if self.current_mode == "markup_line":
+            style = getattr(self, "markup_line_style", "underline")
+            attr = "underline_color" if style == "underline" else "strikeout_color"
+            return getattr(self, attr, None)
+        return None
+
     def _update_rect_preview(self, scene_pos: QPointF) -> None:
-        if self.current_mode != "rect" or self.drawing_start is None:
+        markup_modes = ('highlight', 'markup_line')
+        if self.current_mode not in ('rect', *markup_modes) or self.drawing_start is None:
             return
         page_idx = getattr(self, "_drawing_page_idx", None)
         if page_idx is None:
@@ -3924,15 +4063,23 @@ class PDFView(QMainWindow):
 
         end_pos = self._clamp_scene_point_to_page(scene_pos, page_idx)
         rect = QRectF(self.drawing_start, end_pos).normalized()
-        stroke, fill, border_width = self._rect_appearance()
-        pen = QPen(self._qcolor_from_rgba(stroke))
-        rs = self._render_scale if self._render_scale > 0 else 1.0
-        pen.setWidthF(max(0.1, border_width * rs))
-        brush = (
-            QBrush(self._qcolor_from_rgba(fill))
-            if fill is not None
-            else QBrush(Qt.BrushStyle.NoBrush)
-        )
+        if self.current_mode in markup_modes:
+            markup_color_source = self._markup_preview_color_source()
+            markup_rgba = markup_color_source.getRgbF() if markup_color_source is not None else (1.0, 1.0, 0.0, 0.5)
+            markup_qcolor = self._qcolor_from_rgba(tuple(markup_rgba))
+            pen = QPen(markup_qcolor)
+            pen.setWidthF(0.0)
+            brush = QBrush(markup_qcolor)
+        else:
+            stroke, fill, border_width = self._rect_appearance()
+            pen = QPen(self._qcolor_from_rgba(stroke))
+            rs = self._render_scale if self._render_scale > 0 else 1.0
+            pen.setWidthF(max(0.1, border_width * rs))
+            brush = (
+                QBrush(self._qcolor_from_rgba(fill))
+                if fill is not None
+                else QBrush(Qt.BrushStyle.NoBrush)
+            )
         if self._rect_preview_item is None:
             self._rect_preview_item = self.scene.addRect(rect, pen, brush)
             self._rect_preview_item.setZValue(20)
@@ -4806,7 +4953,7 @@ class PDFView(QMainWindow):
                     logger.debug(f"文字框拖曳完成，新 rect={self.editing_rect}")
                 return
 
-        markup_modes = ('highlight', 'underline', 'strikeout')
+        markup_modes = ('highlight', 'markup_line')
         if (
             event.button() != Qt.LeftButton
             or not self.drawing_start
@@ -4818,20 +4965,29 @@ class PDFView(QMainWindow):
         end_pos = self._event_scene_pos(event)
 
         if self.current_mode in markup_modes:
+            page_idx = getattr(self, "_drawing_page_idx", None)
+            if page_idx is None:
+                cy = (self.drawing_start.y() + end_pos.y()) / 2
+                page_idx = self._scene_y_to_page_index(cy) if (self.continuous_pages and self.page_y_positions) else self.current_page
+            # Anchor to the page the drag *started* on (like 'rect' mode) rather
+            # than recomputing from the drag rect's center every time — a drag
+            # that drifted past the page boundary would otherwise commit (and
+            # then show_page()-recenter) to a different page than the one being
+            # drawn on, which manual testing saw as the page "jumping".
+            end_pos = self._clamp_scene_point_to_page(end_pos, page_idx)
             rect = QRectF(self.drawing_start, end_pos).normalized()
-            cy = (rect.top() + rect.bottom()) / 2
-            page_idx = self._scene_y_to_page_index(cy) if (self.continuous_pages and self.page_y_positions) else self.current_page
             fitz_rect = self._scene_rect_to_doc_rect(rect, page_idx)
             if fitz_rect is None:
                 self.drawing_start = None
                 QGraphicsView.mouseReleaseEvent(self.graphics_view, event)
                 return
-            color = self.highlight_color.getRgbF()
-            signal = {
-                'highlight': self.sig_add_highlight,
-                'underline': self.sig_add_underline,
-                'strikeout': self.sig_add_strikeout,
-            }[self.current_mode]
+            if self.current_mode == 'highlight':
+                color = self.highlight_color.getRgbF()
+                signal = self.sig_add_highlight
+            else:
+                style = self.markup_line_style
+                color = self._markup_line_current_color().getRgbF()
+                signal = self.sig_add_underline if style == 'underline' else self.sig_add_strikeout
             signal.emit(page_idx + 1, fitz_rect, color)
         elif self.current_mode == 'rect':
             page_idx = getattr(self, "_drawing_page_idx", None)
@@ -5560,9 +5716,7 @@ class PDFView(QMainWindow):
         note.marker_move_requested.connect(self.sig_move_annotation.emit)
         note.delete_requested.connect(self.sig_delete_annotation.emit)
         note.destroyed.connect(
-            lambda _obj=None, widget=note: setattr(self, "_floating_note", None)
-            if self._floating_note is widget
-            else None
+            lambda _obj=None, widget=note: self._forget_floating_note(widget)
         )
         marker_rect = self._doc_rect_to_scene_rect(
             int(annotation["page_num"]),
@@ -5574,6 +5728,42 @@ class PDFView(QMainWindow):
         note.show()
         note.raise_()
         self._floating_note = note
+        # A FloatingNote's save/delete/drag act on whatever session is CURRENTLY active in
+        # the model, not the one it was opened for. Remember the owning session so the
+        # popup can be dismissed the moment that session stops being current (see
+        # _dismiss_floating_note_if_orphaned), closing the cross-document corruption path.
+        self._floating_note_sid = self._active_document_session_id()
+
+    def _active_document_session_id(self) -> object | None:
+        bar = getattr(self, "document_tab_bar", None)
+        if bar is None:
+            return None
+        index = bar.currentIndex()
+        if index < 0:
+            return None
+        return bar.tabData(index)
+
+    def _forget_floating_note(self, widget: object) -> None:
+        if self._floating_note is widget:
+            self._floating_note = None
+            self._floating_note_sid = None
+
+    def _dismiss_floating_note_if_orphaned(self) -> None:
+        """Close the open note popup once its owning session is no longer active.
+
+        Single lifecycle chokepoint for the view-owned FloatingNote: it is invoked from
+        set_document_tabs, which the controller funnels every tab switch, tab close, and
+        empty-UI reset through. Because the popup mutates the *active* session, letting it
+        outlive its owning tab is a silent cross-document data-corruption path.
+        """
+        note = self._floating_note
+        if note is None:
+            return
+        if self._floating_note_sid == self._active_document_session_id():
+            return
+        self._floating_note = None
+        self._floating_note_sid = None
+        note.close()
 
     def populate_toc(self, entries: list[list[object]]) -> None:
         tree = getattr(self, "bookmark_tree", None)
@@ -5581,6 +5771,7 @@ class PDFView(QMainWindow):
             return
         self._toc_signal_block = True
         tree.clear()
+        built_items: list[QTreeWidgetItem] = []
         parents: dict[int, QTreeWidgetItem] = {}
         for level, title, page_num in entries:
             item = QTreeWidgetItem([str(title), str(page_num)])
@@ -5594,8 +5785,10 @@ class PDFView(QMainWindow):
             parents[int(level)] = item
             for stale_level in [key for key in parents if key > int(level)]:
                 parents.pop(stale_level, None)
+            built_items.append(item)
         tree.expandAll()
         self._toc_signal_block = False
+        self._restore_pending_toc_selection(tree, built_items)
 
     def _toc_entries_from_tree(self) -> list[list[object]]:
         entries: list[list[object]] = []
@@ -5674,12 +5867,62 @@ class PDFView(QMainWindow):
             moved = parent.takeChild(index)
             parent.insertChild(target, moved)
         self.bookmark_tree.setCurrentItem(moved)
+        self._pending_toc_selection = self._flat_index_of_bookmark_item(moved)
         self.sig_toc_changed.emit(self._toc_entries_from_tree())
+
+    def _flat_index_of_bookmark_item(self, target: QTreeWidgetItem) -> int:
+        counter = 0
+
+        def visit(item: QTreeWidgetItem) -> int:
+            nonlocal counter
+            if item is target:
+                return counter
+            counter += 1
+            for child_index in range(item.childCount()):
+                found = visit(item.child(child_index))
+                if found != -1:
+                    return found
+            return -1
+
+        for index in range(self.bookmark_tree.topLevelItemCount()):
+            found = visit(self.bookmark_tree.topLevelItem(index))
+            if found != -1:
+                return found
+        return -1
+
+    def _restore_pending_toc_selection(
+        self, tree: QTreeWidget, built_items: list[QTreeWidgetItem]
+    ) -> None:
+        pending = getattr(self, "_pending_toc_selection", None)
+        self._pending_toc_selection = None
+        if pending is None or not (0 <= pending < len(built_items)):
+            return
+        target = built_items[pending]
+        tree.setCurrentItem(target)
+        tree.setFocus()
 
     def _on_bookmark_activated(self, item: QTreeWidgetItem, _column: int) -> None:
         page_idx = item.data(0, Qt.UserRole)
         if isinstance(page_idx, int):
             self.sig_bookmark_activated.emit(page_idx)
+
+    def _build_bookmark_context_menu(self, item: QTreeWidgetItem) -> QMenu:
+        menu = QMenu(self.bookmark_tree)
+        menu.addAction(
+            "重新命名", lambda checked=False, i=item: self.bookmark_tree.editItem(i, 0)
+        )
+        menu.addAction(
+            "設定頁碼", lambda checked=False, i=item: self.bookmark_tree.editItem(i, 1)
+        )
+        return menu
+
+    def _show_bookmark_context_menu(self, pos: QPoint) -> None:
+        item = self.bookmark_tree.itemAt(pos)
+        if item is None:
+            return
+        self.bookmark_tree.setCurrentItem(item)
+        menu = self._build_bookmark_context_menu(item)
+        menu.exec(self.bookmark_tree.viewport().mapToGlobal(pos))
 
     def populate_annotations_list(self, annotations: list[dict]):
         self._annotation_dtos = [dict(annotation) for annotation in annotations]

@@ -123,6 +123,9 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
         detached_view.show()
         detached_view.raise_()
         detached_view.activateWindow()
+        from PySide6.QtCore import Qt
+
+        detached_view.graphics_view.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         return True
 
     def attach_and_activate_controller() -> Any:

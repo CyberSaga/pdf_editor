@@ -15,7 +15,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from PySide6.QtCore import QPointF, QRectF, Qt  # noqa: E402
-from PySide6.QtGui import QKeySequence, QShortcut  # noqa: E402
+from PySide6.QtGui import QColor, QKeySequence, QShortcut  # noqa: E402
 
 import view.pdf_view as pdf_view  # noqa: E402
 from model.object_requests import ObjectHitInfo  # noqa: E402
@@ -192,13 +192,16 @@ def test_valid_modes_parity() -> None:
     )
 
 
-def test_underline_and_strikeout_modes_have_toolbar_actions(qapp) -> None:
+def test_markup_line_mode_has_a_single_combined_toolbar_action(qapp) -> None:
+    """Underline and strikeout are combined into one 'markup_line' tool/mode
+    with a style toggle in its property card, rather than two separate
+    toolbar buttons/modes."""
     view = pdf_view.PDFView()
     try:
-        assert "underline" in view._VALID_MODES
-        assert "strikeout" in view._VALID_MODES
-        assert view._mode_actions["underline"].text() == "底線"
-        assert view._mode_actions["strikeout"].text() == "刪除線"
+        assert "markup_line" in view._VALID_MODES
+        assert "underline" not in view._VALID_MODES
+        assert "strikeout" not in view._VALID_MODES
+        assert view._mode_actions["markup_line"].text() == "標記線"
     finally:
         view.close()
         view.deleteLater()
@@ -232,6 +235,57 @@ def test_rect_inspector_exposes_independent_fill_and_border_controls(qapp) -> No
         assert view.rect_border_width.minimum() == 0.1
         assert view.rect_border_width.maximum() == 20.0
         assert view.rect_border_width.value() == 1.0
+    finally:
+        view.close()
+        view.deleteLater()
+
+
+def test_highlight_card_exposes_opacity_control(qapp) -> None:
+    """highlight_card previously exposed only a color button with no opacity
+    slider — the color dialog itself can't set alpha, so opacity was
+    permanently stuck at the QColor(255,255,0,128) construction default."""
+    view = pdf_view.PDFView()
+    try:
+        assert view.highlight_opacity.minimum() == 0
+        assert view.highlight_opacity.maximum() == 100
+        assert view.highlight_opacity.value() == 50  # matches the initial alpha=128/255
+
+        view.highlight_opacity.setValue(30)
+        assert view.highlight_color.alphaF() == pytest.approx(0.3, abs=0.01)
+    finally:
+        view.close()
+        view.deleteLater()
+
+
+@pytest.mark.parametrize(
+    "mode,expected_card_attr",
+    [
+        ("rect", "rect_card"),
+        ("highlight", "highlight_card"),
+        ("markup_line", "markup_line_card"),
+        ("add_text", "text_card"),
+    ],
+)
+def test_entering_a_property_mode_reopens_a_hidden_right_sidebar(
+    qapp, mode: str, expected_card_attr: str
+) -> None:
+    """The stroke/fill/border/opacity controls exist on rect_card (and the
+    equivalent highlight/text cards), but switching QStackedWidget's current
+    page is invisible if the whole right sidebar is hidden — e.g. left toggled
+    off via Ctrl+Alt+R or auto-collapsed by the compact shell. Entering a mode
+    with a dedicated properties card must force the sidebar back open, or the
+    controls are unreachable even though they're fully wired."""
+    view = pdf_view.PDFView()
+    try:
+        view.show()
+        view.ensure_heavy_panels_initialized()
+        view.right_sidebar.hide()
+        assert not view.right_sidebar.isVisible()
+
+        view.set_mode(mode)
+
+        assert view.right_sidebar.isVisible()
+        assert view.right_stacked_widget.currentWidget() is getattr(view, expected_card_attr)
     finally:
         view.close()
         view.deleteLater()
@@ -282,18 +336,35 @@ def test_rect_release_emits_from_starting_page_and_clears_preview(monkeypatch) -
     assert preview.removed is True
 
 
+def _make_markup_line_view(style: str):
+    view = _make_view()
+    view.current_mode = "markup_line"
+    view.markup_line_style = style
+    view.underline_color = SimpleNamespace(getRgbF=lambda: (1.0, 1.0, 0.0, 0.5))
+    view.strikeout_color = SimpleNamespace(getRgbF=lambda: (1.0, 0.0, 0.0, 0.5))
+    view._markup_line_current_color = lambda: (
+        view.underline_color if view.markup_line_style == "underline" else view.strikeout_color
+    )
+    return view
+
+
 @pytest.mark.parametrize(
-    ("mode", "signal_name"),
-    [("underline", "sig_add_underline"), ("strikeout", "sig_add_strikeout")],
+    ("style", "signal_name", "expected_rgba"),
+    [
+        ("underline", "sig_add_underline", (1.0, 1.0, 0.0, 0.5)),
+        ("strikeout", "sig_add_strikeout", (1.0, 0.0, 0.0, 0.5)),
+    ],
 )
-def test_text_markup_drag_emits_selected_page_rect(
-    mode: str,
+def test_markup_line_drag_emits_style_specific_signal_and_color(
+    style: str,
     signal_name: str,
+    expected_rgba: tuple,
     monkeypatch,
 ) -> None:
-    view = _make_view()
-    view.current_mode = mode
-    view.highlight_color = SimpleNamespace(getRgbF=lambda: (0.2, 0.3, 0.9, 0.7))
+    """Underline and strikeout share one 'markup_line' mode; the release
+    handler must dispatch to the correct signal and use that style's own
+    independently-remembered color (e.g. underline yellow, strikeout red)."""
+    view = _make_markup_line_view(style)
     monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *args, **kwargs: None)
     monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *args, **kwargs: None)
 
@@ -301,9 +372,107 @@ def test_text_markup_drag_emits_selected_page_rect(
     pdf_view.PDFView._mouse_release(view, _FakeEvent(80, 40))
 
     signal = getattr(view, signal_name)
-    assert signal.calls == [
-        (1, fitz.Rect(10, 20, 80, 40), (0.2, 0.3, 0.9, 0.7))
-    ]
+    assert signal.calls == [(1, fitz.Rect(10, 20, 80, 40), expected_rgba)]
+    other_signal = view.sig_add_strikeout if style == "underline" else view.sig_add_underline
+    assert other_signal.calls == []
+
+
+@pytest.mark.parametrize("style", ["underline", "strikeout"])
+def test_markup_line_drag_stays_anchored_to_starting_page(style: str, monkeypatch) -> None:
+    """rect mode locks page_idx to _drawing_page_idx (set at press time) so a
+    release past the page boundary still commits to the page the user started
+    drawing on. The markup release handler instead recomputed page_idx from
+    the drag rect's vertical CENTER every time, ignoring _drawing_page_idx —
+    if the drag drifted toward an adjacent page, the annotation (and the
+    show_page() call after it) would land on a different page than the one
+    being drawn on, which is what manual testing saw as the page "jumping"."""
+    view = _make_markup_line_view(style)
+    view.total_pages = 2
+    view.page_y_positions = [0.0, 1000.0]
+    view._scene_y_to_page_index = lambda y: 0 if y < 1000 else 1
+    view._get_page_scene_rect = lambda page_idx: QRectF(0, page_idx * 1000, 500, 500)
+
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *a, **kw: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseMoveEvent", lambda *a, **kw: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *a, **kw: None)
+
+    # Press on page 0 (y=10); release drifts deep into page 1's y-range (y=2200)
+    # so the drag rect's vertical CENTER (≈1105) also falls past the y=1000
+    # page boundary — this is exactly the case the center-based recompute got
+    # wrong.
+    pdf_view.PDFView._mouse_press(view, _FakeEvent(10, 10))
+    pdf_view.PDFView._mouse_release(view, _FakeEvent(400, 2200))
+
+    signal_name = "sig_add_underline" if style == "underline" else "sig_add_strikeout"
+    signal = getattr(view, signal_name)
+    assert len(signal.calls) == 1
+    committed_page = signal.calls[0][0]
+    assert committed_page == 1, f"expected commit anchored to starting page 1, got page {committed_page}"
+
+
+@pytest.mark.parametrize("mode", ["highlight", "markup_line"])
+def test_markup_drag_accepts_press_and_shows_live_preview(mode: str, monkeypatch) -> None:
+    """Markup-mode press previously fell through to the default
+    QGraphicsView.mousePressEvent (no event.accept()/return, unlike 'rect'
+    mode), letting Qt's native drag/rubber-band handling run underneath —
+    manual testing saw this as the page "jumping" mid-drag. Move also had no
+    preview at all for these modes (only 'rect' got one), so nothing visible
+    tracked the cursor until mouse-up. Both must match 'rect' mode's behavior:
+    press is fully consumed and a live rect preview follows the drag."""
+    view = _make_view() if mode == "highlight" else _make_markup_line_view("underline")
+    view.current_mode = mode
+    view.total_pages = 1
+    view._scene_y_to_page_index = lambda y: 0
+    view._get_page_scene_rect = lambda page_idx: QRectF(0, 0, 500, 500)
+    view.highlight_color = SimpleNamespace(getRgbF=lambda: (0.2, 0.3, 0.9, 0.7))
+
+    press_called = SimpleNamespace(count=0)
+
+    def _native_press(*_args, **_kwargs):
+        press_called.count += 1
+
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", _native_press)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseMoveEvent", lambda *args, **kwargs: None)
+
+    press_event = _FakeEvent(10, 10)
+    pdf_view.PDFView._mouse_press(view, press_event)
+
+    assert press_event.accepted is True
+    assert press_called.count == 0
+    assert view._drawing_page_idx == 0
+
+    pdf_view.PDFView._mouse_move(view, _FakeEvent(90, 40))
+
+    assert view._rect_preview_item is not None
+    assert view._rect_preview_item.rect() == QRectF(10, 10, 80, 30)
+
+
+def test_markup_line_style_toggle_preserves_each_styles_own_color(qapp) -> None:
+    """Switching between underline/strikeout in the property card must show
+    (and let the user edit) each style's own remembered color/opacity —
+    selecting strikeout must not show or overwrite the underline color."""
+    view = pdf_view.PDFView()
+    try:
+        assert view.markup_line_style == "underline"
+        assert view.underline_color.name() != view.strikeout_color.name()
+
+        original_underline = QColor(view.underline_color)
+        view.markup_line_strikeout_radio.setChecked(True)
+
+        assert view.markup_line_style == "strikeout"
+        assert view.markup_line_opacity.value() == round(view.strikeout_color.alphaF() * 100)
+        # Changing opacity while strikeout is selected must not touch underline's.
+        view.markup_line_opacity.setValue(20)
+        assert view.strikeout_color.alphaF() == pytest.approx(0.2, abs=0.01)
+        assert view.underline_color.name() == original_underline.name()
+        assert view.underline_color.alphaF() == pytest.approx(original_underline.alphaF(), abs=0.01)
+
+        view.markup_line_underline_radio.setChecked(True)
+        assert view.markup_line_style == "underline"
+        assert view.markup_line_opacity.value() == round(view.underline_color.alphaF() * 100)
+    finally:
+        view.close()
+        view.deleteLater()
 
 
 def test_scene_rebuild_clears_active_rect_drawing_preview() -> None:

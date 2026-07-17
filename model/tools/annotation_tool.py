@@ -40,9 +40,74 @@ class AnnotationTool(ToolExtension):
             raise ValueError(f"無效的頁碼: {page_num}")
         return self._model.doc[page_num - 1]
 
+    @staticmethod
+    def _derotate_rect(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
+        """Map a displayed-coords rect into the unrotated space add_*_annot expects.
+
+        PyMuPDF's annot-creation geometry is always interpreted in unrotated
+        page space; the app deals exclusively in displayed (page.rect) space.
+        At rotation 0 ``derotation_matrix`` is identity, so this is a no-op.
+        """
+        return (fitz.Rect(rect) * page.derotation_matrix).normalize()
+
+    @staticmethod
+    def _derotate_point(page: fitz.Page, point: fitz.Point) -> fitz.Point:
+        return fitz.Point(point) * page.derotation_matrix
+
+    @staticmethod
+    def _rotate_rect_to_displayed(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
+        """Map a stored (unrotated-space) annot rect back into displayed coords.
+
+        Mirror of ``_derotate_rect`` for the read direction: the model
+        boundary must convert geometry both ways, since ``annot.rect`` is
+        always the canonical unrotated /Rect. ``page.rotation_matrix`` is the
+        inverse of ``derotation_matrix``, so this exactly undoes it. Verified
+        empirically for Text/Note icons (the appearance always collapses to a
+        fixed square anchored at (x0, y0), so a plain corner-remap + normalize
+        recovers the original displayed anchor at every rotation -- no
+        separate anchor-only variant is needed here, unlike the write side).
+        """
+        return (fitz.Rect(rect) * page.rotation_matrix).normalize()
+
+    @staticmethod
+    def _derotate_text_annot_rect(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
+        """Derotate a Text/Note annot's target rect for ``Annot.set_rect()``.
+
+        The Note icon is a fixed-size glyph anchored at (rect.x0, rect.y0);
+        PyMuPDF ignores width/height when placing it. A full corner-remap
+        (as ``_derotate_rect`` does for real rectangles) would pick whichever
+        transformed corner ends up as the new min after normalize(), which is
+        not necessarily the original anchor corner. Instead derotate only the
+        anchor point and keep the displayed width/height as the rect span.
+        """
+        anchor = fitz.Point(rect.x0, rect.y0) * page.derotation_matrix
+        width = rect.x1 - rect.x0
+        height = rect.y1 - rect.y0
+        return fitz.Rect(anchor.x, anchor.y, anchor.x + width, anchor.y + height)
+
+    @staticmethod
+    def _displayed_rect_to_quad(page: fitz.Page, rect: fitz.Rect) -> fitz.Quad:
+        """Corner-map a displayed rect into a derotated fitz.Quad for markup annots.
+
+        Markup ink follows quad corner roles (underline hugs the ll-lr edge,
+        strikeout runs mid-height), so a derotated *rect* is insufficient at
+        90/270: it would put the ink on a vertical edge instead of preserving
+        the displayed-bottom placement. Mapping each named corner through
+        derotation_matrix and keeping the ul/ur/ll/lr role assignment fixed
+        keeps the ink on the correct edge at every rotation.
+        """
+        r = fitz.Rect(rect)
+        matrix = page.derotation_matrix
+        ul = fitz.Point(r.x0, r.y0) * matrix
+        ur = fitz.Point(r.x1, r.y0) * matrix
+        ll = fitz.Point(r.x0, r.y1) * matrix
+        lr = fitz.Point(r.x1, r.y1) * matrix
+        return fitz.Quad(ul, ur, ll, lr)
+
     def add_highlight(self, page_num: int, rect: fitz.Rect, color: tuple[float, float, float, float]) -> None:
         page = self._require_page(page_num)
-        annot = page.add_highlight_annot(rect)
+        quad = self._displayed_rect_to_quad(page, rect)
+        annot = page.add_highlight_annot(quad)
         annot.set_colors(stroke=color[:3], fill=color[:3])
         annot.set_opacity(color[3])
         annot.update()
@@ -57,10 +122,11 @@ class AnnotationTool(ToolExtension):
     ) -> None:
         normalized = self._normalize_color(color, name="color")
         page = self._require_page(page_num)
+        quad = self._displayed_rect_to_quad(page, rect)
         if kind == "underline":
-            annot = page.add_underline_annot(rect)
+            annot = page.add_underline_annot(quad)
         elif kind == "strikeout":
-            annot = page.add_strikeout_annot(rect)
+            annot = page.add_strikeout_annot(quad)
         else:  # pragma: no cover - private callers use fixed literals
             raise ValueError(f"unsupported markup kind: {kind}")
         annot.set_colors(stroke=normalized[:3])
@@ -151,7 +217,7 @@ class AnnotationTool(ToolExtension):
             raise ValueError("border_width must be within 0..20")
 
         page = self._require_page(page_num)
-        annot = page.add_rect_annot(rect)
+        annot = page.add_rect_annot(self._derotate_rect(page, rect))
         annot.set_colors(
             stroke=stroke[:3],
             fill=normalized_fill[:3] if normalized_fill is not None else None,
@@ -185,7 +251,7 @@ class AnnotationTool(ToolExtension):
 
     def add_annotation(self, page_num: int, point: fitz.Point, text: str) -> int:
         page = self._require_page(page_num)
-        annot = page.add_text_annot(point, str(text), icon="Note")
+        annot = page.add_text_annot(self._derotate_point(page, point), str(text), icon="Note")
         annot.update()
         logger.debug("新增文字註解: 頁面 %s, 矩形 %s, xref: %s", page_num, annot.rect, annot.xref)
         return annot.xref
@@ -216,7 +282,7 @@ class AnnotationTool(ToolExtension):
         found = self._find_annotation(xref)
         if found is None:
             return False
-        _page, annot = found
+        page, annot = found
         if annot.type[1] != "Text":
             return False
         target = fitz.Rect(rect)
@@ -225,7 +291,7 @@ class AnnotationTool(ToolExtension):
             for value in (target.x0, target.y0, target.x1, target.y1)
         ):
             raise ValueError("annotation rect must be finite and non-empty")
-        annot.set_rect(target)
+        annot.set_rect(self._derotate_text_annot_rect(page, target))
         annot.update()
         return True
 
@@ -253,7 +319,7 @@ class AnnotationTool(ToolExtension):
                     {
                         "xref": annot.xref,
                         "page_num": page.number,
-                        "rect": fitz.Rect(annot.rect),
+                        "rect": self._rotate_rect_to_displayed(page, annot.rect),
                         "text": annot.info.get("content", ""),
                         "kind": "note" if type_name == "Text" else "freetext",
                         "read_only": type_name != "Text",

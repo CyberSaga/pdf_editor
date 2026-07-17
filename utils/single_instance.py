@@ -114,8 +114,21 @@ def _service_local_server(name: str) -> None:
     _process_events()
 
 
-def _normalize_forwarded_argv(argv: list[str]) -> list[str]:
-    return [str(Path(item).resolve()) for item in argv]
+def _normalize_forwarded_argv(argv: list[str]) -> list[str] | None:
+    """Canonicalize every token, or reject the whole hand-off (fail closed).
+
+    Returns ``None`` if any token cannot be resolved (e.g. an unreachable UNC
+    path raising WinError 53 under Py3.10). Per the IPC argv contract an
+    unresolvable token is NEVER silently skipped or passed through — that would
+    let a stale/crafted path slip past the receiver's filter — so the entire
+    forwarded argv is rejected."""
+    normalized: list[str] = []
+    for item in argv:
+        try:
+            normalized.append(str(Path(item).resolve()))
+        except OSError:
+            return None
+    return normalized
 
 
 def _forwarded_argv_is_acceptable(argv: list[str]) -> bool:
@@ -130,7 +143,14 @@ def _forwarded_argv_is_acceptable(argv: list[str]) -> bool:
     # The caller (_handle_socket_message) guarantees every item is a str, and
     # Path(str) cannot raise, so no per-item type guard is needed here.
     for item in argv:
-        path = Path(item).resolve()
+        try:
+            path = Path(item).resolve()
+        except OSError:
+            # An unresolvable token (e.g. unreachable UNC, WinError 53 under
+            # Py3.10) must REJECT the whole message — returning False, never
+            # `continue`. Skipping a token would bypass the .pdf/existence
+            # filter and is a forwarding-security bypass.
+            return False
         if not path.exists() or path.suffix.lower() != ".pdf":
             return False
     return True
@@ -236,6 +256,10 @@ def send_to_running_instance(
 ) -> bool:
     name = server_name or _build_server_name()
     normalized_argv = _normalize_forwarded_argv(argv)
+    if normalized_argv is None:
+        # A token could not be canonicalized — reject the hand-off (fail closed)
+        # rather than crashing the forwarding instance on an unreachable path.
+        return False
     _allow_running_instance_foreground()
     local_server = _ACTIVE_SERVERS.get(name)
     if local_server is not None:

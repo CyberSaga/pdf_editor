@@ -19,6 +19,8 @@ class _NoteDragBar(QFrame):
         self._owner = owner
         self._press_global: QPoint | None = None
         self._start_pos: QPoint | None = None
+        self.setStyleSheet("background-color: #d0d0d0; border: 1px solid #a0a0a0;")
+        self.setCursor(Qt.OpenHandCursor)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 2, 4, 2)
         layout.addWidget(QLabel("註解", self))
@@ -79,10 +81,12 @@ class FloatingNote(QWidget):
         layout.addLayout(buttons)
 
         self.save_button.clicked.connect(self._emit_save)
-        self.delete_button.clicked.connect(
-            lambda: self.delete_requested.emit(self._page_num, self._xref)
-        )
+        self.delete_button.clicked.connect(self._emit_delete)
         self.close_button.clicked.connect(self.close)
+
+    def _emit_delete(self) -> None:
+        self.delete_requested.emit(self._page_num, self._xref)
+        self.close()
 
     def _emit_save(self) -> None:
         self.save_requested.emit(

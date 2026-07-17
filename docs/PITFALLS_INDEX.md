@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 181 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 192 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -143,46 +143,57 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1280 | Qt QSS has no box-shadow or CSS transitions | `view/theme.py`, `view/pdf_view.py` |
 | 1287 | QColor() cannot parse `rgba(r,g,b,a)` float-alpha strings | `view/theme.py` — `_parse_qcolor` |
 | 1294 | Focus rings must be colour-only to avoid layout shift | `view/theme.py` — `build_qss` |
-| 1301 | Free-function extraction silently bypasses method monkeypatching | model/pdf_text_edit.py, model/pdf_object_ops.py (god-module decomposition seams) |
-| 1308 | Helper-class extraction: getattr(self,…) and staticmethods escape the self.→self._view transform | view/object_selection.py (R3.6 view seam); applies to any PDFView→manager extraction |
-| 1315 | Undo byte-budget must dedup by content, not id() | model/edit_commands.py — `CommandManager._unique_byte_total` / `_dedup_top_snapshot_pair` / `_trim_undo_stack_if_needed` |
-| 1322 | OCR invisible text changes doc.tobytes() without bumping render_revision | controller/pdf_controller.py (`capture_worker_snapshot_bytes` cache) + controller/ocr_coordinator.py (`_on_ocr_page_done`) |
-| 1329 | Thumbnail threading: render off snapshot bytes, never the live doc — and watermarks vanish | controller/thumbnail_coordinator.py (R4.3 hybrid async thumbnails) |
-| 1336 | A test that builds a QPixmap needs the `qapp` fixture or it hangs | test_scripts (any Qt-touching test that constructs QPixmap/QImage→QPixmap off a fixture) |
-| 1343 | Overlay raster caching: only watermarks are overlays, and the cache key must capture base content (R4.1 design-note) | model/tools/manager.py (`render_page_pixmap` overlay branch), model/tools/watermark_tool.py, controller `_render_revision`/`_render_cache` |
-| 1350 | Optimize-copy of an encrypted PDF must re-apply the password, or it ships unprotected | model/pdf_optimizer.py (`save_optimized_copy` / `reapply_source_encryption`, R5.5) |
-| 1357 | Print path wrote a fully decrypted PDF to disk; keep the temp encrypted + pass the password out-of-band | controller/print_coordinator.py + src/printing/subprocess_runner.py + src/printing/helper_main.py (R5.1) |
-| 1364 | Building a wheel/sdist in `.venv`: setuptools is too old, and `pip wheel` litters build/ in the repo | packaging / test_scripts/test_security_packaging.py (R5.4) |
-| 1371 | `Path.write_text` on Windows rewrites LF→CRLF — don't use it to "revert" a tracked file | tooling / any transient edit-then-restore of a source file on Windows |
-| 1378 | Characterization tests are green-by-construction — they need *teeth*, not a red-light | testing / coverage-hardening (R6.1) |
-| 1385 | `verify_no_jump.py` full-suite `--ignore` lines go stale — re-audit on every gate change | tooling / no-jump completion gate (R6.2) |
-| 1394 | Object-ops (move/rotate/delete) bypassed GC → unbounded growth + deleted-data recovery | `model/pdf_object_ops.py` (R6-01; reopened R3.4) |
-| 1403 | `delete_object` now replaces the live `fitz.Document` handle | `model/pdf_object_ops.py` `_purge_deleted_content`; callers/tests |
-| 1412 | Delete confidentiality must fail closed, not swallow the GC error | `model/pdf_object_ops.py` `_purge_deleted_content` (Codex F4) |
-| 1421 | Optimize-copy must bind to its source session, not live `model.doc` | `model/pdf_optimizer.py`, `controller/pdf_controller.py` (R5-03; Codex F1/F2) |
-| 1430 | Re-encryption must preserve the auth role and never publish plaintext at the output | `model/pdf_optimizer.py` `reapply_source_encryption` / `save_optimized_copy` (R5-02, R5-04) |
-| 1439 | PyMuPDF `Document.save()`/`tobytes()` default to `garbage=0` — orphans persist on disk | `model/pdf_model.py` save path; relevant to any redaction/delete |
-| 1448 | Async thumbnail identity must include a global token, session, and generation | `controller/thumbnail_coordinator.py`, `controller/pdf_controller.py` (R4-01…R4-04; M3.6 foreground priority) |
-| 1457 | Completed print runner retained its password until the view was destroyed (R5-05) | `src/printing/subprocess_runner.py` |
-| 1466 | Packaging guard accepted a find-all `*` discovery pattern (R5-06) | `test_scripts/test_security_packaging.py` |
-| 1475 | Windows pip-audit crashes on non-ASCII bytes in requirement files | CI (`dependency-audit` job) / requirement files |
-| 1484 | Orphaned print-helper processes poison later full-suite runs | `test_scripts/` print stack / local dev machine state |
-| 1493 | Subprocess text I/O silently depends on the caller's locale, not the child's | `test_scripts/` — any test that `subprocess.run(...)` a script/tool and reads its stdout/stderr |
-| 1505 | CI's `test-functional` job never installed `build`/`setuptools`/`wheel` | `.github/workflows/ci.yml` (`test-functional` job) / `test_scripts/test_security_packaging.py` |
-| 1515 | `apply_redactions` is geometric: it destroys text and line art, not just the targeted image | `model/pdf_object_ops.py` (object delete/move/rotate), any PyMuPDF redaction call |
-| 1530 | Pruning an XObject resource: `/fzImg1` is a prefix of `/fzImg10`, and `/Resources` is inheritable | `model/pdf_object_ops.py` (`_remove_native_image_invocation`) |
-| 1542 | A "fail safe" that refuses to act can strand the object it was protecting | `model/pdf_object_ops.py` (`_delete_object_impl` image branch), and any resolve-then-act path |
-| 1554 | Rolling back a transaction that changed nothing closes the live `fitz.Document` | `model/pdf_object_ops.py` (`delete_objects_atomic`), `model/pdf_model.py` (`_restore_doc_from_snapshot`) |
-| 1564 | The print path wrote two plaintext temps, and `capture_print_snapshot_bytes` is always decrypted | `controller/print_coordinator.py`, `src/printing/*` (R5-01) |
-| 1576 | A QThread worker can clear its own decrypted payload race-free — no join needed | `controller/search_coordinator.py`, `controller/ocr_coordinator.py` (Codex F6 / B3) |
-| 1588 | XObject identity requires both the resource binding and the placement | `model/pdf_object_ops.py` app-image resolution and resource pruning |
-| 1598 | `QProcess.FailedToStart` has no matching `finished` signal | `src/printing/subprocess_runner.py` |
-| 1608 | PDF font identity must be keyed per-xref, never per-basefont | font handling for the text-commit engine design (`plans/2026-07-14-acrobat-parity-text-commit-engine.md`); any code matching spans to fonts |
-| 1618 | Render-quality benchmark must use the profile-scoped quality map | `test_scripts/benchmark_ui_open_render.py`, controller render state |
-| 1628 | A quality flag is not observable until the render callback yields | `controller/pdf_controller.py`, `controller/page_render_coordinator.py`, complex-vector continuous rendering |
-| 1638 | A growing thumbnail icon box does not upscale its source pixmap | thumbnail rendering and layout (`controller/thumbnail_coordinator.py`, `model/pdf_model.py`, `view/pdf_view.py`) |
-| 1648 | Editable combo validation must distinguish draft text from committed values | `view/pdf_view.py`, `view/text_editing.py` — font-size control |
-| 1658 | Printable-area centering is not physical-paper centering | `src/printing/qt_bridge.py` |
-| 1668 | Document snapshots must restore blank-placeholder state too | `model/pdf_model.py`, `model/edit_commands.py` |
-| 1678 | App-object payload versions are parser contracts, not feature counters | `model/tools/annotation_tool.py`, `model/pdf_object_ops.py` |
-| 1689 | PyMuPDF annotations retain their page through the page wrapper | PyMuPDF annotation tests |
+| 1301 | Print dialog: programmatic combo restore must run AFTER signal wiring or overrides silently lose | `src/printing/print_dialog.py` — `UnifiedPrintDialog.__init__` ordering vs `_resolve_hardware_values` (M3.2) |
+| 1309 | unittest.mock.patch on PySide6 dialog methods → Windows fatal access violation | `test_scripts/` — any test constructing a real Qt widget with `patch.object(SomeQDialogSubclass, "method")` active (M3.2) |
+| 1316 | Free-function extraction silently bypasses method monkeypatching | model/pdf_text_edit.py, model/pdf_object_ops.py (god-module decomposition seams) |
+| 1323 | Helper-class extraction: getattr(self,…) and staticmethods escape the self.→self._view transform | view/object_selection.py (R3.6 view seam); applies to any PDFView→manager extraction |
+| 1330 | Undo byte-budget must dedup by content, not id() | model/edit_commands.py — `CommandManager._unique_byte_total` / `_dedup_top_snapshot_pair` / `_trim_undo_stack_if_needed` |
+| 1337 | OCR invisible text changes doc.tobytes() without bumping render_revision | controller/pdf_controller.py (`capture_worker_snapshot_bytes` cache) + controller/ocr_coordinator.py (`_on_ocr_page_done`) |
+| 1344 | Thumbnail threading: render off snapshot bytes, never the live doc — and watermarks vanish | controller/thumbnail_coordinator.py (R4.3 hybrid async thumbnails) |
+| 1351 | A test that builds a QPixmap needs the `qapp` fixture or it hangs | test_scripts (any Qt-touching test that constructs QPixmap/QImage→QPixmap off a fixture) |
+| 1358 | Overlay raster caching: only watermarks are overlays, and the cache key must capture base content (R4.1 design-note) | model/tools/manager.py (`render_page_pixmap` overlay branch), model/tools/watermark_tool.py, controller `_render_revision`/`_render_cache` |
+| 1365 | Optimize-copy of an encrypted PDF must re-apply the password, or it ships unprotected | model/pdf_optimizer.py (`save_optimized_copy` / `reapply_source_encryption`, R5.5) |
+| 1372 | Print path wrote a fully decrypted PDF to disk; keep the temp encrypted + pass the password out-of-band | controller/print_coordinator.py + src/printing/subprocess_runner.py + src/printing/helper_main.py (R5.1) |
+| 1379 | Building a wheel/sdist in `.venv`: setuptools is too old, and `pip wheel` litters build/ in the repo | packaging / test_scripts/test_security_packaging.py (R5.4) |
+| 1386 | `Path.write_text` on Windows rewrites LF→CRLF — don't use it to "revert" a tracked file | tooling / any transient edit-then-restore of a source file on Windows |
+| 1393 | Characterization tests are green-by-construction — they need *teeth*, not a red-light | testing / coverage-hardening (R6.1) |
+| 1400 | `verify_no_jump.py` full-suite `--ignore` lines go stale — re-audit on every gate change | tooling / no-jump completion gate (R6.2) |
+| 1409 | Object-ops (move/rotate/delete) bypassed GC → unbounded growth + deleted-data recovery | `model/pdf_object_ops.py` (R6-01; reopened R3.4) |
+| 1418 | `delete_object` now replaces the live `fitz.Document` handle | `model/pdf_object_ops.py` `_purge_deleted_content`; callers/tests |
+| 1427 | Delete confidentiality must fail closed, not swallow the GC error | `model/pdf_object_ops.py` `_purge_deleted_content` (Codex F4) |
+| 1436 | Optimize-copy must bind to its source session, not live `model.doc` | `model/pdf_optimizer.py`, `controller/pdf_controller.py` (R5-03; Codex F1/F2) |
+| 1445 | Re-encryption must preserve the auth role and never publish plaintext at the output | `model/pdf_optimizer.py` `reapply_source_encryption` / `save_optimized_copy` (R5-02, R5-04) |
+| 1454 | PyMuPDF `Document.save()`/`tobytes()` default to `garbage=0` — orphans persist on disk | `model/pdf_model.py` save path; relevant to any redaction/delete |
+| 1463 | Async thumbnail identity must include a global token, session, and generation | `controller/thumbnail_coordinator.py`, `controller/pdf_controller.py` (R4-01…R4-04; M3.6 foreground priority) |
+| 1472 | Completed print runner retained its password until the view was destroyed (R5-05) | `src/printing/subprocess_runner.py` |
+| 1481 | Packaging guard accepted a find-all `*` discovery pattern (R5-06) | `test_scripts/test_security_packaging.py` |
+| 1490 | Windows pip-audit crashes on non-ASCII bytes in requirement files | CI (`dependency-audit` job) / requirement files |
+| 1499 | Orphaned print-helper processes poison later full-suite runs | `test_scripts/` print stack / local dev machine state |
+| 1508 | Subprocess text I/O silently depends on the caller's locale, not the child's | `test_scripts/` — any test that `subprocess.run(...)` a script/tool and reads its stdout/stderr |
+| 1520 | CI's `test-functional` job never installed `build`/`setuptools`/`wheel` | `.github/workflows/ci.yml` (`test-functional` job) / `test_scripts/test_security_packaging.py` |
+| 1530 | `apply_redactions` is geometric: it destroys text and line art, not just the targeted image | `model/pdf_object_ops.py` (object delete/move/rotate), any PyMuPDF redaction call |
+| 1545 | Pruning an XObject resource: `/fzImg1` is a prefix of `/fzImg10`, and `/Resources` is inheritable | `model/pdf_object_ops.py` (`_remove_native_image_invocation`) |
+| 1557 | A "fail safe" that refuses to act can strand the object it was protecting | `model/pdf_object_ops.py` (`_delete_object_impl` image branch), and any resolve-then-act path |
+| 1569 | Rolling back a transaction that changed nothing closes the live `fitz.Document` | `model/pdf_object_ops.py` (`delete_objects_atomic`), `model/pdf_model.py` (`_restore_doc_from_snapshot`) |
+| 1579 | The print path wrote two plaintext temps, and `capture_print_snapshot_bytes` is always decrypted | `controller/print_coordinator.py`, `src/printing/*` (R5-01) |
+| 1591 | A QThread worker can clear its own decrypted payload race-free — no join needed | `controller/search_coordinator.py`, `controller/ocr_coordinator.py` (Codex F6 / B3) |
+| 1603 | XObject identity requires both the resource binding and the placement | `model/pdf_object_ops.py` app-image resolution and resource pruning |
+| 1613 | `QProcess.FailedToStart` has no matching `finished` signal | `src/printing/subprocess_runner.py` |
+| 1623 | PDF font identity must be keyed per-xref, never per-basefont | font handling for the text-commit engine design (`plans/2026-07-14-acrobat-parity-text-commit-engine.md`); any code matching spans to fonts |
+| 1633 | Render-quality benchmark must use the profile-scoped quality map | `test_scripts/benchmark_ui_open_render.py`, controller render state |
+| 1643 | A quality flag is not observable until the render callback yields | `controller/pdf_controller.py`, `controller/page_render_coordinator.py`, complex-vector continuous rendering |
+| 1653 | A growing thumbnail icon box does not upscale its source pixmap | thumbnail rendering and layout (`controller/thumbnail_coordinator.py`, `model/pdf_model.py`, `view/pdf_view.py`) |
+| 1663 | Editable combo validation must distinguish draft text from committed values | `view/pdf_view.py`, `view/text_editing.py` — font-size control |
+| 1673 | Printable-area centering is not physical-paper centering | `src/printing/qt_bridge.py` |
+| 1683 | Document snapshots must restore blank-placeholder state too | `model/pdf_model.py`, `model/edit_commands.py` |
+| 1693 | App-object payload versions are parser contracts, not feature counters | `model/tools/annotation_tool.py`, `model/pdf_object_ops.py` |
+| 1704 | PyMuPDF annotations retain their page through the page wrapper | PyMuPDF annotation tests |
+| 1714 | `tobytes(encryption=NONE)` on the *live* encrypted doc poisons its next `encryption=KEEP` save | `model/pdf_model.py` — `capture_worker_snapshot_bytes()` / `capture_print_snapshot_bytes()` (M3.5) |
+| 1725 | A later unconditional panel sync silently undoes an earlier mode-specific one | `view/pdf_view.py` — `PDFView.set_mode()` / `_sync_text_property_panel_state()` (M3.5) |
+| 1736 | Markup-mode mouse press fell through to Qt's default QGraphicsView handling | `view/pdf_view.py` — `_mouse_press()` / `_mouse_move()` / `_mouse_release()` for `highlight`/`underline`/`strikeout` modes (M3.5) |
+| 1749 | Underline/strikeout merged into one `markup_line` mode; PyMuPDF has no width API for either | `view/pdf_view.py` — toolbar, `_setup_property_inspector()`, mode dispatch (M3.5 follow-up) |
+| 1760 | PyMuPDF annot geometry is unrotated-space on BOTH write and read; `annot.rect` readback is a false oracle | `model/tools/annotation_tool.py` — every `page.add_*_annot` / `annot.set_rect` / `annot.rect` site |
+| 1770 | Python 3.10 `Path.resolve(strict=False)` still raises on unreachable UNC paths (WinError 53) | `utils/preferences.py` — `canonicalize_recent_path`; any `resolve()` on user-supplied paths |
+| 1779 | `itemActivated` + `EditKeyPressed`-only triggers hide a QTreeWidget's editability | `view/pdf_view.py` — bookmark panel (`self.bookmark_tree`) |
+| 1787 | View-owned popup not scoped to a session silently mutates the wrong document | `view/pdf_view.py` (`_floating_note`) + `view/floating_note.py`; class of bug applies to any singleton view widget that outlives a session |
+| 1795 | Full-rebuild `populate_toc` discards any selection set immediately before `sig_toc_changed` | `view/pdf_view.py` — bookmark panel (`self.bookmark_tree`), TOC round-trip |

@@ -258,7 +258,16 @@ class PDFModel:
 
     def _canonicalize_path(self, path: str) -> str:
         """Normalize path for dedupe across tabs (case-insensitive on Windows)."""
-        return str(Path(path).resolve()).casefold()
+        try:
+            resolved = str(Path(path).resolve())
+        except OSError:
+            # An unreachable UNC share raises WinError 53 under Py3.10 even for
+            # non-strict resolution. find_session_by_path() runs BEFORE open_pdf's
+            # try/except at startup / on forwarded-CLI / on recent-file clicks, so
+            # an unguarded raise here crashes the open flow. Fall back to a pure
+            # string canonical form (no filesystem access) to keep dedupe alive.
+            resolved = os.path.abspath(os.path.expanduser(path))
+        return resolved.casefold()
 
     @staticmethod
     def _safe_exc_message(exc: Exception) -> str:
@@ -2727,7 +2736,7 @@ class PDFModel:
         """Capture snapshot bytes for background worker readers."""
         if not self.doc:
             raise RuntimeError("沒有開啟的 PDF 文件")
-        return self.doc.tobytes(garbage=0, no_new_id=1, encryption=fitz.PDF_ENCRYPT_NONE)
+        return self._decrypted_snapshot_bytes(garbage=0)
 
     def capture_print_snapshot_bytes(self) -> bytes:
         """Capture print input, pruning destructive-edit orphans when required."""
@@ -2735,11 +2744,36 @@ class PDFModel:
             raise RuntimeError("沒有開啟的 PDF 文件")
         if not self.secure_save_required:
             return self.capture_worker_snapshot_bytes()
-        return self.doc.tobytes(
-            garbage=4,
-            no_new_id=1,
-            encryption=fitz.PDF_ENCRYPT_NONE,
-        )
+        return self._decrypted_snapshot_bytes(garbage=4)
+
+    def _decrypted_snapshot_bytes(self, *, garbage: int) -> bytes:
+        """Decrypt-and-flatten the live doc into plain bytes for worker/print readers.
+
+        ``tobytes(encryption=NONE)`` on an *encrypted* live handle silently
+        corrupts its internal crypt state (a PyMuPDF/MuPDF AES quirk): a later
+        ``encryption=KEEP`` save on that same handle then writes content
+        streams that no longer decrypt (blank pages on reopen), even though
+        the save itself reports success and needs_pass/is_encrypted look
+        normal. Since worker/print snapshots are captured on every render —
+        long before any save — this would silently poison the *next* save.
+        Route the decrypt through a throwaway clone opened from an
+        ``encryption=KEEP`` snapshot instead, so rendering/printing can never
+        touch the live handle's crypt state. Skipped for unencrypted docs:
+        cloning there is pure overhead with no corruption to guard against.
+        """
+        doc: fitz.Document = self.doc
+        if not self._doc_is_encrypted(doc):
+            return doc.tobytes(garbage=garbage, no_new_id=1, encryption=fitz.PDF_ENCRYPT_NONE)
+        keep_bytes = doc.tobytes(garbage=garbage, no_new_id=1, encryption=fitz.PDF_ENCRYPT_KEEP)
+        clone = fitz.open("pdf", keep_bytes)
+        try:
+            if clone.needs_pass:
+                password = self.password
+                if password is None or clone.authenticate(password) == 0:
+                    raise RuntimeError("worker/print 快照重新驗證密碼失敗")
+            return clone.tobytes(garbage=0, no_new_id=1, encryption=fitz.PDF_ENCRYPT_NONE)
+        finally:
+            clone.close()
 
     @staticmethod
     def preset_optimize_options(preset: str) -> PdfOptimizeOptions:

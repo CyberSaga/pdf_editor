@@ -201,7 +201,7 @@ from controller.search_coordinator import (  # noqa: E402
 
 
 class PDFController:
-    _VALID_MODES = {"browse", "edit_text", "add_text", "rect", "highlight", "underline", "strikeout", "add_annotation"}
+    _VALID_MODES = {"browse", "edit_text", "add_text", "rect", "highlight", "markup_line", "add_annotation"}
     def __init__(self, model: PDFModel, view: PDFView):
         self.model = model
         self.view = view
@@ -588,11 +588,18 @@ class PDFController:
             return
         entries = []
         for path in self._prefs.get_recent_files():
+            try:
+                available = Path(path).is_file()
+            except OSError:
+                # Defense in depth: one poisoned entry (e.g. an unreachable UNC
+                # whose probe raises rather than returning False) must degrade to
+                # unavailable, never abort activate() and take down the app.
+                available = False
             entries.append(
                 {
                     "path": path,
                     "display_name": Path(path).name or path,
-                    "available": Path(path).is_file(),
+                    "available": available,
                 }
             )
         updater(entries)
@@ -1203,6 +1210,7 @@ class PDFController:
         self.view.reset_document_view()
         self.view.populate_annotations_list([])
         self.view.populate_watermarks_list([])
+        self.view.populate_toc([])
         self.view.update_undo_redo_tooltips("復原（無可撤銷操作）", "重做（無可重做操作）")
 
     def _render_active_session(self, initial_page_idx: int | None = None) -> None:
@@ -1322,6 +1330,7 @@ class PDFController:
             self.view.activateWindow()
             for path in forwarded_files:
                 self.open_pdf(path)
+            self.view.graphics_view.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
 
         QTimer.singleShot(0, _apply)
 

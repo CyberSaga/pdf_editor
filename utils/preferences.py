@@ -39,6 +39,24 @@ _RECENT_FILES_LIMIT = 10
 _MIGRATE_KEYS = (_OCR_DEVICE_KEY, _OCR_LANGS_KEY, _THEME_KEY)
 
 
+def _safe_resolve_path(candidate: str) -> str:
+    """Canonicalize a filesystem path without letting an unreachable target abort.
+
+    On Python 3.10 / Windows, ``Path.resolve(strict=False)`` STILL raises
+    ``OSError`` (WinError 53) for an unreachable UNC share, because
+    ``ERROR_BAD_NETPATH`` is missing from ntpath's non-strict allow-list (later
+    CPython added it). A stale recent-files entry pointing at a now-dead share
+    must not crash activation, so we fall back to a pure-string canonical form.
+    ``os.path.abspath``/``expanduser`` touch no filesystem and cannot raise here,
+    and they preserve the dedup identity (normcase+normpath) so stale entries
+    still deduplicate consistently against their live originals.
+    """
+    try:
+        return str(Path(candidate).expanduser().resolve(strict=False))
+    except OSError:
+        return os.path.abspath(os.path.expanduser(candidate))
+
+
 def _make_default_store() -> _SettingsLike:
     from PySide6.QtCore import QSettings
 
@@ -125,7 +143,7 @@ class UserPreferences:
         candidate = str(path or "").strip()
         if not candidate:
             raise ValueError("最近檔案路徑不可為空")
-        return str(Path(candidate).expanduser().resolve(strict=False))
+        return _safe_resolve_path(candidate)
 
     @staticmethod
     def _recent_identity(path: str) -> str:

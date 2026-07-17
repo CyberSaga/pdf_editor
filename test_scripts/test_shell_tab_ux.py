@@ -72,6 +72,34 @@ def test_restoring_shell_width_restores_previously_visible_sidebars(qapp) -> Non
         qapp.processEvents()
 
 
+def test_restoring_shell_width_does_not_revive_a_sidebar_dragged_to_zero(qapp) -> None:
+    """Dragging a splitter handle to squeeze a sidebar to 0 width never calls
+    hide() on the widget, so isVisible()/isHidden() alone can't tell the
+    compact-collapse capture that the sidebar was effectively closed."""
+    view = PDFView(defer_heavy_panels=True)
+    try:
+        view.show()
+        view.resize(1280, 800)
+        _pump_events()
+
+        sizes = view.main_splitter.sizes()
+        total = sum(sizes)
+        view.main_splitter.setSizes([sizes[0], total - sizes[0], 0])
+        _pump_events()
+        assert view.right_sidebar.isVisible()  # dragged to 0 width, not hidden
+
+        view.resize(720, 520)
+        _pump_events()
+        view.resize(1280, 800)
+        _pump_events()
+
+        assert view.left_sidebar_widget.isVisible()
+        assert view.main_splitter.sizes()[2] == 0
+    finally:
+        view.close()
+        qapp.processEvents()
+
+
 def test_splitter_allows_sidebar_children_to_collapse(qapp) -> None:
     view = PDFView(defer_heavy_panels=True)
     try:
@@ -197,7 +225,36 @@ def test_canvas_navigation_keys_emit_bounded_page_targets(qapp) -> None:
         view.current_page = 4
         QTest.keyClick(view.graphics_view.viewport(), Qt.Key_PageDown)
         QTest.keyClick(view.graphics_view.viewport(), Qt.Key_End)
-        assert emitted == []
+        # PageUp/PageDown correctly no-op at the boundary they're already on,
+        # but Home/End always re-emit even when the cached current_page already
+        # matches the target (see test_home_end_always_reemit_even_when_cached_page_matches_target).
+        assert emitted == [0, 4]
+    finally:
+        view.close()
+        qapp.processEvents()
+
+
+def test_home_end_always_reemit_even_when_cached_page_matches_target(qapp) -> None:
+    """current_page is a viewport-center heuristic updated by _on_scroll_changed
+    and can drift from the true scroll position (e.g. a short page under a tall
+    continuous-mode viewport). Home/End must always force a re-scroll rather than
+    trusting that cache, or a stale match silently drops the navigation."""
+    view = PDFView(defer_heavy_panels=True)
+    emitted: list[int] = []
+    view.sig_page_changed.connect(emitted.append)
+    try:
+        view.show()
+        view.total_pages = 5
+        view.graphics_view.viewport().setFocus()
+
+        view.current_page = 0
+        QTest.keyClick(view.graphics_view.viewport(), Qt.Key_Home)
+        assert emitted == [0]
+
+        emitted.clear()
+        view.current_page = 4
+        QTest.keyClick(view.graphics_view.viewport(), Qt.Key_End)
+        assert emitted == [4]
     finally:
         view.close()
         qapp.processEvents()

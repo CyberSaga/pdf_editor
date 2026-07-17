@@ -149,3 +149,89 @@ def test_controller_toc_update_records_snapshot() -> None:
     assert isinstance(command, SnapshotCommand)
     assert command._command_type == "update_toc"
     controller.load_toc.assert_called_once_with()
+
+
+def test_reset_empty_ui_clears_bookmark_panel() -> None:
+    """Closing the last tab must clear the bookmark tree, like annotations/watermarks."""
+    controller = PDFController.__new__(PDFController)
+    controller.view = MagicMock()
+
+    controller._reset_empty_ui()
+
+    controller.view.populate_toc.assert_called_once_with([])
+
+
+def test_move_bookmark_up_preserves_selection_after_rebuild(qapp) -> None:
+    view = PDFView()
+    view.sig_toc_changed.connect(view.populate_toc)
+    try:
+        view.populate_toc([[1, "A", 1], [1, "B", 2], [1, "C", 3]])
+        view.bookmark_tree.setCurrentItem(view.bookmark_tree.topLevelItem(1))
+
+        view._move_selected_bookmark(-1)
+
+        current = view.bookmark_tree.currentItem()
+        assert current is not None
+        assert current.text(0) == "B"
+        assert view.bookmark_tree.indexOfTopLevelItem(current) == 0
+    finally:
+        view.close()
+        qapp.processEvents()
+
+
+def test_move_bookmark_down_preserves_selection_after_rebuild(qapp) -> None:
+    view = PDFView()
+    view.sig_toc_changed.connect(view.populate_toc)
+    try:
+        view.populate_toc([[1, "A", 1], [1, "B", 2], [1, "C", 3]])
+        view.bookmark_tree.setCurrentItem(view.bookmark_tree.topLevelItem(0))
+
+        view._move_selected_bookmark(1)
+
+        current = view.bookmark_tree.currentItem()
+        assert current is not None
+        assert current.text(0) == "A"
+        assert view.bookmark_tree.indexOfTopLevelItem(current) == 1
+    finally:
+        view.close()
+        qapp.processEvents()
+
+
+def test_move_child_bookmark_preserves_selection_after_rebuild(qapp) -> None:
+    view = PDFView()
+    view.sig_toc_changed.connect(view.populate_toc)
+    try:
+        view.populate_toc([[1, "Root", 1], [2, "C1", 2], [2, "C2", 3]])
+        root = view.bookmark_tree.topLevelItem(0)
+        view.bookmark_tree.setCurrentItem(root.child(1))
+
+        view._move_selected_bookmark(-1)
+
+        current = view.bookmark_tree.currentItem()
+        assert current is not None
+        assert current.text(0) == "C2"
+        parent = current.parent()
+        assert parent is not None
+        assert parent.indexOfChild(current) == 0
+    finally:
+        view.close()
+        qapp.processEvents()
+
+
+def test_move_bookmark_boundary_noop_leaves_selection_intact(qapp) -> None:
+    """Moving the first sibling up is a no-op and must not clear the selection."""
+    view = PDFView()
+    emitted: list[object] = []
+    view.sig_toc_changed.connect(emitted.append)
+    try:
+        view.populate_toc([[1, "A", 1], [1, "B", 2]])
+        first = view.bookmark_tree.topLevelItem(0)
+        view.bookmark_tree.setCurrentItem(first)
+
+        view._move_selected_bookmark(-1)
+
+        assert emitted == []
+        assert view.bookmark_tree.currentItem() is first
+    finally:
+        view.close()
+        qapp.processEvents()

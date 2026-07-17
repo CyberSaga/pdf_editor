@@ -227,6 +227,32 @@ def test_top_left_handle_drag_moves_x0_y0_preserves_x1_y1(monkeypatch) -> None:
     assert abs(dest.y1 - 80) < 1.0, f"expected y1 ≈ 80 (anchored), got {dest.y1}"
 
 
+def test_top_left_handle_drag_with_shift_locks_aspect_ratio(monkeypatch) -> None:
+    """TL corner drag with Shift held must preserve the original aspect ratio
+    end to end through the live mouse event handlers, not just in the pure
+    compute_object_resize_rect() unit (which test_compute_resize_rect_shift_locks_
+    aspect_ratio already covers directly)."""
+    view = _make_view()
+    pdf_view.PDFView._update_object_selection_visuals(view)
+
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *a, **kw: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseMoveEvent", lambda *a, **kw: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *a, **kw: None)
+
+    # bbox is (20, 20, 120, 80): 100x60, ratio ~1.667. Free-form dx/dy here
+    # would change the ratio; Shift must force it back to the original.
+    pdf_view.PDFView._mouse_press(view, _FakeEvent(20, 20))
+    pdf_view.PDFView._mouse_move(view, _FakeEvent(5, 15, modifiers=Qt.ShiftModifier))
+    pdf_view.PDFView._mouse_release(view, _FakeEvent(5, 15, modifiers=Qt.ShiftModifier))
+
+    req = view.sig_resize_object.emitted[0][0]
+    dest = req.destination_rect
+    original_ratio = 100.0 / 60.0
+    assert abs((dest.width / dest.height) - original_ratio) < 0.01
+    assert abs(dest.x1 - 120) < 1.0
+    assert abs(dest.y1 - 80) < 1.0
+
+
 def test_compute_resize_rect_free_form_changes_aspect_ratio() -> None:
     """AC-5a: a plain drag resizes freely (aspect ratio is allowed to change)."""
     start = fitz.Rect(20, 20, 120, 80)  # 100×60, ratio ≈ 1.667
