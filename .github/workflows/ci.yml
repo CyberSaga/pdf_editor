@@ -79,6 +79,29 @@ jobs:
         timeout-minutes: 15
         run: pip-audit -r ocr-requirements.txt --progress-spinner off
 
+  device-guard:
+    name: Device-identity guard (blocking)
+    # Second, un-bypassable layer over scripts/hooks/pre_commit_device_guard.py
+    # (the local pre-commit hook is opt-in per clone; this always runs). Scans
+    # only lines added by the PR/push, not the full tree, so pre-existing
+    # documented pitfall paths (CLAUDE.md, docs/history/**) never trip it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Scan diff for device-identity leaks (blocking)
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="HEAD^"
+          fi
+          python scripts/hooks/pre_commit_device_guard.py --base "$BASE"
+
   lint:
     name: ruff (blocking)
     runs-on: ubuntu-latest
