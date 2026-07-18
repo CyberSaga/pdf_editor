@@ -32,6 +32,18 @@ class RejectReason:
     FONT_UNSUPPORTED_ENCODING = "font_unsupported_encoding"
     FONT_CUSTOM_DIFFERENCES = "font_custom_differences"
     FONT_FACE_UNAVAILABLE = "font_face_unavailable"
+    NOT_SINGLE_LITERAL_TJ = "not_single_literal_tj"
+    STYLE_OVERRIDE_PRESENT = "style_override_present"
+    GEOMETRY_OVERRIDE_PRESENT = "geometry_override_present"
+    MULTILINE_REPLACEMENT = "multiline_replacement"
+    EMPTY_REPLACEMENT = "empty_replacement"
+    NO_CHANGE = "no_change"
+    ADVANCE_MISMATCH = "advance_mismatch"
+    ENCODING_FAILED = "encoding_failed"
+    SIGNED_OR_WIDGET_TARGET = "signed_or_widget_target"
+    PENDING_MAINTENANCE = "pending_page_maintenance"
+    VERIFICATION_FAILED = "verification_failed"
+    STALE_PLAN = "stale_plan"
 
 
 class CommitStatus(str, Enum):

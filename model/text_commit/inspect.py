@@ -47,6 +47,42 @@ def read_page_streams(
     return [(xref, doc.xref_stream(xref) or b"") for xref in page.get_contents()]
 
 
+def page_fingerprint(doc: fitz.Document, page: fitz.Page) -> str:
+    """Digest of everything a Tier 0 commit promises not to disturb.
+
+    Covers decoded content-stream bytes, the font resource table, and
+    annotation/widget identity+geometry.  A prepared plan whose fingerprint
+    no longer matches is stale and must not mutate anything.
+    """
+    digest = hashlib.sha256()
+    for xref, data in read_page_streams(doc, page):
+        digest.update(str(xref).encode("ascii"))
+        digest.update(b"\x00")
+        digest.update(data)
+        digest.update(b"\x01")
+    for entry in page.get_fonts(full=True):
+        digest.update(repr(entry).encode("utf-8"))
+        digest.update(b"\x02")
+    for annot in page.annots():
+        digest.update(f"{annot.xref}:{tuple(annot.rect)}".encode("utf-8"))
+        digest.update(b"\x03")
+    for widget in page.widgets():
+        digest.update(f"{widget.xref}:{tuple(widget.rect)}".encode("utf-8"))
+        digest.update(b"\x04")
+    return digest.hexdigest()
+
+
+def page_has_widgets_or_signatures(doc: fitz.Document, page: fitz.Page) -> bool:
+    """True when the page has form widgets or the document is signed."""
+    if any(True for _ in page.widgets()):
+        return True
+    try:
+        sig_flags = doc.get_sigflags()
+    except (RuntimeError, ValueError):
+        return True  # unreadable AcroForm: refuse rather than guess
+    return sig_flags > 0
+
+
 def replay_page(doc: fitz.Document, page: fitz.Page) -> PageReplay:
     return replay_page_streams(read_page_streams(doc, page))
 
