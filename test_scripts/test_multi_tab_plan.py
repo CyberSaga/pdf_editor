@@ -396,6 +396,42 @@ def test_04e_structural_metadata_uses_actual_deleted_pages(mvc, tmp_path):
     assert cmd.affected_pages == [2]
 
 
+def test_04f_delete_all_restores_placeholder_state_through_controller_undo_redo(mvc, tmp_path):
+    model, _, controller = mvc
+    path = _make_pdf(tmp_path / "delete-all.pdf", ["alpha", "beta", "gamma"])
+    controller.open_pdf(str(path))
+
+    controller.delete_pages([1, 2, 3])
+
+    assert len(model.doc) == 1
+    assert model.blank_placeholder_active is True
+    controller.undo()
+    assert len(model.doc) == 3
+    assert model.blank_placeholder_active is False
+    controller.redo()
+    assert len(model.doc) == 1
+    assert model.blank_placeholder_active is True
+
+
+def test_04g_import_after_delete_all_restores_placeholder_state_through_undo_redo(mvc, tmp_path):
+    model, _, controller = mvc
+    target = _make_pdf(tmp_path / "delete-all.pdf", ["alpha", "beta"])
+    source = _make_pdf(tmp_path / "source.pdf", ["imported"])
+    controller.open_pdf(str(target))
+    controller.delete_pages([1, 2])
+
+    controller.insert_pages_from_file(str(source), [1], 1)
+
+    assert model.blank_placeholder_active is False
+    assert "imported" in model.doc[0].get_text("text")
+    controller.undo()
+    assert model.blank_placeholder_active is True
+    assert len(model.doc) == 1
+    controller.redo()
+    assert model.blank_placeholder_active is False
+    assert "imported" in model.doc[0].get_text("text")
+
+
 def _pump_until_search_results(view, timeout_ms: int = 3000) -> None:
     """Phase 4.2: search runs on a worker thread; pump until results land."""
     deadline = time.time() + timeout_ms / 1000.0
@@ -475,6 +511,20 @@ def test_06c_thumbnail_layout_fills_sidebar_width_and_has_spacing(mvc, tmp_path)
     assert view.thumbnail_list.iconSize().width() >= int(viewport_w * 0.75)
 
 
+def test_06c1_thumbnail_rows_keep_three_drop_targets_visible(mvc, tmp_path):
+    _, view, controller = mvc
+    path = _make_pdf(tmp_path / "thumb_reorder_height.pdf", ["p1", "p2", "p3", "p4", "p5"])
+    view.resize(900, 620)
+    view.show()
+    controller.open_pdf(str(path))
+    _pump_events(500)
+
+    third_item = view.thumbnail_list.item(2)
+    assert third_item is not None
+    third_rect = view.thumbnail_list.visualItemRect(third_item)
+    assert third_rect.bottom() <= view.thumbnail_list.viewport().rect().bottom()
+
+
 def test_06d_thumbnail_list_auto_scrolls_with_page_scroll(mvc, tmp_path):
     _, view, controller = mvc
     pages = [f"p{i}" for i in range(1, 21)]
@@ -520,6 +570,13 @@ def test_06f_thumbnail_layout_caps_width_and_centers_in_wide_sidebar(mvc, tmp_pa
     assert margins.left() > 0
     assert margins.left() == margins.right()
     assert view.thumbnail_list.gridSize().width() <= 280
+
+    item = view.thumbnail_list.item(0)
+    assert item is not None
+    assert item.sizeHint() == view.thumbnail_list.gridSize()
+    assert item.textAlignment() & Qt.AlignHorizontal_Mask == Qt.AlignHCenter
+    actual_icon = item.icon().actualSize(view.thumbnail_list.iconSize())
+    assert actual_icon.width() >= 240
 
 
 def test_07_close_modified_tab_cancel_keeps_tab(mvc, tmp_path, monkeypatch):

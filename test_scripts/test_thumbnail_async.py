@@ -57,7 +57,7 @@ def test_invalidate_thumbnails_uses_set_placeholders_not_update(qapp):
     controller.view.update_thumbnails.assert_not_called()
 
 
-def test_invalidate_thumbnails_schedules_batch_with_correct_start_affected(qapp):
+def test_invalidate_thumbnails_count_changed_rerenders_from_zero(qapp):
     controller = _build_minimal_controller()
     scheduled: list[tuple] = []
     controller._schedule_thumbnail_batch = lambda *args: scheduled.append(args)
@@ -67,8 +67,8 @@ def test_invalidate_thumbnails_schedules_batch_with_correct_start_affected(qapp)
 
     assert scheduled, "batch was never scheduled (QTimer.singleShot expected)"
     start, session_id, gen = scheduled[0]
-    # min(affected)=3 -> one page before the first affected page -> index 1.
-    assert start == 1
+    # set_thumbnail_placeholders clears every icon, so every row must re-render.
+    assert start == 0
     assert session_id == "sid-1"
     assert gen == controller._thumb_gen_by_session["sid-1"]
 

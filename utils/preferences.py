@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
+from pathlib import Path
 from typing import Iterable, Protocol
 
 from utils.app_identity import APP as _APP, LEGACY_APP as _LEGACY_APP, LEGACY_ORG as _LEGACY_ORG, ORG as _ORG
@@ -27,10 +30,31 @@ _THEME_KEY = "ui/theme"
 _THEME_DEFAULT = DEFAULT_THEME_ID
 _VALID_THEME_IDS = VALID_THEME_IDS
 
+_RECENT_FILES_KEY = "files/recent"
+_RECENT_FILES_LIMIT = 10
+
 # Identity strings (_ORG/_APP for the live QSettings store, _LEGACY_* for the
 # one-time migration) come from the utils.app_identity leaf — see the import.
 
 _MIGRATE_KEYS = (_OCR_DEVICE_KEY, _OCR_LANGS_KEY, _THEME_KEY)
+
+
+def _safe_resolve_path(candidate: str) -> str:
+    """Canonicalize a filesystem path without letting an unreachable target abort.
+
+    On Python 3.10 / Windows, ``Path.resolve(strict=False)`` STILL raises
+    ``OSError`` (WinError 53) for an unreachable UNC share, because
+    ``ERROR_BAD_NETPATH`` is missing from ntpath's non-strict allow-list (later
+    CPython added it). A stale recent-files entry pointing at a now-dead share
+    must not crash activation, so we fall back to a pure-string canonical form.
+    ``os.path.abspath``/``expanduser`` touch no filesystem and cannot raise here,
+    and they preserve the dedup identity (normcase+normpath) so stale entries
+    still deduplicate consistently against their live originals.
+    """
+    try:
+        return str(Path(candidate).expanduser().resolve(strict=False))
+    except OSError:
+        return os.path.abspath(os.path.expanduser(candidate))
 
 
 def _make_default_store() -> _SettingsLike:
@@ -113,3 +137,81 @@ class UserPreferences:
         if name not in _VALID_THEME_IDS:
             raise ValueError(f"未知佈景主題：{name!r}")
         self._store.setValue(_THEME_KEY, name)
+
+    @staticmethod
+    def canonicalize_recent_path(path: str) -> str:
+        candidate = str(path or "").strip()
+        if not candidate:
+            raise ValueError("最近檔案路徑不可為空")
+        return _safe_resolve_path(candidate)
+
+    @staticmethod
+    def _recent_identity(path: str) -> str:
+        return os.path.normcase(os.path.normpath(path))
+
+    @classmethod
+    def _is_temporary_path(cls, path: str) -> bool:
+        temp_root = cls.canonicalize_recent_path(tempfile.gettempdir())
+        try:
+            return os.path.commonpath(
+                [cls._recent_identity(path), cls._recent_identity(temp_root)]
+            ) == cls._recent_identity(temp_root)
+        except ValueError:
+            return False
+
+    def get_recent_files(self) -> list[str]:
+        raw = self._store.value(_RECENT_FILES_KEY, [])
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, (list, tuple)):
+            return []
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in raw:
+            if not isinstance(value, str):
+                continue
+            try:
+                canonical = self.canonicalize_recent_path(value)
+            except ValueError:
+                continue
+            identity = self._recent_identity(canonical)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            result.append(canonical)
+            if len(result) >= _RECENT_FILES_LIMIT:
+                break
+        return result
+
+    def add_recent_file(self, path: str) -> bool:
+        try:
+            canonical = self.canonicalize_recent_path(path)
+        except ValueError:
+            return False
+        if Path(canonical).suffix.casefold() != ".pdf" or self._is_temporary_path(canonical):
+            return False
+        identity = self._recent_identity(canonical)
+        recent = [
+            existing
+            for existing in self.get_recent_files()
+            if self._recent_identity(existing) != identity
+        ]
+        self._store.setValue(
+            _RECENT_FILES_KEY,
+            [canonical, *recent][:_RECENT_FILES_LIMIT],
+        )
+        return True
+
+    def remove_recent_file(self, path: str) -> bool:
+        try:
+            identity = self._recent_identity(self.canonicalize_recent_path(path))
+        except ValueError:
+            return False
+        recent = self.get_recent_files()
+        retained = [
+            existing for existing in recent if self._recent_identity(existing) != identity
+        ]
+        if len(retained) == len(recent):
+            return False
+        self._store.setValue(_RECENT_FILES_KEY, retained)
+        return True

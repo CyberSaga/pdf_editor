@@ -11,7 +11,10 @@ environment that has no PySide6.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _RESOURCES_DIR: Path = Path(__file__).resolve().parent / "resources"
 
@@ -107,6 +110,7 @@ else:
         can assign the result unconditionally.
         """
         if not APP_ICON_PATH.is_file():
+            logger.warning("Application icon is unavailable: %s", APP_ICON_PATH)
             return QIcon()
         icon = QIcon(str(APP_ICON_PATH))
         if icon.isNull():

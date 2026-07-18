@@ -4,6 +4,7 @@ _EXPORTS: dict[str, str] = {
     "AuditStackedBar": "audit",
     "ExportPagesDialog": "export",
     "MergePdfDialog": "merge",
+    "MetadataDialog": "metadata",
     "OcrDialog": "ocr",
     "OptimizePdfDialog": "optimize",
     "PDFPasswordDialog": "password",

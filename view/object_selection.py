@@ -209,12 +209,11 @@ class ObjectSelectionManager:
         continuous-mode page offset)."""
         rs = self._view._render_scale if self._view._render_scale > 0 else 1.0
         page_idx = max(0, int(info.page_num) - 1)
-        y0 = self._view.page_y_positions[page_idx] if (
-            self._view.continuous_pages and page_idx < len(self._view.page_y_positions)
-        ) else 0.0
+        x0 = self._view._page_scene_x(page_idx)
+        y0 = self._view._page_scene_y(page_idx)
         bbox = fitz.Rect(info.bbox)
         return QPointF(
-            (bbox.x0 + bbox.x1) / 2.0 * rs,
+            x0 + (bbox.x0 + bbox.x1) / 2.0 * rs,
             y0 + (bbox.y0 + bbox.y1) / 2.0 * rs,
         )
 
@@ -239,17 +238,8 @@ class ObjectSelectionManager:
                 item for item in self._object_resize_handle_items if shiboken6.isValid(item)
             ]
         bbox = fitz.Rect(rect if rect is not None else info.bbox)
-        rs = self._view._render_scale if self._view._render_scale > 0 else 1.0
         page_idx = max(0, int(info.page_num) - 1)
-        y0 = self._view.page_y_positions[page_idx] if (
-            self._view.continuous_pages and page_idx < len(self._view.page_y_positions)
-        ) else 0.0
-        scene_rect = QRectF(
-            bbox.x0 * rs,
-            y0 + bbox.y0 * rs,
-            max(1.0, bbox.width * rs),
-            max(1.0, bbox.height * rs),
-        )
+        scene_rect = self._view._doc_rect_to_scene_rect(page_idx, bbox)
         pen = QPen(QColor(14, 165, 233, 220), 2)
         brush = QBrush(QColor(14, 165, 233, 30))
         if self._object_selection_rect_item is None:
@@ -296,6 +286,10 @@ class ObjectSelectionManager:
             (scene_rect.right() - half, scene_rect.top() - half),  # TR
             (scene_rect.left() - half, scene_rect.bottom() - half),  # BL
             (scene_rect.right() - half, scene_rect.bottom() - half),  # BR
+            (scene_rect.center().x() - half, scene_rect.top() - half),  # top
+            (scene_rect.right() - half, scene_rect.center().y() - half),  # right
+            (scene_rect.center().x() - half, scene_rect.bottom() - half),  # bottom
+            (scene_rect.left() - half, scene_rect.center().y() - half),  # left
         ):
             hrect = QRectF(hx, hy, handle_size, handle_size)
             item = self._view.scene.addRect(hrect, handle_pen, handle_brush)
@@ -309,7 +303,7 @@ class ObjectSelectionManager:
         return self._view._hit_object_resize_handle_index(scene_pos) >= 0
 
     def _hit_object_resize_handle_index(self, scene_pos: QPointF) -> int:
-        """Return the index (0=TL,1=TR,2=BL,3=BR) of the hit handle, or -1 if none."""
+        """Return handle index (corners 0..3, edges top/right/bottom/left 4..7)."""
         items = getattr(self, "_object_resize_handle_items", None) or []
         for i, item in enumerate(items):
             try:

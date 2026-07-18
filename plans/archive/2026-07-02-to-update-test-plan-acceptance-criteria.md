@@ -516,3 +516,56 @@ Pass criteria:
 Regression checks:
 - Opening files through double-click, file dialog, drag/drop, and single-instance forwarding all update history consistently.
 - Private temporary export/build paths are not accidentally recorded.
+
+---
+
+## AC-FIX-05 - 操作頁面後左側縮圖不顯示 (addendum, 2026-07-15)
+
+Requirement: 操作頁面（刪除、插入等）有時會導致左側縮圖不顯示，只剩下頁碼數字。
+
+Root cause: `_invalidate_thumbnails` count-changed branch calls `set_thumbnail_placeholders` which clears ALL rows to label-only items, then schedules re-render only from `max(0, min(affected)-2)` onward. Rows above that index keep the blank label-only placeholder forever.
+
+Test steps:
+- Open a multi-page PDF (≥5 pages).
+- Delete a page in the middle (e.g. page 3 of 5).
+- Observe all thumbnails in the sidebar.
+- Insert pages (from file or blank) after the deletion.
+- Undo and redo the deletion.
+
+Pass criteria:
+- After any page-count-changing operation (delete, insert, merge-append), ALL thumbnail rows display rendered page images, not just page-number labels.
+- Rows above the affected range retain or re-acquire their thumbnail images within one render cycle.
+- Existing generation-token cancellation (`_next_thumb_gen`) continues to work — a rapid sequence of operations does not leave stale thumbnails.
+- Undo/redo of page operations restores all thumbnails correctly.
+
+Regression checks:
+- Thumbnail rendering performance on a 50+ page document is not noticeably degraded.
+- The thumbnail-count-unchanged path (e.g. rotate, reorder) still updates only affected rows, not all rows.
+
+## AC-NEW-10 - PgUp/PgDn/Home/End 快捷鍵 (addendum, 2026-07-15)
+
+Requirement: 新增快捷鍵 PgUp、PgDn、Home、End 用於翻頁。
+
+Test steps:
+- Open a multi-page PDF (≥3 pages) in continuous and single-page modes.
+- Press PgDn repeatedly from page 1.
+- Press PgUp repeatedly from the last page.
+- Press End, then Home.
+- Focus a text input (search box, page number input) and press PgDn.
+- Enter text-edit mode with an active inline editor and press PgDn.
+
+Pass criteria:
+- PgDn navigates to the next page; PgUp navigates to the previous page.
+- Home navigates to the first page (page 0); End navigates to the last page.
+- At boundaries: PgDn on the last page is a no-op; PgUp on the first page is a no-op.
+- Navigation uses `scroll_to_page` (or equivalent) so the target page is fully visible and correctly scrolled.
+- When a text input widget (QLineEdit, QTextEdit) or inline text editor has focus, nav keys are NOT intercepted — they pass through to the focused widget.
+- No double-scroll: QGraphicsView's native pixel-scroll for PgUp/PgDn does not fire alongside the page navigation (event is accepted before `super()`).
+
+Regression checks:
+- Existing keyboard shortcuts (Ctrl+Tab, Esc, Ctrl+C, Delete, Ctrl+F) still work.
+- Text selection and text editing are not disrupted.
+
+## 待釐清 L36 Resolution — Delete All Pages (recorded 2026-07-15)
+
+Decision (binding, from maintainer override 2026-07-10): when the user deletes all pages, the app prompts for confirmation, then keeps exactly one blank placeholder page. The placeholder is auto-removed when real pages are later inserted. See tranche 3.3 in the M3 roadmap for the full design (flag `blank_placeholder_active`, SnapshotCommand undo, auto-removal hook).

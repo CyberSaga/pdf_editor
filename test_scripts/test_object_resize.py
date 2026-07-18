@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import fitz
+import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -226,6 +227,32 @@ def test_top_left_handle_drag_moves_x0_y0_preserves_x1_y1(monkeypatch) -> None:
     assert abs(dest.y1 - 80) < 1.0, f"expected y1 ≈ 80 (anchored), got {dest.y1}"
 
 
+def test_top_left_handle_drag_with_shift_locks_aspect_ratio(monkeypatch) -> None:
+    """TL corner drag with Shift held must preserve the original aspect ratio
+    end to end through the live mouse event handlers, not just in the pure
+    compute_object_resize_rect() unit (which test_compute_resize_rect_shift_locks_
+    aspect_ratio already covers directly)."""
+    view = _make_view()
+    pdf_view.PDFView._update_object_selection_visuals(view)
+
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *a, **kw: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseMoveEvent", lambda *a, **kw: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *a, **kw: None)
+
+    # bbox is (20, 20, 120, 80): 100x60, ratio ~1.667. Free-form dx/dy here
+    # would change the ratio; Shift must force it back to the original.
+    pdf_view.PDFView._mouse_press(view, _FakeEvent(20, 20))
+    pdf_view.PDFView._mouse_move(view, _FakeEvent(5, 15, modifiers=Qt.ShiftModifier))
+    pdf_view.PDFView._mouse_release(view, _FakeEvent(5, 15, modifiers=Qt.ShiftModifier))
+
+    req = view.sig_resize_object.emitted[0][0]
+    dest = req.destination_rect
+    original_ratio = 100.0 / 60.0
+    assert abs((dest.width / dest.height) - original_ratio) < 0.01
+    assert abs(dest.x1 - 120) < 1.0
+    assert abs(dest.y1 - 80) < 1.0
+
+
 def test_compute_resize_rect_free_form_changes_aspect_ratio() -> None:
     """AC-5a: a plain drag resizes freely (aspect ratio is allowed to change)."""
     start = fitz.Rect(20, 20, 120, 80)  # 100×60, ratio ≈ 1.667
@@ -254,6 +281,89 @@ def test_compute_resize_rect_lock_keeps_opposite_corner_for_tl() -> None:
     assert abs(out.x1 - 120.0) < 1e-6
     assert abs(out.y1 - 80.0) < 1e-6
     assert abs((out.width / out.height) - (start.width / start.height)) < 1e-3
+
+
+@pytest.mark.parametrize(
+    ("anchor", "dx", "dy", "expected"),
+    [
+        (4, 35.0, -12.0, fitz.Rect(20, 8, 120, 80)),   # top midpoint
+        (5, 25.0, -30.0, fitz.Rect(20, 20, 145, 80)),  # right midpoint
+        (6, -40.0, 18.0, fitz.Rect(20, 20, 120, 98)),  # bottom midpoint
+        (7, -15.0, 22.0, fitz.Rect(5, 20, 120, 80)),   # left midpoint
+    ],
+)
+def test_compute_resize_rect_edge_handles_move_only_owned_edge(
+    anchor: int,
+    dx: float,
+    dy: float,
+    expected: fitz.Rect,
+) -> None:
+    start = fitz.Rect(20, 20, 120, 80)
+
+    out = pdf_view.compute_object_resize_rect(start, anchor, dx, dy, lock_ar=False)
+
+    assert out == expected
+
+
+@pytest.mark.parametrize(
+    ("anchor", "dx", "dy", "expected"),
+    [
+        (4, 100.0, 100.0, fitz.Rect(20, 72, 120, 80)),
+        (5, -100.0, 100.0, fitz.Rect(20, 20, 28, 80)),
+        (6, 100.0, -100.0, fitz.Rect(20, 20, 120, 28)),
+        (7, 100.0, -100.0, fitz.Rect(112, 20, 120, 80)),
+    ],
+)
+def test_compute_resize_rect_edge_handles_enforce_minimum_and_ignore_shift_lock(
+    anchor: int,
+    dx: float,
+    dy: float,
+    expected: fitz.Rect,
+) -> None:
+    start = fitz.Rect(20, 20, 120, 80)
+
+    out = pdf_view.compute_object_resize_rect(start, anchor, dx, dy, lock_ar=True)
+
+    assert out == expected
+
+
+def test_selection_visuals_add_four_midpoint_handles() -> None:
+    view = _make_view()
+
+    pdf_view.PDFView._update_object_selection_visuals(view)
+
+    handles = view._object_resize_handle_items
+    assert len(handles) == 8
+    centers = [(round(item.rect().center().x()), round(item.rect().center().y())) for item in handles]
+    assert centers == [
+        (20, 20),
+        (120, 20),
+        (20, 80),
+        (120, 80),
+        (70, 20),
+        (120, 50),
+        (70, 80),
+        (20, 50),
+    ]
+    assert pdf_view.PDFView._hit_object_resize_handle_index(view, QPointF(70, 20)) == 4
+    assert pdf_view.PDFView._hit_object_resize_handle_index(view, QPointF(120, 50)) == 5
+    assert pdf_view.PDFView._hit_object_resize_handle_index(view, QPointF(70, 80)) == 6
+    assert pdf_view.PDFView._hit_object_resize_handle_index(view, QPointF(20, 50)) == 7
+
+
+def test_top_midpoint_drag_changes_height_only(monkeypatch) -> None:
+    view = _make_view()
+    pdf_view.PDFView._update_object_selection_visuals(view)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mousePressEvent", lambda *a, **kw: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseMoveEvent", lambda *a, **kw: None)
+    monkeypatch.setattr(pdf_view.QGraphicsView, "mouseReleaseEvent", lambda *a, **kw: None)
+
+    pdf_view.PDFView._mouse_press(view, _FakeEvent(70, 20))
+    pdf_view.PDFView._mouse_move(view, _FakeEvent(95, 5, modifiers=Qt.ShiftModifier))
+    pdf_view.PDFView._mouse_release(view, _FakeEvent(95, 5))
+
+    req = view.sig_resize_object.emitted[0][0]
+    assert req.destination_rect == fitz.Rect(20, 5, 120, 80)
 
 
 def test_bottom_left_handle_drag_moves_x0_y1_preserves_x1_y0(monkeypatch) -> None:

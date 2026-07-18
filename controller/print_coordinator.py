@@ -138,6 +138,7 @@ class PrintCoordinator:
         self._print_worker_bridge: _PrintWorkerBridge | None = None
         self._print_close_pending = False
         self._print_stalled = False
+        self._last_print_settings: dict[str, object] | None = None
         # R5-01: the helper's scratch dir (job.json only — the document never lands here).
         self._print_work_dir: str | None = None
 
@@ -397,11 +398,15 @@ class PrintCoordinator:
                 current_page=self._c.view.current_page + 1,
                 job_name=Path(self._c.model.original_path or "pdf_editor_job").name,
                 preview_page_provider=self._c._render_print_preview_image,
+                previous_settings=self._last_print_settings,
             )
 
             if self._print_dialog.exec() != QDialog.DialogCode.Accepted:
                 return
 
+            capture = getattr(self._print_dialog, "capture_user_settings", None)
+            if callable(capture):
+                self._last_print_settings = capture()
             dialog_result = self._print_dialog.result_data()
             if dialog_result is None:
                 return

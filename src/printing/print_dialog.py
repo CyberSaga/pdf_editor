@@ -56,6 +56,7 @@ class UnifiedPrintDialog(QDialog):
         current_page: int,
         job_name: str,
         preview_page_provider: Callable[[int, int], QImage] | None = None,
+        previous_settings: dict[str, object] | None = None,
     ) -> None:
         super().__init__(parent)
         self.dispatcher = dispatcher
@@ -74,6 +75,7 @@ class UnifiedPrintDialog(QDialog):
         self._touched_hardware_fields: set[str] = set()
         self._syncing_printer_preferences = False
         self._preview_page_provider = preview_page_provider
+        self._previous_settings: dict[str, object] = dict(previous_settings or {})
         # DEVMODE captured from the native Properties dialog, applied job-scoped at
         # submission only (P1). Printer-specific, so it is cleared on printer switch.
         self._pending_devmode_buffer: str | None = None
@@ -88,6 +90,7 @@ class UnifiedPrintDialog(QDialog):
         self._build_ui()
         self._load_printers()
         self._wire_signals()
+        self._apply_previous_settings()
         self._schedule_preview_refresh()
 
     def result_data(self) -> UnifiedPrintDialogResult | None:
@@ -454,6 +457,69 @@ class UnifiedPrintDialog(QDialog):
         copies = applied_prefs.get("copies")
         if isinstance(copies, int):
             self.copies_spin.setValue(max(self.copies_spin.minimum(), min(self.copies_spin.maximum(), copies)))
+
+    def _apply_previous_settings(self) -> None:
+        ps = self._previous_settings
+        if not ps:
+            return
+        # Restore the printer selection FIRST: switching printers (via
+        # _on_printer_changed) clears _touched_hardware_fields and reloads that
+        # printer's preferences, which would wipe out any hardware fields restored
+        # before it.
+        if "printer_name" in ps:
+            idx = self.printer_combo.findData(ps["printer_name"])
+            if idx >= 0 and idx != self.printer_combo.currentIndex():
+                self.printer_combo.setCurrentIndex(idx)
+        if "copies" in ps and isinstance(ps["copies"], int):
+            self.copies_spin.setValue(ps["copies"])
+        if "dpi" in ps and isinstance(ps["dpi"], int):
+            self.dpi_spin.setValue(ps["dpi"])
+        if "collate" in ps and isinstance(ps["collate"], bool):
+            self.collate_cb.setChecked(ps["collate"])
+        if "paper_size" in ps:
+            idx = self.paper_combo.findData(ps["paper_size"])
+            if idx >= 0:
+                self.paper_combo.setCurrentIndex(idx)
+        if "orientation" in ps:
+            idx = self.orientation_combo.findData(ps["orientation"])
+            if idx >= 0:
+                self.orientation_combo.setCurrentIndex(idx)
+        if "duplex" in ps:
+            idx = self.duplex_combo.findData(ps["duplex"])
+            if idx >= 0:
+                self.duplex_combo.setCurrentIndex(idx)
+        if "color_mode" in ps:
+            idx = self.color_combo.findData(ps["color_mode"])
+            if idx >= 0:
+                self.color_combo.setCurrentIndex(idx)
+        if "scale_mode" in ps:
+            idx = self.scale_mode_combo.findData(ps["scale_mode"])
+            if idx >= 0:
+                self.scale_mode_combo.setCurrentIndex(idx)
+        if "scale_percent" in ps and isinstance(ps["scale_percent"], int):
+            self.scale_percent_spin.setValue(ps["scale_percent"])
+        if "page_subset" in ps:
+            idx = self.page_subset_combo.findData(ps["page_subset"])
+            if idx >= 0:
+                self.page_subset_combo.setCurrentIndex(idx)
+        if "reverse_order" in ps and isinstance(ps["reverse_order"], bool):
+            self.reverse_cb.setChecked(ps["reverse_order"])
+
+    def capture_user_settings(self) -> dict[str, object]:
+        return {
+            "printer_name": self.printer_combo.currentData(),
+            "copies": self.copies_spin.value(),
+            "dpi": self.dpi_spin.value(),
+            "collate": self.collate_cb.isChecked(),
+            "paper_size": self.paper_combo.currentData(),
+            "orientation": self.orientation_combo.currentData(),
+            "duplex": self.duplex_combo.currentData(),
+            "color_mode": self.color_combo.currentData(),
+            "scale_mode": self.scale_mode_combo.currentData(),
+            "scale_percent": self.scale_percent_spin.value(),
+            "page_subset": self.page_subset_combo.currentData(),
+            "reverse_order": self.reverse_cb.isChecked(),
+        }
 
     def _update_inherited_property_fields(self, prefs: dict[str, object]) -> None:
         _ = prefs

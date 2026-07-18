@@ -170,3 +170,78 @@ def test_controller_handle_forwarded_cli_opens_forwarded_files(
     finally:
         _cleanup_server(server, server_name)
         _cleanup_startup(startup)
+
+
+def test_primary_close_promotes_secondary_for_forwarding(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp,
+    tmp_path: Path,
+) -> None:
+    """After the primary window closes, forwarded paths must reach a
+    promoted secondary window instead of the dead primary."""
+    initial = tmp_path / "primary.pdf"
+    forward = tmp_path / "forward.pdf"
+    _make_pdf(initial, "primary")
+    _make_pdf(forward, "forward")
+
+    from controller.pdf_controller import PDFController
+
+    opened_by: list[tuple[int, str]] = []
+
+    def tracking_open(self, path: str) -> None:
+        opened_by.append((id(self), path))
+
+    monkeypatch.setattr(PDFController, "open_pdf", tracking_open)
+
+    startup = main_module.run(argv=[str(initial)], start_event_loop=False)
+    primary_controller = startup["controller"]
+    primary_view = startup["view"]
+    assert primary_controller is not None
+
+    from model.pdf_model import PDFModel
+    from view.pdf_view import PDFView
+
+    sec_view = PDFView()
+    sec_view.apply_initial_theme()
+    sec_model = PDFModel()
+    sec_controller = PDFController(sec_model, sec_view)
+    sec_view.controller = sec_controller
+    sec_controller.activate()
+    sec_context = {
+        "model": sec_model,
+        "view": sec_view,
+        "controller": sec_controller,
+    }
+    startup["secondary_windows"].append(sec_context)
+    sec_view.show()
+    qapp.processEvents()
+
+    primary_view.close()
+    qapp.processEvents()
+
+    assert startup["controller"] is sec_controller
+    assert startup["view"] is sec_view
+    assert startup["model"] is sec_model
+    assert sec_context not in startup["secondary_windows"]
+
+    sec_view.close()
+    sec_model.close()
+    startup.get("model") and startup["model"].close()
+    qapp.processEvents()
+
+
+def test_allow_running_instance_foreground_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+
+    class _User32:
+        def AllowSetForegroundWindow(self, process_id: int) -> int:
+            calls.append(process_id)
+            return 1
+
+    fake_ctypes = type("FakeCtypes", (), {"windll": type("Windll", (), {"user32": _User32()})()})()
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
+
+    single_instance_module._allow_running_instance_foreground()
+
+    assert calls == [-1]

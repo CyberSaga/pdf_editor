@@ -42,15 +42,14 @@ def test_default_session_color_profile_is_srgb() -> None:
     assert controller._get_ui_state(sid).color_profile == "srgb"
 
 
-def test_set_session_color_profile_updates_state_and_triggers_render_and_thumbs() -> None:
+def test_set_session_color_profile_prioritizes_visible_render_before_thumbs() -> None:
     controller, sid, scheduled, thumb_batches = _make_controller()
     controller.set_session_color_profile(sid, "gray")
     assert controller._get_ui_state(sid).color_profile == "gray"
     assert controller._page_render_quality_by_session[sid]["gray"] == {}
     assert scheduled == [(sid, 0)]
-    assert thumb_batches
-    assert thumb_batches[0][0] == 0
-    assert thumb_batches[0][1] == sid
+    assert thumb_batches == []
+    assert controller._thumb_gen_by_session[sid] == 1
 
 
 def test_set_session_color_profile_rejects_unknown_profile() -> None:

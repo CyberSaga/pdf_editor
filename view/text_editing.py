@@ -36,6 +36,24 @@ def _parse_font_size_str(text: str) -> float | None:
         return None
 
 
+def _validated_font_size_input(text: str) -> float | None:
+    """Validate a manually-entered font size with at most one decimal place."""
+    candidate = str(text).strip()
+    parts = candidate.split(".")
+    if not candidate or len(parts) > 2:
+        return None
+    if not parts[0].isascii() or not parts[0].isdigit():
+        return None
+    if len(parts) == 2 and (
+        len(parts[1]) != 1 or not parts[1].isascii() or not parts[1].isdigit()
+    ):
+        return None
+    size = float(candidate)
+    if not 1.0 <= size <= 999.9:
+        return None
+    return size
+
+
 def _format_font_size(size: float) -> str:
     """Render a font size for the combo box: ``9`` / ``9.5`` — no trailing ``.0``."""
     value = float(size)
@@ -1321,6 +1339,8 @@ class TextEditManager:
             view.text_size.clear()
             view.text_size.addItems(items)
         view.text_size.setCurrentText(size_str)
+        view._last_valid_text_size_text = size_str
+        view._text_size_input_dirty = False
         normalized_font = view._qt_font_to_pdf(font_name)
         view._set_text_font_by_pdf(normalized_font)
         view._editing_initial_font_name = normalized_font
@@ -1407,7 +1427,8 @@ class TextEditManager:
         view.editing_rect = fitz.Rect(rect)
         view._editing_original_rect = fitz.Rect(rect)
         view._editing_origin_page_idx = page_idx
-        y0 = view.page_y_positions[page_idx] if (view.continuous_pages and page_idx < len(view.page_y_positions)) else 0
+        x0 = view._page_scene_x(page_idx)
+        y0 = view._page_scene_y(page_idx)
         display_font_pt = _display_font_pt(font_size, rs)
         qt_font_family = view._pdf_font_to_qt(font_name)
         # Run-level edits: first frame matches the clicked span bbox exactly.
@@ -1433,15 +1454,16 @@ class TextEditManager:
             rotation=rotation,
             content_height_px=content_height_px,
         )
+        pos_x += x0
         if normalized_rotation == 90:
             editor_width_px = max(int(round(scaled_rect.height)), 1)
             editor_height_px = max(int(round(scaled_rect.width)), 1)
-            pos_x = float(scaled_rect.x1)
+            pos_x = float(x0 + scaled_rect.x1)
             pos_y = float(y0 + scaled_rect.y0)
         elif normalized_rotation == 270:
             editor_width_px = max(int(round(scaled_rect.height)), 1)
             editor_height_px = max(int(round(scaled_rect.width)), 1)
-            pos_x = float(scaled_rect.x0)
+            pos_x = float(x0 + scaled_rect.x0)
             pos_y = float(y0 + scaled_rect.y1)
 
         initial_frame = self._capture_frozen_first_frame(

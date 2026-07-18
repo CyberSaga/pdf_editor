@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import uuid
 from typing import TYPE_CHECKING
 
@@ -39,13 +40,115 @@ class AnnotationTool(ToolExtension):
             raise ValueError(f"無效的頁碼: {page_num}")
         return self._model.doc[page_num - 1]
 
+    @staticmethod
+    def _derotate_rect(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
+        """Map a displayed-coords rect into the unrotated space add_*_annot expects.
+
+        PyMuPDF's annot-creation geometry is always interpreted in unrotated
+        page space; the app deals exclusively in displayed (page.rect) space.
+        At rotation 0 ``derotation_matrix`` is identity, so this is a no-op.
+        """
+        return (fitz.Rect(rect) * page.derotation_matrix).normalize()
+
+    @staticmethod
+    def _derotate_point(page: fitz.Page, point: fitz.Point) -> fitz.Point:
+        return fitz.Point(point) * page.derotation_matrix
+
+    @staticmethod
+    def _rotate_rect_to_displayed(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
+        """Map a stored (unrotated-space) annot rect back into displayed coords.
+
+        Mirror of ``_derotate_rect`` for the read direction: the model
+        boundary must convert geometry both ways, since ``annot.rect`` is
+        always the canonical unrotated /Rect. ``page.rotation_matrix`` is the
+        inverse of ``derotation_matrix``, so this exactly undoes it. Verified
+        empirically for Text/Note icons (the appearance always collapses to a
+        fixed square anchored at (x0, y0), so a plain corner-remap + normalize
+        recovers the original displayed anchor at every rotation -- no
+        separate anchor-only variant is needed here, unlike the write side).
+        """
+        return (fitz.Rect(rect) * page.rotation_matrix).normalize()
+
+    @staticmethod
+    def _derotate_text_annot_rect(page: fitz.Page, rect: fitz.Rect) -> fitz.Rect:
+        """Derotate a Text/Note annot's target rect for ``Annot.set_rect()``.
+
+        The Note icon is a fixed-size glyph anchored at (rect.x0, rect.y0);
+        PyMuPDF ignores width/height when placing it. A full corner-remap
+        (as ``_derotate_rect`` does for real rectangles) would pick whichever
+        transformed corner ends up as the new min after normalize(), which is
+        not necessarily the original anchor corner. Instead derotate only the
+        anchor point and keep the displayed width/height as the rect span.
+        """
+        anchor = fitz.Point(rect.x0, rect.y0) * page.derotation_matrix
+        width = rect.x1 - rect.x0
+        height = rect.y1 - rect.y0
+        return fitz.Rect(anchor.x, anchor.y, anchor.x + width, anchor.y + height)
+
+    @staticmethod
+    def _displayed_rect_to_quad(page: fitz.Page, rect: fitz.Rect) -> fitz.Quad:
+        """Corner-map a displayed rect into a derotated fitz.Quad for markup annots.
+
+        Markup ink follows quad corner roles (underline hugs the ll-lr edge,
+        strikeout runs mid-height), so a derotated *rect* is insufficient at
+        90/270: it would put the ink on a vertical edge instead of preserving
+        the displayed-bottom placement. Mapping each named corner through
+        derotation_matrix and keeping the ul/ur/ll/lr role assignment fixed
+        keeps the ink on the correct edge at every rotation.
+        """
+        r = fitz.Rect(rect)
+        matrix = page.derotation_matrix
+        ul = fitz.Point(r.x0, r.y0) * matrix
+        ur = fitz.Point(r.x1, r.y0) * matrix
+        ll = fitz.Point(r.x0, r.y1) * matrix
+        lr = fitz.Point(r.x1, r.y1) * matrix
+        return fitz.Quad(ul, ur, ll, lr)
+
     def add_highlight(self, page_num: int, rect: fitz.Rect, color: tuple[float, float, float, float]) -> None:
         page = self._require_page(page_num)
-        annot = page.add_highlight_annot(rect)
+        quad = self._displayed_rect_to_quad(page, rect)
+        annot = page.add_highlight_annot(quad)
         annot.set_colors(stroke=color[:3], fill=color[:3])
         annot.set_opacity(color[3])
         annot.update()
         logger.debug("新增螢光筆: 頁面 %s, 矩形 %s, 顏色 %s", page_num, rect, color)
+
+    def _add_text_markup(
+        self,
+        kind: str,
+        page_num: int,
+        rect: fitz.Rect,
+        color: tuple[float, float, float, float],
+    ) -> None:
+        normalized = self._normalize_color(color, name="color")
+        page = self._require_page(page_num)
+        quad = self._displayed_rect_to_quad(page, rect)
+        if kind == "underline":
+            annot = page.add_underline_annot(quad)
+        elif kind == "strikeout":
+            annot = page.add_strikeout_annot(quad)
+        else:  # pragma: no cover - private callers use fixed literals
+            raise ValueError(f"unsupported markup kind: {kind}")
+        annot.set_colors(stroke=normalized[:3])
+        annot.set_opacity(normalized[3])
+        annot.update()
+        logger.debug("新增%s: 頁面 %s, 矩形 %s, 顏色 %s", kind, page_num, rect, normalized)
+
+    def add_underline(
+        self,
+        page_num: int,
+        rect: fitz.Rect,
+        color: tuple[float, float, float, float],
+    ) -> None:
+        self._add_text_markup("underline", page_num, rect, color)
+
+    def add_strikeout(
+        self,
+        page_num: int,
+        rect: fitz.Rect,
+        color: tuple[float, float, float, float],
+    ) -> None:
+        self._add_text_markup("strikeout", page_num, rect, color)
 
     def get_text_bounds(self, page_num: int, rough_rect: fitz.Rect) -> fitz.Rect:
         precise_rect = self._model.get_text_selection_bounds(page_num, rough_rect)
@@ -55,45 +158,152 @@ class AnnotationTool(ToolExtension):
         logger.debug("頁面 %s 在 %s 精準矩形 %s", page_num, rough_rect, precise_rect)
         return precise_rect
 
-    def add_rect(self, page_num: int, rect: fitz.Rect, color: tuple[float, float, float, float], fill: bool) -> None:
+    @staticmethod
+    def _normalize_color(value: object, *, name: str) -> tuple[float, float, float, float]:
+        if not isinstance(value, (tuple, list)) or len(value) not in (3, 4):
+            raise TypeError(f"{name} must contain three or four numeric channels")
+        try:
+            channels = tuple(float(channel) for channel in value)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(f"{name} channels must be numeric") from exc
+        if any(not math.isfinite(channel) or channel < 0.0 or channel > 1.0 for channel in channels):
+            raise ValueError(f"{name} channels must be within 0..1")
+        if len(channels) == 3:
+            return channels[0], channels[1], channels[2], 1.0
+        return channels[0], channels[1], channels[2], channels[3]
+
+    def add_rect(
+        self,
+        page_num: int,
+        rect: fitz.Rect,
+        color: tuple[float, float, float, float] | None = None,
+        fill: bool | None = None,
+        *,
+        stroke_color: tuple[float, float, float, float] | None = None,
+        fill_color: tuple[float, float, float, float] | None = None,
+        border_width: float | None = None,
+    ) -> None:
+        """Add a rectangle with independent stroke/fill appearance.
+
+        ``color``/``fill`` remain accepted for older callers; new callers pass
+        ``stroke_color``/``fill_color`` and an explicit border width.
+        """
+        stroke = self._normalize_color(
+            stroke_color if stroke_color is not None else color,
+            name="stroke_color",
+        )
+        if fill_color is not None:
+            normalized_fill = self._normalize_color(fill_color, name="fill_color")
+        elif fill:
+            normalized_fill = stroke
+        else:
+            normalized_fill = None
+        explicit_border_width = border_width is not None
+        if border_width is None:
+            width = 0.0 if fill is True and stroke_color is None else 5.0 if fill is False else 1.0
+        else:
+            if isinstance(border_width, bool):
+                raise TypeError("border_width must be numeric")
+            try:
+                width = float(border_width)
+            except (TypeError, ValueError) as exc:
+                raise TypeError("border_width must be numeric") from exc
+        if (
+            not math.isfinite(width)
+            or width > 20.0
+            or (explicit_border_width and width <= 0.0)
+            or (not explicit_border_width and width < 0.0)
+        ):
+            raise ValueError("border_width must be within 0..20")
+
         page = self._require_page(page_num)
-        annot = page.add_rect_annot(rect)
-        annot.set_colors(stroke=color[:3], fill=color[:3] if fill else None)
-        annot.set_border(width=5 if not fill else 0)
-        annot.set_opacity(color[3])
+        annot = page.add_rect_annot(self._derotate_rect(page, rect))
+        annot.set_colors(
+            stroke=stroke[:3],
+            fill=normalized_fill[:3] if normalized_fill is not None else None,
+        )
+        annot.set_border(width=width)
+        annot.set_opacity(stroke[3])
         payload = {
             "version": 1,
             "kind": "rect",
             "object_id": str(uuid.uuid4()),
             "page_num": int(page_num),
             "rect": [float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)],
-            "fill": bool(fill),
+            "fill": normalized_fill is not None,
+            "stroke_color": list(stroke),
+            "fill_color": list(normalized_fill) if normalized_fill is not None else None,
+            "border_width": width,
         }
         annot.set_info(
             content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             subject="pdf_editor_rect_object",
         )
         annot.update()
-        logger.debug("新增矩形: 頁面 %s, 矩形 %s, 顏色 %s, 填滿=%s", page_num, rect, color, fill)
+        logger.debug(
+            "新增矩形: 頁面 %s, 矩形 %s, 線色=%s, 填色=%s, 線寬=%s",
+            page_num,
+            rect,
+            stroke,
+            normalized_fill,
+            width,
+        )
 
     def add_annotation(self, page_num: int, point: fitz.Point, text: str) -> int:
         page = self._require_page(page_num)
-        fixed_width = 200
-        font_size = 10.5
-        rect = fitz.Rect(point.x, point.y, point.x + fixed_width, point.y + 50)
-
-        annot = page.add_freetext_annot(
-            rect,
-            text,
-            fontsize=font_size,
-            fontname="helv",
-            text_color=(0, 0, 0),
-            fill_color=(1, 1, 0.8),
-            rotate=page.rotation,
-        )
+        annot = page.add_text_annot(self._derotate_point(page, point), str(text), icon="Note")
         annot.update()
-        logger.debug("新增註解: 頁面 %s, 最終矩形 %s, xref: %s", page_num, annot.rect, annot.xref)
+        logger.debug("新增文字註解: 頁面 %s, 矩形 %s, xref: %s", page_num, annot.rect, annot.xref)
         return annot.xref
+
+    def _find_annotation(self, xref: int) -> tuple[fitz.Page, fitz.Annot] | None:
+        if not self._model.doc or not isinstance(xref, int) or xref <= 0:
+            return None
+        for page in self._model.doc:
+            annot = page.first_annot
+            while annot is not None:
+                if annot.xref == xref:
+                    return page, annot
+                annot = annot.next
+        return None
+
+    def update_annotation(self, xref: int, text: str) -> bool:
+        found = self._find_annotation(xref)
+        if found is None:
+            return False
+        _page, annot = found
+        if annot.type[1] != "Text":
+            return False
+        annot.set_info(content=str(text))
+        annot.update()
+        return True
+
+    def move_annotation(self, xref: int, rect: fitz.Rect) -> bool:
+        found = self._find_annotation(xref)
+        if found is None:
+            return False
+        page, annot = found
+        if annot.type[1] != "Text":
+            return False
+        target = fitz.Rect(rect)
+        if target.is_empty or any(
+            not math.isfinite(value)
+            for value in (target.x0, target.y0, target.x1, target.y1)
+        ):
+            raise ValueError("annotation rect must be finite and non-empty")
+        annot.set_rect(self._derotate_text_annot_rect(page, target))
+        annot.update()
+        return True
+
+    def delete_annotation(self, xref: int) -> bool:
+        found = self._find_annotation(xref)
+        if found is None:
+            return False
+        page, annot = found
+        if annot.type[1] != "Text":
+            return False
+        page.delete_annot(annot)
+        return True
 
     def get_all_annotations(self) -> list[dict]:
         results: list[dict] = []
@@ -102,16 +312,21 @@ class AnnotationTool(ToolExtension):
 
         for page in self._model.doc:
             for annot in page.annots():
-                if annot.type[1] == "FreeText":
-                    info = {
+                type_name = annot.type[1]
+                if type_name not in {"Text", "FreeText"}:
+                    continue
+                results.append(
+                    {
                         "xref": annot.xref,
                         "page_num": page.number,
-                        "rect": annot.rect,
+                        "rect": self._rotate_rect_to_displayed(page, annot.rect),
                         "text": annot.info.get("content", ""),
+                        "kind": "note" if type_name == "Text" else "freetext",
+                        "read_only": type_name != "Text",
                     }
-                    results.append(info)
+                )
 
-        logger.debug("找到 %s 個 FreeText 註解", len(results))
+        logger.debug("找到 %s 個文字註解", len(results))
         return results
 
     def toggle_annotations_visibility(self, visible: bool) -> None:
@@ -120,7 +335,7 @@ class AnnotationTool(ToolExtension):
 
         for page in self._model.doc:
             for annot in page.annots():
-                if annot.type[1] == "FreeText":
+                if annot.type[1] in {"Text", "FreeText"}:
                     current_flags = annot.flags
                     if visible:
                         new_flags = current_flags & ~fitz.ANNOT_FLAG_HIDDEN

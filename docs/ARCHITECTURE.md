@@ -65,12 +65,14 @@ This structure is enforced by per-phase unit tests using real PyMuPDF documents 
 
 #### Structural Page Operations and Text Indexing
 
-Structural operations (insert/delete pages) are model-owned correctness logic. The model must sanitize dirty inputs and return the actual effected pages so the controller can synchronize UI and undo metadata without re-deriving page numbers.
+Structural operations (insert/delete/reorder pages) are model-owned correctness logic. The model must sanitize dirty inputs and return the actual affected pages so the controller can synchronize UI and undo metadata without re-deriving page numbers.
 
 Key contracts:
 - `delete_pages(pages) -> list[int]` returns the actual deleted pages (1-based, sorted).
 - `insert_blank_page(position) -> list[int]` returns the actual inserted page number (1-based).
 - `insert_pages_from_file(source_file, source_pages, position) -> list[int]` returns the actual inserted target page numbers (1-based, sorted).
+- `move_page(source_index, destination_index) -> list[int]` accepts final 0-based indices and returns the inclusive affected range (1-based). The model translates forward moves to PyMuPDF's pre-removal destination convention.
+- Deleting every page creates one blank physical page and sets the session-local `blank_placeholder_active` marker; importing real pages replaces it. `SnapshotCommand` captures the marker’s before/after state with its document bytes so undo/redo cannot restore the wrong semantic state.
 
 Text index lifecycle:
 - Page text indices live in `TextBlockManager` ([`model/text_block.py`](../model/text_block.py)). The
@@ -80,7 +82,7 @@ Text index lifecycle:
   `TextBlockManager` keeps every page-keyed index and delegates the transforms. `text_block` re-exports
   the dataclasses and `rotation_degrees_from_dir`, so `from model.text_block import …` is unchanged.
 - Each cached page has a state: `"missing" | "clean" | "stale"`.
-- Structural ops shift cached keys and mark shifted pages `"stale"` (cheap), instead of eagerly rebuilding the entire document.
+- Structural ops shift cached keys and mark shifted pages `"stale"` (cheap), instead of eagerly rebuilding the entire document. A page reorder marks every page in its moved interval stale while rebuilding the final destination page as the immediate anchor.
 - Any immediate edit/search path calls `model.ensure_page_index_built(page_num)` which rebuilds missing/stale pages on-demand.
 
 ### 2.2 Commands (`model/edit_commands.py`)
@@ -105,7 +107,7 @@ Mode registry includes `browse`, `edit_text`, `add_text`, `rect`, `highlight`, a
 
 Controller activation is now explicit. `PDFController.__init__()` keeps startup cheap, while `PDFController.activate()` performs view-signal wiring, print subsystem setup, and startup sync such as text-target granularity alignment. This keeps the no-document startup shell decoupled from full controller behavior until the UI is ready.
 
-For performance on large PDFs, controller schedules heavy work in small batches (thumbnail rasterization, visible-page rendering, and text indexing). Continuous mode now uses a placeholder-first pipeline: the view allocates full-document scene geometry immediately from lightweight placeholders, then the controller progressively renders only the viewport window (plus a small prefetch margin) so the UI stays interactive even on 1000+ page PDFs. Open-time priority is now explicit: the initial visible page is allowed to reach high quality before background thumbnail batches and sidebar scans start, with a short fallback timer so background work still resumes if that high-quality upgrade never arrives. After structural operations or snapshot restore, controller also drains stale page indices in the background (`_schedule_stale_index_drain`), while the active/visible pages remain immediately usable via the model's `ensure_page_index_built(...)` contract.
+For performance on large PDFs, controller schedules heavy work in bounded background stages (thumbnail rasterization, visible-page rendering, and text indexing). Continuous mode uses a placeholder-first pipeline: the view allocates full-document scene geometry immediately from lightweight placeholders, then the controller renders the explicitly requested page once at low resolution on the GUI thread and delegates high-quality plus non-immediate low/prefetch rasterization to `PageRenderCoordinator` (`controller/page_render_coordinator.py`). The coordinator owns one `QThread` worker and one latest pending request, opens an independent document from immutable snapshot bytes, emits `QImage` only, and accepts results only when token/session/generation/revision/page/scale/profile/DPR still match. Runtime-watermarked sessions remain on the synchronous ToolManager overlay path because watermarks are not embedded in `doc.tobytes()`. Foreground visible rendering pauses full-document thumbnail work and resumes it only after visible/prefetch candidates drain. After structural operations or snapshot restore, controller also drains stale page indices in the background (`_schedule_stale_index_drain`), while the active/visible pages remain immediately usable via the model's `ensure_page_index_built(...)` contract.
 Search requests now use a private snapshot byte buffer captured on the GUI thread before the worker starts, so background search never reads the live `fitz.Document`. Completed searches store their accumulated hits back into `SessionUIState.search_state`, which lets tab switches restore finished result lists per tab; `_cancel_search()` only clears search state when it aborts an in-flight partial search. The async-search runtime — the `_SearchWorker`/`_SearchBridge` QObjects plus the thread/worker/bridge/generation/session state and the per-page hit/finish/fail slots — lives in [`controller/search_coordinator.py`](../controller/search_coordinator.py) as `SearchCoordinator` (R3.2). `PDFController` holds one coordinator and keeps thin `search_text`/`_cancel_search` delegates (the latter still called by 13 pre-mutation sites); `_SearchWorker`/`_SearchBridge` are re-exported from `pdf_controller` for backward compatibility. The coordinator preserves the exact QThread lifecycle (release bound to `thread.finished`, never `worker.finished`), the two-hop `worker→bridge→coordinator` wiring, and the `_search_gen` token that drops late queued signals from a cancelled search.
 
 The background-OCR runtime is extracted the same way into [`controller/ocr_coordinator.py`](../controller/ocr_coordinator.py) as `OcrCoordinator` (R3.2): the `_OcrWorker`/`_OcrBridge` QObjects plus the OCR thread/worker/bridge/`_ocr_gen`/`_ocr_session_id`/progress-dialog state and the page-done/progress/status/failure/thread-finished slots. `PDFController` holds one coordinator and keeps thin `start_ocr`/`cancel_ocr` delegates; `_OcrWorker`/`_OcrBridge` are re-exported from `pdf_controller`. The coordinator preserves the `_ocr_gen` cancellation token, the per-page **session guard** (`_on_ocr_page_done` drops spans whose `_ocr_session_id` no longer matches the active session, so recognized text never lands in the wrong document after a tab switch), the GUI-thread `model.apply_ocr_spans` sequencing, and the `QProgressDialog` parenting/cleanup. `_refresh_ocr_availability` (a one-shot UI-availability probe, not worker runtime) intentionally **stays on `PDFController`**.
@@ -115,9 +117,9 @@ Print submissions also snapshot the active document on the GUI thread before the
 
 Worker snapshot-bytes cache (R4.2): the full-doc `model.capture_worker_snapshot_bytes()` (`doc.tobytes(...)`) is captured independently by the search, OCR and print coordinators on the GUI thread before their worker threads start. The controller wraps it in a single-entry cache (`PDFController.capture_worker_snapshot_bytes`, keyed by `(active_session_id, render_revision)`), so overlapping jobs on an unedited document reuse one serialization; the three coordinators call the controller method, not the model. The cache key reuses the page-render invalidation token (`render_revision`), and `_bump_render_revision` drops the cache. The one doc mutation that is render-invisible but worker-visible is OCR's `apply_ocr_spans` (invisible `render_mode=3` text — searchable but pixel-identical, so no render bump), so `ocr_coordinator._on_ocr_page_done` explicitly calls `_invalidate_worker_snapshot_cache()` after applying spans. Any future render-invisible/worker-visible mutation must do likewise.
 
-Thumbnail refresh is asynchronous via `_invalidate_thumbnails(affected)`. When the page count changed (insert/delete), it calls `view.set_thumbnail_placeholders(len(doc))` to resize the widget first, then schedules a full batch from the earliest affected page. When the page count is unchanged (rotate/straighten/text move), it skips the placeholder reset (preserving existing thumbnail icons) and schedules a bounded batch covering only the affected rows — rotating 1 page of a 2000-page doc re-rasters 1 page, not 2000. Thumbnail batches use a dedicated `_thumb_gen_by_session` counter so invalidation does not cancel unrelated background loading or viewport-anchor restoration (which rely on `_load_gen_by_session`). `_next_load_gen` bumps both counters, but `_invalidate_thumbnails` bumps only the thumb counter. Cross-page text moves invalidate thumbnails for both source and destination pages on success and rollback. The old synchronous `_update_thumbnails` method has been deleted.
+Thumbnail refresh is asynchronous via `_invalidate_thumbnails(affected)`. When the page count changed (insert/delete), it calls `view.set_thumbnail_placeholders(len(doc))` to resize the widget first, then schedules a full batch. When the page count is unchanged (rotate/straighten/text move/page reorder), it preserves existing icons and requests only the affected interval. The view's `_ReorderableThumbnailList` performs only an internal row move and emits `sig_reorder_page(source, destination)`; it caps portrait icon height at 120 px in narrow sidebars, restores viewport drop acceptance under Static movement, owns `QDrag`, computes final rows from item centres, and auto-scrolls within a 48 px edge margin. `PDFController.reorder_page` owns the PDF move, snapshot history, scene rebuild, stale-index drain, and thumbnail label repair.
 
-Thumbnail rendering is **synchronous** (bounded `QTimer` batches on the GUI thread). The R4.3 hybrid-async `ThumbnailCoordinator` was **removed** (2026-06-21, R4-01…R4-04): its `batch_ready` signal carried only `(gen, start_index, images)` and per-session generation tokens are not globally unique, so a cancelled tab's queued batch could paint into the newly-active tab; it also serialized the snapshot on the GUI thread, retained a decrypted snapshot after tab close, and left the old worker running on sync fallback. `_schedule_thumbnail_batch` now renders `THUMB_BATCH_SIZE` pages per `QTimer.singleShot(THUMB_BATCH_INTERVAL_MS)` tick, guarded by the `_thumb_gen_by_session` token (a superseded generation exits at the head check before painting — cross-paint is impossible by construction). The R4.2 worker-snapshot cache is retained for search/OCR/print, and `on_tab_close_requested` now clears it for the departing session (R4-03) so decrypted bytes do not outlive the tab.
+`ThumbnailCoordinator` (`controller/thumbnail_coordinator.py`) uses globally unique request tokens plus session and generation identity. Clean saved documents render from a verified file descriptor in a worker-owned `fitz.Document`; dirty/watermarked sessions use a one-page-per-event-turn live fallback so runtime overlays and current edits remain correct. Every worker result is a `QImage`; `QPixmap` construction remains on the GUI thread. Cancellation occurs before strategy selection, stale batches cannot cross-paint tabs, and tab close clears any matching decrypted worker-snapshot cache. M3.6 visible-page scheduling gives foreground work priority by canceling an active thumbnail batch and restarting the current thumbnail generation only after visible and prefetch page requests are exhausted.
 
 ### 2.4 View (`view/pdf_view.py`)
 
@@ -125,11 +127,18 @@ View owns widgets, scene interactions, and signal emission. It does not mutate m
 For empty startup it can show a lightweight shell with no model/controller attached. When the user requests a document (open or drop), the view queues paths and emits a backend-bootstrap signal so `main.py` can create model/controller and drain pending open paths.
 The view also owns the Save As dialog invocation (`_save_as()`), but the controller supplies the active-session default path through `set_save_as_default_path(...)`.
 
+Responsive shell and document-tab contracts (M3.4):
+- The outer window minimum is 720×520. Below 900 px width, the view remembers which sidebars were visible, collapses both splitter children, and restores only those prior visibility states when width returns. The existing instance-assigned `_resize_event` remains the single resize seam.
+- Document tabs use explicit themed 20×20 `QToolButton` close controls; clicks resolve the current index from stable session id and continue through `sig_tab_close_requested`, preserving the controller's unsaved-document pipeline.
+- Tab context menus emit only `sig_reveal_document_requested(session_id)`. The controller resolves current session metadata and delegates platform launching to `utils/file_reveal.py`; the view never opens Explorer or resolves model paths.
+- PgUp/PgDn/Home/End are intercepted on the canvas viewport only in browse mode and emit bounded `sig_page_changed` targets. Inline editors and text inputs retain those keys, and accepted canvas events never reach native `QGraphicsView` scrolling.
+- `UserPreferences` owns the canonical, deduplicated, ten-entry recent-file list. `PDFController.open_pdf()` records only successful opens and provides availability DTOs to the view's Open menu; missing entries remain visible but disabled.
+
 Continuous mode rendering contracts:
-- `initialize_continuous_placeholders(...)` establishes the full scene rect and per-page y offsets for the entire document without rasterizing every page.
+- `initialize_continuous_placeholders(...)` establishes the full scene rect plus parallel per-page x/y origins and heights without rasterizing every page. The scene column width is the widest scaled page; every narrower page is independently centered inside that stable column.
+- `_page_scene_x/_page_scene_y` and `_doc_rect_to_scene_rect` are the coordinate chokepoints. Text selection/editing, object overlays, annotation drawing, hover outlines, and scene→document hit-testing add/subtract the same page origin; page pixmap replacement never changes item position.
 - The view emits `sig_viewport_changed` when the user scrolls/resizes; the controller uses this as the steady-state trigger to schedule visible-page rendering.
-- Programmatic jumps (for example controller-driven navigation) may suppress `sig_viewport_changed` emissions to avoid double-scheduling the same visible render batch.
-- Visible-render scheduling is controller-owned and now coalesced per session. Repeated page changes or viewport notifications may update the target page immediately, but they must not keep spawning fresh render generations while a batch is already queued.
+- Programmatic jumps may suppress `sig_viewport_changed` to avoid double-scheduling. Repeated viewport notifications coalesce while one worker request is active; profile/zoom/revision/session changes invalidate identity and cancel the matching request.
 - Thumbnail layout metrics are view-owned; when the left sidebar becomes unusually wide, the thumbnail column caps its content width and uses symmetric viewport margins so thumbnails stay centered instead of stretching indefinitely.
 
 The text editor state is split by intent:
@@ -372,7 +381,7 @@ View-only color profile switching is session-scoped: `SessionUIState.color_profi
 The unified print dialog also exposes native printer properties through driver-dispatched calls (`PrintDispatcher.open_printer_properties(...)`), enabling OS/vendor preference dialogs from the same workflow. The dialog caches the latest returned printer preferences and tracks only user-touched hardware fields in-app. Effective print options are built with two ownership rules: `paper_size` and `orientation` are app-owned and default to `auto`, so native printer preferences must not overwrite them; `duplex` and `color_mode` still inherit native defaults until the user changes them in-app. On Windows, preference collection merges printer DEVMODE data from `GetPrinter(..., 2/8/9)` so per-user defaults from native `屬性` can sync back into the app UI even when a driver exposes some values only through user-specific defaults. When the native properties dialog is canceled, the driver returns `None` and the unified dialog preserves both current UI values and touched-state instead of resyncing from printer defaults.
 Tray and other non-UI driver preferences remain pass-through system defaults because dialog output keeps `paper_tray="auto"`. The app no longer renders a tray/system-properties section in the dialog UI. On Windows, properties chosen in `屬性` are applied **job-scoped, not persisted**: the captured DEVMODE is carried with the job (base64 under `extra_options["devmode_buffer"]`, which keeps it JSON-safe across the helper-subprocess `job.json` boundary) and applied for that print only by briefly writing the per-user default (`SetPrinter` level 9) and restoring the previous default in a `finally`, so a single print never permanently mutates the printer's defaults for other jobs or apps. When a driver changes only private `DriverExtra` data and leaves public DEVMODE fields stale, the driver marks those fields opaque; the dialog then shows `color_mode="system"` (`依系統屬性`) instead of incorrectly echoing stale public values.
 `PrintJobOptions.override_fields` is the shared contract between the dialog and print backends. Explicit fixed paper/orientation choices are marked overridden; `auto` paper/orientation remain unmarked and mean "follow the source page." Duplex/color mode are still applied only when those fields are marked overridden. This keeps app-owned job settings (`copies`, `dpi`, `collate`, page range, scaling) unconditional while preventing silent overrides of native hardware defaults.
-The Qt bridge resolves page layout from each rendered page's source rect and applies it via the dedicated `QPrinter.setPageSize()` / `setPageOrientation()` setters — the `setPageLayout(pageLayout()-copy)` idiom silently drops the page **size** on the Windows GDI device (orientation still applies), which made mixed jobs print every page on the default media. Per-page layout changes mid-job are honoured by Qt's PDF writer but ignored by the Windows GDI spooler, so for the real spooler `WindowsPrinterDriver` pre-splits a mixed-size/orientation job into one spooler job per contiguous uniform-layout group, with multi-copy ordering coordinated in `_print_layout_groups` (collated → loop the document; uncollated → copies per group). The effective raster DPI is capped at `_WIN_MAX_RASTER_DPI = 150` for the spooler path while PDF output keeps full DPI. Linux/macOS direct-PDF submission remains valid only for source-following auto layout; explicit fixed paper/orientation choices force raster so the app, not the spooler default, owns the final page layout.
+The Qt bridge resolves page layout from each rendered page's source rect and applies it via the dedicated `QPrinter.setPageSize()` / `setPageOrientation()` setters — the `setPageLayout(pageLayout()-copy)` idiom silently drops the page **size** on the Windows GDI device (orientation still applies), which made mixed jobs print every page on the default media. Per-page layout changes mid-job are honoured by Qt's PDF writer but ignored by the Windows GDI spooler, so for the real spooler `WindowsPrinterDriver` pre-splits a mixed-size/orientation job into one spooler job per contiguous uniform-layout group, with multi-copy ordering coordinated in `_print_layout_groups` (collated → loop the document; uncollated → copies per group). The effective raster DPI is capped at `_WIN_MAX_RASTER_DPI = 150` for the spooler path while PDF output keeps full DPI. Linux/macOS direct-PDF submission remains valid only for source-following auto layout; explicit fixed paper/orientation choices force raster so the app, not the spooler default, owns the final page layout. `_draw_page_image()` calculates centering from the physical `QPrinter.paperRect(DevicePixel)`, not `pageRect()`: hardware margins may be asymmetric, so printable-area centering can be visibly off-centre on the sheet; the device clips naturally where a printer cannot reach the paper edge.
 Preview rendering and final submission are intentionally split. `UnifiedPrintDialog` can render preview pages from a live-document provider callback, so opening the dialog does not require prebuilding a full print snapshot. `PDFController.print_document()` builds the full print snapshot only after the dialog returns `Accepted`, avoiding wasted serialization on cancel.
 
 ### 6.0 Fileless submission (R5-01)
@@ -503,9 +512,12 @@ The inline editor must be pixel-faithful to the committed PDF so opening,
 typing, and reopening never visibly shift glyphs. Five cooperating pieces:
 
 - **Shared insert classifier** — `model.pdf_model._classify_insert_path` is the
-  single source of truth for "fast `insert_text`" vs "`insert_htmlbox`". Both
-  the commit path (`_apply_redact_insert`) and the preview path
-  (`PreviewRenderer`) route through it; they cannot diverge.
+  single source of truth for "fast `insert_text`" vs "`insert_htmlbox`" on the
+  **commit** side (`_apply_redact_insert`). *Correction (2026-07-14):* the preview
+  path does **not** consult the classifier — `PreviewRenderer` always renders via
+  `insert_htmlbox`, so preview and a fast-path commit can diverge. The successor
+  preview contract (preview rasterizes the commit engine's output) is specified in
+  `plans/2026-07-14-acrobat-parity-text-commit-engine.md` §4.5.
 - **`PreviewRenderer`** (view) rasterizes proposed content through the *same*
   MuPDF `insert_htmlbox` engine and CSS the commit uses (borrowed from the
   model when present), cached by full arg tuple incl. `line_height`.
@@ -553,10 +565,17 @@ actual character range between cursor start and cursor end points.
   axis (x for horizontal, y for vertical) to accommodate natural inter-character
   spacing; tight cross-axis to prevent glyphs from overlapping lines from
   entering the wrong run's list.
+- `get_char_context_at_point(page_num, point)` performs a strict run hit and
+  returns `(run_text, hit_index, glyph_rects)` without Qt dependencies.
 
 View-side: `_update_text_selection()` receives `(text, [rects])` from the model
 and renders one highlight item per rect, so multi-line selections show proper
-line-by-line coverage.
+line-by-line coverage. Browse-mode double-click uses the controller's thin
+character-context façade plus pure `numeric_token_bounds()` expansion. Digits,
+decimal points, commas, `/`, and one leading minus form a run-local token;
+letters remain boundaries. The resulting text and PDF rectangle are stored in
+the existing selection manager, so Ctrl+C and context actions need no separate
+copy path.
 
 ## 12. Print — Auto Orientation & Paper Size
 
@@ -601,13 +620,15 @@ Moving a previously-rotated object preserves rotation by threading
 `current_rotation` through `MoveObjectRequest` into the model's cm-matrix
 rewrite path.
 
-### 13.2 Aspect Ratio Locked Resize
+### 13.2 Corner and Edge Resize Handles
 
-Shift+drag on any resize handle locks the aspect ratio:
-- Newly inserted images default to free-form (no lock).
-- All native PDF images also default to free-form.
-- When locked, the secondary dimension is clamped to preserve the start rect's
-  aspect ratio.
+Single-object selection exposes eight handles in a stable anchor order: corners
+TL/TR/BL/BR (`0..3`), then edge midpoints top/right/bottom/left (`4..7`). Corner
+handles resize two dimensions and Shift locks the start aspect ratio around the
+opposite corner. Edge handles own exactly one edge, ignore Shift locking, preserve
+the opposite edge and orthogonal dimension, and enforce the same 8 pt minimum.
+The handle index flows unchanged from `ObjectSelectionManager` hit-testing into
+`compute_object_resize_rect()` and the final `ResizeObjectRequest`.
 
 ### 13.3 Native Image Selectability
 
@@ -621,6 +642,42 @@ multi-pass scan in `discover_native_image_invocations()`:
 
 Object rotation, move, and resize rewrite the PDF content stream operators
 (`cm`, `Do`) in place, preserving overlapping text and graphics.
+
+### 13.4 Rectangle and Text-Markup Appearance
+
+Rectangle mode owns its appearance state in the right inspector: independent
+stroke/fill colors, an explicit no-fill checkbox, 0.1–20 pt border width, and a
+shared annotation opacity. Preview uses those exact values. The View emits the
+appearance tuple; `PDFController.add_rect()` records one snapshot; and
+`AnnotationTool.add_rect()` validates channels/width, writes PyMuPDF stroke/fill/
+border properties, and extends the version-1 app-object payload with appearance
+fields so later move/resize operations preserve them.
+
+Underline and strikeout are full interaction modes alongside highlight. They use
+the same drag rectangle/color path, emit dedicated View signals, and terminate in
+`AnnotationTool.add_underline()` / `add_strikeout()` through snapshot-backed
+controller handlers. The Tool layer remains the only owner of PyMuPDF annotation
+creation.
+
+### 13.5 Existing-Document Metadata
+
+`PDFModel.get_editable_metadata()` / `set_editable_metadata()` expose only title,
+author, subject, and keywords while preserving creator, producer, dates, and other
+standard metadata. `MetadataDialog` is View-owned and emits a dictionary;
+`PDFController` validates through the model, records an `update_metadata`
+`SnapshotCommand`, invalidates the worker-snapshot cache (metadata is render-
+invisible but worker-visible), and refreshes dirty tab state. Undo/redo restores
+metadata bytes exactly.
+
+### 13.6 Compact Notes and Document TOC
+
+New comments are standard PDF Text annotations, not 200×50 FreeText bodies. `AnnotationTool` returns normalized note/legacy-FreeText DTOs and owns note create/content-update/marker-move/delete; legacy FreeText remains listable and jumpable but read-only. `PDFController` records each note mutation as one page-scoped `SnapshotCommand`. `FloatingNote` is a frameless child of the main window, so popup dragging is UI-only and creates no taskbar/Alt-Tab surface; marker dragging emits a separate controller request. Because note mutations act on the *active* session, the single-instance popup is session-scoped: the view records the owning session (`_floating_note_sid`, from the tab bar's `tabData`) when it opens and `_dismiss_floating_note_if_orphaned()` — invoked from `set_document_tabs`, the funnel for every tab switch/close/reset — closes it the moment its origin session is no longer current, closing the cross-document write path without any View→Model call.
+
+`PDFModel.get_toc()` / `set_toc()` normalize and validate `[level, title, page]` entries. Insert/delete/move operations capture the pre-operation TOC and route every target through one remapping helper so bookmarks follow logical page content, deleted targets choose the nearest survivor, and delete-all clamps to the blank placeholder. The View's nested `QTreeWidget` emits page navigation and whole-TOC edit DTOs; controller updates are snapshot-backed and undo/redo/tree refresh stay within MVC ownership.
+
+### 13.7 Detached Document Windows
+
+`DetachableTabBar` emits a stable session id only after a thresholded release outside the bar. `PDFController` captures a repr-safe `SessionTransferPayload` containing immutable snapshot bytes and session/UI metadata, invokes an injected composition callback, and removes the source only after destination readiness. `main.py` remains the composition root: it creates and retains each secondary PDFModel/PDFView/PDFController triple and keeps single-instance forwarding aimed at the primary window. `PDFModel.import_session_transfer()` opens an independent `fitz.Document`; live docs, workers, and command managers are never shared. Dirty state transfers through a session-local flag, while pre-detach undo history is intentionally unavailable.
 
 ## 14. macOS Native Menu Bar
 

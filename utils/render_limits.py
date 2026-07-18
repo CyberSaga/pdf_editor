@@ -3,6 +3,13 @@ from __future__ import annotations
 import fitz
 
 _MAX_PIXMAP_PX = 40_000_000  # ~40 MP per rendered page
+THUMBNAIL_RENDER_WIDTH_PX = 270
+
+
+def thumbnail_render_scale(page: fitz.Page) -> float:
+    """Return a bounded scale that renders a thumbnail near the UI's max width."""
+    requested = THUMBNAIL_RENDER_WIDTH_PX / max(1.0, float(page.rect.width))
+    return min(requested, safe_render_scale(page, requested))
 
 
 def safe_render_scale(page: fitz.Page, scale: float) -> float:

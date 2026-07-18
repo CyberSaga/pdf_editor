@@ -75,7 +75,11 @@ _MAX_PAGES = 5_000
 # and tests reference ``model.pdf_model._MAX_PIXMAP_PX`` (see docs/PITFALLS.md).
 # It is unused *within* this module, so F401 is suppressed deliberately — do NOT
 # let ``ruff --fix`` strip it (that breaks test_security_pdf_resource_guards).
-from utils.render_limits import _MAX_PIXMAP_PX, safe_render_scale as _safe_render_scale  # noqa: E402, F401
+from utils.render_limits import (  # noqa: E402
+    _MAX_PIXMAP_PX,  # noqa: F401
+    safe_render_scale as _safe_render_scale,
+    thumbnail_render_scale,
+)
 
 
 def _guard_before_open(path: Path) -> None:
@@ -212,6 +216,12 @@ class DocumentSession:
     edit_count: int = 0
     run_reopen_anchors: dict[str, fitz.Rect] = field(default_factory=dict)
     run_reopen_anchor_sizes: dict[str, float] = field(default_factory=dict)
+    # A delete-all operation retains one physical blank page so downstream PyMuPDF
+    # and View code never have to handle an empty active document. This marker is
+    # session-local and must travel with SnapshotCommand undo/redo state.
+    blank_placeholder_active: bool = False
+    transferred_dirty: bool = False
+
 
 class PDFModel:
     def __init__(self):
@@ -248,7 +258,16 @@ class PDFModel:
 
     def _canonicalize_path(self, path: str) -> str:
         """Normalize path for dedupe across tabs (case-insensitive on Windows)."""
-        return str(Path(path).resolve()).casefold()
+        try:
+            resolved = str(Path(path).resolve())
+        except OSError:
+            # An unreachable UNC share raises WinError 53 under Py3.10 even for
+            # non-strict resolution. find_session_by_path() runs BEFORE open_pdf's
+            # try/except at startup / on forwarded-CLI / on recent-file clicks, so
+            # an unguarded raise here crashes the open flow. Fall back to a pure
+            # string canonical form (no filesystem access) to keep dedupe alive.
+            resolved = os.path.abspath(os.path.expanduser(path))
+        return resolved.casefold()
 
     @staticmethod
     def _safe_exc_message(exc: Exception) -> str:
@@ -265,6 +284,16 @@ class PDFModel:
             return None
         sessions_by_id = getattr(self, "_sessions_by_id", {})
         return sessions_by_id.get(active_session_id)
+
+    @property
+    def blank_placeholder_active(self) -> bool:
+        session = self._active_session()
+        return bool(session and session.blank_placeholder_active)
+
+    def _set_blank_placeholder_active(self, active: bool) -> None:
+        session = self._active_session()
+        if session is not None:
+            session.blank_placeholder_active = bool(active)
 
     @contextmanager
     def _activate_temporarily(self, session_id: str) -> Iterator[None]:
@@ -332,7 +361,11 @@ class PDFModel:
         session = self._sessions_by_id.get(session_id)
         if not session:
             return False
-        return session.command_manager.has_pending_changes() or self.tools.has_unsaved_changes(session_id)
+        return bool(
+            session.transferred_dirty
+            or session.command_manager.has_pending_changes()
+            or self.tools.has_unsaved_changes(session_id)
+        )
 
     def has_any_unsaved_changes(self) -> bool:
         return any(self.session_has_unsaved_changes(sid) for sid in self._session_ids)
@@ -789,6 +822,38 @@ class PDFModel:
             logger.error(f"開啟PDF失敗: {e!s}")
             raise RuntimeError(f"開啟PDF失敗: {e!s}")
 
+    def import_session_transfer(self, payload) -> str:
+        snapshot_bytes = bytes(payload.snapshot_bytes)
+        doc = fitz.open(stream=snapshot_bytes, filetype="pdf")
+        if len(doc) == 0:
+            doc.close()
+            raise ValueError("transferred PDF must contain at least one page")
+        session_id = str(uuid.uuid4())
+        source_path = str(payload.source_path or "")
+        canonical_path = (
+            self._canonicalize_path(source_path)
+            if source_path
+            else f"detached:{session_id}"
+        )
+        session = DocumentSession(
+            session_id=session_id,
+            canonical_path=canonical_path,
+            display_name=str(payload.display_name or "未命名.pdf"),
+            original_path=source_path,
+            saved_path=str(payload.saved_path) if payload.saved_path else None,
+            doc=doc,
+            password=payload.password,
+            auth_level=payload.auth_level,
+            transferred_dirty=bool(payload.dirty),
+        )
+        self._sessions_by_id[session_id] = session
+        self._session_ids.append(session_id)
+        if source_path:
+            self._path_to_session_id[canonical_path] = session_id
+        self._active_session_id = session_id
+        self.tools.on_session_open(session_id, doc)
+        return session_id
+
     def ensure_page_index_built(self, page_num: int) -> None:
         """
         Ensure the requested page is immediately edit/search-ready.
@@ -1118,6 +1183,71 @@ class PDFModel:
             logger.debug("臨時目錄已清理")
             self.temp_dir = None
 
+    def get_toc(self) -> list[list[object]]:
+        if not self.doc:
+            return []
+        return [
+            [int(level), str(title), int(page_num)]
+            for level, title, page_num, *_rest in self.doc.get_toc(simple=True)
+        ]
+
+    def set_toc(self, entries: list[list[object]]) -> bool:
+        if not self.doc:
+            raise ValueError("沒有開啟的PDF文件")
+        if not isinstance(entries, list):
+            raise TypeError("TOC entries must be a list")
+        normalized: list[list[object]] = []
+        previous_level = 0
+        page_count = len(self.doc)
+        for entry in entries:
+            if not isinstance(entry, (list, tuple)) or len(entry) < 3:
+                raise TypeError("each TOC entry must contain level, title, and page")
+            level, title, page_num = entry[:3]
+            if isinstance(level, bool) or not isinstance(level, int) or level < 1:
+                raise ValueError("TOC level must be a positive integer")
+            if not normalized and level != 1:
+                raise ValueError("the first TOC level must be 1")
+            if normalized and level > previous_level + 1:
+                raise ValueError("TOC levels may increase by at most one")
+            title_text = str(title).strip()
+            if not title_text:
+                raise ValueError("TOC title must not be empty")
+            if isinstance(page_num, bool) or not isinstance(page_num, int):
+                raise TypeError("TOC page must be an integer")
+            if page_num < 1 or page_num > page_count:
+                raise ValueError("TOC page is out of range")
+            normalized.append([level, title_text, page_num])
+            previous_level = level
+        if normalized == self.get_toc():
+            return False
+        self.doc.set_toc(normalized)
+        self.secure_save_required = True
+        return True
+
+    def _remap_toc_pages(
+        self,
+        mapper,
+        page_count: int,
+        entries: list[list[object]] | None = None,
+    ) -> None:
+        doc = self.doc
+        source_entries = self.get_toc() if entries is None else entries
+        if doc is None or not source_entries:
+            return
+        remapped = [
+            [
+                level,
+                title,
+                min(
+                    max(1, int(mapper(cast(int, page_num)))),
+                    page_count,
+                ),
+            ]
+            for level, title, page_num in source_entries
+        ]
+        if remapped != self.get_toc():
+            doc.set_toc(remapped)
+
     def delete_pages(
         self,
         pages: list[int],
@@ -1154,29 +1284,128 @@ class PDFModel:
         if not actual_deleted_pages:
             return []
         deleted_page_idxs = [page_num - 1 for page_num in actual_deleted_pages]
+        deleted_set = set(actual_deleted_pages)
+        surviving_pages = [page for page in range(1, max_page + 1) if page not in deleted_set]
+        delete_all = len(actual_deleted_pages) == max_page
+        placeholder_size = self.doc[0].rect if delete_all else None
+        toc_before = self.get_toc()
+
+        def _map_deleted_toc_page(page_num: int) -> int:
+            if delete_all:
+                return 1
+            target = page_num
+            if target in deleted_set:
+                target = next(
+                    (page for page in surviving_pages if page > target),
+                    surviving_pages[-1],
+                )
+            return target - sum(1 for deleted in actual_deleted_pages if deleted < target)
+
         before = transaction_snapshot if transaction_snapshot is not None else self._capture_doc_snapshot()
         pending_before = list(self.pending_edits)
         edit_count_before = self.edit_count
         secure_before = self.secure_save_required
+        placeholder_before = self.blank_placeholder_active
         try:
             for page_num in sorted(actual_deleted_pages, reverse=True):
                 self.doc.delete_page(page_num - 1)
+            if delete_all:
+                # Keep a real, blank PDF page: empty fitz.Documents make existing
+                # render, navigation, and persistence paths fail their no-doc checks.
+                assert placeholder_size is not None
+                self.doc.new_page(width=placeholder_size.width, height=placeholder_size.height)
+                self._set_blank_placeholder_active(True)
+            else:
+                self._set_blank_placeholder_active(False)
             # Preserve unaffected cache entries; shifted survivors become stale until demanded.
             self.block_manager.shift_after_delete(deleted_page_idxs)
-            if self.doc and deleted_page_idxs:
+            if deleted_page_idxs:
                 # Keep the page nearest the deletion immediately usable for existing callers.
-                anchor_idx = min(deleted_page_idxs[0], len(self.doc) - 1)
+                anchor_idx = 0 if delete_all else min(deleted_page_idxs[0], len(self.doc) - 1)
                 if anchor_idx >= 0:
                     self.block_manager.rebuild_page(anchor_idx, self.doc)
+            self._remap_toc_pages(
+                _map_deleted_toc_page,
+                len(self.doc),
+                toc_before,
+            )
         except Exception:
             self._restore_doc_from_snapshot(before)
             self.pending_edits = pending_before
             self.edit_count = edit_count_before
             self.secure_save_required = secure_before
+            self._set_blank_placeholder_active(placeholder_before)
             self.block_manager.build_index(self.doc)
             raise
         self.secure_save_required = True
         return actual_deleted_pages
+
+    def move_page(self, source_index: int, destination_index: int) -> list[int]:
+        """Move one page to a final 0-based destination and return its affected range.
+
+        The public destination is the page's final index after the move.  PyMuPDF
+        instead interprets a forward destination as the insertion position before
+        removing the source page, so that native call must be offset by one.
+        """
+        if not self.doc:
+            raise ValueError("沒有開啟的PDF文件")
+        if (
+            isinstance(source_index, bool)
+            or isinstance(destination_index, bool)
+            or not isinstance(source_index, int)
+            or not isinstance(destination_index, int)
+        ):
+            return []
+
+        page_count = len(self.doc)
+        if (
+            source_index < 0
+            or destination_index < 0
+            or source_index >= page_count
+            or destination_index >= page_count
+            or source_index == destination_index
+        ):
+            return []
+
+        affected_start = min(source_index, destination_index)
+        affected_end = max(source_index, destination_index)
+        toc_before = self.get_toc()
+
+        def _map_moved_toc_page(page_num: int) -> int:
+            page_idx = page_num - 1
+            if page_idx == source_index:
+                return destination_index + 1
+            if source_index < destination_index and source_index < page_idx <= destination_index:
+                return page_idx
+            if destination_index < source_index and destination_index <= page_idx < source_index:
+                return page_idx + 2
+            return page_num
+
+        before = self._capture_doc_snapshot()
+        try:
+            if destination_index == page_count - 1 and source_index < destination_index:
+                native_destination = -1
+            elif source_index < destination_index:
+                native_destination = destination_index + 1
+            else:
+                native_destination = destination_index
+            self.doc.move_page(source_index, native_destination)
+            self.block_manager.shift_after_move(source_index, destination_index)
+            # The destination page is immediately usable; the rest of the moved
+            # interval remains stale for the controller's lazy drain.
+            self.block_manager.rebuild_page(destination_index, self.doc)
+            self._remap_toc_pages(
+                _map_moved_toc_page,
+                len(self.doc),
+                toc_before,
+            )
+        except Exception:
+            self._restore_doc_from_snapshot(before)
+            self.block_manager.build_index(self.doc)
+            raise
+
+        self.secure_save_required = True
+        return list(range(affected_start + 1, affected_end + 2))
 
     def rotate_pages(self, pages: list[int], degrees: int) -> list[int]:
         """
@@ -1329,12 +1558,18 @@ class PDFModel:
         if insert_at < 0:
             insert_at = 0
 
+        toc_before = self.get_toc()
         # 插入空白頁面
         self.doc.new_page(insert_at, width=width, height=height)
         logger.debug(f"在位置 {insert_at + 1} 插入空白頁面，尺寸: {width}x{height}")
         # New pages must be editable right away, but later pages can be rebuilt lazily.
         self.block_manager.shift_after_insert(insert_at, 1)
         self.block_manager.rebuild_page(insert_at, self.doc)
+        self._remap_toc_pages(
+            lambda page_num: page_num + 1 if page_num >= insert_at + 1 else page_num,
+            len(self.doc),
+            toc_before,
+        )
         return [insert_at + 1]
 
     def insert_pages_from_file(
@@ -1362,6 +1597,9 @@ class PDFModel:
         """
         if not self.doc:
             raise ValueError("沒有開啟的PDF文件")
+        placeholder_active = self.blank_placeholder_active
+        placeholder_snapshot: bytes | None = None
+        toc_before = self.get_toc()
 
         source_path = Path(source_file)
         if not source_path.exists():
@@ -1397,11 +1635,22 @@ class PDFModel:
 
             # Sort and de-dup BEFORE insertion so invalid pages do not distort positional offsets.
             actual_source_pages = sorted(set(normalized_source))
+            if not actual_source_pages:
+                return []
 
-            # Post-merge invariant: the combined document must stay under _MAX_PAGES.
-            if len(self.doc) + len(actual_source_pages) > _MAX_PAGES:
+            # A placeholder is replaced, rather than retained beside, the first real
+            # imported page. It therefore does not count against the document limit.
+            existing_page_count = len(self.doc) - int(placeholder_active)
+            if existing_page_count + len(actual_source_pages) > _MAX_PAGES:
                 source_doc.close()
                 raise ValueError(f"Merged document would exceed page limit ({_MAX_PAGES} pages)")
+
+            if placeholder_active:
+                placeholder_snapshot = self._capture_doc_snapshot()
+                self.doc.delete_page(0)
+                self.block_manager.shift_after_delete([0])
+                self._set_blank_placeholder_active(False)
+                insert_at = 0
 
             # Group the sorted/deduped pages into contiguous runs so each run is
             # one insert_pdf call instead of one call per page.
@@ -1435,9 +1684,24 @@ class PDFModel:
                 self.block_manager.shift_after_insert(insert_at, len(inserted_positions))
                 for page_idx in range(insert_at, insert_at + len(inserted_positions)):
                     self.block_manager.rebuild_page(page_idx, self.doc)
+                if placeholder_active:
+                    self._remap_toc_pages(lambda _page_num: 1, len(self.doc), toc_before)
+                else:
+                    inserted_count = len(inserted_positions)
+                    self._remap_toc_pages(
+                        lambda page_num: page_num + inserted_count
+                        if page_num >= insert_at + 1
+                        else page_num,
+                        len(self.doc),
+                        toc_before,
+                    )
             return inserted_positions
 
         except Exception as e:
+            if placeholder_snapshot is not None:
+                self._restore_doc_from_snapshot(placeholder_snapshot)
+                self._set_blank_placeholder_active(True)
+                self.refresh_structural_indexes([1])
             logger.error(f"從檔案插入頁面失敗: {e}")
             raise RuntimeError(f"從檔案插入頁面失敗: {e}")
 
@@ -1550,7 +1814,10 @@ class PDFModel:
         )
 
     def get_thumbnail(self, page_num: int, colorspace: fitz.Colorspace | None = None) -> fitz.Pixmap:
-        return self.get_page_pixmap(page_num, scale=0.2, colorspace=colorspace)
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            raise ValueError(f"無效頁碼: {page_num}")
+        scale = thumbnail_render_scale(self.doc[page_num - 1])
+        return self.get_page_pixmap(page_num, scale=scale, colorspace=colorspace)
 
     def get_page_label(self, page_num: int) -> str:
         if not self.doc or page_num < 1 or page_num > len(self.doc):
@@ -1976,6 +2243,35 @@ class PDFModel:
             # Order by line then x so a span wrapped onto two rows stays in order.
             collected.sort(key=lambda item: (round(item[1].y0), item[1].x0))
         return collected
+
+    def get_char_context_at_point(
+        self,
+        page_num: int,
+        point: fitz.Point,
+    ) -> tuple[str, int, list[fitz.Rect]] | None:
+        """Return run text, strict hit index, and glyph rectangles at a point."""
+        hit = self.get_text_info_at_point(page_num, point, allow_fallback=False)
+        span_id = getattr(hit, "target_span_id", None) if hit is not None else None
+        if not span_id:
+            return None
+        chars = self.get_chars_in_run(page_num, span_id)
+        if not chars:
+            return None
+        hit_index = next(
+            (
+                index
+                for index, (_glyph, rect) in enumerate(chars)
+                if fitz.Rect(rect).contains(point)
+            ),
+            None,
+        )
+        if hit_index is None:
+            return None
+        return (
+            "".join(glyph for glyph, _rect in chars),
+            hit_index,
+            [fitz.Rect(rect) for _glyph, rect in chars],
+        )
 
     def get_text_selection_lines(
         self,
@@ -2440,7 +2736,7 @@ class PDFModel:
         """Capture snapshot bytes for background worker readers."""
         if not self.doc:
             raise RuntimeError("沒有開啟的 PDF 文件")
-        return self.doc.tobytes(garbage=0, no_new_id=1, encryption=fitz.PDF_ENCRYPT_NONE)
+        return self._decrypted_snapshot_bytes(garbage=0)
 
     def capture_print_snapshot_bytes(self) -> bytes:
         """Capture print input, pruning destructive-edit orphans when required."""
@@ -2448,11 +2744,36 @@ class PDFModel:
             raise RuntimeError("沒有開啟的 PDF 文件")
         if not self.secure_save_required:
             return self.capture_worker_snapshot_bytes()
-        return self.doc.tobytes(
-            garbage=4,
-            no_new_id=1,
-            encryption=fitz.PDF_ENCRYPT_NONE,
-        )
+        return self._decrypted_snapshot_bytes(garbage=4)
+
+    def _decrypted_snapshot_bytes(self, *, garbage: int) -> bytes:
+        """Decrypt-and-flatten the live doc into plain bytes for worker/print readers.
+
+        ``tobytes(encryption=NONE)`` on an *encrypted* live handle silently
+        corrupts its internal crypt state (a PyMuPDF/MuPDF AES quirk): a later
+        ``encryption=KEEP`` save on that same handle then writes content
+        streams that no longer decrypt (blank pages on reopen), even though
+        the save itself reports success and needs_pass/is_encrypted look
+        normal. Since worker/print snapshots are captured on every render —
+        long before any save — this would silently poison the *next* save.
+        Route the decrypt through a throwaway clone opened from an
+        ``encryption=KEEP`` snapshot instead, so rendering/printing can never
+        touch the live handle's crypt state. Skipped for unencrypted docs:
+        cloning there is pure overhead with no corruption to guard against.
+        """
+        doc: fitz.Document = self.doc
+        if not self._doc_is_encrypted(doc):
+            return doc.tobytes(garbage=garbage, no_new_id=1, encryption=fitz.PDF_ENCRYPT_NONE)
+        keep_bytes = doc.tobytes(garbage=garbage, no_new_id=1, encryption=fitz.PDF_ENCRYPT_KEEP)
+        clone = fitz.open("pdf", keep_bytes)
+        try:
+            if clone.needs_pass:
+                password = self.password
+                if password is None or clone.authenticate(password) == 0:
+                    raise RuntimeError("worker/print 快照重新驗證密碼失敗")
+            return clone.tobytes(garbage=0, no_new_id=1, encryption=fitz.PDF_ENCRYPT_NONE)
+        finally:
+            clone.close()
 
     @staticmethod
     def preset_optimize_options(preset: str) -> PdfOptimizeOptions:
@@ -2473,6 +2794,43 @@ class PDFModel:
 
     def _make_active_audit_cache_key(self) -> tuple | None:
         return pdf_optimizer.make_active_audit_cache_key(self)
+
+    def get_editable_metadata(self) -> dict[str, str]:
+        keys = ("title", "author", "subject", "keywords")
+        if not self.doc:
+            return {key: "" for key in keys}
+        metadata = self.doc.metadata or {}
+        return {key: str(metadata.get(key) or "") for key in keys}
+
+    def set_editable_metadata(self, values: dict[str, object]) -> bool:
+        if not self.doc:
+            raise ValueError("沒有開啟的PDF文件")
+        if not isinstance(values, dict):
+            raise TypeError("metadata payload must be a dict")
+        allowed = {"title", "author", "subject", "keywords"}
+        unknown = set(values) - allowed
+        if unknown:
+            raise ValueError(f"unsupported metadata fields: {sorted(unknown)}")
+        normalized: dict[str, str] = {}
+        for key in allowed:
+            value = values.get(key, "")
+            if value is None:
+                normalized[key] = ""
+            elif isinstance(value, (str, int, float, bool)):
+                normalized[key] = str(value)
+            else:
+                raise TypeError(f"metadata field {key!r} must be scalar")
+        current = self.get_editable_metadata()
+        if normalized == current:
+            return False
+        metadata = {
+            str(key): str(value or "")
+            for key, value in (self.doc.metadata or {}).items()
+        }
+        metadata.update(normalized)
+        self.doc.set_metadata(metadata)
+        self.secure_save_required = True
+        return True
 
     @staticmethod
     def _blank_metadata_dict(doc: fitz.Document) -> dict[str, str]:
@@ -3330,6 +3688,8 @@ class PDFModel:
             self._path_to_session_id[canonical_new] = active_sid
         self.command_manager.mark_saved()
         self.edit_count = 0
+        if active_sid:
+            self._sessions_by_id[active_sid].transferred_dirty = False
         if active_sid:
             self.tools.on_session_saved(active_sid)
 

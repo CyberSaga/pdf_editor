@@ -215,6 +215,48 @@ def test_watermark_save_preserves_encryption_and_user_role(
         reopened.close()
 
 
+def test_worker_snapshot_before_edit_does_not_corrupt_later_encrypted_save(
+    tmp_path: Path,
+) -> None:
+    """capture_worker_snapshot_bytes() decrypts the live doc's content for
+    background renderers on every page/thumbnail render. Calling
+    ``self.doc.tobytes(encryption=NONE)`` directly on the *live* authenticated
+    handle silently corrupts its internal crypt state (a real PyMuPDF 1.27.1
+    AES-256 quirk): a subsequent ``encryption=KEEP`` save on that same handle
+    then writes a file whose content streams no longer decrypt (blank pages on
+    reopen), even though the save itself reports success and needs_pass/
+    is_encrypted look normal. The snapshot must be taken from an isolated
+    clone, never the live handle, so ordinary rendering can never poison a
+    later save."""
+    source = tmp_path / "encrypted.pdf"
+    _make_encrypted_pdf(source)
+    model = PDFModel()
+    try:
+        model.open_pdf(str(source), password="user-secret")
+
+        # Simulate the render/thumbnail workers reading a snapshot before any edit.
+        snapshot_before = model.capture_worker_snapshot_bytes()
+        before_doc = fitz.open("pdf", snapshot_before)
+        assert before_doc[0].get_text("text").strip() == "ENCRYPTED SOURCE"
+        before_doc.close()
+
+        model.set_editable_metadata({"title": "Edited", "author": "", "subject": "", "keywords": ""})
+        model.save_as(str(source))
+    finally:
+        model.close()
+
+    reopened = PDFModel()
+    try:
+        reopened.open_pdf(str(source), password="user-secret")
+        assert reopened.doc[0].get_text("text").strip() == "ENCRYPTED SOURCE"
+        post_save_snapshot = reopened.capture_worker_snapshot_bytes()
+        rendered = fitz.open("pdf", post_save_snapshot)
+        assert rendered[0].get_text("text").strip() == "ENCRYPTED SOURCE"
+        rendered.close()
+    finally:
+        reopened.close()
+
+
 def test_page_delete_sets_secure_latch_and_rolls_back_whole_batch_on_failure(
     tmp_path: Path, monkeypatch
 ) -> None:

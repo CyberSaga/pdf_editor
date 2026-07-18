@@ -365,6 +365,36 @@
 
 ---
 
+## Centering a page requires updating every scene/document x conversion
+
+**Area:** continuous rendering and interaction geometry (`view/pdf_view.py`, `view/text_selection.py`, `view/object_selection.py`, `view/text_editing.py`)
+**Symptom:** Mixed portrait/landscape pages looked centered, but clicks, selection highlights, object handles, annotation rectangles, or inline editors were horizontally displaced on narrower pages.
+**Cause:** Moving only the page `QGraphicsPixmapItem` introduces a per-page scene x origin. Older code assumed every page began at scene x=0 and converted with `scene_x / render_scale` or `doc_x * render_scale` at many independent sites.
+**Fix:** Store `page_x_positions` parallel to y positions and route all page geometry through `_page_scene_x/_page_scene_y`, `_scene_pos_to_page_and_doc_point`, `_doc_rect_to_scene_rect`, and `_get_page_scene_rect`. Pixmap quality replacement must preserve the placeholder item position. Regression-test text, objects, annotations, and editor placement—not only the visible page image.
+**File:** `view/pdf_view.py`, `view/text_selection.py`, `view/object_selection.py`, `view/text_editing.py`
+
+---
+
+## Structural TOC remapping must start from the pre-operation entries
+
+**Area:** `model/pdf_model.py` page insert/delete/move and TOC APIs
+**Symptom:** Bookmarks drift to the wrong logical content after page operations, or deleted-target bookmarks disappear/change before custom remapping runs.
+**Cause:** PyMuPDF may adjust document navigation structures as pages mutate. Reading `doc.get_toc()` only after the operation loses the original page identity needed to distinguish moved, shifted, and deleted targets.
+**Fix:** Capture normalized TOC entries before the structural mutation, apply the same final-index map used by the page operation, clamp every result to the final page count, then replace the document TOC. Deleted targets map to the nearest surviving original page; delete-all maps to page 1.
+**File:** `model/pdf_model.py`, `test_scripts/test_bookmarks_toc.py`
+
+---
+
+## Tab detachment must be prepare-first and must not share a live document
+
+**Area:** `controller/session_transfer.py`, `controller/pdf_controller.py`, `main.py`
+**Symptom:** A failed detached-window creation loses the source tab, or edits/close/undo in one window corrupt the other window.
+**Cause:** Closing the source before destination readiness is non-atomic; sharing a `fitz.Document`, command manager, or worker across windows violates both PyMuPDF thread safety and MVC lifecycle ownership.
+**Fix:** Transfer immutable snapshot bytes and metadata in a repr-safe DTO, build and activate a fully independent MVC triple in `main.py`, restore UI state, then acknowledge readiness. Only after a true acknowledgment may the source controller close its session. Pre-detach undo history is deliberately not transferred.
+**File:** `controller/session_transfer.py`, `view/detachable_tab_bar.py`, `controller/pdf_controller.py`, `model/pdf_model.py`, `main.py`
+
+---
+
 ## Zoom combo always shows 100%
 
 **Area:** `controller/pdf_controller.py`, `view/pdf_view.py`  
@@ -452,6 +482,17 @@
 **Cause:** Structural ops mark cached pages `"stale"` rather than eagerly rebuilding, so callers that skip `ensure_page_index_built()` read stale data.  
 **Fix:** Always call `model.ensure_page_index_built(page_num)` before any edit or search path.  
 **File:** `model/pdf_model.py`, `model/text_block.py`
+
+---
+
+## PyMuPDF forward page moves use a pre-removal destination
+
+**Area:** `model/pdf_model.py`
+**Symptom:** Dragging page 1 to the visual position after page 3 leaves it after page 2 instead.
+**Cause:** `fitz.Document.move_page(source, destination)` interprets a forward `destination` before removing `source`; the requested final row is therefore one greater than its native insertion index. Moving to the final page uses PyMuPDF's `-1` sentinel rather than `page_count`.
+**Fix:** Keep `PDFModel.move_page()`'s public source/destination contract as final 0-based rows, then translate forward moves to `destination + 1` or `-1` for the final boundary. Mark the entire moved index interval stale and rebuild its destination anchor immediately.
+**File:** `model/pdf_model.py`, `model/text_block.py`
+**Tests:** `test_scripts/test_page_reorder.py`
 
 ---
 
@@ -1098,6 +1139,39 @@
 **File:** `model/tools/manager.py` (`ToolManager.build_print_snapshot`), `controller/pdf_controller.py` (`PrintJobRequest`, `_PrintSubmissionWorker.run`)
 **Tests:** `test_scripts/test_print_snapshot_path.py`, `test_scripts/test_print_controller_flow.py`
 
+## Uncapped portrait thumbnails can make page reordering impractical
+
+**Area:** `view/pdf_view.py`
+**Symptom:** A narrow sidebar displays only two very tall portrait thumbnails, so dragging one page over another requires leaving the sidebar and the internal move cannot complete.
+**Cause:** Thumbnail height was derived only from sidebar width and the source page aspect ratio; portrait pages could create 345 px rows.
+**Fix:** Preserve width-aware scaling but cap thumbnail icon height at 120 px in narrow sidebars, keeping at least three internal-drop targets visible at the real 900×620 shell size. (The earlier 168 px cap appeared sufficient only because the old 800 px minimum height silently enlarged the test window.)
+**File:** `view/pdf_view.py`
+**Tests:** `test_scripts/test_multi_tab_plan.py::test_06c1_thumbnail_rows_keep_three_drop_targets_visible`
+
+---
+
+## QListWidget InternalMove never reorders rows in IconMode with non-Static movement
+
+**Area:** `view/pdf_view.py`
+**Symptom:** Dragging a thumbnail either shows a forbidden cursor and never drops, or appears to reorder but removes the moved thumbnail afterward.
+**Cause:** Three Qt item-view behaviors conflict here. `IconMode` with `Snap`/`Free` repositions icons without changing model rows. Switching to `Static` prevents that, but `setMovement(Static)` silently disables `viewport().acceptDrops()`, while a later `setAcceptDrops(True)` restores only the outer view; native drag events are delivered to the viewport. Finally, inherited `QAbstractItemView.startDrag()` removes the selected source row after a MoveAction completes, even though the custom `dropEvent()` has already relocated that same item.
+**Fix:** Keep Static movement but explicitly restore `viewport().setAcceptDrops(True)`. Accept internal enter/move events in the subclass, compute the destination by scanning row centers, and perform `takeItem`/`insertItem` without calling Qt's internal drop handler. Own the `QDrag` in `startDrag()` so Qt never performs post-exec source-row removal. Nudge the vertical scrollbar within a 48 px edge margin so off-screen rows remain reachable.
+**File:** `view/pdf_view.py` (`_ReorderableThumbnailList`)
+**Tests:** `test_scripts/test_page_reorder.py` (native-delivery configuration, enter/move acceptance, manual drop, custom QDrag ownership, edge auto-scroll); real-GUI verification uses `test_files/test-colored-background.pdf`
+
+---
+
+## Instance-assigned Qt event handlers shadow class overrides
+
+**Area:** `view/pdf_view.py` responsive shell
+**Symptom:** A new `PDFView.resizeEvent()` override is present and lint-clean, but resizing the real/offscreen window never calls it, so compact-shell state does not change.
+**Cause:** `PDFView.__init__()` already assigns `self.resizeEvent = self._resize_event` to preserve the existing scene/fullscreen resize path. The instance attribute shadows the class method entirely.
+**Fix:** Extend the existing `_resize_event()` chokepoint rather than adding a second class-level override. Tests must assert the resulting sidebar visibility after a real `resize()` event, not merely call the helper directly.
+**File:** `view/pdf_view.py`
+**Tests:** `test_scripts/test_shell_tab_ux.py::test_small_shell_collapses_sidebars_and_preserves_canvas`
+
+---
+
 ## Thumbnail invalidation must distinguish count-changed from count-unchanged
 
 **Area:** `controller/pdf_controller.py` (`_invalidate_thumbnails`, `_schedule_thumbnail_batch`), `view/pdf_view.py` (`update_thumbnail_batch`)
@@ -1223,6 +1297,21 @@
 **Cause:** A QSS border participates in box metrics; introducing it on `:focus` changes the widget's content rect.
 **Fix:** Give the control a base `1px` border at rest and only **recolour** it to `accent` on `:focus` (inputs/combos/buttons already carry a 1px line border). Skipped focus rings on `QToolButton` (no base border) to avoid perturbing the measured ribbon width used by the adaptive toolbar.
 **File:** `view/theme.py`
+
+## Print dialog: programmatic combo restore must run AFTER signal wiring or overrides silently lose
+**Area:** `src/printing/print_dialog.py` — `UnifiedPrintDialog.__init__` ordering vs `_resolve_hardware_values` (M3.2)
+**Symptom:** Second print in the same process: restored duplex/color combos *display* the user's previous choice, but the submitted job uses the printer-driver preference instead — the UI lies. Also, a restored `scale_mode="custom"` left the percent spinbox disabled.
+**Cause:** Hardware fields (duplex/color_mode) only win over driver preferences if they're in `_touched_hardware_fields`, which is populated by `_on_hardware_field_changed` — a slot connected in `_wire_signals()`. Restoring combo values *before* wiring means no touch-marking fires, so `_resolve_hardware_values()` falls back to the driver pref; likewise `_on_scale_mode_changed` (which enables the percent spin) never runs. `setCurrentIndex()` looks like state restoration but is really an event source — its side effects only exist if the listeners are already connected.
+**Fix:** Call `_apply_previous_settings()` **after** `_wire_signals()`. Restoring then fires the same handlers as a human click: fields get marked touched, dependent enable-states update. Additional ordering constraint inside the restore: printer selection must be restored *first*, because `_on_printer_changed` clears `_touched_hardware_fields` and re-applies that printer's preferences — restoring any field before the printer switch gets wiped. Assert persistence tests against `_build_effective_options()`, not combo `currentData()` — the display can be right while the effective value is wrong.
+**File:** `src/printing/print_dialog.py`
+**Tests:** `test_scripts/test_m3_print_settings_persistence.py::TestPrintDialogSettingsPersistence::test_previous_settings_win_over_printer_preferences_in_effective_options`, `::test_previous_settings_restores_printer_selection_before_other_fields`
+
+## unittest.mock.patch on PySide6 dialog methods → Windows fatal access violation
+**Area:** `test_scripts/` — any test constructing a real Qt widget with `patch.object(SomeQDialogSubclass, "method")` active (M3.2)
+**Symptom:** `Windows fatal exception: access violation` inside `__init__`/signal-connect during test collection or execution; pytest exits with code 5/9 and no Python traceback for the real cause.
+**Cause:** `patch.object` replaces the method on the class with a `MagicMock`. PySide6's signal `.connect(self._method)` and internal C++ bookkeeping resolve bound methods through the class; handing them a MagicMock (not a real slot/callable bound to the QObject) corrupts the binding layer under the offscreen QPA.
+**Fix:** Don't patch methods on Qt widget classes. Inject behavior the way the existing print-dialog tests do: hand the widget a plain-Python fake collaborator (e.g. `_FakeDispatcher` duck-typing `PrintDispatcher`) so no Qt-side method resolution is touched.
+**File:** `test_scripts/test_m3_print_settings_persistence.py` (pattern), `test_scripts/test_print_dialog_properties_button.py` (original pattern source)
 
 ## Free-function extraction silently bypasses method monkeypatching
 **Area:** model/pdf_text_edit.py, model/pdf_object_ops.py (god-module decomposition seams)
@@ -1371,12 +1460,12 @@
 
 ---
 
-## Async thumbnail QThread coordinator was removed (R4) — keep thumbnails synchronous
-**Area:** `controller/pdf_controller.py` (R4-01…R4-04)
-**Symptom:** The R4.3 `ThumbnailCoordinator` could paint a cancelled tab's queued batch into the newly-active tab (the `batch_ready` signal carried only `(gen, start_index, images)` and `gen` collides across sessions), serialized the snapshot on the GUI thread, retained a decrypted snapshot after tab close, and left the old worker running on sync fallback.
-**Cause:** Per-session generation tokens are not globally unique, and the coordinator's session id was a mutable field overwritten by each `try_start`.
-**Fix:** Removed the coordinator entirely; `_schedule_thumbnail_batch` renders synchronously in bounded `QTimer` batches guarded by `_thumb_gen_by_session` (cannot cross-paint by construction). Separately, `on_tab_close_requested` clears `_worker_snapshot_cache` for the departing session (R4-03) so decrypted bytes don't outlive it. Do not reintroduce an async thumbnail path without a globally-unique job token and a close/switch-time cancel+cache-clear.
-**File:** `controller/pdf_controller.py`
+## Async thumbnail identity must include a global token, session, and generation
+**Area:** `controller/thumbnail_coordinator.py`, `controller/pdf_controller.py` (R4-01…R4-04; M3.6 foreground priority)
+**Symptom:** An earlier async thumbnail worker could paint a cancelled tab's queued batch into the newly active tab, retain decrypted snapshot bytes after close, or leave the old worker running when a live fallback was selected. On complex-vector documents, a full-document thumbnail worker could also starve the foreground page render for tens of seconds.
+**Cause:** Per-session generations can collide across tabs; mutable coordinator session state is not immutable job identity; and background raster work needs an explicit foreground-priority contract rather than merely living on another thread.
+**Fix:** Every request/result carries a globally unique token plus session and generation. Clean documents use a verified file-backed worker; dirty/watermarked documents use a one-page-per-event-turn live fallback. Cancellation happens before replacement strategy selection, tab close clears matching decrypted cache bytes, and visible-page rendering cancels/restarts thumbnail work only after foreground visible/prefetch candidates drain.
+**File:** `controller/thumbnail_coordinator.py`, `controller/pdf_controller.py`
 
 ---
 
@@ -1528,3 +1617,185 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** Qt emits `errorOccurred(FailedToStart)` and transitions to `NotRunning`, but does not subsequently emit `finished`; cleanup existed only in the latter handler.
 **Fix:** Route `FailedToStart` through the same idempotent terminal lifecycle as `_on_finished`, clearing the payload/process/work directory and emitting the runner's `finished` signal exactly once.
 **File:** `src/printing/subprocess_runner.py`; test `test_runner_failed_to_start_releases_fileless_payload_and_finishes`
+
+---
+
+## PDF font identity must be keyed per-xref, never per-basefont
+
+**Area:** font handling for the text-commit engine design (`plans/2026-07-14-acrobat-parity-text-commit-engine.md`); any code matching spans to fonts
+**Symptom:** A glyph-coverage audit reported the document's *own* characters as missing from the document's *own* subset font — false "missing glyph" results.
+**Cause:** One document can carry multiple distinct subset instances sharing a single basefont name (observed: four different `LAAAAA+Consolas` xrefs with disjoint glyph sets). Matching spans to fonts by (subset-stripped) basefont name conflates the instances, so coverage/metric checks run against the wrong font object.
+**Fix:** Track font identity by xref end-to-end (`page.get_fonts(full=True)` xref → `doc.extract_font(xref)` → `fitz.Font(fontbuffer=...)`); use span→xref mapping (texttrace/text-state replay), never name equality.
+**File:** design record in `plans/2026-07-14-acrobat-parity-text-commit-engine.md` §3; audit script (scratchpad `font_roundtrip_audit.py`, to be productized as `scripts/audit_tier_coverage.py`)
+
+---
+
+## Render-quality benchmark must use the profile-scoped quality map
+
+**Area:** `test_scripts/benchmark_ui_open_render.py`, controller render state
+**Symptom:** The UI open/render benchmark timed out waiting for a quality that had already been rendered.
+**Cause:** `_page_render_quality_by_session` changed from a flat page map to `{session_id: {color_profile: {page_idx: quality}}}`, but the benchmark continued to look up `page_idx` directly under the session.
+**Fix:** Read quality through `PDFController._page_quality_map(session_id)`, which selects the active profile, instead of reaching into `_page_render_quality_by_session` directly. Cover the benchmark helper with a profile-scoped regression test.
+**File:** `test_scripts/benchmark_ui_open_render.py`; test `test_wait_for_quality_reads_active_color_profile_map`
+
+---
+
+## A quality flag is not observable until the render callback yields
+
+**Area:** `controller/pdf_controller.py`, `controller/page_render_coordinator.py`, complex-vector continuous rendering
+**Symptom:** The requested page's high-quality raster completed in about 0.4 seconds, yet the UI benchmark reported 9–80 seconds before that quality became ready and close/tab-switch input stalled.
+**Cause:** `_process_visible_render_batch()` marked the requested page high, then synchronously rendered another low-quality prefetch page in the same GUI callback. One neighboring complex page took 8.3 seconds. Concurrent full-document thumbnail work amplified the delay to 78–80 seconds. Qt could not process the benchmark/input event that observed the already-written quality map until the callback returned.
+**Fix:** Keep only the explicitly requested low first paint synchronous. Dispatch high-quality and non-immediate low/prefetch rasters through a one-worker `PageRenderCoordinator`, process one fallback render per event-loop turn, and pause/resume thumbnail work around foreground candidates. Measure stage timings separately from event-loop-observed readiness; a fast `get_pixmap()` does not prove responsive scheduling.
+**File:** `controller/page_render_coordinator.py`, `controller/pdf_controller.py`, `plans/archive/2026-07-16-m3-render-offload.md`
+
+---
+
+## A growing thumbnail icon box does not upscale its source pixmap
+
+**Area:** thumbnail rendering and layout (`controller/thumbnail_coordinator.py`, `model/pdf_model.py`, `view/pdf_view.py`)
+**Symptom:** The sidebar's icon/grid dimensions grew as the splitter widened, but each rendered page image stayed about 120 px wide and appeared surrounded by excessive blank space.
+**Cause:** Both thumbnail render paths used a fixed MuPDF scale of `0.2`. `QIcon.actualSize()` can downscale a larger source, but it does not invent higher-resolution pixels to fill a larger icon box; the item also lacked a full-grid size hint.
+**Fix:** Render both clean-file and live-session thumbnails near the UI's maximum icon width, let QIcon downscale for narrow sidebars, and set each item's size hint/alignment to the computed grid cell.
+**File:** `utils/render_limits.py::thumbnail_render_scale`, `controller/thumbnail_coordinator.py`, `model/pdf_model.py::get_thumbnail`, `view/pdf_view.py::_update_thumbnail_layout_metrics`
+
+---
+
+## Editable combo validation must distinguish draft text from committed values
+
+**Area:** `view/pdf_view.py`, `view/text_editing.py` — font-size control
+**Symptom:** Typing a font size could resize the inline editor on every partial keystroke; standard `QDoubleValidator` behavior also blocked `-2`, `1000`, or the second decimal digit before commit, so an attempted invalid value could silently become a different valid value instead of restoring the last valid size.
+**Cause:** Editable `QComboBox.currentTextChanged` fires while the user is still composing text. A normal validator rejects some invalid keystrokes and does not emit `editingFinished` for intermediate input, which makes commit-time restoration unreliable.
+**Fix:** Treat numeric-shaped text as a draft, gate live preview while the line edit is dirty, catch Return/focus-out in the line edit's event filter, and apply a strict one-decimal/range validator only at commit. Invalid commits restore the remembered display text; preset/programmatic changes continue through the existing immediate-preview path.
+**File:** `view/pdf_view.py` (`_FontSizeInputValidator`, `_commit_text_size_input`), `view/text_editing.py` (`_validated_font_size_input`)
+
+---
+
+## Printable-area centering is not physical-paper centering
+
+**Area:** `src/printing/qt_bridge.py`
+**Symptom:** A PDF looked centred within a printer's printable region but had unequal margins on the physical sheet when hardware margins were asymmetric.
+**Cause:** `QPrinter.pageRect(DevicePixel)` describes the printable area, not the paper sheet; its centre can differ from `paperRect(DevicePixel)`.
+**Fix:** Pass `paperRect(DevicePixel)` to the existing fit/placement calculation in `_draw_page_image()`. Retain normal painter clipping for unprintable edge areas and test with deliberately asymmetric printable margins.
+**File:** `src/printing/qt_bridge.py`; `test_scripts/test_print_layout.py`
+
+---
+
+## Document snapshots must restore blank-placeholder state too
+
+**Area:** `model/pdf_model.py`, `model/edit_commands.py`
+**Symptom:** Undo restored the original page bytes after delete-all, but the active session still treated a subsequently restored real document as a blank placeholder; redo after importing a real page could invert the same state.
+**Cause:** `blank_placeholder_active` is intentionally model/session state rather than serialized PDF metadata, while `SnapshotCommand` previously restored only document bytes.
+**Fix:** Store optional before/after placeholder flags on `SnapshotCommand` and apply the matching flag immediately after its byte snapshot is restored. Controllers capture the flags around delete-all and imported-page replacement commands.
+**File:** `model/pdf_model.py`, `model/edit_commands.py`, `controller/pdf_controller.py`
+
+---
+
+## App-object payload versions are parser contracts, not feature counters
+
+**Area:** `model/tools/annotation_tool.py`, `model/pdf_object_ops.py`
+**Symptom:** A newly created rectangle rendered correctly, but object hit-testing, move, resize, and delete stopped recognizing it.
+**Cause:** Adding appearance fields also changed the embedded payload from version 1 to version 2, while `_load_app_object_payload()` deliberately accepts only `_APP_OBJECT_VERSION == 1`. The new fields were backward-compatible, but the version bump made the whole annotation opaque to object operations.
+**Fix:** Keep payload version 1 when adding optional backward-compatible fields. Only bump the version together with parser migration/compatibility logic and tests covering every object operation.
+**File:** `model/tools/annotation_tool.py`, `model/pdf_object_ops.py`
+**Tests:** `test_scripts/test_object_manipulation_model.py`
+
+---
+
+## PyMuPDF annotations retain their page through the page wrapper
+
+**Area:** PyMuPDF annotation tests
+**Symptom:** Accessing `annot.type`, `annot.border`, or `annot.colors` immediately after `next(doc[0].annots())` raises `FzErrorArgument: annotation not bound to any page`.
+**Cause:** The temporary `doc[0]` page wrapper can be released after the expression, while the annotation wrapper still depends on that page object.
+**Fix:** Keep a strong local page reference for as long as annotation properties are inspected: `page = doc[0]; annot = next(page.annots())`.
+**File:** `test_scripts/test_object_manipulation_model.py`
+
+---
+
+## `tobytes(encryption=NONE)` on the *live* encrypted doc poisons its next `encryption=KEEP` save
+
+**Area:** `model/pdf_model.py` — `capture_worker_snapshot_bytes()` / `capture_print_snapshot_bytes()` (M3.5)
+**Symptom:** Manual test: edit metadata on an encrypted PDF, save, close, reopen with the correct password — all pages render blank, and MuPDF logs `syntax error in content stream` / `format error: aes padding out of range` from the render/thumbnail workers. `needs_pass`/`is_encrypted` looked normal on the saved file the whole time, so nothing in the save path's own checks caught it.
+**Cause:** Every page render and thumbnail calls `capture_worker_snapshot_bytes()`, which called `self.doc.tobytes(garbage=0, no_new_id=1, encryption=fitz.PDF_ENCRYPT_NONE)` directly on the live, already-authenticated `fitz.Document`. In PyMuPDF 1.27.1, decrypt-and-flatten on the live handle silently corrupts its internal AES crypt state — invisible to `needs_pass`/`is_encrypted`, which read the same both before and after. Any later `doc.save(..., encryption=PDF_ENCRYPT_KEEP)` on that *same* handle then writes content streams that no longer decrypt correctly. Since real usage always renders a page before the first save, this reliably corrupted every encrypted-PDF save, not just a rare edge case. (Reading `.needs_pass`/`.is_encrypted` a second time on an already-authenticated handle is a *separate* trigger for the identical symptom — never re-read either property after `authenticate()` has already succeeded once; `doc.metadata["encryption"]` is the safe encryption probe, confirmed non-corrupting.)
+**Fix:** Added `_decrypted_snapshot_bytes()`: for unencrypted docs, behavior is unchanged (direct `tobytes(NONE)`, no overhead). For encrypted docs, first take an `encryption=KEEP` snapshot (proven safe — the same pattern `_capture_doc_snapshot`/`_roundtrip_live_doc` already use), open it as a throwaway clone, re-authenticate the clone if needed, and call `tobytes(encryption=NONE)` on the *clone* — never on `self.doc`. `capture_worker_snapshot_bytes()` and `capture_print_snapshot_bytes()` both route through it.
+**File:** `model/pdf_model.py`
+**Tests:** `test_scripts/test_secure_persistence.py::test_worker_snapshot_before_edit_does_not_corrupt_later_encrypted_save`
+
+---
+
+## A later unconditional panel sync silently undoes an earlier mode-specific one
+
+**Area:** `view/pdf_view.py` — `PDFView.set_mode()` / `_sync_text_property_panel_state()` (M3.5)
+**Symptom:** Manual test: entering rectangle/underline/strikeout mode showed no stroke/fill/border/opacity controls in the right sidebar — "no place to pick" — even though the widgets existed and were fully wired (`rect_card`, `highlight_card`).
+**Cause:** `set_mode()` correctly calls `right_stacked_widget.setCurrentWidget(self.rect_card)` (etc.), but it *unconditionally* calls `_sync_text_property_panel_state()` right after. That function only special-cases `add_text`/`edit_text`/an active text selection; for every other mode (including `rect`/`highlight`/`underline`/`strikeout`) it falls through to `stacked.setCurrentWidget(page_info_card)`, immediately clobbering the card `set_mode()` had just picked. Two functions independently "owned" the same `QStackedWidget.currentWidget()` with no coordination, so the later call always won regardless of which mode was actually active. Also found in the same investigation: the right sidebar itself has no auto-show when entering one of these modes (parallel to the existing `_ensure_left_sidebar_visible()` used for the left sidebar), so a previously-hidden right sidebar stayed hidden even once the correct card was showing.
+**Fix:** `_sync_text_property_panel_state()` now returns immediately when `current_mode` is `rect`/`highlight`/`underline`/`strikeout`, leaving whatever `set_mode()` set untouched. Added `_ensure_right_sidebar_visible()` (mirrors `_ensure_left_sidebar_visible()`) and call it from `set_mode()` for every mode with a dedicated properties card (`rect`, `highlight`/`underline`/`strikeout`, `add_text`, `edit_text`).
+**File:** `view/pdf_view.py`
+**Tests:** `test_scripts/test_interaction_modes.py::test_entering_a_property_mode_reopens_a_hidden_right_sidebar`
+
+---
+
+## Markup-mode mouse press fell through to Qt's default QGraphicsView handling
+
+**Area:** `view/pdf_view.py` — `_mouse_press()` / `_mouse_move()` / `_mouse_release()` for `highlight`/`underline`/`strikeout` modes (M3.5)
+**Symptom:** Manual test: dragging to create an underline moved the page/view unexpectedly mid-drag and on release ("page jumps to another place"), and no live preview rectangle followed the cursor — only a shape appeared at mouse-up, and its geometry only tracked the release Y-position.
+**Cause:** Two independent bugs, both from markup modes not mirroring `rect` mode:
+1. The `rect` press handler set `_drawing_page_idx`/`drawing_start`, called the preview updater, then `event.accept(); return`. Markup press only set `drawing_start` and fell through to `QGraphicsView.mousePressEvent(...)` — Qt's *default* handling ran underneath (rubber-band/pan) — and `_mouse_move`'s preview branch was gated to `current_mode == 'rect'` only, so markup drags got zero visual feedback until release. (Fixed first, but the release-time page jump persisted — this was fix #2, below.)
+2. `rect`'s release handler anchors to `_drawing_page_idx` — the page the drag *started* on — for the entire gesture. The markup release handler instead recomputed the target page from the drag rect's vertical **center** every time, ignoring `_drawing_page_idx` entirely and never clamping `end_pos` to the starting page. A drag that drifted toward an adjacent page (or a page short enough that the drag's midpoint fell into the next page's y-range) would commit the annotation to a *different* page than the one being drawn on — and the subsequent `show_page()` call would then visibly navigate/recenter there. This is what manual testing kept seeing as "page jump" even after fix #1 landed.
+**Fix:** Markup press now mirrors `rect`: computes and clamps to the starting page, sets `_drawing_page_idx`, calls the (now-shared) preview updater, and accepts+returns; `_update_rect_preview()` and the move handler's preview branch cover `rect`/`highlight`/`markup_line` uniformly (markup preview renders in the active style's color). Markup release now also prefers `_drawing_page_idx` over the center recompute and clamps `end_pos` to that page before building the rect — identical anchoring to `rect` mode.
+**File:** `view/pdf_view.py`
+**Tests:** `test_scripts/test_interaction_modes.py::test_markup_drag_accepts_press_and_shows_live_preview`, `test_scripts/test_interaction_modes.py::test_markup_line_drag_stays_anchored_to_starting_page`
+
+---
+
+## Underline/strikeout merged into one `markup_line` mode; PyMuPDF has no width API for either
+
+**Area:** `view/pdf_view.py` — toolbar, `_setup_property_inspector()`, mode dispatch (M3.5 follow-up)
+**Symptom/request:** User asked to combine the separate underline/strikeout tools into one, with per-style color (e.g. underline yellow, strikeout red) and a line-width control.
+**Investigation:** `page.add_underline_annot()`/`add_strikeout_annot()` both raise on `annot.set_border(width=...)` — `"Cannot set border for 'Underline'"` / `'StrikeOut'`. These annotation subtypes have no PDF-level border/width concept at all; PyMuPDF isn't withholding an existing feature, there's genuinely nothing to set. A width control would require switching to a generic `Line` annotation positioned at the underline/strikeout Y-offset instead — which gains `set_border()` but loses the semantic Underline/StrikeOut subtype other PDF readers use to recognize/toggle "underlined text". User deferred this decision; tracked in `TODOS.md`.
+**Fix:** Two former toolbar actions/modes (`underline`, `strikeout`) collapsed into one `markup_line` mode and toolbar button ("標記線"). `markup_line_card` holds a style radio pair (底線/刪除線) plus one color button + opacity slider; `self.underline_color`/`self.strikeout_color` are independent `QColor`s so switching styles never clobbers the other's setting (`_markup_line_current_color()` resolves the active one). The release-time dispatch (`sig_add_underline` vs `sig_add_strikeout`) now keys off `self.markup_line_style`, not `self.current_mode` — the controller-side `add_underline`/`add_strikeout` methods and their signals are unchanged.
+**File:** `view/pdf_view.py`, `controller/pdf_controller.py` (`_VALID_MODES`)
+**Tests:** `test_scripts/test_interaction_modes.py::test_markup_line_mode_has_a_single_combined_toolbar_action`, `test_scripts/test_interaction_modes.py::test_markup_line_style_toggle_preserves_each_styles_own_color`, `test_scripts/test_interaction_modes.py::test_markup_line_drag_emits_style_specific_signal_and_color`
+
+---
+
+## PyMuPDF annot geometry is unrotated-space on BOTH write and read; `annot.rect` readback is a false oracle
+
+**Area:** `model/tools/annotation_tool.py` — every `page.add_*_annot` / `annot.set_rect` / `annot.rect` site
+**Symptom:** Rectangle/highlight/underline/strikeout/note annotations land down-right of the click on `/Rotate` pages (the complex HVAC fixture's pages are rotation=270). Tests asserting on `annot.rect` readback pass anyway, because readback echoes the requested values in unrotated space — only pixel-level verification of a rendered pixmap exposes the misplacement.
+**Cause:** PyMuPDF 1.27 interprets annot-creation geometry (and stores `/Rect`) in **unrotated** page space, while the app deals exclusively in displayed (`page.rect`) coordinates. Every self-canceling view path (text selection, object handles, inline editor) looked correct because scene→doc→scene round-trips through the same helpers cancel any absolute bias; annotations bake absolute coordinates. Two extra traps: (1) markup annots follow quad corner roles, so a derotated *rect* still draws underline ink on a vertical edge at 90/270 — a corner-mapped `fitz.Quad` is required; (2) Text/Note icons are fixed-size glyphs anchored at the rect corner, so `set_rect` needs anchor-point derotation, not corner-remap+normalize. Exception: `add_redact_annot` accepts displayed coords (rotation-safe), so the text-commit engine is unaffected.
+**Fix:** Convert at the model boundary in BOTH directions via chokepoint helpers in `AnnotationTool`: `_derotate_rect`/`_derotate_point`/`_displayed_rect_to_quad`/`_derotate_text_annot_rect` on write, `_rotate_rect_to_displayed` on read (`get_all_annotations`). Regression tests must use baseline-relative pixel detection (render at rotation 0 as the expected ink bbox, compare rotations 90/180/270 against it) — never `annot.rect`.
+**File:** `model/tools/annotation_tool.py`, `test_scripts/test_annotation_rotation.py`
+
+---
+
+## Python 3.10 `Path.resolve(strict=False)` still raises on unreachable UNC paths (WinError 53)
+
+**Area:** `utils/preferences.py` — `canonicalize_recent_path`; any `resolve()` on user-supplied paths
+**Symptom:** `PDFController.activate()` crashed with `FileNotFoundError: [WinError 53] 找不到網路路徑` when the recent-files store contained a document on a currently-unreachable network share; ~8 controller tests failed identically. Was live on the dev machine 2026-07-17 (a `\\192.168.1.238\...` work document went stale). A second live crash path: `open_pdf()` → `find_session_by_path()` → `PDFModel._canonicalize_path` (plain `resolve()`, no strict) ran BEFORE `open_pdf`'s try/except at startup/forwarded-CLI/recent-click.
+**Cause:** CPython 3.10's non-strict `resolve()` walks `_getfinalpathname` and only swallows an allow-list of WinErrors; 53 (`ERROR_BAD_NETPATH`) was added to that list in a later Python. `Path.is_file()` is safe (returns False); `resolve()` is not. Compounding gap: the test suite reads the REAL user preference store, so one stale machine-local entry poisons unrelated suites.
+**Fix:** Chokepoint guards catching ONLY `OSError` with a pure-string fallback (`os.path.abspath(os.path.expanduser(...))`, which preserves the normcase+normpath dedup identity): `_safe_resolve_path` in `utils/preferences.py`, the same pattern inside `PDFModel._canonicalize_path`, plus per-entry defense in `_refresh_recent_files` (`available=False`, never abort activate). `utils/single_instance.py` must stay FAIL-CLOSED per the IPC argv contract: sender `_normalize_forwarded_argv` returns `None` on any unresolvable token (whole hand-off rejected), receiver `_forwarded_argv_is_acceptable` returns `False` — never skip a token. Lower-severity inline save-time `resolve()` sites (insert/merge/save paths in `pdf_model.py`, optimize dedupe, print dispatcher) are audited-but-unguarded follow-ups tracked in `TODOS.md`.
+**File:** `utils/preferences.py`, `model/pdf_model.py` (`_canonicalize_path`), `utils/single_instance.py`, `controller/pdf_controller.py` (`_refresh_recent_files`)
+**Tests:** `test_scripts/test_recent_files_unc_robustness.py` (6, red-light-first; guard tests verified red-on-revert)
+
+## `itemActivated` + `EditKeyPressed`-only triggers hide a QTreeWidget's editability
+**Area:** `view/pdf_view.py` — bookmark panel (`self.bookmark_tree`)
+**Symptom:** M3.7 manual QA reported "沒找到怎麼操作" (couldn't find how) for both renaming a bookmark and changing its page number, even though `populate_toc()` already sets `Qt.ItemIsEditable` on both columns and `_on_toc_item_changed` already validates/clamps page edits and emits `sig_toc_changed`. The feature worked end-to-end; users just never triggered it.
+**Cause:** `setEditTriggers(QAbstractItemView.EditKeyPressed)` means only F2 opens the inline editor, and the intuitive gesture — double-click — was already claimed by `itemActivated` → `_on_bookmark_activated` (jump-to-page navigation). With no visible affordance (no menu, no button) pointing at F2, the edit path was functionally undiscoverable despite being fully implemented.
+**Fix:** Added a right-click context menu on the tree (`setContextMenuPolicy(Qt.CustomContextMenu)` + `customContextMenuRequested`) with "重新命名" and "設定頁碼" actions that call `self.bookmark_tree.editItem(item, 0)` / `editItem(item, 1)` — reusing the existing `itemChanged` → `_on_toc_item_changed` → `sig_toc_changed` path unchanged. Double-click-to-navigate is untouched. General lesson: an `EditTriggers` value narrower than the default (`AllEditTriggers`) needs an explicit, visible affordance somewhere, or treat the feature as undiscovered even if the wiring is correct.
+**File:** `view/pdf_view.py` (`_build_bookmark_context_menu`, `_show_bookmark_context_menu`)
+**Tests:** `test_scripts/test_bookmark_rename_ux.py`
+
+## View-owned popup not scoped to a session silently mutates the wrong document
+**Area:** `view/pdf_view.py` (`_floating_note`) + `view/floating_note.py`; class of bug applies to any singleton view widget that outlives a session
+**Symptom:** There is one `PDFView` for the whole app; "tabs" are model/controller sessions keyed by `sid`, not separate widgets. `_floating_note` was a single un-scoped attribute. Open a note popup on tab A, switch to tab B (making B the active session), then hit Save/Delete on the still-open A popup — it wrote/deleted against B's document at A's page/xref, silently corrupting B. Deleting the note via its own 刪除 button also left the popup editing a now-nonexistent xref (it emitted `delete_requested` but never `.close()`d).
+**Cause:** The popup's `save_requested`/`delete_requested`/`marker_move_requested` signals route through the controller to `update_annotation_content`/`delete_annotation`/`move_annotation_marker`, which all call `_record_annotation_mutation` → `self.model.tools.annotation.*`. Those tools operate on `self.model.doc`, i.e. whatever `get_active_session_id()` currently points at — never the session the popup was opened for. A view-owned widget with no session ownership + active-session-relative mutation = cross-document write. `on_tab_close_requested` tore down a dozen `*_by_session` dicts but never referenced `view._floating_note`.
+**Fix:** Give the popup a session identity and one lifecycle chokepoint. The view records `_floating_note_sid` (the active tab's `tabData`) when the popup opens, and `_dismiss_floating_note_if_orphaned()` closes it whenever the currently-active tab's `sid` no longer matches. That chokepoint is called from `set_document_tabs`, which the controller already funnels every tab switch, tab close, and empty-UI reset through — so one function covers all three paths instead of three ad-hoc patches. Session identity comes from the tab bar's `tabData` the controller already handed the view (no new View→Model call). Separately, `FloatingNote`'s delete button now `.close()`s itself (relying on `WA_DeleteOnClose`) after emitting. General lesson: a singleton view widget that acts on the *active* session must track which session spawned it and self-dismiss the instant that session stops being current.
+**File:** `view/pdf_view.py` (`_show_floating_note`, `_active_document_session_id`, `_dismiss_floating_note_if_orphaned`, `_forget_floating_note`, `set_document_tabs`), `view/floating_note.py` (`_emit_delete`)
+**Tests:** `test_scripts/test_floating_notes.py` (`test_delete_button_closes_the_popup`, `test_closing_the_popups_owning_tab_dismisses_the_popup`, `test_switching_away_from_owning_tab_severs_the_cross_session_mutation_path`)
+
+## Full-rebuild `populate_toc` discards any selection set immediately before `sig_toc_changed`
+**Area:** `view/pdf_view.py` — bookmark panel (`self.bookmark_tree`), TOC round-trip
+**Symptom:** M3.7 manual QA reported that every "上移"/"下移" (move bookmark up/down) press deselected the moved bookmark, forcing a re-click before the next move (每按一次上移或下移就會取消聚焦該書籤). `_move_selected_bookmark` did the right thing locally — reorder, `setCurrentItem(moved)`, emit — yet the selection was gone the moment control returned.
+**Cause:** `sig_toc_changed` is connected to the controller's `update_toc`, which persists then calls `load_toc()` → `view.populate_toc(entries)`. `populate_toc` does a FULL `tree.clear()` + rebuild of fresh `QTreeWidgetItem`s. Qt signal emission is **synchronous within the same call stack**, so the rebuild runs immediately after `setCurrentItem` and destroys the just-selected item before the event loop ever repaints. Any per-widget UI state (selection, expansion, scroll, focus) set right before emitting a signal that triggers a clear-and-rebuild is thrown away — the same trap applies to annotations/watermarks lists or any list that round-trips through the model.
+**Fix:** Carry the intent through the rebuild instead of setting live widget state before it. The moved item's identity is expressed as its flat DFS pre-order index in the TOC entries (the exact order `populate_toc` iterates and `_toc_entries_from_tree`/`get_toc` preserve), stashed in a View-internal `_pending_toc_selection` by `_move_selected_bookmark`. `populate_toc` collects the items it builds in order and, at the end, `_restore_pending_toc_selection` re-selects/`setFocus`es the item at that index, then clears the pending state. Mechanism lives entirely in the View (it owns its own refresh behavior — no Controller/Model change) and is scoped to the move path (add/delete/rename intentionally let focus move). Boundary no-op moves (`return` before any emit) never set the pending index, so they can't mis-target.
+**File:** `view/pdf_view.py` (`_move_selected_bookmark`, `_flat_index_of_bookmark_item`, `populate_toc`, `_restore_pending_toc_selection`)
+**Tests:** `test_scripts/test_bookmarks_toc.py` (`test_move_bookmark_up_preserves_selection_after_rebuild`, `test_move_bookmark_down_preserves_selection_after_rebuild`, `test_move_child_bookmark_preserves_selection_after_rebuild`, `test_move_bookmark_boundary_noop_leaves_selection_intact`)

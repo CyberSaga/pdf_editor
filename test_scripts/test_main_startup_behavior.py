@@ -150,8 +150,8 @@ def test_empty_launch_keeps_heavy_panels_lazy_until_pdf_open(
 
         assert startup["view"].controller is startup["controller"]
         assert startup["controller"] is not None
-        assert startup["view"].left_sidebar.count() == 4
-        assert startup["view"].right_stacked_widget.count() == 4
+        assert startup["view"].left_sidebar.count() == 5
+        assert startup["view"].right_stacked_widget.count() == 5
         assert startup["view"].text_target_mode_combo.currentData() == "paragraph"
     finally:
         _cleanup_startup(startup)
@@ -170,7 +170,7 @@ def test_lazy_shell_hydrates_panels_when_user_opens_search_tab() -> None:
 
         view._show_search_tab()
 
-        assert view.left_sidebar.count() == 4
+        assert view.left_sidebar.count() == 5
         assert view.left_sidebar.currentIndex() == 1
         assert hasattr(view, "search_input")
     finally:
