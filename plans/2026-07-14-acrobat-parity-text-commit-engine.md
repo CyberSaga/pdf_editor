@@ -344,8 +344,11 @@ the existing 300ms slow-edit budget.
 2. **Identity-H in Tier 0 v1 scope** — resolved by spike S3's outcome.
 3. **`style_overrides` plumbing** — exact view-side tracking of "user touched font
    control" needs a small design note when Phase A starts.
-4. **ε calibration** for V1d render-diff — measure across repeated renders on this
-   machine + CI runner before hard-coding.
+4. **ε calibration** for V1d render-diff — **RESOLVED 2026-07-18.**
+   Maintainer machine (Win11, PyMuPDF 1.27.1): 50 iterations × 10 corpus
+   cases at 96 dpi → zero pixel noise.  Recommended ε = 1 (floor margin).
+   CI runner leg deferred to Phase B `commit-fidelity` job.
+   Script: `scripts/calibrate_render_epsilon.py`.
 5. **ARCHITECTURE.md §10 stale claim** ("preview and commit cannot diverge") —
    correct it when the new preview contract lands, or earlier as a docs fix.
 6. **Preview scratch-doc cost on large PDFs** (adversarial-verify finding):

@@ -28,9 +28,13 @@ a time (not batched) per the milestone-1 lesson on PR size.
   encoding (F3), Type3 font (F1), multi-style runs (T0a), neighbor proximity.
   Test: `test_scripts/test_build_fidelity_corpus.py` (19 structural assertions).
   No longer blocks Phase A.
-- [ ] **ε calibration for V1d render-diff** (open question 4 in the plan) —
-  measure repeated-render pixel noise on both the maintainer's machine and the
-  CI runner before hard-coding a tolerance.
+- [x] **ε calibration for V1d render-diff** (open question 4 in the plan) —
+  DONE 2026-07-18.  Script: `scripts/calibrate_render_epsilon.py`; test:
+  `test_scripts/test_calibrate_render_epsilon.py` (17 tests).
+  Result on maintainer machine (Win11, PyMuPDF 1.27.1, 50 iterations, 96 dpi):
+  **zero pixel noise** across all 10 corpus cases.  Recommended ε = 1
+  (floor margin).  CI runner measurement deferred to the `commit-fidelity`
+  CI job (Phase B) — if CI shows non-zero noise, bump ε there.
 - [ ] **Rebind the Stop-hook completion gate** (`scripts/check_completion_proof_hook.py`)
   from its dormant `GOAL_FILE` (`plans/2026-05-05-no-jump-editor-geometry-gate.md`,
   never committed → gate is a permanent no-op) to a new gate plan for this
