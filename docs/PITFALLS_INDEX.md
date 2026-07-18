@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 194 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 198 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -199,3 +199,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1795 | Full-rebuild `populate_toc` discards any selection set immediately before `sig_toc_changed` | `view/pdf_view.py` — bookmark panel (`self.bookmark_tree`), TOC round-trip |
 | 1805 | PyMuPDF version skew masks runtime-only bugs | Environment / test toolchain (`requirements.txt`, `constraints-ci.txt`) |
 | 1812 | A local pre-commit hook is not durable across clones/worktrees -- pair it with a CI gate | `scripts/hooks/` (device-identity guard) |
+| 1821 | PyMuPDF PDF generation is not byte-deterministic | `scripts/build_fidelity_corpus.py` (fidelity corpus generator) |
+| 1828 | PyMuPDF `insert_text` vs TextWriter produce fundamentally different font structures | `scripts/build_fidelity_corpus.py`, `model/text_commit/font_registry.py` (future) |
+| 1835 | PyMuPDF merges close `insert_text` calls into a single text block | `scripts/build_fidelity_corpus.py`, test fixtures |
+| 1842 | PyMuPDF `Document.get_new_xref()` not `new_xref()` | `scripts/build_fidelity_corpus.py` (direct PDF object construction) |

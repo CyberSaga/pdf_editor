@@ -1815,3 +1815,33 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** `.git/hooks/` is not version-controlled; git never installs hooks from a repo checkout automatically, and hooks live in the *common* git dir (`git rev-parse --git-common-dir`), not per-worktree, which trips up naive `.git/hooks`-path assumptions in linked worktrees.
 **Fix:** Ship the guard logic as an importable, unit-testable module (`scan_diff()` in `scripts/hooks/pre_commit_device_guard.py`) with a separate installer (`scripts/hooks/install_git_hooks.py`) for the opt-in local hook, AND run the same script in CI with `--base <ref>` diffing the PR/push range -- the CI leg is the one that can't be skipped by an uninstalled hook.
 **File:** `scripts/hooks/pre_commit_device_guard.py`, `scripts/hooks/install_git_hooks.py`, `.github/workflows/ci.yml` (`device-guard` job)
+
+---
+
+## PyMuPDF PDF generation is not byte-deterministic
+**Area:** `scripts/build_fidelity_corpus.py` (fidelity corpus generator)
+**Symptom:** Calling `doc.tobytes()` multiple times on identically-constructed PyMuPDF documents produces different byte content (different SHA-256 hashes each run), even after stripping metadata with `doc.set_metadata({})`.
+**Cause:** Internal MuPDF allocation or serialisation uses non-deterministic state (object numbering, compression, internal IDs). There is no public API to seed or stabilise this.
+**Fix:** Do not check generated PDFs into git and rely on byte identity. Instead, treat the generator script as the canonical corpus definition: generate PDFs on-the-fly (in `tmp_path` / at test time), and verify *structural* properties (font types, encodings, text content, stream operators) rather than byte hashes.
+**File:** `scripts/build_fidelity_corpus.py`
+
+## PyMuPDF `insert_text` vs TextWriter produce fundamentally different font structures
+**Area:** `scripts/build_fidelity_corpus.py`, `model/text_commit/font_registry.py` (future)
+**Symptom:** `page.insert_text(fontname="helv")` creates an unembedded Type1 base-14 reference (buffer length 0), while `TextWriter` with `fitz.Font("helv")` embeds the font as a Type0/CIDFont with Identity-H encoding (buffer ~33KB). Both use "Helvetica" but produce completely different PDF structures.
+**Cause:** `insert_text` uses the PDF spec's base-14 font reference (no embedding required). TextWriter always embeds the font program as a CIDFont for full Unicode coverage.
+**Fix:** Choose the API based on which PDF structure the test case needs. For base-14 unembedded: `page.insert_text(fontname="helv")`. For embedded/extractable fonts: use TextWriter with `fitz.Font(...)`. The `DocumentFontRegistry` (Phase A) must handle both structures.
+**File:** `scripts/build_fidelity_corpus.py`
+
+## PyMuPDF merges close `insert_text` calls into a single text block
+**Area:** `scripts/build_fidelity_corpus.py`, test fixtures
+**Symptom:** Two separate `page.insert_text()` calls placed vertically close together (e.g. 15pt gap with fontsize=12) appear as a single block in `page.get_text("dict")["blocks"]` — tests expecting separate blocks fail.
+**Cause:** MuPDF's text extraction groups lines into blocks using a proximity heuristic (~1.5x font size). Lines closer than this threshold are merged into one block regardless of how they were inserted.
+**Fix:** Space separate text blocks at least 2x the font size apart (e.g. >=35pt gap for fontsize=12) to ensure they report as distinct blocks in `get_text("dict")`.
+**File:** `scripts/build_fidelity_corpus.py`
+
+## PyMuPDF `Document.get_new_xref()` not `new_xref()`
+**Area:** `scripts/build_fidelity_corpus.py` (direct PDF object construction)
+**Symptom:** `AttributeError: 'Document' object has no attribute 'new_xref'` when trying to create new indirect objects for Type3 fonts, Form XObjects, or custom encoding dictionaries.
+**Cause:** PyMuPDF 1.27 renamed the method to `get_new_xref()`. Older documentation and examples may reference `new_xref()`.
+**Fix:** Use `doc.get_new_xref()` to allocate new indirect object numbers.
+**File:** `scripts/build_fidelity_corpus.py`
