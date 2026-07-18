@@ -19,6 +19,9 @@ class EditTextResult(str, Enum):
     NO_CHANGE = "no_change"
     TARGET_BLOCK_NOT_FOUND = "target_block_not_found"
     TARGET_SPAN_NOT_FOUND = "target_span_not_found"
+    # V2 strict mode: the edit failed every enabled high-fidelity tier and
+    # the degraded legacy engine is not permitted to run. No mutation happened.
+    REJECTED_STRICT = "rejected_strict"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -198,6 +201,7 @@ class EditTextCommand(EditCommand):
             new_rect=self._new_rect,
             target_span_id=self._target_span_id,
             target_mode=self._target_mode,
+            style_overrides=self.style_overrides,
         )
         if self.result is not EditTextResult.SUCCESS:
             self._executed = False

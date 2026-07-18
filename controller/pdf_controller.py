@@ -2271,6 +2271,8 @@ class PDFController:
             return "找不到可編輯的文字區塊"
         if result is EditTextResult.TARGET_SPAN_NOT_FOUND:
             return "找不到要編輯的文字內容"
+        if result is EditTextResult.REJECTED_STRICT:
+            return "嚴格模式：此編輯不符合高保真條件，已拒絕（文件未變更）"
         return None
 
     def _show_edit_result_feedback(self, result: EditTextResult) -> None:
@@ -2414,6 +2416,8 @@ class PDFController:
                 target_span_id=target_span_id,
                 target_mode=target_mode,
                 reflow_fn=_reflow_fn,
+                style_overrides=request.style_overrides,
+                plan_token=request.plan_token,
             )
             self.model.command_manager.execute(cmd)
             if cmd.result is not EditTextResult.SUCCESS:

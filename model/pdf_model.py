@@ -214,6 +214,11 @@ class DocumentSession:
     block_manager: TextBlockManager = field(default_factory=TextBlockManager)
     command_manager: CommandManager = field(default_factory=CommandManager)
     pending_edits: list = field(default_factory=list)
+    # Pages that received a V2 Tier 0 lossless commit: their content streams
+    # must never pass through clean_contents (it would destroy the verified
+    # byte identity). A later legacy rewrite of the page revokes the entry
+    # via PDFModel.mark_page_content_dirty.
+    fidelity_protected_pages: set = field(default_factory=set)
     edit_count: int = 0
     run_reopen_anchors: dict[str, fitz.Rect] = field(default_factory=dict)
     run_reopen_anchor_sizes: dict[str, float] = field(default_factory=dict)
@@ -246,6 +251,7 @@ class PDFModel:
         self._legacy_edit_count: int = 0
         self._legacy_secure_save_required: bool = False
         self._legacy_pending_edits: list = []
+        self._legacy_fidelity_protected_pages: set = set()
         self._legacy_run_reopen_anchors: dict[str, fitz.Rect] = {}
         self._legacy_run_reopen_anchor_sizes: dict[str, float] = {}
         # Any: gradual typing — save paths access .name behind runtime guards
@@ -548,6 +554,32 @@ class PDFModel:
             session.pending_edits = value
         else:
             self._legacy_pending_edits = value
+
+    @property
+    def fidelity_protected_pages(self) -> set:
+        session = self._active_session()
+        if session:
+            return session.fidelity_protected_pages
+        return self._legacy_fidelity_protected_pages
+
+    @fidelity_protected_pages.setter
+    def fidelity_protected_pages(self, value: set) -> None:
+        session = self._active_session()
+        if session:
+            session.fidelity_protected_pages = value
+        else:
+            self._legacy_fidelity_protected_pages = value
+
+    def mark_page_content_dirty(self, page_idx: int, rect: fitz.Rect) -> None:
+        """Chokepoint for every legacy content rewrite of a page.
+
+        Queues the page for clean_contents maintenance AND revokes its V2
+        Tier-0 fidelity protection: a redact/reinsert (or object rewrite)
+        invalidates the byte-identity promise, after which normal cleanup
+        is both safe and desirable again.
+        """
+        self.fidelity_protected_pages.discard(page_idx)
+        self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(rect)})
 
     # ── Run reopen anchors ────────────────────────────────────────────────
     # A run-mode edit shrinks/repositions the committed box every commit. To
@@ -2573,7 +2605,7 @@ class PDFModel:
 
         if inserted:
             self.block_manager.rebuild_page(page_idx, self.doc)
-            self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(page.rect)})
+            self.mark_page_content_dirty(page_idx, fitz.Rect(page.rect))
             self.edit_count += 1
             logger.info("apply_ocr_spans page=%s inserted=%s", page_num, inserted)
         return inserted
@@ -3325,9 +3357,21 @@ class PDFModel:
         """
         if not self.pending_edits or not self.doc:
             return
+        # V2 maintenance policy: a fidelity-protected page (Tier 0 lossless
+        # commit) must never pass through clean_contents — it would rewrite
+        # the stream and destroy the verified byte identity. Its pending
+        # entries are preserved for the day its protection is revoked
+        # (mark_page_content_dirty on a later legacy rewrite).
+        protected = set(self.fidelity_protected_pages)
         unique_pages = {e["page_idx"] for e in self.pending_edits}
+        skipped = unique_pages & protected
+        if skipped:
+            logger.debug(
+                "apply_pending_redactions: 跳過 fidelity-protected 頁面 %s",
+                sorted(skipped),
+            )
         cleaned = 0
-        for page_idx in sorted(unique_pages):
+        for page_idx in sorted(unique_pages - skipped):
             if 0 <= page_idx < len(self.doc):
                 try:
                     self.doc[page_idx].clean_contents()
@@ -3337,7 +3381,9 @@ class PDFModel:
         logger.debug(
             f"apply_pending_redactions: 已清理 {cleaned}/{len(unique_pages)} 頁的 content stream"
         )
-        self.pending_edits.clear()
+        self.pending_edits = [
+            e for e in self.pending_edits if e["page_idx"] in skipped
+        ]
 
     def _maybe_garbage_collect(self) -> None:
         """
@@ -3449,7 +3495,8 @@ class PDFModel:
                   vertical_shift_left: bool = True,
                   new_rect: fitz.Rect = None,
                   target_span_id: str | None = None,
-                  target_mode: str | None = None) -> EditTextResult:
+                  target_mode: str | None = None,
+                  style_overrides=None) -> EditTextResult:
         return pdf_text_edit.edit_text(
             self, page_num, rect, new_text,
             font=font, size=size, color=color,
@@ -3458,6 +3505,7 @@ class PDFModel:
             new_rect=new_rect,
             target_span_id=target_span_id,
             target_mode=target_mode,
+            style_overrides=style_overrides,
         )
 
     def _reauthenticate_if_needed(self, doc: fitz.Document) -> fitz.Document:
@@ -3611,7 +3659,7 @@ class PDFModel:
             self.block_manager.rebuild_page(idx, self.doc)
         except Exception:
             logger.debug("block index rebuild after straighten skipped")
-        self.pending_edits.append({"page_idx": idx, "rect": fitz.Rect(rect)})
+        self.mark_page_content_dirty(idx, fitz.Rect(rect))
         self.edit_count += 1
         return True
 

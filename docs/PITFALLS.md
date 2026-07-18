@@ -1899,3 +1899,12 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** MuPDF's HTML engine applies break-anywhere only when a single word exceeds the full line width; it is not a browser-faithful `break-all`.
 **Fix:** The real, deterministic line-break defect of the legacy engine is different: the insert box is widened up to the page's safe right margin and the paragraph re-breaks at that new width (a 3-line paragraph commits as 1 line). Characterize that (`test_paragraph_edit_preserves_original_line_breaks`), not mid-word splitting.
 **File:** `test_scripts/test_text_commit_characterization.py`
+
+---
+
+## Block-manager runs are word-level: one show op maps to several member spans
+**Area:** `model/pdf_text_edit.py` (V2 engine target derivation); `model/text_block_parsing.py`
+**Symptom:** A single-line `(Price 2024) Tj` resolves to TWO member spans ('Price', '2024'), so a "single member span" gate rejects every normal edit with `multi_span_target`, and Tier 0 never fires.
+**Cause:** `TextBlockManager` deliberately splits rawdict spans into word-level runs (`EditableSpan`) for run-mode editing granularity. Span-count is therefore a property of the editing UI model, not of the content stream: N member runs can still be one whole show operator.
+**Fix:** Derive the Tier 0 target as either exactly one member run (whole-word Tj) or a member set that covers one full line of one block (verified against `block_manager.get_runs`), space-joining the run texts in x-order to reconstruct the show-op string. Partial-line and multi-line selections reject honestly.
+**File:** `model/pdf_text_edit.py:_tier0_target_from_resolve`

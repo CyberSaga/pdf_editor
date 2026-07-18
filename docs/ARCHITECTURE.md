@@ -604,6 +604,33 @@ on the legacy engine (font substitution, style-truth API gap, fast/htmlbox
 pixel divergence, neighbor push-down, line-break rewriting). They must keep
 xfailing until the tiered engine is enabled for the covered case.
 
+**Integration (Task 7, 2026-07-19).** `pdf_text_edit.edit_text` hooks the
+engine after target resolution, gated on `TextCommitSettings.engine`:
+
+- `shadow` — classify only (`prepare_tier0_plan`, no scratch verify), log
+  one `text_commit_shadow` line with reason code + timing, never document
+  text; wrapped so an engine error can never break the real edit.
+- `tiered` — derive the Tier 0 target from the resolve members (block-manager
+  runs are **word-level**: one show op maps to several member spans, so the
+  target is either one whole-word run or a member set covering one full line,
+  space-joined), then `engine.prepare`/`commit`. Success returns without any
+  legacy machinery (no redaction, push-down, protected replay, pending
+  cleanup, or Track A/B reflow) and marks the page fidelity-protected.
+  Rejection falls back to legacy with `fallback_chain=("tier0:<reason>",
+  "legacy")`; `strict=1` instead returns `EditTextResult.REJECTED_STRICT`
+  with zero mutation.
+
+**Maintenance policy.** `PDFModel.mark_page_content_dirty(page_idx, rect)` is
+the single chokepoint for every legacy content rewrite (redact/reinsert,
+object move/resize/rotate/delete, textbox insert, straighten): it queues
+clean_contents maintenance AND revokes the page's Tier-0 fidelity
+protection. `apply_pending_redactions` (interactive every-5-edits GC and
+save preparation) never passes a fidelity-protected page through
+`clean_contents` — its pending entries are preserved until a legacy rewrite
+revokes protection. Tier 0 itself is refused on pages with pending
+maintenance (`pending_page_maintenance` gate), so the two engines never
+interleave on one page in the dangerous order.
+
 ## 11. Character-Level Text Selection (Browse Mode)
 
 **Module:** `model/pdf_model.py:get_chars_in_run()`, `get_text_selection_lines()`
