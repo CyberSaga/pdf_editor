@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 196 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 200 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -201,3 +201,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1812 | A local pre-commit hook is not durable across clones/worktrees -- pair it with a CI gate | `scripts/hooks/` (device-identity guard) |
 | 1821 | Normalized PDF token serialization cannot prove lossless text patching | text-commit design; `model/pdf_content_ops.py` |
 | 1830 | `Tj`/`TJ` edits must preserve consumed text advance, not just surrounding operators | text-commit design; future `model/text_commit/replay.py` and `patch.py` |
+| 1839 | PyMuPDF PDF generation is not byte-deterministic | `scripts/build_fidelity_corpus.py` (fidelity corpus generator) |
+| 1846 | PyMuPDF `insert_text` vs TextWriter produce fundamentally different font structures | `scripts/build_fidelity_corpus.py`, `model/text_commit/font_registry.py` (future) |
+| 1853 | PyMuPDF merges close `insert_text` calls into a single text block | `scripts/build_fidelity_corpus.py`, test fixtures |
+| 1860 | PyMuPDF `Document.get_new_xref()` not `new_xref()` | `scripts/build_fidelity_corpus.py` (direct PDF object construction) |

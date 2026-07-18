@@ -20,16 +20,21 @@ a time (not batched) per the milestone-1 lesson on PR size.
   unconditionally by the new `device-guard` CI job. Relevant because
   Phase A's telemetry (§4.7) will start dumping stream hashes / font metadata /
   local paths on failure — this closes the leak path before that lands.
-- [ ] **Synthetic fidelity corpus generator** (`scripts/build_fidelity_corpus.py`) —
-  the real corpus PDFs used for spike S1 are local/private and gitignored, so
-  `verify_commit_fidelity.py` (§4.8) cannot run in CI without a checked-in,
-  deterministically-generated substitute covering each decision-gate case
-  (simple font, subset TrueType, Identity-H CJK via an OFL font, TJ arrays,
-  rotation, Form XObject, `/Differences`, Type3 + Arabic rejection cases).
-  Blocks Phase A.
-- [ ] **ε calibration for V1d render-diff** (open question 4 in the plan) —
-  measure repeated-render pixel noise on both the maintainer's machine and the
-  CI runner before hard-coding a tolerance.
+- [x] **Synthetic fidelity corpus generator** (`scripts/build_fidelity_corpus.py`) —
+  generates 10 synthetic PDFs on the fly (no checked-in binaries; `*.pdf` stays
+  gitignored) covering each decision-gate case: base-14 unembedded Type1,
+  embedded CIDFont/Type0 (extractable + reloadable), CJK Identity-H, TJ
+  kerning arrays, rotated text (G4), Form XObject (G2), `/Differences`
+  encoding (F3), Type3 font (F1), multi-style runs (T0a), neighbor proximity.
+  Test: `test_scripts/test_build_fidelity_corpus.py` (19 structural assertions).
+  No longer blocks Phase A.
+- [x] **ε calibration for V1d render-diff** (open question 4 in the plan) —
+  DONE 2026-07-18.  Script: `scripts/calibrate_render_epsilon.py`; test:
+  `test_scripts/test_calibrate_render_epsilon.py` (17 tests).
+  Result on maintainer machine (Win11, PyMuPDF 1.27.1, 50 iterations, 96 dpi):
+  **zero pixel noise** across all 10 corpus cases.  Recommended ε = 1
+  (floor margin).  CI runner measurement deferred to the `commit-fidelity`
+  CI job (Phase B) — if CI shows non-zero noise, bump ε there.
 - [ ] **Rebind the Stop-hook completion gate** (`scripts/check_completion_proof_hook.py`)
   from its dormant `GOAL_FILE` (`plans/2026-05-05-no-jump-editor-geometry-gate.md`,
   never committed → gate is a permanent no-op) to a new gate plan for this
