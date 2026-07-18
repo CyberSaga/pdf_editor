@@ -10,7 +10,9 @@ requires-python = ">=3.9"
 # Mirrors requirements.txt (the canonical runtime list with rationale comments).
 dependencies = [
     "PySide6>=6.4",
-    "PyMuPDF>=1.23",
+    # Single-minor pin, not a floor — see requirements.txt for rationale
+    # (text-commit engine needs byte-identical stream patching across dev/CI).
+    "PyMuPDF>=1.27,<1.28",
     # Pillow/numpy are imported lazily (the app launches without them) but the
     # shipped build bundles them. Pillow is floored at 12.2.0 to close the
     # image-parser CVEs (CVE-2026-40192 / 42309 / 42310 / 42311, PYSEC-2026-165).

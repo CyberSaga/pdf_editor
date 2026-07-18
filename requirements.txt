@@ -2,7 +2,14 @@
 # features). Python 3.9+.
 
 PySide6>=6.4
-PyMuPDF>=1.23
+# Pinned to a single minor version (not just a floor): the text-commit engine
+# relies on byte-identical content-stream patching, and PyMuPDF's stream
+# serialization / extract_font behavior can shift between minors. A floor pin
+# let dev (.venv, 1.27.x) and CI/system Python drift apart silently -- see
+# docs/PITFALLS.md "PyMuPDF version skew masks runtime-only bugs".
+# test_scripts/test_environment_pins.py fails loudly if the resolved version
+# leaves this range.
+PyMuPDF>=1.27,<1.28
 
 # Image processing for deskew / straighten / optimize / rotated-text preview
 # (model/pdf_model.py, model/pdf_optimizer.py, view/text_editing.py). These are

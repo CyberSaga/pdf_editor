@@ -1799,3 +1799,19 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Fix:** Carry the intent through the rebuild instead of setting live widget state before it. The moved item's identity is expressed as its flat DFS pre-order index in the TOC entries (the exact order `populate_toc` iterates and `_toc_entries_from_tree`/`get_toc` preserve), stashed in a View-internal `_pending_toc_selection` by `_move_selected_bookmark`. `populate_toc` collects the items it builds in order and, at the end, `_restore_pending_toc_selection` re-selects/`setFocus`es the item at that index, then clears the pending state. Mechanism lives entirely in the View (it owns its own refresh behavior — no Controller/Model change) and is scoped to the move path (add/delete/rename intentionally let focus move). Boundary no-op moves (`return` before any emit) never set the pending index, so they can't mis-target.
 **File:** `view/pdf_view.py` (`_move_selected_bookmark`, `_flat_index_of_bookmark_item`, `populate_toc`, `_restore_pending_toc_selection`)
 **Tests:** `test_scripts/test_bookmarks_toc.py` (`test_move_bookmark_up_preserves_selection_after_rebuild`, `test_move_bookmark_down_preserves_selection_after_rebuild`, `test_move_child_bookmark_preserves_selection_after_rebuild`, `test_move_bookmark_boundary_noop_leaves_selection_intact`)
+
+---
+
+## PyMuPDF version skew masks runtime-only bugs
+**Area:** Environment / test toolchain (`requirements.txt`, `constraints-ci.txt`)
+**Symptom:** A test suite run passes or fails inconsistently depending on which interpreter ran it, even with no code changes -- e.g. a stream-serialization or `extract_font` bug that only reproduces on one machine.
+**Cause:** `requirements.txt` used to floor-pin `PyMuPDF>=1.23`. The maintainer's `.venv` resolves 1.27.1, but a bare system-Python `pytest` invocation can resolve a materially older minor (observed: 1.25.5) with different stream serialization / font-extraction behavior. CI was already pinned exactly via `constraints-ci.txt`, so the drift only bit local runs -- which is worse, because it looks like a flaky bug instead of an environment mismatch.
+**Fix:** Pin `requirements.txt`/`pyproject.toml` to a single minor range (`>=1.27,<1.28`), and add `test_scripts/test_environment_pins.py::test_pymupdf_version_within_pinned_range`, which fails loudly (naming the resolved version and the fix) instead of letting skew silently change behavior. Always invoke tests via `.venv\Scripts\python.exe -m pytest`, never bare `pytest` (CLAUDE.md §3.1).
+**File:** `requirements.txt`, `pyproject.toml`, `test_scripts/test_environment_pins.py`
+
+## A local pre-commit hook is not durable across clones/worktrees -- pair it with a CI gate
+**Area:** `scripts/hooks/` (device-identity guard)
+**Symptom:** A rule the maintainer has learned the hard way (e.g. "never commit this machine's username/hardware fingerprint" -- see the 2026-07-15 incident that required a git history rewrite) gets re-violated later because a fresh clone or worktree never had the local git hook installed.
+**Cause:** `.git/hooks/` is not version-controlled; git never installs hooks from a repo checkout automatically, and hooks live in the *common* git dir (`git rev-parse --git-common-dir`), not per-worktree, which trips up naive `.git/hooks`-path assumptions in linked worktrees.
+**Fix:** Ship the guard logic as an importable, unit-testable module (`scan_diff()` in `scripts/hooks/pre_commit_device_guard.py`) with a separate installer (`scripts/hooks/install_git_hooks.py`) for the opt-in local hook, AND run the same script in CI with `--base <ref>` diffing the PR/push range -- the CI leg is the one that can't be skipped by an uninstalled hook.
+**File:** `scripts/hooks/pre_commit_device_guard.py`, `scripts/hooks/install_git_hooks.py`, `.github/workflows/ci.yml` (`device-guard` job)

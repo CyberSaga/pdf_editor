@@ -1,5 +1,54 @@
 # TODOS
 
+## Acrobat-parity text commit engine — harness prep (plans/2026-07-14-acrobat-parity-text-commit-engine.md)
+
+Before any engine code (Phase A onward), the environment/CI gaps that would let
+the fidelity checks (byte-identical stream patching, render-diff) pass/fail
+inconsistently by machine needed closing first. Scoped and landed one slice at
+a time (not batched) per the milestone-1 lesson on PR size.
+
+- [x] **PyMuPDF pinned to a single minor (`>=1.27,<1.28`), not a floor.** Was
+  `>=1.23`, which let `.venv` (1.27.1) and a bare system-Python run (observed
+  1.25.5) silently diverge in stream serialization / `extract_font` behavior —
+  exactly the signal a byte-identical fidelity check needs to trust.
+  `test_scripts/test_environment_pins.py` fails loudly on skew. `docs/PITFALLS.md`
+  "PyMuPDF version skew masks runtime-only bugs".
+- [x] **Device-identity pre-commit guard.** `scripts/hooks/pre_commit_device_guard.py`
+  scans added diff lines for local machine paths/hostnames/MAC addresses (the
+  class of leak from the 2026-07-15 history-rewrite incident); installed via
+  `scripts/hooks/install_git_hooks.py` (opt-in per clone) and enforced
+  unconditionally by the new `device-guard` CI job. Relevant because
+  Phase A's telemetry (§4.7) will start dumping stream hashes / font metadata /
+  local paths on failure — this closes the leak path before that lands.
+- [ ] **Synthetic fidelity corpus generator** (`scripts/build_fidelity_corpus.py`) —
+  the real corpus PDFs used for spike S1 are local/private and gitignored, so
+  `verify_commit_fidelity.py` (§4.8) cannot run in CI without a checked-in,
+  deterministically-generated substitute covering each decision-gate case
+  (simple font, subset TrueType, Identity-H CJK via an OFL font, TJ arrays,
+  rotation, Form XObject, `/Differences`, Type3 + Arabic rejection cases).
+  Blocks Phase A.
+- [ ] **ε calibration for V1d render-diff** (open question 4 in the plan) —
+  measure repeated-render pixel noise on both the maintainer's machine and the
+  CI runner before hard-coding a tolerance.
+- [ ] **Rebind the Stop-hook completion gate** (`scripts/check_completion_proof_hook.py`)
+  from its dormant `GOAL_FILE` (`plans/2026-05-05-no-jump-editor-geometry-gate.md`,
+  never committed → gate is a permanent no-op) to a new gate plan for this
+  engine, so Phase A-D PRs get the independent re-verification the hook was
+  built for instead of relying on manual review alone.
+- [ ] **`commit-fidelity` CI job** running `verify_commit_fidelity.py` against
+  the synthetic corpus (Windows leg blocking, matching the existing
+  `test-functional` split) — lands with Phase B.
+- [ ] **Perf-budget tests** for `engine.apply` / `render_edit_preview` (the
+  300ms slow-edit budget and per-keystroke scratch-doc cost from open question
+  6) — target the M3.6 failure class ("So slow" / "Freeze on each operation" /
+  500-700MB resident) with an automated gate instead of relying on manual QA
+  to catch it a second time.
+- [ ] Spikes S2 (TextWriter transplant vs append — 1b is the theoretically
+  correct default for z-order but is unproven on resource-dict-collision /
+  graphics-state-bleed risk; decide from the render-diff spike, not from
+  argument), S3 (Identity-H stream patch), S4 (mapping-ambiguity audit) — each
+  its own PR, per plan §4.10.
+
 ## Deferred from prior campaigns
 
 ### R5-01 / Codex F6 (from post-campaign repair, 2026-06-21) — Resolved in Milestone 2
