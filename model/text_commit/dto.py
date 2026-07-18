@@ -23,6 +23,10 @@ class RejectReason:
     UNSUPPORTED_TEXT_STATE = "unsupported_text_state"
     UNTRACKED_ADVANCE = "untracked_advance"
     UNDECODABLE_TARGET = "undecodable_target"
+    FONT_TYPE3 = "font_type3"
+    FONT_UNSUPPORTED_ENCODING = "font_unsupported_encoding"
+    FONT_CUSTOM_DIFFERENCES = "font_custom_differences"
+    FONT_FACE_UNAVAILABLE = "font_face_unavailable"
 
 
 @dataclass(frozen=True)
