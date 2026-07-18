@@ -132,6 +132,8 @@ class EditTextCommand(EditCommand):
         target_span_id: str | None = None,
         target_mode: str | None = None,
         reflow_fn: Any | None = None,    # callable()，在 model.edit_text() 後呼叫做 displacement reflow
+        style_overrides: Any | None = None,  # StyleOverrides；使用者實際碰過的樣式欄位
+        plan_token: str | None = None,   # V2 prepared-plan token（stale 檢查用）
     ):
         self._model = model
         self._page_num = page_num
@@ -150,6 +152,9 @@ class EditTextCommand(EditCommand):
         self._target_span_id = target_span_id
         self._target_mode = target_mode
         self._reflow_fn = reflow_fn         # displacement reflow callback（Track A/B）
+        self.style_overrides = style_overrides  # redo 需保留原始 intent
+        self.plan_token = plan_token
+        self.outcome: Any | None = None     # CommitOutcome，execute() 後由 model 提供
         self._executed = False              # 防止在未 execute 前呼叫 undo
 
     @property
@@ -201,8 +206,14 @@ class EditTextCommand(EditCommand):
                 self.result.value,
             )
             return False
-        # Displacement reflow：將後續塊向上/下推移（Track A/B 引擎）
-        if self._reflow_fn is not None:
+        # V2 plumbing: history keeps the full CommitOutcome of this commit.
+        self.outcome = getattr(self._model, "last_commit_outcome", None)
+        # Displacement reflow：將後續塊向上/下推移（Track A/B 引擎）。
+        # 高保真 tier 的 outcome 會禁止外部 reflow（不得移動鄰居）。
+        allows_reflow = (
+            self.outcome.allows_external_reflow if self.outcome is not None else True
+        )
+        if self._reflow_fn is not None and allows_reflow:
             try:
                 self._reflow_fn()
             except Exception as _rf_e:

@@ -22,7 +22,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QTextEdit
 
-from model.edit_requests import EditTextRequest, MoveTextRequest  # re-exported for view/controller
+from model.edit_requests import EditTextRequest, MoveTextRequest, StyleOverrides  # re-exported for view/controller
 from utils.render_limits import safe_render_scale as _safe_render_scale
 
 logger = logging.getLogger(__name__)
@@ -1824,6 +1824,12 @@ class TextEditManager:
                     new_rect=new_rect_arg,
                     target_span_id=session.target_span_id,
                     target_mode=session.target_mode,
+                    style_overrides=build_style_overrides(
+                        current_font=session.current_font,
+                        initial_font=session.initial_font,
+                        current_size=session.current_size,
+                        initial_size=session.initial_size,
+                    ),
                 )
                 view.sig_edit_text.emit(request)
         except Exception as exc:
@@ -1844,6 +1850,30 @@ class TextEditManager:
             origin_page=session.origin_page,
             delta=delta,
         )
+
+
+def build_style_overrides(
+    *,
+    current_font: str,
+    initial_font: str,
+    current_size: float,
+    initial_size: float,
+) -> StyleOverrides:
+    """Overrides for the fields the user actually changed this session.
+
+    Uses the same change detection as TextEditDelta: a case-insensitive
+    font-name comparison and a 1e-3 size tolerance.  Merely opening the
+    editor (which maps the source font to a UI alias) never counts as a
+    user override — with no change, style truth stays with the source
+    spans (V2 plan Task 5).
+    """
+    font_changed = str(current_font).lower() != str(initial_font).lower()
+    size_changed = abs(float(current_size) - float(initial_size)) > 1e-3
+    return StyleOverrides(
+        font_family=str(current_font) if font_changed else None,
+        font_size=float(current_size) if size_changed else None,
+        color=None,  # no in-session color control yet
+    )
 
 
 def _map_legacy_reason(reason: TextEditReason | TextEditFinalizeReason) -> TextEditFinalizeReason:

@@ -29,6 +29,7 @@ import fitz
 
 from model.edit_commands import EditTextResult
 from model.geometry import clamp_rect_to_page, rect_union
+from model.text_commit.dto import legacy_commit_outcome
 from model.text_block import EditableSpan, TextBlock
 from model.text_normalization import normalize_text, token_coverage_ratio
 
@@ -1204,6 +1205,7 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
         new_text = ""
 
     _t0 = time.perf_counter()  # Phase 6: 效能計時
+    model.last_commit_outcome = None
     page_idx = page_num - 1
     model.ensure_page_index_built(page_num)
     # typed bind; callers guarantee an open doc here (edit path) - runtime behavior identical if None
@@ -1290,6 +1292,7 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
         )
         if _duration > 0.3:
             logger.warning("單次編輯過慢：%.3fs，頁面 %s", _duration, page_num)
+        model.last_commit_outcome = legacy_commit_outcome()
         return EditTextResult.SUCCESS
 
     except RuntimeError:

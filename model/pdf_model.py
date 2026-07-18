@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import fitz
 
@@ -32,6 +32,7 @@ from model.text_block import (
     rotation_degrees_from_dir,
 )
 from model.geometry import clamp_rect_to_page, rect_from_points, rect_overlap_ratio
+from model.text_commit.dto import CommitOutcome, TextCommitSettings
 from model.text_normalization import normalize_text, normalized_similarity
 from model.tools import ToolManager
 
@@ -224,10 +225,17 @@ class DocumentSession:
 
 
 class PDFModel:
-    def __init__(self):
+    def __init__(self, text_commit_settings: TextCommitSettings | None = None):
         self._sessions_by_id: dict[str, DocumentSession] = {}
         self._session_ids: list[str] = []
         self._active_session_id: str | None = None
+        # V2 text-commit engine flags (Qt-free DTO, injected at composition
+        # root; defaults keep the legacy engine in charge) + the outcome of
+        # the most recent edit_text commit for history/telemetry plumbing.
+        self.text_commit_settings: TextCommitSettings = (
+            text_commit_settings or TextCommitSettings()
+        )
+        self.last_commit_outcome: CommitOutcome | None = None
         self._path_to_session_id: dict[str, str] = {}
         self._legacy_doc: fitz.Document | None = None
         self._legacy_original_path: str | None = None
@@ -240,7 +248,9 @@ class PDFModel:
         self._legacy_pending_edits: list = []
         self._legacy_run_reopen_anchors: dict[str, fitz.Rect] = {}
         self._legacy_run_reopen_anchor_sizes: dict[str, float] = {}
-        self.temp_dir = None
+        # Any: gradual typing — save paths access .name behind runtime guards
+        # that mypy cannot see; keep pre-typed-__init__ semantics.
+        self.temp_dir: Any = None
         # 是否在「存回原檔」時使用增量更新（Incremental Update），以減少對數位簽章與大檔的影響
         self.use_incremental_save: bool = True
         # Text target granularity: "run" or "paragraph" (UI can override on startup).
