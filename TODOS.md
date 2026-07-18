@@ -1,6 +1,6 @@
 # TODOS
 
-## Acrobat-parity text commit engine — harness prep (plans/2026-07-14-acrobat-parity-text-commit-engine.md)
+## Acrobat-parity text commit engine — harness prep (plans/2026-07-18-acrobat-stable-text-commit-engine-v2.md)
 
 Before any engine code (Phase A onward), the environment/CI gaps that would let
 the fidelity checks (byte-identical stream patching, render-diff) pass/fail
@@ -390,20 +390,25 @@ Full commands, method, and values: `plans/archive/2026-07-16-m3-render-offload.m
 - [x] Final automated gates: `1804 passed, 21 skipped`; full Ruff clean; mypy clean across 36 model/utils files.
 - [ ] Manual acceptance remains: drag saved and dirty tabs into secondary windows, save/reopen, and close both windows independently.
 
-## M3 candidate — Acrobat-parity text commit engine (design complete 2026-07-14)
+## M3 candidate — Acrobat-stable text commit engine V2 (design corrected 2026-07-18)
 
-Design: `plans/2026-07-14-acrobat-parity-text-commit-engine.md` (synthesis of two
-independent proposals + corpus font audit). Addresses "font changes / layout jumps
-after edit" — structural ceiling of redact+reinsert, not a regression.
+Implementation plan: `plans/2026-07-18-acrobat-stable-text-commit-engine-v2.md`.
+The earlier `plans/2026-07-14-acrobat-parity-text-commit-engine.md` is retained as
+superseded design archaeology. The diagnosis remains: font/layout changes are the
+structural ceiling of redact+reinsert, not a collapse of the May five-layer editor-open work.
 
-- [x] Diagnosis + root cause (font substitution in `_resolve_font_for_push`; htmlbox
-      re-layout with break-all CSS; push-down moving neighbors; verify checks text only)
+- [x] Diagnosis + base-vs-main regression audit (commit engine unchanged; one continuous-mode placement change is unrelated to general post-commit font/reflow changes)
+- [x] Adversarial design review — corrected lossless stream, text-advance, TextWriter resource identity, scratch-first verification, save/cleanup, and unsupported-PDF assumptions
 - [x] Spike S1 — font round-trip audit over corpus (embedded TT/Type0: 100% extract+load)
-- [ ] Spike S2 — TextWriter transplant vs append (z-order); decides Tier 1 write strategy
-- [ ] Spike S3 — Identity-H GID stream patch on a representative CJK fixture; decides Tier 0 CID scope
-- [ ] Spike S4 — span→operator mapping ambiguity audit (~20 corpus PDFs, ≥95% bar)
-- [ ] Phase A — font_registry + verify + EditTextResult extension + TEXT_COMMIT_ENGINE flag
-- [ ] Phase A.5 — shadow-classify telemetry (no behavior change)
-- [ ] Phase B — Tier 0 (STREAM_PATCH, Latin) + preview DTO contract + verify_commit_fidelity gate
-- [ ] Phase C — Tier 1 (RESET_ORIGINAL_FONT via TextWriter + LayoutEngine)
-- [ ] Phase D — Identity-H / CJK
+- [ ] Task 1 — deterministic synthetic fidelity corpus + characterization tests
+- [ ] Task 2 — lossless byte-range lexer/raw splice (do not use `pdf_content_ops.serialize_tokens`)
+- [ ] Task 3 — horizontal page-stream text-state replay + ambiguity audit
+- [ ] Task 4 — per-resource/per-xref font registry and encoding capability
+- [ ] Task 5 — immutable style intent/outcome/settings/history plumbing
+- [ ] Task 6 — deliberately narrow equal-advance whole-`Tj` Tier 0 + structural/raster verifier
+- [ ] Task 7 — shadow integration, external-reflow gate, and `clean_contents` maintenance policy
+- [ ] Task 8 — exact plan-backed preview via QThread coordinator
+- [ ] Task 9 — persistence, annotations, signatures/widgets, encryption, stale-plan, and undo/redo boundaries
+- [ ] Task 10 — Tier 1 advance-preserving erase + TextWriter transplant and Identity-H spikes
+- [ ] Task 11 — Tier 1 horizontal layout only if Task 10 evidence passes
+- [ ] Task 12 — blocking fidelity/performance CI, rollout, docs, and plan archive

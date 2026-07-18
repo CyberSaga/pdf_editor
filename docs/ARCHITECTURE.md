@@ -539,12 +539,20 @@ the model; `QGraphicsProxyWidget.graphicsProxyWidget` in the view) — see
 `docs/PITFALLS.md`.
 
 Guardrails (do not change casually):
-- Preview and commit must keep sharing `_classify_insert_path`.
+- The current `_classify_insert_path` is commit-only; do not describe it as a
+  preview/commit contract. The successor contract is one immutable prepared edit:
+  preview rasterizes that exact scratch candidate and commit stale-checks then
+  applies the same `PatchSet`. See
+  `plans/2026-07-18-acrobat-stable-text-commit-engine-v2.md`.
 - Never assign `editor.font = <QFont>` (shadows `QTextEdit.font()`); build the
   `QFont` with `_display_font_pt`.
 - The `paintEvent` frozen-vs-preview two-branch contract and the
-  `_text_matches_initial` caching are load-bearing — the gate
+  `_text_matches_initial` caching are load-bearing for the legacy path — the gate
   `scripts/verify_no_jump.py` (27 deterministic cases, run twice) enforces it.
+- The five layers stabilize editor opening/reopening; they do not guarantee commit
+  fidelity. High-fidelity commit tiers must preserve source font/resource identity,
+  text-state continuity, non-target content, and annotation state without redaction,
+  neighbor replay, `clean_contents`, or Track A/B reflow.
 
 ## 11. Character-Level Text Selection (Browse Mode)
 

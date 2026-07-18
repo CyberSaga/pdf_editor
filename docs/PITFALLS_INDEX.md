@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 194 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 196 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -199,3 +199,5 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1795 | Full-rebuild `populate_toc` discards any selection set immediately before `sig_toc_changed` | `view/pdf_view.py` — bookmark panel (`self.bookmark_tree`), TOC round-trip |
 | 1805 | PyMuPDF version skew masks runtime-only bugs | Environment / test toolchain (`requirements.txt`, `constraints-ci.txt`) |
 | 1812 | A local pre-commit hook is not durable across clones/worktrees -- pair it with a CI gate | `scripts/hooks/` (device-identity guard) |
+| 1821 | Normalized PDF token serialization cannot prove lossless text patching | text-commit design; `model/pdf_content_ops.py` |
+| 1830 | `Tj`/`TJ` edits must preserve consumed text advance, not just surrounding operators | text-commit design; future `model/text_commit/replay.py` and `patch.py` |

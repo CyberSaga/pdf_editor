@@ -1815,3 +1815,21 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** `.git/hooks/` is not version-controlled; git never installs hooks from a repo checkout automatically, and hooks live in the *common* git dir (`git rev-parse --git-common-dir`), not per-worktree, which trips up naive `.git/hooks`-path assumptions in linked worktrees.
 **Fix:** Ship the guard logic as an importable, unit-testable module (`scan_diff()` in `scripts/hooks/pre_commit_device_guard.py`) with a separate installer (`scripts/hooks/install_git_hooks.py`) for the opt-in local hook, AND run the same script in CI with `--base <ref>` diffing the PR/push range -- the CI leg is the one that can't be skipped by an uninstalled hook.
 **File:** `scripts/hooks/pre_commit_device_guard.py`, `scripts/hooks/install_git_hooks.py`, `.github/workflows/ci.yml` (`device-guard` job)
+
+---
+
+## Normalized PDF token serialization cannot prove lossless text patching
+**Area:** text-commit design; `model/pdf_content_ops.py`
+**Symptom:** A content-stream edit appears semantically correct, but comments, whitespace, token formatting, or unrelated bytes change across the stream, invalidating a byte-identity fidelity guarantee.
+**Cause:** `tokenize_content_stream()` intentionally skips whitespace/comments, and `serialize_tokens()` rejoins every token with newlines. This is acceptable for existing native-image operator rewrites, but it cannot preserve untouched source bytes for a high-fidelity text tier.
+**Fix:** Use a separate lossless lexer that records raw byte ranges/trivia and a splice-only writer whose replacements carry expected source bytes and stream digests. Keep `pdf_content_ops` on its existing normalized contract; do not retrofit Tier 0 text patching onto it.
+**File:** design in `plans/2026-07-18-acrobat-stable-text-commit-engine-v2.md`; future `model/text_commit/pdf_lexer.py`
+
+---
+
+## `Tj`/`TJ` edits must preserve consumed text advance, not just surrounding operators
+**Area:** text-commit design; future `model/text_commit/replay.py` and `patch.py`
+**Symptom:** Editing or removing a target string leaves every non-target operator byte intact, yet suffix glyphs or later text in the same `BT`/`ET` move.
+**Cause:** PDF text-show operators advance the text matrix. Replacing a substring with different metrics shifts suffix glyphs; removing a show operator removes its entire advance. Preserving nearby kerning numbers or positioning operators alone does not preserve later text position.
+**Fix:** Initial Tier 0 accepts only whole supported show operations with verified equal advance. Any later substring or Tier 1 erase support must emit an exact text-space compensation and verify downstream matrices/origins before commit. Ambiguous or unsupported cases reject rather than guess.
+**File:** design in `plans/2026-07-18-acrobat-stable-text-commit-engine-v2.md`; future `model/text_commit/replay.py`, `model/text_commit/patch.py`, `model/text_commit/verify.py`
