@@ -8,6 +8,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+class RejectReason:
+    """Stable reason codes for refusing a high-fidelity mapping or plan.
+
+    These strings are telemetry- and UI-facing contracts: rename only with
+    a migration.  A refusal always carries one of these — never a guess.
+    """
+
+    MALFORMED_STREAM = "malformed_stream"
+    NO_MATCH = "no_source_match"
+    AMBIGUOUS_MATCH = "ambiguous_source_match"
+    EVIDENCE_MISMATCH = "evidence_mismatch"
+    TARGET_IN_FORM_XOBJECT = "target_in_form_xobject"
+    UNSUPPORTED_TEXT_STATE = "unsupported_text_state"
+    UNTRACKED_ADVANCE = "untracked_advance"
+    UNDECODABLE_TARGET = "undecodable_target"
+
+
 @dataclass(frozen=True)
 class StreamReplacement:
     """One byte-range replacement in a decoded content stream.
