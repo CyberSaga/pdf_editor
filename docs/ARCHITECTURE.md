@@ -554,6 +554,56 @@ Guardrails (do not change casually):
   text-state continuity, non-target content, and annotation state without redaction,
   neighbor replay, `clean_contents`, or Track A/B reflow.
 
+### 10.1 V2 Text Commit Engine (`model/text_commit/`, Tasks 1–6 landed 2026-07-18)
+
+Model-only package implementing the capability-driven tiered commit path of
+`plans/2026-07-18-acrobat-stable-text-commit-engine-v2.md`. Flag-gated by
+`TextCommitSettings` (TEXT_COMMIT_* env, injected into `PDFModel` at the
+composition root); **defaults are `legacy/off` — nothing routes through the
+new engine yet** (integration is plan Task 7+).
+
+- `dto.py` — `RejectReason` (stable refusal codes), `CommitStatus`/`CommitTier`,
+  `FontResourceAction`/`FontOutcome`, `CommitOutcome` (stored on
+  `EditTextCommand.outcome`; `allows_external_reflow=False` blocks Track A/B),
+  `TextCommitSettings`, `StreamReplacement`.
+- `pdf_lexer.py` — lossless lexer (tokens tile the source exactly; whitespace/
+  comments/inline-image payloads are tokens; malformed constructs flagged, never
+  raised) + `splice_stream`, the only writer: expected-bytes + SHA-256 stream
+  digest + range/overlap validation, all-or-nothing. **No token serializer by
+  design** — Tier 0 byte identity depends on its absence (`pdf_content_ops`'s
+  normalized serializer must never be used here).
+- `replay.py` — text/graphics-state interpreter (q/Q, cm, BT/ET, Tf, Tm, Td,
+  TD, T*, TL, Tc, Tw, Tz, Ts, Tr, Tj, TJ, ', ") across the page's ordered
+  stream list; per-stream byte ranges; reliability flags instead of guesses.
+- `inspect.py` — `bind_source_text` (text match corroborated by rawdict
+  geometry; ambiguity/XObject/rotation/malformed refuse with `RejectReason`),
+  `page_fingerprint` (streams + fonts + annots + widgets digest).
+- `fonts.py` — `DocumentFontRegistry`: capabilities keyed by (generation,
+  owner xref, resource name, font xref) — never by basename; explicit face
+  provenance (`extracted`/`base14`/`system`/`none`); strict-ASCII verified
+  reverse encoder; no silent Helvetica fallback anywhere.
+- `plan.py` — Tier 0 gate: one unambiguous run → one complete literal-string
+  `Tj`, simple encoding, equal consumed advance (Tc/Tw folded), no style/
+  geometry override, no widgets/signatures, no pending maintenance. Encoder is
+  verified against the *source* bytes before it may encode the replacement.
+- `patch.py` — `PatchSet`/`apply_patchset`: fingerprint-gated, revertible; the
+  sole mutation primitive of the high-fidelity tiers.
+- `verify.py` — V0a–V0e post-conditions: stream identity outside the declared
+  range (re-diffed), font/annotation identity, non-target span origins,
+  extractable replacement, exact raster identity outside a 2pt halo (96 dpi;
+  calibrated ε=0 on the maintainer machine), reopenability.
+- `engine.py` — `TieredCommitEngine.prepare()` classifies then *refutes the
+  candidate on a scratch copy* (`fitz.open("pdf", doc.tobytes())` preserves
+  xrefs and decoded stream bytes; the live doc is untouched);
+  `commit()` revalidates the fingerprint (else `STALE_PLAN`, zero mutation),
+  applies one `PatchSet`, re-verifies on the live doc, reverts on failure.
+
+Regression net: `test_scripts/test_text_commit_characterization.py` — five
+strict-xfail tests that assert the *intended* behavior and demonstrably fail
+on the legacy engine (font substitution, style-truth API gap, fast/htmlbox
+pixel divergence, neighbor push-down, line-break rewriting). They must keep
+xfailing until the tiered engine is enabled for the covered case.
+
 ## 11. Character-Level Text Selection (Browse Mode)
 
 **Module:** `model/pdf_model.py:get_chars_in_run()`, `get_text_selection_lines()`

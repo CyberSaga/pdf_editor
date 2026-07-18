@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 200 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 204 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -205,3 +205,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1846 | PyMuPDF `insert_text` vs TextWriter produce fundamentally different font structures | `scripts/build_fidelity_corpus.py`, `model/text_commit/font_registry.py` (future) |
 | 1853 | PyMuPDF merges close `insert_text` calls into a single text block | `scripts/build_fidelity_corpus.py`, test fixtures |
 | 1860 | PyMuPDF `Document.get_new_xref()` not `new_xref()` | `scripts/build_fidelity_corpus.py` (direct PDF object construction) |
+| 1869 | `doc.tobytes()` of the SAME unchanged document differs between calls | `model/text_commit/engine.py`; any "no mutation" test assertion |
+| 1878 | `fitz.Font(<unknown name>)` raises `FzErrorArgument`, not RuntimeError — and known names may silently alias | `model/text_commit/fonts.py` |
+| 1887 | `Document.xref_copy` needs a dict-initialized target; `xref_set_key` cannot create keys through indirect paths | test fixtures / direct PDF object surgery |
+| 1896 | MuPDF `insert_htmlbox` break-all does NOT split words that fit a line | legacy commit path characterization; `model/pdf_model.py:_build_insert_css` |

@@ -405,13 +405,13 @@ structural ceiling of redact+reinsert, not a collapse of the May five-layer edit
 - [x] Diagnosis + base-vs-main regression audit (commit engine unchanged; one continuous-mode placement change is unrelated to general post-commit font/reflow changes)
 - [x] Adversarial design review — corrected lossless stream, text-advance, TextWriter resource identity, scratch-first verification, save/cleanup, and unsupported-PDF assumptions
 - [x] Spike S1 — font round-trip audit over corpus (embedded TT/Type0: 100% extract+load)
-- [ ] Task 1 — deterministic synthetic fidelity corpus + characterization tests
-- [ ] Task 2 — lossless byte-range lexer/raw splice (do not use `pdf_content_ops.serialize_tokens`)
-- [ ] Task 3 — horizontal page-stream text-state replay + ambiguity audit
-- [ ] Task 4 — per-resource/per-xref font registry and encoding capability
-- [ ] Task 5 — immutable style intent/outcome/settings/history plumbing
-- [ ] Task 6 — deliberately narrow equal-advance whole-`Tj` Tier 0 + structural/raster verifier
-- [ ] Task 7 — shadow integration, external-reflow gate, and `clean_contents` maintenance policy
+- [x] Task 1 — deterministic synthetic fidelity corpus (merged via PR #26) + 5 strict-xfail characterization tests (`test_scripts/test_text_commit_characterization.py`, 2026-07-18): Base-14 substitution, scalar-font style truth, fast/htmlbox pixel divergence, neighbor push-down, line-break rewriting
+- [x] Task 2 — lossless byte-range lexer/raw splice (`model/text_commit/pdf_lexer.py`; tiles source exactly incl. trivia/inline images; splice gated on digest+expected-bytes+overlap+range; no serializer by design)
+- [x] Task 3 — horizontal page-stream text-state replay + source binding (`replay.py`/`inspect.py`; multi-stream state carry, per-stream byte ranges, stable RejectReason refusals) + read-only audit `scripts/audit_text_source_mapping.py` (synthetic corpus: 14/18 spans bound; CID/GID and rotation reject honestly)
+- [x] Task 4 — per-xref font registry (`fonts.py`; keyed by generation/owner/name/xref; explicit face provenance; Type3//Differences/Identity-H tier0 reject codes; strict-ASCII verified reverse encoder; no silent Helvetica anywhere)
+- [x] Task 5 — StyleOverrides (view populates only user-touched fields) + CommitStatus/Tier/FontOutcome/CommitOutcome + EditTextCommand stores outcome & gates Track A/B reflow on `allows_external_reflow` + TextCommitSettings (TEXT_COMMIT_* env) injected in main.py; defaults legacy/off
+- [x] Task 6 — Tier 0 LOSSLESS_STREAM_PATCH (`plan.py`/`patch.py`/`verify.py`/`engine.py`): whole-Tj equal-advance Latin gate, scratch-first prepare, fingerprint-checked single PatchSet, V0a–V0e verification incl. exact raster identity outside 2pt halo, revert-on-failure, STALE_PLAN without mutation
+- [ ] Task 7 — shadow integration, external-reflow gate, and `clean_contents` maintenance policy (reflow gate itself landed with Task 5; shadow classify + maintenance policy remain)
 - [ ] Task 8 — exact plan-backed preview via QThread coordinator
 - [ ] Task 9 — persistence, annotations, signatures/widgets, encryption, stale-plan, and undo/redo boundaries
 - [ ] Task 10 — Tier 1 advance-preserving erase + TextWriter transplant and Identity-H spikes

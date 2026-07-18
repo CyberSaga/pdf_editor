@@ -1863,3 +1863,39 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** PyMuPDF 1.27 renamed the method to `get_new_xref()`. Older documentation and examples may reference `new_xref()`.
 **Fix:** Use `doc.get_new_xref()` to allocate new indirect object numbers.
 **File:** `scripts/build_fidelity_corpus.py`
+
+---
+
+## `doc.tobytes()` of the SAME unchanged document differs between calls
+**Area:** `model/text_commit/engine.py`; any "no mutation" test assertion
+**Symptom:** `assert doc.tobytes() == before` fails even though nothing touched the document — one byte in the trailer region differs.
+**Cause:** PyMuPDF regenerates the trailer `/ID` (and may re-serialize other bookkeeping) on every save/serialization, so two `tobytes()` calls on an identical in-memory document are not byte-equal.
+**Fix:** Never prove "document unchanged" with `tobytes()` equality. Compare structural fingerprints instead: `model/text_commit/inspect.py:page_fingerprint` (decoded streams + fonts + annots + widgets) plus `doc.xref_length()` for object-count drift. `tobytes()` round-trips are still fine for making scratch copies — xref numbering and decoded stream bytes are preserved.
+**File:** `test_scripts/test_text_commit_tier0.py`, `model/text_commit/inspect.py`
+
+---
+
+## `fitz.Font(<unknown name>)` raises `FzErrorArgument`, not RuntimeError — and known names may silently alias
+**Area:** `model/text_commit/fonts.py`
+**Symptom:** Catching `(RuntimeError, ValueError)` around `fitz.Font(name)` lets `pymupdf.mupdf.FzErrorArgument` escape (its MRO is `FzErrorBase -> Exception`, not RuntimeError). Separately, some name lookups can succeed with an unrelated face.
+**Cause:** PyMuPDF 1.27 raises its own `FzError*` hierarchy from `fz_new_base14_font`; name resolution is permissive.
+**Fix:** Catch `fitz.mupdf.FzErrorBase` alongside RuntimeError/ValueError, and after a successful named load verify `face.name` corroborates the requested family before trusting it (`resolve_system_face` returns None otherwise — no silent Helvetica).
+**File:** `model/text_commit/fonts.py`
+
+---
+
+## `Document.xref_copy` needs a dict-initialized target; `xref_set_key` cannot create keys through indirect paths
+**Area:** test fixtures / direct PDF object surgery
+**Symptom:** `xref_copy(src, doc.get_new_xref())` fails with "not a dict (null)"; `xref_set_key(page.xref, "Resources/Font/X", ...)` fails with "path to 'X' has indirects" when /Resources (or /Font) is an indirect reference.
+**Cause:** A fresh xref from `get_new_xref()` holds `null` — `xref_copy` copies key-by-key into an existing dict. `xref_set_key` refuses to auto-create nested keys across indirect boundaries.
+**Fix:** `doc.update_object(new_xref, "<<>>")` before `xref_copy`. For resource registration, resolve each indirect level (`xref_get_key` returning `("xref", "N 0 R")`) and set the key on the owning object directly.
+**File:** `test_scripts/test_text_commit_fonts.py:_register_font_resource`
+
+---
+
+## MuPDF `insert_htmlbox` break-all does NOT split words that fit a line
+**Area:** legacy commit path characterization; `model/pdf_model.py:_build_insert_css`
+**Symptom:** Expected mid-word line breaks from `word-break: break-all; overflow-wrap: anywhere` do not reproduce: MuPDF still breaks at spaces when each word fits the box width.
+**Cause:** MuPDF's HTML engine applies break-anywhere only when a single word exceeds the full line width; it is not a browser-faithful `break-all`.
+**Fix:** The real, deterministic line-break defect of the legacy engine is different: the insert box is widened up to the page's safe right margin and the paragraph re-breaks at that new width (a 3-line paragraph commits as 1 line). Characterize that (`test_paragraph_edit_preserves_original_line_breaks`), not mid-word splitting.
+**File:** `test_scripts/test_text_commit_characterization.py`
