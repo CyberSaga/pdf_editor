@@ -478,6 +478,7 @@ class PDFView(QMainWindow):
     sig_add_strikeout = Signal(int, object, object)
     sig_add_rect = Signal(int, object, object, object, float)
     sig_edit_text = Signal(object)  # EditTextRequest
+    sig_text_edit_plan_preview = Signal(object)  # plan-preview payload dict
     sig_move_text_across_pages = Signal(object)  # MoveTextRequest
     sig_add_textbox = Signal(int, object, str, str, int, tuple)  # page_num, visual_rect, text, font, size, color
     sig_add_image_object = Signal(object)  # InsertImageObjectRequest
@@ -5147,6 +5148,31 @@ class PDFView(QMainWindow):
             return
         self._remember_text_size_value(size_str)
         self._ensure_text_edit_manager().on_edit_font_size_changed(size_str)
+
+    def apply_text_edit_plan_preview(
+        self,
+        *,
+        session_key: str,
+        generation: int,
+        image,
+        plan_token: str | None,
+        reject_reason: str | None,
+    ) -> None:
+        """Route a plan-backed preview raster to the live inline editor.
+
+        Results for a session other than the live editor's are dropped;
+        a rejected candidate leaves the CSS preview in charge (which never
+        claims exactness) and clears the plan token.
+        """
+        editor = self.text_editor.widget() if self.text_editor else None
+        if editor is None:
+            return
+        if getattr(editor, "plan_preview_session_key", None) != session_key:
+            return
+        if image is not None and hasattr(editor, "apply_plan_preview"):
+            editor.apply_plan_preview(generation, image, plan_token)
+        elif reject_reason is not None:
+            logger.debug("plan preview unavailable: %s", reject_reason)
 
     def _finalize_text_edit(
         self,

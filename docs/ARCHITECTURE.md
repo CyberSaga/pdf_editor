@@ -631,6 +631,40 @@ revokes protection. Tier 0 itself is refused on pages with pending
 maintenance (`pending_page_maintenance` gate), so the two engines never
 interleave on one page in the dangerous order.
 
+**Exact plan-backed preview (Task 8, 2026-07-19).** Gated by
+`TextCommitSettings.preview == "plan"`; the legacy CSS `PreviewRenderer`
+stays in charge otherwise (and as the interim frame / rejection fallback —
+it never claims exactness).
+
+- `model/text_commit/preview.py` (Qt-free) — `open_preview_session` takes
+  the document snapshot **once per edit session**; `PlanPreviewRenderer`
+  opens one scratch document from it and, per keystroke, runs
+  `prepare_tier0_plan` → `apply_patchset` → clip raster → revert, returning
+  a `PlanPreviewResult` raster DTO (PNG bytes + content-derived plan token,
+  or a sanitized `RejectReason`). Because the token hashes the page
+  fingerprint + splice bytes, preview token == commit token iff the
+  document is unchanged in between — the exactness guarantee.
+- `controller/text_commit_coordinator.py` — session-scoped QThread worker
+  (modeled on `page_render_coordinator.py`): one worker thread and one
+  scratch renderer live for the whole inline-edit session; latest-wins
+  queueing (at most one in flight + one pending); results are dropped
+  unless session-key, newest generation, and the injected
+  `identity_matches` all agree. Retired (thread, worker) pairs stay
+  referenced until the thread finishes (see PITFALLS: premature GC of an
+  unparented cross-thread QObject is an access violation).
+- View — `PreviewBackedInlineTextEditor.set_plan_preview_hook` emits a
+  primitives-only payload on `PDFView.sig_text_edit_plan_preview` per
+  debounced keystroke (generation bumped synchronously on every
+  textChanged); `apply_plan_preview(generation, image, token)` accepts a
+  raster only for the current generation. The View never opens a PDF and
+  never calls the Model. The applied plan token (when still current at
+  finalize) rides `EditTextRequest.plan_token` into the commit path.
+- Controller — `on_text_edit_plan_preview_request` derives the Tier 0
+  target once per session (`derive_tier0_preview_target`, read-only resolve
+  mirror), snapshots once, and forwards keystrokes to the coordinator;
+  `edit_text` ends the preview session before committing so a stale
+  scratch can never outlive a mutation.
+
 ## 11. Character-Level Text Selection (Browse Mode)
 
 **Module:** `model/pdf_model.py:get_chars_in_run()`, `get_text_selection_lines()`

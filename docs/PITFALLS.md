@@ -1908,3 +1908,12 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** `TextBlockManager` deliberately splits rawdict spans into word-level runs (`EditableSpan`) for run-mode editing granularity. Span-count is therefore a property of the editing UI model, not of the content stream: N member runs can still be one whole show operator.
 **Fix:** Derive the Tier 0 target as either exactly one member run (whole-word Tj) or a member set that covers one full line of one block (verified against `block_manager.get_runs`), space-joining the run texts in x-order to reconstruct the show-op string. Partial-line and multi-line selections reject honestly.
 **File:** `model/pdf_text_edit.py:_tier0_target_from_resolve`
+
+---
+
+## Dropping the last Python reference to an unparented cross-thread QObject is an access violation
+**Area:** PySide6 threading; `controller/text_commit_coordinator.py`
+**Symptom:** `Windows fatal exception: access violation` with `<no Python frame>` in the worker thread during session teardown; the main thread sits innocently in `QThread.wait()`.
+**Cause:** An unparented `QObject` worker moved to a `QThread` is owned by its Python wrapper. Setting `self._worker = None` on the main thread while the worker thread is still delivering a queued call destroys the C++ object immediately — from the wrong thread, under a live event delivery.
+**Fix:** Retain retired `(thread, worker)` pairs in a list until `thread.isFinished()`; only then let the wrappers go. Prefer a dedicated queued Signal for cross-thread shutdown over `QMetaObject.invokeMethod`, and quit the thread from inside the worker's shutdown slot. `PageRenderCoordinator._threads` follows the same rule.
+**File:** `controller/text_commit_coordinator.py:TextCommitPreviewCoordinator.end_session`

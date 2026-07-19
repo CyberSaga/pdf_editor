@@ -1230,6 +1230,56 @@ def _tier0_target_from_resolve(
     )
 
 
+def derive_tier0_preview_target(
+    model: PDFModel,
+    *,
+    page_num: int,
+    rect: fitz.Rect,
+    original_text: str | None,
+    target_span_id: str | None,
+    target_mode: str | None,
+) -> tuple[str, tuple[float, float], tuple[float, float, float, float]] | None:
+    """Resolve the Tier 0 (text, origin, bbox) once per preview session.
+
+    Mirrors ``edit_text``'s resolve sequence read-only: the target is fixed
+    when the inline editor opens, so the plan-backed preview derives it one
+    time and only the replacement text varies per keystroke.
+    """
+    doc = model.doc
+    if doc is None:
+        return None
+    page_idx = page_num - 1
+    if page_idx < 0 or page_idx >= len(doc):
+        return None
+    model.ensure_page_index_built(page_num)
+    page = doc[page_idx]
+    effective_target_mode = model._resolve_effective_target_mode(
+        target_mode=target_mode,
+        target_span_id=target_span_id,
+        new_rect=None,
+        page_idx=page_idx,
+        rect=rect,
+        original_text=original_text,
+    )
+    resolve_status, resolve_result = model._resolve_edit_target(
+        page_num=page_num,
+        page_idx=page_idx,
+        page=page,
+        rect=rect,
+        new_text=original_text or "",
+        font="helv",
+        size=12.0,
+        color=(0.0, 0.0, 0.0),
+        original_text=original_text,
+        new_rect=None,
+        resolved_target_span_id=target_span_id,
+        effective_target_mode=effective_target_mode,
+    )
+    if resolve_status is not EditTextResult.SUCCESS or resolve_result is None:
+        return None
+    return _tier0_target_from_resolve(model, page_idx, resolve_result)
+
+
 def _classify_tier0_candidate(
     model: PDFModel,
     page: fitz.Page,

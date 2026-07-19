@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 205 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 206 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -210,3 +210,4 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1887 | `Document.xref_copy` needs a dict-initialized target; `xref_set_key` cannot create keys through indirect paths | test fixtures / direct PDF object surgery |
 | 1896 | MuPDF `insert_htmlbox` break-all does NOT split words that fit a line | legacy commit path characterization; `model/pdf_model.py:_build_insert_css` |
 | 1905 | Block-manager runs are word-level: one show op maps to several member spans | `model/pdf_text_edit.py` (V2 engine target derivation); `model/text_block_parsing.py` |
+| 1914 | Dropping the last Python reference to an unparented cross-thread QObject is an access violation | PySide6 threading; `controller/text_commit_coordinator.py` |

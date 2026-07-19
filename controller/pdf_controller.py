@@ -34,6 +34,8 @@ from model.object_requests import (
 )
 from model import pdf_optimizer
 from model.pdf_model import PDFModel
+from model.pdf_text_edit import derive_tier0_preview_target
+from model.text_commit.preview import PlanPreviewResult, open_preview_session
 from model.tools.ocr_tool import is_device_available
 from utils.file_reveal import reveal_in_file_manager
 from utils.helpers import pixmap_to_qimage, pixmap_to_qpixmap
@@ -114,6 +116,10 @@ from controller.session_transfer import SessionTransferPayload  # noqa: E402
 from controller.page_render_coordinator import (  # noqa: E402
     PageRenderCoordinator,
     PageRenderIdentity,
+)
+from controller.text_commit_coordinator import (  # noqa: E402
+    PlanPreviewIdentity,
+    TextCommitPreviewCoordinator,
 )
 from controller.print_coordinator import (  # noqa: E402
     PrintCoordinator,
@@ -230,6 +236,10 @@ class PDFController:
             identity_matches=self._page_render_identity_matches,
             parent=self.view,
         )
+        # V2 plan-backed preview (lazy: only built when TEXT_COMMIT_PREVIEW=plan)
+        self._text_commit_preview_coordinator: TextCommitPreviewCoordinator | None = None
+        self._plan_preview_session_key: str | None = None
+        self._plan_preview_target: tuple | None = None
         self._thumbnail_resume_pending_by_session: set[str] = set()
         self._load_gen_by_session: dict[str, int] = {}
         self._thumb_gen_by_session: dict[str, int] = {}
@@ -320,6 +330,10 @@ class PDFController:
         self.view.sig_add_strikeout.connect(self.add_strikeout)
         self.view.sig_add_rect.connect(self.add_rect)
         self.view.sig_edit_text.connect(self.edit_text)
+        if hasattr(self.view, "sig_text_edit_plan_preview"):
+            self.view.sig_text_edit_plan_preview.connect(
+                self.on_text_edit_plan_preview_request
+            )
         self.view.sig_move_text_across_pages.connect(self.move_text_across_pages)
         self.view.sig_add_textbox.connect(self.add_textbox)
         if hasattr(self.view, "sig_add_image_object"):
@@ -2330,6 +2344,9 @@ class PDFController:
             new_text = ""
         if not self.model.doc or page < 1 or page > len(self.model.doc):
             return
+        # The commit invalidates any plan-backed preview session's scratch
+        # snapshot; end it so stale rasters can never surface afterwards.
+        self._end_text_edit_plan_preview_session()
         try:
             page_idx = page - 1
             view = getattr(self, "view", None)
@@ -3446,6 +3463,140 @@ class PDFController:
         )
         return css, html
 
+    # ---- V2 exact plan-backed preview (plan Task 8) ----------------------
+
+    def _ensure_text_commit_preview_coordinator(self) -> TextCommitPreviewCoordinator:
+        coordinator = getattr(self, "_text_commit_preview_coordinator", None)
+        if coordinator is None:
+            coordinator = TextCommitPreviewCoordinator(
+                result_consumer=self._consume_plan_preview,
+                failure_consumer=self._on_plan_preview_failed,
+                identity_matches=self._plan_preview_identity_matches,
+                parent=self.view,
+            )
+            self._text_commit_preview_coordinator = coordinator
+        return coordinator
+
+    def _plan_preview_identity_matches(self, identity: PlanPreviewIdentity) -> bool:
+        return identity.session_key == getattr(self, "_plan_preview_session_key", None)
+
+    def _end_text_edit_plan_preview_session(self) -> None:
+        self._plan_preview_session_key = None
+        self._plan_preview_target = None
+        coordinator = getattr(self, "_text_commit_preview_coordinator", None)
+        if coordinator is not None:
+            coordinator.end_session()
+
+    def on_text_edit_plan_preview_request(self, payload: dict) -> None:
+        """Keystroke-debounced preview request from the View.
+
+        The Tier 0 target is derived and the document snapshotted ONCE per
+        edit session; each keystroke only re-plans the replacement text on
+        the worker's cached scratch document (never a fresh snapshot).
+        """
+        settings = getattr(self.model, "text_commit_settings", None)
+        if settings is None or getattr(settings, "preview", "legacy") != "plan":
+            return
+        if self.model.doc is None:
+            return
+        try:
+            session_key = str(payload["session_key"])
+            page_idx = int(payload["page_idx"])
+            generation = int(payload["generation"])
+            replacement_text = str(payload.get("replacement_text", ""))
+            clip_rect = tuple(float(v) for v in payload["clip_rect"])
+            render_scale = float(payload.get("render_scale", 1.0))
+        except (KeyError, TypeError, ValueError):
+            logger.warning("plan preview payload malformed; ignored")
+            return
+        coordinator = self._ensure_text_commit_preview_coordinator()
+        if self._plan_preview_session_key != session_key:
+            try:
+                target = derive_tier0_preview_target(
+                    self.model,
+                    page_num=page_idx + 1,
+                    rect=fitz.Rect(payload.get("rect")),
+                    original_text=payload.get("original_text"),
+                    target_span_id=payload.get("target_span_id"),
+                    target_mode=payload.get("target_mode"),
+                )
+            except Exception as exc:  # preview must never break editing
+                logger.warning(
+                    "plan preview target derivation failed: %s", type(exc).__name__
+                )
+                target = None
+            # Cache even a None target under this key: an unresolvable
+            # session must not re-run the resolve pipeline per keystroke.
+            self._plan_preview_session_key = session_key
+            self._plan_preview_target = target
+            if target is None:
+                coordinator.end_session()
+            else:
+                pending = any(
+                    e.get("page_idx") == page_idx
+                    for e in getattr(self.model, "pending_edits", [])
+                )
+                session = open_preview_session(
+                    self.model.doc,
+                    page_idx,
+                    session_key,
+                    page_has_pending_maintenance=pending,
+                )
+                coordinator.begin_session(session)
+        if self._plan_preview_target is None:
+            self._notify_plan_preview_rejected(
+                session_key, generation, "target_unresolved"
+            )
+            return
+        target_text, expected_origin, target_bbox = self._plan_preview_target
+        coordinator.request(
+            generation=generation,
+            target_text=target_text,
+            replacement_text=replacement_text,
+            expected_origin=expected_origin,
+            target_bbox=target_bbox,
+            clip_rect=clip_rect,
+            render_scale=render_scale,
+        )
+
+    def _notify_plan_preview_rejected(
+        self, session_key: str, generation: int, reason: str
+    ) -> None:
+        notify = getattr(self.view, "apply_text_edit_plan_preview", None)
+        if callable(notify):
+            notify(
+                session_key=session_key,
+                generation=generation,
+                image=None,
+                plan_token=None,
+                reject_reason=reason,
+            )
+
+    def _consume_plan_preview(
+        self, identity: PlanPreviewIdentity, result: PlanPreviewResult
+    ) -> None:
+        image = None
+        if result.png_bytes:
+            candidate = QImage.fromData(result.png_bytes, "PNG")
+            if not candidate.isNull():
+                image = candidate
+        self.view.apply_text_edit_plan_preview(
+            session_key=identity.session_key,
+            generation=identity.generation,
+            image=image,
+            plan_token=result.plan_token if image is not None else None,
+            reject_reason=result.reject_reason,
+        )
+
+    def _on_plan_preview_failed(
+        self, identity: PlanPreviewIdentity, exc: Exception
+    ) -> None:
+        # Sanitized: never document text or paths — only the exception type.
+        logger.warning("plan preview worker failed: %s", type(exc).__name__)
+        self._notify_plan_preview_rejected(
+            identity.session_key, identity.generation, "preview_error"
+        )
+
     def add_watermark(self, pages: list, text: str, angle: float, opacity: float, font_size: int, color: tuple, font: str, offset_x: float = 0, offset_y: float = 0, line_spacing: float = 1.3):
         """新增浮水印"""
         if not self.model.doc:
@@ -3513,6 +3664,13 @@ class PDFController:
         if not self._thumbnail_coordinator.wait_for_done(1000):
             event.ignore()
             return
+        plan_preview_coordinator = getattr(
+            self, "_text_commit_preview_coordinator", None
+        )
+        if plan_preview_coordinator is not None:
+            if not plan_preview_coordinator.wait_for_done(1000):
+                event.ignore()
+                return
         if self._has_active_print_submission():
             self._print_coordinator.begin_close_pending()
             event.ignore()
