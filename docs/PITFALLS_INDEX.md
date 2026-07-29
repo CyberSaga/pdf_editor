@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 206 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 209 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -211,3 +211,6 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1896 | MuPDF `insert_htmlbox` break-all does NOT split words that fit a line | legacy commit path characterization; `model/pdf_model.py:_build_insert_css` |
 | 1905 | Block-manager runs are word-level: one show op maps to several member spans | `model/pdf_text_edit.py` (V2 engine target derivation); `model/text_block_parsing.py` |
 | 1914 | Dropping the last Python reference to an unparented cross-thread QObject is an access violation | PySide6 threading; `controller/text_commit_coordinator.py` |
+| 1923 | `insert_pdf` strips the SOURCE page's annotation `/P` key — even on whole-document copies | PyMuPDF; `model/pdf_model.py` undo snapshots |
+| 1932 | `doc.tobytes()` with default encryption poisons a live encrypted document — even read-only | PyMuPDF AES-256; `model/text_commit/engine.py`, `model/text_commit/verify.py` |
+| 1941 | `insert_pdf` renumbers xrefs — unusable for xref-identical scratch copies | PyMuPDF; `model/text_commit` scratch-first verification |

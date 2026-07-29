@@ -56,8 +56,9 @@ def _rejection_outcome(status: CommitStatus, reason: str, detail: str) -> Commit
 class TieredCommitEngine:
     """One engine per open document; owns the font registry."""
 
-    def __init__(self, doc: fitz.Document) -> None:
+    def __init__(self, doc: fitz.Document, *, password: str | None = None) -> None:
         self._doc = doc
+        self._password = password
         self.registry = DocumentFontRegistry(doc)
 
     # ------------------------------------------------------------ prepare
@@ -92,7 +93,12 @@ class TieredCommitEngine:
 
         # Scratch-first proof: tobytes() preserves xref numbering and decoded
         # stream bytes, so the plan's offsets are valid on the copy.
-        scratch = fitz.open("pdf", self._doc.tobytes())
+        scratch = self._build_scratch_copy()
+        if scratch is None:
+            return PlanRejection(
+                RejectReason.VERIFICATION_FAILED,
+                "could not build an authenticated scratch copy to prove the candidate on",
+            )
         try:
             scratch_page = scratch[page.number]
             pre_state = capture_page_state(scratch, scratch_page, plan)
@@ -173,6 +179,34 @@ class TieredCommitEngine:
         )
 
     # ------------------------------------------------------------ helpers
+
+    def _build_scratch_copy(self) -> fitz.Document | None:
+        """Build a throwaway, content-readable clone of the live document.
+
+        Never calls ``tobytes()`` with the default (decrypting) encryption
+        directly on the live handle: on an *encrypted* document that
+        silently poisons its crypt state (a measured PyMuPDF AES quirk --
+        the same one ``PDFModel._decrypted_snapshot_bytes`` already guards
+        against for worker/print snapshots), so a later ``encryption=KEEP``
+        save on that same handle would write content streams that no longer
+        decrypt, even though the save itself reports success. Route every
+        scratch build through an ``encryption=KEEP`` snapshot and
+        re-authenticate the throwaway clone instead -- the live handle's
+        crypt state is never touched either way. ``KEEP`` is a no-op for
+        unencrypted documents, so this is one code path for both cases.
+
+        Returns ``None`` (never raises) when an encrypted document's clone
+        cannot be re-authenticated -- callers turn that into a stable
+        ``PlanRejection`` rather than letting the failure escape as an
+        exception.
+        """
+        keep_bytes = self._doc.tobytes(encryption=fitz.PDF_ENCRYPT_KEEP)
+        clone = fitz.open("pdf", keep_bytes)
+        if clone.needs_pass:
+            if self._password is None or clone.authenticate(self._password) == 0:
+                clone.close()
+                return None
+        return clone
 
     def _patchset(self, prepared: PreparedEdit) -> PatchSet:
         return PatchSet(

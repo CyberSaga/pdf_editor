@@ -1363,7 +1363,12 @@ def _attempt_tiered_commit(
     if target is None:
         return None, RejectReason.MULTI_SPAN_TARGET
     target_text, expected_origin, target_bbox = target
-    engine = TieredCommitEngine(model.doc)
+    # Password threaded through so the engine's scratch-first proof can
+    # re-authenticate its throwaway clone on encrypted documents instead of
+    # ever calling tobytes() on the live handle (see engine.py
+    # ``_build_scratch_copy`` -- a decrypting tobytes() call directly on the
+    # live doc silently poisons its crypt state).
+    engine = TieredCommitEngine(model.doc, password=model.password)
     pending = any(e.get("page_idx") == page_idx for e in model.pending_edits)
     prepared = engine.prepare(
         page,

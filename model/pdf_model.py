@@ -32,7 +32,12 @@ from model.text_block import (
     rotation_degrees_from_dir,
 )
 from model.geometry import clamp_rect_to_page, rect_from_points, rect_overlap_ratio
-from model.text_commit.dto import CommitOutcome, TextCommitSettings
+from model.text_commit.dto import CommitOutcome, CommitStatus, RejectReason, TextCommitSettings
+from model.text_commit.inspect import (
+    capture_annotation_parent_refs,
+    page_has_widgets_or_signatures,
+    restore_annotation_parent_refs,
+)
 from model.text_normalization import normalize_text, normalized_similarity
 from model.tools import ToolManager
 
@@ -3231,37 +3236,63 @@ class PDFModel:
           1. 正常 insert_pdf（含 annotations）
           2. insert_pdf annots=False（含跨頁 annotation 引用的 PDF）
           3. 整份文件快照（最保守）
+
+        ``fitz.Document.insert_pdf()`` 會把 SOURCE 頁面（即 ``self.doc`` 本身）
+        上每個 annotation 的 ``/P``（parent-page）key 當場清掉，是一個已實測、
+        與 annots 參數無關的 PyMuPDF 副作用（xref、rect、``/AP`` 外觀串流皆不受
+        影響，只有 ``/P`` 消失）——嘗試 1/2 都會觸發它。因此在呼叫前先備份該頁
+        annotation 的 ``/P``，無論走哪個 fallback 分支，離開本方法前都恢復，
+        讓 live document 自身的 annotation identity 不因單純「擷取快照」而受損。
         """
-        # 嘗試 1：完整頁面（含 annotations）
+        annot_parent_backup: tuple[tuple[int, str], ...] = ()
         try:
-            tmp_doc = fitz.open()
-            tmp_doc.insert_pdf(self.doc, from_page=page_num_0based, to_page=page_num_0based)
-            stream = io.BytesIO()
-            tmp_doc.save(stream, garbage=0)
-            data = stream.getvalue()
-            tmp_doc.close()
-            return data
-        except Exception as e1:
-            logger.debug(f"_capture_page_snapshot 完整複製失敗 (p{page_num_0based+1}): {e1}，嘗試 annots=False")
-
-        # 嘗試 2：不含 annotations（避免跨頁 xref 無效引用）
-        try:
-            tmp_doc = fitz.open()
-            tmp_doc.insert_pdf(
-                self.doc, from_page=page_num_0based, to_page=page_num_0based,
-                annots=False
+            doc = self.doc
+            if doc is None:
+                raise ValueError("no document open")
+            annot_parent_backup = capture_annotation_parent_refs(
+                doc, doc[page_num_0based]
             )
-            stream = io.BytesIO()
-            tmp_doc.save(stream, garbage=0)
-            data = stream.getvalue()
-            tmp_doc.close()
-            logger.debug(f"_capture_page_snapshot: 使用 annots=False 快照 (p{page_num_0based+1})")
-            return data
-        except Exception as e2:
-            logger.debug(f"_capture_page_snapshot annots=False 亦失敗: {e2}，改用文件級快照")
+        except (IndexError, ValueError) as exc:
+            logger.debug(
+                "_capture_page_snapshot: annot /P backup skipped (p%s): %s",
+                page_num_0based + 1,
+                type(exc).__name__,
+            )
 
-        # 嘗試 3：整份文件快照（最保守，undo 效果較差但不崩潰）
-        return self._capture_doc_snapshot()
+        try:
+            # 嘗試 1：完整頁面（含 annotations）
+            try:
+                tmp_doc = fitz.open()
+                tmp_doc.insert_pdf(self.doc, from_page=page_num_0based, to_page=page_num_0based)
+                stream = io.BytesIO()
+                tmp_doc.save(stream, garbage=0)
+                data = stream.getvalue()
+                tmp_doc.close()
+                return data
+            except Exception as e1:
+                logger.debug(f"_capture_page_snapshot 完整複製失敗 (p{page_num_0based+1}): {e1}，嘗試 annots=False")
+
+            # 嘗試 2：不含 annotations（避免跨頁 xref 無效引用）
+            try:
+                tmp_doc = fitz.open()
+                tmp_doc.insert_pdf(
+                    self.doc, from_page=page_num_0based, to_page=page_num_0based,
+                    annots=False
+                )
+                stream = io.BytesIO()
+                tmp_doc.save(stream, garbage=0)
+                data = stream.getvalue()
+                tmp_doc.close()
+                logger.debug(f"_capture_page_snapshot: 使用 annots=False 快照 (p{page_num_0based+1})")
+                return data
+            except Exception as e2:
+                logger.debug(f"_capture_page_snapshot annots=False 亦失敗: {e2}，改用文件級快照")
+
+            # 嘗試 3：整份文件快照（最保守，undo 效果較差但不崩潰）
+            return self._capture_doc_snapshot()
+        finally:
+            if annot_parent_backup:
+                restore_annotation_parent_refs(self.doc, annot_parent_backup)
 
     def _restore_page_from_snapshot(self, page_num_0based: int, snapshot_bytes: bytes) -> None:
         """用 bytes 快照替換 doc 中指定頁面（undo / rollback 時呼叫）"""
@@ -3497,6 +3528,40 @@ class PDFModel:
                   target_span_id: str | None = None,
                   target_mode: str | None = None,
                   style_overrides=None) -> EditTextResult:
+        # V2 hard-reject boundary: signed documents and widget-bearing pages
+        # must never be silently degraded to the legacy redact+reinsert
+        # engine, in strict *or* non-strict mode -- checked here, before the
+        # tiered branch's non-strict fallthrough (pdf_text_edit.py) ever
+        # gets a chance to run it, so zero mutation happens either way.
+        if self.text_commit_settings.engine == "tiered" and self.doc is not None:
+            page_idx = page_num - 1
+            if 0 <= page_idx < self.doc.page_count:
+                try:
+                    hard_reject = page_has_widgets_or_signatures(self.doc, self.doc[page_idx])
+                except (RuntimeError, ValueError) as exc:
+                    logger.warning(
+                        "edit_text: widget/signature probe failed page=%s %s",
+                        page_num,
+                        type(exc).__name__,
+                    )
+                    hard_reject = False
+                if hard_reject:
+                    self.last_commit_outcome = CommitOutcome(
+                        status=CommitStatus.REJECTED,
+                        tier=None,
+                        fallback_chain=(f"tier0:{RejectReason.SIGNED_OR_WIDGET_TARGET}",),
+                        warnings=(),
+                        font_outcomes=(),
+                        verified_properties=(),
+                        degraded_reason=RejectReason.SIGNED_OR_WIDGET_TARGET,
+                        allows_external_reflow=False,
+                    )
+                    logger.info(
+                        "text_commit_hard_reject page=%s reason=%s",
+                        page_num,
+                        RejectReason.SIGNED_OR_WIDGET_TARGET,
+                    )
+                    return EditTextResult.REJECTED_UNSUPPORTED
         return pdf_text_edit.edit_text(
             self, page_num, rect, new_text,
             font=font, size=size, color=color,

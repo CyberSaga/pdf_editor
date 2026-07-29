@@ -193,8 +193,20 @@ def verify_tier0_commit(
         )
 
     # V0e — the mutated document still reopens.
+    #
+    # ``encryption=KEEP`` (never the default, which decrypts): calling
+    # ``tobytes()`` with the default encryption directly on a *live*,
+    # authenticated, encrypted document handle silently poisons its internal
+    # crypt state (a measured PyMuPDF AES quirk -- the same one
+    # ``PDFModel._decrypted_snapshot_bytes`` already guards against for
+    # worker/print snapshots), so a later ``encryption=KEEP`` save on that
+    # same handle would write content streams that no longer decrypt. This
+    # probe only needs structural reopenability and the page count, not
+    # decrypted content, so a locked reopen is just as good a proof and
+    # never touches the live crypt state either way. KEEP is a no-op for
+    # unencrypted documents.
     try:
-        reopened = fitz.open("pdf", doc.tobytes())
+        reopened = fitz.open("pdf", doc.tobytes(encryption=fitz.PDF_ENCRYPT_KEEP))
         page_count = reopened.page_count
         reopened.close()
     except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase) as exc:

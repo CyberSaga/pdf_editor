@@ -665,6 +665,42 @@ it never claims exactness).
   `edit_text` ends the preview session before committing so a stale
   scratch can never outlive a mutation.
 
+**Persistence, undo/redo, and unsupported boundaries (Task 9, 2026-07-29).**
+The engine's promise is scoped explicitly: supported live-commit semantics
+plus tested save/reopen behavior — never whole-file byte or xref identity
+after a full save / garbage collection.
+
+- **Hard rejection over silent degradation** — with
+  `TextCommitSettings.engine == "tiered"`, `PDFModel.edit_text` refuses
+  up front (`EditTextResult.REJECTED_UNSUPPORTED`,
+  `RejectReason.SIGNED_OR_WIDGET_TARGET`, zero mutation) when the target
+  page carries widgets or the document is signed, before the non-strict
+  tier fallback could reach the legacy redact+reinsert engine.
+- **Validated-intent undo/redo** — on a Tier 0 commit, `EditTextCommand`
+  captures pre-edit stream bytes + fingerprint and builds a
+  forward/inverse `PatchSet` pair (`patch.py:build_reversal_patchset`).
+  `undo()` replays the fingerprint-gated inverse patch (byte-identical
+  restore, annotations physically untouched, `fidelity_protected_pages`
+  membership restored) with the legacy page-snapshot restore as the
+  stale-only fallback; `redo()` replays the retained forward patch —
+  exact committed bytes or a `STALE_PLAN` refusal with zero mutation,
+  never a fresh `edit_text` re-run.
+- **Encryption-safe serialization** — `TieredCommitEngine._build_scratch_copy`
+  and V0e's reopen probe serialize with `PDF_ENCRYPT_KEEP` and
+  re-authenticate a throwaway clone (engine now accepts a `password`
+  kwarg, threaded from `model.password`); default `tobytes()` on the live
+  handle corrupts its crypt state (PITFALLS).
+- **Annotation identity** — `inspect.py:capture_annotation_parent_refs` /
+  `restore_annotation_parent_refs` round-trip full annotation objects
+  around `_capture_page_snapshot`'s `insert_pdf` call, which otherwise
+  strips `/P` from the live document on every edit (pre-existing,
+  engine-agnostic PyMuPDF side effect).
+
+Pinned by `test_scripts/test_text_commit_persistence.py` (save/save-as/
+incremental/full/reopen/encrypted/legacy-then-tier0) and
+`test_scripts/test_text_commit_boundaries.py` (annotation identity,
+widget/signed rejection, undo/redo replay + stale refusal).
+
 ## 11. Character-Level Text Selection (Browse Mode)
 
 **Module:** `model/pdf_model.py:get_chars_in_run()`, `get_text_selection_lines()`

@@ -72,6 +72,45 @@ def page_fingerprint(doc: fitz.Document, page: fitz.Page) -> str:
     return digest.hexdigest()
 
 
+def capture_annotation_parent_refs(
+    doc: fitz.Document, page: fitz.Page
+) -> tuple[tuple[int, str], ...]:
+    """Snapshot one page's annotations' full object dictionaries.
+
+    ``fitz.Document.insert_pdf()`` mutates the copied SOURCE page's
+    annotation objects as an observed side effect (a PyMuPDF quirk,
+    reproduced directly with no model code involved): the ``/P``
+    (parent-page) key is dropped and silently re-appended at the *end* of
+    the dictionary, so a plain ``xref_get_key``/``xref_set_key`` round trip
+    restores the right value but in the wrong position -- ``xref_object()``
+    (and any byte-level comparison of it) still disagrees with the
+    pre-copy state even though every key's value is intact. The xref, rect,
+    and ``/AP`` appearance stream are never touched.
+
+    Any call site that copies this page out of a *live* document (page-level
+    undo snapshots, most notably) must back the full object string up first
+    and restore it immediately after via :func:`restore_annotation_parent_refs`,
+    or the live document's own annotation identity is silently disturbed by
+    the mere act of copying it.
+    """
+    return tuple((annot.xref, doc.xref_object(annot.xref)) for annot in page.annots())
+
+
+def restore_annotation_parent_refs(
+    doc: fitz.Document, backup: tuple[tuple[int, str], ...]
+) -> None:
+    """Restore object dictionaries captured by
+    :func:`capture_annotation_parent_refs`, verbatim, including key order.
+
+    Only writes back an object that actually changed -- if the current
+    object string already matches, the copy that would have disturbed it
+    never ran, and this is a no-op.
+    """
+    for xref, object_str in backup:
+        if doc.xref_object(xref) != object_str:
+            doc.update_object(xref, object_str)
+
+
 def page_has_widgets_or_signatures(doc: fitz.Document, page: fitz.Page) -> bool:
     """True when the page has form widgets or the document is signed."""
     if any(True for _ in page.widgets()):

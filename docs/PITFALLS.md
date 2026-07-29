@@ -1917,3 +1917,30 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** An unparented `QObject` worker moved to a `QThread` is owned by its Python wrapper. Setting `self._worker = None` on the main thread while the worker thread is still delivering a queued call destroys the C++ object immediately — from the wrong thread, under a live event delivery.
 **Fix:** Retain retired `(thread, worker)` pairs in a list until `thread.isFinished()`; only then let the wrappers go. Prefer a dedicated queued Signal for cross-thread shutdown over `QMetaObject.invokeMethod`, and quit the thread from inside the worker's shutdown slot. `PageRenderCoordinator._threads` follows the same rule.
 **File:** `controller/text_commit_coordinator.py:TextCommitPreviewCoordinator.end_session`
+
+---
+
+## `insert_pdf` strips the SOURCE page's annotation `/P` key — even on whole-document copies
+**Area:** PyMuPDF; `model/pdf_model.py` undo snapshots
+**Symptom:** After any `edit_text()` call (Tier 0 or legacy), an annotation on the edited page loses its `/P` (parent-page) key in the LIVE document; xref, rect, and `/AP` appearance stream all survive. Dictionary-identity assertions fail.
+**Cause:** `PDFModel._capture_page_snapshot` builds the undo snapshot via `tmp_doc.insert_pdf(self.doc, ...)`. PyMuPDF's `insert_pdf` mutates the *source* document as a side effect: it deletes each source annotation's `/P` key. Confirmed independent of the `annots=` flag and reproduced even with a full `from_page=0, to_page=-1` copy — pure fitz, no model code.
+**Fix:** Snapshot every annotation's FULL `xref_object()` string before the `insert_pdf` call and restore it verbatim afterwards with `doc.update_object(xref, captured)`. A `xref_get_key`/`xref_set_key` round-trip of just `/P` is NOT enough — the restored key is re-appended at the end of the dict, so string-identity checks still fail; only the full-object restore round-trips byte-for-byte including key order.
+**File:** `model/text_commit/inspect.py:capture_annotation_parent_refs` / `restore_annotation_parent_refs`; caller `model/pdf_model.py:_capture_page_snapshot`
+
+---
+
+## `doc.tobytes()` with default encryption poisons a live encrypted document — even read-only
+**Area:** PyMuPDF AES-256; `model/text_commit/engine.py`, `model/text_commit/verify.py`
+**Symptom:** After a Tier 0 attempt on an encrypted document, a later `encryption=PDF_ENCRYPT_KEEP` save (incremental OR full) writes a file whose content streams no longer decrypt — real corruption, not a safe reject.
+**Cause:** `tobytes()` defaults to `encryption=NONE` (decrypt-on-serialize). Calling it on the LIVE authenticated handle — as `TieredCommitEngine.prepare` did to build its scratch copy and as V0e's reopen probe did again — silently poisons that handle's internal crypt state (same PyMuPDF 1.27.1 quirk already pinned by `test_secure_persistence.py::test_worker_snapshot_before_edit_does_not_corrupt_later_encrypted_save`). The damage surfaces only at the NEXT save, far from the cause.
+**Fix:** On any live possibly-encrypted doc, always serialize with `encryption=fitz.PDF_ENCRYPT_KEEP` (a safe no-op for unencrypted docs, so one code path covers both), then reopen + re-authenticate a throwaway clone for anything needing decrypted content. A locked reopened doc still exposes an accurate `page_count`, so pure reopenability probes need no password at all. `model/text_commit/preview.py` still has one default-`tobytes()` call site — flagged follow-up, not yet exercised by an encrypted-preview test.
+**File:** `model/text_commit/engine.py:_build_scratch_copy`; `model/text_commit/verify.py` (V0e probe)
+
+---
+
+## `insert_pdf` renumbers xrefs — unusable for xref-identical scratch copies
+**Area:** PyMuPDF; `model/text_commit` scratch-first verification
+**Symptom:** A scratch copy built with `insert_pdf` yields different `page.xref` / content-stream xrefs than the source, so fingerprint- and xref-keyed plans (PatchSet.page_xref, stream xrefs) never match.
+**Cause:** `insert_pdf` rebuilds the object graph and renumbers destination xrefs relative to the source — even for a full `from_page=0, to_page=-1` copy.
+**Fix:** Only a same-document `tobytes()`+reopen round-trip preserves xref numbering (with `encryption=PDF_ENCRYPT_KEEP` on live encrypted docs — see previous entry). Use that for any scratch copy that must be xref-identical.
+**File:** `model/text_commit/engine.py:_build_scratch_copy`
