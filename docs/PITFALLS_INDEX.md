@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 209 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 213 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -214,3 +214,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1923 | `insert_pdf` strips the SOURCE page's annotation `/P` key — even on whole-document copies | PyMuPDF; `model/pdf_model.py` undo snapshots |
 | 1932 | `doc.tobytes()` with default encryption poisons a live encrypted document — even read-only | PyMuPDF AES-256; `model/text_commit/engine.py`, `model/text_commit/verify.py` |
 | 1941 | `insert_pdf` renumbers xrefs — unusable for xref-identical scratch copies | PyMuPDF; `model/text_commit` scratch-first verification |
+| 1948 | Pixel-uniformity occlusion checks need edge erosion | model/text_commit/verify.py (Tier-1 spike: verify_tier1_strategy / _region_is_uniform) |
+| 1955 | A "graphics-state bleed" ink-tint check must not sample a covering shape's own fill color | model/text_commit/verify.py (Tier-1 spike: verify_tier1_strategy) |
+| 1962 | PyMuPDF insert_font(fontbuffer=..., set_simple=True) dedupes byte-identical programs onto the same xref | model/text_commit fonts (font-honesty Tier-1 spike) |
+| 1969 | OCG visibility only takes effect after a tobytes()+reopen round trip — and only on a *second* round trip after set_layer | model/text_commit/verify.py (`_ocg_membership_lost`) |

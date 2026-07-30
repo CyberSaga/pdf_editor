@@ -1944,3 +1944,31 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** `insert_pdf` rebuilds the object graph and renumbers destination xrefs relative to the source — even for a full `from_page=0, to_page=-1` copy.
 **Fix:** Only a same-document `tobytes()`+reopen round-trip preserves xref numbering (with `encryption=PDF_ENCRYPT_KEEP` on live encrypted docs — see previous entry). Use that for any scratch copy that must be xref-identical.
 **File:** `model/text_commit/engine.py:_build_scratch_copy`
+
+## Pixel-uniformity occlusion checks need edge erosion
+**Area:** model/text_commit/verify.py (Tier-1 spike: verify_tier1_strategy / _region_is_uniform)
+**Symptom:** A z-order/occlusion check that samples "is this whole region one flat color" reported non-uniform even when a fully-opaque covering rectangle painted over the target with nothing else in the region — because PyMuPDF anti-aliases the rectangle's own edge against the page background, producing a thin ring of blended colors right at the declared bbox boundary.
+**Cause:** The declared target bbox coincided exactly with the covering rect's own fill coordinates; sampling all the way to that boundary picks up the rect's edge anti-aliasing, not any change in the underlying (occluded) content.
+**Fix:** Erode the sampled pixel region inward by a small fixed margin (`_UNIFORM_ERODE_PX = 2`) before checking uniformity, so only the flat interior — away from any shape's own rendered edge — is compared.
+**File:** model/text_commit/verify.py (`_region_is_uniform`, `_UNIFORM_ERODE_PX`)
+
+## A "graphics-state bleed" ink-tint check must not sample a covering shape's own fill color
+**Area:** model/text_commit/verify.py (Tier-1 spike: verify_tier1_strategy)
+**Symptom:** A check for "is the darkest pixel in the target region tinted (non-gray), meaning a dangling `rg` bled into the replacement's glyph ink" produced a false positive when the target was correctly still hidden under an opaque red rectangle (the z-order-preserving, PASSING outcome) — the only/darkest pixel found was the rectangle's own red fill, not glyph ink at all, since there was no visible ink to sample.
+**Cause:** When z-order is correctly preserved, the target text stays fully occluded post-edit; naively sampling "whichever color is darkest in the declared region" instead samples whatever opaque content is on top, which is unrelated to the replacement's own fill color.
+**Fix:** Gate the ink-tint check on the target region NOT being fully occluded post-edit, reusing the same flat-color occlusion test already computed for the z-order check; skip the ink check entirely (record `glyph_ink_not_visible_ignored`) when the region is still uniform/occluded.
+**File:** model/text_commit/verify.py (`verify_tier1_strategy`)
+
+## PyMuPDF insert_font(fontbuffer=..., set_simple=True) dedupes byte-identical programs onto the same xref
+**Area:** model/text_commit fonts (font-honesty Tier-1 spike)
+**Symptom:** Re-embedding the exact same extracted font bytes under a NEW resource name via `page.insert_font` silently reuses the original font's xref instead of creating a distinct object — a naive test/rebuild that expects a fresh `written_font_xref` gets the source xref back, which would make an honesty test for "not SOURCE_RESOURCE_REUSED" pass for the wrong reason.
+**Cause:** PyMuPDF content-addresses inserted font programs; identical bytes never produce a second xref.
+**Fix:** To force a genuinely distinct font object (as any real Tier-1 rebuild must produce), hand-clone it: `new_xref = doc.get_new_xref(); doc.update_object(new_xref, doc.xref_object(source_xref))`, then splice the new xref into the Resources' /Font subdict directly (Resources itself may be an indirect xref object, not an inline dict — read/rewrite via `doc.xref_get_key`/`doc.xref_set_key` on the Resources xref, not the page xref).
+**File:** test_scripts/test_text_commit_textwriter_zorder.py (font-honesty fixture); relevant to any future model/text_commit/fonts.py Tier-1 rebuild code.
+
+## OCG visibility only takes effect after a tobytes()+reopen round trip — and only on a *second* round trip after set_layer
+**Area:** model/text_commit/verify.py (`_ocg_membership_lost`)
+**Symptom:** Calling `doc.set_layer(-1, off=[...])` on a live document and then immediately calling `get_text()`/rendering the same live page shows no change at all — the OCG toggle appears to be a no-op.
+**Cause:** OCG on/off state is only consulted by MuPDF's content interpreter when a document is (re)opened from bytes; a live, already-parsed page/pixmap does not re-evaluate it.
+**Fix:** To probe OCG membership, snapshot the doc via `tobytes()`+reopen, call `set_layer` on THAT reopened copy, `tobytes()` again, and reopen a second time before calling `get_text()` — two full round trips total, never mutating the original live document.
+**File:** model/text_commit/verify.py (`_ocg_membership_lost`)

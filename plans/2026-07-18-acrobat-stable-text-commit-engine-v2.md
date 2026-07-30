@@ -683,6 +683,16 @@ Do not infer source encoding from Unicode coverage. Require source CMap/CID/GID 
 
 Do not enable Tier 1 from argument alone. Promote only the strategy that passes structural and raster verification on deterministic plus representative corpora.
 
+> **Go/no-go record (2026-07-30, spike evidence from Steps 1–5; deterministic synthetic fixtures only — representative-corpus confirmation still owed before any production enablement):**
+>
+> - **(a) Advance-preserving erase — GO.** `patch.build_advance_preserving_erase` replaces a show op's full byte range with a kern-only `[N] TJ`, `N = -100000 * consumed_advance / (font_size * hscale)`. TJ adjustment numbers apply in unscaled text space and never re-trigger Tc/Tw, so one arithmetic correction covers ops that had Tc/Tw folded in. Spike proves the raw-delete hazard (later same-line show shifts >1pt), then exact compensation within 0.1pt on both Tj and kerned-TJ fixtures, raster identity outside halo, full `revert()` reversibility.
+> - **(b) TextWriter/append (new ops at end of `/Contents`) — NO-GO, terminal.** Fails all 6 fixtures. Resource rebinding is fixable by real `TextWriter`, but z-order resurrection over occluding paint, escape from `q..Q` clip scope, loss of `/OC BDC..EMC` membership, and inherited dirty graphics state (dangling `rg`/`w` bleeding across stream concatenation) are **structural to append as a strategy**, not prototype artifacts. Do not revisit.
+> - **(c) Source-position transplant — GO (Tier 1's write primitive).** `patch.build_transplant_replacement` splices the replacement at the source op's exact byte position; z-order, clip scope, ExtGState, and OCG membership are inherited **by construction** because nothing outside the declared byte range changes. Zero failures on all 6 fixtures. Caveat carried into Task 11: transplant alone is not advance-neutral — layer in (a)'s compensation math whenever the replacement advance differs from the source.
+> - **(d) Font-outcome honesty — GO.** `patch.build_tier1_font_outcome` gated by `verify.prove_source_resource_reuse` (affirmative xref-identity proof; defaults to False on ambiguity). `SOURCE_RESOURCE_REUSED` only when the resource name still resolves to the exact source font xref; extracted faces report `VALIDATED_FACE_EMBEDDED`, system faces `SYSTEM_FACE_SUBSTITUTED`. Never inferred from face similarity or Unicode coverage.
+> - **(e) Identity-H — PARTIAL: evidence collection GO, Tier 1 enablement NO-GO (stays on the deferred list).** `verify.collect_cid_encoding_evidence` reads `/Encoding`, descendant `/CIDToGIDMap` (absent key = PDF-spec-implicit Identity, never inferred), and a parsed `/ToUnicode` CMap; `CidEncodingEvidence.decode()` round-trips CIDs from source CMap evidence alone. Missing `/ToUnicode` is a hard `FONT_UNSUPPORTED_ENCODING` failure even when the face provably covers every target glyph. `bind_source_text` continues to refuse CID text (`UNDECODABLE_TARGET`). Characterization only; no tier accepts CID text.
+>
+> **Decision: Task 11 proceeds on transplant (c) + erase-compensation (a) + honest font outcomes (d). Append (b) is dead. Identity-H (e) remains deferred.** Tier 1 stays flag-off; nothing here enables it. `scripts/audit_tier_coverage.py` (read-only, counts-only) exists to size tier coverage on representative corpora before rollout.
+
 **Step 7: Commit spike evidence**
 
 ```bash
