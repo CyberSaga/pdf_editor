@@ -1972,3 +1972,17 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** OCG on/off state is only consulted by MuPDF's content interpreter when a document is (re)opened from bytes; a live, already-parsed page/pixmap does not re-evaluate it.
 **Fix:** To probe OCG membership, snapshot the doc via `tobytes()`+reopen, call `set_layer` on THAT reopened copy, `tobytes()` again, and reopen a second time before calling `get_text()` — two full round trips total, never mutating the original live document.
 **File:** model/text_commit/verify.py (`_ocg_membership_lost`)
+
+## Asserting that the replay *recorded* a text state does not test the gate that *rejects* it
+**Area:** model/text_commit planner gates (`plan.py`, `inspect.py`) + their tests
+**Symptom:** `plan.py`'s `mc_depth` gate and its `render_mode`/`rise`/`hscale` gate could both be deleted outright and the entire 135-test text_commit suite still passed. The marked-content gate — the single gate rejecting the most real-world shows (all 32 in `test-horizontal-texts.pdf`, 2364 in `test-complexed-layout.pdf`) — had zero coverage.
+**Cause:** `test_text_commit_replay.py` builds the right fixtures (`80 Tz 3 Ts 2 Tr`, `/P <</MCID 0>> BDC … EMC`) but asserts only `show.hscale == 80.0` / `show.mc_depth == 1` — i.e. that the replay *observed* the state. Nothing asserted the planner *acted* on it. Meanwhile every case in `test_text_commit_tier0.py`'s parametrized rejection test varies only the **request** (replacement text, style/geometry overrides); the fixture document was never varied, so no structural gate was reachable from it. Sensor tested, switch untested.
+**Fix:** Test the planner's return value, not the replay's fields: build one raw content stream per gate and assert `prepare_tier0_plan(...)` returns a `PlanRejection` with that gate's `RejectReason`. Confirm each new test is real by mutation — neuter the guard (`if False:`) and check that exactly the matching test fails. A green suite proves nothing about a gate no fixture reaches.
+**File:** test_scripts/test_text_commit_structural_gates.py
+
+## Two gates sharing one RejectReason let a test survive deletion of its own gate
+**Area:** model/text_commit/plan.py (`FONT_FACE_UNAVAILABLE`, `UNSUPPORTED_TEXT_STATE`)
+**Symptom:** A test pinning only `rejection.reason == FONT_FACE_UNAVAILABLE` for the "no font selected" gate still **passes** when that gate is deleted — a silently vacuous test.
+**Cause:** `FONT_FACE_UNAVAILABLE` is emitted at two sites and `UNSUPPORTED_TEXT_STATE` at four. Deleting the `show.font_resource is None` check just lets control fall through to `registry.capability(page, None)`, which also returns `None` and re-emits the *same* reason with different detail text. The reason code alone cannot distinguish which guard fired.
+**Fix:** Where several guards share a `RejectReason`, also pin a short stable substring of `PlanRejection.detail` (`"no font selected"` vs `"not resolvable"`; `"marked-content"` vs `"render_mode="` vs `"outside BT/ET"`). Additionally assert the fixture's `ShowOp` carries the intended off-nominal field *and no other* — otherwise the test can drift into a neighbouring gate and stay green. Verified by mutation: the detail assertion is the only thing that catches the `FONT_FACE_UNAVAILABLE` mutant.
+**File:** test_scripts/test_text_commit_structural_gates.py (`_assert_only_off_nominal`)
