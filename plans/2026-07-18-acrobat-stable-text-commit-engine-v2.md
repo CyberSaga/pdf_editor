@@ -505,6 +505,52 @@ git add model/text_commit/plan.py model/text_commit/patch.py model/text_commit/v
 git commit -m "feat: add verified lossless Tier 0 text patch"
 ```
 
+### Amendment (2026-08-01): advance source is `/Widths`, not the face
+
+Tier 0 shipped inert — 0 accepted shows on all six corpus fixtures. Measurement
+(read-only, counts-only) attributed 98.1% of the block to the font gate, of which
+76.6% was `FONT_FACE_UNAVAILABLE`: seven unembedded Word-export fonts that all carry
+a complete `/Widths` table. Sourcing the advance from the face was the design error.
+
+> **Decision: for simple fonts the advance comes from `/Widths`, and the face is a
+> fallback, not the contract.** A conforming viewer advances by
+> `Widths[code - FirstChar] / 1000 * size` and never consults the font program.
+> Proven empirically, not assumed: an embedded real `arial.ttf` whose `/Widths` are
+> all 1000 lays out at 40.0pt in MuPDF while the extracted face reports 23.32pt.
+> `FontCapability.advance_source` is now `"widths" | "face" | "none"`. This is also a
+> soundness fix independent of coverage — 22 *embedded* capabilities were measuring
+> advance from the wrong source. Because `/Widths` is exact rational arithmetic, the
+> advance tolerance splits: `1e-9`/pt for widths-sourced, the existing `1e-3`/pt for
+> face-derived.
+
+> **Corollary that constrains Task 11: `/Widths` proves an advance, not a glyph.**
+> Absent a face, glyph coverage is attested only for non-subset, non-symbolic,
+> standard-family fonts (`ascii_repertoire_attested`); everything else refuses. The
+> V0a–V0e render checks *cannot* backstop this — raster identity is compared outside
+> a 2pt halo, so a committed tofu box passes verification. Any future relaxation of
+> the glyph gate must come with a check that actually looks inside the glyph box.
+
+**Dead end, recorded so it is not repeated: regex-parsing PDF dictionaries.** Three
+separate review findings (indirect `/Flags`, inline vs. indirect `FontDescriptor`, and
+a `/FontFamily (/Flags 0)` string-literal decoy that defeats any regex) had one root
+cause. The fix is structural: `doc.xref_get_key(font_xref, "FontDescriptor/Flags")`
+resolves inline-or-indirect descriptor *and* inline-or-indirect flags in a single call
+and is immune to literal decoys. No regex reads a PDF dictionary in `fonts.py`.
+
+**Second dead end: first-blocker counts.** Gates compose multiplicatively, so ranking
+them by "what blocks the most shows first" misleads. The matrix/operator gates measured
+0.36% while the font gate masked them and 15.25% (5,879 shows) after it was cleared — a
+43× swing from the same measurement script. Size a relaxation only against a corpus with
+the upstream gates already relaxed.
+
+**Outcome:** `FONT_FACE_UNAVAILABLE` 29,526 → 0 with zero fonts newly refused. Corpus
+acceptance is *unchanged* (174 accepted / 771 `FONT_UNSUPPORTED_ENCODING` / 174
+`FONT_TYPE3`) because no show fails only the font gate — Tier 0 remains inert pending the
+matrix/operator gates below. Carried forward to Task 11: the TJ relaxation needs a
+**no-kern check**, not an item count; relaxing the trm gate inverts
+`test_planner_rejects_uniformly_scaled_text_matrix`, which must be revised in the same
+change rather than deleted.
+
 ## Task 7: Shadow Integration and Maintenance Policy
 
 **Files:**
