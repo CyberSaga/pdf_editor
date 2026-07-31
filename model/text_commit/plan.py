@@ -29,10 +29,21 @@ from model.text_commit.pdf_lexer import encode_literal_string
 
 logger = logging.getLogger(__name__)
 
-# Advance equality tolerance, relative to font size.  Both sides are
-# computed from the same loaded face, so genuinely width-neutral
-# replacements agree to float precision; this only absorbs rounding.
-_ADVANCE_TOL_PER_PT = 1e-3
+# Advance equality tolerance, relative to font size.  Both sides are measured
+# from the same source, so genuinely width-neutral replacements agree to float
+# precision and this only absorbs rounding.
+#
+# The two sources need different tolerances, and the difference is not
+# cosmetic.  A /Widths advance is exact rational arithmetic — integer table
+# units scaled by the font size — and one table unit is *exactly*
+# ``_ADVANCE_TOL_PER_PT * size``.  Reusing the face tolerance there would put
+# the smallest representable width difference precisely on the ``>`` boundary,
+# leaving float representation to decide accept/reject: measured
+# non-monotonic (size 12 accepted a 0.012pt shift, size 72 refused 0.072pt,
+# size 600 accepted 0.600pt).  Absorbing a whole unit of the document's own
+# width table is not "rounding", so widths get a float-noise tolerance.
+_ADVANCE_TOL_PER_PT = 1e-3  # face-derived: absorbs the face's own float error
+_ADVANCE_TOL_PER_PT_EXACT = 1e-9  # /Widths: exact arithmetic, noise only
 
 
 @dataclass(frozen=True)
@@ -62,8 +73,17 @@ class PlanRejection:
 def _advance(
     capability: FontCapability, text: str, size: float, tc: float, tw: float
 ) -> float:
-    assert capability.face is not None
-    width = capability.face.text_length(text, fontsize=size)
+    """Advance ``text`` consumes, in points, including Tc/Tw contributions.
+
+    The string width comes from the font's own /Widths table when it
+    declares one — that, not the font program, is what a viewer advances by
+    for a simple font — and from the resolved face otherwise.  Callers must
+    have established that the advance is provable; an unprovable code has no
+    defensible width and Tier 0 refuses rather than invent one.
+    """
+    width = capability.string_width(text, size)
+    if width is None:
+        raise ValueError("advance is not provable for this font and text")
     return width + tc * len(text) + tw * text.count(" ")
 
 
@@ -170,6 +190,20 @@ def prepare_tier0_plan(
             "encoding or the font's glyph set",
         )
 
+    # Both strings must be measurable before either is measured: a code with
+    # no usable /Widths entry (out of [FirstChar, LastChar], or declared
+    # zero) has no advance the document proves, and /MissingWidth is never
+    # substituted for it.  Counts only — never the characters themselves.
+    uncovered = capability.uncovered_codes(target_text) or capability.uncovered_codes(
+        replacement_text
+    )
+    if uncovered:
+        return PlanRejection(
+            RejectReason.FONT_WIDTHS_INCOMPLETE,
+            f"font /{show.font_resource} ({capability.basefont}) declares no "
+            f"usable /Widths entry for {len(uncovered)} character code(s)",
+        )
+
     old_advance = _advance(
         capability, target_text, show.font_size, show.char_spacing, show.word_spacing
     )
@@ -180,7 +214,10 @@ def prepare_tier0_plan(
         show.char_spacing,
         show.word_spacing,
     )
-    tolerance = max(_ADVANCE_TOL_PER_PT * show.font_size, 1e-4)
+    if capability.advance_source == "widths":
+        tolerance = max(_ADVANCE_TOL_PER_PT_EXACT * show.font_size, 1e-9)
+    else:
+        tolerance = max(_ADVANCE_TOL_PER_PT * show.font_size, 1e-4)
     if abs(new_advance - old_advance) > tolerance:
         return PlanRejection(
             RejectReason.ADVANCE_MISMATCH,

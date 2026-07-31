@@ -47,6 +47,60 @@ def read_page_streams(
     return [(xref, doc.xref_stream(xref) or b"") for xref in page.get_contents()]
 
 
+# Font dictionary keys whose values feed Tier 0 capability classification:
+# the width table and the code range that indexes it, the encoding that
+# decides simple-ness, and the descriptor carrying the glyph-repertoire
+# attestation.  Each may be an indirect object.
+_FONT_DEPENDENCY_KEYS = (
+    "Widths",
+    "FirstChar",
+    "LastChar",
+    "Encoding",
+    "FontDescriptor",
+)
+
+def _indirect_target(doc: fitz.Document, xref: int, key: str) -> int | None:
+    """The xref ``key`` points at, or ``None`` when it is not indirect."""
+    kind, value = doc.xref_get_key(xref, key)
+    if kind != "xref":
+        return None
+    try:
+        return int(value.split()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def _update_font_dependencies(
+    digest: "hashlib._Hash", doc: fitz.Document, font_xref: int
+) -> None:
+    """Fold one font's object and every indirect object it depends on.
+
+    Enumerated rather than followed generically so the set is auditable: if
+    capability classification starts reading another key, it belongs here in
+    the same change, or a plan measured under the old value stays "fresh".
+    """
+    digest.update(doc.xref_object(font_xref).encode("utf-8"))
+    for key in _FONT_DEPENDENCY_KEYS:
+        target = _indirect_target(doc, font_xref, key)
+        if target is None:
+            continue
+        try:
+            digest.update(doc.xref_object(target).encode("utf-8"))
+        except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+            digest.update(b"<unreadable>")
+            continue
+    # /Flags carries the glyph-repertoire attestation and may be indirect
+    # whether its descriptor is inline or an indirect object; the path form
+    # resolves both shapes in one lookup.
+    flags_target = _indirect_target(doc, font_xref, "FontDescriptor/Flags")
+    if flags_target is not None:
+        try:
+            digest.update(doc.xref_object(flags_target).encode("utf-8"))
+        except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+            digest.update(b"<unreadable>")
+    digest.update(b"\x06")
+
+
 def page_fingerprint(doc: fitz.Document, page: fitz.Page) -> str:
     """Digest of everything a Tier 0 commit promises not to disturb.
 
@@ -63,6 +117,15 @@ def page_fingerprint(doc: fitz.Document, page: fitz.Page) -> str:
     for entry in page.get_fonts(full=True):
         digest.update(repr(entry).encode("utf-8"))
         digest.update(b"\x02")
+        # The metadata tuple is identical whether or not the font's advance
+        # or glyph contract changed, so hash the defining objects themselves —
+        # including every indirect one, whose *content* can change while the
+        # reference in the font dictionary stays byte-identical.
+        try:
+            _update_font_dependencies(digest, doc, int(entry[0]))
+        except (RuntimeError, ValueError, IndexError, fitz.mupdf.FzErrorBase):
+            digest.update(b"<unreadable-font-object>")
+        digest.update(b"\x05")
     for annot in page.annots():
         digest.update(f"{annot.xref}:{tuple(annot.rect)}".encode("utf-8"))
         digest.update(b"\x03")

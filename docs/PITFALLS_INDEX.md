@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 217 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 221 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -222,3 +222,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1983 | A wrong extracted string can hide as a *similarity* problem rather than a visible failure | model/pdf_text_edit.py (`SequenceMatcher` block/page reconciliation) |
 | 1990 | Asserting that the replay *recorded* a text state does not test the gate that *rejects* it | model/text_commit planner gates (`plan.py`, `inspect.py`) + their tests |
 | 1997 | Two gates sharing one RejectReason let a test survive deletion of its own gate | model/text_commit/plan.py (`FONT_FACE_UNAVAILABLE`, `UNSUPPORTED_TEXT_STATE`) |
+| 2004 | For a simple PDF font, `/Widths` overrides the font program — measuring advance from a face is wrong | model/text_commit/fonts.py, plan.py (`_advance`) |
+| 2011 | `/Widths` proves an advance, not a glyph — trusting it as glyph evidence commits tofu | model/text_commit/fonts.py (`FontCapability.missing_glyphs`) |
+| 2018 | A staleness fingerprint must cover whatever the plan was *measured* against, not just what it edits | model/text_commit/inspect.py (`page_fingerprint`) |
+| 2025 | A tolerance that equals the quantum of its own measurement source stops being a tolerance | model/text_commit/plan.py (`_ADVANCE_TOL_PER_PT`) |

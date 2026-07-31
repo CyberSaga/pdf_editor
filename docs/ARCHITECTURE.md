@@ -582,6 +582,16 @@ new engine yet** (integration is plan Task 7+).
   owner xref, resource name, font xref) — never by basename; explicit face
   provenance (`extracted`/`base14`/`system`/`none`); strict-ASCII verified
   reverse encoder; no silent Helvetica fallback anywhere.
+  **Advance and glyph coverage are separate proofs, from separate sources.**
+  `advance_source` (`widths`/`face`/`none`) is deliberately distinct from
+  `face_source`: for a simple font the `/Widths` table *is* the layout
+  contract and outranks any face, including an embedded font's own metrics,
+  so a capability can measure with `face=None`. Glyph coverage cannot come
+  from that table — a width proves an advance, not an outline — so
+  `missing_glyphs` still requires a face, except for non-subset unembedded
+  fonts, which every viewer draws through a substituted complete face.
+  Malformed `/Widths` is never downgraded to absent: the document declared a
+  contract we cannot read, so refusing beats measuring something else.
 - `plan.py` — Tier 0 gate: one unambiguous run → one complete literal-string
   `Tj`, simple encoding, equal consumed advance (Tc/Tw folded), no style/
   geometry override, no widgets/signatures, no pending maintenance. Encoder is

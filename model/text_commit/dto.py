@@ -32,6 +32,7 @@ class RejectReason:
     FONT_UNSUPPORTED_ENCODING = "font_unsupported_encoding"
     FONT_CUSTOM_DIFFERENCES = "font_custom_differences"
     FONT_FACE_UNAVAILABLE = "font_face_unavailable"
+    FONT_WIDTHS_INCOMPLETE = "font_widths_incomplete"
     NOT_SINGLE_LITERAL_TJ = "not_single_literal_tj"
     MULTI_SPAN_TARGET = "multi_span_target"
     STYLE_OVERRIDE_PRESENT = "style_override_present"
