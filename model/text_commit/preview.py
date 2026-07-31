@@ -78,23 +78,62 @@ class PlanPreviewResult:
     render_scale: float
 
 
+def _session_snapshot_bytes(
+    doc: fitz.Document, password: str | None
+) -> bytes | None:
+    """Decrypted, xref-stable bytes for the scratch copy — or ``None``.
+
+    Never calls ``tobytes()`` with the default (decrypting) encryption on the
+    live handle.  On an *encrypted* document that silently poisons the
+    handle's internal crypt state (a PyMuPDF AES quirk), so the user's next
+    ``encryption=KEEP`` save writes content streams that no longer decrypt —
+    reported as success, discovered as blank pages on reopen.  Take an
+    ``encryption=KEEP`` snapshot instead and decrypt a throwaway clone, whose
+    crypt state nobody depends on.  ``KEEP`` is a no-op for unencrypted
+    documents, so one path covers both.
+
+    Returns ``None`` (never raises) when an encrypted document's clone cannot
+    be re-authenticated; the caller degrades to the legacy preview rather
+    than claiming exactness.
+    """
+    keep_bytes = doc.tobytes(encryption=fitz.PDF_ENCRYPT_KEEP)
+    clone = fitz.open("pdf", keep_bytes)
+    try:
+        if not clone.needs_pass:
+            return keep_bytes
+        if password is None or clone.authenticate(password) == 0:
+            return None
+        return clone.tobytes(
+            garbage=0, no_new_id=1, encryption=fitz.PDF_ENCRYPT_NONE
+        )
+    finally:
+        clone.close()
+
+
 def open_preview_session(
     doc: fitz.Document,
     page_number: int,
     session_key: str,
     *,
+    password: str | None = None,
     page_has_pending_maintenance: bool = False,
-) -> PreviewSessionInput:
+) -> PreviewSessionInput | None:
     """Snapshot the document once for a whole edit session.
 
     ``tobytes()`` preserves xref numbering and decoded stream bytes, so
     plans prepared on the scratch copy are byte-valid on the live document.
+
+    Returns ``None`` when an encrypted document cannot be snapshotted
+    without its password — the live handle is left untouched either way.
     """
     page = doc[page_number]
+    snapshot_bytes = _session_snapshot_bytes(doc, password)
+    if snapshot_bytes is None:
+        return None
     return PreviewSessionInput(
         session_key=session_key,
         page_number=page_number,
-        snapshot_bytes=doc.tobytes(),
+        snapshot_bytes=snapshot_bytes,
         page_fingerprint=page_fingerprint(doc, page),
         page_has_pending_maintenance=page_has_pending_maintenance,
     )

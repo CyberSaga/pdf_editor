@@ -3540,8 +3540,19 @@ class PDFController:
                     self.model.doc,
                     page_idx,
                     session_key,
+                    password=getattr(self.model, "password", None),
                     page_has_pending_maintenance=pending,
                 )
+                if session is None:
+                    # Encrypted document whose password is unavailable: no
+                    # exact preview is possible. The live document is intact
+                    # either way -- fall back without claiming exactness.
+                    self._plan_preview_target = None
+                    coordinator.end_session()
+                    self._notify_plan_preview_rejected(
+                        session_key, generation, "snapshot_unavailable"
+                    )
+                    return
                 coordinator.begin_session(session)
         if self._plan_preview_target is None:
             self._notify_plan_preview_rejected(

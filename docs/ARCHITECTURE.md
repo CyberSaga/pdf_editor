@@ -637,7 +637,13 @@ stays in charge otherwise (and as the interim frame / rejection fallback —
 it never claims exactness).
 
 - `model/text_commit/preview.py` (Qt-free) — `open_preview_session` takes
-  the document snapshot **once per edit session**; `PlanPreviewRenderer`
+  the document snapshot **once per edit session**, via an
+  `encryption=PDF_ENCRYPT_KEEP` serialization plus a re-authenticated
+  throwaway clone (never a default `tobytes()` on the live handle, which
+  silently poisons an encrypted document's crypt state — see PITFALLS). It
+  takes an optional `password` and returns `None` when an encrypted document
+  cannot be snapshotted, which the controller degrades to the legacy preview
+  with reason `snapshot_unavailable`. `PlanPreviewRenderer`
   opens one scratch document from it and, per keystroke, runs
   `prepare_tier0_plan` → `apply_patchset` → clip raster → revert, returning
   a `PlanPreviewResult` raster DTO (PNG bytes + content-derived plan token,

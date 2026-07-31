@@ -348,10 +348,19 @@ def _ocg_membership_lost(doc: fitz.Document, expected_text: str) -> bool:
     called on the reopened copy. Nothing here mutates the live ``doc``.
     """
     try:
-        probe = fitz.open("pdf", doc.tobytes())
+        probe = fitz.open("pdf", doc.tobytes(encryption=fitz.PDF_ENCRYPT_KEEP))
     except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
         return False
     try:
+        if probe.needs_pass:
+            # Encrypted and no password reaches this probe. Decrypting the
+            # live handle to get a readable one would poison its crypt state
+            # (see the KEEP note above), so report no evidence of loss. Today
+            # this never fires -- callers pass an already-decrypted scratch --
+            # but promoting V0d onto a live-handle document (Task 11) needs a
+            # tri-state here, not a bool: "not lost" and "could not evaluate"
+            # must stop sharing an answer.
+            return False
         ocgs = probe.get_ocgs()
         if not ocgs:
             return False
