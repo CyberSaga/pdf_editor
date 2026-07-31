@@ -1973,6 +1973,20 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Fix:** To probe OCG membership, snapshot the doc via `tobytes()`+reopen, call `set_layer` on THAT reopened copy, `tobytes()` again, and reopen a second time before calling `get_text()` — two full round trips total, never mutating the original live document.
 **File:** model/text_commit/verify.py (`_ocg_membership_lost`)
 
+## Concatenating a block's spans is right; concatenating its lines deletes a word boundary
+**Area:** model/text_block_parsing.py (`_parse_block`)
+**Symptom:** `TextBlock.text` for a three-line paragraph read `'The quick brown fox jumpsover the lazy dog whilecarrying a heavy basket'` — the substring `'jumps over'` was not present at all. Silent: no error, just a wrong string handed to block matching and to `original_text=` on edit requests.
+**Cause:** `_parse_block` flattened every span of every line into one list and `"".join`-ed it. Within a line that is correct — rawdict spans are contiguous style runs, and inserting a separator between them would split styled fragments mid-word (`"Sun"` + `"day"` → `"Sun day"`). Across lines it is not: soft wrapping is where the space went. The same module already had the right rule in `_build_paragraphs` (space between visual lines, `\n` at bullets/large gaps) and `pdf_text_edit.py:1223` space-joins its cluster path, so `_parse_block` was the lone dissenter — the giveaway that this was a defect rather than a deliberate convention.
+**Fix:** Build one string per line, then join *lines* via `_join_visual_lines`: one space between lines, suppressed when the previous line already ends in space/newline/hyphen (a trailing hyphen is a split word, `"compre-"` + `"hensive"`), empty lines skipped. When fixing this class of bug, pin the non-fix too — a test that the over-correction (separating per *span*) does not happen.
+**File:** `model/text_block_parsing.py:_join_visual_lines`; tests in `test_scripts/test_text_block_parsing_extraction.py`
+
+## A wrong extracted string can hide as a *similarity* problem rather than a visible failure
+**Area:** model/pdf_text_edit.py (`SequenceMatcher` block/page reconciliation)
+**Symptom:** No user-visible error — just occasional unnecessary page-index rebuilds, and edit targeting that is subtly worse than it should be.
+**Cause:** `pdf_text_edit.py:456-459` reconciles the indexed `target.text` against `page.get_text("text", clip=target.rect)` with `difflib.SequenceMatcher`, rebuilding the page index when the ratio drops below 0.5. `get_text` separates lines; the fused `TextBlock.text` did not, so every line break cost real similarity. The check absorbed the corruption instead of surfacing it — a threshold comparison degrades gracefully where an equality check would have failed loudly on day one.
+**Fix:** Fixed at the source (see previous entry). The general lesson: a fuzzy comparator between two representations of the same text is a place where one side can be quietly wrong for a long time. When adding one, assert the *exact* agreement somewhere too, or the ratio silently becomes the spec.
+**File:** `model/pdf_text_edit.py:456-459`
+
 ## Asserting that the replay *recorded* a text state does not test the gate that *rejects* it
 **Area:** model/text_commit planner gates (`plan.py`, `inspect.py`) + their tests
 **Symptom:** `plan.py`'s `mc_depth` gate and its `render_mode`/`rise`/`hscale` gate could both be deleted outright and the entire 135-test text_commit suite still passed. The marked-content gate — the single gate rejecting the most real-world shows (all 32 in `test-horizontal-texts.pdf`, 2364 in `test-complexed-layout.pdf`) — had zero coverage.

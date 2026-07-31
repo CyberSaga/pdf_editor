@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 215 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 217 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -218,5 +218,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1955 | A "graphics-state bleed" ink-tint check must not sample a covering shape's own fill color | model/text_commit/verify.py (Tier-1 spike: verify_tier1_strategy) |
 | 1962 | PyMuPDF insert_font(fontbuffer=..., set_simple=True) dedupes byte-identical programs onto the same xref | model/text_commit fonts (font-honesty Tier-1 spike) |
 | 1969 | OCG visibility only takes effect after a tobytes()+reopen round trip — and only on a *second* round trip after set_layer | model/text_commit/verify.py (`_ocg_membership_lost`) |
-| 1976 | Asserting that the replay *recorded* a text state does not test the gate that *rejects* it | model/text_commit planner gates (`plan.py`, `inspect.py`) + their tests |
-| 1983 | Two gates sharing one RejectReason let a test survive deletion of its own gate | model/text_commit/plan.py (`FONT_FACE_UNAVAILABLE`, `UNSUPPORTED_TEXT_STATE`) |
+| 1976 | Concatenating a block's spans is right; concatenating its lines deletes a word boundary | model/text_block_parsing.py (`_parse_block`) |
+| 1983 | A wrong extracted string can hide as a *similarity* problem rather than a visible failure | model/pdf_text_edit.py (`SequenceMatcher` block/page reconciliation) |
+| 1990 | Asserting that the replay *recorded* a text state does not test the gate that *rejects* it | model/text_commit planner gates (`plan.py`, `inspect.py`) + their tests |
+| 1997 | Two gates sharing one RejectReason let a test survive deletion of its own gate | model/text_commit/plan.py (`FONT_FACE_UNAVAILABLE`, `UNSUPPORTED_TEXT_STATE`) |
