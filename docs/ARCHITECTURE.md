@@ -681,6 +681,21 @@ it never claims exactness).
   `edit_text` ends the preview session before committing so a stale
   scratch can never outlive a mutation.
 
+**Target derivation is a reconstruction, and says so (Task 11 prereq D5,
+2026-08-01).** `_tier0_target_from_resolve` (`model/pdf_text_edit.py`) turns
+the editor's resolved member spans into the target text the binder then
+matches byte-for-byte. It returns `_Tier0Target` — the `(text, origin, bbox)`
+triple at index positions 0-2, plus `joined_runs`. The extra field exists
+because word runs are stripped when parsed
+(`text_block_parsing.py:_finalize`), so joining two or more of them with
+single spaces reproduces the source only when every gap was exactly one
+space; the text is then a *candidate*, not a quotation of the document.
+`_reconstruction_aware_reason` re-labels a run-joined target's `NO_MATCH` as
+`RejectReason.TARGET_RECONSTRUCTION_UNVERIFIED` at both call sites
+(`_classify_tier0_candidate`, `_attempt_tiered_commit`), so a refusal never
+blames the document for the engine's own lossy reconstruction.
+`derive_tier0_preview_target` keeps its 3-tuple contract for the controller.
+
 **Persistence, undo/redo, and unsupported boundaries (Task 9, 2026-07-29).**
 The engine's promise is scoped explicitly: supported live-commit semantics
 plus tested save/reopen behavior — never whole-file byte or xref identity

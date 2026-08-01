@@ -35,6 +35,12 @@ class RejectReason:
     FONT_WIDTHS_INCOMPLETE = "font_widths_incomplete"
     NOT_SINGLE_LITERAL_TJ = "not_single_literal_tj"
     MULTI_SPAN_TARGET = "multi_span_target"
+    # The engine's own target string was assembled by joining word runs and
+    # could not be found in the stream.  Distinct from NO_MATCH, which
+    # asserts the *document* lacks the text: here the reconstruction is the
+    # suspect, because run parsing strips whitespace and cannot reproduce a
+    # source gap wider than one space.
+    TARGET_RECONSTRUCTION_UNVERIFIED = "target_reconstruction_unverified"
     STYLE_OVERRIDE_PRESENT = "style_override_present"
     GEOMETRY_OVERRIDE_PRESENT = "geometry_override_present"
     MULTILINE_REPLACEMENT = "multiline_replacement"

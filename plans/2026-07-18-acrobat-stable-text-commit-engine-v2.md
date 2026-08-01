@@ -1066,3 +1066,37 @@ The project can claim Acrobat-like text-edit stability only when:
 - legacy fallback is visibly degraded or rejected under strict mode;
 - all project verification commands pass;
 - architecture, pitfalls, TODOs, and the archived plan match the shipped behavior.
+
+### Prereq D5 landed (2026-08-01): target derivation is a reconstruction
+
+Direct tests for `_tier0_target_from_resolve` now exist
+(`test_scripts/test_tier0_target_resolution.py`, 11 tests). The prerequisite
+asked whether the `" ".join` at `pdf_text_edit.py:1223` byte-matches
+`bind_source_text`'s exact-equality demand (`inspect.py:233`). Measured
+answer: **not in general.** `text_block_parsing.py:_finalize` strips every
+word run, so run text carries no whitespace and word boundaries come from
+geometric gap analysis. `"Price is  100"` rebuilds as `"Price is 100"` and
+fails to bind.
+
+**Decision — make it honest, not clever.** The recovery path (read the
+verbatim dict line text, which *does* preserve the source exactly) was
+considered and deferred: it crosses the rawdict↔dict index-alignment
+assumption in `_build_page_index` and does not address the single-run
+padding case (`"  Total  "` → `"Total"`, which also fails to bind). Shipping
+a reconstruction *derived* differently but still unverified would repeat the
+Task 10f root cause — inferring a property from evidence that does not prove
+it. Instead the boundary now distinguishes the two claims:
+`RejectReason.NO_MATCH` continues to mean "the document lacks this text",
+while `TARGET_RECONSTRUCTION_UNVERIFIED` means "our target string was
+assembled from N stripped runs and may itself be wrong".
+
+**Consequence for Task 12's coverage reporting:** the
+`TARGET_RECONSTRUCTION_UNVERIFIED` count is a *known-fixable gap*, not part
+of the structural ceiling. It must not be folded into the refusal total as if it
+were a document property.
+
+**Also found (mutation testing):** the `any(...)` line-identity guard is
+subsumed by the full-line set-equality check that follows it and cannot be
+made SENSITIVE — `span_id` encodes page/block/line, so cross-line members can
+never satisfy the set equality. Recorded rather than papered over; see
+TODOS.md and PITFALLS.md.

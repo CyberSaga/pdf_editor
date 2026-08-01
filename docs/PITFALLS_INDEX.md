@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 221 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 223 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -226,3 +226,5 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2011 | `/Widths` proves an advance, not a glyph — trusting it as glyph evidence commits tofu | model/text_commit/fonts.py (`FontCapability.missing_glyphs`) |
 | 2018 | A staleness fingerprint must cover whatever the plan was *measured* against, not just what it edits | model/text_commit/inspect.py (`page_fingerprint`) |
 | 2025 | A tolerance that equals the quantum of its own measurement source stops being a tolerance | model/text_commit/plan.py (`_ADVANCE_TOL_PER_PT`) |
+| 2032 | Word runs are stripped, so `" ".join` cannot reconstruct source whitespace | model/pdf_text_edit.py (`_tier0_target_from_resolve`) → model/text_commit/inspect.py (`bind_source_text`) |
+| 2039 | A redundant guard cannot be made mutation-SENSITIVE — check for subsumption before claiming a test pins it | model/pdf_text_edit.py (`_tier0_target_from_resolve`), test design |

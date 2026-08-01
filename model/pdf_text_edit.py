@@ -24,7 +24,7 @@ import re
 import time
 from dataclasses import dataclass
 from dataclasses import replace as dataclasses_replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import fitz
 
@@ -1182,11 +1182,60 @@ def _resolve_effective_target_mode(
             logger.warning("auto-promoted target_mode run->paragraph (no explicit span_id)")
     return effective
 
+class _Tier0Target(NamedTuple):
+    """The Tier 0 target triple plus how its ``text`` was arrived at.
+
+    ``text``/``origin``/``bbox`` keep index positions 0-2 so existing tuple
+    consumers are unaffected; ``joined_runs`` is what lets a caller tell a
+    quotation from a reconstruction.
+    """
+
+    text: str
+    origin: tuple[float, float]
+    bbox: tuple[float, float, float, float]
+    joined_runs: int
+
+    @property
+    def whitespace_reconstructed(self) -> bool:
+        """``text`` was assembled from stripped runs, so it may be wrong.
+
+        ``text_block_parsing._finalize`` strips each word run, so joining
+        two or more of them with single spaces reproduces the source only
+        when every gap in it was exactly one space.  Wherever it was not —
+        multiple spaces, a tab, a kern-derived gap — the join silently
+        differs from the stream bytes that ``bind_source_text`` demands.
+        """
+        return self.joined_runs > 1
+
+
+def _reconstruction_aware_reason(reason: str, target: _Tier0Target) -> str:
+    """Re-label a ``NO_MATCH`` whose target this stage may itself have broken.
+
+    ``NO_MATCH`` claims the document does not contain the text.  That claim
+    is only honest when the text is a quotation of the document; when it is
+    a run-join it may be the reconstruction that is wrong, and conflating
+    the two hid this whole failure class from every corpus number (the
+    audits classify shows, not edits).
+    """
+    if reason == RejectReason.NO_MATCH and target.whitespace_reconstructed:
+        return RejectReason.TARGET_RECONSTRUCTION_UNVERIFIED
+    return reason
+
+
+def _reconstruction_detail(target: _Tier0Target) -> str:
+    return (
+        f"target text was reconstructed by joining {target.joined_runs} word "
+        "runs with single spaces; run parsing strips whitespace, so a source "
+        "gap that is not exactly one space cannot be reproduced and no show "
+        "operator matched"
+    )
+
+
 def _tier0_target_from_resolve(
     model: PDFModel,
     page_idx: int,
     resolve_result: _EditTextResolveResult,
-) -> tuple[str, tuple[float, float], tuple[float, float, float, float]] | None:
+) -> _Tier0Target | None:
     """Derive the Tier 0 (text, origin, bbox) target from the edit's members.
 
     The block manager splits lines into word-level runs, so one show op
@@ -1195,6 +1244,10 @@ def _tier0_target_from_resolve(
     (its space-joined text is the show-op string).  Anything else — partial
     line selections, multi-line paragraphs — is not a whole-operator patch
     and returns None.
+
+    The returned ``text`` is a *candidate*: for a multi-run target it is a
+    reconstruction, not a quotation (see
+    :attr:`_Tier0Target.whitespace_reconstructed`).
     """
     members = [
         span
@@ -1223,10 +1276,11 @@ def _tier0_target_from_resolve(
     text = " ".join((s.text or "") for s in ordered)
     origin_span = ordered[0]
     bbox = rect_union([fitz.Rect(s.bbox) for s in ordered])
-    return (
+    return _Tier0Target(
         text,
         (float(origin_span.origin.x), float(origin_span.origin.y)),
         (float(bbox.x0), float(bbox.y0), float(bbox.x1), float(bbox.y1)),
+        len(ordered),
     )
 
 
@@ -1277,7 +1331,10 @@ def derive_tier0_preview_target(
     )
     if resolve_status is not EditTextResult.SUCCESS or resolve_result is None:
         return None
-    return _tier0_target_from_resolve(model, page_idx, resolve_result)
+    target = _tier0_target_from_resolve(model, page_idx, resolve_result)
+    if target is None:
+        return None
+    return (target.text, target.origin, target.bbox)
 
 
 def _classify_tier0_candidate(
@@ -1296,9 +1353,9 @@ def _classify_tier0_candidate(
             RejectReason.MULTI_SPAN_TARGET,
             "target does not map to one whole line or one whole word run",
         )
-    target_text, expected_origin, target_bbox = target
+    target_text, expected_origin, target_bbox, _ = target
     pending = any(e.get("page_idx") == page_idx for e in model.pending_edits)
-    return prepare_tier0_plan(
+    result = prepare_tier0_plan(
         model.doc,
         page,
         target_text=target_text,
@@ -1310,6 +1367,11 @@ def _classify_tier0_candidate(
         new_rect=new_rect,
         page_has_pending_maintenance=pending,
     )
+    if isinstance(result, PlanRejection):
+        reason = _reconstruction_aware_reason(result.reason, target)
+        if reason != result.reason:
+            return PlanRejection(reason, _reconstruction_detail(target))
+    return result
 
 
 def _shadow_classify_edit(
@@ -1362,7 +1424,7 @@ def _attempt_tiered_commit(
     target = _tier0_target_from_resolve(model, page_idx, resolve_result)
     if target is None:
         return None, RejectReason.MULTI_SPAN_TARGET
-    target_text, expected_origin, target_bbox = target
+    target_text, expected_origin, target_bbox, _ = target
     # Password threaded through so the engine's scratch-first proof can
     # re-authenticate its throwaway clone on encrypted documents instead of
     # ever calling tobytes() on the live handle (see engine.py
@@ -1381,7 +1443,7 @@ def _attempt_tiered_commit(
         page_has_pending_maintenance=pending,
     )
     if isinstance(prepared, PlanRejection):
-        return None, prepared.reason
+        return None, _reconstruction_aware_reason(prepared.reason, target)
     outcome = engine.commit(prepared)
     if outcome.status is CommitStatus.COMMITTED:
         return outcome, None
