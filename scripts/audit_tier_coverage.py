@@ -4,8 +4,9 @@
 Replays every page's content streams and classifies each text-showing
 operator into ``tier0_eligible`` (would pass every structural Tier 0 gate
 ``model/text_commit/plan.py`` checks, independent of any specific
-replacement text), ``tier1_candidate`` (a resolvable font face but not a
-literal single-run ``Tj``, or some other Tier 0-only restriction), or
+replacement text), ``tier1_candidate`` (font passes the Task 10d
+widths-based gates and the Task 10e glyph proxy, but is not a single-string
+``Tj``, or some other Tier 0-only restriction), or
 ``legacy_only``. Never mutates the document -- no scratch commit, no
 ``prepare_tier0_plan`` call -- and never emits document text, extracted
 strings, or file paths: only counts, booleans, and stable
@@ -53,16 +54,20 @@ def _classify_show(
         or show.hscale != 100.0
         or show.mc_depth != 0
         or not show.in_bt
-        or not show.trm_translation_only
+        or not show.trm_uniform_scaled
     )
-    literal_tj = show.operator == "Tj" and show.string_kind == "literal"
+    single_string_tj = show.operator == "Tj" and show.string_kind in (
+        "literal",
+        "hex",
+    )
 
     tier0_eligible = (
-        literal_tj
+        single_string_tj
         and not unsupported_state
         and show.origin_reliable
         and capability is not None
         and capability.tier0_reject_reason is None
+        and (capability.face is not None or capability.ascii_repertoire_attested)
     )
     if tier0_eligible:
         return TIER0_ELIGIBLE, None
@@ -72,7 +77,8 @@ def _classify_show(
         and not unsupported_state
         and show.origin_reliable
         and capability is not None
-        and capability.face is not None
+        and capability.tier0_reject_reason is None
+        and (capability.face is not None or capability.ascii_repertoire_attested)
     )
 
     if unsupported_state:
@@ -83,7 +89,7 @@ def _classify_show(
         reason = RejectReason.FONT_FACE_UNAVAILABLE
     elif capability.tier0_reject_reason is not None:
         reason = capability.tier0_reject_reason
-    elif not literal_tj:
+    elif not single_string_tj:
         reason = RejectReason.NOT_SINGLE_LITERAL_TJ
     else:
         reason = RejectReason.UNSUPPORTED_TEXT_STATE
