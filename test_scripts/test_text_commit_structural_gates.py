@@ -22,10 +22,12 @@ Two rules make these tests mutation-proof rather than merely green:
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
 import fitz
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -50,8 +52,10 @@ LEAD_IN = "Lead-in"  # distinct bytes: never collides with TARGET when matching
 _NOMINAL: dict[str, object] = {
     "origin_reliable": True,  # inspect.py G6 -> UNTRACKED_ADVANCE
     "in_bt": True,  # inspect.py G5 -> UNSUPPORTED_TEXT_STATE
-    "trm_translation_only": True,  # inspect.py G7 -> UNSUPPORTED_TEXT_STATE
+    "trm_uniform_scaled": True,  # inspect.py G7 -> UNSUPPORTED_TEXT_STATE
     "operator": "Tj",  # plan.py    -> NOT_SINGLE_LITERAL_TJ
+    # "hex" is equally admissible since 2026-08-01; every fixture here is
+    # literal, so one nominal value still suffices.
     "string_kind": "literal",  # plan.py    -> NOT_SINGLE_LITERAL_TJ
     "render_mode": 0,  # plan.py G2 -> UNSUPPORTED_TEXT_STATE
     "rise": 0.0,  # plan.py G3 -> UNSUPPORTED_TEXT_STATE
@@ -338,13 +342,20 @@ def test_planner_rejects_origin_that_depends_on_a_preceding_advance():
     )
 
 
-def test_planner_rejects_uniformly_scaled_text_matrix():
-    """G7: the TeX/dvips idiom of baking the point size into Tm.
+def test_planner_accepts_uniformly_scaled_text_matrix():
+    """G7 (relaxed 2026-08-01): the TeX/dvips idiom is a Tier 0 candidate.
 
-    ``/F1 1 Tf`` with ``10 0 0 10 ... Tm`` renders at 10pt with a *uniform*
-    (unrotated, unsheared) scale — visually indistinguishable from
-    ``/F1 10 Tf``, but the byte-level advance arithmetic Tier 0 relies on
-    no longer holds, so it must be refused just like a rotation.
+    ``/F1 1 Tf`` with ``10 0 0 10 ... Tm`` renders at 10pt with a *uniform,
+    axis-aligned, positive* scale — visually indistinguishable from
+    ``/F1 10 Tf``.  The equal-advance proof is scale-invariant (both sides
+    are measured in text space and multiplied by the same factor), so this
+    shape is admitted; rotation, shear, and reflection are not, and are
+    pinned by the two tests below.
+
+    This test was ``test_planner_rejects_uniformly_scaled_text_matrix``
+    before the relaxation; it is revised rather than deleted so the
+    fixture's isolation guarantee (:func:`_assert_only_off_nominal`) keeps
+    covering the same content-stream shape.
     """
     doc = _stream_doc(
         b"BT /F1 1 Tf 10 0 0 10 72 700 Tm (" + TARGET.encode() + b") Tj ET"
@@ -352,18 +363,237 @@ def test_planner_rejects_uniformly_scaled_text_matrix():
     show = _target_show(doc)
     assert show.tm == (10.0, 0.0, 0.0, 10.0, 72.0, 700.0)
     assert show.ctm == (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)  # scale is in Tm, not cm
-    assert show.tm[1] == 0.0 and show.tm[2] == 0.0  # uniform scale, not a rotation
     assert show.font_size == 1.0  # float, per the size-stays-float rule
-    assert show.trm_translation_only is False
-    _assert_only_off_nominal(show, "trm_translation_only")
+    assert show.trm_uniform_scale == pytest.approx(10.0)
+    _assert_only_off_nominal(show)  # nothing is off-nominal any more
+
+    prepared = _plan(doc)
+    assert isinstance(prepared, PreparedEdit), prepared
+    assert prepared.font_size == 1.0  # the Tf size, not the effective size
+    doc.close()
+
+
+# Deleting the ``abs(b) > _EPS or abs(c) > _EPS`` half of
+# ``replay._uniform_scale`` makes every matrix below return its ``a``, so
+# each of these three MUST fail on that mutation.  A 90-degree rotation
+# would not: its ``a`` is 0 and the ``a > 0`` guard catches it anyway.
+@pytest.mark.parametrize(
+    ("label", "text_matrix"),
+    [
+        ("rotation_45", b"0.7071 0.7071 -0.7071 0.7071"),  # b and c both set
+        ("shear_b", b"1 0.5 0 1"),  # only b set
+        ("shear_c", b"1 0 0.5 1"),  # only c set
+    ],
+)
+def test_planner_rejects_off_axis_text_matrix(label, text_matrix):
+    """G7: rotation and shear keep ``a == d > 0`` but are not Tier 0."""
+    doc = _stream_doc(
+        b"BT /F1 12 Tf " + text_matrix + b" 72 700 Tm ("
+        + TARGET.encode()
+        + b") Tj ET"
+    )
+    show = _target_show(doc)
+    assert show.tm[0] == pytest.approx(show.tm[3])  # the a == d guard is happy
+    assert show.tm[0] > 0.0  # so is the a > 0 guard
+    assert show.trm_uniform_scale is None
+    _assert_only_off_nominal(show, "trm_uniform_scaled")
 
     rejection = _plan(doc)
     assert isinstance(rejection, PlanRejection), rejection
     assert rejection.reason == RejectReason.UNSUPPORTED_TEXT_STATE
-    assert "rotated, scaled, or sheared" in rejection.detail
+    assert "rotated, sheared, reflected" in rejection.detail
     doc.close()
 
-    # Control: identical stream with the Tm scale factors set to 1.
     _assert_control_plans_cleanly(
-        b"BT /F1 1 Tf 1 0 0 1 72 700 Tm (" + TARGET.encode() + b") Tj ET"
+        b"BT /F1 12 Tf 1 0 0 1 72 700 Tm (" + TARGET.encode() + b") Tj ET"
     )
+
+
+# ``point_reflection`` is the only fixture here that pins the ``a > 0``
+# guard: delete it and ``_uniform_scale`` returns -10.0, so upside-down
+# text would plan (and the fallback bbox would come out inverted).  The
+# other two are guarded by ``a == d`` / ``b == c == 0`` and pin nothing on
+# their own — they are kept as documentation of the refused shapes.
+@pytest.mark.parametrize(
+    ("label", "text_matrix"),
+    [
+        ("point_reflection", b"-10 0 0 -10"),  # a == d < 0
+        ("mirror_x", b"-10 0 0 10"),  # a == -d
+        ("rotation_90", b"0 10 -10 0"),  # a == d == 0
+    ],
+)
+def test_planner_rejects_reflected_or_rotated_text_matrix(label, text_matrix):
+    """G7: a negative or degenerate scale is never a Tier 0 candidate."""
+    doc = _stream_doc(
+        b"BT /F1 1 Tf " + text_matrix + b" 300 400 Tm ("
+        + TARGET.encode()
+        + b") Tj ET"
+    )
+    show = _target_show(doc)
+    assert show.tm[0] <= 0.0
+    assert show.trm_uniform_scale is None
+    _assert_only_off_nominal(show, "trm_uniform_scaled")
+
+    rejection = _plan(doc)
+    assert isinstance(rejection, PlanRejection), rejection
+    assert rejection.reason == RejectReason.UNSUPPORTED_TEXT_STATE
+    assert "rotated, sheared, reflected" in rejection.detail
+    doc.close()
+
+    _assert_control_plans_cleanly(
+        b"BT /F1 1 Tf 10 0 0 10 300 400 Tm (" + TARGET.encode() + b") Tj ET"
+    )
+
+
+# ------------------------------------------------- fallback target geometry
+
+
+def _rendered_span_bbox(doc: fitz.Document) -> tuple[float, float, float, float]:
+    """MuPDF's own page-space bbox for the target — an independent oracle."""
+    for block in doc[0].get_text("rawdict")["blocks"]:
+        for line in block.get("lines", []):
+            for span in line["spans"]:
+                if TARGET in "".join(ch["c"] for ch in span["chars"]):
+                    return tuple(span["bbox"])
+    raise AssertionError("target span not rendered")
+
+
+def test_fallback_target_bbox_follows_the_text_matrix_scale():
+    """No caller bbox + a scaled Tm: the halo must be in PAGE space.
+
+    ``_advance`` measures in *text* space, so at ``a == d == 0.5`` the
+    fallback bbox derived straight from it is twice as wide and twice as
+    tall as the glyphs actually painted.  An over-wide halo is the
+    dangerous direction: ``verify`` asserts raster identity *outside* it,
+    so corruption in the inflated margin is a false ACCEPT.
+    """
+    doc = _stream_doc(
+        b"BT /F1 24 Tf 0.5 0 0 0.5 72 700 Tm (" + TARGET.encode() + b") Tj ET"
+    )
+    page = doc[0]
+    capability = DocumentFontRegistry(doc).capability(page, "F1")
+    assert capability is not None
+    text_space_advance = capability.string_width(TARGET, 24.0)
+    assert text_space_advance is not None
+
+    prepared = _plan(doc)  # _plan passes target_bbox=None
+    assert isinstance(prepared, PreparedEdit), prepared
+    x0, y0, x1, y1 = prepared.target_bbox_page
+
+    assert x1 - x0 == pytest.approx(0.5 * text_space_advance, abs=0.01)
+    assert y1 - y0 == pytest.approx(0.5 * 24.0 * 1.35, abs=0.01)
+    # Origin (72, 700) in user space is (72, 142) in MuPDF page space.
+    assert x0 == pytest.approx(72.0, abs=0.01)
+    assert y0 == pytest.approx(142.0 - 0.5 * 24.0, abs=0.01)
+
+    # Independent oracle: MuPDF's own layout of the same stream.
+    rx0, _, rx1, _ = _rendered_span_bbox(doc)
+    assert x0 == pytest.approx(rx0, abs=1.0)
+    assert x1 == pytest.approx(rx1, abs=1.0)
+    doc.close()
+
+
+def test_fallback_target_bbox_includes_the_page_user_unit_scale():
+    """No caller bbox + ``/UserUnit != 1``: the page scale counts too.
+
+    MuPDF folds ``/UserUnit`` into ``page.rect`` and
+    ``page.transformation_matrix`` (2.0 at ``/UserUnit 2``), so
+    ``binding.origin_page`` already carries that factor while ``_advance``
+    and ``font_size`` are still text space.  Applying only the Tm scale
+    leaves the halo off by the ``/UserUnit`` factor: here the net page
+    scale is ``0.5 * 2 == 1`` and the glyphs are full size, so a half-size
+    halo makes ``verify`` V0c report the replacement "not extractable at
+    the target" and reject a valid edit.
+    """
+    doc = _stream_doc(
+        b"BT /F1 24 Tf 0.5 0 0 0.5 72 700 Tm (" + TARGET.encode() + b") Tj ET"
+    )
+    doc.xref_set_key(doc[0].xref, "UserUnit", "2")
+    page = doc[0]  # re-fetch: the page's transform is read when it is loaded
+    matrix = page.transformation_matrix
+    assert math.hypot(matrix.a, matrix.b) == pytest.approx(
+        2.0
+    ), "fixture: /UserUnit did not reach the page transform"
+
+    capability = DocumentFontRegistry(doc).capability(page, "F1")
+    assert capability is not None
+    text_space_advance = capability.string_width(TARGET, 24.0)
+    assert text_space_advance is not None
+
+    prepared = _plan(doc)  # _plan passes target_bbox=None
+    assert isinstance(prepared, PreparedEdit), prepared
+    x0, y0, x1, y1 = prepared.target_bbox_page
+
+    # Net page scale is 0.5 (Tm) * 2 (/UserUnit) == 1: full-size glyphs.
+    assert x1 - x0 == pytest.approx(text_space_advance, abs=0.01)
+    assert y1 - y0 == pytest.approx(24.0 * 1.35, abs=0.01)
+    # Origin (72, 700) in user space is (144, 284) in MuPDF page space.
+    assert x0 == pytest.approx(144.0, abs=0.01)
+    assert y0 == pytest.approx(284.0 - 24.0, abs=0.01)
+
+    # Independent oracle: MuPDF's own layout of the same stream.
+    rx0, _, rx1, _ = _rendered_span_bbox(doc)
+    assert x0 == pytest.approx(rx0, abs=1.0)
+    assert x1 == pytest.approx(rx1, abs=1.0)
+    doc.close()
+
+
+def test_fallback_target_bbox_is_not_inflated_by_a_sub_unit_user_unit():
+    """The *dangerous* direction of the same defect: an inflated halo.
+
+    ``/UserUnit 0.5`` halves the page transform, so ``2 0 0 2 Tm`` again
+    nets to page scale 1.  Ignoring the page factor scales the halo by 2 on
+    each axis -- 4x the area -- and verification cannot catch that: V0d
+    proves raster identity only *outside* the halo, so the inflated margin
+    absorbs corruption instead of reporting it.  Pinning both directions
+    also pins the multiply: dividing by the page scale passes the
+    ``/UserUnit 2`` case above and fails here.
+    """
+    doc = _stream_doc(
+        b"BT /F1 24 Tf 2 0 0 2 72 700 Tm (" + TARGET.encode() + b") Tj ET"
+    )
+    doc.xref_set_key(doc[0].xref, "UserUnit", "0.5")
+    page = doc[0]  # re-fetch: the page's transform is read when it is loaded
+    matrix = page.transformation_matrix
+    assert math.hypot(matrix.a, matrix.b) == pytest.approx(
+        0.5
+    ), "fixture: /UserUnit did not reach the page transform"
+
+    capability = DocumentFontRegistry(doc).capability(page, "F1")
+    assert capability is not None
+    text_space_advance = capability.string_width(TARGET, 24.0)
+    assert text_space_advance is not None
+
+    prepared = _plan(doc)  # _plan passes target_bbox=None
+    assert isinstance(prepared, PreparedEdit), prepared
+    x0, y0, x1, y1 = prepared.target_bbox_page
+
+    # Net page scale is 2 (Tm) * 0.5 (/UserUnit) == 1 again.
+    assert x1 - x0 == pytest.approx(text_space_advance, abs=0.01)
+    assert y1 - y0 == pytest.approx(24.0 * 1.35, abs=0.01)
+    # Origin (72, 700) in user space is (36, 71) in MuPDF page space.
+    assert x0 == pytest.approx(36.0, abs=0.01)
+    assert y0 == pytest.approx(71.0 - 24.0, abs=0.01)
+
+    # Independent oracle: MuPDF's own layout of the same stream.
+    rx0, _, rx1, _ = _rendered_span_bbox(doc)
+    assert x0 == pytest.approx(rx0, abs=1.0)
+    assert x1 == pytest.approx(rx1, abs=1.0)
+    doc.close()
+
+
+def test_fallback_target_bbox_is_unchanged_at_unit_scale():
+    """Control: the scale correction must be a no-op at ``a == d == 1``."""
+    doc = _stream_doc(
+        b"BT /F1 12 Tf 1 0 0 1 72 700 Tm (" + TARGET.encode() + b") Tj ET"
+    )
+    capability = DocumentFontRegistry(doc).capability(doc[0], "F1")
+    assert capability is not None
+    advance = capability.string_width(TARGET, 12.0)
+
+    prepared = _plan(doc)
+    assert isinstance(prepared, PreparedEdit), prepared
+    x0, y0, x1, y1 = prepared.target_bbox_page
+    assert x1 - x0 == pytest.approx(advance, abs=0.01)
+    assert y1 - y0 == pytest.approx(12.0 * 1.35, abs=0.01)
+    doc.close()

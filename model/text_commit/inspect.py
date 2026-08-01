@@ -275,10 +275,11 @@ def bind_source_text(
             RejectReason.UNSUPPORTED_TEXT_STATE,
             "show operator outside BT/ET",
         )
-    if not show.trm_translation_only:
+    if not show.trm_uniform_scaled:
         return BindingFailure(
             RejectReason.UNSUPPORTED_TEXT_STATE,
-            "combined text/transform matrix is rotated, scaled, or sheared",
+            "combined text/transform matrix is rotated, sheared, reflected, "
+            "or non-uniformly scaled",
         )
 
     stream_bytes = dict(streams)[show.stream_xref]

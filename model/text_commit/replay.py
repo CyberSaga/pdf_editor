@@ -4,7 +4,7 @@ Interprets exactly the operators the V2 engine supports (q/Q, cm, BT/ET,
 Tf, Tm, Td, TD, T*, TL, Tc, Tw, Tz, Ts, Tr, Tj, TJ, ', ") and records each
 text-show operation with its resolved state and exact per-stream byte
 ranges.  Anything the interpreter cannot account for is *flagged* — shows
-carry ``origin_reliable``/``in_bt``/``trm_translation_only`` and the replay
+carry ``origin_reliable``/``in_bt``/``trm_uniform_scale`` and the replay
 carries ``malformed`` — so downstream binding/planning can refuse instead
 of guessing (plan Task 3).
 
@@ -58,14 +58,23 @@ def _translate(tx: float, ty: float) -> Matrix:
     return (1.0, 0.0, 0.0, 1.0, tx, ty)
 
 
-def _is_translation_only(m: Matrix) -> bool:
+def _uniform_scale(m: Matrix) -> float | None:
+    """``m``'s uniform positive scale factor, or ``None`` when it has none.
+
+    Accepts translation (factor 1.0) and the axis-aligned uniform positive
+    scale the TeX/dvips idiom produces (``/F1 1 Tf`` with ``10 0 0 10 … Tm``):
+    both preserve the ratio between any two advances, so the equal-advance
+    proof carries over unchanged and only page-space *geometry* has to be
+    multiplied by the factor.  Rotation and shear (``b``/``c`` set) and
+    reflection or a degenerate scale (``a <= 0``, or ``a != d`` as in a
+    mirror) all return ``None``: each needs layout work Tier 0 does not do.
+    """
     a, b, c, d, _, _ = m
-    return (
-        abs(a - 1.0) <= _EPS
-        and abs(b) <= _EPS
-        and abs(c) <= _EPS
-        and abs(d - 1.0) <= _EPS
-    )
+    if abs(b) > _EPS or abs(c) > _EPS:
+        return None  # rotated or sheared
+    if a <= _EPS or abs(a - d) > _EPS:
+        return None  # reflected, mirrored, or degenerate
+    return a
 
 
 @dataclass(frozen=True)
@@ -86,7 +95,7 @@ class ShowOp:
     font_size: float
     tm: Matrix
     ctm: Matrix
-    trm_translation_only: bool
+    trm_uniform_scale: float | None  # None: rotated, sheared, or reflected
     origin_user: tuple[float, float]  # PDF user space, rise applied
     origin_reliable: bool  # False if a prior show's advance was not tracked
     char_spacing: float
@@ -98,6 +107,11 @@ class ShowOp:
     in_bt: bool
     gs_depth: int
     mc_depth: int
+
+    @property
+    def trm_uniform_scaled(self) -> bool:
+        """The TRM is a translation plus a uniform positive scale."""
+        return self.trm_uniform_scale is not None
 
 
 @dataclass(frozen=True)
@@ -220,7 +234,7 @@ def replay_page_streams(streams: list[tuple[int, bytes]]) -> PageReplay:
                 font_size=state.font_size,
                 tm=tm,
                 ctm=state.ctm,
-                trm_translation_only=_is_translation_only(trm),
+                trm_uniform_scale=_uniform_scale(trm),
                 origin_user=_mat_apply(trm, 0.0, state.rise),
                 origin_reliable=not advance_pending,
                 char_spacing=state.char_spacing,

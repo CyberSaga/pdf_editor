@@ -196,6 +196,7 @@ Initial production scope is deliberately narrow:
 - replacement advance equals source advance within a measured tolerance;
 - no pending legacy maintenance that can call `clean_contents` on the page;
 - no signature and no AcroForm/widget target.
+- **Amended 2026-08-01 (D1):** the `Tj` operand may be literal **or** hex, and the text matrix may carry a uniform positive scale (`a == d > 0`, `b == c == 0`) as well as pure translation; rotation, shear, and reflection stay deferred.
 
 Any failed gate rejects Tier 0. It does not guess.
 

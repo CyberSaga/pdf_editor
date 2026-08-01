@@ -32,11 +32,18 @@ from model.text_commit.plan import (  # noqa: E402
     prepare_tier0_plan,
 )
 from model.text_commit.fonts import DocumentFontRegistry  # noqa: E402
-from model.text_commit.inspect import page_fingerprint  # noqa: E402
+from model.text_commit.inspect import page_fingerprint, replay_page  # noqa: E402
 
 TARGET = "Price 2024"
 REPLACEMENT = "Price 2025"  # helv digits share widths: advance-neutral
 DOWNSTREAM = "Downstream line stays"
+
+# The same target written as a hex-string operand, delimiters included.
+HEX_TARGET_TOKEN = b"<" + TARGET.encode("ascii").hex().encode("ascii") + b">"
+# helv: '(' and 'r' are both 333/1000, so this stays advance-neutral while
+# forcing the literal writer to escape a delimiter.
+HEX_REPLACEMENT = "P(ice 2025"
+HEX_REPLACEMENT_TOKEN = b"(P\\(ice 2025)"
 
 
 def _tier0_doc() -> fitz.Document:
@@ -45,6 +52,33 @@ def _tier0_doc() -> fitz.Document:
     page = doc.new_page(width=595, height=842)
     stream = (
         b"BT /F1 12 Tf 72 700 Td (" + TARGET.encode() + b") Tj "
+        b"0 -40 Td (" + DOWNSTREAM.encode() + b") Tj ET"
+    )
+    content_xref = doc.get_new_xref()
+    doc.update_object(content_xref, "<<>>")
+    doc.update_stream(content_xref, stream)
+    doc.xref_set_key(page.xref, "Contents", f"{content_xref} 0 R")
+    font_xref = doc.get_new_xref()
+    doc.update_object(
+        font_xref,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+        "/Encoding /WinAnsiEncoding >>",
+    )
+    doc.xref_set_key(page.xref, "Resources", f"<< /Font << /F1 {font_xref} 0 R >> >>")
+    return doc
+
+
+def _hex_tier0_doc() -> fitz.Document:
+    """:func:`_tier0_doc`'s page with the target as a HEX-string ``Tj``.
+
+    Written by hand because nothing in this suite generates one: PyMuPDF's
+    ``insert_text`` emits ``[<...>]TJ`` (an *array*), so the shape that
+    dominates real corpora — a bare hex ``Tj`` — had no fixture at all.
+    """
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    stream = (
+        b"BT /F1 12 Tf 72 700 Td " + HEX_TARGET_TOKEN + b" Tj "
         b"0 -40 Td (" + DOWNSTREAM.encode() + b") Tj ET"
     )
     content_xref = doc.get_new_xref()
@@ -133,10 +167,23 @@ def test_planner_rejects_each_gate_with_stable_reason(overrides, reason):
     doc.close()
 
 
-def test_planner_rejects_hex_tj_pages_as_not_literal():
+def test_planner_rejects_tj_array_pages():
+    """``insert_text`` writes ``[<...>]TJ`` — an ARRAY, not a hex ``Tj``.
+
+    This case was named ``..._hex_tj_...`` until 2026-08-01 and was read as
+    covering hex strings; it never did.  The operator is ``TJ``, so it
+    failed on the operator half of the gate and the string-kind half stayed
+    uncovered (see :func:`_hex_tier0_doc`).  TJ arrays remain out of scope
+    in v1 — admitting one means compensating its kerns — so the rejection
+    itself is unchanged; only the claim it makes is now honest.
+    """
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
     page.insert_text((72, 100), "Hello World", fontsize=12.0, fontname="helv")
+    show = replay_page(doc, page).shows[0]
+    assert show.operator == "TJ"
+    assert show.string_kind == "array"
+
     engine = TieredCommitEngine(doc)
     span = _span(page, "Hello World")
     rejection = engine.prepare(
@@ -148,6 +195,77 @@ def test_planner_rejects_hex_tj_pages_as_not_literal():
     )
     assert isinstance(rejection, PlanRejection)
     assert rejection.reason == RejectReason.NOT_SINGLE_LITERAL_TJ
+    assert "TJ" in rejection.detail
+    doc.close()
+
+
+def test_planner_accepts_hex_tj_and_writes_an_escaped_literal():
+    """A hex operand is replaced by a freshly encoded LITERAL string.
+
+    The patch writer already replaces the whole operand byte range, so the
+    hex relaxation needs no new writer — but that property is exactly what
+    the relaxation rests on, so it is pinned here: ``expected_bytes`` must
+    span the ``<``/``>`` delimiters, or the splice would leave them behind.
+    """
+    doc = _hex_tier0_doc()
+    page = doc[0]
+    show = replay_page(doc, page).shows[0]
+    assert show.operator == "Tj"
+    assert show.string_kind == "hex"
+
+    span = _span(page, TARGET)
+    prepared = TieredCommitEngine(doc).prepare(
+        page,
+        target_text=TARGET,
+        replacement_text=HEX_REPLACEMENT,
+        expected_origin=tuple(span["origin"]),
+        target_bbox=tuple(span["bbox"]),
+    )
+    assert isinstance(prepared, PreparedEdit), prepared
+    assert prepared.replacement.expected_bytes == HEX_TARGET_TOKEN
+    assert prepared.replacement.expected_bytes[:1] == b"<"
+    assert prepared.replacement.expected_bytes[-1:] == b">"
+    assert prepared.replacement.replacement_bytes == HEX_REPLACEMENT_TOKEN
+    doc.close()
+
+
+def test_commit_replaces_a_hex_operand_with_a_literal_string():
+    """End to end: the committed stream carries the escaped literal."""
+    doc = _hex_tier0_doc()
+    engine = TieredCommitEngine(doc)
+    page = doc[0]
+    stream_xref = page.get_contents()[0]
+    stream_before = doc.xref_stream(stream_xref)
+    downstream_before = _span(page, DOWNSTREAM)["origin"]
+
+    span = _span(page, TARGET)
+    prepared = engine.prepare(
+        page,
+        target_text=TARGET,
+        replacement_text=HEX_REPLACEMENT,
+        expected_origin=tuple(span["origin"]),
+        target_bbox=tuple(span["bbox"]),
+    )
+    assert isinstance(prepared, PreparedEdit), prepared
+    outcome = engine.commit(prepared)
+    assert outcome.status is CommitStatus.COMMITTED, outcome
+    assert outcome.tier is CommitTier.TIER0_LOSSLESS_STREAM_PATCH
+
+    stream_after = doc.xref_stream(stream_xref)
+    assert HEX_TARGET_TOKEN not in stream_after
+    assert HEX_REPLACEMENT_TOKEN in stream_after
+    start = prepared.replacement.start
+    end = prepared.replacement.end
+    assert stream_after[:start] == stream_before[:start]
+    assert stream_after[start + len(HEX_REPLACEMENT_TOKEN):] == stream_before[end:]
+
+    page = doc[0]
+    text = page.get_text()
+    assert HEX_REPLACEMENT in text
+    assert TARGET not in text
+    downstream_after = _span(page, DOWNSTREAM)["origin"]
+    assert downstream_after[0] == pytest.approx(downstream_before[0], abs=0.1)
+    assert downstream_after[1] == pytest.approx(downstream_before[1], abs=0.1)
     doc.close()
 
 

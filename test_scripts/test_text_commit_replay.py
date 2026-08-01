@@ -77,19 +77,23 @@ def test_replay_cm_and_tm_compose_and_q_restores():
     replay = _replay_one(stream)
     x_show, y_show = replay.shows
     assert x_show.origin_user == pytest.approx((110.0, 220.0))
-    assert not x_show.trm_translation_only  # scaled by 2
+    # A uniform positive scale is measured, not refused: the factor is what
+    # page-space geometry (the fallback target bbox) is derived from.
+    assert x_show.trm_uniform_scale == pytest.approx(2.0)
+    assert x_show.trm_uniform_scaled
     assert x_show.gs_depth == 1
     assert y_show.origin_user == pytest.approx((0.0, 0.0))
-    assert y_show.trm_translation_only
+    assert y_show.trm_uniform_scale == pytest.approx(1.0)  # pure translation
     assert y_show.gs_depth == 0
 
 
-def test_replay_rotation_in_cm_is_not_translation_only():
+def test_replay_rotation_in_cm_has_no_uniform_scale():
     stream = b"q BT 0 1 -1 0 0 0 cm 1 0 0 1 442 -200 Tm /F1 12 Tf (R) Tj ET Q"
     replay = _replay_one(stream)
     show = replay.shows[0]
     assert show.origin_user == pytest.approx((200.0, 442.0))
-    assert not show.trm_translation_only
+    assert show.trm_uniform_scale is None
+    assert not show.trm_uniform_scaled
 
 
 def test_replay_records_spacing_scaling_rise_render_mode():

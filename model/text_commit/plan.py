@@ -1,9 +1,10 @@
 """Tier 0 capability classification: narrow by design, never guessing.
 
 The only edit that classifies as Tier 0 in v1: one unambiguous run bound
-to one complete literal-string ``Tj`` on the direct page stream, simple
-Latin encoding with a verified reverse encoder, fill render mode, no
-rise/scaling/marked-content dependency, no style or geometry override,
+to one complete single-string ``Tj`` (literal or hex) on the direct page
+stream, simple Latin encoding with a verified reverse encoder, fill render
+mode, no rise/horizontal-scaling/marked-content dependency, a text matrix
+that is at most a uniform positive scale, no style or geometry override,
 and a replacement whose consumed advance equals the source advance.
 Every failed gate returns a stable :class:`RejectReason` code.
 """
@@ -11,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 from dataclasses import dataclass
 
 import fitz
@@ -140,11 +142,16 @@ def prepare_tier0_plan(
         return PlanRejection(binding.reason, binding.detail)
 
     show = binding.show
-    if show.operator != "Tj" or show.string_kind != "literal":
+    # A hex operand is admitted alongside a literal one: the two encode the
+    # same bytes, and the patch below replaces the *whole* operand token
+    # (delimiters included) with a freshly encoded literal, so nothing of
+    # the source string's spelling survives to matter.  ``TJ`` stays out --
+    # its array carries kerns that a replacement would have to compensate.
+    if show.operator != "Tj" or show.string_kind not in ("literal", "hex"):
         return PlanRejection(
             RejectReason.NOT_SINGLE_LITERAL_TJ,
             f"target is a {show.string_kind} {show.operator}; v1 patches only "
-            "complete literal-string Tj operators",
+            "complete single-string Tj operators",
         )
     if show.render_mode != 0 or show.rise != 0.0 or show.hscale != 100.0:
         return PlanRejection(
@@ -241,12 +248,34 @@ def prepare_tier0_plan(
 
     fingerprint = page_fingerprint(doc, page)
     if target_bbox is None:
+        # ``origin_page`` is page space but ``old_advance``/``font_size`` are
+        # text space, so *both* scales between the two have to be applied
+        # here or the halo is wrong by their product.  Below 1 it *inflates*,
+        # and verification only proves raster identity OUTSIDE the halo -- so
+        # an inflated one masks corruption instead of catching it; above 1 it
+        # shrinks and V0c rejects a valid edit as not extractable.
+        #
+        # 1. The text matrix.  ``bind_source_text`` already refused any TRM
+        #    that is not a uniform positive scale; 1.0 keeps this total
+        #    rather than relying on that.
+        # 2. The page transform, which MuPDF builds from the cropbox flip,
+        #    /Rotate *and* /UserUnit -- at /UserUnit 2 it scales by 2, and
+        #    ``origin_page`` went through it while the advance did not.
+        #    ``hypot`` of its first row is that scale for every page (the
+        #    transform is always a rotation/flip times one uniform factor);
+        #    ``abs(a)`` would read 0 at /Rotate 90 and collapse the halo.
+        trm_scale = (
+            show.trm_uniform_scale if show.trm_uniform_scale is not None else 1.0
+        )
+        page_matrix = page.transformation_matrix
+        scale = trm_scale * math.hypot(page_matrix.a, page_matrix.b)
+        page_size = show.font_size * scale
         origin = binding.origin_page
         target_bbox = (
             origin[0],
-            origin[1] - show.font_size,
-            origin[0] + old_advance,
-            origin[1] + 0.35 * show.font_size,
+            origin[1] - page_size,
+            origin[0] + old_advance * scale,
+            origin[1] + 0.35 * page_size,
         )
 
     token = hashlib.sha256(
