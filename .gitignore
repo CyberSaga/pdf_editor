@@ -77,3 +77,7 @@ htmlcov/
 # Codegraph generated outputs (regenerate via indexer.py / report_gen.py)
 .codegraph/CODEINDEX.md
 .codegraph/CODEGRAPH_REPORT.md
+
+# Machine-specific runtime/memory benchmark numbers (harness script is
+# committed; measured JSON output is not -- see scripts/benchmark_text_commit_baseline.py)
+benchmarks/
