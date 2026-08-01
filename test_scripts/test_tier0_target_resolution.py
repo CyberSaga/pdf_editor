@@ -479,10 +479,50 @@ def test_reconstruction_absent_target_still_reports_plain_no_match() -> None:
         doc.close()
 
 
+def test_reconstruction_relabel_applies_on_the_live_commit_path_too() -> None:
+    """``_attempt_tiered_commit`` re-labels as well, and mutates nothing.
+
+    The helper is called from two sites and the classify-path tests alone
+    make it mutation-SENSITIVE, so without this test reverting *this* call
+    site to a bare ``prepared.reason`` left the whole suite green (verified
+    by mutation).  A shared helper is not evidence that each of its callers
+    uses it.
+    """
+    doc = _line_doc("Price is  100")
+    try:
+        model = _StubModel(doc)
+        runs = _line_group(model, 0)
+        assert len(runs) == 3
+        before = doc.xref_length()
+        stream_before = doc.xref_stream(doc[0].get_contents()[0])
+
+        outcome, reason = _attempt_tiered_commit(
+            model,
+            doc[0],
+            0,
+            "Price is  200",
+            _resolve_result(model, {r.span_id for r in runs}),
+            None,
+            None,
+        )
+        assert outcome is None
+        assert reason == RejectReason.TARGET_RECONSTRUCTION_UNVERIFIED
+        # The live document is untouched: this is the commit path, so a
+        # refusal that had already written would be the worse defect.
+        assert doc.xref_length() == before
+        assert doc.xref_stream(doc[0].get_contents()[0]) == stream_before
+    finally:
+        doc.close()
+
+
 def test_reconstruction_reason_code_is_stable() -> None:
     """The reason string is a telemetry contract (dto.py docstring)."""
     assert (
         RejectReason.TARGET_RECONSTRUCTION_UNVERIFIED
         == "target_reconstruction_unverified"
     )
-    assert pdf_text_edit is not None
+    # Re-exported through the module the editor actually imports.
+    assert (
+        pdf_text_edit.RejectReason.TARGET_RECONSTRUCTION_UNVERIFIED
+        == "target_reconstruction_unverified"
+    )
