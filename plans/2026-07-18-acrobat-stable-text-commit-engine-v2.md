@@ -796,6 +796,131 @@ git commit -m "test: evaluate Tier 1 text transplant strategies"
 
 ## Task 11: Tier 1 Horizontal Layout — Conditional on Task 10
 
+### Amendment (2026-08-01): panel review — equal-advance is a policy, not a ceiling; Slice 1 first
+
+A three-model independent review (Opus/Sonnet/Haiku, serial, each instructed to
+*refute* the "structural relaxations are capped by the equal-advance rule"
+verdict) returned unanimous **partially refuted**: the recommended order stands,
+the reasoning behind it did not.
+
+**Correction 1 — real edit classes pass the advance gate deterministically.**
+`plan.py:_advance` is a pure multiset function of the text (Σ per-code `/Widths`
++ Tc·len + Tw·spaces), so any permutation of the same characters — the
+transposition typo class (`teh`→`the`, `adn`→`and`) — has advance delta exactly
+0.0 (~1e-13 float noise against a ≥1e-9 tolerance). Digit-for-digit edits
+(dates, prices, versions) are advance-preserving wherever the font declares
+tabular figures — verified for Helvetica in `test_text_commit_font_widths.py`;
+unverified for the corpus's unembedded Word-export fonts (a one-line audit
+addition settles it). The P=0.39 uniform-random-swap statistic measures neither
+class; "accepted only by numeric coincidence" is withdrawn.
+
+**Correction 2 — the cap is liftable with primitives that already passed their
+spikes.** This plan's invariant already reads "…or carry an independently
+verified compensation operation". Composing `build_advance_preserving_erase`'s
+kern math with `build_transplant_replacement` yields `[(newtext) K] TJ` spliced
+at the source op's byte range: arbitrary-length edits, same font resource and
+encoding, every following show provably unmoved, no layout engine. **That is
+Slice 1 of this task, and it ships and verifies before any Step-1 layout work**
+(wrapping, alignment, overflow UI). The `LOSSLESS_STREAM_PATCH` label does not
+fit growth (replacement ink exceeds the source bbox), so Slice 1 lands as
+Tier 1 with an honest outcome, flag-off.
+
+**Slice 1 hard gates (new, from the review; first two code-verified):**
+- `patch.py:156-213` has no operator guard, and the spliced range differs by
+  operator: for `"` the range starts at `operands[-3].start` (`replay.py:437`)
+  and includes the aw/ac operands whose `Tw`/`Tc` assignments persist beyond
+  the op (`replay.py:426-427`); `'` folds in an implicit `T*`
+  (`replay.py:399-402`). A naive whole-op rewrite silently deletes persistent
+  state — refuse `'` and `"` explicitly, with tests.
+- Halo semantics under growth are undesigned: V0d's
+  raster-identity-outside-halo stops proving the neighbour region unpainted
+  once the halo widens. Decide and document: widen honestly, or admit
+  compensated growth only when `verify.py:_region_is_uniform` proves the
+  growth zone blank pre-edit.
+- `_ocg_membership_lost` must become tri-state across **all** failure paths
+  (`verify.py:341-379` — locked probe plus every raised-exception branch
+  return `False`, recorded as `ocg_membership_preserved`) before
+  V0d/`verify_tier1_strategy` runs on live handles. Not a blocker for starting
+  Slice 1: transplant inherits OCG by construction.
+
+**Prerequisites promoted ahead of this task** (phased checklist in TODOS.md):
+1. Direct tests for `_tier0_target_from_resolve` — zero exist; its `" ".join`
+   reconstruction must byte-match `bind_source_text`'s exact-equality demand
+   (`inspect.py:233`), else eligible edits die as silent `NO_MATCH` above the
+   planner where no corpus measurement can see them.
+2. `scripts/audit_tier_coverage.py:70-76` still gates `tier1_candidate` on
+   `capability.face is not None` — stale against the Task 10d `/Widths`
+   finding; fix before running the owed representative-corpus audit.
+3. Measurement pass (counts-only): edit-level funnel survival; forward
+   advance-dependency rate (how often a successor consumes an op's advance
+   before the next `Td`/`Tm`/`T*`/`BT` — decides how much of Slice 1 needs
+   kern math at all); tabular-digit check; TJ binding-survival rate
+   (`decoded_bytes` drops kern numbers, so kern-as-word-gap arrays can never
+   bind — the 17,952/46.6% TJ figure is not achievable coverage).
+4. D1 (hex-Tj + uniform-scale) with `a>0` in the relaxed matrix gate (else the
+   48 reflected shows slip in) and the scale-corrected *fallback* bbox
+   (`plan.py:243-250`; under scale<1 the halo inflates → false accepts —
+   production already passes a page-space bbox via `pdf_text_edit.py:1225`).
+
+**TJ arrays (decision):** whole-array targets only, via transplant — an
+accepted target always covers the entire operator, so no unedited glyph sits
+inside the replaced range; preserve leading/trailing kerns; never the unsound
+`array_item_count==1` rule. In-array splicing with kern rebalancing is
+rejected: it serves only substring targets every tier refuses.
+
+### Amendment addendum (2026-08-01): GPT-5.6-sol independent evaluation
+
+A fourth reviewer (GPT-5.6-sol, dual-lens) evaluated the same question and
+returned **conditional GO — for functional coverage and edit capability, not
+runtime performance**. It confirmed the direction above and added four
+corrections that change this task's shape:
+
+**1. The performance baseline moves BEFORE this task, not into Task 12.** There
+is no basis for claiming post-Task-10 work improves runtime, and per-preview
+cost is *increasing*: prepare + full page-stream replay + patch + raster +
+revert per keystroke generation. On dense pages the plausible outcomes include
+stale generations arriving faster than the worker can finish them. Baseline
+p50/p95/p99 for prepare (cold/warm), key-to-preview, raster, stale-drop rate,
+commit, live verification, undo/redo, and peak/resident memory (including after
+repeated preview-session teardown) **before** D1, then re-measure each phase.
+Derive budgets from the measured legacy baseline — do not adopt invented
+thresholds; Task 12's own gate already says budgets come from measurement.
+
+**2. Slice 1's key claim is a forecast, not a proven result.** Task 10 proved
+advance-preserving erase and source-position transplant **separately**. "Every
+following show is provably unmoved" holds for the composite only once one Red
+test exercises the whole candidate: replacement renders, arbitrary replacement
+advance compensated, later shows retain origins, persistent text state
+unchanged, exact source range + stream digest checked, preview and commit use
+the *same* prepared candidate, undo restores byte-identical bytes, verification
+failure reverts everything.
+
+**3. This task's `Files:` list is incomplete.** It names `layout.py`,
+`plan.py`, `patch.py`, `engine.py`, `view/text_editing.py` — but Tier 1 also
+needs explicit contracts for prepared-candidate/token DTOs, preview↔commit
+candidate identity, live-commit rollback, persistence, undo/redo, resource-
+dictionary and font-embedding mutation, clip / allowed-growth-region semantics,
+and **shared content streams** (a stream referenced by multiple pages must be
+handled or explicitly rejected). Extend the file list before implementing.
+
+**4. Coverage must be published as a funnel, both weightings.** selected edits
+→ target resolved → source bound → encoding/glyph accepted → candidate built →
+preview verified → commit verified → save/reopen verified, reported per
+document class with **document-weighted alongside show-weighted** figures.
+Structural eligibility (D1's ~5,853 shows, the 15.25%) is headroom and must
+never be quoted as product coverage. Zero-tolerance correctness gates and
+per-direction pivot conditions are recorded in TODOS.md.
+
+Where this reviewer proposed absolute latency/success thresholds, they are
+**not adopted** — the plan's existing rule (derive p95 budgets from measured
+baselines) governs.
+
+**Carried to Task 12:** re-measure runtime against the pre-Task-11 baseline — `preview.py` re-runs
+`prepare_tier0_plan` per keystroke generation, a full page re-parse on a
+35k-show document — and report the Q3 ceiling decomposed (Identity-H stays
+NO-GO so 14.74% never clears; render_mode 5.55% unaddressed): this task's real
+ceiling is materially below 72.79% and is currently uncomputed.
+
 **Files:**
 - Create: `model/text_commit/layout.py`
 - Create: `test_scripts/test_text_commit_tier1_layout.py`
