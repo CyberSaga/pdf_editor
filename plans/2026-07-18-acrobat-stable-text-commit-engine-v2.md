@@ -543,6 +543,54 @@ them by "what blocks the most shows first" misleads. The matrix/operator gates m
 43× swing from the same measurement script. Size a relaxation only against a corpus with
 the upstream gates already relaxed.
 
+**Correction (same day, after decomposing the 5,879):** the sentence below that names
+the TJ no-kern check as the carried-forward caveat is *true but misleading*, and the
+number it cites was never broken down. `diag_gate_joint.py`'s `+tj_equiv_ops` policy
+conflated a lexical relaxation with an unsound semantic one. Measured decomposition of
+the 5,879 P3-eligible shows, by the operator form the policy admitted:
+
+| operator form | shows | % of P3 | soundness |
+|---|---:|---:|---|
+| `Tj` with a **hex** string operand | 5,688 | 96.75% | purely lexical — same string, same advance |
+| `Tj` with a literal operand (accepted today) | 165 | 2.81% | already eligible; blocked only by trm |
+| `TJ`, one string item, **kerned** | 26 | 0.44% | **unsound** — the leading kern moves the origin |
+| `TJ`, one string item, kernless | 0 | 0.00% | sound, and worth nothing on this corpus |
+
+So the sound TJ relaxation is worth **zero shows**, and essentially all the value is in
+hex `Tj`, which the earlier note never named. The two surviving relaxations are also
+**jointly required**: 5,666 of the 5,688 hex shows are at uniform scale, so neither
+uniform-scale nor hex-`Tj` alone delivers more than ~165.
+
+Cost, checked rather than assumed:
+- **hex `Tj` is a one-line gate change** at `plan.py:143`. The patch writer needs
+  nothing — `plan.py:238` already replaces the *entire* string-operand byte range
+  (`string_start`..`string_end`, delimiters included) with a freshly encoded literal, so
+  a hex source operand is spliced out wholesale, and `replay.py:158` already normalizes
+  hex and literal operands to identical `decoded_bytes`.
+- **uniform scale is not just a gate flip.** Advance *equality* is scale-invariant
+  (a uniform factor multiplies both sides), but `target_bbox` in `plan.py` adds a
+  text-space `old_advance` to a page-space origin, which only coincides under identity.
+  Under scale `s` the V0a–V0e halo would be measured over the wrong rectangle. The bbox
+  math has to become scale-aware in the same change.
+
+**The largest reachable population is not a gate at all.** With base state and trm
+relaxed, `TJ` arrays that are multi-item or kerned account for **17,952 shows (46.6% of
+corpus)** — the single biggest prize, and out of reach of any flag. Serving it means
+patching *inside* an array and recomputing kerns to hold total advance, which is Tier 0
+scope work of the same order as the `/Widths` change.
+
+**Ceiling, and why Task 11 outranks all of the above.** Relaxing every structural gate
+(trm shape and operator form) leaves 28,055 shows (72.79%) reachable; the residue is
+`FONT_UNSUPPORTED_ENCODING` (14.74%), `mc_depth` (6.51%), and `render_mode` (5.55%).
+But *reachable* is not *acceptable*: Tier 0 still requires the replacement's advance to
+equal the source's. On the reachable population, P(advance preserved) for a uniformly
+random same-length **single-character** swap averages 0.39, and no font in the corpus is
+monospaced. That is the ceiling for the most permissive edit shape that exists — a
+length-changing edit (typo fix, word swap, insertion) is accepted only by numeric
+coincidence. **No number of structural relaxations changes this.** Tier 1
+(transplant + erase-compensation) is the only direction that escapes the equal-advance
+rule, and therefore the only one that changes what a user can actually do.
+
 **Outcome:** `FONT_FACE_UNAVAILABLE` 29,526 → 0 with zero fonts newly refused. Corpus
 acceptance is *unchanged* (174 accepted / 771 `FONT_UNSUPPORTED_ENCODING` / 174
 `FONT_TYPE3`) because no show fails only the font gate — Tier 0 remains inert pending the
