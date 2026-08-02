@@ -76,6 +76,12 @@ report are unaffected: ``prepare()`` returns before ``_build_scratch_copy``
 runs on rejection. This benchmark works around the mismatch for its own
 ACCEPT-path fixture by canonicalizing with one round trip before ever
 calling ``prepare()`` -- see ``_canonicalize_once``.
+**Superseded 2026-08-01** -- the production fix in ``model/text_commit/inspect.py``
+now resolves the dictionary-key reordering issue by using order-independent
+digest calculation in ``_canonical_object_digest``, replacing the raw
+``xref_object()`` strings with structured key/value hashing. The workaround
+in ``_canonicalize_once`` below is no longer required for correctness but
+is retained as a harmless no-op for continuity with prior benchmark runs.
 
 Never prints, logs, returns, or writes extracted document text anywhere --
 only counts, booleans, reason codes, timings, and byte lengths. PlanRejection
@@ -220,6 +226,12 @@ def _canonicalize_once(doc: fitz.Document) -> bytes:
     ``TieredCommitEngine.prepare()`` performs internally for its scratch-
     first proof -- reproduces the identical byte layout and the page
     fingerprint comparison passes.
+
+    **Superseded 2026-08-01** -- this workaround is no longer required for
+    correctness. The production fix in ``model/text_commit/inspect.py``
+    (``_canonical_object_digest``) now handles the dictionary-key reordering
+    issue directly in the fingerprint calculation. This function is retained
+    as a harmless no-op for continuity with prior benchmark runs.
     """
     return doc.tobytes(encryption=fitz.PDF_ENCRYPT_KEEP)
 

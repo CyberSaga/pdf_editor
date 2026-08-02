@@ -70,6 +70,26 @@ def _indirect_target(doc: fitz.Document, xref: int, key: str) -> int | None:
         return None
 
 
+def _canonical_object_digest(doc: fitz.Document, xref: int) -> bytes:
+    # doc.xref_object()'s key order is not stable across a
+    # tobytes(encryption=KEEP) round trip on a disk-loaded *dictionary*
+    # object (MuPDF re-serializes with a different dict key order, same
+    # keys/values), so hash the structured key/value API instead, sorted
+    # for order-independence. Arrays/scalars/strings have no keys to
+    # reorder (xref_get_keys is [] for them too, indistinguishable from an
+    # empty dict) and are not observed to reformat across the round trip,
+    # so fall back to the raw object string rather than silently hashing
+    # nothing -- e.g. an indirect /Widths array must still be covered.
+    keys = sorted(doc.xref_get_keys(xref))
+    if not keys:
+        return " ".join(doc.xref_object(xref).split()).encode("utf-8")
+    parts = []
+    for key in keys:
+        kind, value = doc.xref_get_key(xref, key)
+        parts.append(f"{key}\x1f{kind}\x1f{value}")
+    return "\x1e".join(parts).encode("utf-8")
+
+
 def _update_font_dependencies(
     digest: "hashlib._Hash", doc: fitz.Document, font_xref: int
 ) -> None:
@@ -79,13 +99,13 @@ def _update_font_dependencies(
     capability classification starts reading another key, it belongs here in
     the same change, or a plan measured under the old value stays "fresh".
     """
-    digest.update(doc.xref_object(font_xref).encode("utf-8"))
+    digest.update(_canonical_object_digest(doc, font_xref))
     for key in _FONT_DEPENDENCY_KEYS:
         target = _indirect_target(doc, font_xref, key)
         if target is None:
             continue
         try:
-            digest.update(doc.xref_object(target).encode("utf-8"))
+            digest.update(_canonical_object_digest(doc, target))
         except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
             digest.update(b"<unreadable>")
             continue
@@ -95,7 +115,7 @@ def _update_font_dependencies(
     flags_target = _indirect_target(doc, font_xref, "FontDescriptor/Flags")
     if flags_target is not None:
         try:
-            digest.update(doc.xref_object(flags_target).encode("utf-8"))
+            digest.update(_canonical_object_digest(doc, flags_target))
         except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
             digest.update(b"<unreadable>")
     digest.update(b"\x06")

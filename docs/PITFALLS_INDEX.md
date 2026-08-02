@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 230 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 231 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -230,8 +230,9 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2039 | A redundant guard cannot be made mutation-SENSITIVE — check for subsumption before claiming a test pins it | model/pdf_text_edit.py (`_tier0_target_from_resolve`), test design |
 | 2046 | `TARGET_IN_FORM_XOBJECT` is page-scoped, not target-scoped — it mislabels almost every miss on real corpora | model/text_commit/inspect.py (`bind_source_text`) |
 | 2053 | Calling `bind_source_text` per target re-replays the whole page — prohibitively slow for multi-target sampling | model/text_commit (measurement/tooling) |
-| 2060 | `tobytes(encryption=KEEP)` reorders dictionary keys the first time it serializes a disk-loaded object — breaking the scratch-first fingerprint self-check | model/text_commit/engine.py (`prepare` → `_build_scratch_copy`) / inspect.py (`page_fingerprint`) |
+| 2060 | `tobytes(encryption=KEEP)` reorders dictionary keys the first time it serializes a disk-loaded object — breaking the scratch-first fingerprint self-check | model/text_commit/engine.py (`prepare` → `_build_scratch_copy`) / inspect.py (`page_fingerprint`, `_update_font_dependencies`) |
 | 2067 | Text-space and page-space quantities must not mix in bbox/halo math — under scale the error is a silent false ACCEPT | model/text_commit/plan.py (fallback `target_bbox`) |
 | 2074 | PyMuPDF `insert_text` emits `[<...>] TJ` — an array, never a hex `Tj` | test fixtures for text-commit gates |
 | 2081 | `pytest … | tail` reports tail's exit code — a hard interpreter abort can read as a passing run | test harness / CI hygiene |
-| 2088 | A mutation fixture can be subsumed by a sibling guard — rotation does not pin `b==c==0`, a mirror does not pin `a>0` | test_scripts/test_text_commit_structural_gates.py (`_uniform_scale` gates) |
+| 2088 | `doc.xref_get_keys(xref)` returns `[]` for a non-dictionary object — indistinguishable from an empty dictionary | model/text_commit/inspect.py (`_canonical_object_digest`) |
+| 2095 | A mutation fixture can be subsumed by a sibling guard — rotation does not pin `b==c==0`, a mirror does not pin `a>0` | test_scripts/test_text_commit_structural_gates.py (`_uniform_scale` gates) |

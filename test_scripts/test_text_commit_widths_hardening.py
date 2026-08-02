@@ -346,6 +346,43 @@ def test_page_fingerprint_covers_indirect_font_dependencies():
     doc.close()
 
 
+def test_page_fingerprint_covers_an_indirect_widths_array_by_content():
+    """A content change to an *indirect* ``/Widths`` array must move the digest.
+
+    The digest hashes a dictionary's keys/values in sorted order so it
+    survives ``tobytes(KEEP)``'s key reorder (see
+    ``test_text_commit_fingerprint_roundtrip.py``) -- but an array has no
+    keys at all, and ``xref_get_keys`` returns ``[]`` for it exactly the way
+    it does for a genuinely empty dictionary.  Treating "no keys" as
+    "nothing to hash" would silently drop the width table whenever it is
+    stored indirectly, reintroducing the Codex-R5 defect
+    ``test_page_fingerprint_covers_the_width_table`` guards for the inline
+    case.
+    """
+    doc = _doc(basefont="ArialMT", target="AB")
+    page = doc[0]
+    font_xref = next(int(e[0]) for e in page.get_fonts(full=True) if e[4] == "F1")
+
+    widths_xref = doc.get_new_xref()
+    doc.update_object(widths_xref, "[" + " ".join(["500"] * (126 - 32 + 1)) + "]")
+    doc.xref_set_key(font_xref, "Widths", f"{widths_xref} 0 R")
+
+    kind, _ = doc.xref_get_key(font_xref, "Widths")
+    assert kind == "xref", "fixture must store /Widths indirectly"
+    assert doc.xref_get_keys(widths_xref) == [], (
+        "precondition: an array has no dictionary keys to enumerate"
+    )
+
+    before = page_fingerprint(doc, page)
+    doc.update_object(widths_xref, "[" + " ".join(["999"] * (126 - 32 + 1)) + "]")
+
+    assert page_fingerprint(doc, page) != before, (
+        "a changed indirect /Widths array's content must change the page "
+        "fingerprint, not just its reference"
+    )
+    doc.close()
+
+
 def test_flags_are_read_as_a_dictionary_key_not_as_text():
     """A string value containing "/Flags" must not be mistaken for the key.
 
