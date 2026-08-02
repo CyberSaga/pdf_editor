@@ -23,12 +23,23 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from dataclasses import replace as dataclasses_replace
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import fitz
 
 from model.edit_commands import EditTextResult
+from model.edit_requests import StyleOverrides
 from model.geometry import clamp_rect_to_page, rect_union
+from model.text_commit.dto import (
+    CommitOutcome,
+    CommitStatus,
+    RejectReason,
+    legacy_commit_outcome,
+)
+from model.text_commit.engine import TieredCommitEngine
+from model.text_commit.fonts import DocumentFontRegistry
+from model.text_commit.plan import PlanRejection, prepare_tier0_plan
 from model.text_block import EditableSpan, TextBlock
 from model.text_normalization import normalize_text, token_coverage_ratio
 
@@ -613,7 +624,7 @@ def _apply_redact_insert(
         model.tools.annotation._restore_annots(page, _saved_annots)
     if resolve_result.protected_spans:
         model._replay_protected_spans(page, resolve_result.protected_spans)
-    model.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(resolve_result.redact_rect)})
+    model.mark_page_content_dirty(page_idx, fitz.Rect(resolve_result.redact_rect))
     logger.debug(
         "overlap_redaction page=%s target_span_id=%s target_mode=%s cluster_size=%s protected_count=%s redact_rect=%s",
         page_num,
@@ -1171,6 +1182,274 @@ def _resolve_effective_target_mode(
             logger.warning("auto-promoted target_mode run->paragraph (no explicit span_id)")
     return effective
 
+class _Tier0Target(NamedTuple):
+    """The Tier 0 target triple plus how its ``text`` was arrived at.
+
+    ``text``/``origin``/``bbox`` keep index positions 0-2 so existing tuple
+    consumers are unaffected; ``joined_runs`` is what lets a caller tell a
+    quotation from a reconstruction.
+    """
+
+    text: str
+    origin: tuple[float, float]
+    bbox: tuple[float, float, float, float]
+    joined_runs: int
+
+    @property
+    def whitespace_reconstructed(self) -> bool:
+        """``text`` was assembled from stripped runs, so it may be wrong.
+
+        ``text_block_parsing._finalize`` strips each word run, so joining
+        two or more of them with single spaces reproduces the source only
+        when every gap in it was exactly one space.  Wherever it was not —
+        multiple spaces, a tab, a kern-derived gap — the join silently
+        differs from the stream bytes that ``bind_source_text`` demands.
+        """
+        return self.joined_runs > 1
+
+
+def _reconstruction_aware_reason(reason: str, target: _Tier0Target) -> str:
+    """Re-label a ``NO_MATCH`` whose target this stage may itself have broken.
+
+    ``NO_MATCH`` claims the document does not contain the text.  That claim
+    is only honest when the text is a quotation of the document; when it is
+    a run-join it may be the reconstruction that is wrong, and conflating
+    the two hid this whole failure class from every corpus number (the
+    audits classify shows, not edits).
+    """
+    if reason == RejectReason.NO_MATCH and target.whitespace_reconstructed:
+        return RejectReason.TARGET_RECONSTRUCTION_UNVERIFIED
+    return reason
+
+
+def _reconstruction_detail(target: _Tier0Target) -> str:
+    return (
+        f"target text was reconstructed by joining {target.joined_runs} word "
+        "runs with single spaces; run parsing strips whitespace, so a source "
+        "gap that is not exactly one space cannot be reproduced and no show "
+        "operator matched"
+    )
+
+
+def _tier0_target_from_resolve(
+    model: PDFModel,
+    page_idx: int,
+    resolve_result: _EditTextResolveResult,
+) -> _Tier0Target | None:
+    """Derive the Tier 0 (text, origin, bbox) target from the edit's members.
+
+    The block manager splits lines into word-level runs, so one show op
+    usually maps to several member spans.  Supported shapes: exactly one
+    member run (a whole-word Tj), or a member set covering one full line
+    (its space-joined text is the show-op string).  Anything else — partial
+    line selections, multi-line paragraphs — is not a whole-operator patch
+    and returns None.
+
+    The returned ``text`` is a *candidate*: for a multi-run target it is a
+    reconstruction, not a quotation (see
+    :attr:`_Tier0Target.whitespace_reconstructed`).
+    """
+    members = [
+        span
+        for span in resolve_result.overlap_cluster
+        if span.span_id in resolve_result.target_member_span_ids
+    ]
+    if not members:
+        return None
+    first = members[0]
+    if any(
+        s.page_idx != first.page_idx
+        or s.block_idx != first.block_idx
+        or s.line_idx != first.line_idx
+        for s in members
+    ):
+        return None  # spans multiple lines: paragraph re-layout (Tier 1+)
+    if len(members) > 1:
+        line_run_ids = {
+            run.span_id
+            for run in model.block_manager.get_runs(page_idx)
+            if run.block_idx == first.block_idx and run.line_idx == first.line_idx
+        }
+        if line_run_ids != {m.span_id for m in members}:
+            return None  # partial line selection: substring patch unsupported
+    ordered = sorted(members, key=lambda s: float(s.origin.x))
+    text = " ".join((s.text or "") for s in ordered)
+    origin_span = ordered[0]
+    bbox = rect_union([fitz.Rect(s.bbox) for s in ordered])
+    return _Tier0Target(
+        text,
+        (float(origin_span.origin.x), float(origin_span.origin.y)),
+        (float(bbox.x0), float(bbox.y0), float(bbox.x1), float(bbox.y1)),
+        len(ordered),
+    )
+
+
+def derive_tier0_preview_target(
+    model: PDFModel,
+    *,
+    page_num: int,
+    rect: fitz.Rect,
+    original_text: str | None,
+    target_span_id: str | None,
+    target_mode: str | None,
+) -> tuple[str, tuple[float, float], tuple[float, float, float, float]] | None:
+    """Resolve the Tier 0 (text, origin, bbox) once per preview session.
+
+    Mirrors ``edit_text``'s resolve sequence read-only: the target is fixed
+    when the inline editor opens, so the plan-backed preview derives it one
+    time and only the replacement text varies per keystroke.
+    """
+    doc = model.doc
+    if doc is None:
+        return None
+    page_idx = page_num - 1
+    if page_idx < 0 or page_idx >= len(doc):
+        return None
+    model.ensure_page_index_built(page_num)
+    page = doc[page_idx]
+    effective_target_mode = model._resolve_effective_target_mode(
+        target_mode=target_mode,
+        target_span_id=target_span_id,
+        new_rect=None,
+        page_idx=page_idx,
+        rect=rect,
+        original_text=original_text,
+    )
+    resolve_status, resolve_result = model._resolve_edit_target(
+        page_num=page_num,
+        page_idx=page_idx,
+        page=page,
+        rect=rect,
+        new_text=original_text or "",
+        font="helv",
+        size=12.0,
+        color=(0.0, 0.0, 0.0),
+        original_text=original_text,
+        new_rect=None,
+        resolved_target_span_id=target_span_id,
+        effective_target_mode=effective_target_mode,
+    )
+    if resolve_status is not EditTextResult.SUCCESS or resolve_result is None:
+        return None
+    target = _tier0_target_from_resolve(model, page_idx, resolve_result)
+    if target is None:
+        return None
+    return (target.text, target.origin, target.bbox)
+
+
+def _classify_tier0_candidate(
+    model: PDFModel,
+    page: fitz.Page,
+    page_idx: int,
+    new_text: str,
+    resolve_result: _EditTextResolveResult,
+    style_overrides: StyleOverrides | None,
+    new_rect: fitz.Rect | None,
+    registry: DocumentFontRegistry,
+):
+    target = _tier0_target_from_resolve(model, page_idx, resolve_result)
+    if target is None:
+        return PlanRejection(
+            RejectReason.MULTI_SPAN_TARGET,
+            "target does not map to one whole line or one whole word run",
+        )
+    target_text, expected_origin, target_bbox, _ = target
+    pending = any(e.get("page_idx") == page_idx for e in model.pending_edits)
+    result = prepare_tier0_plan(
+        model.doc,
+        page,
+        target_text=target_text,
+        replacement_text=new_text,
+        expected_origin=expected_origin,
+        target_bbox=target_bbox,
+        registry=registry,
+        style_overrides=style_overrides,
+        new_rect=new_rect,
+        page_has_pending_maintenance=pending,
+    )
+    if isinstance(result, PlanRejection):
+        reason = _reconstruction_aware_reason(result.reason, target)
+        if reason != result.reason:
+            return PlanRejection(reason, _reconstruction_detail(target))
+    return result
+
+
+def _shadow_classify_edit(
+    model: PDFModel,
+    page: fitz.Page,
+    page_idx: int,
+    new_text: str,
+    resolve_result: _EditTextResolveResult,
+    style_overrides: StyleOverrides | None,
+    new_rect: fitz.Rect | None,
+) -> None:
+    """Shadow mode: classify only, log sanitized codes, never interfere.
+
+    The log line carries reason codes and timing exclusively — never
+    document text (telemetry/privacy contract of the V2 plan).
+    """
+    _t0 = time.perf_counter()
+    try:
+        registry = DocumentFontRegistry(model.doc)
+        plan = _classify_tier0_candidate(
+            model, page, page_idx, new_text, resolve_result,
+            style_overrides, new_rect, registry,
+        )
+        capable = not isinstance(plan, PlanRejection)
+        reason = "tier0_eligible" if capable else plan.reason
+    except Exception as exc:  # shadow must never break the real edit
+        logger.warning(
+            "text_commit_shadow error page=%s %s", page_idx + 1, type(exc).__name__
+        )
+        return
+    logger.info(
+        "text_commit_shadow page=%s tier0_capable=%s reason=%s duration_ms=%.1f",
+        page_idx + 1,
+        capable,
+        reason,
+        (time.perf_counter() - _t0) * 1000,
+    )
+
+
+def _attempt_tiered_commit(
+    model: PDFModel,
+    page: fitz.Page,
+    page_idx: int,
+    new_text: str,
+    resolve_result: _EditTextResolveResult,
+    style_overrides: StyleOverrides | None,
+    new_rect: fitz.Rect | None,
+) -> tuple[CommitOutcome | None, str | None]:
+    """Try a Tier 0 commit; ``(outcome, None)`` on success, else ``(None, reason)``."""
+    target = _tier0_target_from_resolve(model, page_idx, resolve_result)
+    if target is None:
+        return None, RejectReason.MULTI_SPAN_TARGET
+    target_text, expected_origin, target_bbox, _ = target
+    # Password threaded through so the engine's scratch-first proof can
+    # re-authenticate its throwaway clone on encrypted documents instead of
+    # ever calling tobytes() on the live handle (see engine.py
+    # ``_build_scratch_copy`` -- a decrypting tobytes() call directly on the
+    # live doc silently poisons its crypt state).
+    engine = TieredCommitEngine(model.doc, password=model.password)
+    pending = any(e.get("page_idx") == page_idx for e in model.pending_edits)
+    prepared = engine.prepare(
+        page,
+        target_text=target_text,
+        replacement_text=new_text,
+        expected_origin=expected_origin,
+        target_bbox=target_bbox,
+        style_overrides=style_overrides,
+        new_rect=new_rect,
+        page_has_pending_maintenance=pending,
+    )
+    if isinstance(prepared, PlanRejection):
+        return None, _reconstruction_aware_reason(prepared.reason, target)
+    outcome = engine.commit(prepared)
+    if outcome.status is CommitStatus.COMMITTED:
+        return outcome, None
+    return None, outcome.degraded_reason or outcome.status.value
+
+
 def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
               font: str = "helv", size: float = 12.0,
               color: tuple = (0.0, 0.0, 0.0),
@@ -1178,7 +1457,8 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
               vertical_shift_left: bool = True,
               new_rect: fitz.Rect = None,
               target_span_id: str | None = None,
-              target_mode: str | None = None) -> EditTextResult:
+              target_mode: str | None = None,
+              style_overrides: StyleOverrides | None = None) -> EditTextResult:
     """
     編輯文字：五步流程 + 三策略智能插入。
 
@@ -1204,6 +1484,7 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
         new_text = ""
 
     _t0 = time.perf_counter()  # Phase 6: 效能計時
+    model.last_commit_outcome = None
     page_idx = page_num - 1
     model.ensure_page_index_built(page_num)
     # typed bind; callers guarantee an open doc here (edit path) - runtime behavior identical if None
@@ -1245,6 +1526,50 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
 
         resolved_target_span_id = resolve_result.resolved_target_span_id
         effective_target_mode = resolve_result.effective_target_mode
+
+        # ── V2 engine hook (flag-gated; default "legacy" skips both arms) ──
+        tier0_fallback_reason: str | None = None
+        settings = getattr(model, "text_commit_settings", None)
+        if settings is not None and settings.engine == "shadow":
+            _shadow_classify_edit(
+                model, page, page_idx, new_text, resolve_result,
+                style_overrides, new_rect,
+            )
+        elif settings is not None and settings.engine == "tiered":
+            tier0_outcome, tier0_fallback_reason = _attempt_tiered_commit(
+                model, page, page_idx, new_text, resolve_result,
+                style_overrides, new_rect,
+            )
+            if tier0_outcome is not None:
+                # Lossless commit succeeded: no redaction happened, so no
+                # pending cleanup; the page is now fidelity-protected.
+                model.block_manager.rebuild_page(page_idx, doc)
+                model.fidelity_protected_pages.add(page_idx)
+                model.edit_count += 1
+                model.last_commit_outcome = tier0_outcome
+                logger.debug(
+                    "text_commit_tiered page=%s tier=0 committed duration_ms=%s",
+                    page_num,
+                    round((time.perf_counter() - _t0) * 1000, 2),
+                )
+                return EditTextResult.SUCCESS
+            if settings.strict:
+                model.last_commit_outcome = CommitOutcome(
+                    status=CommitStatus.REJECTED,
+                    tier=None,
+                    fallback_chain=(f"tier0:{tier0_fallback_reason}",),
+                    warnings=(),
+                    font_outcomes=(),
+                    verified_properties=(),
+                    degraded_reason=tier0_fallback_reason,
+                    allows_external_reflow=False,
+                )
+                logger.info(
+                    "text_commit_strict_reject page=%s reason=%s",
+                    page_num,
+                    tier0_fallback_reason,
+                )
+                return EditTextResult.REJECTED_STRICT
 
         new_layout_rect = model._apply_redact_insert(
             page=page,
@@ -1290,6 +1615,13 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
         )
         if _duration > 0.3:
             logger.warning("單次編輯過慢：%.3fs，頁面 %s", _duration, page_num)
+        outcome = legacy_commit_outcome()
+        if tier0_fallback_reason is not None:
+            outcome = dataclasses_replace(
+                outcome,
+                fallback_chain=(f"tier0:{tier0_fallback_reason}", "legacy"),
+            )
+        model.last_commit_outcome = outcome
         return EditTextResult.SUCCESS
 
     except RuntimeError:

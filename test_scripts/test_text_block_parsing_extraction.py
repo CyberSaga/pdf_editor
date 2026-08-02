@@ -82,6 +82,91 @@ def test_parse_block_builds_textblock_from_fitz_dict() -> None:
     assert tb.block_id == "page_0_block_0"
 
 
+def _line(*texts: str, y0: float) -> dict:
+    """One visual line whose spans are contiguous style runs."""
+    return {
+        "dir": (1.0, 0.0),
+        "spans": [
+            {
+                "text": t,
+                "font": "Times",
+                "size": 14.0,
+                "color": 0,
+                "bbox": (10, y0, 200, y0 + 14),
+                "origin": (10, y0 + 12),
+            }
+            for t in texts
+        ],
+    }
+
+
+def test_parse_block_joins_visual_lines_with_space() -> None:
+    """Soft-wrapped lines must not fuse into one word.
+
+    ``_build_paragraphs`` already joins visual lines with a space (see
+    ``test_build_paragraphs_joins_visual_lines_with_space``).  ``_parse_block``
+    has to agree: concatenating lines with no separator silently deletes a
+    word boundary at every line break, so ``TextBlock.text`` reports
+    ``"jumpsover"`` for text that reads ``"jumps over"`` on the page.
+    """
+    block = {
+        "type": 0,
+        "bbox": (10.0, 10.0, 200.0, 52.0),
+        "lines": [
+            _line("The quick brown fox jumps", y0=10),
+            _line("over the lazy dog", y0=26),
+        ],
+    }
+    tb = tbp._parse_block(0, 0, block)
+    assert tb.text == "The quick brown fox jumps over the lazy dog"
+    assert "jumpsover" not in tb.text
+
+
+def test_parse_block_keeps_spans_within_a_line_contiguous() -> None:
+    """Spans inside one line are style runs, not words — never separated.
+
+    Guards the obvious over-correction: inserting a separator per *span*
+    rather than per *line* would split styled fragments mid-word, turning a
+    bolded stem into ``"Sun day"``.
+    """
+    block = {
+        "type": 0,
+        "bbox": (10.0, 10.0, 200.0, 24.0),
+        "lines": [_line("Sun", "day", y0=10)],
+    }
+    tb = tbp._parse_block(0, 0, block)
+    assert tb.text == "Sunday"
+
+
+def test_parse_block_treats_trailing_hyphen_as_word_continuation() -> None:
+    """A line ending in ``-`` is a split word: no space before the remainder."""
+    block = {
+        "type": 0,
+        "bbox": (10.0, 10.0, 200.0, 52.0),
+        "lines": [
+            _line("compre-", y0=10),
+            _line("hensive", y0=26),
+        ],
+    }
+    tb = tbp._parse_block(0, 0, block)
+    assert tb.text == "compre-hensive"
+
+
+def test_parse_block_does_not_double_space_around_empty_lines() -> None:
+    """Empty lines and lines already ending in space contribute no extra gap."""
+    block = {
+        "type": 0,
+        "bbox": (10.0, 10.0, 200.0, 68.0),
+        "lines": [
+            _line("alpha ", y0=10),
+            _line("", y0=26),
+            _line("beta", y0=42),
+        ],
+    }
+    tb = tbp._parse_block(0, 0, block)
+    assert tb.text == "alpha beta"
+
+
 def test_build_paragraphs_joins_visual_lines_with_space() -> None:
     runs = [
         tbp.EditableSpan("run-1", 0, 0, 0, 0, fitz.Rect(10, 10, 80, 22),

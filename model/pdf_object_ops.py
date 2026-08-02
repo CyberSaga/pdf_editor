@@ -193,7 +193,7 @@ def _rewrite_native_image_matrix(
         )
     new_stream = replace_operator_operands(tokens, cm_operator, new_operands)
     doc.update_stream(invocation.stream_xref, new_stream)
-    model.pending_edits.append({"page_idx": invocation.page_num - 1, "rect": fitz.Rect(destination_rect)})
+    model.mark_page_content_dirty(invocation.page_num - 1, fitz.Rect(destination_rect))
     model.edit_count += 1
     return True
 
@@ -461,7 +461,7 @@ def _remove_native_image_invocation(model: PDFModel, invocation: NativeImageInvo
                     invocation.xobject_name,
                     owner_xref,
                 )
-    model.pending_edits.append({"page_idx": invocation.page_num - 1, "rect": fitz.Rect(invocation.bbox)})
+    model.mark_page_content_dirty(invocation.page_num - 1, fitz.Rect(invocation.bbox))
     model.edit_count += 1
     return True
 
@@ -591,7 +591,7 @@ def add_image_object(
         image_digest=image_digest,
         rotation=int(rotation) % 360,
     )
-    model.pending_edits.append({"page_idx": page_num - 1, "rect": fitz.Rect(rect)})
+    model.mark_page_content_dirty(page_num - 1, fitz.Rect(rect))
     model.edit_count += 1
     return object_id
 
@@ -733,7 +733,7 @@ def add_textbox(
         rotation=insert_state["rotation"],
     )
     model.block_manager.rebuild_page(page_idx, model.doc)
-    model.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(insert_state["insert_rect"])})
+    model.mark_page_content_dirty(page_idx, fitz.Rect(insert_state["insert_rect"]))
     model.edit_count += 1
     logger.debug(
         "add_textbox page=%s visual_rect=%s insert_rect=%s rotate=%s font=%s",
@@ -815,7 +815,7 @@ def _redact_and_restore_textbox_region(model: PDFModel, page: fitz.Page, rect: f
 
 def _register_mutation(model: PDFModel, page_idx: int, rect: fitz.Rect) -> None:
     """Track a rewrite without performing a live full-document GC."""
-    model.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(rect)})
+    model.mark_page_content_dirty(page_idx, fitz.Rect(rect))
     model.edit_count += 1
 
 
@@ -926,7 +926,7 @@ def _rotate_native_image_absolute(
     )
     new_stream = replace_operator_operands(tokens, cm_operator, new_operands)
     doc.update_stream(invocation.stream_xref, new_stream)
-    model.pending_edits.append({"page_idx": invocation.page_num - 1, "rect": fitz.Rect(invocation.bbox)})
+    model.mark_page_content_dirty(invocation.page_num - 1, fitz.Rect(invocation.bbox))
     model.edit_count += 1
     return True
 

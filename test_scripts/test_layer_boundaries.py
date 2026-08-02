@@ -104,7 +104,7 @@ _VIEW_MODEL_IMPORT_NAME_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
         {"BatchMoveObjectsRequest", "InsertImageObjectRequest", "MoveObjectRequest", "ResizeObjectRequest"}
     ),
     ("view/text_editing.py", "model.edit_requests"): frozenset(
-        {"EditTextRequest", "MoveTextRequest"}
+        {"EditTextRequest", "MoveTextRequest", "StyleOverrides"}
     ),
 }
 

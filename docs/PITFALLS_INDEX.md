@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 198 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 231 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -199,7 +199,40 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1795 | Full-rebuild `populate_toc` discards any selection set immediately before `sig_toc_changed` | `view/pdf_view.py` — bookmark panel (`self.bookmark_tree`), TOC round-trip |
 | 1805 | PyMuPDF version skew masks runtime-only bugs | Environment / test toolchain (`requirements.txt`, `constraints-ci.txt`) |
 | 1812 | A local pre-commit hook is not durable across clones/worktrees -- pair it with a CI gate | `scripts/hooks/` (device-identity guard) |
-| 1821 | PyMuPDF PDF generation is not byte-deterministic | `scripts/build_fidelity_corpus.py` (fidelity corpus generator) |
-| 1828 | PyMuPDF `insert_text` vs TextWriter produce fundamentally different font structures | `scripts/build_fidelity_corpus.py`, `model/text_commit/font_registry.py` (future) |
-| 1835 | PyMuPDF merges close `insert_text` calls into a single text block | `scripts/build_fidelity_corpus.py`, test fixtures |
-| 1842 | PyMuPDF `Document.get_new_xref()` not `new_xref()` | `scripts/build_fidelity_corpus.py` (direct PDF object construction) |
+| 1821 | Normalized PDF token serialization cannot prove lossless text patching | text-commit design; `model/pdf_content_ops.py` |
+| 1830 | `Tj`/`TJ` edits must preserve consumed text advance, not just surrounding operators | text-commit design; future `model/text_commit/replay.py` and `patch.py` |
+| 1839 | PyMuPDF PDF generation is not byte-deterministic | `scripts/build_fidelity_corpus.py` (fidelity corpus generator) |
+| 1846 | PyMuPDF `insert_text` vs TextWriter produce fundamentally different font structures | `scripts/build_fidelity_corpus.py`, `model/text_commit/font_registry.py` (future) |
+| 1853 | PyMuPDF merges close `insert_text` calls into a single text block | `scripts/build_fidelity_corpus.py`, test fixtures |
+| 1860 | PyMuPDF `Document.get_new_xref()` not `new_xref()` | `scripts/build_fidelity_corpus.py` (direct PDF object construction) |
+| 1869 | `doc.tobytes()` of the SAME unchanged document differs between calls | `model/text_commit/engine.py`; any "no mutation" test assertion |
+| 1878 | `fitz.Font(<unknown name>)` raises `FzErrorArgument`, not RuntimeError — and known names may silently alias | `model/text_commit/fonts.py` |
+| 1887 | `Document.xref_copy` needs a dict-initialized target; `xref_set_key` cannot create keys through indirect paths | test fixtures / direct PDF object surgery |
+| 1896 | MuPDF `insert_htmlbox` break-all does NOT split words that fit a line | legacy commit path characterization; `model/pdf_model.py:_build_insert_css` |
+| 1905 | Block-manager runs are word-level: one show op maps to several member spans | `model/pdf_text_edit.py` (V2 engine target derivation); `model/text_block_parsing.py` |
+| 1914 | Dropping the last Python reference to an unparented cross-thread QObject is an access violation | PySide6 threading; `controller/text_commit_coordinator.py` |
+| 1923 | `insert_pdf` strips the SOURCE page's annotation `/P` key — even on whole-document copies | PyMuPDF; `model/pdf_model.py` undo snapshots |
+| 1932 | `doc.tobytes()` with default encryption poisons a live encrypted document — even read-only | PyMuPDF AES-256; `model/text_commit/engine.py`, `model/text_commit/verify.py` |
+| 1941 | `insert_pdf` renumbers xrefs — unusable for xref-identical scratch copies | PyMuPDF; `model/text_commit` scratch-first verification |
+| 1948 | Pixel-uniformity occlusion checks need edge erosion | model/text_commit/verify.py (Tier-1 spike: verify_tier1_strategy / _region_is_uniform) |
+| 1955 | A "graphics-state bleed" ink-tint check must not sample a covering shape's own fill color | model/text_commit/verify.py (Tier-1 spike: verify_tier1_strategy) |
+| 1962 | PyMuPDF insert_font(fontbuffer=..., set_simple=True) dedupes byte-identical programs onto the same xref | model/text_commit fonts (font-honesty Tier-1 spike) |
+| 1969 | OCG visibility only takes effect after a tobytes()+reopen round trip — and only on a *second* round trip after set_layer | model/text_commit/verify.py (`_ocg_membership_lost`) |
+| 1976 | Concatenating a block's spans is right; concatenating its lines deletes a word boundary | model/text_block_parsing.py (`_parse_block`) |
+| 1983 | A wrong extracted string can hide as a *similarity* problem rather than a visible failure | model/pdf_text_edit.py (`SequenceMatcher` block/page reconciliation) |
+| 1990 | Asserting that the replay *recorded* a text state does not test the gate that *rejects* it | model/text_commit planner gates (`plan.py`, `inspect.py`) + their tests |
+| 1997 | Two gates sharing one RejectReason let a test survive deletion of its own gate | model/text_commit/plan.py (`FONT_FACE_UNAVAILABLE`, `UNSUPPORTED_TEXT_STATE`) |
+| 2004 | For a simple PDF font, `/Widths` overrides the font program — measuring advance from a face is wrong | model/text_commit/fonts.py, plan.py (`_advance`) |
+| 2011 | `/Widths` proves an advance, not a glyph — trusting it as glyph evidence commits tofu | model/text_commit/fonts.py (`FontCapability.missing_glyphs`) |
+| 2018 | A staleness fingerprint must cover whatever the plan was *measured* against, not just what it edits | model/text_commit/inspect.py (`page_fingerprint`) |
+| 2025 | A tolerance that equals the quantum of its own measurement source stops being a tolerance | model/text_commit/plan.py (`_ADVANCE_TOL_PER_PT`) |
+| 2032 | Word runs are stripped, so `" ".join` cannot reconstruct source whitespace | model/pdf_text_edit.py (`_tier0_target_from_resolve`) → model/text_commit/inspect.py (`bind_source_text`) |
+| 2039 | A redundant guard cannot be made mutation-SENSITIVE — check for subsumption before claiming a test pins it | model/pdf_text_edit.py (`_tier0_target_from_resolve`), test design |
+| 2046 | `TARGET_IN_FORM_XOBJECT` is page-scoped, not target-scoped — it mislabels almost every miss on real corpora | model/text_commit/inspect.py (`bind_source_text`) |
+| 2053 | Calling `bind_source_text` per target re-replays the whole page — prohibitively slow for multi-target sampling | model/text_commit (measurement/tooling) |
+| 2060 | `tobytes(encryption=KEEP)` reorders dictionary keys the first time it serializes a disk-loaded object — breaking the scratch-first fingerprint self-check | model/text_commit/engine.py (`prepare` → `_build_scratch_copy`) / inspect.py (`page_fingerprint`, `_update_font_dependencies`) |
+| 2067 | Text-space and page-space quantities must not mix in bbox/halo math — under scale the error is a silent false ACCEPT | model/text_commit/plan.py (fallback `target_bbox`) |
+| 2074 | PyMuPDF `insert_text` emits `[<...>] TJ` — an array, never a hex `Tj` | test fixtures for text-commit gates |
+| 2081 | `pytest … | tail` reports tail's exit code — a hard interpreter abort can read as a passing run | test harness / CI hygiene |
+| 2088 | `doc.xref_get_keys(xref)` returns `[]` for a non-dictionary object — indistinguishable from an empty dictionary | model/text_commit/inspect.py (`_canonical_object_digest`) |
+| 2095 | A mutation fixture can be subsumed by a sibling guard — rotation does not pin `b==c==0`, a mirror does not pin `a>0` | test_scripts/test_text_commit_structural_gates.py (`_uniform_scale` gates) |

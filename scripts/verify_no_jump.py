@@ -42,6 +42,7 @@ PYTEST_TARGETS = [
     "test_scripts/test_resolve_target_mode.py",
     "test_scripts/test_text_editing_fidelity_suite.py",
     "test_scripts/test_no_jump_editor_geometry.py",
+    "test_scripts/test_text_commit_preview_contract.py",
 ]
 
 

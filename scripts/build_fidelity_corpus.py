@@ -128,7 +128,7 @@ def _build_form_xobject() -> fitz.Document:
 
     page_contents = page.get_contents()[0]
     old_stream = doc.xref_stream(page_contents)
-    invoke = f"\nq 72 650 cm /{_register_xobject(doc, page, xobj_xref)} Do Q\n"
+    invoke = f"\nq 1 0 0 1 72 650 cm /{_register_xobject(doc, page, xobj_xref)} Do Q\n"
     doc.update_stream(page_contents, old_stream + invoke.encode())
 
     return doc

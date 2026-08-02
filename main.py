@@ -90,10 +90,13 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
     def create_detached_window(payload, global_pos) -> bool:
         from controller.pdf_controller import PDFController
         from model.pdf_model import PDFModel
+        from model.text_commit.dto import TextCommitSettings
 
         detached_view = PDFView()
         detached_view.apply_initial_theme()
-        detached_model = PDFModel()
+        detached_model = PDFModel(
+            text_commit_settings=TextCommitSettings.from_env(os.environ)
+        )
         session_id = detached_model.import_session_transfer(payload)
         detached_controller = PDFController(detached_model, detached_view)
         detached_view.controller = detached_controller
@@ -134,8 +137,11 @@ def run(argv: list[str] | None = None, start_event_loop: bool = True) -> int | d
             return controller
         from controller.pdf_controller import PDFController
         from model.pdf_model import PDFModel
+        from model.text_commit.dto import TextCommitSettings
 
-        model = PDFModel()
+        model = PDFModel(
+            text_commit_settings=TextCommitSettings.from_env(os.environ)
+        )
         controller = PDFController(model, view)
         view.controller = controller
         controller.activate()

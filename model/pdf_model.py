@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import fitz
 
@@ -32,6 +32,12 @@ from model.text_block import (
     rotation_degrees_from_dir,
 )
 from model.geometry import clamp_rect_to_page, rect_from_points, rect_overlap_ratio
+from model.text_commit.dto import CommitOutcome, CommitStatus, RejectReason, TextCommitSettings
+from model.text_commit.inspect import (
+    capture_annotation_parent_refs,
+    page_has_widgets_or_signatures,
+    restore_annotation_parent_refs,
+)
 from model.text_normalization import normalize_text, normalized_similarity
 from model.tools import ToolManager
 
@@ -213,6 +219,11 @@ class DocumentSession:
     block_manager: TextBlockManager = field(default_factory=TextBlockManager)
     command_manager: CommandManager = field(default_factory=CommandManager)
     pending_edits: list = field(default_factory=list)
+    # Pages that received a V2 Tier 0 lossless commit: their content streams
+    # must never pass through clean_contents (it would destroy the verified
+    # byte identity). A later legacy rewrite of the page revokes the entry
+    # via PDFModel.mark_page_content_dirty.
+    fidelity_protected_pages: set = field(default_factory=set)
     edit_count: int = 0
     run_reopen_anchors: dict[str, fitz.Rect] = field(default_factory=dict)
     run_reopen_anchor_sizes: dict[str, float] = field(default_factory=dict)
@@ -224,10 +235,17 @@ class DocumentSession:
 
 
 class PDFModel:
-    def __init__(self):
+    def __init__(self, text_commit_settings: TextCommitSettings | None = None):
         self._sessions_by_id: dict[str, DocumentSession] = {}
         self._session_ids: list[str] = []
         self._active_session_id: str | None = None
+        # V2 text-commit engine flags (Qt-free DTO, injected at composition
+        # root; defaults keep the legacy engine in charge) + the outcome of
+        # the most recent edit_text commit for history/telemetry plumbing.
+        self.text_commit_settings: TextCommitSettings = (
+            text_commit_settings or TextCommitSettings()
+        )
+        self.last_commit_outcome: CommitOutcome | None = None
         self._path_to_session_id: dict[str, str] = {}
         self._legacy_doc: fitz.Document | None = None
         self._legacy_original_path: str | None = None
@@ -238,9 +256,12 @@ class PDFModel:
         self._legacy_edit_count: int = 0
         self._legacy_secure_save_required: bool = False
         self._legacy_pending_edits: list = []
+        self._legacy_fidelity_protected_pages: set = set()
         self._legacy_run_reopen_anchors: dict[str, fitz.Rect] = {}
         self._legacy_run_reopen_anchor_sizes: dict[str, float] = {}
-        self.temp_dir = None
+        # Any: gradual typing — save paths access .name behind runtime guards
+        # that mypy cannot see; keep pre-typed-__init__ semantics.
+        self.temp_dir: Any = None
         # 是否在「存回原檔」時使用增量更新（Incremental Update），以減少對數位簽章與大檔的影響
         self.use_incremental_save: bool = True
         # Text target granularity: "run" or "paragraph" (UI can override on startup).
@@ -538,6 +559,32 @@ class PDFModel:
             session.pending_edits = value
         else:
             self._legacy_pending_edits = value
+
+    @property
+    def fidelity_protected_pages(self) -> set:
+        session = self._active_session()
+        if session:
+            return session.fidelity_protected_pages
+        return self._legacy_fidelity_protected_pages
+
+    @fidelity_protected_pages.setter
+    def fidelity_protected_pages(self, value: set) -> None:
+        session = self._active_session()
+        if session:
+            session.fidelity_protected_pages = value
+        else:
+            self._legacy_fidelity_protected_pages = value
+
+    def mark_page_content_dirty(self, page_idx: int, rect: fitz.Rect) -> None:
+        """Chokepoint for every legacy content rewrite of a page.
+
+        Queues the page for clean_contents maintenance AND revokes its V2
+        Tier-0 fidelity protection: a redact/reinsert (or object rewrite)
+        invalidates the byte-identity promise, after which normal cleanup
+        is both safe and desirable again.
+        """
+        self.fidelity_protected_pages.discard(page_idx)
+        self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(rect)})
 
     # ── Run reopen anchors ────────────────────────────────────────────────
     # A run-mode edit shrinks/repositions the committed box every commit. To
@@ -2563,7 +2610,7 @@ class PDFModel:
 
         if inserted:
             self.block_manager.rebuild_page(page_idx, self.doc)
-            self.pending_edits.append({"page_idx": page_idx, "rect": fitz.Rect(page.rect)})
+            self.mark_page_content_dirty(page_idx, fitz.Rect(page.rect))
             self.edit_count += 1
             logger.info("apply_ocr_spans page=%s inserted=%s", page_num, inserted)
         return inserted
@@ -3189,37 +3236,63 @@ class PDFModel:
           1. 正常 insert_pdf（含 annotations）
           2. insert_pdf annots=False（含跨頁 annotation 引用的 PDF）
           3. 整份文件快照（最保守）
+
+        ``fitz.Document.insert_pdf()`` 會把 SOURCE 頁面（即 ``self.doc`` 本身）
+        上每個 annotation 的 ``/P``（parent-page）key 當場清掉，是一個已實測、
+        與 annots 參數無關的 PyMuPDF 副作用（xref、rect、``/AP`` 外觀串流皆不受
+        影響，只有 ``/P`` 消失）——嘗試 1/2 都會觸發它。因此在呼叫前先備份該頁
+        annotation 的 ``/P``，無論走哪個 fallback 分支，離開本方法前都恢復，
+        讓 live document 自身的 annotation identity 不因單純「擷取快照」而受損。
         """
-        # 嘗試 1：完整頁面（含 annotations）
+        annot_parent_backup: tuple[tuple[int, str], ...] = ()
         try:
-            tmp_doc = fitz.open()
-            tmp_doc.insert_pdf(self.doc, from_page=page_num_0based, to_page=page_num_0based)
-            stream = io.BytesIO()
-            tmp_doc.save(stream, garbage=0)
-            data = stream.getvalue()
-            tmp_doc.close()
-            return data
-        except Exception as e1:
-            logger.debug(f"_capture_page_snapshot 完整複製失敗 (p{page_num_0based+1}): {e1}，嘗試 annots=False")
-
-        # 嘗試 2：不含 annotations（避免跨頁 xref 無效引用）
-        try:
-            tmp_doc = fitz.open()
-            tmp_doc.insert_pdf(
-                self.doc, from_page=page_num_0based, to_page=page_num_0based,
-                annots=False
+            doc = self.doc
+            if doc is None:
+                raise ValueError("no document open")
+            annot_parent_backup = capture_annotation_parent_refs(
+                doc, doc[page_num_0based]
             )
-            stream = io.BytesIO()
-            tmp_doc.save(stream, garbage=0)
-            data = stream.getvalue()
-            tmp_doc.close()
-            logger.debug(f"_capture_page_snapshot: 使用 annots=False 快照 (p{page_num_0based+1})")
-            return data
-        except Exception as e2:
-            logger.debug(f"_capture_page_snapshot annots=False 亦失敗: {e2}，改用文件級快照")
+        except (IndexError, ValueError) as exc:
+            logger.debug(
+                "_capture_page_snapshot: annot /P backup skipped (p%s): %s",
+                page_num_0based + 1,
+                type(exc).__name__,
+            )
 
-        # 嘗試 3：整份文件快照（最保守，undo 效果較差但不崩潰）
-        return self._capture_doc_snapshot()
+        try:
+            # 嘗試 1：完整頁面（含 annotations）
+            try:
+                tmp_doc = fitz.open()
+                tmp_doc.insert_pdf(self.doc, from_page=page_num_0based, to_page=page_num_0based)
+                stream = io.BytesIO()
+                tmp_doc.save(stream, garbage=0)
+                data = stream.getvalue()
+                tmp_doc.close()
+                return data
+            except Exception as e1:
+                logger.debug(f"_capture_page_snapshot 完整複製失敗 (p{page_num_0based+1}): {e1}，嘗試 annots=False")
+
+            # 嘗試 2：不含 annotations（避免跨頁 xref 無效引用）
+            try:
+                tmp_doc = fitz.open()
+                tmp_doc.insert_pdf(
+                    self.doc, from_page=page_num_0based, to_page=page_num_0based,
+                    annots=False
+                )
+                stream = io.BytesIO()
+                tmp_doc.save(stream, garbage=0)
+                data = stream.getvalue()
+                tmp_doc.close()
+                logger.debug(f"_capture_page_snapshot: 使用 annots=False 快照 (p{page_num_0based+1})")
+                return data
+            except Exception as e2:
+                logger.debug(f"_capture_page_snapshot annots=False 亦失敗: {e2}，改用文件級快照")
+
+            # 嘗試 3：整份文件快照（最保守，undo 效果較差但不崩潰）
+            return self._capture_doc_snapshot()
+        finally:
+            if annot_parent_backup:
+                restore_annotation_parent_refs(self.doc, annot_parent_backup)
 
     def _restore_page_from_snapshot(self, page_num_0based: int, snapshot_bytes: bytes) -> None:
         """用 bytes 快照替換 doc 中指定頁面（undo / rollback 時呼叫）"""
@@ -3315,9 +3388,21 @@ class PDFModel:
         """
         if not self.pending_edits or not self.doc:
             return
+        # V2 maintenance policy: a fidelity-protected page (Tier 0 lossless
+        # commit) must never pass through clean_contents — it would rewrite
+        # the stream and destroy the verified byte identity. Its pending
+        # entries are preserved for the day its protection is revoked
+        # (mark_page_content_dirty on a later legacy rewrite).
+        protected = set(self.fidelity_protected_pages)
         unique_pages = {e["page_idx"] for e in self.pending_edits}
+        skipped = unique_pages & protected
+        if skipped:
+            logger.debug(
+                "apply_pending_redactions: 跳過 fidelity-protected 頁面 %s",
+                sorted(skipped),
+            )
         cleaned = 0
-        for page_idx in sorted(unique_pages):
+        for page_idx in sorted(unique_pages - skipped):
             if 0 <= page_idx < len(self.doc):
                 try:
                     self.doc[page_idx].clean_contents()
@@ -3327,7 +3412,9 @@ class PDFModel:
         logger.debug(
             f"apply_pending_redactions: 已清理 {cleaned}/{len(unique_pages)} 頁的 content stream"
         )
-        self.pending_edits.clear()
+        self.pending_edits = [
+            e for e in self.pending_edits if e["page_idx"] in skipped
+        ]
 
     def _maybe_garbage_collect(self) -> None:
         """
@@ -3439,7 +3526,42 @@ class PDFModel:
                   vertical_shift_left: bool = True,
                   new_rect: fitz.Rect = None,
                   target_span_id: str | None = None,
-                  target_mode: str | None = None) -> EditTextResult:
+                  target_mode: str | None = None,
+                  style_overrides=None) -> EditTextResult:
+        # V2 hard-reject boundary: signed documents and widget-bearing pages
+        # must never be silently degraded to the legacy redact+reinsert
+        # engine, in strict *or* non-strict mode -- checked here, before the
+        # tiered branch's non-strict fallthrough (pdf_text_edit.py) ever
+        # gets a chance to run it, so zero mutation happens either way.
+        if self.text_commit_settings.engine == "tiered" and self.doc is not None:
+            page_idx = page_num - 1
+            if 0 <= page_idx < self.doc.page_count:
+                try:
+                    hard_reject = page_has_widgets_or_signatures(self.doc, self.doc[page_idx])
+                except (RuntimeError, ValueError) as exc:
+                    logger.warning(
+                        "edit_text: widget/signature probe failed page=%s %s",
+                        page_num,
+                        type(exc).__name__,
+                    )
+                    hard_reject = False
+                if hard_reject:
+                    self.last_commit_outcome = CommitOutcome(
+                        status=CommitStatus.REJECTED,
+                        tier=None,
+                        fallback_chain=(f"tier0:{RejectReason.SIGNED_OR_WIDGET_TARGET}",),
+                        warnings=(),
+                        font_outcomes=(),
+                        verified_properties=(),
+                        degraded_reason=RejectReason.SIGNED_OR_WIDGET_TARGET,
+                        allows_external_reflow=False,
+                    )
+                    logger.info(
+                        "text_commit_hard_reject page=%s reason=%s",
+                        page_num,
+                        RejectReason.SIGNED_OR_WIDGET_TARGET,
+                    )
+                    return EditTextResult.REJECTED_UNSUPPORTED
         return pdf_text_edit.edit_text(
             self, page_num, rect, new_text,
             font=font, size=size, color=color,
@@ -3448,6 +3570,7 @@ class PDFModel:
             new_rect=new_rect,
             target_span_id=target_span_id,
             target_mode=target_mode,
+            style_overrides=style_overrides,
         )
 
     def _reauthenticate_if_needed(self, doc: fitz.Document) -> fitz.Document:
@@ -3601,7 +3724,7 @@ class PDFModel:
             self.block_manager.rebuild_page(idx, self.doc)
         except Exception:
             logger.debug("block index rebuild after straighten skipped")
-        self.pending_edits.append({"page_idx": idx, "rect": fitz.Rect(rect)})
+        self.mark_page_content_dirty(idx, fitz.Rect(rect))
         self.edit_count += 1
         return True
 

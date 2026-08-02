@@ -6,6 +6,29 @@ import fitz
 
 
 @dataclass(frozen=True)
+class StyleOverrides:
+    """Style fields the user *explicitly* touched during an edit session.
+
+    A field is non-None only when the user operated that control; merely
+    opening the editor never populates anything.  This is how the model
+    distinguishes "user typed text" from "user restyled" — with an empty
+    overrides object, style truth stays with the source spans and no
+    substitute font/size/color may silently replace them.
+    """
+
+    font_family: str | None = None
+    font_size: float | None = None
+    color: tuple[float, float, float] | None = None
+
+    @property
+    def changed(self) -> bool:
+        return any(
+            value is not None
+            for value in (self.font_family, self.font_size, self.color)
+        )
+
+
+@dataclass(frozen=True)
 class EditTextRequest:
     page: int
     rect: fitz.Rect
@@ -18,6 +41,8 @@ class EditTextRequest:
     new_rect: fitz.Rect | None = None
     target_span_id: str | None = None
     target_mode: str | None = None
+    style_overrides: StyleOverrides | None = None
+    plan_token: str | None = None
 
     def to_legacy_args(self) -> tuple:
         return (

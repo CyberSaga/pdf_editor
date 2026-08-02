@@ -539,12 +539,198 @@ the model; `QGraphicsProxyWidget.graphicsProxyWidget` in the view) — see
 `docs/PITFALLS.md`.
 
 Guardrails (do not change casually):
-- Preview and commit must keep sharing `_classify_insert_path`.
+- The current `_classify_insert_path` is commit-only; do not describe it as a
+  preview/commit contract. The successor contract is one immutable prepared edit:
+  preview rasterizes that exact scratch candidate and commit stale-checks then
+  applies the same `PatchSet`. See
+  `plans/2026-07-18-acrobat-stable-text-commit-engine-v2.md`.
 - Never assign `editor.font = <QFont>` (shadows `QTextEdit.font()`); build the
   `QFont` with `_display_font_pt`.
 - The `paintEvent` frozen-vs-preview two-branch contract and the
-  `_text_matches_initial` caching are load-bearing — the gate
+  `_text_matches_initial` caching are load-bearing for the legacy path — the gate
   `scripts/verify_no_jump.py` (27 deterministic cases, run twice) enforces it.
+- The five layers stabilize editor opening/reopening; they do not guarantee commit
+  fidelity. High-fidelity commit tiers must preserve source font/resource identity,
+  text-state continuity, non-target content, and annotation state without redaction,
+  neighbor replay, `clean_contents`, or Track A/B reflow.
+
+### 10.1 V2 Text Commit Engine (`model/text_commit/`, Tasks 1–6 landed 2026-07-18)
+
+Model-only package implementing the capability-driven tiered commit path of
+`plans/2026-07-18-acrobat-stable-text-commit-engine-v2.md`. Flag-gated by
+`TextCommitSettings` (TEXT_COMMIT_* env, injected into `PDFModel` at the
+composition root); **defaults are `legacy/off` — nothing routes through the
+new engine yet** (integration is plan Task 7+).
+
+- `dto.py` — `RejectReason` (stable refusal codes), `CommitStatus`/`CommitTier`,
+  `FontResourceAction`/`FontOutcome`, `CommitOutcome` (stored on
+  `EditTextCommand.outcome`; `allows_external_reflow=False` blocks Track A/B),
+  `TextCommitSettings`, `StreamReplacement`.
+- `pdf_lexer.py` — lossless lexer (tokens tile the source exactly; whitespace/
+  comments/inline-image payloads are tokens; malformed constructs flagged, never
+  raised) + `splice_stream`, the only writer: expected-bytes + SHA-256 stream
+  digest + range/overlap validation, all-or-nothing. **No token serializer by
+  design** — Tier 0 byte identity depends on its absence (`pdf_content_ops`'s
+  normalized serializer must never be used here).
+- `replay.py` — text/graphics-state interpreter (q/Q, cm, BT/ET, Tf, Tm, Td,
+  TD, T*, TL, Tc, Tw, Tz, Ts, Tr, Tj, TJ, ', ") across the page's ordered
+  stream list; per-stream byte ranges; reliability flags instead of guesses.
+- `inspect.py` — `bind_source_text` (text match corroborated by rawdict
+  geometry; ambiguity/XObject/rotation/malformed refuse with `RejectReason`),
+  `page_fingerprint` (streams + fonts + annots + widgets digest).
+- `fonts.py` — `DocumentFontRegistry`: capabilities keyed by (generation,
+  owner xref, resource name, font xref) — never by basename; explicit face
+  provenance (`extracted`/`base14`/`system`/`none`); strict-ASCII verified
+  reverse encoder; no silent Helvetica fallback anywhere.
+  **Advance and glyph coverage are separate proofs, from separate sources.**
+  `advance_source` (`widths`/`face`/`none`) is deliberately distinct from
+  `face_source`: for a simple font the `/Widths` table *is* the layout
+  contract and outranks any face, including an embedded font's own metrics,
+  so a capability can measure with `face=None`. Glyph coverage cannot come
+  from that table — a width proves an advance, not an outline — so
+  `missing_glyphs` still requires a face, except for non-subset unembedded
+  fonts, which every viewer draws through a substituted complete face.
+  Malformed `/Widths` is never downgraded to absent: the document declared a
+  contract we cannot read, so refusing beats measuring something else.
+- `plan.py` — Tier 0 gate: one unambiguous run → one complete literal-string
+  `Tj`, simple encoding, equal consumed advance (Tc/Tw folded), no style/
+  geometry override, no widgets/signatures, no pending maintenance. Encoder is
+  verified against the *source* bytes before it may encode the replacement.
+- `patch.py` — `PatchSet`/`apply_patchset`: fingerprint-gated, revertible; the
+  sole mutation primitive of the high-fidelity tiers.
+- `verify.py` — V0a–V0e post-conditions: stream identity outside the declared
+  range (re-diffed), font/annotation identity, non-target span origins,
+  extractable replacement, exact raster identity outside a 2pt halo (96 dpi;
+  calibrated ε=0 on the maintainer machine), reopenability.
+- `engine.py` — `TieredCommitEngine.prepare()` classifies then *refutes the
+  candidate on a scratch copy* (`fitz.open("pdf", doc.tobytes())` preserves
+  xrefs and decoded stream bytes; the live doc is untouched);
+  `commit()` revalidates the fingerprint (else `STALE_PLAN`, zero mutation),
+  applies one `PatchSet`, re-verifies on the live doc, reverts on failure.
+
+Regression net: `test_scripts/test_text_commit_characterization.py` — five
+strict-xfail tests that assert the *intended* behavior and demonstrably fail
+on the legacy engine (font substitution, style-truth API gap, fast/htmlbox
+pixel divergence, neighbor push-down, line-break rewriting). They must keep
+xfailing until the tiered engine is enabled for the covered case.
+
+**Integration (Task 7, 2026-07-19).** `pdf_text_edit.edit_text` hooks the
+engine after target resolution, gated on `TextCommitSettings.engine`:
+
+- `shadow` — classify only (`prepare_tier0_plan`, no scratch verify), log
+  one `text_commit_shadow` line with reason code + timing, never document
+  text; wrapped so an engine error can never break the real edit.
+- `tiered` — derive the Tier 0 target from the resolve members (block-manager
+  runs are **word-level**: one show op maps to several member spans, so the
+  target is either one whole-word run or a member set covering one full line,
+  space-joined), then `engine.prepare`/`commit`. Success returns without any
+  legacy machinery (no redaction, push-down, protected replay, pending
+  cleanup, or Track A/B reflow) and marks the page fidelity-protected.
+  Rejection falls back to legacy with `fallback_chain=("tier0:<reason>",
+  "legacy")`; `strict=1` instead returns `EditTextResult.REJECTED_STRICT`
+  with zero mutation.
+
+**Maintenance policy.** `PDFModel.mark_page_content_dirty(page_idx, rect)` is
+the single chokepoint for every legacy content rewrite (redact/reinsert,
+object move/resize/rotate/delete, textbox insert, straighten): it queues
+clean_contents maintenance AND revokes the page's Tier-0 fidelity
+protection. `apply_pending_redactions` (interactive every-5-edits GC and
+save preparation) never passes a fidelity-protected page through
+`clean_contents` — its pending entries are preserved until a legacy rewrite
+revokes protection. Tier 0 itself is refused on pages with pending
+maintenance (`pending_page_maintenance` gate), so the two engines never
+interleave on one page in the dangerous order.
+
+**Exact plan-backed preview (Task 8, 2026-07-19).** Gated by
+`TextCommitSettings.preview == "plan"`; the legacy CSS `PreviewRenderer`
+stays in charge otherwise (and as the interim frame / rejection fallback —
+it never claims exactness).
+
+- `model/text_commit/preview.py` (Qt-free) — `open_preview_session` takes
+  the document snapshot **once per edit session**, via an
+  `encryption=PDF_ENCRYPT_KEEP` serialization plus a re-authenticated
+  throwaway clone (never a default `tobytes()` on the live handle, which
+  silently poisons an encrypted document's crypt state — see PITFALLS). It
+  takes an optional `password` and returns `None` when an encrypted document
+  cannot be snapshotted, which the controller degrades to the legacy preview
+  with reason `snapshot_unavailable`. `PlanPreviewRenderer`
+  opens one scratch document from it and, per keystroke, runs
+  `prepare_tier0_plan` → `apply_patchset` → clip raster → revert, returning
+  a `PlanPreviewResult` raster DTO (PNG bytes + content-derived plan token,
+  or a sanitized `RejectReason`). Because the token hashes the page
+  fingerprint + splice bytes, preview token == commit token iff the
+  document is unchanged in between — the exactness guarantee.
+- `controller/text_commit_coordinator.py` — session-scoped QThread worker
+  (modeled on `page_render_coordinator.py`): one worker thread and one
+  scratch renderer live for the whole inline-edit session; latest-wins
+  queueing (at most one in flight + one pending); results are dropped
+  unless session-key, newest generation, and the injected
+  `identity_matches` all agree. Retired (thread, worker) pairs stay
+  referenced until the thread finishes (see PITFALLS: premature GC of an
+  unparented cross-thread QObject is an access violation).
+- View — `PreviewBackedInlineTextEditor.set_plan_preview_hook` emits a
+  primitives-only payload on `PDFView.sig_text_edit_plan_preview` per
+  debounced keystroke (generation bumped synchronously on every
+  textChanged); `apply_plan_preview(generation, image, token)` accepts a
+  raster only for the current generation. The View never opens a PDF and
+  never calls the Model. The applied plan token (when still current at
+  finalize) rides `EditTextRequest.plan_token` into the commit path.
+- Controller — `on_text_edit_plan_preview_request` derives the Tier 0
+  target once per session (`derive_tier0_preview_target`, read-only resolve
+  mirror), snapshots once, and forwards keystrokes to the coordinator;
+  `edit_text` ends the preview session before committing so a stale
+  scratch can never outlive a mutation.
+
+**Target derivation is a reconstruction, and says so (Task 11 prereq D5,
+2026-08-01).** `_tier0_target_from_resolve` (`model/pdf_text_edit.py`) turns
+the editor's resolved member spans into the target text the binder then
+matches byte-for-byte. It returns `_Tier0Target` — the `(text, origin, bbox)`
+triple at index positions 0-2, plus `joined_runs`. The extra field exists
+because word runs are stripped when parsed
+(`text_block_parsing.py:_finalize`), so joining two or more of them with
+single spaces reproduces the source only when every gap was exactly one
+space; the text is then a *candidate*, not a quotation of the document.
+`_reconstruction_aware_reason` re-labels a run-joined target's `NO_MATCH` as
+`RejectReason.TARGET_RECONSTRUCTION_UNVERIFIED` at both call sites
+(`_classify_tier0_candidate`, `_attempt_tiered_commit`), so a refusal never
+blames the document for the engine's own lossy reconstruction.
+`derive_tier0_preview_target` keeps its 3-tuple contract for the controller.
+
+**Persistence, undo/redo, and unsupported boundaries (Task 9, 2026-07-29).**
+The engine's promise is scoped explicitly: supported live-commit semantics
+plus tested save/reopen behavior — never whole-file byte or xref identity
+after a full save / garbage collection.
+
+- **Hard rejection over silent degradation** — with
+  `TextCommitSettings.engine == "tiered"`, `PDFModel.edit_text` refuses
+  up front (`EditTextResult.REJECTED_UNSUPPORTED`,
+  `RejectReason.SIGNED_OR_WIDGET_TARGET`, zero mutation) when the target
+  page carries widgets or the document is signed, before the non-strict
+  tier fallback could reach the legacy redact+reinsert engine.
+- **Validated-intent undo/redo** — on a Tier 0 commit, `EditTextCommand`
+  captures pre-edit stream bytes + fingerprint and builds a
+  forward/inverse `PatchSet` pair (`patch.py:build_reversal_patchset`).
+  `undo()` replays the fingerprint-gated inverse patch (byte-identical
+  restore, annotations physically untouched, `fidelity_protected_pages`
+  membership restored) with the legacy page-snapshot restore as the
+  stale-only fallback; `redo()` replays the retained forward patch —
+  exact committed bytes or a `STALE_PLAN` refusal with zero mutation,
+  never a fresh `edit_text` re-run.
+- **Encryption-safe serialization** — `TieredCommitEngine._build_scratch_copy`
+  and V0e's reopen probe serialize with `PDF_ENCRYPT_KEEP` and
+  re-authenticate a throwaway clone (engine now accepts a `password`
+  kwarg, threaded from `model.password`); default `tobytes()` on the live
+  handle corrupts its crypt state (PITFALLS).
+- **Annotation identity** — `inspect.py:capture_annotation_parent_refs` /
+  `restore_annotation_parent_refs` round-trip full annotation objects
+  around `_capture_page_snapshot`'s `insert_pdf` call, which otherwise
+  strips `/P` from the live document on every edit (pre-existing,
+  engine-agnostic PyMuPDF side effect).
+
+Pinned by `test_scripts/test_text_commit_persistence.py` (save/save-as/
+incremental/full/reopen/encrypted/legacy-then-tier0) and
+`test_scripts/test_text_commit_boundaries.py` (annotation identity,
+widget/signed rejection, undo/redo replay + stale refusal).
 
 ## 11. Character-Level Text Selection (Browse Mode)
 

@@ -1,7 +1,9 @@
 # Acrobat-Parity Text Commit Engine — Design
 
+> **Superseded for implementation by `plans/2026-07-18-acrobat-stable-text-commit-engine-v2.md`.** This record remains as design archaeology. The V2 plan corrects the lossless-lexer, text-advance continuity, TextWriter resource-identity, scratch-first verification, save/cleanup, and unsupported-PDF boundaries identified by adversarial review.
+
 **Date:** 2026-07-14
-**Status:** DESIGN — synthesis of two independent proposals (deep-reasoner + Codex) plus empirical corpus audit. No implementation yet.
+**Status:** SUPERSEDED DESIGN — synthesis of two independent proposals (deep-reasoner + Codex) plus empirical corpus audit. No implementation landed from this version.
 **Trigger:** User report: "After editing, text formatting/layout jumps around and font changes — not as stable as Adobe Acrobat."
 
 ---

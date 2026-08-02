@@ -2,6 +2,7 @@ from __future__ import annotations
 import logging
 import math
 import unicodedata
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 
@@ -22,7 +23,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QTextEdit
 
-from model.edit_requests import EditTextRequest, MoveTextRequest  # re-exported for view/controller
+from model.edit_requests import EditTextRequest, MoveTextRequest, StyleOverrides  # re-exported for view/controller
 from utils.render_limits import safe_render_scale as _safe_render_scale
 
 logger = logging.getLogger(__name__)
@@ -802,6 +803,15 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
         self._mutated_preview_is_valid: bool = True
         self._legacy_standalone_mode = bool(legacy_kwargs) and renderer is None
         self._render_args: dict[str, object] = {}
+        # Plan-backed exact preview (V2 Task 8). The hook only *emits* a
+        # request — the editor never opens a PDF or touches the Model; the
+        # raster comes back through apply_plan_preview() with a generation
+        # guard so stale keystrokes can never paint.
+        self._plan_preview_hook = None
+        self._plan_generation = 1
+        self._plan_preview_active = False
+        self._applied_plan_generation: int | None = None
+        self._applied_plan_token: str | None = None
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(150)
@@ -859,6 +869,10 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
         # QTextDocument 60+ times/second.
         self._text_matches_initial = self.toPlainText() == self._initial_text
         self._text_is_nonempty = bool(self.toPlainText())
+        # Bump synchronously on every text change (not in the debounced
+        # regenerate) so the generation always reflects the latest text and
+        # rasters for superseded keystrokes fail the guard.
+        self._plan_generation += 1
         if not self._text_is_nonempty:
             # Box just emptied: regenerate synchronously so the editor does not
             # linger on the stale preview of the previous text (which would flash
@@ -930,6 +944,14 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
             not self._text_is_nonempty
             or self._mutated_preview_has_visible_ink(self._preview_image)
         )
+        # The CSS interim frame is now current; any previously applied plan
+        # raster belongs to older text until a fresh one arrives.
+        self._plan_preview_active = False
+        if self._plan_preview_hook is not None:
+            try:
+                self._plan_preview_hook(text, self._plan_generation)
+            except Exception:
+                logger.warning("plan preview hook failed", exc_info=True)
         self.viewport().update()
 
     def paintEvent(self, event) -> None:
@@ -989,6 +1011,41 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
     def freeze_first_frame(self, image: QImage | None) -> None:
         self._frozen_first_frame_image = image.copy() if image is not None else None
         self.viewport().update()
+
+    # ---- plan-backed exact preview (V2 Task 8) -------------------------
+
+    def set_plan_preview_hook(self, hook) -> None:
+        """Install the request emitter: ``hook(text, generation)``.
+
+        The hook must only emit a View signal — the editor stays free of
+        any PDF or Model access.
+        """
+        self._plan_preview_hook = hook
+
+    def apply_plan_preview(
+        self, generation: int, image: QImage | None, plan_token: str | None = None
+    ) -> bool:
+        """Accept an exact plan raster only for the current generation."""
+        if generation != self._plan_generation:
+            return False  # stale keystroke: the CSS interim frame stays
+        if image is None or image.isNull():
+            return False
+        self._preview_image = image
+        self._mutated_preview_is_valid = True
+        self._plan_preview_active = True
+        self._applied_plan_generation = generation
+        self._applied_plan_token = plan_token
+        self.viewport().update()
+        return True
+
+    def current_plan_token(self) -> str | None:
+        """The applied plan's token, only while it matches the live text."""
+        if (
+            self._plan_preview_active
+            and self._applied_plan_generation == self._plan_generation
+        ):
+            return self._applied_plan_token
+        return None
 
 
 class TextEditManager:
@@ -1521,9 +1578,71 @@ class TextEditManager:
             line_height=line_ht_for_preview,
         )
 
+        # Installed AFTER the initial configure so the unchanged first frame
+        # (already pixel-exact via the frozen capture) emits no request.
+        self._install_plan_preview_hook(
+            editor,
+            page_idx=page_idx,
+            rect=fitz.Rect(rect),
+            original_text=text,
+            target_span_id=target_span_id,
+            target_mode=view.editing_target_mode,
+            rotation=normalized_rotation,
+            render_scale=float(rs),
+        )
+
         self._sync_font_combo_state(font_name, font_size)
 
         self._install_editor_in_scene(editor, pos_x, pos_y, normalized_rotation, initial_frame)
+
+    def _install_plan_preview_hook(
+        self,
+        editor,
+        *,
+        page_idx: int,
+        rect: fitz.Rect,
+        original_text: str,
+        target_span_id: str | None,
+        target_mode: str | None,
+        rotation: int,
+        render_scale: float,
+    ) -> None:
+        """Emit-only wiring for the exact plan-backed preview (V2 Task 8).
+
+        The hook packages primitives and emits ``sig_text_edit_plan_preview``
+        — the View never opens a PDF and never calls the Model.  Rotated
+        pages keep the CSS preview: the Tier 0 raster clip assumes an
+        unrotated editor frame.
+        """
+        view = self._view
+        if rotation != 0:
+            return
+        if not hasattr(view, "sig_text_edit_plan_preview"):
+            return
+        session_key = str(uuid.uuid4())
+        editor.plan_preview_session_key = session_key
+        rect_tuple = (
+            float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1),
+        )
+
+        def _emit(text: str, generation: int) -> None:
+            view.sig_text_edit_plan_preview.emit(
+                {
+                    "session_key": session_key,
+                    "page_idx": int(page_idx),
+                    "rect": rect_tuple,
+                    "original_text": original_text,
+                    "target_span_id": target_span_id,
+                    "target_mode": target_mode,
+                    "replacement_text": text,
+                    "generation": int(generation),
+                    "clip_rect": rect_tuple,
+                    "render_scale": float(render_scale),
+                }
+            )
+
+        if hasattr(editor, "set_plan_preview_hook"):
+            editor.set_plan_preview_hook(_emit)
 
     def on_edit_font_family_changed(self, *_) -> None:
         view = self._view
@@ -1812,6 +1931,14 @@ class TextEditManager:
                 )
                 view.sig_move_text_across_pages.emit(move_request)
             else:
+                editor_widget = (
+                    view.text_editor.widget() if view.text_editor else None
+                )
+                plan_token = (
+                    editor_widget.current_plan_token()
+                    if hasattr(editor_widget, "current_plan_token")
+                    else None
+                )
                 request = EditTextRequest(
                     page=session.edit_page + 1,
                     rect=session.original_rect,
@@ -1824,6 +1951,13 @@ class TextEditManager:
                     new_rect=new_rect_arg,
                     target_span_id=session.target_span_id,
                     target_mode=session.target_mode,
+                    style_overrides=build_style_overrides(
+                        current_font=session.current_font,
+                        initial_font=session.initial_font,
+                        current_size=session.current_size,
+                        initial_size=session.initial_size,
+                    ),
+                    plan_token=plan_token,
                 )
                 view.sig_edit_text.emit(request)
         except Exception as exc:
@@ -1844,6 +1978,30 @@ class TextEditManager:
             origin_page=session.origin_page,
             delta=delta,
         )
+
+
+def build_style_overrides(
+    *,
+    current_font: str,
+    initial_font: str,
+    current_size: float,
+    initial_size: float,
+) -> StyleOverrides:
+    """Overrides for the fields the user actually changed this session.
+
+    Uses the same change detection as TextEditDelta: a case-insensitive
+    font-name comparison and a 1e-3 size tolerance.  Merely opening the
+    editor (which maps the source font to a UI alias) never counts as a
+    user override — with no change, style truth stays with the source
+    spans (V2 plan Task 5).
+    """
+    font_changed = str(current_font).lower() != str(initial_font).lower()
+    size_changed = abs(float(current_size) - float(initial_size)) > 1e-3
+    return StyleOverrides(
+        font_family=str(current_font) if font_changed else None,
+        font_size=float(current_size) if size_changed else None,
+        color=None,  # no in-session color control yet
+    )
 
 
 def _map_legacy_reason(reason: TextEditReason | TextEditFinalizeReason) -> TextEditFinalizeReason:

@@ -7,6 +7,21 @@ from typing import TYPE_CHECKING, Any
 
 import fitz
 
+from model.text_commit.dto import (
+    CommitOutcome,
+    CommitStatus,
+    CommitTier,
+    RejectReason,
+)
+from model.text_commit.inspect import page_fingerprint, read_page_streams
+from model.text_commit.patch import (
+    PatchSet,
+    SpliceError,
+    StalePlanError,
+    apply_patchset,
+    build_reversal_patchset,
+)
+
 if TYPE_CHECKING:
     # 避免循環 import：只在型別檢查期間引入 PDFModel
     pass
@@ -19,6 +34,17 @@ class EditTextResult(str, Enum):
     NO_CHANGE = "no_change"
     TARGET_BLOCK_NOT_FOUND = "target_block_not_found"
     TARGET_SPAN_NOT_FOUND = "target_span_not_found"
+    # V2 strict mode: the edit failed every enabled high-fidelity tier and
+    # the degraded legacy engine is not permitted to run. No mutation happened.
+    REJECTED_STRICT = "rejected_strict"
+    # V2 hard-reject boundary: signed documents / widget-bearing pages are
+    # categorically refused for the tiered engine, in strict *or*
+    # non-strict mode. No mutation happened.
+    REJECTED_UNSUPPORTED = "rejected_unsupported"
+    # V2 redo safety: a Tier 0 commit's retained forward patch no longer
+    # matches the current page fingerprint (the document changed since the
+    # commit it is replaying). Redo refused; zero mutation happened.
+    STALE_PLAN = "stale_plan"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -132,6 +158,8 @@ class EditTextCommand(EditCommand):
         target_span_id: str | None = None,
         target_mode: str | None = None,
         reflow_fn: Any | None = None,    # callable()，在 model.edit_text() 後呼叫做 displacement reflow
+        style_overrides: Any | None = None,  # StyleOverrides；使用者實際碰過的樣式欄位
+        plan_token: str | None = None,   # V2 prepared-plan token（stale 檢查用）
     ):
         self._model = model
         self._page_num = page_num
@@ -150,7 +178,29 @@ class EditTextCommand(EditCommand):
         self._target_span_id = target_span_id
         self._target_mode = target_mode
         self._reflow_fn = reflow_fn         # displacement reflow callback（Track A/B）
+        self.style_overrides = style_overrides  # redo 需保留原始 intent
+        self.plan_token = plan_token
+        self.outcome: Any | None = None     # CommitOutcome，execute() 後由 model 提供
         self._executed = False              # 防止在未 execute 前呼叫 undo
+
+        # V2 tier-aware reversal (Task 9): when the first execute() commits
+        # via Tier 0, these hold a validated forward/inverse PatchSet pair
+        # built from the observed before/after stream diff (see
+        # model.text_commit.patch.build_reversal_patchset). Populated once,
+        # replayed by every later undo()/redo() instead of re-running the
+        # full model.edit_text() pipeline (which would re-prepare from
+        # scratch on a different page state and cannot reproduce the exact
+        # same committed bytes). Stay ``None`` for every non-Tier-0 command,
+        # which keeps the original page-snapshot undo/full-redo behavior.
+        self._tier0_forward_patchset: PatchSet | None = None
+        self._tier0_inverse_patchset: PatchSet | None = None
+        # Whether the forward patch is CURRENTLY applied to the live
+        # document (True right after commit/redo, False right after undo).
+        self._tier0_active = False
+        # fidelity_protected_pages membership for this page *before* the
+        # very first execute() -- restored verbatim by every undo(),
+        # whichever restore path (patch replay or snapshot fallback) runs.
+        self._pre_protected = False
 
     @property
     def description(self) -> str:
@@ -180,7 +230,42 @@ class EditTextCommand(EditCommand):
         in CommandManager.execute()/redo() treats every other subclass's None
         return as "recordable", so the wider return type is safe at every call
         site; only mypy's strict override variance objects.
+
+        V2 tier-aware redo: if a *previous* execute() on this command
+        committed via Tier 0 and it is currently undone (``_tier0_active``
+        False), CommandManager.redo() calling this same method must NOT
+        re-run the whole model.edit_text() pipeline from scratch — that
+        would re-classify/re-prepare against whatever the page looks like
+        now and cannot guarantee reproducing the exact same committed
+        bytes. Instead it replays the retained forward PatchSet directly
+        (see ``_redo_tier0``): success or a stale-safe, zero-mutation
+        refusal, never a silent fall-through to the legacy engine.
         """
+        if self._tier0_forward_patchset is not None and self._executed and not self._tier0_active:
+            return self._redo_tier0()
+
+        page_idx = self._page_num - 1
+        # Best-effort: minimal/mocked models (unit tests exercising only
+        # style-intent/reflow plumbing) may not expose fidelity_protected_pages
+        # or a real fitz doc at all -- degrade to "no reversal tracking" for
+        # those exactly like before this command grew tier0 awareness,
+        # rather than requiring every caller to be a full PDFModel.
+        pre_protected = False
+        pre_streams: tuple[tuple[int, bytes], ...] = ()
+        pre_fingerprint: str | None = None
+        pre_page: fitz.Page | None = None
+        try:
+            pre_protected = page_idx in self._model.fidelity_protected_pages
+            pre_page = self._model.doc[page_idx]
+            pre_streams = tuple(read_page_streams(self._model.doc, pre_page))
+            pre_fingerprint = page_fingerprint(self._model.doc, pre_page)
+        except (AttributeError, IndexError, ValueError, TypeError) as exc:
+            logger.debug(
+                "EditTextCommand.execute(): pre-edit stream capture skipped page=%s %s",
+                self._page_num,
+                type(exc).__name__,
+            )
+
         self.result = self._model.edit_text(
             self._page_num,
             self._rect,
@@ -193,6 +278,7 @@ class EditTextCommand(EditCommand):
             new_rect=self._new_rect,
             target_span_id=self._target_span_id,
             target_mode=self._target_mode,
+            style_overrides=self.style_overrides,
         )
         if self.result is not EditTextResult.SUCCESS:
             self._executed = False
@@ -201,8 +287,22 @@ class EditTextCommand(EditCommand):
                 self.result.value,
             )
             return False
-        # Displacement reflow：將後續塊向上/下推移（Track A/B 引擎）
-        if self._reflow_fn is not None:
+        # V2 plumbing: history keeps the full CommitOutcome of this commit.
+        self.outcome = getattr(self._model, "last_commit_outcome", None)
+        self._pre_protected = pre_protected
+        if (
+            self.outcome is not None
+            and self.outcome.tier is CommitTier.TIER0_LOSSLESS_STREAM_PATCH
+            and pre_fingerprint is not None
+            and pre_page is not None
+        ):
+            self._capture_tier0_reversal(page_idx, pre_streams, pre_fingerprint)
+        # Displacement reflow：將後續塊向上/下推移（Track A/B 引擎）。
+        # 高保真 tier 的 outcome 會禁止外部 reflow（不得移動鄰居）。
+        allows_reflow = (
+            self.outcome.allows_external_reflow if self.outcome is not None else True
+        )
+        if self._reflow_fn is not None and allows_reflow:
             try:
                 self._reflow_fn()
             except Exception as _rf_e:
@@ -211,13 +311,105 @@ class EditTextCommand(EditCommand):
         logger.debug(f"EditTextCommand.execute(): {self.description}")
         return True
 
+    def _capture_tier0_reversal(
+        self,
+        page_idx: int,
+        pre_streams: tuple[tuple[int, bytes], ...],
+        pre_fingerprint: str,
+    ) -> None:
+        """After a successful Tier 0 commit, retain a forward/inverse
+        PatchSet pair so future undo()/redo() replay the exact validated
+        intent instead of re-running model.edit_text(). Best-effort: if the
+        observed diff doesn't look like exactly one Tier 0 stream patch,
+        this command silently keeps using the page-snapshot fallback for
+        undo/redo instead (never guesses).
+        """
+        try:
+            page = self._model.doc[page_idx]
+        except (IndexError, ValueError):
+            return
+        reversal = build_reversal_patchset(self._model.doc, page, pre_streams, pre_fingerprint)
+        if reversal is None:
+            logger.debug(
+                "EditTextCommand: tier0 reversal not captured (page=%s), "
+                "falling back to page-snapshot undo/redo",
+                self._page_num,
+            )
+            return
+        self._tier0_forward_patchset, self._tier0_inverse_patchset = reversal
+        self._tier0_active = True
+
+    def _redo_tier0(self) -> bool:
+        """Replay the retained forward PatchSet — the same validated intent
+        as the original Tier 0 commit — or fail STALE with zero mutation.
+
+        Never falls through to the legacy engine: a stale forward patch
+        means the document changed since the commit it is replaying, so the
+        only safe outcomes are "identical replay" or "refuse, untouched".
+        """
+        forward = self._tier0_forward_patchset
+        if forward is None:
+            # execute() only routes here when the forward patch exists;
+            # defensive refusal keeps mypy honest and mutates nothing.
+            return False
+        page_idx = self._page_num - 1
+        try:
+            page = self._model.doc[page_idx]
+            apply_patchset(self._model.doc, page, forward)
+        except (StalePlanError, SpliceError, IndexError, ValueError) as exc:
+            logger.warning(
+                "EditTextCommand.redo(): tier0 forward patch stale (%s); "
+                "redo refused, zero mutation",
+                type(exc).__name__,
+            )
+            self._model.last_commit_outcome = CommitOutcome(
+                status=CommitStatus.STALE_PLAN,
+                tier=None,
+                fallback_chain=(f"tier0:{RejectReason.STALE_PLAN}",),
+                warnings=(),
+                font_outcomes=(),
+                verified_properties=(),
+                degraded_reason=str(exc),
+                allows_external_reflow=False,
+            )
+            self.result = EditTextResult.STALE_PLAN
+            return False
+
+        self._model.fidelity_protected_pages.add(page_idx)
+        self._model.block_manager.rebuild_page(page_idx, self._model.doc)
+        self._tier0_active = True
+        self.result = EditTextResult.SUCCESS
+        # Same validated intent as the original commit -- outcome is left
+        # untouched (it already describes the committed state this replay
+        # reproduces byte-for-byte); only refresh the model's transient
+        # "last operation" field for callers that read it directly.
+        self._model.last_commit_outcome = self.outcome
+        logger.debug(
+            "EditTextCommand.redo(): tier0 forward patch replayed for page %s",
+            self._page_num,
+        )
+        return True
+
+    def _restore_protection_membership(self, page_idx: int) -> None:
+        if self._pre_protected:
+            self._model.fidelity_protected_pages.add(page_idx)
+        else:
+            self._model.fidelity_protected_pages.discard(page_idx)
+
     def undo(self) -> None:
         """
-        還原頁面至 execute() 前的狀態：
-          1. 呼叫 model._restore_page_from_snapshot() 用 bytes 快照替換該頁。
-          2. 呼叫 model.block_manager.rebuild_page() 重建該頁 TextBlock 索引。
+        還原頁面至 execute() 前的狀態。
 
-        依賴 Phase 3 加入 pdf_model.py 的兩個 helper 方法。
+        V2 tier-aware path: if this command committed via Tier 0 and the
+        retained inverse PatchSet is still fingerprint-valid, replay it
+        directly -- byte-identical source stream, annotation xrefs
+        untouched (patch.py only ever calls ``doc.update_stream``, never
+        redaction/annotation recreate). Falls back to the original
+        page-snapshot restore when there is no tier0 reversal to replay, or
+        when it has gone stale (the document changed since the commit it
+        would be reversing) -- StalePlanError there is expected, not a bug.
+        Either path restores fidelity_protected_pages membership to its
+        pre-edit value.
         """
         if not self._executed:
             logger.warning("EditTextCommand.undo(): 尚未執行過，跳過還原")
@@ -225,10 +417,32 @@ class EditTextCommand(EditCommand):
 
         page_num_0based = self._page_num - 1
 
+        if self._tier0_inverse_patchset is not None and self._tier0_active:
+            try:
+                page = self._model.doc[page_num_0based]
+                apply_patchset(self._model.doc, page, self._tier0_inverse_patchset)
+            except (StalePlanError, SpliceError, IndexError, ValueError) as exc:
+                logger.warning(
+                    "EditTextCommand.undo(): tier0 inverse patch stale (%s); "
+                    "falling back to page-snapshot restore",
+                    type(exc).__name__,
+                )
+            else:
+                self._restore_protection_membership(page_num_0based)
+                self._tier0_active = False
+                self._model.block_manager.rebuild_page(page_num_0based, self._model.doc)
+                logger.debug(
+                    f"EditTextCommand.undo(): tier0 inverse patch restored 頁面 {self._page_num}，"
+                    f"原文字='{self._old_block_text}'"
+                )
+                return
+
         # Phase 3: _restore_page_from_snapshot() 將在 pdf_model.py 中實作
         self._model._restore_page_from_snapshot(
             page_num_0based, self._page_snapshot_bytes
         )
+        self._restore_protection_membership(page_num_0based)
+        self._tier0_active = False
 
         # Phase 3: 重建該頁索引，確保後續 find_by_rect 等查詢正確
         self._model.block_manager.rebuild_page(page_num_0based, self._model.doc)

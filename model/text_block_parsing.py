@@ -159,6 +159,30 @@ class EditableParagraph:
     line_end: int
 
 
+def _join_visual_lines(line_texts: list[str]) -> str:
+    """Join a block's soft-wrapped lines back into one paragraph string.
+
+    Spans *inside* a line are contiguous style runs, so they concatenate with
+    no separator.  Lines are not: joining them directly deletes the word
+    boundary at every line break, so ``"jumps"`` + ``"over"`` reads back as
+    ``"jumpsover"``.  A trailing hyphen is a split word and keeps no space —
+    the same rule :func:`_build_paragraphs` already applies to run-level
+    paragraphs, which this now agrees with.
+    """
+    joined: list[str] = []
+    for line_text in line_texts:
+        if not line_text:
+            continue
+        if (
+            joined
+            and not joined[-1].endswith((" ", "\n", "-"))
+            and not line_text.startswith((" ", "\n"))
+        ):
+            joined.append(" ")
+        joined.append(line_text)
+    return "".join(joined)
+
+
 def _parse_block(
     page_num: int,
     raw_index: int,
@@ -168,22 +192,24 @@ def _parse_block(
         return None
 
     block_rect = fitz.Rect(block["bbox"])
-    text_parts: list[str] = []
+    line_texts: list[str] = []
     font_name = "helv"
     font_size = 12.0
     color_int = 0
     span_count = 0
 
     for line in block.get("lines", []) or []:
+        span_texts: list[str] = []
         for span in line.get("spans", []) or []:
-            text_parts.append(span.get("text", ""))
+            span_texts.append(span.get("text", ""))
             span_count += 1
             if font_name == "helv" and "font" in span:
                 font_name = span.get("font", "helv")
                 font_size = float(span.get("size", 12.0))
                 color_int = int(span.get("color", 0))
+        line_texts.append("".join(span_texts))
 
-    text = "".join(text_parts)
+    text = _join_visual_lines(line_texts)
     rgb_int = fitz.sRGB_to_rgb(color_int) if color_int else (0, 0, 0)
     color = tuple(c / 255.0 for c in rgb_int)
 

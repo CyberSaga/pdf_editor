@@ -1818,6 +1818,24 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 
 ---
 
+## Normalized PDF token serialization cannot prove lossless text patching
+**Area:** text-commit design; `model/pdf_content_ops.py`
+**Symptom:** A content-stream edit appears semantically correct, but comments, whitespace, token formatting, or unrelated bytes change across the stream, invalidating a byte-identity fidelity guarantee.
+**Cause:** `tokenize_content_stream()` intentionally skips whitespace/comments, and `serialize_tokens()` rejoins every token with newlines. This is acceptable for existing native-image operator rewrites, but it cannot preserve untouched source bytes for a high-fidelity text tier.
+**Fix:** Use a separate lossless lexer that records raw byte ranges/trivia and a splice-only writer whose replacements carry expected source bytes and stream digests. Keep `pdf_content_ops` on its existing normalized contract; do not retrofit Tier 0 text patching onto it.
+**File:** design in `plans/2026-07-18-acrobat-stable-text-commit-engine-v2.md`; future `model/text_commit/pdf_lexer.py`
+
+---
+
+## `Tj`/`TJ` edits must preserve consumed text advance, not just surrounding operators
+**Area:** text-commit design; future `model/text_commit/replay.py` and `patch.py`
+**Symptom:** Editing or removing a target string leaves every non-target operator byte intact, yet suffix glyphs or later text in the same `BT`/`ET` move.
+**Cause:** PDF text-show operators advance the text matrix. Replacing a substring with different metrics shifts suffix glyphs; removing a show operator removes its entire advance. Preserving nearby kerning numbers or positioning operators alone does not preserve later text position.
+**Fix:** Initial Tier 0 accepts only whole supported show operations with verified equal advance. Any later substring or Tier 1 erase support must emit an exact text-space compensation and verify downstream matrices/origins before commit. Ambiguous or unsupported cases reject rather than guess.
+**File:** design in `plans/2026-07-18-acrobat-stable-text-commit-engine-v2.md`; future `model/text_commit/replay.py`, `model/text_commit/patch.py`, `model/text_commit/verify.py`
+
+---
+
 ## PyMuPDF PDF generation is not byte-deterministic
 **Area:** `scripts/build_fidelity_corpus.py` (fidelity corpus generator)
 **Symptom:** Calling `doc.tobytes()` multiple times on identically-constructed PyMuPDF documents produces different byte content (different SHA-256 hashes each run), even after stripping metadata with `doc.set_metadata({})`.
@@ -1845,3 +1863,238 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** PyMuPDF 1.27 renamed the method to `get_new_xref()`. Older documentation and examples may reference `new_xref()`.
 **Fix:** Use `doc.get_new_xref()` to allocate new indirect object numbers.
 **File:** `scripts/build_fidelity_corpus.py`
+
+---
+
+## `doc.tobytes()` of the SAME unchanged document differs between calls
+**Area:** `model/text_commit/engine.py`; any "no mutation" test assertion
+**Symptom:** `assert doc.tobytes() == before` fails even though nothing touched the document — one byte in the trailer region differs.
+**Cause:** PyMuPDF regenerates the trailer `/ID` (and may re-serialize other bookkeeping) on every save/serialization, so two `tobytes()` calls on an identical in-memory document are not byte-equal.
+**Fix:** Never prove "document unchanged" with `tobytes()` equality. Compare structural fingerprints instead: `model/text_commit/inspect.py:page_fingerprint` (decoded streams + fonts + annots + widgets) plus `doc.xref_length()` for object-count drift. `tobytes()` round-trips are still fine for making scratch copies — xref numbering and decoded stream bytes are preserved.
+**File:** `test_scripts/test_text_commit_tier0.py`, `model/text_commit/inspect.py`
+
+---
+
+## `fitz.Font(<unknown name>)` raises `FzErrorArgument`, not RuntimeError — and known names may silently alias
+**Area:** `model/text_commit/fonts.py`
+**Symptom:** Catching `(RuntimeError, ValueError)` around `fitz.Font(name)` lets `pymupdf.mupdf.FzErrorArgument` escape (its MRO is `FzErrorBase -> Exception`, not RuntimeError). Separately, some name lookups can succeed with an unrelated face.
+**Cause:** PyMuPDF 1.27 raises its own `FzError*` hierarchy from `fz_new_base14_font`; name resolution is permissive.
+**Fix:** Catch `fitz.mupdf.FzErrorBase` alongside RuntimeError/ValueError, and after a successful named load verify `face.name` corroborates the requested family before trusting it (`resolve_system_face` returns None otherwise — no silent Helvetica).
+**File:** `model/text_commit/fonts.py`
+
+---
+
+## `Document.xref_copy` needs a dict-initialized target; `xref_set_key` cannot create keys through indirect paths
+**Area:** test fixtures / direct PDF object surgery
+**Symptom:** `xref_copy(src, doc.get_new_xref())` fails with "not a dict (null)"; `xref_set_key(page.xref, "Resources/Font/X", ...)` fails with "path to 'X' has indirects" when /Resources (or /Font) is an indirect reference.
+**Cause:** A fresh xref from `get_new_xref()` holds `null` — `xref_copy` copies key-by-key into an existing dict. `xref_set_key` refuses to auto-create nested keys across indirect boundaries.
+**Fix:** `doc.update_object(new_xref, "<<>>")` before `xref_copy`. For resource registration, resolve each indirect level (`xref_get_key` returning `("xref", "N 0 R")`) and set the key on the owning object directly.
+**File:** `test_scripts/test_text_commit_fonts.py:_register_font_resource`
+
+---
+
+## MuPDF `insert_htmlbox` break-all does NOT split words that fit a line
+**Area:** legacy commit path characterization; `model/pdf_model.py:_build_insert_css`
+**Symptom:** Expected mid-word line breaks from `word-break: break-all; overflow-wrap: anywhere` do not reproduce: MuPDF still breaks at spaces when each word fits the box width.
+**Cause:** MuPDF's HTML engine applies break-anywhere only when a single word exceeds the full line width; it is not a browser-faithful `break-all`.
+**Fix:** The real, deterministic line-break defect of the legacy engine is different: the insert box is widened up to the page's safe right margin and the paragraph re-breaks at that new width (a 3-line paragraph commits as 1 line). Characterize that (`test_paragraph_edit_preserves_original_line_breaks`), not mid-word splitting.
+**File:** `test_scripts/test_text_commit_characterization.py`
+
+---
+
+## Block-manager runs are word-level: one show op maps to several member spans
+**Area:** `model/pdf_text_edit.py` (V2 engine target derivation); `model/text_block_parsing.py`
+**Symptom:** A single-line `(Price 2024) Tj` resolves to TWO member spans ('Price', '2024'), so a "single member span" gate rejects every normal edit with `multi_span_target`, and Tier 0 never fires.
+**Cause:** `TextBlockManager` deliberately splits rawdict spans into word-level runs (`EditableSpan`) for run-mode editing granularity. Span-count is therefore a property of the editing UI model, not of the content stream: N member runs can still be one whole show operator.
+**Fix:** Derive the Tier 0 target as either exactly one member run (whole-word Tj) or a member set that covers one full line of one block (verified against `block_manager.get_runs`), space-joining the run texts in x-order to reconstruct the show-op string. Partial-line and multi-line selections reject honestly.
+**File:** `model/pdf_text_edit.py:_tier0_target_from_resolve`
+
+---
+
+## Dropping the last Python reference to an unparented cross-thread QObject is an access violation
+**Area:** PySide6 threading; `controller/text_commit_coordinator.py`
+**Symptom:** `Windows fatal exception: access violation` with `<no Python frame>` in the worker thread during session teardown; the main thread sits innocently in `QThread.wait()`.
+**Cause:** An unparented `QObject` worker moved to a `QThread` is owned by its Python wrapper. Setting `self._worker = None` on the main thread while the worker thread is still delivering a queued call destroys the C++ object immediately — from the wrong thread, under a live event delivery.
+**Fix:** Retain retired `(thread, worker)` pairs in a list until `thread.isFinished()`; only then let the wrappers go. Prefer a dedicated queued Signal for cross-thread shutdown over `QMetaObject.invokeMethod`, and quit the thread from inside the worker's shutdown slot. `PageRenderCoordinator._threads` follows the same rule.
+**File:** `controller/text_commit_coordinator.py:TextCommitPreviewCoordinator.end_session`
+
+---
+
+## `insert_pdf` strips the SOURCE page's annotation `/P` key — even on whole-document copies
+**Area:** PyMuPDF; `model/pdf_model.py` undo snapshots
+**Symptom:** After any `edit_text()` call (Tier 0 or legacy), an annotation on the edited page loses its `/P` (parent-page) key in the LIVE document; xref, rect, and `/AP` appearance stream all survive. Dictionary-identity assertions fail.
+**Cause:** `PDFModel._capture_page_snapshot` builds the undo snapshot via `tmp_doc.insert_pdf(self.doc, ...)`. PyMuPDF's `insert_pdf` mutates the *source* document as a side effect: it deletes each source annotation's `/P` key. Confirmed independent of the `annots=` flag and reproduced even with a full `from_page=0, to_page=-1` copy — pure fitz, no model code.
+**Fix:** Snapshot every annotation's FULL `xref_object()` string before the `insert_pdf` call and restore it verbatim afterwards with `doc.update_object(xref, captured)`. A `xref_get_key`/`xref_set_key` round-trip of just `/P` is NOT enough — the restored key is re-appended at the end of the dict, so string-identity checks still fail; only the full-object restore round-trips byte-for-byte including key order.
+**File:** `model/text_commit/inspect.py:capture_annotation_parent_refs` / `restore_annotation_parent_refs`; caller `model/pdf_model.py:_capture_page_snapshot`
+
+---
+
+## `doc.tobytes()` with default encryption poisons a live encrypted document — even read-only
+**Area:** PyMuPDF AES-256; `model/text_commit/engine.py`, `model/text_commit/verify.py`
+**Symptom:** After a Tier 0 attempt on an encrypted document, a later `encryption=PDF_ENCRYPT_KEEP` save (incremental OR full) writes a file whose content streams no longer decrypt — real corruption, not a safe reject.
+**Cause:** `tobytes()` defaults to `encryption=NONE` (decrypt-on-serialize). Calling it on the LIVE authenticated handle — as `TieredCommitEngine.prepare` did to build its scratch copy and as V0e's reopen probe did again — silently poisons that handle's internal crypt state (same PyMuPDF 1.27.1 quirk already pinned by `test_secure_persistence.py::test_worker_snapshot_before_edit_does_not_corrupt_later_encrypted_save`). The damage surfaces only at the NEXT save, far from the cause.
+**Fix:** On any live possibly-encrypted doc, always serialize with `encryption=fitz.PDF_ENCRYPT_KEEP` (a safe no-op for unencrypted docs, so one code path covers both), then reopen + re-authenticate a throwaway clone for anything needing decrypted content. A locked reopened doc still exposes an accurate `page_count`, so pure reopenability probes need no password at all. The two remaining unguarded call sites — `preview.py:open_preview_session` and `verify.py:_ocg_membership_lost` — were closed the same way (2026-07-31); both were measurably stripping encryption off the live handle, not just theoretically at risk. Note the asymmetry when converting a probe: a *reopenability* probe works fine against a locked clone, but a probe that must read content (OCG membership, text extraction) cannot, so it needs either a password or an explicit "could not evaluate" answer — never a silent "no problem found".
+**File:** `model/text_commit/engine.py:_build_scratch_copy`; `model/text_commit/verify.py` (V0e probe, `_ocg_membership_lost`); `model/text_commit/preview.py:_session_snapshot_bytes`; tests in `test_scripts/test_text_commit_encrypted_safety.py`
+
+---
+
+## `insert_pdf` renumbers xrefs — unusable for xref-identical scratch copies
+**Area:** PyMuPDF; `model/text_commit` scratch-first verification
+**Symptom:** A scratch copy built with `insert_pdf` yields different `page.xref` / content-stream xrefs than the source, so fingerprint- and xref-keyed plans (PatchSet.page_xref, stream xrefs) never match.
+**Cause:** `insert_pdf` rebuilds the object graph and renumbers destination xrefs relative to the source — even for a full `from_page=0, to_page=-1` copy.
+**Fix:** Only a same-document `tobytes()`+reopen round-trip preserves xref numbering (with `encryption=PDF_ENCRYPT_KEEP` on live encrypted docs — see previous entry). Use that for any scratch copy that must be xref-identical.
+**File:** `model/text_commit/engine.py:_build_scratch_copy`
+
+## Pixel-uniformity occlusion checks need edge erosion
+**Area:** model/text_commit/verify.py (Tier-1 spike: verify_tier1_strategy / _region_is_uniform)
+**Symptom:** A z-order/occlusion check that samples "is this whole region one flat color" reported non-uniform even when a fully-opaque covering rectangle painted over the target with nothing else in the region — because PyMuPDF anti-aliases the rectangle's own edge against the page background, producing a thin ring of blended colors right at the declared bbox boundary.
+**Cause:** The declared target bbox coincided exactly with the covering rect's own fill coordinates; sampling all the way to that boundary picks up the rect's edge anti-aliasing, not any change in the underlying (occluded) content.
+**Fix:** Erode the sampled pixel region inward by a small fixed margin (`_UNIFORM_ERODE_PX = 2`) before checking uniformity, so only the flat interior — away from any shape's own rendered edge — is compared.
+**File:** model/text_commit/verify.py (`_region_is_uniform`, `_UNIFORM_ERODE_PX`)
+
+## A "graphics-state bleed" ink-tint check must not sample a covering shape's own fill color
+**Area:** model/text_commit/verify.py (Tier-1 spike: verify_tier1_strategy)
+**Symptom:** A check for "is the darkest pixel in the target region tinted (non-gray), meaning a dangling `rg` bled into the replacement's glyph ink" produced a false positive when the target was correctly still hidden under an opaque red rectangle (the z-order-preserving, PASSING outcome) — the only/darkest pixel found was the rectangle's own red fill, not glyph ink at all, since there was no visible ink to sample.
+**Cause:** When z-order is correctly preserved, the target text stays fully occluded post-edit; naively sampling "whichever color is darkest in the declared region" instead samples whatever opaque content is on top, which is unrelated to the replacement's own fill color.
+**Fix:** Gate the ink-tint check on the target region NOT being fully occluded post-edit, reusing the same flat-color occlusion test already computed for the z-order check; skip the ink check entirely (record `glyph_ink_not_visible_ignored`) when the region is still uniform/occluded.
+**File:** model/text_commit/verify.py (`verify_tier1_strategy`)
+
+## PyMuPDF insert_font(fontbuffer=..., set_simple=True) dedupes byte-identical programs onto the same xref
+**Area:** model/text_commit fonts (font-honesty Tier-1 spike)
+**Symptom:** Re-embedding the exact same extracted font bytes under a NEW resource name via `page.insert_font` silently reuses the original font's xref instead of creating a distinct object — a naive test/rebuild that expects a fresh `written_font_xref` gets the source xref back, which would make an honesty test for "not SOURCE_RESOURCE_REUSED" pass for the wrong reason.
+**Cause:** PyMuPDF content-addresses inserted font programs; identical bytes never produce a second xref.
+**Fix:** To force a genuinely distinct font object (as any real Tier-1 rebuild must produce), hand-clone it: `new_xref = doc.get_new_xref(); doc.update_object(new_xref, doc.xref_object(source_xref))`, then splice the new xref into the Resources' /Font subdict directly (Resources itself may be an indirect xref object, not an inline dict — read/rewrite via `doc.xref_get_key`/`doc.xref_set_key` on the Resources xref, not the page xref).
+**File:** test_scripts/test_text_commit_textwriter_zorder.py (font-honesty fixture); relevant to any future model/text_commit/fonts.py Tier-1 rebuild code.
+
+## OCG visibility only takes effect after a tobytes()+reopen round trip — and only on a *second* round trip after set_layer
+**Area:** model/text_commit/verify.py (`_ocg_membership_lost`)
+**Symptom:** Calling `doc.set_layer(-1, off=[...])` on a live document and then immediately calling `get_text()`/rendering the same live page shows no change at all — the OCG toggle appears to be a no-op.
+**Cause:** OCG on/off state is only consulted by MuPDF's content interpreter when a document is (re)opened from bytes; a live, already-parsed page/pixmap does not re-evaluate it.
+**Fix:** To probe OCG membership, snapshot the doc via `tobytes()`+reopen, call `set_layer` on THAT reopened copy, `tobytes()` again, and reopen a second time before calling `get_text()` — two full round trips total, never mutating the original live document.
+**File:** model/text_commit/verify.py (`_ocg_membership_lost`)
+
+## Concatenating a block's spans is right; concatenating its lines deletes a word boundary
+**Area:** model/text_block_parsing.py (`_parse_block`)
+**Symptom:** `TextBlock.text` for a three-line paragraph read `'The quick brown fox jumpsover the lazy dog whilecarrying a heavy basket'` — the substring `'jumps over'` was not present at all. Silent: no error, just a wrong string handed to block matching and to `original_text=` on edit requests.
+**Cause:** `_parse_block` flattened every span of every line into one list and `"".join`-ed it. Within a line that is correct — rawdict spans are contiguous style runs, and inserting a separator between them would split styled fragments mid-word (`"Sun"` + `"day"` → `"Sun day"`). Across lines it is not: soft wrapping is where the space went. The same module already had the right rule in `_build_paragraphs` (space between visual lines, `\n` at bullets/large gaps) and `pdf_text_edit.py:1223` space-joins its cluster path, so `_parse_block` was the lone dissenter — the giveaway that this was a defect rather than a deliberate convention.
+**Fix:** Build one string per line, then join *lines* via `_join_visual_lines`: one space between lines, suppressed when the previous line already ends in space/newline/hyphen (a trailing hyphen is a split word, `"compre-"` + `"hensive"`), empty lines skipped. When fixing this class of bug, pin the non-fix too — a test that the over-correction (separating per *span*) does not happen.
+**File:** `model/text_block_parsing.py:_join_visual_lines`; tests in `test_scripts/test_text_block_parsing_extraction.py`
+
+## A wrong extracted string can hide as a *similarity* problem rather than a visible failure
+**Area:** model/pdf_text_edit.py (`SequenceMatcher` block/page reconciliation)
+**Symptom:** No user-visible error — just occasional unnecessary page-index rebuilds, and edit targeting that is subtly worse than it should be.
+**Cause:** `pdf_text_edit.py:456-459` reconciles the indexed `target.text` against `page.get_text("text", clip=target.rect)` with `difflib.SequenceMatcher`, rebuilding the page index when the ratio drops below 0.5. `get_text` separates lines; the fused `TextBlock.text` did not, so every line break cost real similarity. The check absorbed the corruption instead of surfacing it — a threshold comparison degrades gracefully where an equality check would have failed loudly on day one.
+**Fix:** Fixed at the source (see previous entry). The general lesson: a fuzzy comparator between two representations of the same text is a place where one side can be quietly wrong for a long time. When adding one, assert the *exact* agreement somewhere too, or the ratio silently becomes the spec.
+**File:** `model/pdf_text_edit.py:456-459`
+
+## Asserting that the replay *recorded* a text state does not test the gate that *rejects* it
+**Area:** model/text_commit planner gates (`plan.py`, `inspect.py`) + their tests
+**Symptom:** `plan.py`'s `mc_depth` gate and its `render_mode`/`rise`/`hscale` gate could both be deleted outright and the entire 135-test text_commit suite still passed. The marked-content gate — the single gate rejecting the most real-world shows (all 32 in `test-horizontal-texts.pdf`, 2364 in `test-complexed-layout.pdf`) — had zero coverage.
+**Cause:** `test_text_commit_replay.py` builds the right fixtures (`80 Tz 3 Ts 2 Tr`, `/P <</MCID 0>> BDC … EMC`) but asserts only `show.hscale == 80.0` / `show.mc_depth == 1` — i.e. that the replay *observed* the state. Nothing asserted the planner *acted* on it. Meanwhile every case in `test_text_commit_tier0.py`'s parametrized rejection test varies only the **request** (replacement text, style/geometry overrides); the fixture document was never varied, so no structural gate was reachable from it. Sensor tested, switch untested.
+**Fix:** Test the planner's return value, not the replay's fields: build one raw content stream per gate and assert `prepare_tier0_plan(...)` returns a `PlanRejection` with that gate's `RejectReason`. Confirm each new test is real by mutation — neuter the guard (`if False:`) and check that exactly the matching test fails. A green suite proves nothing about a gate no fixture reaches.
+**File:** test_scripts/test_text_commit_structural_gates.py
+
+## Two gates sharing one RejectReason let a test survive deletion of its own gate
+**Area:** model/text_commit/plan.py (`FONT_FACE_UNAVAILABLE`, `UNSUPPORTED_TEXT_STATE`)
+**Symptom:** A test pinning only `rejection.reason == FONT_FACE_UNAVAILABLE` for the "no font selected" gate still **passes** when that gate is deleted — a silently vacuous test.
+**Cause:** `FONT_FACE_UNAVAILABLE` is emitted at two sites and `UNSUPPORTED_TEXT_STATE` at four. Deleting the `show.font_resource is None` check just lets control fall through to `registry.capability(page, None)`, which also returns `None` and re-emits the *same* reason with different detail text. The reason code alone cannot distinguish which guard fired.
+**Fix:** Where several guards share a `RejectReason`, also pin a short stable substring of `PlanRejection.detail` (`"no font selected"` vs `"not resolvable"`; `"marked-content"` vs `"render_mode="` vs `"outside BT/ET"`). Additionally assert the fixture's `ShowOp` carries the intended off-nominal field *and no other* — otherwise the test can drift into a neighbouring gate and stay green. Verified by mutation: the detail assertion is the only thing that catches the `FONT_FACE_UNAVAILABLE` mutant.
+**File:** test_scripts/test_text_commit_structural_gates.py (`_assert_only_off_nominal`)
+
+## For a simple PDF font, `/Widths` overrides the font program — measuring advance from a face is wrong
+**Area:** model/text_commit/fonts.py, plan.py (`_advance`)
+**Symptom:** Tier 0 refused 29,526 of 38,540 corpus show ops (76.6%) with `font_face_unavailable`. All were one profile: unembedded TrueType Arial / Times New Roman / Courier New with WinAnsiEncoding — Word's default export. None is base-14 (base-14 is Helvetica/Times-Roman/Courier, *different* typefaces), so no face resolved and nothing could be measured.
+**Cause:** advance was computed as `capability.face.text_length(...)`. But for a simple (non-CID) font the `/Widths` array **is** the layout contract: a conforming viewer advances by `Widths[code - FirstChar] / 1000 * font_size` and does not consult the font program's metrics. Every one of those fonts carried a complete `/Widths`, so the data was present all along and the engine was reading the wrong source.
+**Fix:** Read `/Widths` (+ `/FirstChar`) and prefer it over any face. Measured proof that `/Widths` wins: embed a real `arial.ttf` as `/FontFile2` but write `/Widths` as all-1000 — MuPDF lays out **40.0pt** while the extracted face reports **23.32pt**. So this is a soundness *fix* for embedded fonts too, not only a widening for unembedded ones. Corollary worth internalising: a face resolved by *name* from the host system is a fact about the machine, not the document, so it is non-reproducible across machines — never let it decide a layout question the document already answered.
+**File:** `model/text_commit/fonts.py` (`_read_width_table`, `FontCapability.advance_source`); tests in `test_scripts/test_text_commit_font_widths.py`
+
+## `/Widths` proves an advance, not a glyph — trusting it as glyph evidence commits tofu
+**Area:** model/text_commit/fonts.py (`FontCapability.missing_glyphs`)
+**Symptom:** With advance sourced from `/Widths` and no face loaded, `missing_glyphs()` returned `""` for *any* text, so `encode_simple`'s coverage guard never fired and Tier 0 would commit a replacement whose glyphs do not exist — rendering as tofu boxes.
+**Cause:** Conflating two different claims. A `/Widths` entry says a code has a horizontal advance; it says nothing about an outline existing. Subset fonts routinely declare widths across the whole `[FirstChar, LastChar]` range while embedding only the glyphs actually drawn. Guarding only against *zero* widths does not help — a positive `.notdef` or default width passes.
+**Fix:** Keep glyph coverage as its own gate, exactly as the plan requires ("replacement glyphs exist in the source font encoding"). Without a face it is attestable only for an **unembedded, non-subset font from a closed allowlist of full-ASCII text families whose own descriptor does not flag it symbolic**. Note the first attempt at this fix — trusting any non-subset unembedded font, on the theory that a viewer substitutes a complete face — was itself wrong, and review caught it: if the named font *is* installed, the viewer uses that font rather than a substitute, so an unfamiliar name (barcode, icon, dingbat) can still render `.notdef`. Absence of a subset prefix is not glyph evidence; a closed family allowlist plus the document's own `/Flags` is. Note too that V0a–V0e cannot backstop any of this: raster identity is asserted *outside* a 2pt halo around the target, so tofu inside the edit region is invisible to verification — the check has to happen at plan time.
+**File:** `model/text_commit/fonts.py` (`missing_glyphs`); tests in `test_scripts/test_text_commit_widths_hardening.py`
+
+## A staleness fingerprint must cover whatever the plan was *measured* against, not just what it edits
+**Area:** model/text_commit/inspect.py (`page_fingerprint`)
+**Symptom:** After Tier 0 began measuring advance from `/Widths`, editing that table between prepare and commit left the page fingerprint unchanged, so a plan measured against the old widths still passed the freshness check and could commit.
+**Cause:** the fingerprint hashed content streams, `page.get_fonts(full=True)` entries, and annotation/widget identity. That tuple reports the same metadata whether or not the width array changed, and the font *object* was never hashed. The fingerprint was built when advance came from a loaded face — a thing outside the document — so nothing in the document needed covering. Changing the measurement source silently widened what "stale" has to mean.
+**Fix:** Hash the font object itself and, when `/Widths` is an indirect reference, the referenced object too. General rule: whenever a plan starts deriving a number from a new part of the document, extend the staleness fingerprint in the same change — the guard is only as good as its inputs, and its gaps are invisible until something mutates.
+**File:** `model/text_commit/inspect.py` (`page_fingerprint`); test in `test_scripts/test_text_commit_widths_hardening.py`
+
+## A tolerance that equals the quantum of its own measurement source stops being a tolerance
+**Area:** model/text_commit/plan.py (`_ADVANCE_TOL_PER_PT`)
+**Symptom:** Non-monotonic accept/reject on the *same* one-unit width difference — size 12 committed a 0.012pt shift, size 72 refused 0.072pt, size 600 committed a **0.600pt** shift. V0a–V0e passed all of it.
+**Cause:** The advance tolerance was `1e-3 * font_size`, and one `/Widths` table unit is exactly `font_size / 1000` — algebraically identical. Against face-derived floats the tolerance absorbed genuine rounding noise; against integer `/Widths` the smallest representable difference lands precisely on the strict `>` boundary, so float representation, not design, decides the outcome.
+**Fix:** Match the tolerance to the arithmetic of the source. `/Widths` advances are exact rational values (integer units scaled by size), so they need a float-noise tolerance (`1e-9 * size`), not the face's `1e-3 * size`. General rule: whenever a measurement source changes, re-derive the tolerance — one that happens to equal the source's quantisation step silently absorbs a full unit of real error while the comment still claims it "only absorbs rounding".
+**File:** `model/text_commit/plan.py`; tests in `test_scripts/test_text_commit_widths_hardening.py`
+
+## Word runs are stripped, so `" ".join` cannot reconstruct source whitespace
+**Area:** model/pdf_text_edit.py (`_tier0_target_from_resolve`) → model/text_commit/inspect.py (`bind_source_text`)
+**Symptom:** A Tier 0 edit on a line containing two or more consecutive spaces (`"Price is  100"`) always refused with `no_source_match` — the same code emitted when the text is genuinely absent from the page. Invisible to every corpus number, because `scripts/audit_tier_coverage.py` classifies *show operators*, not *edits*, and this stage sits above the planner.
+**Cause:** `text_block_parsing.py:_finalize` ends each word run with `"".join(run["text_parts"]).strip()`, so a run never carries its surrounding whitespace — word boundaries come from geometric gap analysis, not from space characters. `_tier0_target_from_resolve` then rebuilds the show-op string as `" ".join(...)` over those runs, which is correct only when every gap in the source was exactly one space. `bind_source_text` demands exact byte equality (`s.decoded_bytes == target_bytes`), so any wider gap fails to bind. The reconstruction, not the document, was at fault — but the reason code blamed the document.
+**Fix:** Do not let a *guess* be reported as a *finding*. `_tier0_target_from_resolve` now returns `_Tier0Target` carrying `joined_runs`, and a run-joined target whose only failure is `NO_MATCH` is re-labelled `TARGET_RECONSTRUCTION_UNVERIFIED` with a detail naming the join. Recovering these edits (reading the verbatim line text instead of rejoining runs) is still owed — the dict parse *does* preserve `"Price is  100"` verbatim, but mapping a run's `(block_idx, line_idx)` onto it crosses the rawdict↔dict index-alignment assumption in `_build_page_index` and does not help the single-run case (`"  Total  "` → run `"Total"`, which also fails to bind). Tracked in TODOS.md.
+**File:** `model/pdf_text_edit.py` (`_Tier0Target`, `_reconstruction_aware_reason`); tests in `test_scripts/test_tier0_target_resolution.py`
+
+## A redundant guard cannot be made mutation-SENSITIVE — check for subsumption before claiming a test pins it
+**Area:** model/pdf_text_edit.py (`_tier0_target_from_resolve`), test design
+**Symptom:** A new test asserting that members spanning two lines return `None` passed, but deleting the `any(s.block_idx != first.block_idx ...)` line-identity guard it claimed to pin left the entire suite green — the exact failure mode Task 10a was written to catch.
+**Cause:** The guard is genuinely unreachable as a decision. `span_id` is built as `f"p{page}_b{block}_l{line}_s{idx}"` in **both** parsers, so a member on another line always carries an id absent from `first`'s `line_run_ids`; the full-line set-equality check immediately below refuses the same input first. With a single member, `any(...)` compares `first` to itself and is always `False`.
+**Fix:** Report it rather than inventing a fixture that "proves" a redundant branch. A guard that no mutation can kill is either dead or subsumed, and the honest outcome is to say which — writing a test that passes for a different reason is worse than having no test. Kept as cheap defence-in-depth; the test's docstring now says it pins the *behaviour*, not that line.
+**File:** `test_scripts/test_tier0_target_resolution.py` (`test_shape_multi_line_members_are_refused`)
+
+## `TARGET_IN_FORM_XOBJECT` is page-scoped, not target-scoped — it mislabels almost every miss on real corpora
+**Area:** model/text_commit/inspect.py (`bind_source_text`)
+**Symptom:** In the 2026-08-01 funnel measurement, 34,552 bind failures carried `TARGET_IN_FORM_XOBJECT`, but a byte-scan of every invoked Form XObject confirmed only 1,827 (5.3%) of those targets actually live in one. 409/415 corpus pages (98.6%) invoke *some* Form XObject (a logo, a bullet glyph), so the label was eligible to fire on virtually any miss.
+**Cause:** The reclassification asks a *page* question — "does this page invoke any XObject?" — where a *target* question was needed — "is this target's text inside an invoked XObject?". Any unmatched target on such a page inherits the label regardless of where its text actually is.
+**Fix:** Deconflict per target: replay each invoked Form XObject once (cached per document) and byte-check the target against it; only a confirmed hit keeps the label, everything else falls through to the true code (`no_source_match` / `target_reconstruction_unverified`). Prototyped in `scripts/measure_tier_funnel.py`; production `bind_source_text` still behaves page-scoped — do not trust this reason code in telemetry or audits until that is fixed (tracked in TODOS.md).
+**File:** `scripts/measure_tier_funnel.py` (deconfliction pass)
+
+## Calling `bind_source_text` per target re-replays the whole page — prohibitively slow for multi-target sampling
+**Area:** model/text_commit (measurement/tooling)
+**Symptom:** 50 per-target calls against one 2-page fixture (`test-complexed-layout.pdf`) exceeded a 60-second timeout — not "slow", unusable. Measured, not theoretical.
+**Cause:** Every call runs `read_page_streams` + `replay_page_streams` from scratch; replay cost scales with page operator count, so sampling N targets on a page pays the full page parse N times.
+**Fix:** Replay once per page, then bind each target against the cached replay (`scripts/measure_tier_funnel.py:_bind_against_replay`, cross-checked with 0 mismatches against the real function over 618 targets). The same cost structure is why `preview.py` re-running `prepare_tier0_plan` per keystroke is the known perf risk.
+**File:** `scripts/measure_tier_funnel.py`
+
+## `tobytes(encryption=KEEP)` reorders dictionary keys the first time it serializes a disk-loaded object — breaking the scratch-first fingerprint self-check
+**Area:** model/text_commit/engine.py (`prepare` → `_build_scratch_copy`) / inspect.py (`page_fingerprint`, `_update_font_dependencies`)
+**Symptom:** On `test_files/test-large-file.pdf`, `TieredCommitEngine.prepare()` failed its own scratch-first self-consistency check on the *first* attempt against any genuinely Tier-0-eligible target: the pre-scratch `page_fingerprint` never matched the scratch copy's.
+**Cause:** PyMuPDF's `tobytes(encryption=KEEP)` re-serializes a disk-loaded object's dictionary with reordered keys (same keys, same length, different order) the first time through; it is idempotent after that one round trip. `_update_font_dependencies` hashed `xref_object()` strings verbatim, so a cosmetic reorder read as a content change. Unit tests never hit this because synthetic fixtures are built via `fitz.open()` + `new_page()` — never loaded from disk. `page.get_fonts(full=True)`, decoded content-stream bytes, and annot/widget geometry are all round-trip-stable; only the raw serialized object string was not.
+**Fix (landed):** `_update_font_dependencies` now folds `_canonical_object_digest(doc, xref)` — `sorted(doc.xref_get_keys(xref))`, then `doc.xref_get_key(xref, key)` per key, joined with field/record separators — instead of `doc.xref_object(xref).encode("utf-8")`. Order-independent by construction, so the MuPDF reorder no longer moves the digest; a real dependency mutation (e.g. `/FirstChar`) still does (see `test_page_fingerprint_detects_font_dependency_mutation`). The earlier workaround in `scripts/benchmark_text_commit_baseline.py` (`_canonicalize_once`) is now superseded by the production fix for this call path, though it stays in place there as its own dedicated canonicalization for the benchmark script's use.
+**File:** `model/text_commit/inspect.py`; tests in `test_scripts/test_text_commit_fingerprint_roundtrip.py`
+
+## Text-space and page-space quantities must not mix in bbox/halo math — under scale the error is a silent false ACCEPT
+**Area:** model/text_commit/plan.py (fallback `target_bbox`)
+**Symptom:** With `target_bbox=None` and a uniformly scaled Tm (`a==d==0.5`), the fallback bbox came out exactly 2× too wide — and the dangerous direction is `s<1`, where the halo *inflates*: `verify` proves raster identity only *outside* the halo, so an inflated halo silently absorbs out-of-halo corruption, invisible to V0a–V0e. A second, independent instance of the same mistake surfaced in Codex review (2026-08-01): even with the Tm term fixed, a page with `/UserUnit != 1` still built a wrong halo — MuPDF folds `/UserUnit` into `page.rect`/`page.transformation_matrix` (mediabox/cropbox stay unscaled), so `binding.origin_page` is *already* page-scaled by it while `old_advance`/`font_size` are not. At `/UserUnit 2` (net page scale 1) the fallback built a half-size halo and a valid edit was refused (`verification_failed`); at `/UserUnit 0.5` it built a double-size halo — the dangerous false-ACCEPT direction again.
+**Cause:** `binding.origin_page` is page space, but `old_advance` and `show.font_size` are text space; adding them without applying *every* scale between text space and page space mixes coordinate systems. Harmless at scale 1, which is why nothing caught either instance before D1 admitted scaled matrices and before a `/UserUnit`-bearing page was tested.
+**Fix:** Multiply the advance and font-size extents by the *product* of the TRM scale and the page transform's uniform scale: `scale = trm_uniform_scale * math.hypot(page_matrix.a, page_matrix.b)`. `hypot` of the transform's first row, not `abs(a)` — at `/Rotate 90`/`270` the transform is `Matrix(0, k, k, 0, ...)` and `abs(a)` reads 0, collapsing the halo to zero width. Both terms confirmed Red-first with the exact predicted halo size (D1: 2×; Codex-P2: 1/2× and 2× at `/UserUnit 2` and `0.5`). Still wrong and out of scope for both fixes: the same expression assumes text runs left-to-right in page space, so the *shape* (not just the scale) is wrong on `/Rotate 90`/`270` pages — `origin_page` is correct (it goes through the full transform), only the axis-aligned box built from it is not; reachable from the preview path (`request.target_bbox` is `tuple | None`); tracked in TODOS.md.
+**File:** `model/text_commit/plan.py`; tests in `test_scripts/test_text_commit_tier0.py`, `test_scripts/test_text_commit_structural_gates.py`
+
+## PyMuPDF `insert_text` emits `[<...>] TJ` — an array, never a hex `Tj`
+**Area:** test fixtures for text-commit gates
+**Symptom:** A rejection test believed to cover hex-string `Tj` (`test_planner_rejects_hex_tj_pages_as_not_literal`) never did: `insert_text` output is a one-element hex-string *array* under `TJ`, so the test failed on the *operator* half of the gate and the string-kind half had zero coverage until D1 hand-built a real `... <48656c6c6f> Tj ...` stream.
+**Cause:** Assuming the library's serialization matches the operator you meant to test, without dumping the stream. A rejection test named after a gate it never reaches is worse than no test — it reads as coverage.
+**Fix:** Dump and assert the fixture's actual stream form (`show.operator`/`show.string_kind`), and name the test after the gate that really fires (now `test_planner_rejects_tj_array_pages`). Hex-`Tj` coverage requires a hand-built content stream.
+**File:** `test_scripts/test_text_commit_tier0.py`, `test_scripts/test_text_commit_structural_gates.py`
+
+## `pytest … | tail` reports tail's exit code — a hard interpreter abort can read as a passing run
+**Area:** test harness / CI hygiene
+**Symptom:** A full-suite run ended in `Fatal Python error: Aborted` inside `test_page_reorder.py`, but the pipeline exit code was 0 (tail's) and the visible tail showed only the post-abort faulthandler dump — nearly reported as green.
+**Cause:** A pipe's exit status is the last command's. This is distinct from the documented-benign `0x80040155` COM dump (PITFALLS.md:58), after which the suite still prints a summary; "Fatal Python error" with **no summary line** is a real abort. Trigger here was contention: `test_page_reorder.py` (Qt drag-and-drop, offscreen) aborts natively when another pytest run or heavy PyMuPDF script is in flight, and passes 20/20 in isolation.
+**Fix:** Redirect suite output to a file and read the summary line (or use pipefail); never overlap full-suite runs with other Python/PyMuPDF workloads on this machine. Second observation (2026-08-01, same day): the abort also fired on a run whose only companions were trivial git/markdown/ripgrep operations, then a fully isolated re-run passed 2135/2135 — so treat the trigger as "anything else at all, or plain flakiness", and on an abort re-run in isolation before suspecting the code change.
+**File:** process note; no code change
+
+## `doc.xref_get_keys(xref)` returns `[]` for a non-dictionary object — indistinguishable from an empty dictionary
+**Area:** model/text_commit/inspect.py (`_canonical_object_digest`)
+**Symptom:** Caught in review before it shipped, not in production: an order-independent digest built as "hash `sorted(xref_get_keys(xref))` + `xref_get_key` per key, else hash nothing" silently drops the *content* of any indirect object that is an array or scalar (a PDF `/Widths` table is exactly this — an indirect array of numbers, no dictionary keys at all) — mutating it moves nothing in the digest, reintroducing the "fingerprint blind to /Widths" defect `test_page_fingerprint_covers_the_width_table` already guards for the *inline* case (TODOS.md Codex round R5).
+**Cause:** `xref_get_keys` enumerates dictionary keys; arrays, numbers, names, and strings have none, so it returns `[]` for them too — the same value a genuinely empty dictionary (`<<>>`) produces. "No keys" cannot be read as "nothing to hash" without silently going blind to every non-dict indirect object a font dictionary can point at.
+**Fix:** When `xref_get_keys` is empty, fall back to hashing the raw `doc.xref_object(xref)` string (whitespace-normalized) instead of nothing. Safe specifically because the round-trip reordering this digest exists to survive is a *dictionary*-key phenomenon — arrays/scalars have a fixed element order and were measured stable (byte-identical, no normalization even needed) across the same `tobytes(KEEP)` round trip that reorders dict keys.
+**File:** `model/text_commit/inspect.py` (`_canonical_object_digest`); test in `test_scripts/test_text_commit_widths_hardening.py::test_page_fingerprint_covers_an_indirect_widths_array_by_content`
+
+## A mutation fixture can be subsumed by a sibling guard — rotation does not pin `b==c==0`, a mirror does not pin `a>0`
+**Area:** test_scripts/test_text_commit_structural_gates.py (`_uniform_scale` gates)
+**Symptom:** Plausible-looking fixtures pinned nothing: a 90° rotation has `a==0`, so deleting the `b==c==0` check still rejects it via `a>0`; a mirror (`a==-d`) is rejected by `a==d` before `a>0` is ever consulted. Both mutants survived those fixtures.
+**Cause:** In a conjunction of guards, a fixture only pins the guard that is the *sole* reason it is rejected. Off-nominal in the mutated dimension is not enough — it must be nominal in every other dimension the earlier guards check.
+**Fix:** Pin `b==c==0` with `a==d>0` plus off-diagonals set; pin `a>0` with a point reflection (`a==d<0`). Both confirmed by actually running the mutants — reasoning about which fixture kills which mutant was wrong twice here. Complements the "redundant guard cannot be made SENSITIVE" entry above.
+**File:** `test_scripts/test_text_commit_structural_gates.py`
