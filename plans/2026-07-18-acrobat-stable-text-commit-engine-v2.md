@@ -980,6 +980,23 @@ git commit -m "feat: add bounded Tier 1 text layout"
 
 **Deferred from Slice 1 (stated in task scope to remain unblocked):** Whole-array TJ targets (Slice 1 refuses TJ at planner, one gate after operator guard); D4 _ocg_membership_lost tri-state (transplant inherits OCG, not blocking); rotated-page fallback-bbox shape defect (production safe today because pdf_text_edit.py:1225 passes real page-space bbox); TEXT_COMMIT_TELEMETRY wire-or-remove (untouched, TEXT_COMMIT_MAX_TIER now actually readable); different-face replacement/font re-embedding; Identity-H/CID enablement (evidence collection only); deletion/multiline via Tier 1; running growth gates inside per-keystroke preview (known preview/commit asymmetry documented); shadow-mode staying Tier-0-only classification.
 
+## Amendment (2026-08-03): Slice 1 acceptance closed
+
+**Verdict:** Task 11 Slice 1 end-to-end acceptance is closed on branch `task11/slice1-closure` (`db5ca5db` → `ff435fbe` → `2cf901f9` → `768ab174`, cut from the reviewed `08b15e7f`). All five P0 blockers from the GPT 5.6 Pro review are fixed red-light-first; the during-Task-11 backlog is done. Final gates on the closure HEAD: ruff clean, mypy clean (47 source files), full pytest `2178 passed / 21 skipped / 5 xfailed / 0 failed`. Defaults unchanged — `engine=legacy`, `max_tier=0`, `preview=legacy`, `telemetry=off`: closure is acceptance, not rollout; nothing here reaches a user until Task 12's gates pass.
+
+**P0 → commit map (each with a test that fails on the pre-fix code):**
+1. Preview token end-to-end wiring — `ff435fbe`: token read from the saved editor local before `view.text_editor = None`; `EditTextRequest.plan_token` → `EditTextCommand` → `model.edit_text(plan_token=)` → engine candidate cache (`test_text_commit_candidate_identity.py`).
+2. Preview verdict parity — `2cf901f9`: preview runs the full Tier 0/1 verifier on the session scratch and refuses with the live reason class; clip widened to `effective_verify_bbox` (`test_text_commit_preview_parity.py`, parametrized over both WS-B growth fixtures; a `fail_prepare` monkeypatch proves commit consumes the cached candidate without re-preparing).
+3. Uniform ≠ blank growth proof — `db5ca5db`: background-reference + drawings/images/shading occupancy layered onto uniformity, fail-closed on every uninspectable path (`test_growth_into_filled_vector_region_is_rejected` — uniformly black growth zone passes the old check, refused by occupancy).
+4. Growth outside page — `db5ca5db`: `_bbox_within_page` containment gate at `_build_tier1`, reason `growth_outside_page` (`test_growth_verify_bbox_outside_page_is_rejected_during_prepare`, 200pt-page reproduction from the review).
+5. Verifier-exception atomic revert — `db5ca5db`: live `verify_fn` wrapped, `applied.revert(doc)` + re-raise (`test_live_commit_reverts_and_reraises_when_verifier_raises` asserts byte-identical stream and fingerprint after the raise).
+
+**Closed from the 08-02 deferred list (WS-D, `768ab174`):** D4 OCG tri-state (`unknown` never recorded as preserved); `TEXT_COMMIT_TELEMETRY` wired (`telemetry == "local"` gates the shadow log line); rotated fallback bbox now maps user space through `transformation_matrix * rotation_matrix` with `/Rotate 90/270` fixtures; `TARGET_IN_FORM_XOBJECT` target-scoped; stale undo mirrors stale redo (`STALE_UNDO`, zero mutation, command retained).
+
+**Still Task 12 (registered, not implemented):** T12-P1-01..06 (TODOS.md registry with fixture names); rollout gates + fidelity/perf CI; ceiling decomposition; runtime re-measure vs the 2026-08-01 baseline; whole-array TJ stays deferred per the pivot condition.
+
+**Residual risks, named:** (a) caller-supplied `target_bbox` (the production `pdf_text_edit.py` path and preview requests) is used untransformed — on `/Rotate 90/270` pages its axis-aligned shape is wrong versus the visual-space raster gates; the WS-D fix covers only the fallback-bbox path. (b) `inspect._origin_in_page_space` maps through `transformation_matrix` only (no `rotation_matrix`), so `binding.origin_page` is unrotated page space; consumers comparing it against visual-space quantities on rotated pages inherit the mismatch. (c) `growth_outside_page` is emitted as a bare string via a `getattr` fallback — the constant was never declared in `RejectReason`, contrary to the registry's own contract (one-line Task 12 cleanup). (d) The View-side finalize read-order fix has no dedicated GUI assertion (the chain is tested piecewise from Controller down; existing finalize tests would catch a read-after-clear regression only as a FAILED outcome).
+
 ## Task 12: Fidelity Gate, Rollout, and Documentation
 
 **Files:**

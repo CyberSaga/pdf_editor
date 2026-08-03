@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 237 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 238 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -242,3 +242,4 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2134 | Widening V0c's non-target-span-origin comparison to verify_bbox would false-reject every honest growth commit | `model/text_commit/verify.py` |
 | 2144 | Preview verification must capture pre-patch state and reuse the session scratch | `model/text_commit/preview.py`, `model/text_commit/verify.py` |
 | 2166 | High-fidelity stale undo must refuse, not snapshot-restore | `model/edit_commands.py` (`EditTextCommand.undo`) |
+| 2176 | PDFModel property setters must getattr-guard legacy slots — tests build models via `__new__` | `model/pdf_model.py` (session-fallback properties), `test_scripts/` |

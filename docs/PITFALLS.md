@@ -2170,3 +2170,13 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** Undo treated `StalePlanError` as "use the snapshot fallback", while redo already refused with `STALE_PLAN` and zero mutation. Asymmetric policy.
 **Fix:** When a high-fidelity inverse is stale → `EditTextResult.STALE_UNDO`, set `CommitStatus.STALE_PLAN`, mutate nothing, return `False` so `CommandManager.undo` retains the command. Snapshot restore remains only for non-high-fidelity commands.
 **File:** `model/edit_commands.py`; test `test_undo_after_external_change_fails_stale_without_mutation`
+
+---
+
+## PDFModel property setters must getattr-guard legacy slots — tests build models via `__new__`
+
+**Area:** `model/pdf_model.py` (session-fallback properties), `test_scripts/`
+**Symptom:** Six previously-green tests (`test_resolve_target_mode`, `test_snapshot_restore`, `test_tier0_target_resolution`) failed mid-workstream with `AttributeError: 'PDFModel' object has no attribute '_legacy_doc'` / `'_StubModel' object has no attribute 'get_tiered_commit_engine'` — caught only by the *full* suite, not the targeted text-commit runs.
+**Cause:** Several unit tests construct model shells with `PDFModel.__new__(PDFModel)` (skipping `__init__`) or hand-rolled `_StubModel` doubles. Turning `doc` into a property whose setter touches `self._legacy_doc`, and routing `_attempt_tiered_commit` through `model.get_tiered_commit_engine()`, broke every such double even though production code was correct.
+**Fix:** Setters/readers on session-fallback properties use `getattr(self, "_legacy_*", None)` (same pattern as `_active_session`), and test doubles that feed `_attempt_tiered_commit` must expose `get_tiered_commit_engine()`. When changing `PDFModel`'s attribute surface, grep tests for `PDFModel.__new__` first — the targeted suite will not warn you.
+**File:** `model/pdf_model.py` (`doc` setter, `_active_session`); `test_scripts/test_tier0_target_resolution.py` (`_StubModel`)

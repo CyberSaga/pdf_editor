@@ -49,6 +49,11 @@ slot), and `cache_verified_candidate(...)` transfers a scratch-verified
 `PreparedEdit` from the preview result into that engine. The engine and its
 candidate cache are discarded when the document handle/session closes or is
 replaced; a new preview session clears candidates from the prior edit session.
+`edit_text(..., plan_token=...)` consumes the cache at commit: a token that
+matches a cached candidate commits exactly that `PreparedEdit` (no re-prepare);
+a miss or `None` falls back to a fresh `engine.prepare()`. Stale cached
+candidates can never mutate the document — `apply_patchset` revalidates the
+page fingerprint and refuses with `STALE_PLAN`.
 The text rendering path now resolves style tokens and supports custom CJK-family embedding for insert-html flows (for example `microsoft jhenghei`, `pmingliu`, `dfkai-sb`) when local font files are available.
 Browse-mode selection is also model-owned: legacy rectangle helpers still exist, but the primary browse drag path now uses a run-anchored resolver. Mouse-down locks the start run, mouse-up resolves the end run, boundary lines stay partial, and only the fully covered lines between them expand to whole-line units. `get_text_info_at_point(...)` now has a strict-hit option (`allow_fallback=False`) so browse selection can reject coarse block fallback hits while other flows keep backward-compatible text-block behavior.
 Object manipulation correctness is also model-owned. App-owned textboxes/rectangles/images still use hidden annotation markers for identity, while native PDF images are discovered from parsed page content stream operators. Their primary bbox/rotation data comes from the parsed `cm` transform, with per-xref placement APIs only used as a fallback when a safe `cm` is unavailable. Native-image move/resize/rotate/delete rewrites the target image invocation operators instead of redacting the painted bbox, so overlapping text/graphics are preserved.
