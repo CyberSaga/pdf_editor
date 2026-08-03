@@ -154,14 +154,27 @@ def _advance(
     return width + tc * len(text) + tw * text.count(" ")
 
 
-def _content_token(fingerprint: str, replacement: StreamReplacement) -> str:
-    """The content-derived plan token shared by every tier and by preview.
+def _content_token(
+    fingerprint: str,
+    replacement: StreamReplacement,
+    *,
+    target_bbox: tuple[float, float, float, float] | None = None,
+    verify_bbox: tuple[float, float, float, float] | None = None,
+    source_advance: float = 0.0,
+    replacement_advance: float = 0.0,
+    kern_adjustment: float = 0.0,
+    font_resource: str = "",
+    font_xref: int = 0,
+) -> str:
+    """Content-derived plan token shared by every tier and by preview.
 
-    Preimage: page fingerprint + stream xref + byte range + replacement
-    bytes.  The op byte range Tier 1 splices at (versus Tier 0's string
-    range) already distinguishes the two tiers' tokens, so no tier field
-    needs to enter the preimage.
+    Preimage includes full candidate semantics: page fingerprint, splice
+    coordinates, replacement bytes, target/verify bboxes, advance pair,
+    kern adjustment, and font identity.  Two candidates that differ in
+    any property always produce different tokens.
     """
+    bbox_str = ",".join(f"{v:.6f}" for v in target_bbox) if target_bbox else ""
+    vbbox_str = ",".join(f"{v:.6f}" for v in verify_bbox) if verify_bbox else ""
     return hashlib.sha256(
         "|".join(
             (
@@ -170,6 +183,13 @@ def _content_token(fingerprint: str, replacement: StreamReplacement) -> str:
                 str(replacement.start),
                 str(replacement.end),
                 replacement.replacement_bytes.hex(),
+                bbox_str,
+                vbbox_str,
+                f"{source_advance:.6f}",
+                f"{replacement_advance:.6f}",
+                f"{kern_adjustment:.6f}",
+                font_resource,
+                str(font_xref),
             )
         ).encode("ascii")
     ).hexdigest()
@@ -433,7 +453,15 @@ def _build_tier0(
         replacement_bytes=encode_literal_string(classified.replacement_encoded),
         expected_stream_digest=classified.binding.stream_digest,
     )
-    token = _content_token(classified.fingerprint, replacement)
+    token = _content_token(
+        classified.fingerprint,
+        replacement,
+        target_bbox=classified.target_bbox_page,
+        source_advance=classified.source_advance,
+        replacement_advance=classified.replacement_advance,
+        font_resource=show.font_resource,
+        font_xref=classified.capability.font_xref,
+    )
     return PreparedEdit(
         token=token,
         page_xref=page.xref,
@@ -525,7 +553,17 @@ def _build_tier1(
         source_advance=classified.source_advance,
         replacement_advance=classified.replacement_advance,
     )
-    token = _content_token(classified.fingerprint, replacement)
+    token = _content_token(
+        classified.fingerprint,
+        replacement,
+        target_bbox=classified.target_bbox_page,
+        verify_bbox=verify_bbox_page,
+        source_advance=classified.source_advance,
+        replacement_advance=classified.replacement_advance,
+        kern_adjustment=kern,
+        font_resource=show.font_resource,
+        font_xref=classified.capability.font_xref,
+    )
     return PreparedEdit(
         token=token,
         page_xref=page.xref,

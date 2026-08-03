@@ -3527,7 +3527,8 @@ class PDFModel:
                   new_rect: fitz.Rect = None,
                   target_span_id: str | None = None,
                   target_mode: str | None = None,
-                  style_overrides=None) -> EditTextResult:
+                  style_overrides=None,
+                  plan_token: str | None = None) -> EditTextResult:
         # V2 hard-reject boundary: signed documents and widget-bearing pages
         # must never be silently degraded to the legacy redact+reinsert
         # engine, in strict *or* non-strict mode -- checked here, before the
@@ -3571,6 +3572,7 @@ class PDFModel:
             target_span_id=target_span_id,
             target_mode=target_mode,
             style_overrides=style_overrides,
+            plan_token=plan_token,
         )
 
     def _reauthenticate_if_needed(self, doc: fitz.Document) -> fitz.Document:

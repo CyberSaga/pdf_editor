@@ -281,6 +281,7 @@ class EditTextCommand(EditCommand):
             target_span_id=self._target_span_id,
             target_mode=self._target_mode,
             style_overrides=self.style_overrides,
+            plan_token=self.plan_token,
         )
         if self.result is not EditTextResult.SUCCESS:
             self._executed = False

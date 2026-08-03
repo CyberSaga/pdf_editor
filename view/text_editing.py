@@ -1931,12 +1931,9 @@ class TextEditManager:
                 )
                 view.sig_move_text_across_pages.emit(move_request)
             else:
-                editor_widget = (
-                    view.text_editor.widget() if view.text_editor else None
-                )
                 plan_token = (
-                    editor_widget.current_plan_token()
-                    if hasattr(editor_widget, "current_plan_token")
+                    editor.current_plan_token()
+                    if hasattr(editor, "current_plan_token")
                     else None
                 )
                 request = EditTextRequest(

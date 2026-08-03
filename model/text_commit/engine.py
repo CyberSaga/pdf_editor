@@ -70,7 +70,17 @@ def _tier1_chain(reason: str) -> tuple[str, ...]:
 
 
 class TieredCommitEngine:
-    """One engine per open document; owns the font registry."""
+    """One engine per open document; owns the font registry.
+
+    The ``_verified_candidates`` cache stores PreparedEdit objects that
+    passed scratch verification during prepare().  When commit receives
+    a plan_token that matches a cached entry, it skips the full
+    re-prepare cycle and commits the already-verified candidate directly.
+    This is the preview↔commit identity guarantee: the exact candidate
+    the user saw in the preview is the one committed to the live document.
+    """
+
+    _VERIFIED_CACHE_MAX = 8
 
     def __init__(
         self, doc: fitz.Document, *, password: str | None = None, max_tier: int = 0
@@ -79,6 +89,30 @@ class TieredCommitEngine:
         self._password = password
         self._max_tier = max_tier
         self.registry = DocumentFontRegistry(doc)
+        self._verified_candidates: dict[str, PreparedEdit] = {}
+
+    # --------------------------------------------------- verified cache
+
+    def cache_verified_candidate(
+        self, token: str, prepared: PreparedEdit
+    ) -> None:
+        """Store a scratch-verified PreparedEdit keyed by its token."""
+        if len(self._verified_candidates) >= self._VERIFIED_CACHE_MAX:
+            oldest = next(iter(self._verified_candidates))
+            del self._verified_candidates[oldest]
+        self._verified_candidates[token] = prepared
+
+    def get_verified_candidate(
+        self, token: str | None
+    ) -> PreparedEdit | None:
+        """Retrieve a cached verified candidate by token, or None."""
+        if token is None:
+            return None
+        return self._verified_candidates.get(token)
+
+    def clear_verified_candidates(self) -> None:
+        """Drop all cached candidates (e.g. after a document mutation)."""
+        self._verified_candidates.clear()
 
     # ------------------------------------------------------------ prepare
 
@@ -156,6 +190,8 @@ class TieredCommitEngine:
                 return PlanRejection(result.reason, result.detail)
         finally:
             scratch.close()
+
+        self.cache_verified_candidate(plan.token, plan)
         return plan
 
     # ------------------------------------------------------------- commit

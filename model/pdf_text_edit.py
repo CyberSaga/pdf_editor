@@ -1419,17 +1419,13 @@ def _attempt_tiered_commit(
     resolve_result: _EditTextResolveResult,
     style_overrides: StyleOverrides | None,
     new_rect: fitz.Rect | None,
+    plan_token: str | None = None,
 ) -> tuple[CommitOutcome | None, str | None]:
     """Try a Tier 0 commit; ``(outcome, None)`` on success, else ``(None, reason)``."""
     target = _tier0_target_from_resolve(model, page_idx, resolve_result)
     if target is None:
         return None, RejectReason.MULTI_SPAN_TARGET
     target_text, expected_origin, target_bbox, _ = target
-    # Password threaded through so the engine's scratch-first proof can
-    # re-authenticate its throwaway clone on encrypted documents instead of
-    # ever calling tobytes() on the live handle (see engine.py
-    # ``_build_scratch_copy`` -- a decrypting tobytes() call directly on the
-    # live doc silently poisons its crypt state).
     engine = TieredCommitEngine(
         model.doc,
         password=model.password,
@@ -1438,16 +1434,28 @@ def _attempt_tiered_commit(
         ),
     )
     pending = any(e.get("page_idx") == page_idx for e in model.pending_edits)
-    prepared = engine.prepare(
-        page,
-        target_text=target_text,
-        replacement_text=new_text,
-        expected_origin=expected_origin,
-        target_bbox=target_bbox,
-        style_overrides=style_overrides,
-        new_rect=new_rect,
-        page_has_pending_maintenance=pending,
-    )
+
+    # WS-A: when a preview token is supplied, try the verified candidate
+    # cache first — the preview already prepared and scratch-verified this
+    # exact candidate, so re-preparing it is wasted work.
+    cached = engine.get_verified_candidate(plan_token) if plan_token else None
+    if cached is not None:
+        prepared = cached
+        logger.debug(
+            "text_commit: reusing cached verified candidate token=%s…",
+            plan_token[:12] if plan_token else "?",
+        )
+    else:
+        prepared = engine.prepare(
+            page,
+            target_text=target_text,
+            replacement_text=new_text,
+            expected_origin=expected_origin,
+            target_bbox=target_bbox,
+            style_overrides=style_overrides,
+            new_rect=new_rect,
+            page_has_pending_maintenance=pending,
+        )
     if isinstance(prepared, PlanRejection):
         return None, _reconstruction_aware_reason(prepared.reason, target)
     outcome = engine.commit(prepared)
@@ -1464,7 +1472,8 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
               new_rect: fitz.Rect = None,
               target_span_id: str | None = None,
               target_mode: str | None = None,
-              style_overrides: StyleOverrides | None = None) -> EditTextResult:
+              style_overrides: StyleOverrides | None = None,
+              plan_token: str | None = None) -> EditTextResult:
     """
     編輯文字：五步流程 + 三策略智能插入。
 
@@ -1544,7 +1553,7 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
         elif settings is not None and settings.engine == "tiered":
             tier0_outcome, tier0_fallback_reason = _attempt_tiered_commit(
                 model, page, page_idx, new_text, resolve_result,
-                style_overrides, new_rect,
+                style_overrides, new_rect, plan_token=plan_token,
             )
             if tier0_outcome is not None:
                 # Lossless commit succeeded: no redaction happened, so no
