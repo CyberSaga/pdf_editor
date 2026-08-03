@@ -93,6 +93,17 @@ def _stream_doc(stream: bytes) -> fitz.Document:
     return doc
 
 
+def _stream_doc_with_size(stream: bytes, *, width: float, height: float) -> fitz.Document:
+    doc = fitz.open()
+    page = doc.new_page(width=width, height=height)
+    content_xref = doc.get_new_xref()
+    doc.update_object(content_xref, "<<>>")
+    doc.update_stream(content_xref, stream)
+    doc.xref_set_key(page.xref, "Contents", f"{content_xref} 0 R")
+    _add_font(doc, page)
+    return doc
+
+
 def _composite_doc() -> fitz.Document:
     """The corrected Slice 1 composite fixture (fixture_notes in the design).
 
@@ -673,6 +684,87 @@ def test_growth_into_blank_zone_is_accepted_and_widens_the_verified_region():
     assert prepared_narrow.verify_bbox_page == prepared_narrow.target_bbox_page
     assert prepared_narrow.has_ink_growth is False
     doc2.close()
+    doc.close()
+
+
+def test_growth_verify_bbox_outside_page_is_rejected_during_prepare():
+    doc = _stream_doc_with_size(
+        b"BT /F1 12 Tf 175 120 Td (" + TARGET.encode() + b") Tj ET",
+        width=200,
+        height=200,
+    )
+    page = doc[0]
+    span = _span(page, TARGET)
+
+    engine = TieredCommitEngine(doc, max_tier=1)
+    rejection = engine.prepare(
+        page,
+        target_text=TARGET,
+        replacement_text=GROWTH_REPLACEMENT,
+        expected_origin=tuple(span["origin"]),
+        target_bbox=tuple(span["bbox"]),
+    )
+    assert isinstance(rejection, PlanRejection)
+    new_reason = getattr(RejectReason, "GROWTH_OUTSIDE_PAGE", "growth_outside_page")
+    assert rejection.reason == new_reason
+    assert "page" in rejection.detail.lower()
+    doc.close()
+
+
+def test_growth_into_filled_vector_region_is_rejected():
+    doc = _stream_doc(
+        b"BT /F1 12 Tf 72 120 Td (" + TARGET.encode() + b") Tj ET "
+        b"0 0 0 rg 70 0 130 200 re f"
+    )
+    page = doc[0]
+    span = _span(page, TARGET)
+
+    engine = TieredCommitEngine(doc, max_tier=1)
+    rejection = engine.prepare(
+        page,
+        target_text=TARGET,
+        replacement_text=GROWTH_REPLACEMENT,
+        expected_origin=tuple(span["origin"]),
+        target_bbox=tuple(span["bbox"]),
+    )
+    assert isinstance(rejection, PlanRejection)
+    assert rejection.reason == RejectReason.GROWTH_REGION_NOT_BLANK
+    assert rejection.detail.startswith("occupancy:")
+    doc.close()
+
+
+def test_live_commit_reverts_and_reraises_when_verifier_raises():
+    doc = _composite_doc()
+    page = doc[0]
+    span = _span(page, TARGET)
+    stream_xref = page.get_contents()[0]
+    stream_before = doc.xref_stream(stream_xref)
+    fingerprint_before = page_fingerprint(doc, page)
+
+    engine = TieredCommitEngine(doc, max_tier=1)
+    prepared = engine.prepare(
+        page,
+        target_text=TARGET,
+        replacement_text=GROWTH_REPLACEMENT,
+        expected_origin=tuple(span["origin"]),
+        target_bbox=tuple(span["bbox"]),
+    )
+    assert isinstance(prepared, PreparedEdit)
+    real_verify = engine_module.verify_tier1_commit
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("injected verifier exception")
+
+    engine_module.verify_tier1_commit = _boom
+    try:
+        with pytest.raises(RuntimeError, match="injected verifier exception"):
+            engine.commit(prepared)
+    finally:
+        engine_module.verify_tier1_commit = real_verify
+
+    assert doc.xref_stream(stream_xref) == stream_before
+    assert page_fingerprint(doc, doc[0]) == fingerprint_before
+    assert TARGET in doc[0].get_text()
     doc.close()
 
 

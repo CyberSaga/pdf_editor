@@ -58,6 +58,10 @@ logger = logging.getLogger(__name__)
 # width table is not "rounding", so widths get a float-noise tolerance.
 _ADVANCE_TOL_PER_PT = 1e-3  # face-derived: absorbs the face's own float error
 _ADVANCE_TOL_PER_PT_EXACT = 1e-9  # /Widths: exact arithmetic, noise only
+_GROWTH_OUTSIDE_PAGE_REASON = getattr(
+    RejectReason, "GROWTH_OUTSIDE_PAGE", "growth_outside_page"
+)
+_PAGE_CONTAINMENT_TOL_PT = 1e-3
 
 
 @dataclass(frozen=True)
@@ -476,6 +480,20 @@ def _grown_verify_bbox(
     )
 
 
+def _bbox_within_page(
+    page: fitz.Page, bbox: tuple[float, float, float, float]
+) -> bool:
+    page_rect = page.rect
+    x0, y0, x1, y1 = bbox
+    tol = _PAGE_CONTAINMENT_TOL_PT
+    return (
+        x0 >= float(page_rect.x0) - tol
+        and y0 >= float(page_rect.y0) - tol
+        and x1 <= float(page_rect.x1) + tol
+        and y1 <= float(page_rect.y1) + tol
+    )
+
+
 def _build_tier1(
     classified: _ClassifiedTarget, page: fitz.Page
 ) -> PreparedEdit | PlanRejection:
@@ -492,6 +510,11 @@ def _build_tier1(
     verify_bbox_page = _grown_verify_bbox(
         page, show, classified.target_bbox_page, growth
     )
+    if not _bbox_within_page(page, verify_bbox_page):
+        return PlanRejection(
+            _GROWTH_OUTSIDE_PAGE_REASON,
+            "widened verify bbox escapes page bounds",
+        )
     kern = kern_for_displacement(
         show, classified.source_advance - classified.replacement_advance
     )

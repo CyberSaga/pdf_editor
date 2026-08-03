@@ -32,6 +32,7 @@ _VERIFY_DPI = 96
 _HALO_MARGIN_PT = 2.0
 _ORIGIN_TOL_PT = 0.1
 _COLOR_TINT_TOLERANCE = 24  # max(rgb) - min(rgb) above this is a color tint, not gray
+_SHADING_OPERATOR_RE = re.compile(rb"(?<![A-Za-z])sh(?![A-Za-z])")
 
 
 @dataclass(frozen=True)
@@ -397,24 +398,223 @@ def _region_is_uniform_pixels(
     return True
 
 
+@dataclass(frozen=True)
+class _GrowthProbeFailure:
+    region: tuple[int, int, int, int]
+    detail: str
+
+
+def _pixel_rgb_at(
+    samples: bytes, meta: tuple[int, int, int, int], x: int, y: int
+) -> tuple[int, ...]:
+    _, _, stride, n = meta
+    row = samples[y * stride : (y + 1) * stride]
+    pixel = row[x * n : (x + 1) * n]
+    channels = min(3, n)
+    return tuple(int(component) for component in pixel[:channels])
+
+
+def _region_matches_reference_color(
+    samples: bytes,
+    meta: tuple[int, int, int, int],
+    region: tuple[int, int, int, int],
+    reference_rgb: tuple[int, ...],
+) -> bool:
+    x0, y0, x1, y1 = region
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            if _pixel_rgb_at(samples, meta, x, y) != reference_rgb:
+                return False
+    return True
+
+
+def _target_tail_reference_rgb(
+    pre_state: PageState, target_bbox: tuple[float, float, float, float]
+) -> tuple[int, ...] | None:
+    width, height, _, _ = pre_state.pixmap_meta
+    scale = _VERIFY_DPI / 72.0
+    y = int(((target_bbox[1] + target_bbox[3]) / 2.0) * scale)
+    if y < 0 or y >= height:
+        return None
+    for offset_pt in (2.25, 3.0, 4.0, 5.0):
+        x = int((target_bbox[2] + offset_pt) * scale)
+        if not (0 <= x < width):
+            continue
+        neighborhood: list[tuple[int, ...]] = []
+        for dx in (-1, 0, 1):
+            nx = x + dx
+            if 0 <= nx < width:
+                neighborhood.append(
+                    _pixel_rgb_at(pre_state.pixmap_samples, pre_state.pixmap_meta, nx, y)
+                )
+        if neighborhood and len(set(neighborhood)) == 1:
+            return neighborhood[0]
+        if neighborhood:
+            return neighborhood[len(neighborhood) // 2]
+    return None
+
+
+def _growth_zone_rect(
+    target_bbox: tuple[float, float, float, float],
+    verify_bbox: tuple[float, float, float, float],
+) -> fitz.Rect | None:
+    if verify_bbox[2] <= target_bbox[2]:
+        return None
+    rect = fitz.Rect(
+        target_bbox[2],
+        min(target_bbox[1], verify_bbox[1]),
+        verify_bbox[2],
+        max(target_bbox[3], verify_bbox[3]),
+    )
+    rect.normalize()
+    if rect.is_empty:
+        return None
+    return rect
+
+
+def _rects_overlap(a: fitz.Rect, b: fitz.Rect, *, tol: float = 1e-3) -> bool:
+    a_norm = fitz.Rect(a)
+    b_norm = fitz.Rect(b)
+    a_norm.normalize()
+    b_norm.normalize()
+    ix0 = max(float(a_norm.x0), float(b_norm.x0))
+    iy0 = max(float(a_norm.y0), float(b_norm.y0))
+    ix1 = min(float(a_norm.x1), float(b_norm.x1))
+    iy1 = min(float(a_norm.y1), float(b_norm.y1))
+    return (ix1 - ix0) > tol and (iy1 - iy0) > tol
+
+
+def _drawings_intersect_growth(page: fitz.Page, growth_rect: fitz.Rect) -> bool | None:
+    try:
+        drawings = page.get_drawings()
+    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+        return None
+    for drawing in drawings:
+        rect = drawing.get("rect")
+        if rect is None:
+            if drawing.get("items"):
+                return None
+            continue
+        if _rects_overlap(fitz.Rect(rect), growth_rect):
+            return True
+    return False
+
+
+def _images_intersect_growth(page: fitz.Page, growth_rect: fitz.Rect) -> bool | None:
+    try:
+        images = page.get_images(full=True)
+    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+        return None
+    for image in images:
+        xref = int(image[0])
+        if xref <= 0:
+            continue
+        try:
+            placements = page.get_image_rects(xref)
+        except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+            return None
+        for placement in placements:
+            if _rects_overlap(fitz.Rect(placement), growth_rect):
+                return True
+    return False
+
+
+def _shading_presence(page: fitz.Page, doc: fitz.Document) -> bool | None:
+    try:
+        streams = read_page_streams(doc, page)
+    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+        return None
+    return any(_SHADING_OPERATOR_RE.search(data) for _, data in streams)
+
+
+def _growth_probe_failure(
+    pre_state: PageState,
+    *,
+    target_bbox: tuple[float, float, float, float],
+    verify_bbox: tuple[float, float, float, float],
+    page: fitz.Page | None,
+    doc: fitz.Document | None,
+) -> _GrowthProbeFailure | None:
+    regions = growth_probe_regions(target_bbox, verify_bbox, pre_state.pixmap_meta)
+    if not regions:
+        return None
+
+    reference_rgb = _target_tail_reference_rgb(pre_state, target_bbox)
+    if reference_rgb is None:
+        return _GrowthProbeFailure(
+            regions[0], "occupancy: target-tail background reference unavailable"
+        )
+
+    for region in regions:
+        if not _region_is_uniform_pixels(
+            pre_state.pixmap_samples, pre_state.pixmap_meta, region, erode_px=0
+        ):
+            return _GrowthProbeFailure(
+                region, f"raster: growth probe region {region} is not uniform pre-edit"
+            )
+        if not _region_matches_reference_color(
+            pre_state.pixmap_samples, pre_state.pixmap_meta, region, reference_rgb
+        ):
+            return _GrowthProbeFailure(
+                region,
+                f"background: growth probe region {region} diverges from target-tail background",
+            )
+
+    growth_rect = _growth_zone_rect(target_bbox, verify_bbox)
+    if growth_rect is None:
+        return None
+    if page is None or doc is None:
+        return None
+
+    drawings_overlap = _drawings_intersect_growth(page, growth_rect)
+    if drawings_overlap is None:
+        return _GrowthProbeFailure(regions[0], "occupancy: could not inspect vector drawings")
+    if drawings_overlap:
+        return _GrowthProbeFailure(regions[0], "occupancy: vector drawing intersects growth zone")
+
+    images_overlap = _images_intersect_growth(page, growth_rect)
+    if images_overlap is None:
+        return _GrowthProbeFailure(regions[0], "occupancy: could not inspect image placement")
+    if images_overlap:
+        return _GrowthProbeFailure(regions[0], "occupancy: image intersects growth zone")
+
+    shading_present = _shading_presence(page, doc)
+    if shading_present is None:
+        return _GrowthProbeFailure(regions[0], "occupancy: could not inspect shading operators")
+    if shading_present:
+        return _GrowthProbeFailure(
+            regions[0], "occupancy: shading operator present; bounds are uncertain"
+        )
+
+    return None
+
+
 def prove_growth_region_blank(
     pre_state: PageState,
     *,
     target_bbox: tuple[float, float, float, float],
     verify_bbox: tuple[float, float, float, float],
+    page: fitz.Page | None = None,
+    doc: fitz.Document | None = None,
 ) -> tuple[int, int, int, int] | None:
-    """The first :func:`growth_probe_regions` region that is NOT uniform on
-    ``pre_state``'s captured raster, or ``None`` when every probe region is
-    blank.  Erosion is deliberately zero here (unlike the occlusion probe's
-    :data:`_UNIFORM_ERODE_PX`): skipping a border of a *blankness* probe is a
-    false-accept hole, not a false-positive-avoidance measure.
+    """The first growth probe region that fails the blankness proof, or
+    ``None`` when all probe regions are proven blank.
+
+    The proof is stricter than uniformity: each region must match the
+    target-tail background reference color, and when ``page``/``doc`` are
+    provided it must also be free of non-text occupancy (drawings/images) and
+    shading uncertainty.
     """
-    for region in growth_probe_regions(target_bbox, verify_bbox, pre_state.pixmap_meta):
-        if not _region_is_uniform_pixels(
-            pre_state.pixmap_samples, pre_state.pixmap_meta, region, erode_px=0
-        ):
-            return region
-    return None
+    failure = _growth_probe_failure(
+        pre_state,
+        target_bbox=target_bbox,
+        verify_bbox=verify_bbox,
+        page=page,
+        doc=doc,
+    )
+    if failure is None:
+        return None
+    return failure.region
 
 
 def count_growth_zone_glyphs(
@@ -475,15 +675,17 @@ def verify_tier1_commit(
                 f"glyphs: {pre_state.growth_zone_glyphs} character(s) "
                 "already occupy the growth zone",
             )
-        region = prove_growth_region_blank(
+        probe_failure = _growth_probe_failure(
             pre_state,
             target_bbox=prepared.target_bbox_page,
             verify_bbox=prepared.effective_verify_bbox,
+            page=page,
+            doc=doc,
         )
-        if region is not None:
+        if probe_failure is not None:
             return VerificationFailure(
                 RejectReason.GROWTH_REGION_NOT_BLANK,
-                f"raster: growth probe region {region} is not uniform pre-edit",
+                probe_failure.detail,
             )
 
     result = _verify_patch_postconditions(

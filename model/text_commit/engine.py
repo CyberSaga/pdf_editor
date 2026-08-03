@@ -212,7 +212,15 @@ class TieredCommitEngine:
             )
 
         verify_fn = verify_tier1_commit if is_tier1 else verify_tier0_commit
-        result = verify_fn(doc, page, prepared, pre_state)
+        try:
+            result = verify_fn(doc, page, prepared, pre_state)
+        except Exception:
+            applied.revert(doc)
+            logger.exception(
+                "tier%s live verifier raised, reverted",
+                prepared.tier.value,
+            )
+            raise
         if isinstance(result, VerificationFailure):
             applied.revert(doc)
             logger.warning(
