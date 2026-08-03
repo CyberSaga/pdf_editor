@@ -2138,3 +2138,25 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** `capture_page_state` always computes `pre_state.nontarget_origins` by excluding `target_bbox_page` (the narrow box), never `verify_bbox_page`; comparing that pre-set against a post-set excluded by the wider `verify_bbox` would silently drop any real neighbour span sitting between the two boxes from the post-set while it is still present in the pre-set.
 **Fix:** `_verify_patch_postconditions` widens only the V0c extraction clip (halo_rect) and the V0d raster-diff halo to `verify_bbox`; the V0c span-origin comparison stays pinned to `prepared.target_bbox_page` on both sides, matching what `capture_page_state` actually computed.
 **File:** `model/text_commit/verify.py`
+
+---
+
+## Preview verification must capture pre-patch state and reuse the session scratch
+
+**Area:** `model/text_commit/preview.py`, `model/text_commit/verify.py`
+
+**Symptom:** A preview either falsely rejects a valid growth candidate as
+occupied or adds one full-document serialization/open per keystroke.
+
+**Cause:** Growth occupancy is a PRE-EDIT proof, so calling
+`capture_page_state(...)` after `apply_patchset(...)` counts the replacement
+glyphs as pre-existing. Conversely, invoking live V0e's KEEP-encrypted
+serialization probe for every preview generation defeats the one
+session-scratch performance contract.
+
+**Fix:** Capture `PageState` before applying the patch, run the same V0a–V0d
+checks on the already-open session scratch, and use that scratch's
+reopenability certificate for preview V0e. Live commit continues to perform
+the real KEEP-encrypted serialize/reopen probe.
+
+**File:** `model/text_commit/preview.py`, `model/text_commit/verify.py`

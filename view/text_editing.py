@@ -1589,6 +1589,8 @@ class TextEditManager:
             target_mode=view.editing_target_mode,
             rotation=normalized_rotation,
             render_scale=float(rs),
+            initial_font=font_name,
+            initial_size=float(font_size),
         )
 
         self._sync_font_combo_state(font_name, font_size)
@@ -1606,6 +1608,8 @@ class TextEditManager:
         target_mode: str | None,
         rotation: int,
         render_scale: float,
+        initial_font: str,
+        initial_size: float,
     ) -> None:
         """Emit-only wiring for the exact plan-backed preview (V2 Task 8).
 
@@ -1626,6 +1630,33 @@ class TextEditManager:
         )
 
         def _emit(text: str, generation: int) -> None:
+            current_font = getattr(view, "editing_font_name", initial_font)
+            session_initial_font = getattr(
+                view, "_editing_initial_font_name", initial_font
+            )
+            current_size = float(
+                getattr(view, "_editing_current_pdf_size", initial_size)
+            )
+            session_initial_size = float(
+                getattr(view, "_editing_initial_size", initial_size)
+            )
+            style_overrides = build_style_overrides(
+                current_font=current_font,
+                initial_font=session_initial_font,
+                current_size=current_size,
+                initial_size=session_initial_size,
+            )
+            current_rect = getattr(view, "editing_rect", None)
+            original_rect = getattr(view, "_editing_original_rect", rect)
+            new_rect = None
+            if current_rect is not None and original_rect is not None:
+                if (
+                    abs(float(current_rect.x0) - float(original_rect.x0)) > 0.01
+                    or abs(float(current_rect.y0) - float(original_rect.y0)) > 0.01
+                    or abs(float(current_rect.x1) - float(original_rect.x1)) > 0.01
+                    or abs(float(current_rect.y1) - float(original_rect.y1)) > 0.01
+                ):
+                    new_rect = tuple(float(value) for value in current_rect)
             view.sig_text_edit_plan_preview.emit(
                 {
                     "session_key": session_key,
@@ -1638,6 +1669,8 @@ class TextEditManager:
                     "generation": int(generation),
                     "clip_rect": rect_tuple,
                     "render_scale": float(render_scale),
+                    "style_overrides": style_overrides,
+                    "new_rect": new_rect,
                 }
             )
 

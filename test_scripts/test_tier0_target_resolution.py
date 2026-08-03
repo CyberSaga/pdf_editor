@@ -51,6 +51,7 @@ from model.text_commit.dto import RejectReason  # noqa: E402
 from model.text_commit.fonts import DocumentFontRegistry  # noqa: E402
 from model.text_commit.inspect import SourceSpanBinding, bind_source_text  # noqa: E402
 from model.text_commit.plan import PlanRejection  # noqa: E402
+from model.text_commit.engine import TieredCommitEngine  # noqa: E402
 
 # Helvetica digits share a width, so this pair is advance-neutral and cannot
 # fail Tier 0 for a reason unrelated to the stage under test.
@@ -108,6 +109,10 @@ class _StubModel:
         self.text_target_mode = "run"
         self.block_manager = TextBlockManager()
         self.block_manager.build_index(doc)
+        self._tiered_commit_engine = TieredCommitEngine(doc)
+
+    def get_tiered_commit_engine(self) -> TieredCommitEngine:
+        return self._tiered_commit_engine
 
 
 def _resolve_result(model: _StubModel, member_span_ids: set[str]):

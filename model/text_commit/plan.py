@@ -90,6 +90,8 @@ class PreparedEdit:
     source_advance: float = 0.0
     replacement_advance: float = 0.0
     kern_adjustment: float = 0.0
+    style_overrides: StyleOverrides | None = None
+    geometry_intent: tuple[float, float, float, float] | None = None
 
     @property
     def effective_verify_bbox(self) -> tuple[float, float, float, float]:
@@ -135,6 +137,8 @@ class _ClassifiedTarget:
     advance_tolerance: float
     target_bbox_page: tuple[float, float, float, float]
     fingerprint: str
+    style_overrides: StyleOverrides | None
+    geometry_intent: tuple[float, float, float, float] | None
 
 
 def _advance(
@@ -165,16 +169,40 @@ def _content_token(
     kern_adjustment: float = 0.0,
     font_resource: str = "",
     font_xref: int = 0,
+    style_overrides: StyleOverrides | None = None,
+    geometry_intent: tuple[float, float, float, float] | None = None,
 ) -> str:
     """Content-derived plan token shared by every tier and by preview.
 
     Preimage includes full candidate semantics: page fingerprint, splice
     coordinates, replacement bytes, target/verify bboxes, advance pair,
-    kern adjustment, and font identity.  Two candidates that differ in
-    any property always produce different tokens.
+    kern adjustment, font identity, style intent, and geometry intent. Two
+    candidates that differ in any property always produce different tokens.
     """
     bbox_str = ",".join(f"{v:.6f}" for v in target_bbox) if target_bbox else ""
     vbbox_str = ",".join(f"{v:.6f}" for v in verify_bbox) if verify_bbox else ""
+    style_str = (
+        "|".join(
+            (
+                style_overrides.font_family or "",
+                ""
+                if style_overrides.font_size is None
+                else f"{style_overrides.font_size:.6f}",
+                ""
+                if style_overrides.color is None
+                else ",".join(
+                    f"{value:.6f}" for value in style_overrides.color
+                ),
+            )
+        )
+        if style_overrides is not None and style_overrides.changed
+        else ""
+    )
+    geometry_str = (
+        ",".join(f"{value:.6f}" for value in geometry_intent)
+        if geometry_intent is not None
+        else ""
+    )
     return hashlib.sha256(
         "|".join(
             (
@@ -190,6 +218,8 @@ def _content_token(
                 f"{kern_adjustment:.6f}",
                 font_resource,
                 str(font_xref),
+                style_str,
+                geometry_str,
             )
         ).encode("ascii")
     ).hexdigest()
@@ -423,6 +453,12 @@ def _classify_common(
         advance_tolerance=tolerance,
         target_bbox_page=tuple(float(v) for v in target_bbox),  # type: ignore[arg-type]
         fingerprint=fingerprint,
+        style_overrides=style_overrides,
+        geometry_intent=(
+            tuple(float(value) for value in new_rect)
+            if new_rect is not None
+            else None
+        ),
     )
 
 
@@ -461,6 +497,8 @@ def _build_tier0(
         replacement_advance=classified.replacement_advance,
         font_resource=show.font_resource,
         font_xref=classified.capability.font_xref,
+        style_overrides=classified.style_overrides,
+        geometry_intent=classified.geometry_intent,
     )
     return PreparedEdit(
         token=token,
@@ -475,6 +513,8 @@ def _build_tier0(
         font_size=show.font_size,
         target_bbox_page=classified.target_bbox_page,
         page_fingerprint=classified.fingerprint,
+        style_overrides=classified.style_overrides,
+        geometry_intent=classified.geometry_intent,
     )
 
 
@@ -563,6 +603,8 @@ def _build_tier1(
         kern_adjustment=kern,
         font_resource=show.font_resource,
         font_xref=classified.capability.font_xref,
+        style_overrides=classified.style_overrides,
+        geometry_intent=classified.geometry_intent,
     )
     return PreparedEdit(
         token=token,
@@ -582,6 +624,8 @@ def _build_tier1(
         source_advance=classified.source_advance,
         replacement_advance=classified.replacement_advance,
         kern_adjustment=kern,
+        style_overrides=classified.style_overrides,
+        geometry_intent=classified.geometry_intent,
     )
 
 

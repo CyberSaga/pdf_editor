@@ -43,6 +43,12 @@ blocking `threading.Thread` grep over `view/`+`controller/`.
 Model owns document correctness and persistence behavior. It manages sessions (`DocumentSession`), document handles (`fitz.Document`), text hit-testing, text edit transactions, add-text insertion, save/save-as pipeline, and snapshot helpers used by history commands.
 
 Important text APIs include `get_text_info_at_point(...)`, `edit_text(...)`, `add_textbox(...)`, and `set_text_target_mode(...)`.
+Tiered text editing is session-owned: `get_tiered_commit_engine()` returns one
+`TieredCommitEngine` for the active `DocumentSession` (or the legacy document
+slot), and `cache_verified_candidate(...)` transfers a scratch-verified
+`PreparedEdit` from the preview result into that engine. The engine and its
+candidate cache are discarded when the document handle/session closes or is
+replaced; a new preview session clears candidates from the prior edit session.
 The text rendering path now resolves style tokens and supports custom CJK-family embedding for insert-html flows (for example `microsoft jhenghei`, `pmingliu`, `dfkai-sb`) when local font files are available.
 Browse-mode selection is also model-owned: legacy rectangle helpers still exist, but the primary browse drag path now uses a run-anchored resolver. Mouse-down locks the start run, mouse-up resolves the end run, boundary lines stay partial, and only the fully covered lines between them expand to whole-line units. `get_text_info_at_point(...)` now has a strict-hit option (`allow_fallback=False`) so browse selection can reject coarse block fallback hits while other flows keep backward-compatible text-block behavior.
 Object manipulation correctness is also model-owned. App-owned textboxes/rectangles/images still use hidden annotation markers for identity, while native PDF images are discovered from parsed page content stream operators. Their primary bbox/rotation data comes from the parsed `cm` transform, with per-xref placement APIs only used as a fallback when a safe `cm` is unavailable. Native-image move/resize/rotate/delete rewrites the target image invocation operators instead of redacting the painted bbox, so overlapping text/graphics are preserved.
@@ -62,6 +68,18 @@ Snapshot APIs include `_capture_doc_snapshot()`, `_restore_doc_from_snapshot(...
 - Paragraph-mode edits that span ≥2 distinct span colors use `_build_multi_style_html(...)` (difflib char-level mapping) to rebuild per-run color fidelity. This path is gated on `preserve_multi_style` and takes priority over the single-line fast path.
 
 This structure is enforced by per-phase unit tests using real PyMuPDF documents (no mocks) in `test_scripts/test_edit_text_helpers.py`.
+
+#### Tiered Preview Verification
+
+`PlanPreviewRenderer` prepares and applies a candidate on its one
+session-scratch document, captures `PageState` before the patch, and invokes
+the same Tier 0/Tier 1 verifier used by live commit before rasterizing. The
+preview clip is the union of the requested clip and
+`PreparedEdit.effective_verify_bbox`, so verified ink growth is visible.
+Preview reuses the already-open session scratch certificate for V0e to avoid a
+full-document serialization per keystroke; live commit retains the real
+KEEP-encrypted reopen probe. `PlanPreviewResult.prepared` is an immutable DTO,
+not a live document handle, and is cached by the controller on the GUI thread.
 
 #### Structural Page Operations and Text Indexing
 
@@ -104,6 +122,12 @@ Controller is the only mutation coordinator between View and Model. It normalize
 Document-tab refresh also synchronizes the active session's Save As suggestion into the view, so the view-owned `另存PDF` dialog opens with the current tab's path/name instead of a blank or stale filename.
 
 Mode registry includes `browse`, `edit_text`, `add_text`, `rect`, `highlight`, and `add_annotation`.
+
+Plan-backed text preview requests remain View-emitted DTOs. The controller
+forwards style overrides and geometry intent through
+`TextCommitPreviewCoordinator`, caches only the verified candidate returned by
+the worker, and then delivers the raster/token to the View. The View never
+opens or mutates a PDF.
 
 Controller activation is now explicit. `PDFController.__init__()` keeps startup cheap, while `PDFController.activate()` performs view-signal wiring, print subsystem setup, and startup sync such as text-target granularity alignment. This keeps the no-document startup shell decoupled from full controller behavior until the UI is ready.
 

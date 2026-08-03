@@ -33,6 +33,7 @@ from model.text_block import (
 )
 from model.geometry import clamp_rect_to_page, rect_from_points, rect_overlap_ratio
 from model.text_commit.dto import CommitOutcome, CommitStatus, RejectReason, TextCommitSettings
+from model.text_commit.engine import TieredCommitEngine
 from model.text_commit.inspect import (
     capture_annotation_parent_refs,
     page_has_widgets_or_signatures,
@@ -203,6 +204,7 @@ class DocumentSession:
     display_name: str
     original_path: str
     doc: fitz.Document
+    tiered_commit_engine: TieredCommitEngine | None = None
     saved_path: str | None = None
     # Password captured at open (in-memory only), used to re-authenticate the
     # reopen-after-save handle when a full save preserves encryption. Never
@@ -248,6 +250,7 @@ class PDFModel:
         self.last_commit_outcome: CommitOutcome | None = None
         self._path_to_session_id: dict[str, str] = {}
         self._legacy_doc: fitz.Document | None = None
+        self._legacy_tiered_commit_engine: TieredCommitEngine | None = None
         self._legacy_original_path: str | None = None
         self._legacy_saved_path: str | None = None
         self._legacy_password: str | None = None
@@ -411,6 +414,7 @@ class PDFModel:
         if not session:
             return False
         self.tools.on_session_close(session_id)
+        session.tiered_commit_engine = None
         try:
             if session.doc:
                 session.doc.close()
@@ -452,8 +456,12 @@ class PDFModel:
     def doc(self, value: fitz.Document | None) -> None:
         session = self._active_session()
         if session:
+            if session.doc is not value:
+                session.tiered_commit_engine = None
             session.doc = value
         else:
+            if getattr(self, "_legacy_doc", None) is not value:
+                self._legacy_tiered_commit_engine = None
             self._legacy_doc = value
 
     @property
@@ -507,6 +515,56 @@ class PDFModel:
             session.password = value
         else:
             self._legacy_password = value
+
+    def get_tiered_commit_engine(self) -> TieredCommitEngine:
+        """Return the engine owned by the active document session.
+
+        Preview workers produce immutable ``PreparedEdit`` DTOs on a
+        session-scratch document.  The corresponding live-document engine
+        therefore must outlive each keystroke and each controller callback so
+        its verified-candidate cache remains available to commit.
+        """
+        doc = self.doc
+        if doc is None:
+            raise RuntimeError("cannot create a text-commit engine without a document")
+        session = self._active_session()
+        if session is not None:
+            engine = session.tiered_commit_engine
+        else:
+            engine = self._legacy_tiered_commit_engine
+        max_tier = int(getattr(self.text_commit_settings, "max_tier", 0))
+        if (
+            engine is None
+            or getattr(engine, "_doc", None) is not doc
+            or getattr(engine, "_max_tier", max_tier) != max_tier
+        ):
+            engine = TieredCommitEngine(
+                doc,
+                password=self.password,
+                max_tier=max_tier,
+            )
+            if session is not None:
+                session.tiered_commit_engine = engine
+            else:
+                self._legacy_tiered_commit_engine = engine
+        return engine
+
+    @property
+    def tiered_commit_engine(self) -> TieredCommitEngine | None:
+        """The active session's engine, if a document is currently open."""
+        if self.doc is None:
+            return None
+        return self.get_tiered_commit_engine()
+
+    def cache_verified_candidate(self, token: str, prepared) -> None:
+        """Cache a scratch-verified candidate in the active session engine."""
+        self.get_tiered_commit_engine().cache_verified_candidate(token, prepared)
+
+    def clear_verified_candidates(self) -> None:
+        """Invalidate preview candidates after an unrelated document change."""
+        engine = self.tiered_commit_engine
+        if engine is not None:
+            engine.clear_verified_candidates()
 
     @property
     def block_manager(self) -> TextBlockManager:
@@ -1213,6 +1271,7 @@ class PDFModel:
         logger.debug("關閉PDF並清理臨時目錄")
         self.close_all_sessions()
         self._legacy_doc = None
+        self._legacy_tiered_commit_engine = None
         self._legacy_original_path = None
         self._legacy_saved_path = None
         legacy_block_manager = getattr(self, "_legacy_block_manager", None)

@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 235 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 236 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -240,3 +240,4 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2114 | plan -> patch -> verify -> plan runtime import cycle | `model/text_commit` |
 | 2124 | mypy loses None-narrowing for a dataclass field re-accessed in a different function | `model/text_commit/plan.py` |
 | 2134 | Widening V0c's non-target-span-origin comparison to verify_bbox would false-reject every honest growth commit | `model/text_commit/verify.py` |
+| 2144 | Preview verification must capture pre-patch state and reuse the session scratch | `model/text_commit/preview.py`, `model/text_commit/verify.py` |

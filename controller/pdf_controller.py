@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from model.color_profile import ColorProfile, safe_to_fitz_colorspace
 from model.edit_commands import AddTextboxCommand, EditTextCommand, EditTextResult, SnapshotCommand
+from model.edit_requests import StyleOverrides
 from model.object_requests import (
     BatchDeleteObjectsRequest,
     BatchMoveObjectsRequest,
@@ -3506,11 +3507,27 @@ class PDFController:
             replacement_text = str(payload.get("replacement_text", ""))
             clip_rect = tuple(float(v) for v in payload["clip_rect"])
             render_scale = float(payload.get("render_scale", 1.0))
+            raw_new_rect = payload.get("new_rect")
+            new_rect = (
+                tuple(float(v) for v in raw_new_rect)
+                if raw_new_rect is not None
+                else None
+            )
+            style_overrides = payload.get("style_overrides")
+            if isinstance(style_overrides, dict):
+                style_overrides = StyleOverrides(**style_overrides)
+            elif style_overrides is not None and not isinstance(
+                style_overrides, StyleOverrides
+            ):
+                style_overrides = None
         except (KeyError, TypeError, ValueError):
             logger.warning("plan preview payload malformed; ignored")
             return
         coordinator = self._ensure_text_commit_preview_coordinator()
         if self._plan_preview_session_key != session_key:
+            clear_cache = getattr(self.model, "clear_verified_candidates", None)
+            if callable(clear_cache):
+                clear_cache()
             try:
                 target = derive_tier0_preview_target(
                     self.model,
@@ -3573,6 +3590,8 @@ class PDFController:
             target_bbox=target_bbox,
             clip_rect=clip_rect,
             render_scale=render_scale,
+            style_overrides=style_overrides,
+            new_rect=new_rect,
         )
 
     def _notify_plan_preview_rejected(
@@ -3591,6 +3610,17 @@ class PDFController:
     def _consume_plan_preview(
         self, identity: PlanPreviewIdentity, result: PlanPreviewResult
     ) -> None:
+        if result.plan_token is not None and result.prepared is not None:
+            cache = getattr(self.model, "cache_verified_candidate", None)
+            if callable(cache):
+                try:
+                    cache(result.plan_token, result.prepared)
+                except Exception as exc:
+                    logger.warning(
+                        "plan preview candidate cache failed: %s",
+                        type(exc).__name__,
+                    )
+                    return
         image = None
         if result.png_bytes:
             candidate = QImage.fromData(result.png_bytes, "PNG")

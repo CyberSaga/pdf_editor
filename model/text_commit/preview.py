@@ -28,7 +28,13 @@ from model.text_commit.patch import (
     StalePlanError,
     apply_patchset,
 )
-from model.text_commit.plan import PlanRejection, prepare_plan
+from model.text_commit.plan import PlanRejection, PreparedEdit, prepare_plan
+from model.text_commit.verify import (
+    VerificationFailure,
+    capture_page_state,
+    verify_tier0_commit,
+    verify_tier1_commit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +64,7 @@ class PlanPreviewRequest:
     clip_rect: tuple[float, float, float, float]
     render_scale: float
     style_overrides: StyleOverrides | None = None
+    new_rect: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -69,12 +76,10 @@ class PlanPreviewResult:
     the sanitized RejectReason code otherwise (the caller falls back to the
     legacy CSS preview without claiming exactness).
 
-    KNOWN ASYMMETRY: this renderer never runs verification (it splices,
-    rasterizes, and reverts), so it can display a Tier 1 candidate that
-    ``TieredCommitEngine.prepare`` later refuses with
-    ``GROWTH_REGION_NOT_BLANK`` -- not new (the preview equally cannot see a
-    V0a-V0e refusal today); the identity contract is about the *prepared
-    product*, not the verdict.
+    ``prepared`` is the immutable candidate that passed the same scratch
+    verification used by live commit.  The controller transfers it to the
+    document-session engine cache before presenting the raster, so a later
+    commit can consume the exact candidate identified by ``plan_token``.
     """
 
     session_key: str
@@ -84,6 +89,8 @@ class PlanPreviewResult:
     png_bytes: bytes
     clip_rect: tuple[float, float, float, float]
     render_scale: float
+    new_rect: tuple[float, float, float, float] | None = None
+    prepared: PreparedEdit | None = None
 
 
 def _session_snapshot_bytes(
@@ -171,7 +178,7 @@ class PlanPreviewRenderer:
         return self._scratch, self._registry
 
     def render(self, request: PlanPreviewRequest) -> PlanPreviewResult:
-        """Prepare, splice, rasterize, revert — all on the scratch copy."""
+        """Prepare, verify, splice, rasterize, revert on the scratch copy."""
 
         def _rejection(reason: str) -> PlanPreviewResult:
             return PlanPreviewResult(
@@ -182,6 +189,7 @@ class PlanPreviewRenderer:
                 png_bytes=b"",
                 clip_rect=request.clip_rect,
                 render_scale=request.render_scale,
+                new_rect=request.new_rect,
             )
 
         scratch, registry = self._ensure_scratch()
@@ -195,6 +203,7 @@ class PlanPreviewRenderer:
             target_bbox=request.target_bbox,
             registry=registry,
             style_overrides=request.style_overrides,
+            new_rect=request.new_rect,
             page_has_pending_maintenance=self._session.page_has_pending_maintenance,
             max_tier=self._session.max_tier,
         )
@@ -206,14 +215,33 @@ class PlanPreviewRenderer:
             replacements=(plan.replacement,),
             expected_page_fingerprint=plan.page_fingerprint,
         )
+        pre_state = capture_page_state(scratch, page, plan)
         try:
             applied = apply_patchset(scratch, page, patchset)
         except (StalePlanError, SpliceError) as exc:
             logger.warning("plan preview splice failed: %s", type(exc).__name__)
             return _rejection("preview_splice_failed")
         try:
+            verify_fn = (
+                verify_tier1_commit
+                if plan.tier.value == 1
+                else verify_tier0_commit
+            )
+            verification = verify_fn(
+                scratch, page, plan, pre_state, reopen_probe=False
+            )
+            if isinstance(verification, VerificationFailure):
+                logger.info(
+                    "preview candidate refuted on scratch: %s (%s)",
+                    verification.reason,
+                    verification.detail,
+                )
+                return _rejection(verification.reason)
             scale = float(request.render_scale)
-            clip = fitz.Rect(request.clip_rect) & page.rect
+            clip = (
+                fitz.Rect(request.clip_rect)
+                | fitz.Rect(plan.effective_verify_bbox)
+            ) & page.rect
             pixmap = page.get_pixmap(
                 matrix=fitz.Matrix(scale, scale), clip=clip, annots=True
             )
@@ -226,8 +254,15 @@ class PlanPreviewRenderer:
             plan_token=plan.token,
             reject_reason=None,
             png_bytes=png_bytes,
-            clip_rect=request.clip_rect,
+            clip_rect=(
+                float(clip.x0),
+                float(clip.y0),
+                float(clip.x1),
+                float(clip.y1),
+            ),
             render_scale=request.render_scale,
+            new_rect=request.new_rect,
+            prepared=plan,
         )
 
     def close(self) -> None:

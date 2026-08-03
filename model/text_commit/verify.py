@@ -145,6 +145,7 @@ def _verify_patch_postconditions(
     pre_state: PageState,
     *,
     verify_bbox: tuple[float, float, float, float],
+    reopen_probe: bool = True,
 ) -> tuple[str, ...] | VerificationFailure:
     """Prove the V0 post-conditions; return the verified-property list.
 
@@ -245,14 +246,30 @@ def _verify_patch_postconditions(
     # decrypted content, so a locked reopen is just as good a proof and
     # never touches the live crypt state either way. KEEP is a no-op for
     # unencrypted documents.
-    try:
-        reopened = fitz.open("pdf", doc.tobytes(encryption=fitz.PDF_ENCRYPT_KEEP))
-        page_count = reopened.page_count
-        reopened.close()
-    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase) as exc:
-        return VerificationFailure(
-            RejectReason.VERIFICATION_FAILED, f"document no longer opens: {exc}"
-        )
+    if reopen_probe:
+        try:
+            reopened = fitz.open(
+                "pdf", doc.tobytes(encryption=fitz.PDF_ENCRYPT_KEEP)
+            )
+            page_count = reopened.page_count
+            reopened.close()
+        except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase) as exc:
+            return VerificationFailure(
+                RejectReason.VERIFICATION_FAILED, f"document no longer opens: {exc}"
+            )
+    else:
+        # A PlanPreviewRenderer's scratch document was itself opened from the
+        # session snapshot.  The only mutation here is a validated in-place
+        # content-stream splice, and V0a/V0c/V0d already exercise that stream
+        # through extraction and rasterization.  Reusing this open-document
+        # certificate avoids a full-document serialization per keystroke;
+        # live commit always uses the real round-trip above.
+        if not getattr(doc, "is_pdf", False):
+            return VerificationFailure(
+                RejectReason.VERIFICATION_FAILED,
+                "session scratch document is not a PDF",
+            )
+        page_count = doc.page_count
     if page_count != doc.page_count:
         return VerificationFailure(
             RejectReason.VERIFICATION_FAILED, "page count changed on reopen"
@@ -274,6 +291,8 @@ def verify_tier0_commit(
     page: fitz.Page,
     prepared: PreparedEdit,
     pre_state: PageState,
+    *,
+    reopen_probe: bool = True,
 ) -> tuple[str, ...] | VerificationFailure:
     """Prove the V0 post-conditions; return the verified-property list.
 
@@ -281,7 +300,12 @@ def verify_tier0_commit(
     postconditions are always proven around ``target_bbox_page`` itself.
     """
     return _verify_patch_postconditions(
-        doc, page, prepared, pre_state, verify_bbox=prepared.target_bbox_page
+        doc,
+        page,
+        prepared,
+        pre_state,
+        verify_bbox=prepared.target_bbox_page,
+        reopen_probe=reopen_probe,
     )
 
 
@@ -660,6 +684,8 @@ def verify_tier1_commit(
     page: fitz.Page,
     prepared: PreparedEdit,
     pre_state: PageState,
+    *,
+    reopen_probe: bool = True,
 ) -> tuple[str, ...] | VerificationFailure:
     """Tier 1 postconditions: the two growth gates, then V0's, widened.
 
@@ -689,7 +715,12 @@ def verify_tier1_commit(
             )
 
     result = _verify_patch_postconditions(
-        doc, page, prepared, pre_state, verify_bbox=prepared.effective_verify_bbox
+        doc,
+        page,
+        prepared,
+        pre_state,
+        verify_bbox=prepared.effective_verify_bbox,
+        reopen_probe=reopen_probe,
     )
     if isinstance(result, VerificationFailure):
         return result

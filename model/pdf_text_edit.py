@@ -37,9 +37,8 @@ from model.text_commit.dto import (
     RejectReason,
     legacy_commit_outcome,
 )
-from model.text_commit.engine import TieredCommitEngine
 from model.text_commit.fonts import DocumentFontRegistry
-from model.text_commit.plan import PlanRejection, prepare_tier0_plan
+from model.text_commit.plan import PreparedEdit, PlanRejection, prepare_tier0_plan
 from model.text_block import EditableSpan, TextBlock
 from model.text_normalization import normalize_text, token_coverage_ratio
 
@@ -1426,19 +1425,14 @@ def _attempt_tiered_commit(
     if target is None:
         return None, RejectReason.MULTI_SPAN_TARGET
     target_text, expected_origin, target_bbox, _ = target
-    engine = TieredCommitEngine(
-        model.doc,
-        password=model.password,
-        max_tier=getattr(
-            getattr(model, "text_commit_settings", None), "max_tier", 0
-        ),
-    )
+    engine = model.get_tiered_commit_engine()
     pending = any(e.get("page_idx") == page_idx for e in model.pending_edits)
 
     # WS-A: when a preview token is supplied, try the verified candidate
     # cache first — the preview already prepared and scratch-verified this
     # exact candidate, so re-preparing it is wasted work.
     cached = engine.get_verified_candidate(plan_token) if plan_token else None
+    prepared: PreparedEdit | PlanRejection
     if cached is not None:
         prepared = cached
         logger.debug(

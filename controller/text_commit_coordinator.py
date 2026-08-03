@@ -181,6 +181,7 @@ class TextCommitPreviewCoordinator(QObject):
         clip_rect: tuple[float, float, float, float],
         render_scale: float,
         style_overrides: StyleOverrides | None = None,
+        new_rect: tuple[float, float, float, float] | None = None,
     ) -> str | None:
         session = self._session
         if session is None:
@@ -200,6 +201,7 @@ class TextCommitPreviewCoordinator(QObject):
             clip_rect=tuple(float(v) for v in clip_rect),  # type: ignore[arg-type]
             render_scale=float(render_scale),
             style_overrides=style_overrides,
+            new_rect=new_rect,
         )
         self._latest_generation = identity.generation
         if self._inflight is not None:
