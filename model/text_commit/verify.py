@@ -11,12 +11,20 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import fitz
 
 from model.text_commit.dto import RejectReason
 from model.text_commit.inspect import read_page_streams
-from model.text_commit.plan import PreparedEdit
+
+if TYPE_CHECKING:
+    # Deferred: plan.py imports patch.py (for the Tier 1 composite builder),
+    # and patch.py imports this module (for prove_source_resource_reuse), so
+    # a runtime import here would close the cycle plan -> patch -> verify ->
+    # plan. PreparedEdit is used only in annotations below, and
+    # ``from __future__ import annotations`` (this file) makes that safe.
+    from model.text_commit.plan import PreparedEdit
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +50,11 @@ class PageState:
     nontarget_origins: tuple[tuple[float, float], ...]
     pixmap_samples: bytes
     pixmap_meta: tuple[int, int, int, int]  # width, height, stride, n
+    # Tier 1 ink-growth pre-proof: rawdict character count already occupying
+    # the growth zone, captured PRE-EDIT (0 when the prepared edit has no ink
+    # growth). Defaulted so every hand-built ``PageState`` in existing tests
+    # keeps constructing unchanged.
+    growth_zone_glyphs: int = 0
 
 
 def _span_origins(
@@ -63,13 +76,24 @@ def capture_page_state(
     doc: fitz.Document, page: fitz.Page, prepared: PreparedEdit
 ) -> PageState:
     pixmap = page.get_pixmap(dpi=_VERIFY_DPI)
+    growth_zone_glyphs = 0
+    if prepared.has_ink_growth:
+        growth_zone_glyphs = count_growth_zone_glyphs(
+            page,
+            target_bbox=prepared.target_bbox_page,
+            verify_bbox=prepared.effective_verify_bbox,
+        )
     return PageState(
         streams=tuple(read_page_streams(doc, page)),
         fonts=tuple(page.get_fonts(full=True)),
         annots=tuple((a.xref, tuple(a.rect)) for a in page.annots()),
+        # Always the TARGET box, never the widened one: excluding more
+        # origins here would weaken V0c's non-target-geometry proof (a real
+        # neighbour span could then move undetected inside the growth band).
         nontarget_origins=_span_origins(page, prepared.target_bbox_page),
         pixmap_samples=bytes(pixmap.samples),
         pixmap_meta=(pixmap.width, pixmap.height, pixmap.stride, pixmap.n),
+        growth_zone_glyphs=growth_zone_glyphs,
     )
 
 
@@ -113,13 +137,26 @@ def _first_diff_outside_halo(
     return None
 
 
-def verify_tier0_commit(
+def _verify_patch_postconditions(
     doc: fitz.Document,
     page: fitz.Page,
     prepared: PreparedEdit,
     pre_state: PageState,
+    *,
+    verify_bbox: tuple[float, float, float, float],
 ) -> tuple[str, ...] | VerificationFailure:
-    """Prove the V0 post-conditions; return the verified-property list."""
+    """Prove the V0 post-conditions; return the verified-property list.
+
+    ``verify_bbox`` is the region V0c's extraction clip and V0d's raster
+    halo are built around -- ``prepared.target_bbox_page`` for Tier 0
+    (:func:`verify_tier0_commit`), or the ink-growth-widened box for Tier 1
+    (:func:`verify_tier1_commit`).  V0c's ``_span_origins`` comparison stays
+    on ``prepared.target_bbox_page`` regardless: it is compared against
+    ``pre_state.nontarget_origins``, which :func:`capture_page_state` always
+    computes with the (narrower) target box, and widening only one side of
+    that comparison would either weaken the proof or spuriously reject an
+    honest growth commit.
+    """
     replacement = prepared.replacement
 
     # V0a — stream bytes outside the declared range are re-diffed, not assumed.
@@ -161,7 +198,7 @@ def verify_tier0_commit(
         )
 
     # V0c — replacement extractable in the halo, source gone, neighbors fixed.
-    halo_rect = fitz.Rect(*prepared.target_bbox_page) + (
+    halo_rect = fitz.Rect(*verify_bbox) + (
         -_HALO_MARGIN_PT,
         -_HALO_MARGIN_PT,
         _HALO_MARGIN_PT,
@@ -187,7 +224,7 @@ def verify_tier0_commit(
 
     # V0d — raster identity outside the halo (exact; calibrated ε = 0).
     post_pixmap = page.get_pixmap(dpi=_VERIFY_DPI)
-    diff = _first_diff_outside_halo(pre_state, post_pixmap, prepared.target_bbox_page)
+    diff = _first_diff_outside_halo(pre_state, post_pixmap, verify_bbox)
     if diff is not None:
         return VerificationFailure(
             RejectReason.VERIFICATION_FAILED,
@@ -229,6 +266,234 @@ def verify_tier0_commit(
         "raster_identity_outside_halo",
         "document_reopens",
     )
+
+
+def verify_tier0_commit(
+    doc: fitz.Document,
+    page: fitz.Page,
+    prepared: PreparedEdit,
+    pre_state: PageState,
+) -> tuple[str, ...] | VerificationFailure:
+    """Prove the V0 post-conditions; return the verified-property list.
+
+    Behaviour-identical wrapper: Tier 0 never grows the target box, so the
+    postconditions are always proven around ``target_bbox_page`` itself.
+    """
+    return _verify_patch_postconditions(
+        doc, page, prepared, pre_state, verify_bbox=prepared.target_bbox_page
+    )
+
+
+# ================================================== Tier 1 growth machinery
+#
+# Slice 1's ink growth is admitted only when the growth zone is proven blank
+# on the PRE-EDIT rendering by two complementary gates: a rawdict
+# character-intersection gate (exact, text-only) and a raster uniformity
+# gate (covers non-text ink). See plans/2026-07-18-acrobat-stable-text-
+# commit-engine-v2.md and docs/PITFALLS.md for the halo/geometry rationale.
+
+_GROWTH_EDGE_GUARD_PX = 1  # +1px: int() truncation makes the source bbox's
+# own edge pixel column straddle the boundary; combined with the 1px AA
+# guard already folded into _region_is_uniform's erosion story elsewhere,
+# this keeps the growth probe from clipping into the source glyph's own
+# anti-aliased edge.
+
+
+def _clamp_pixels(
+    meta: tuple[int, int, int, int], region: tuple[int, int, int, int]
+) -> tuple[int, int, int, int]:
+    """Clamp an already pixel-space ``(x0, y0, x1, y1)`` rectangle to the
+    pixmap's bounds, collapsing (never inverting) a rectangle that falls
+    entirely outside."""
+    width, height, _, _ = meta
+    x0, y0, x1, y1 = region
+    x0 = max(0, min(x0, width - 1))
+    x1 = max(0, min(x1, width - 1))
+    y0 = max(0, min(y0, height - 1))
+    y1 = max(0, min(y1, height - 1))
+    return (x0, y0, max(x0, x1), max(y0, y1))
+
+
+def _expand_pixels(
+    region: tuple[int, int, int, int], px: int
+) -> tuple[int, int, int, int]:
+    x0, y0, x1, y1 = region
+    return (x0 - px, y0 - px, x1 + px, y1 + px)
+
+
+def _frame_strips(
+    outer: tuple[int, int, int, int], inner: tuple[int, int, int, int]
+) -> tuple[tuple[int, int, int, int], ...]:
+    """The <=4 non-degenerate inclusive-pixel rectangles of ``outer`` minus
+    ``inner`` (a donut decomposition): left, right, top, bottom strips, in
+    that order, omitting any that collapse to nothing."""
+    ox0, oy0, ox1, oy1 = outer
+    ix0, iy0, ix1, iy1 = inner
+    cix0 = max(ix0, ox0)
+    ciy0 = max(iy0, oy0)
+    cix1 = min(ix1, ox1)
+    ciy1 = min(iy1, oy1)
+    strips: list[tuple[int, int, int, int]] = []
+    if cix0 - 1 >= ox0 and oy1 >= oy0:
+        strips.append((ox0, oy0, cix0 - 1, oy1))
+    if ox1 >= cix1 + 1 and oy1 >= oy0:
+        strips.append((cix1 + 1, oy0, ox1, oy1))
+    if cix1 >= cix0 and ciy0 - 1 >= oy0:
+        strips.append((cix0, oy0, cix1, ciy0 - 1))
+    if cix1 >= cix0 and oy1 >= ciy1 + 1:
+        strips.append((cix0, ciy1 + 1, cix1, oy1))
+    return tuple(strips)
+
+
+def growth_probe_regions(
+    target_bbox: tuple[float, float, float, float],
+    verify_bbox: tuple[float, float, float, float],
+    meta: tuple[int, int, int, int],
+) -> tuple[tuple[int, int, int, int], ...]:
+    """Pixel-space probe regions a Tier 1 ink-growth commit must prove blank
+    pre-edit: ``(V \\ guard(T))`` (new ink can land inside the old halo)
+    UNION ``(halo(V) \\ halo(T))`` (pixels V0d's raster gate newly stops
+    checking).  Empty when ``target_bbox == verify_bbox`` (no growth).
+
+    ``guard(T)`` is ``T`` expanded by ``1 + _GROWTH_EDGE_GUARD_PX`` pixels
+    (never ``halo(T)``): the ~1.5pt band just outside the source bbox is
+    where growth ink is actually painted, so a probe boundary borrowed from
+    the *occlusion* halo convention would silently admit ink there.
+    """
+    if tuple(target_bbox) == tuple(verify_bbox):
+        return ()
+    family_bbox = _frame_strips(
+        _bbox_pixels(verify_bbox),
+        _expand_pixels(_bbox_pixels(target_bbox), 1 + _GROWTH_EDGE_GUARD_PX),
+    )
+    family_halo = _frame_strips(_halo_pixels(verify_bbox), _halo_pixels(target_bbox))
+    return tuple(_clamp_pixels(meta, region) for region in family_bbox + family_halo)
+
+
+def _region_is_uniform_pixels(
+    samples: bytes,
+    meta: tuple[int, int, int, int],
+    region: tuple[int, int, int, int],
+    erode_px: int = 0,
+) -> bool:
+    """Pixel-space core of :func:`_region_is_uniform`: true when every pixel
+    in the inclusive pixel rectangle ``region`` is the same color, after
+    eroding inward by ``erode_px`` on each side."""
+    _, _, stride, n = meta
+    x0, y0, x1, y1 = region
+    ex0, ey0 = x0 + erode_px, y0 + erode_px
+    ex1, ey1 = x1 - erode_px, y1 - erode_px
+    if ex0 <= ex1 and ey0 <= ey1:
+        x0, y0, x1, y1 = ex0, ey0, ex1, ey1
+    first: bytes | None = None
+    for y in range(y0, y1 + 1):
+        row = samples[y * stride : (y + 1) * stride]
+        for x in range(x0, x1 + 1):
+            pixel = row[x * n : (x + 1) * n]
+            if first is None:
+                first = pixel
+            elif pixel != first:
+                return False
+    return True
+
+
+def prove_growth_region_blank(
+    pre_state: PageState,
+    *,
+    target_bbox: tuple[float, float, float, float],
+    verify_bbox: tuple[float, float, float, float],
+) -> tuple[int, int, int, int] | None:
+    """The first :func:`growth_probe_regions` region that is NOT uniform on
+    ``pre_state``'s captured raster, or ``None`` when every probe region is
+    blank.  Erosion is deliberately zero here (unlike the occlusion probe's
+    :data:`_UNIFORM_ERODE_PX`): skipping a border of a *blankness* probe is a
+    false-accept hole, not a false-positive-avoidance measure.
+    """
+    for region in growth_probe_regions(target_bbox, verify_bbox, pre_state.pixmap_meta):
+        if not _region_is_uniform_pixels(
+            pre_state.pixmap_samples, pre_state.pixmap_meta, region, erode_px=0
+        ):
+            return region
+    return None
+
+
+def count_growth_zone_glyphs(
+    page: fitz.Page,
+    *,
+    target_bbox: tuple[float, float, float, float],
+    verify_bbox: tuple[float, float, float, float],
+) -> int:
+    """Count of non-whitespace rawdict characters already occupying the
+    growth zone -- the rectangle from ``target_bbox``'s right edge to
+    ``verify_bbox``'s right edge, over ``target_bbox``'s y-range.
+
+    A COUNT only, never text: this is the character half of the growth-
+    blank proof, exact and size-independent, complementary to the raster
+    gate (:func:`prove_growth_region_blank`), which also covers non-text ink.
+    Excluding the target's own glyphs by ``bbox.x0 >= target_bbox[2] - 0.5``
+    (not span-level exclusion) matters because MuPDF usually merges the
+    target and a same-line successor into ONE rawdict span.
+    """
+    tx1 = target_bbox[2]
+    ty0, ty1 = target_bbox[1], target_bbox[3]
+    vx1 = verify_bbox[2]
+    count = 0
+    for block in page.get_text("rawdict")["blocks"]:
+        for line in block.get("lines", []):
+            for span in line["spans"]:
+                for ch in span["chars"]:
+                    if ch["c"].isspace():
+                        continue
+                    bbox = ch["bbox"]
+                    if bbox[0] < tx1 - 0.5:
+                        continue  # the target's own glyph
+                    if bbox[2] <= tx1 or bbox[0] >= vx1:
+                        continue  # outside the growth rectangle's x-range
+                    if bbox[3] <= ty0 or bbox[1] >= ty1:
+                        continue  # outside the growth rectangle's y-range
+                    count += 1
+    return count
+
+
+def verify_tier1_commit(
+    doc: fitz.Document,
+    page: fitz.Page,
+    prepared: PreparedEdit,
+    pre_state: PageState,
+) -> tuple[str, ...] | VerificationFailure:
+    """Tier 1 postconditions: the two growth gates, then V0's, widened.
+
+    Two distinct detail prefixes (``"glyphs: "`` / ``"raster: "``) for the
+    same :data:`~model.text_commit.dto.RejectReason.GROWTH_REGION_NOT_BLANK`
+    so a test can pin WHICH gate fired -- a shared reason with only one
+    emission site can survive deletion of the other gate (Task 10a).
+    """
+    if prepared.has_ink_growth:
+        if pre_state.growth_zone_glyphs > 0:
+            return VerificationFailure(
+                RejectReason.GROWTH_REGION_NOT_BLANK,
+                f"glyphs: {pre_state.growth_zone_glyphs} character(s) "
+                "already occupy the growth zone",
+            )
+        region = prove_growth_region_blank(
+            pre_state,
+            target_bbox=prepared.target_bbox_page,
+            verify_bbox=prepared.effective_verify_bbox,
+        )
+        if region is not None:
+            return VerificationFailure(
+                RejectReason.GROWTH_REGION_NOT_BLANK,
+                f"raster: growth probe region {region} is not uniform pre-edit",
+            )
+
+    result = _verify_patch_postconditions(
+        doc, page, prepared, pre_state, verify_bbox=prepared.effective_verify_bbox
+    )
+    if isinstance(result, VerificationFailure):
+        return result
+    if prepared.has_ink_growth:
+        return (*result, "growth_region_blank_pre_edit")
+    return result
 
 
 # ======================================================= Tier 1 spike support
@@ -274,32 +539,24 @@ def _region_is_uniform(
     samples: bytes,
     meta: tuple[int, int, int, int],
     bbox: tuple[float, float, float, float],
+    *,
+    erode_px: int = _UNIFORM_ERODE_PX,
 ) -> bool:
     """True when every pixel in ``bbox`` (tight, no halo) is the same color.
 
     Used to characterize occlusion: a target fully covered by later opaque
     painting renders as one flat color; a target that becomes visible does
-    not. Eroded inward by :data:`_UNIFORM_ERODE_PX` first: a filled rect's
-    own edge is anti-aliased against the page background, which would
-    otherwise register as spurious non-uniformity having nothing to do
-    with whether the *target* underneath is occluded.
+    not. Eroded inward by ``erode_px`` first (default :data:`_UNIFORM_
+    ERODE_PX`): a filled rect's own edge is anti-aliased against the page
+    background, which would otherwise register as spurious non-uniformity
+    having nothing to do with whether the *target* underneath is occluded.
+    The Tier 1 growth probe passes ``erode_px=0``: skipping a border of a
+    *blankness* probe (as opposed to an occlusion probe) is a false-accept
+    hole, not a false-positive-avoidance measure.
     """
-    _, _, stride, n = meta
-    x0, y0, x1, y1 = _clamped_region(meta, bbox)
-    ex0, ey0 = x0 + _UNIFORM_ERODE_PX, y0 + _UNIFORM_ERODE_PX
-    ex1, ey1 = x1 - _UNIFORM_ERODE_PX, y1 - _UNIFORM_ERODE_PX
-    if ex0 <= ex1 and ey0 <= ey1:
-        x0, y0, x1, y1 = ex0, ey0, ex1, ey1
-    first: bytes | None = None
-    for y in range(y0, y1 + 1):
-        row = samples[y * stride : (y + 1) * stride]
-        for x in range(x0, x1 + 1):
-            pixel = row[x * n : (x + 1) * n]
-            if first is None:
-                first = pixel
-            elif pixel != first:
-                return False
-    return True
+    return _region_is_uniform_pixels(
+        samples, meta, _clamped_region(meta, bbox), erode_px
+    )
 
 
 def _darkest_pixel(

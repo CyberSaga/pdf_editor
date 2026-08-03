@@ -961,6 +961,25 @@ git add model/text_commit/layout.py model/text_commit/plan.py model/text_commit/
 git commit -m "feat: add bounded Tier 1 text layout"
 ```
 
+## Amendment (2026-08-02): Slice 1 landed
+
+**What landed:** Task 11 Slice 1 (transplant + kern-compensated splice) shipped complete and verified. The mutation shape is `[(newtext) K] TJ` spliced at the source op's exact byte range. Four hard gates control ink growth: (1) operator guard refusing `/` single/double quote at the plan policy level and patch mechanism level; (2) growth-region blank proof via two independent pre-edit checks (character-intersection gate on rawdict, raster-uniformity gate on pixels); (3) shared-content-stream detection across all pages, gated in the common classifier so both tiers are covered; (4) font-resource re-proof before scratch and again before live apply_patchset. Tier 0 is always tried first; only ADVANCE_MISMATCH escalates to Tier 1, and the default engine flag stays max_tier=0 (flag-off). All 12 red tests pass, including the composite verification that replacement renders, arbitrary replacement advance is compensated, later shows retain origins, persistent state is unchanged, and exact source range + stream digest are checked. Six-PDF corpus audit confirms forward advance-dependency is 0.40% show-weighted (99.6% of shows have no successor before the next structural op).
+
+**Halo decision:** Blank-growth-zone proof on the PRE-EDIT rendering. Compared box widens from target_bbox_page to verify_bbox_page (mapping through page.transformation_matrix, extending x1 in user space), proving the growth zone via two complementary gates sharing reason but not detail prefix. Inner guard = source_bbox + 2px (1px truncation + 1px AA bleed). Honesty limits: V0c cannot see same-span successors, 1.5pt unproven band remains, V0c false-rejects (never false accepts) on wider clip.
+
+**Shared-stream decision:** New `inspect.find_pages_sharing_content_stream(doc, *, stream_xref, page_number)` never loads a Page object per page; handles array / indirect-array / single-stream / null shapes with fail-closed on any xref call exception. Detect and reject in `_classify_common` prologue so both tiers are covered (every high-fidelity tier mutates the stream in place). New `RejectReason.SHARED_CONTENT_STREAM` with counts-only detail. Blast radius narrow: six-PDF corpus uses one stream per page.
+
+**Operator guard:** Two placements, both required. Plan-level: new `_classify_common` gate immediately before NOT_SINGLE_LITERAL_TJ returns `PlanRejection(UNSUPPORTED_SHOW_OPERATOR)`. Patch-level: `_SPLICEABLE_SHOW_OPERATORS = {"Tj", "TJ"}`, `_require_spliceable_show(show)` called as the first statement of both `build_advance_preserving_erase` and `build_transplant_replacement`, raising `UnsupportedShowOperatorError(ValueError)`. Why both: plan alone is insufficient because patch builders are public API called by spikes; patch alone is insufficient because exceptions escaping into per-keystroke preview are the failure class Task 10e had to fix.
+
+**Corrected Slice 1 files_list (verbatim from implementation):**
+- `model/text_commit/{dto,plan,patch,verify,inspect,engine}.py`
+- `model/text_commit/preview.py` (threading coordination only, no layout)
+- `model/{pdf_text_edit,edit_commands}.py`
+- `controller/pdf_controller.py`
+- `test_scripts/test_text_commit_tier1_slice1.py` (one fixture deviation: char-level vs span-level target_bbox in growth-refusal cases)
+
+**Deferred from Slice 1 (stated in task scope to remain unblocked):** Whole-array TJ targets (Slice 1 refuses TJ at planner, one gate after operator guard); D4 _ocg_membership_lost tri-state (transplant inherits OCG, not blocking); rotated-page fallback-bbox shape defect (production safe today because pdf_text_edit.py:1225 passes real page-space bbox); TEXT_COMMIT_TELEMETRY wire-or-remove (untouched, TEXT_COMMIT_MAX_TIER now actually readable); different-face replacement/font re-embedding; Identity-H/CID enablement (evidence collection only); deletion/multiline via Tier 1; running growth gates inside per-keystroke preview (known preview/commit asymmetry documented); shadow-mode staying Tier-0-only classification.
+
 ## Task 12: Fidelity Gate, Rollout, and Documentation
 
 **Files:**

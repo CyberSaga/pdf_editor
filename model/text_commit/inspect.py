@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 
 import fitz
@@ -203,6 +204,86 @@ def page_has_widgets_or_signatures(doc: fitz.Document, page: fitz.Page) -> bool:
     except (RuntimeError, ValueError):
         return True  # unreadable AcroForm: refuse rather than guess
     return sig_flags > 0
+
+
+_CONTENTS_REF_RE = re.compile(r"(\d+)\s+\d+\s+R")
+
+
+def _page_contents_xrefs(doc: fitz.Document, page_xref: int) -> tuple[int, ...] | None:
+    """The xref(s) a page's ``/Contents`` refers to, or ``None`` when the
+    value could not be parsed (callers must treat that as "possibly shares
+    a stream", never as "shares nothing" -- fail-closed, matching
+    :func:`page_has_widgets_or_signatures` above).
+
+    Handles the three legal shapes: a direct reference to a single stream
+    (``kind == "xref"``), an indirect reference to an array of stream
+    references (``kind == "xref"`` pointing at a non-stream object), and an
+    inline array of references (``kind == "array"``).  A page with no
+    ``/Contents`` at all (``kind == "null"``) cannot share a stream and
+    returns an empty tuple, never ``None``.
+    """
+    try:
+        kind, value = doc.xref_get_key(page_xref, "Contents")
+    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+        return None
+    if kind == "null":
+        return ()
+    if kind == "array":
+        matches = _CONTENTS_REF_RE.findall(value)
+        if not matches:
+            return None
+        return tuple(int(m) for m in matches)
+    if kind == "xref":
+        try:
+            target = int(value.split()[0])
+        except (ValueError, IndexError):
+            return None
+        xrefs = [target]
+        try:
+            is_stream = doc.xref_is_stream(target)
+        except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+            return None
+        if not is_stream:
+            # The indirect-/Contents-array shape: `target` is itself an
+            # array object, not a stream -- parse the references inside it,
+            # never the dictionary that owns them.
+            try:
+                obj = doc.xref_object(target)
+            except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+                return None
+            matches = _CONTENTS_REF_RE.findall(obj)
+            if not matches:
+                return None
+            xrefs.extend(int(m) for m in matches)
+        return tuple(xrefs)
+    return None  # any other kind: fail-closed, never a guess
+
+
+def find_pages_sharing_content_stream(
+    doc: fitz.Document, *, stream_xref: int, page_number: int
+) -> tuple[int, ...]:
+    """0-based indices of every OTHER page whose ``/Contents`` references
+    ``stream_xref`` -- or that could not be proven NOT to (fail-closed).
+
+    Reads ``doc.xref_get_key(doc.page_xref(i), "Contents")`` for every page
+    but ``page_number`` -- never ``doc[i]``, which loads a full page object
+    and is the dense-page-preview cost this function must not pay per
+    keystroke.  ``/Contents`` is not an inheritable page attribute, so no
+    ``/Pages``-tree walk is needed.
+    """
+    hits: list[int] = []
+    for i in range(doc.page_count):
+        if i == page_number:
+            continue
+        try:
+            page_xref = doc.page_xref(i)
+        except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+            hits.append(i)
+            continue
+        xrefs = _page_contents_xrefs(doc, page_xref)
+        if xrefs is None or stream_xref in xrefs:
+            hits.append(i)
+    return tuple(hits)
 
 
 def replay_page(doc: fitz.Document, page: fitz.Page) -> PageReplay:

@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 231 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 235 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -236,3 +236,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2081 | `pytest … | tail` reports tail's exit code — a hard interpreter abort can read as a passing run | test harness / CI hygiene |
 | 2088 | `doc.xref_get_keys(xref)` returns `[]` for a non-dictionary object — indistinguishable from an empty dictionary | model/text_commit/inspect.py (`_canonical_object_digest`) |
 | 2095 | A mutation fixture can be subsumed by a sibling guard — rotation does not pin `b==c==0`, a mirror does not pin `a>0` | test_scripts/test_text_commit_structural_gates.py (`_uniform_scale` gates) |
+| 2104 | Same-line successor merges into the target's own rawdict span without an intervening Tf/Tm/T* | `model/text_commit` (rawdict-derived bboxes) / test fixtures |
+| 2114 | plan -> patch -> verify -> plan runtime import cycle | `model/text_commit` |
+| 2124 | mypy loses None-narrowing for a dataclass field re-accessed in a different function | `model/text_commit/plan.py` |
+| 2134 | Widening V0c's non-target-span-origin comparison to verify_bbox would false-reject every honest growth commit | `model/text_commit/verify.py` |

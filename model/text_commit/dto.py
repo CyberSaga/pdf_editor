@@ -52,6 +52,14 @@ class RejectReason:
     PENDING_MAINTENANCE = "pending_page_maintenance"
     VERIFICATION_FAILED = "verification_failed"
     STALE_PLAN = "stale_plan"
+    # Task 11 Slice 1 (Tier 1 kern-compensated transplant): each is a NEW
+    # name on purpose (Task 10a, TODOS.md:418) -- reusing an existing reason
+    # with existing emission sites lets a test survive deletion of its own
+    # gate.
+    UNSUPPORTED_SHOW_OPERATOR = "unsupported_show_operator"
+    SHARED_CONTENT_STREAM = "shared_content_stream"
+    GROWTH_REGION_NOT_BLANK = "growth_region_not_blank"
+    FONT_RESOURCE_NOT_PROVEN = "font_resource_not_proven"
 
 
 class CommitStatus(str, Enum):
@@ -66,6 +74,17 @@ class CommitTier(IntEnum):
     TIER0_LOSSLESS_STREAM_PATCH = 0
     TIER1_REBUILD_WITH_VALIDATED_FACE = 1
     TIER2_LEGACY = 2
+
+
+# The tiers whose commit is byte-provable and undo-reversible via a single
+# validated PatchSet -- as opposed to Tier 2 (legacy redact+reinsert), whose
+# undo/redo can only replay a lossier page-level snapshot. Consulted by
+# edit_commands.py's reversal-capture gate so a Tier 1 commit gets the same
+# high-fidelity undo/redo path as Tier 0.
+HIGH_FIDELITY_TIERS: tuple[CommitTier, ...] = (
+    CommitTier.TIER0_LOSSLESS_STREAM_PATCH,
+    CommitTier.TIER1_REBUILD_WITH_VALIDATED_FACE,
+)
 
 
 class FontResourceAction:

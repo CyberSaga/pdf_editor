@@ -5,8 +5,9 @@ of the document — the live document is never touched during preparation.
 ``commit`` revalidates the page fingerprint, applies exactly one validated
 PatchSet, re-verifies on the live document, and reverts on any failure.
 
-Tier 1 does not exist yet (flag-gated future work); everything that is
-not Tier 0 is rejected here and stays with the legacy engine.
+Tier 1 (Task 11 Slice 1) is reached only when ``max_tier >= 1`` and Tier 0
+refuses with ``ADVANCE_MISMATCH``; the default ``max_tier=0`` keeps every
+existing construction on Tier 0 only (the flag-off guarantee).
 """
 from __future__ import annotations
 
@@ -29,22 +30,30 @@ from model.text_commit.patch import (
     SpliceError,
     StalePlanError,
     apply_patchset,
+    build_tier1_font_outcome,
 )
-from model.text_commit.plan import PlanRejection, PreparedEdit, prepare_tier0_plan
+from model.text_commit.plan import PlanRejection, PreparedEdit, prepare_plan
 from model.text_commit.verify import (
     VerificationFailure,
     capture_page_state,
     verify_tier0_commit,
+    verify_tier1_commit,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _rejection_outcome(status: CommitStatus, reason: str, detail: str) -> CommitOutcome:
+def _rejection_outcome(
+    status: CommitStatus,
+    reason: str,
+    detail: str,
+    *,
+    chain: tuple[str, ...] | None = None,
+) -> CommitOutcome:
     return CommitOutcome(
         status=status,
         tier=None,
-        fallback_chain=("tier0:" + reason,),
+        fallback_chain=chain if chain is not None else ("tier0:" + reason,),
         warnings=(),
         font_outcomes=(),
         verified_properties=(),
@@ -53,12 +62,22 @@ def _rejection_outcome(status: CommitStatus, reason: str, detail: str) -> Commit
     )
 
 
+def _tier1_chain(reason: str) -> tuple[str, ...]:
+    """A Tier 1 commit is only ever reached by escalating a Tier 0
+    ``ADVANCE_MISMATCH`` refusal (``plan._TIER1_ESCALATION_REASONS``), so
+    every Tier 1 failure honestly reports both stages."""
+    return (f"tier0:{RejectReason.ADVANCE_MISMATCH}", f"tier1:{reason}")
+
+
 class TieredCommitEngine:
     """One engine per open document; owns the font registry."""
 
-    def __init__(self, doc: fitz.Document, *, password: str | None = None) -> None:
+    def __init__(
+        self, doc: fitz.Document, *, password: str | None = None, max_tier: int = 0
+    ) -> None:
         self._doc = doc
         self._password = password
+        self._max_tier = max_tier
         self.registry = DocumentFontRegistry(doc)
 
     # ------------------------------------------------------------ prepare
@@ -76,7 +95,7 @@ class TieredCommitEngine:
         page_has_pending_maintenance: bool = False,
     ) -> PreparedEdit | PlanRejection:
         """Classify, then prove the candidate on a scratch document."""
-        plan = prepare_tier0_plan(
+        plan = prepare_plan(
             self._doc,
             page,
             target_text=target_text,
@@ -87,9 +106,25 @@ class TieredCommitEngine:
             style_overrides=style_overrides,
             new_rect=new_rect,
             page_has_pending_maintenance=page_has_pending_maintenance,
+            max_tier=self._max_tier,
         )
         if isinstance(plan, PlanRejection):
             return plan
+
+        is_tier1 = plan.tier is CommitTier.TIER1_REBUILD_WITH_VALIDATED_FACE
+        if is_tier1:
+            font_outcome = build_tier1_font_outcome(
+                self._doc,
+                page,
+                resource_name=plan.font_resource,
+                source_font_xref=plan.font_xref,
+                written_font_xref=plan.font_xref,
+            )
+            if font_outcome.action != FontResourceAction.SOURCE_RESOURCE_REUSED:
+                return PlanRejection(
+                    RejectReason.FONT_RESOURCE_NOT_PROVEN,
+                    f"resource /{plan.font_resource} reports {font_outcome.action}",
+                )
 
         # Scratch-first proof: tobytes() preserves xref numbering and decoded
         # stream bytes, so the plan's offsets are valid on the copy.
@@ -109,10 +144,12 @@ class TieredCommitEngine:
                     RejectReason.VERIFICATION_FAILED,
                     f"candidate failed to apply on scratch: {exc}",
                 )
-            result = verify_tier0_commit(scratch, scratch_page, plan, pre_state)
+            verify_fn = verify_tier1_commit if is_tier1 else verify_tier0_commit
+            result = verify_fn(scratch, scratch_page, plan, pre_state)
             if isinstance(result, VerificationFailure):
                 logger.info(
-                    "tier0 candidate refuted on scratch: %s (%s)",
+                    "tier%s candidate refuted on scratch: %s (%s)",
+                    plan.tier.value,
                     result.reason,
                     result.detail,
                 )
@@ -135,6 +172,33 @@ class TieredCommitEngine:
                 "target page no longer exists",
             )
 
+        is_tier1 = prepared.tier is CommitTier.TIER1_REBUILD_WITH_VALIDATED_FACE
+        if is_tier1:
+            # Re-proven on the LIVE document: the resource table can change
+            # between prepare and commit. Zero mutation on failure -- this
+            # runs before apply_patchset.
+            font_outcome = build_tier1_font_outcome(
+                doc,
+                page,
+                resource_name=prepared.font_resource,
+                source_font_xref=prepared.font_xref,
+                written_font_xref=prepared.font_xref,
+            )
+            if font_outcome.action != FontResourceAction.SOURCE_RESOURCE_REUSED:
+                return _rejection_outcome(
+                    CommitStatus.FAILED,
+                    RejectReason.FONT_RESOURCE_NOT_PROVEN,
+                    f"resource /{prepared.font_resource} reports {font_outcome.action}",
+                    chain=_tier1_chain(RejectReason.FONT_RESOURCE_NOT_PROVEN),
+                )
+        else:
+            font_outcome = FontOutcome(
+                resource_name=prepared.font_resource,
+                source_font_xref=prepared.font_xref,
+                written_font_xref=prepared.font_xref,
+                action=FontResourceAction.SOURCE_RESOURCE_REUSED,
+            )
+
         pre_state = capture_page_state(doc, page, prepared)
         try:
             applied = apply_patchset(doc, page, self._patchset(prepared))
@@ -147,32 +211,28 @@ class TieredCommitEngine:
                 CommitStatus.STALE_PLAN, RejectReason.STALE_PLAN, str(exc)
             )
 
-        result = verify_tier0_commit(doc, page, prepared, pre_state)
+        verify_fn = verify_tier1_commit if is_tier1 else verify_tier0_commit
+        result = verify_fn(doc, page, prepared, pre_state)
         if isinstance(result, VerificationFailure):
             applied.revert(doc)
             logger.warning(
-                "tier0 live verification failed, reverted: %s (%s)",
+                "tier%s live verification failed, reverted: %s (%s)",
+                prepared.tier.value,
                 result.reason,
                 result.detail,
             )
+            chain = _tier1_chain(result.reason) if is_tier1 else None
             return _rejection_outcome(
-                CommitStatus.FAILED, result.reason, result.detail
+                CommitStatus.FAILED, result.reason, result.detail, chain=chain
             )
 
         self.registry.bump_generation()
         return CommitOutcome(
             status=CommitStatus.COMMITTED,
-            tier=CommitTier.TIER0_LOSSLESS_STREAM_PATCH,
+            tier=prepared.tier,
             fallback_chain=(),
-            warnings=(),
-            font_outcomes=(
-                FontOutcome(
-                    resource_name=prepared.font_resource,
-                    source_font_xref=prepared.font_xref,
-                    written_font_xref=prepared.font_xref,
-                    action=FontResourceAction.SOURCE_RESOURCE_REUSED,
-                ),
-            ),
+            warnings=("tier1_ink_growth",) if prepared.has_ink_growth else (),
+            font_outcomes=(font_outcome,),
             verified_properties=result,
             degraded_reason=None,
             allows_external_reflow=False,

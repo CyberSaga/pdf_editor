@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING, Any
 import fitz
 
 from model.text_commit.dto import (
+    HIGH_FIDELITY_TIERS,
     CommitOutcome,
     CommitStatus,
-    CommitTier,
     RejectReason,
 )
 from model.text_commit.inspect import page_fingerprint, read_page_streams
@@ -183,14 +183,16 @@ class EditTextCommand(EditCommand):
         self.outcome: Any | None = None     # CommitOutcome，execute() 後由 model 提供
         self._executed = False              # 防止在未 execute 前呼叫 undo
 
-        # V2 tier-aware reversal (Task 9): when the first execute() commits
-        # via Tier 0, these hold a validated forward/inverse PatchSet pair
-        # built from the observed before/after stream diff (see
-        # model.text_commit.patch.build_reversal_patchset). Populated once,
-        # replayed by every later undo()/redo() instead of re-running the
-        # full model.edit_text() pipeline (which would re-prepare from
-        # scratch on a different page state and cannot reproduce the exact
-        # same committed bytes). Stay ``None`` for every non-Tier-0 command,
+        # V2 tier-aware reversal (Task 9; Task 11 Slice 1 widened this to
+        # every high-fidelity tier): when the first execute() commits via a
+        # high-fidelity tier (dto.HIGH_FIDELITY_TIERS -- Tier 0 or Tier 1),
+        # these hold a validated forward/inverse PatchSet pair built from the
+        # observed before/after stream diff (see model.text_commit.patch.
+        # build_reversal_patchset). Populated once, replayed by every later
+        # undo()/redo() instead of re-running the full model.edit_text()
+        # pipeline (which would re-prepare from scratch on a different page
+        # state and cannot reproduce the exact same committed bytes). Stay
+        # ``None`` for every non-high-fidelity-tier command (Tier 2/legacy),
         # which keeps the original page-snapshot undo/full-redo behavior.
         self._tier0_forward_patchset: PatchSet | None = None
         self._tier0_inverse_patchset: PatchSet | None = None
@@ -292,7 +294,7 @@ class EditTextCommand(EditCommand):
         self._pre_protected = pre_protected
         if (
             self.outcome is not None
-            and self.outcome.tier is CommitTier.TIER0_LOSSLESS_STREAM_PATCH
+            and self.outcome.tier in HIGH_FIDELITY_TIERS
             and pre_fingerprint is not None
             and pre_page is not None
         ):
@@ -317,12 +319,12 @@ class EditTextCommand(EditCommand):
         pre_streams: tuple[tuple[int, bytes], ...],
         pre_fingerprint: str,
     ) -> None:
-        """After a successful Tier 0 commit, retain a forward/inverse
-        PatchSet pair so future undo()/redo() replay the exact validated
-        intent instead of re-running model.edit_text(). Best-effort: if the
-        observed diff doesn't look like exactly one Tier 0 stream patch,
-        this command silently keeps using the page-snapshot fallback for
-        undo/redo instead (never guesses).
+        """After a successful high-fidelity tier commit (Tier 0 or Tier 1),
+        retain a forward/inverse PatchSet pair so future undo()/redo() replay
+        the exact validated intent instead of re-running model.edit_text().
+        Best-effort: if the observed diff doesn't look like exactly one
+        high-fidelity stream patch, this command silently keeps using the
+        page-snapshot fallback for undo/redo instead (never guesses).
         """
         try:
             page = self._model.doc[page_idx]
@@ -341,7 +343,8 @@ class EditTextCommand(EditCommand):
 
     def _redo_tier0(self) -> bool:
         """Replay the retained forward PatchSet — the same validated intent
-        as the original Tier 0 commit — or fail STALE with zero mutation.
+        as the original high-fidelity tier commit — or fail STALE with zero
+        mutation.
 
         Never falls through to the legacy engine: a stale forward patch
         means the document changed since the commit it is replaying, so the

@@ -1430,7 +1430,13 @@ def _attempt_tiered_commit(
     # ever calling tobytes() on the live handle (see engine.py
     # ``_build_scratch_copy`` -- a decrypting tobytes() call directly on the
     # live doc silently poisons its crypt state).
-    engine = TieredCommitEngine(model.doc, password=model.password)
+    engine = TieredCommitEngine(
+        model.doc,
+        password=model.password,
+        max_tier=getattr(
+            getattr(model, "text_commit_settings", None), "max_tier", 0
+        ),
+    )
     pending = any(e.get("page_idx") == page_idx for e in model.pending_edits)
     prepared = engine.prepare(
         page,
@@ -1548,8 +1554,9 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
                 model.edit_count += 1
                 model.last_commit_outcome = tier0_outcome
                 logger.debug(
-                    "text_commit_tiered page=%s tier=0 committed duration_ms=%s",
+                    "text_commit_tiered page=%s tier=%s committed duration_ms=%s",
                     page_num,
+                    tier0_outcome.tier.value if tier0_outcome.tier is not None else "?",
                     round((time.perf_counter() - _t0) * 1000, 2),
                 )
                 return EditTextResult.SUCCESS

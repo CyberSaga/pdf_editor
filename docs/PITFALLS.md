@@ -2098,3 +2098,43 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** In a conjunction of guards, a fixture only pins the guard that is the *sole* reason it is rejected. Off-nominal in the mutated dimension is not enough — it must be nominal in every other dimension the earlier guards check.
 **Fix:** Pin `b==c==0` with `a==d>0` plus off-diagonals set; pin `a>0` with a point reflection (`a==d<0`). Both confirmed by actually running the mutants — reasoning about which fixture kills which mutant was wrong twice here. Complements the "redundant guard cannot be made SENSITIVE" entry above.
 **File:** `test_scripts/test_text_commit_structural_gates.py`
+
+---
+
+## Same-line successor merges into the target's own rawdict span without an intervening Tf/Tm/T*
+
+**Area:** `model/text_commit` (rawdict-derived bboxes) / test fixtures
+**Symptom:** Two Slice 1 red tests (neighbour-word and single-narrow-glyph growth-refusal fixtures) failed with engine.prepare() returning an accepted PreparedEdit instead of the expected GROWTH_REGION_NOT_BLANK PlanRejection.
+**Cause:** `page.get_text('rawdict')` groups consecutive Tj shows sharing font state into ONE span when nothing (Td/Tm/T*/Tf) separates them, so `_span(page, TARGET)['bbox']` returned the union of the target AND its same-line successor's bbox, not the target's own — feeding an already-too-wide box into target_bbox made the 'occupied growth zone' look like it belonged to the target itself.
+**Fix:** Added a char-level `_target_bbox(page, probe)` helper that unions only the rawdict characters belonging to the probe's own first occurrence (mirroring how `_first_char_origin` already had to work char-level for the same reason), and used it in place of the merged span bbox for the two affected fixtures.
+**File:** `test_scripts/test_text_commit_tier1_slice1.py`
+
+---
+
+## plan -> patch -> verify -> plan runtime import cycle
+
+**Area:** `model/text_commit`
+**Symptom:** Importing `model.text_commit.plan` would raise ImportError as soon as plan.py needs patch.py's Tier 1 composite builder.
+**Cause:** `patch.py` imports `verify.py` (for `prove_source_resource_reuse`); `verify.py` previously imported `PreparedEdit` from `plan.py` at runtime; `plan.py` now imports `patch.py` — closing the cycle.
+**Fix:** `verify.py`'s `from model.text_commit.plan import PreparedEdit` moved under `if TYPE_CHECKING:` (safe because verify.py already has `from __future__ import annotations` and only uses `PreparedEdit` in annotations).
+**File:** `model/text_commit/verify.py`
+
+---
+
+## mypy loses None-narrowing for a dataclass field re-accessed in a different function
+
+**Area:** `model/text_commit/plan.py`
+**Symptom:** mypy arg-type error passing `show.font_resource` (str | None) to `PreparedEdit(font_resource=...)` (str) inside the newly extracted _build_tier0/_build_tier1, even though the None case was already refused earlier.
+**Cause:** The `if show.font_resource is None: return ...` guard runs inside `_classify_common`; `_build_tier0`/`_build_tier1` receive the same ShowOp via a stored `_ClassifiedTarget.show` field in a different function scope, and mypy does not carry narrowing across that boundary.
+**Fix:** Added `assert show.font_resource is not None` at the top of both `_build_tier0` and `_build_tier1` — a type-narrowing restatement of an already-enforced invariant, not a new runtime check.
+**File:** `model/text_commit/plan.py`
+
+---
+
+## Widening V0c's non-target-span-origin comparison to verify_bbox would false-reject every honest growth commit
+
+**Area:** `model/text_commit/verify.py`
+**Symptom:** The design's literal wording ('every use of prepared.target_bbox_page replaced by the verify_bbox parameter') would, if applied to the `_span_origins(...) != pre_state.nontarget_origins` comparison, spuriously report 'non-target span geometry changed' on every accepted Tier 1 growth commit.
+**Cause:** `capture_page_state` always computes `pre_state.nontarget_origins` by excluding `target_bbox_page` (the narrow box), never `verify_bbox_page`; comparing that pre-set against a post-set excluded by the wider `verify_bbox` would silently drop any real neighbour span sitting between the two boxes from the post-set while it is still present in the pre-set.
+**Fix:** `_verify_patch_postconditions` widens only the V0c extraction clip (halo_rect) and the V0d raster-diff halo to `verify_bbox`; the V0c span-origin comparison stays pinned to `prepared.target_bbox_page` on both sides, matching what `capture_page_state` actually computed.
+**File:** `model/text_commit/verify.py`

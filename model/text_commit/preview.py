@@ -28,7 +28,7 @@ from model.text_commit.patch import (
     StalePlanError,
     apply_patchset,
 )
-from model.text_commit.plan import PlanRejection, prepare_tier0_plan
+from model.text_commit.plan import PlanRejection, prepare_plan
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,7 @@ class PreviewSessionInput:
     snapshot_bytes: bytes
     page_fingerprint: str
     page_has_pending_maintenance: bool = False
+    max_tier: int = 0
 
 
 @dataclass(frozen=True)
@@ -63,10 +64,17 @@ class PlanPreviewRequest:
 class PlanPreviewResult:
     """Raster DTO returned to the GUI thread.
 
-    ``plan_token`` is set exactly when the candidate is Tier 0 eligible;
-    ``reject_reason`` carries the sanitized RejectReason code otherwise
-    (the caller falls back to the legacy CSS preview without claiming
-    exactness).
+    ``plan_token`` is set exactly when the candidate is tier-eligible (Tier 0,
+    or Tier 1 when the session allows escalation); ``reject_reason`` carries
+    the sanitized RejectReason code otherwise (the caller falls back to the
+    legacy CSS preview without claiming exactness).
+
+    KNOWN ASYMMETRY: this renderer never runs verification (it splices,
+    rasterizes, and reverts), so it can display a Tier 1 candidate that
+    ``TieredCommitEngine.prepare`` later refuses with
+    ``GROWTH_REGION_NOT_BLANK`` -- not new (the preview equally cannot see a
+    V0a-V0e refusal today); the identity contract is about the *prepared
+    product*, not the verdict.
     """
 
     session_key: str
@@ -117,6 +125,7 @@ def open_preview_session(
     *,
     password: str | None = None,
     page_has_pending_maintenance: bool = False,
+    max_tier: int = 0,
 ) -> PreviewSessionInput | None:
     """Snapshot the document once for a whole edit session.
 
@@ -136,6 +145,7 @@ def open_preview_session(
         snapshot_bytes=snapshot_bytes,
         page_fingerprint=page_fingerprint(doc, page),
         page_has_pending_maintenance=page_has_pending_maintenance,
+        max_tier=max_tier,
     )
 
 
@@ -176,7 +186,7 @@ class PlanPreviewRenderer:
 
         scratch, registry = self._ensure_scratch()
         page = scratch[self._session.page_number]
-        plan = prepare_tier0_plan(
+        plan = prepare_plan(
             scratch,
             page,
             target_text=request.target_text,
@@ -186,6 +196,7 @@ class PlanPreviewRenderer:
             registry=registry,
             style_overrides=request.style_overrides,
             page_has_pending_maintenance=self._session.page_has_pending_maintenance,
+            max_tier=self._session.max_tier,
         )
         if isinstance(plan, PlanRejection):
             return _rejection(plan.reason)
