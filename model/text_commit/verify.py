@@ -828,9 +828,16 @@ def _resource_font_bindings(entries: object) -> dict[str, int]:
     return bindings
 
 
-def _ocg_membership_lost(doc: fitz.Document, expected_text: str) -> bool:
-    """True when ``expected_text`` survives turning off every OCG in a
-    snapshot of ``doc``, i.e. it was never actually scoped to any of them.
+def _ocg_membership_status(
+    doc: fitz.Document, expected_text: str
+) -> str:
+    """Tri-state OCG membership check for ``expected_text``.
+
+    Returns:
+        ``"lost"`` — text survives turning every OCG off (was never scoped).
+        ``"preserved"`` — text disappears when OCGs are off (membership holds).
+        ``"unknown"`` — probe could not be evaluated (locked/encrypted, or any
+        exception). Callers must never record unknown as preserved.
 
     OCG visibility does not affect a live, already-open page/pixmap or its
     text extraction -- it only takes effect after a ``tobytes()`` + reopen
@@ -840,24 +847,20 @@ def _ocg_membership_lost(doc: fitz.Document, expected_text: str) -> bool:
     try:
         probe = fitz.open("pdf", doc.tobytes(encryption=fitz.PDF_ENCRYPT_KEEP))
     except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
-        return False
+        return "unknown"
     try:
         if probe.needs_pass:
             # Encrypted and no password reaches this probe. Decrypting the
             # live handle to get a readable one would poison its crypt state
-            # (see the KEEP note above), so report no evidence of loss. Today
-            # this never fires -- callers pass an already-decrypted scratch --
-            # but promoting V0d onto a live-handle document (Task 11) needs a
-            # tri-state here, not a bool: "not lost" and "could not evaluate"
-            # must stop sharing an answer.
-            return False
+            # (see Task 10b KEEP note), so report unknown — not "preserved".
+            return "unknown"
         ocgs = probe.get_ocgs()
         if not ocgs:
-            return False
+            return "preserved"
         probe.set_layer(-1, off=list(ocgs.keys()))
         data = probe.tobytes()
     except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
-        return False
+        return "unknown"
     finally:
         probe.close()
     try:
@@ -865,8 +868,17 @@ def _ocg_membership_lost(doc: fitz.Document, expected_text: str) -> bool:
         text = reopened.load_page(0).get_text()
         reopened.close()
     except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
-        return False
-    return expected_text in text
+        return "unknown"
+    return "lost" if expected_text in text else "preserved"
+
+
+def _ocg_membership_lost(doc: fitz.Document, expected_text: str) -> bool:
+    """Deprecated bool wrapper — prefer :func:`_ocg_membership_status`.
+
+    ``True`` only for confirmed loss. ``False`` means preserved *or*
+    unknown; do not treat False as proof of preservation.
+    """
+    return _ocg_membership_status(doc, expected_text) == "lost"
 
 
 def verify_tier1_strategy(
@@ -944,11 +956,14 @@ def verify_tier1_strategy(
         elif pre_uniform and post_uniform:
             evidence.append("z_order_preserved")
 
-    # -- OCG (marked-content layer) membership.
-    if _ocg_membership_lost(doc, expected_text):
+    # -- OCG (marked-content layer) membership (tri-state).
+    ocg_status = _ocg_membership_status(doc, expected_text)
+    if ocg_status == "lost":
         failures.append("ocg_membership_lost")
-    else:
+    elif ocg_status == "preserved":
         evidence.append("ocg_membership_preserved")
+    else:
+        evidence.append("ocg_membership_unknown")
 
     # -- graphics-state bleed: the replacement's own glyph ink should never
     # pick up an untracked fill color left dangling by a prior stream. Only

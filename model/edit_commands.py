@@ -45,6 +45,10 @@ class EditTextResult(str, Enum):
     # matches the current page fingerprint (the document changed since the
     # commit it is replaying). Redo refused; zero mutation happened.
     STALE_PLAN = "stale_plan"
+    # V2 undo safety: a high-fidelity tier commit's retained inverse patch
+    # is fingerprint-stale. Undo refused; zero mutation; command retained.
+    # Never falls back to page-snapshot restore for these commands.
+    STALE_UNDO = "stale_undo"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -400,24 +404,25 @@ class EditTextCommand(EditCommand):
         else:
             self._model.fidelity_protected_pages.discard(page_idx)
 
-    def undo(self) -> None:
+    def undo(self) -> bool:  # type: ignore[override]
         """
         還原頁面至 execute() 前的狀態。
 
-        V2 tier-aware path: if this command committed via Tier 0 and the
-        retained inverse PatchSet is still fingerprint-valid, replay it
-        directly -- byte-identical source stream, annotation xrefs
-        untouched (patch.py only ever calls ``doc.update_stream``, never
-        redaction/annotation recreate). Falls back to the original
-        page-snapshot restore when there is no tier0 reversal to replay, or
-        when it has gone stale (the document changed since the commit it
-        would be reversing) -- StalePlanError there is expected, not a bug.
-        Either path restores fidelity_protected_pages membership to its
-        pre-edit value.
+        V2 tier-aware path: if this command committed via a high-fidelity
+        tier and the retained inverse PatchSet is still fingerprint-valid,
+        replay it directly -- byte-identical source stream, annotation
+        xrefs untouched. If the inverse is stale, refuse with STALE_UNDO
+        and zero mutation (command retained on the undo stack) — never
+        fall through to page-snapshot restore for high-fidelity commands.
+        Non-high-fidelity commands still use the page-snapshot path.
+
+        Intentional LSP widening (same pattern as execute): returns bool so
+        CommandManager.undo() can detect STALE_UNDO (False) and keep the
+        command on the undo stack.
         """
         if not self._executed:
             logger.warning("EditTextCommand.undo(): 尚未執行過，跳過還原")
-            return
+            return True  # allow CommandManager to pop a no-op entry
 
         page_num_0based = self._page_num - 1
 
@@ -428,33 +433,44 @@ class EditTextCommand(EditCommand):
             except (StalePlanError, SpliceError, IndexError, ValueError) as exc:
                 logger.warning(
                     "EditTextCommand.undo(): tier0 inverse patch stale (%s); "
-                    "falling back to page-snapshot restore",
+                    "undo refused, zero mutation",
                     type(exc).__name__,
                 )
-            else:
-                self._restore_protection_membership(page_num_0based)
-                self._tier0_active = False
-                self._model.block_manager.rebuild_page(page_num_0based, self._model.doc)
-                logger.debug(
-                    f"EditTextCommand.undo(): tier0 inverse patch restored 頁面 {self._page_num}，"
-                    f"原文字='{self._old_block_text}'"
+                self._model.last_commit_outcome = CommitOutcome(
+                    status=CommitStatus.STALE_PLAN,
+                    tier=None,
+                    fallback_chain=(f"tier0:{RejectReason.STALE_PLAN}",),
+                    warnings=(),
+                    font_outcomes=(),
+                    verified_properties=(),
+                    degraded_reason=str(exc),
+                    allows_external_reflow=False,
                 )
-                return
+                self.result = EditTextResult.STALE_UNDO
+                return False
+            self._restore_protection_membership(page_num_0based)
+            self._tier0_active = False
+            self._model.block_manager.rebuild_page(page_num_0based, self._model.doc)
+            logger.debug(
+                f"EditTextCommand.undo(): tier0 inverse patch restored 頁面 {self._page_num}，"
+                f"原文字='{self._old_block_text}'"
+            )
+            return True
 
-        # Phase 3: _restore_page_from_snapshot() 將在 pdf_model.py 中實作
+        # Legacy / non-high-fidelity: page-snapshot restore.
         self._model._restore_page_from_snapshot(
             page_num_0based, self._page_snapshot_bytes
         )
         self._restore_protection_membership(page_num_0based)
         self._tier0_active = False
 
-        # Phase 3: 重建該頁索引，確保後續 find_by_rect 等查詢正確
         self._model.block_manager.rebuild_page(page_num_0based, self._model.doc)
 
         logger.debug(
             f"EditTextCommand.undo(): 已還原頁面 {self._page_num}，"
             f"原文字='{self._old_block_text}'"
         )
+        return True
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -739,14 +755,21 @@ class CommandManager:
         撤銷最近一次操作。
 
         Returns:
-            True 若成功撤銷，False 若 undo 堆疊為空。
+            True 若成功撤銷，False 若 undo 堆疊為空，或 the command refused
+            (e.g. high-fidelity STALE_UNDO — command retained on the stack).
         """
         if not self._undo_stack:
             logger.debug("CommandManager.undo(): undo 堆疊為空，無可撤銷")
             return False
 
         cmd = self._undo_stack[-1]
-        cmd.undo()
+        undone = cmd.undo()
+        if undone is False:
+            logger.debug(
+                "CommandManager.undo(): command undo skipped: %s",
+                cmd.description,
+            )
+            return False
         self._undo_stack.pop()
         self._redo_stack.append(cmd)
 

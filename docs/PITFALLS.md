@@ -1967,11 +1967,11 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **File:** test_scripts/test_text_commit_textwriter_zorder.py (font-honesty fixture); relevant to any future model/text_commit/fonts.py Tier-1 rebuild code.
 
 ## OCG visibility only takes effect after a tobytes()+reopen round trip — and only on a *second* round trip after set_layer
-**Area:** model/text_commit/verify.py (`_ocg_membership_lost`)
-**Symptom:** Calling `doc.set_layer(-1, off=[...])` on a live document and then immediately calling `get_text()`/rendering the same live page shows no change at all — the OCG toggle appears to be a no-op.
-**Cause:** OCG on/off state is only consulted by MuPDF's content interpreter when a document is (re)opened from bytes; a live, already-parsed page/pixmap does not re-evaluate it.
-**Fix:** To probe OCG membership, snapshot the doc via `tobytes()`+reopen, call `set_layer` on THAT reopened copy, `tobytes()` again, and reopen a second time before calling `get_text()` — two full round trips total, never mutating the original live document.
-**File:** model/text_commit/verify.py (`_ocg_membership_lost`)
+**Area:** model/text_commit/verify.py (`_ocg_membership_status`)
+**Symptom:** Calling `doc.set_layer(-1, off=[...])` on a live document and then immediately calling `get_text()`/rendering the same live page shows no change at all — the OCG toggle appears to be a no-op. Separately: a locked/encrypted KEEP probe (or any exception) used to return bool `False`, which `verify_tier1_strategy` recorded as `ocg_membership_preserved`.
+**Cause:** OCG on/off state is only consulted by MuPDF's content interpreter when a document is (re)opened from bytes; a live, already-parsed page/pixmap does not re-evaluate it. Bool "not lost" conflated "preserved" with "could not evaluate".
+**Fix:** Probe via KEEP `tobytes()`+reopen → `set_layer` → second `tobytes()`+reopen before `get_text()`, never mutating the live doc. Return tri-state `preserved`/`lost`/`unknown`; unknown must never be recorded as preserved.
+**File:** model/text_commit/verify.py (`_ocg_membership_status`)
 
 ## Concatenating a block's spans is right; concatenating its lines deletes a word boundary
 **Area:** model/text_block_parsing.py (`_parse_block`)
@@ -2043,12 +2043,12 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Fix:** Report it rather than inventing a fixture that "proves" a redundant branch. A guard that no mutation can kill is either dead or subsumed, and the honest outcome is to say which — writing a test that passes for a different reason is worse than having no test. Kept as cheap defence-in-depth; the test's docstring now says it pins the *behaviour*, not that line.
 **File:** `test_scripts/test_tier0_target_resolution.py` (`test_shape_multi_line_members_are_refused`)
 
-## `TARGET_IN_FORM_XOBJECT` is page-scoped, not target-scoped — it mislabels almost every miss on real corpora
+## `TARGET_IN_FORM_XOBJECT` must be target-scoped — page-scoped labeling mislabels almost every miss on real corpora
 **Area:** model/text_commit/inspect.py (`bind_source_text`)
 **Symptom:** In the 2026-08-01 funnel measurement, 34,552 bind failures carried `TARGET_IN_FORM_XOBJECT`, but a byte-scan of every invoked Form XObject confirmed only 1,827 (5.3%) of those targets actually live in one. 409/415 corpus pages (98.6%) invoke *some* Form XObject (a logo, a bullet glyph), so the label was eligible to fire on virtually any miss.
-**Cause:** The reclassification asks a *page* question — "does this page invoke any XObject?" — where a *target* question was needed — "is this target's text inside an invoked XObject?". Any unmatched target on such a page inherits the label regardless of where its text actually is.
-**Fix:** Deconflict per target: replay each invoked Form XObject once (cached per document) and byte-check the target against it; only a confirmed hit keeps the label, everything else falls through to the true code (`no_source_match` / `target_reconstruction_unverified`). Prototyped in `scripts/measure_tier_funnel.py`; production `bind_source_text` still behaves page-scoped — do not trust this reason code in telemetry or audits until that is fixed (tracked in TODOS.md).
-**File:** `scripts/measure_tier_funnel.py` (deconfliction pass)
+**Cause:** The reclassification asked a *page* question — "does this page invoke any XObject?" — where a *target* question was needed — "is this target's text inside an invoked XObject?".
+**Fix (WS-D 2026-08-03):** `_target_in_invoked_form_xobjects` replays each Form XObject from `page.get_xobjects()` (one level) and byte-checks the target; only a confirmed hit keeps the label, otherwise `NO_MATCH`.
+**File:** model/text_commit/inspect.py (`bind_source_text`)
 
 ## Calling `bind_source_text` per target re-replays the whole page — prohibitively slow for multi-target sampling
 **Area:** model/text_commit (measurement/tooling)
@@ -2066,10 +2066,10 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 
 ## Text-space and page-space quantities must not mix in bbox/halo math — under scale the error is a silent false ACCEPT
 **Area:** model/text_commit/plan.py (fallback `target_bbox`)
-**Symptom:** With `target_bbox=None` and a uniformly scaled Tm (`a==d==0.5`), the fallback bbox came out exactly 2× too wide — and the dangerous direction is `s<1`, where the halo *inflates*: `verify` proves raster identity only *outside* the halo, so an inflated halo silently absorbs out-of-halo corruption, invisible to V0a–V0e. A second, independent instance of the same mistake surfaced in Codex review (2026-08-01): even with the Tm term fixed, a page with `/UserUnit != 1` still built a wrong halo — MuPDF folds `/UserUnit` into `page.rect`/`page.transformation_matrix` (mediabox/cropbox stay unscaled), so `binding.origin_page` is *already* page-scaled by it while `old_advance`/`font_size` are not. At `/UserUnit 2` (net page scale 1) the fallback built a half-size halo and a valid edit was refused (`verification_failed`); at `/UserUnit 0.5` it built a double-size halo — the dangerous false-ACCEPT direction again.
-**Cause:** `binding.origin_page` is page space, but `old_advance` and `show.font_size` are text space; adding them without applying *every* scale between text space and page space mixes coordinate systems. Harmless at scale 1, which is why nothing caught either instance before D1 admitted scaled matrices and before a `/UserUnit`-bearing page was tested.
-**Fix:** Multiply the advance and font-size extents by the *product* of the TRM scale and the page transform's uniform scale: `scale = trm_uniform_scale * math.hypot(page_matrix.a, page_matrix.b)`. `hypot` of the transform's first row, not `abs(a)` — at `/Rotate 90`/`270` the transform is `Matrix(0, k, k, 0, ...)` and `abs(a)` reads 0, collapsing the halo to zero width. Both terms confirmed Red-first with the exact predicted halo size (D1: 2×; Codex-P2: 1/2× and 2× at `/UserUnit 2` and `0.5`). Still wrong and out of scope for both fixes: the same expression assumes text runs left-to-right in page space, so the *shape* (not just the scale) is wrong on `/Rotate 90`/`270` pages — `origin_page` is correct (it goes through the full transform), only the axis-aligned box built from it is not; reachable from the preview path (`request.target_bbox` is `tuple | None`); tracked in TODOS.md.
-**File:** `model/text_commit/plan.py`; tests in `test_scripts/test_text_commit_tier0.py`, `test_scripts/test_text_commit_structural_gates.py`
+**Symptom:** With `target_bbox=None` and a uniformly scaled Tm (`a==d==0.5`), the fallback bbox came out exactly 2× too wide — and the dangerous direction is `s<1`, where the halo *inflates*: `verify` proves raster identity only *outside* the halo, so an inflated halo silently absorbs out-of-halo corruption, invisible to V0a–V0e. A second instance: `/UserUnit != 1` left the halo off by the page scale. A third: `/Rotate 90/270` left a horizontal halo while pixmap ink ran vertically — because `page.transformation_matrix` omits `/Rotate` in PyMuPDF 1.27 (only `page.rotation_matrix` supplies it); rawdict stays in unrotated space while `get_pixmap` is visual.
+**Cause:** Mixing text-space advance/size with page/visual coordinates without applying every matrix between them. Assuming `transformation_matrix` alone is the "full page transform" is wrong under `/Rotate`.
+**Fix:** Build the rect in user space, map through `_page_visual_matrix` = `transformation_matrix * rotation_matrix`. Same matrix used by `_grown_verify_bbox`. Scale/`/UserUnit`/`/Rotate` fixtures in `test_text_commit_structural_gates.py`.
+**File:** `model/text_commit/plan.py`; tests in `test_scripts/test_text_commit_structural_gates.py`
 
 ## PyMuPDF `insert_text` emits `[<...>] TJ` — an array, never a hex `Tj`
 **Area:** test fixtures for text-commit gates
@@ -2160,3 +2160,13 @@ reopenability certificate for preview V0e. Live commit continues to perform
 the real KEEP-encrypted serialize/reopen probe.
 
 **File:** `model/text_commit/preview.py`, `model/text_commit/verify.py`
+
+---
+
+## High-fidelity stale undo must refuse, not snapshot-restore
+
+**Area:** `model/edit_commands.py` (`EditTextCommand.undo`)
+**Symptom:** After a Tier 0/1 commit, an out-of-band stream drift made the inverse PatchSet stale; undo silently fell through to `page-snapshot` restore, rewriting annotation xrefs and discarding the drifted page state while still popping the command off the undo stack.
+**Cause:** Undo treated `StalePlanError` as "use the snapshot fallback", while redo already refused with `STALE_PLAN` and zero mutation. Asymmetric policy.
+**Fix:** When a high-fidelity inverse is stale → `EditTextResult.STALE_UNDO`, set `CommitStatus.STALE_PLAN`, mutate nothing, return `False` so `CommandManager.undo` retains the command. Snapshot restore remains only for non-high-fidelity commands.
+**File:** `model/edit_commands.py`; test `test_undo_after_external_change_fails_stale_without_mutation`

@@ -597,3 +597,63 @@ def test_fallback_target_bbox_is_unchanged_at_unit_scale():
     assert x1 - x0 == pytest.approx(advance, abs=0.01)
     assert y1 - y0 == pytest.approx(12.0 * 1.35, abs=0.01)
     doc.close()
+
+
+@pytest.mark.parametrize("rotation", [90, 270])
+def test_fallback_target_bbox_follows_page_rotate(rotation):
+    """No caller bbox + ``/Rotate 90/270``: shape must follow the visual matrix.
+
+    ``page.transformation_matrix`` alone omits /Rotate in PyMuPDF; the
+    fallback must also apply ``page.rotation_matrix`` so the halo matches
+    pixmap ink (vertical under 90/270). Building from unrotated
+    ``origin_page`` along page-x leaves a horizontal halo while glyphs run
+    vertically in visual space.
+    """
+    doc = _stream_doc(
+        b"BT /F1 12 Tf 1 0 0 1 72 700 Tm (" + TARGET.encode() + b") Tj ET"
+    )
+    doc[0].set_rotation(rotation)
+    data = doc.tobytes()
+    doc.close()
+    doc = fitz.open("pdf", data)
+    page = doc[0]
+    assert page.rotation == rotation
+
+    capability = DocumentFontRegistry(doc).capability(page, "F1")
+    assert capability is not None
+    advance = capability.string_width(TARGET, 12.0)
+    assert advance is not None
+    # Analytic oracle: same user-space construction the planner must use,
+    # mapped through the full visual matrix (not rawdict — glyph ink ≠ the
+    # 1.0/0.35 ascent/descent heuristic).
+    user = fitz.Rect(72.0, 700.0 - 0.35 * 12.0, 72.0 + advance, 700.0 + 12.0)
+    expected = user * page.transformation_matrix * page.rotation_matrix
+
+    prepared = _plan(doc)
+    assert isinstance(prepared, PreparedEdit), prepared
+    x0, y0, x1, y1 = prepared.target_bbox_page
+    assert x0 == pytest.approx(expected.x0, abs=0.05)
+    assert y0 == pytest.approx(expected.y0, abs=0.05)
+    assert x1 == pytest.approx(expected.x1, abs=0.05)
+    assert y1 == pytest.approx(expected.y1, abs=0.05)
+    # Orientation: under 90/270 the advance runs along a visual axis where
+    # height dominates width (the broken formula keeps width >> height).
+    assert (y1 - y0) > (x1 - x0)
+
+    # Independent: first dark pixmap pixels must sit inside the halo.
+    pix = page.get_pixmap(dpi=72)
+    samples = bytes(pix.samples)
+    n = pix.n
+    found = False
+    for y in range(pix.height):
+        for x in range(pix.width):
+            i = (y * pix.width + x) * n
+            if samples[i] < 200:
+                assert x0 - 2.0 <= x <= x1 + 2.0
+                assert y0 - 2.0 <= y <= y1 + 2.0
+                found = True
+                break
+        if found:
+            break
+    assert found, "fixture: no dark pixmap pixels found"
+    doc.close()

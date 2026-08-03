@@ -263,17 +263,81 @@ def test_bind_missing_text_reports_no_match():
 
 
 def test_bind_form_xobject_target_refused():
+    """Confirmed target-in-XObject keeps ``TARGET_IN_FORM_XOBJECT``."""
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
     page.insert_text((72, 100), "Page-level text", fontsize=12.0, fontname="helv")
+
+    # Embed the missing target inside a Form XObject the page invokes.
+    form_xref = doc.get_new_xref()
+    doc.update_object(
+        form_xref,
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 200 50] "
+        "/Resources << /Font << /F1 1 0 R >> >> >>",
+    )
+    # Helvetica resource for the form: reuse a page font if present, else
+    # install one under the form's own Resources below.
+    font_xref = doc.get_new_xref()
+    doc.update_object(
+        font_xref,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+        "/Encoding /WinAnsiEncoding >>",
+    )
+    doc.update_object(
+        form_xref,
+        f"<< /Type /XObject /Subtype /Form /BBox [0 0 200 50] "
+        f"/Resources << /Font << /F1 {font_xref} 0 R >> >> >>",
+    )
+    doc.update_stream(
+        form_xref,
+        b"BT /F1 12 Tf 0 10 Td (XObject text inside) Tj ET",
+    )
+    doc.xref_set_key(
+        page.xref,
+        "Resources",
+        f"<< /XObject << /FX1 {form_xref} 0 R >> "
+        f"/Font << /F1 {font_xref} 0 R >> >>",
+    )
     page_xref = page.get_contents()[0]
     invoke = b"\nq 1 0 0 1 72 650 cm /FX1 Do Q\n"
     doc.update_stream(page_xref, doc.xref_stream(page_xref) + invoke)
+
     binding = bind_source_text(
         doc, page, target_text="XObject text inside", expected_origin=(80.0, 160.0)
     )
     assert isinstance(binding, BindingFailure)
     assert binding.reason == RejectReason.TARGET_IN_FORM_XOBJECT
+    doc.close()
+
+
+def test_bind_miss_on_xobject_page_reports_no_match_not_form_xobject():
+    """A page that merely invokes an XObject must not rebrand every miss.
+
+    Production used to fire ``TARGET_IN_FORM_XOBJECT`` whenever
+    ``has_xobject_invocation`` was true — 98.6% of corpus pages — even when
+    the target bytes were nowhere in any invoked Form XObject.
+    """
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "Page-level text", fontsize=12.0, fontname="helv")
+    form_xref = doc.get_new_xref()
+    doc.update_object(
+        form_xref,
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 100 20] >>",
+    )
+    doc.update_stream(form_xref, b"BT /F1 12 Tf 0 0 Td (logo) Tj ET")
+    doc.xref_set_key(
+        page.xref, "Resources", f"<< /XObject << /FX1 {form_xref} 0 R >> >>"
+    )
+    page_xref = page.get_contents()[0]
+    invoke = b"\nq 1 0 0 1 72 650 cm /FX1 Do Q\n"
+    doc.update_stream(page_xref, doc.xref_stream(page_xref) + invoke)
+
+    binding = bind_source_text(
+        doc, page, target_text="Nonexistent target", expected_origin=(50.0, 50.0)
+    )
+    assert isinstance(binding, BindingFailure)
+    assert binding.reason == RejectReason.NO_MATCH
     doc.close()
 
 

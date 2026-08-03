@@ -1385,7 +1385,9 @@ def _shadow_classify_edit(
     """Shadow mode: classify only, log sanitized codes, never interfere.
 
     The log line carries reason codes and timing exclusively — never
-    document text (telemetry/privacy contract of the V2 plan).
+    document text (telemetry/privacy contract of the V2 plan). Emitted only
+    when ``TextCommitSettings.telemetry == "local"`` so the parsed
+    ``TEXT_COMMIT_TELEMETRY`` flag has honest effect.
     """
     _t0 = time.perf_counter()
     try:
@@ -1400,6 +1402,9 @@ def _shadow_classify_edit(
         logger.warning(
             "text_commit_shadow error page=%s %s", page_idx + 1, type(exc).__name__
         )
+        return
+    settings = getattr(model, "text_commit_settings", None)
+    if settings is None or settings.telemetry != "local":
         return
     logger.info(
         "text_commit_shadow page=%s tier0_capable=%s reason=%s duration_ms=%.1f",

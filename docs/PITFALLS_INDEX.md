@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 236 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 237 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -217,7 +217,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1948 | Pixel-uniformity occlusion checks need edge erosion | model/text_commit/verify.py (Tier-1 spike: verify_tier1_strategy / _region_is_uniform) |
 | 1955 | A "graphics-state bleed" ink-tint check must not sample a covering shape's own fill color | model/text_commit/verify.py (Tier-1 spike: verify_tier1_strategy) |
 | 1962 | PyMuPDF insert_font(fontbuffer=..., set_simple=True) dedupes byte-identical programs onto the same xref | model/text_commit fonts (font-honesty Tier-1 spike) |
-| 1969 | OCG visibility only takes effect after a tobytes()+reopen round trip — and only on a *second* round trip after set_layer | model/text_commit/verify.py (`_ocg_membership_lost`) |
+| 1969 | OCG visibility only takes effect after a tobytes()+reopen round trip — and only on a *second* round trip after set_layer | model/text_commit/verify.py (`_ocg_membership_status`) |
 | 1976 | Concatenating a block's spans is right; concatenating its lines deletes a word boundary | model/text_block_parsing.py (`_parse_block`) |
 | 1983 | A wrong extracted string can hide as a *similarity* problem rather than a visible failure | model/pdf_text_edit.py (`SequenceMatcher` block/page reconciliation) |
 | 1990 | Asserting that the replay *recorded* a text state does not test the gate that *rejects* it | model/text_commit planner gates (`plan.py`, `inspect.py`) + their tests |
@@ -228,7 +228,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2025 | A tolerance that equals the quantum of its own measurement source stops being a tolerance | model/text_commit/plan.py (`_ADVANCE_TOL_PER_PT`) |
 | 2032 | Word runs are stripped, so `" ".join` cannot reconstruct source whitespace | model/pdf_text_edit.py (`_tier0_target_from_resolve`) → model/text_commit/inspect.py (`bind_source_text`) |
 | 2039 | A redundant guard cannot be made mutation-SENSITIVE — check for subsumption before claiming a test pins it | model/pdf_text_edit.py (`_tier0_target_from_resolve`), test design |
-| 2046 | `TARGET_IN_FORM_XOBJECT` is page-scoped, not target-scoped — it mislabels almost every miss on real corpora | model/text_commit/inspect.py (`bind_source_text`) |
+| 2046 | `TARGET_IN_FORM_XOBJECT` must be target-scoped — page-scoped labeling mislabels almost every miss on real corpora | model/text_commit/inspect.py (`bind_source_text`) |
 | 2053 | Calling `bind_source_text` per target re-replays the whole page — prohibitively slow for multi-target sampling | model/text_commit (measurement/tooling) |
 | 2060 | `tobytes(encryption=KEEP)` reorders dictionary keys the first time it serializes a disk-loaded object — breaking the scratch-first fingerprint self-check | model/text_commit/engine.py (`prepare` → `_build_scratch_copy`) / inspect.py (`page_fingerprint`, `_update_font_dependencies`) |
 | 2067 | Text-space and page-space quantities must not mix in bbox/halo math — under scale the error is a silent false ACCEPT | model/text_commit/plan.py (fallback `target_bbox`) |
@@ -241,3 +241,4 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2124 | mypy loses None-narrowing for a dataclass field re-accessed in a different function | `model/text_commit/plan.py` |
 | 2134 | Widening V0c's non-target-span-origin comparison to verify_bbox would false-reject every honest growth commit | `model/text_commit/verify.py` |
 | 2144 | Preview verification must capture pre-patch state and reuse the session scratch | `model/text_commit/preview.py`, `model/text_commit/verify.py` |
+| 2166 | High-fidelity stale undo must refuse, not snapshot-restore | `model/edit_commands.py` (`EditTextCommand.undo`) |

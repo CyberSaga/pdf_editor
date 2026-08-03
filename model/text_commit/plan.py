@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import math
 from dataclasses import dataclass
 
 import fitz
@@ -156,6 +155,17 @@ def _advance(
     if width is None:
         raise ValueError("advance is not provable for this font and text")
     return width + tc * len(text) + tw * text.count(" ")
+
+
+def _page_visual_matrix(page: fitz.Page) -> fitz.Matrix:
+    """User-space → pixmap/visual-space matrix.
+
+    ``page.transformation_matrix`` covers the cropbox y-flip and /UserUnit
+    but deliberately omits /Rotate in PyMuPDF 1.27; ``page.rotation_matrix``
+    supplies the /Rotate term. Their product matches ``page.get_pixmap``
+    coordinates used by verification halos.
+    """
+    return page.transformation_matrix * page.rotation_matrix
 
 
 def _content_token(
@@ -409,34 +419,35 @@ def _classify_common(
 
     fingerprint = page_fingerprint(doc, page)
     if target_bbox is None:
-        # ``origin_page`` is page space but ``old_advance``/``font_size`` are
-        # text space, so *both* scales between the two have to be applied
-        # here or the halo is wrong by their product.  Below 1 it *inflates*,
-        # and verification only proves raster identity OUTSIDE the halo -- so
-        # an inflated one masks corruption instead of catching it; above 1 it
-        # shrinks and V0c rejects a valid edit as not extractable.
-        #
-        # 1. The text matrix.  ``bind_source_text`` already refused any TRM
-        #    that is not a uniform positive scale; 1.0 keeps this total
-        #    rather than relying on that.
-        # 2. The page transform, which MuPDF builds from the cropbox flip,
-        #    /Rotate *and* /UserUnit -- at /UserUnit 2 it scales by 2, and
-        #    ``origin_page`` went through it while the advance did not.
-        #    ``hypot`` of its first row is that scale for every page (the
-        #    transform is always a rotation/flip times one uniform factor);
-        #    ``abs(a)`` would read 0 at /Rotate 90 and collapse the halo.
+        # ``old_advance``/``font_size`` are text space. Build the halo in
+        # user space (advance along +x, ascent along +y), then map through
+        # the full page→visual matrix (``transformation_matrix`` covers the
+        # cropbox flip and /UserUnit; ``rotation_matrix`` covers /Rotate).
+        # PyMuPDF's ``transformation_matrix`` alone does NOT include /Rotate
+        # — without the rotation term a /Rotate 90/270 page keeps a
+        # horizontal halo while pixmap ink runs vertically (V0d false-
+        # reject / false-accept risk).
         trm_scale = (
             show.trm_uniform_scale if show.trm_uniform_scale is not None else 1.0
         )
-        page_matrix = page.transformation_matrix
-        scale = trm_scale * math.hypot(page_matrix.a, page_matrix.b)
-        page_size = show.font_size * scale
-        origin = binding.origin_page
+        user_size = show.font_size * trm_scale
+        user_advance = old_advance * trm_scale
+        ox, oy = show.origin_user
+        # User space: +y is up. Visual above-baseline ≈ +size; below ≈
+        # 0.35*size. After the page flip this matches the historical
+        # unrotated page-space formula at /Rotate 0.
+        user = fitz.Rect(
+            ox,
+            oy - 0.35 * user_size,
+            ox + user_advance,
+            oy + user_size,
+        )
+        mapped = user * _page_visual_matrix(page)
         target_bbox = (
-            origin[0],
-            origin[1] - page_size,
-            origin[0] + old_advance * scale,
-            origin[1] + 0.35 * page_size,
+            float(mapped.x0),
+            float(mapped.y0),
+            float(mapped.x1),
+            float(mapped.y1),
         )
 
     return _ClassifiedTarget(
@@ -525,10 +536,9 @@ def _grown_verify_bbox(
     growth_advance: float,
 ) -> tuple[float, float, float, float]:
     """``target_bbox_page`` widened forward by ``growth_advance`` text-space
-    points, mapped through the page transform so /Rotate and /UserUnit are
-    handled correctly by construction (unlike the axis-aligned fallback-bbox
-    formula in :func:`_classify_common`, whose shape defect on rotated pages
-    is a separate, not-fixed-here issue).
+    points, mapped through the full page→visual matrix so /Rotate and
+    /UserUnit are handled correctly by construction (same matrix as the
+    fallback ``target_bbox`` in :func:`_classify_common`).
 
     Returns ``target_bbox_page`` UNCHANGED (no round trip, no float noise)
     when there is no growth: callers rely on exact equality to decide
@@ -537,9 +547,10 @@ def _grown_verify_bbox(
     if growth_advance <= 0.0:
         return target_bbox_page
     scale = show.trm_uniform_scale if show.trm_uniform_scale is not None else 1.0
-    user = fitz.Rect(*target_bbox_page) * ~page.transformation_matrix
+    visual = _page_visual_matrix(page)
+    user = fitz.Rect(*target_bbox_page) * ~visual
     user.x1 = user.x1 + growth_advance * scale
-    mapped = user * page.transformation_matrix
+    mapped = user * visual
     return (
         min(target_bbox_page[0], float(mapped.x0)),
         min(target_bbox_page[1], float(mapped.y0)),

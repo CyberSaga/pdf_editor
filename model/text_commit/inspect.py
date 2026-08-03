@@ -297,6 +297,29 @@ def _origin_in_page_space(
     return (point.x, point.y)
 
 
+def _target_in_invoked_form_xobjects(
+    doc: fitz.Document, page: fitz.Page, target_bytes: bytes
+) -> bool:
+    """True when ``target_bytes`` decode from a show op inside a Form
+    XObject the page's ``/Resources`` invokes (one level; nested ``Do``
+    inside a Form is not followed — matches the funnel diagnostic).
+    """
+    try:
+        xobjects = page.get_xobjects()
+    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+        return False
+    for entry in xobjects:
+        xref = int(entry[0])
+        try:
+            data = doc.xref_stream(xref) or b""
+        except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+            continue
+        replay = replay_page_streams([(xref, data)])
+        if any(s.decoded_bytes == target_bytes for s in replay.shows):
+            return True
+    return False
+
+
 def bind_source_text(
     doc: fitz.Document,
     page: fitz.Page,
@@ -333,11 +356,16 @@ def bind_source_text(
 
     candidates = [s for s in replay.shows if s.decoded_bytes == target_bytes]
     if not candidates:
-        if replay.has_xobject_invocation:
+        # Target-scoped: only fire TARGET_IN_FORM_XOBJECT when the target
+        # bytes are confirmed inside an invoked Form XObject. A page that
+        # merely invokes a logo/bullet XObject must not rebrand every miss.
+        if replay.has_xobject_invocation and _target_in_invoked_form_xobjects(
+            doc, page, target_bytes
+        ):
             return BindingFailure(
                 RejectReason.TARGET_IN_FORM_XOBJECT,
-                "target not in the direct page stream; page invokes Form "
-                "XObjects that may contain it",
+                "target not in the direct page stream; confirmed inside an "
+                "invoked Form XObject",
             )
         return BindingFailure(
             RejectReason.NO_MATCH,

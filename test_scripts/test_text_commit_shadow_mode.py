@@ -91,7 +91,9 @@ def _edit(model: PDFModel, probe: str, new_text: str, **kwargs) -> EditTextResul
 def test_shadow_classifies_and_logs_without_affecting_result(tmp_path, caplog):
     pdf_path = tmp_path / "b14.pdf"
     _write_base14_pdf(pdf_path)
-    model = _open(pdf_path, TextCommitSettings(engine="shadow"))
+    model = _open(
+        pdf_path, TextCommitSettings(engine="shadow", telemetry="local")
+    )
     try:
         with caplog.at_level(logging.INFO, logger="model.pdf_text_edit"):
             result = _edit(model, "Hello World", "Hallo World")
@@ -107,6 +109,30 @@ def test_shadow_classifies_and_logs_without_affecting_result(tmp_path, caplog):
         assert RejectReason.NOT_SINGLE_LITERAL_TJ in message
         assert model.last_commit_outcome is not None
         assert model.last_commit_outcome.tier is CommitTier.TIER2_LEGACY
+    finally:
+        model.close()
+
+
+def test_shadow_telemetry_off_suppresses_measurement_log(tmp_path, caplog):
+    """``TEXT_COMMIT_TELEMETRY=off`` must not emit shadow measurement lines.
+
+    Classification still runs (shadow engine contract); only the telemetry
+    log is gated. A parsed-but-unread flag invited false confidence that
+    local telemetry was on.
+    """
+    pdf_path = tmp_path / "b14.pdf"
+    _write_base14_pdf(pdf_path)
+    model = _open(
+        pdf_path, TextCommitSettings(engine="shadow", telemetry="off")
+    )
+    try:
+        with caplog.at_level(logging.INFO, logger="model.pdf_text_edit"):
+            result = _edit(model, "Hello World", "Hallo World")
+        assert result is EditTextResult.SUCCESS
+        assert "Hallo World" in model.doc[0].get_text()
+        assert not any(
+            "text_commit_shadow" in r.getMessage() for r in caplog.records
+        )
     finally:
         model.close()
 
@@ -132,7 +158,9 @@ def test_shadow_matches_legacy_side_effects(tmp_path):
 def test_shadow_logs_no_document_text(tmp_path, caplog):
     pdf_path = tmp_path / "b14.pdf"
     _write_base14_pdf(pdf_path)
-    model = _open(pdf_path, TextCommitSettings(engine="shadow"))
+    model = _open(
+        pdf_path, TextCommitSettings(engine="shadow", telemetry="local")
+    )
     try:
         with caplog.at_level(logging.INFO, logger="model.pdf_text_edit"):
             _edit(model, "Hello World", "Hallo World")
