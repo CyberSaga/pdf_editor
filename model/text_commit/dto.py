@@ -52,6 +52,11 @@ class RejectReason:
     PENDING_MAINTENANCE = "pending_page_maintenance"
     VERIFICATION_FAILED = "verification_failed"
     STALE_PLAN = "stale_plan"
+    # Task 11 Slice 1 (Tier 1 transplant+kern) additions.
+    GROWTH_EXCEEDS_BLANK_REGION = "growth_exceeds_blank_region"
+    GROWTH_PAST_PAGE_BOUNDARY = "growth_past_page_boundary"
+    SHARED_CONTENT_STREAM = "shared_content_stream"
+    GROWTH_DIRECTION_UNPROVEN = "growth_direction_unproven"
 
 
 class CommitStatus(str, Enum):

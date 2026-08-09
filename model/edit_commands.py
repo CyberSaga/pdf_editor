@@ -290,9 +290,17 @@ class EditTextCommand(EditCommand):
         # V2 plumbing: history keeps the full CommitOutcome of this commit.
         self.outcome = getattr(self._model, "last_commit_outcome", None)
         self._pre_protected = pre_protected
+        # Tier 1 transplant commits are single-stream PatchSet splices just
+        # like Tier 0, so the byte-exact reversal pair applies identically --
+        # without this, Tier 1 undo would silently fall through to the
+        # lossier page-snapshot path (Task 11 Slice 1 review).
         if (
             self.outcome is not None
-            and self.outcome.tier is CommitTier.TIER0_LOSSLESS_STREAM_PATCH
+            and self.outcome.tier
+            in (
+                CommitTier.TIER0_LOSSLESS_STREAM_PATCH,
+                CommitTier.TIER1_REBUILD_WITH_VALIDATED_FACE,
+            )
             and pre_fingerprint is not None
             and pre_page is not None
         ):

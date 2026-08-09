@@ -5,8 +5,9 @@ of the document — the live document is never touched during preparation.
 ``commit`` revalidates the page fingerprint, applies exactly one validated
 PatchSet, re-verifies on the live document, and reverts on any failure.
 
-Tier 1 does not exist yet (flag-gated future work); everything that is
-not Tier 0 is rejected here and stays with the legacy engine.
+Tier 1 (Task 11 Slice 1, ``max_tier=1``) is flag-gated opt-in: transplant+
+kern candidates get the same scratch-first prepare -> live commit -> verify
+-> revert pipeline as Tier 0, dispatched by ``prepared.tier``.
 """
 from __future__ import annotations
 
@@ -29,22 +30,27 @@ from model.text_commit.patch import (
     SpliceError,
     StalePlanError,
     apply_patchset,
+    build_tier1_font_outcome,
 )
-from model.text_commit.plan import PlanRejection, PreparedEdit, prepare_tier0_plan
+from model.text_commit.plan import PlanRejection, PreparedEdit, prepare_plan
 from model.text_commit.verify import (
     VerificationFailure,
     capture_page_state,
+    growth_zone_is_uniform,
     verify_tier0_commit,
+    verify_tier1_commit,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _rejection_outcome(status: CommitStatus, reason: str, detail: str) -> CommitOutcome:
+def _rejection_outcome(
+    status: CommitStatus, reason: str, detail: str, *, tier: int = 0
+) -> CommitOutcome:
     return CommitOutcome(
         status=status,
         tier=None,
-        fallback_chain=("tier0:" + reason,),
+        fallback_chain=(f"tier{tier}:{reason}",),
         warnings=(),
         font_outcomes=(),
         verified_properties=(),
@@ -74,11 +80,13 @@ class TieredCommitEngine:
         style_overrides: StyleOverrides | None = None,
         new_rect: object | None = None,
         page_has_pending_maintenance: bool = False,
+        max_tier: int = 0,
     ) -> PreparedEdit | PlanRejection:
         """Classify, then prove the candidate on a scratch document."""
-        plan = prepare_tier0_plan(
+        plan = prepare_plan(
             self._doc,
             page,
+            max_tier=max_tier,
             target_text=target_text,
             replacement_text=replacement_text,
             expected_origin=expected_origin,
@@ -102,6 +110,13 @@ class TieredCommitEngine:
         try:
             scratch_page = scratch[page.number]
             pre_state = capture_page_state(scratch, scratch_page, plan)
+            if plan.growth_bbox_page is not None and not growth_zone_is_uniform(
+                scratch_page, plan.growth_bbox_page
+            ):
+                return PlanRejection(
+                    RejectReason.GROWTH_EXCEEDS_BLANK_REGION,
+                    "growth zone not visually blank on scratch pre-state",
+                )
             try:
                 apply_patchset(scratch, scratch_page, self._patchset(plan))
             except (StalePlanError, SpliceError) as exc:
@@ -109,10 +124,12 @@ class TieredCommitEngine:
                     RejectReason.VERIFICATION_FAILED,
                     f"candidate failed to apply on scratch: {exc}",
                 )
-            result = verify_tier0_commit(scratch, scratch_page, plan, pre_state)
+            verify_fn = verify_tier1_commit if plan.tier >= 1 else verify_tier0_commit
+            result = verify_fn(scratch, scratch_page, plan, pre_state)
             if isinstance(result, VerificationFailure):
                 logger.info(
-                    "tier0 candidate refuted on scratch: %s (%s)",
+                    "tier%s candidate refuted on scratch: %s (%s)",
+                    plan.tier,
                     result.reason,
                     result.detail,
                 )
@@ -133,33 +150,75 @@ class TieredCommitEngine:
                 CommitStatus.STALE_PLAN,
                 RejectReason.STALE_PLAN,
                 "target page no longer exists",
+                tier=prepared.tier,
             )
 
         pre_state = capture_page_state(doc, page, prepared)
+        if prepared.growth_bbox_page is not None and not growth_zone_is_uniform(
+            page, prepared.growth_bbox_page
+        ):
+            # Live re-check, not redundant with prepare()'s scratch check:
+            # page_fingerprint does not cover annotation appearance-stream
+            # content, only xref+rect, so an appearance changed between
+            # prepare() and commit() can leave scratch and live fingerprint-
+            # identical but raster-different in the growth zone. Nothing has
+            # been applied yet, so no revert is needed.
+            return _rejection_outcome(
+                CommitStatus.FAILED,
+                RejectReason.GROWTH_EXCEEDS_BLANK_REGION,
+                "growth zone not visually blank on live pre-state",
+                tier=prepared.tier,
+            )
         try:
             applied = apply_patchset(doc, page, self._patchset(prepared))
         except StalePlanError as exc:
             return _rejection_outcome(
-                CommitStatus.STALE_PLAN, RejectReason.STALE_PLAN, str(exc)
+                CommitStatus.STALE_PLAN,
+                RejectReason.STALE_PLAN,
+                str(exc),
+                tier=prepared.tier,
             )
         except SpliceError as exc:
             return _rejection_outcome(
-                CommitStatus.STALE_PLAN, RejectReason.STALE_PLAN, str(exc)
+                CommitStatus.STALE_PLAN,
+                RejectReason.STALE_PLAN,
+                str(exc),
+                tier=prepared.tier,
             )
 
-        result = verify_tier0_commit(doc, page, prepared, pre_state)
+        verify_fn = verify_tier1_commit if prepared.tier >= 1 else verify_tier0_commit
+        result = verify_fn(doc, page, prepared, pre_state)
         if isinstance(result, VerificationFailure):
             applied.revert(doc)
             logger.warning(
-                "tier0 live verification failed, reverted: %s (%s)",
+                "tier%s live verification failed, reverted: %s (%s)",
+                prepared.tier,
                 result.reason,
                 result.detail,
             )
             return _rejection_outcome(
-                CommitStatus.FAILED, result.reason, result.detail
+                CommitStatus.FAILED, result.reason, result.detail, tier=prepared.tier
             )
 
         self.registry.bump_generation()
+        if prepared.tier >= 1:
+            font_outcome = build_tier1_font_outcome(
+                doc,
+                page,
+                resource_name=prepared.font_resource,
+                source_font_xref=prepared.font_xref,
+                written_font_xref=prepared.font_xref,
+            )
+            return CommitOutcome(
+                status=CommitStatus.COMMITTED,
+                tier=CommitTier.TIER1_REBUILD_WITH_VALIDATED_FACE,
+                fallback_chain=(f"tier0:{prepared.tier0_fallback_reason}",),
+                warnings=("compensated_transplant_kern",),
+                font_outcomes=(font_outcome,),
+                verified_properties=result,
+                degraded_reason=None,
+                allows_external_reflow=False,
+            )
         return CommitOutcome(
             status=CommitStatus.COMMITTED,
             tier=CommitTier.TIER0_LOSSLESS_STREAM_PATCH,

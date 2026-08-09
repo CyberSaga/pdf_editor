@@ -39,7 +39,7 @@ from model.text_commit.dto import (
 )
 from model.text_commit.engine import TieredCommitEngine
 from model.text_commit.fonts import DocumentFontRegistry
-from model.text_commit.plan import PlanRejection, prepare_tier0_plan
+from model.text_commit.plan import PlanRejection, prepare_plan
 from model.text_block import EditableSpan, TextBlock
 from model.text_normalization import normalize_text, token_coverage_ratio
 
@@ -1355,9 +1355,14 @@ def _classify_tier0_candidate(
         )
     target_text, expected_origin, target_bbox, _ = target
     pending = any(e.get("page_idx") == page_idx for e in model.pending_edits)
-    result = prepare_tier0_plan(
+    # Shadow telemetry must mirror what the tiered path would decide, so it
+    # classifies through prepare_plan (Slice 1 common gates active) at
+    # max_tier=0 — it stays a Tier 0 capability probe; tier-aware shadow
+    # reporting is Task 12 scope.
+    result = prepare_plan(
         model.doc,
         page,
+        max_tier=0,
         target_text=target_text,
         replacement_text=new_text,
         expected_origin=expected_origin,
@@ -1419,8 +1424,12 @@ def _attempt_tiered_commit(
     resolve_result: _EditTextResolveResult,
     style_overrides: StyleOverrides | None,
     new_rect: fitz.Rect | None,
+    max_tier: int = 0,
 ) -> tuple[CommitOutcome | None, str | None]:
-    """Try a Tier 0 commit; ``(outcome, None)`` on success, else ``(None, reason)``."""
+    """Try a tiered commit (Tier 0, or Tier 1 when ``max_tier`` allows the
+    transplant+kern candidate); ``(outcome, None)`` on success, else
+    ``(None, reason)``.
+    """
     target = _tier0_target_from_resolve(model, page_idx, resolve_result)
     if target is None:
         return None, RejectReason.MULTI_SPAN_TARGET
@@ -1441,6 +1450,7 @@ def _attempt_tiered_commit(
         style_overrides=style_overrides,
         new_rect=new_rect,
         page_has_pending_maintenance=pending,
+        max_tier=max_tier,
     )
     if isinstance(prepared, PlanRejection):
         return None, _reconstruction_aware_reason(prepared.reason, target)
@@ -1539,6 +1549,7 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
             tier0_outcome, tier0_fallback_reason = _attempt_tiered_commit(
                 model, page, page_idx, new_text, resolve_result,
                 style_overrides, new_rect,
+                max_tier=settings.max_tier,
             )
             if tier0_outcome is not None:
                 # Lossless commit succeeded: no redaction happened, so no
@@ -1547,9 +1558,13 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
                 model.fidelity_protected_pages.add(page_idx)
                 model.edit_count += 1
                 model.last_commit_outcome = tier0_outcome
+                committed_tier = (
+                    tier0_outcome.tier.value if tier0_outcome.tier is not None else "?"
+                )
                 logger.debug(
-                    "text_commit_tiered page=%s tier=0 committed duration_ms=%s",
+                    "text_commit_tiered page=%s tier=%s committed duration_ms=%s",
                     page_num,
+                    committed_tier,
                     round((time.perf_counter() - _t0) * 1000, 2),
                 )
                 return EditTextResult.SUCCESS

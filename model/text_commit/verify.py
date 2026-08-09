@@ -11,12 +11,22 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import fitz
 
 from model.text_commit.dto import RejectReason
 from model.text_commit.inspect import read_page_streams
-from model.text_commit.plan import PreparedEdit
+
+# Type-only: plan.py -> patch.py -> verify.py already exists (build_tier1_
+# font_outcome / prove_source_resource_reuse), and plan.py's Tier 1 assembly
+# now calls patch.build_transplant_replacement, so a runtime import of
+# PreparedEdit here would close that into an import cycle. Every use below is
+# a parameter annotation (lazy under ``from __future__ import annotations``,
+# never introspected at runtime in this codebase) -- TYPE_CHECKING-only import
+# keeps the type without the cycle.
+if TYPE_CHECKING:
+    from model.text_commit.plan import PreparedEdit
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +34,7 @@ _VERIFY_DPI = 96
 _HALO_MARGIN_PT = 2.0
 _ORIGIN_TOL_PT = 0.1
 _COLOR_TINT_TOLERANCE = 24  # max(rgb) - min(rgb) above this is a color tint, not gray
+_UNIFORM_ERODE_PX = 2  # shrink inward past the rendered edge's own anti-aliasing
 
 
 @dataclass(frozen=True)
@@ -113,13 +124,23 @@ def _first_diff_outside_halo(
     return None
 
 
-def verify_tier0_commit(
+def _verify_commit(
     doc: fitz.Document,
     page: fitz.Page,
     prepared: PreparedEdit,
     pre_state: PageState,
+    *,
+    declared_bbox: tuple[float, float, float, float],
 ) -> tuple[str, ...] | VerificationFailure:
-    """Prove the V0 post-conditions; return the verified-property list."""
+    """Shared V0 core; prove the post-conditions, return the verified list.
+
+    ``declared_bbox`` (target bbox, or target UNION growth for Tier 1
+    growth) controls the raster halo (V0d) and the extraction clip (V0c).
+    Span-origin exclusion (also V0c) ALWAYS anchors to the SOURCE
+    ``prepared.target_bbox_page`` regardless of ``declared_bbox``: a wider
+    exclusion window would silently stop watching a neighbor span whose
+    origin falls inside the growth zone (plan.md adjudication 8).
+    """
     replacement = prepared.replacement
 
     # V0a — stream bytes outside the declared range are re-diffed, not assumed.
@@ -161,7 +182,7 @@ def verify_tier0_commit(
         )
 
     # V0c — replacement extractable in the halo, source gone, neighbors fixed.
-    halo_rect = fitz.Rect(*prepared.target_bbox_page) + (
+    halo_rect = fitz.Rect(*declared_bbox) + (
         -_HALO_MARGIN_PT,
         -_HALO_MARGIN_PT,
         _HALO_MARGIN_PT,
@@ -187,7 +208,7 @@ def verify_tier0_commit(
 
     # V0d — raster identity outside the halo (exact; calibrated ε = 0).
     post_pixmap = page.get_pixmap(dpi=_VERIFY_DPI)
-    diff = _first_diff_outside_halo(pre_state, post_pixmap, prepared.target_bbox_page)
+    diff = _first_diff_outside_halo(pre_state, post_pixmap, declared_bbox)
     if diff is not None:
         return VerificationFailure(
             RejectReason.VERIFICATION_FAILED,
@@ -231,6 +252,104 @@ def verify_tier0_commit(
     )
 
 
+def verify_tier0_commit(
+    doc: fitz.Document,
+    page: fitz.Page,
+    prepared: PreparedEdit,
+    pre_state: PageState,
+) -> tuple[str, ...] | VerificationFailure:
+    """Prove the V0 post-conditions; return the verified-property list.
+
+    Tier 0 never grows: the declared region is always the source bbox.
+    """
+    return _verify_commit(
+        doc, page, prepared, pre_state, declared_bbox=prepared.target_bbox_page
+    )
+
+
+def verify_tier1_commit(
+    doc: fitz.Document,
+    page: fitz.Page,
+    prepared: PreparedEdit,
+    pre_state: PageState,
+) -> tuple[str, ...] | VerificationFailure:
+    """Prove the V0 post-conditions for a Tier 1 transplant+kern candidate.
+
+    Declared region is target UNION growth (target alone for a shrink, which
+    never sets ``growth_bbox_page``). No OCG-membership claim is ever made:
+    transplant inherits OCG by byte position, and V0a's byte-identity outside
+    the declared range is the structural proof (plan.md D6/D8) -- so the
+    verified-property tuple is the same seven Tier 0 proves, plus
+    ``growth_zone_proven_uniform`` exactly when growth occurred.
+    """
+    declared_bbox = prepared.target_bbox_page
+    if prepared.growth_bbox_page is not None:
+        tb = prepared.target_bbox_page
+        gb = prepared.growth_bbox_page
+        declared_bbox = (tb[0], tb[1], gb[2], tb[3])
+    result = _verify_commit(doc, page, prepared, pre_state, declared_bbox=declared_bbox)
+    if isinstance(result, VerificationFailure):
+        return result
+    if prepared.growth_bbox_page is not None:
+        return result + ("growth_zone_proven_uniform",)
+    return result
+
+
+def growth_zone_is_uniform(
+    page: fitz.Page, growth_bbox: tuple[float, float, float, float]
+) -> bool:
+    """Pre-patch uniformity proof for a Tier 1 growth zone (plan.md
+    adjudication 4): compensated growth is admitted only when the zone the
+    replacement would spill into is one flat pre-edit color.
+
+    Uniformity, not blankness: a uniformly *dark* zone (a filled table
+    cell, a redaction rectangle) also passes -- the proof is that no glyph
+    ink or other spatial detail sits in the zone, never that the zone
+    matches the page background. Painting into a flat colored zone changes
+    only pixels inside the declared region the outcome reports.
+
+    Clip-renders ONLY ``growth_bbox`` -- no full-page pixmap -- and requires
+    the WHOLE clipped raster to be uniform, eroded 2px inward like
+    :func:`_region_is_uniform` (skipped when the zone is <=4px in either
+    dimension, since erosion would invert past the far edge). Deliberately
+    does not reuse :func:`_region_is_uniform`: that function indexes pixels
+    in absolute page-pixmap coordinates, but a *clipped* pixmap's samples
+    start at the clip's own origin -- reusing it would scan the wrong pixels
+    (the false-ACCEPT direction).
+
+    Called identically, pre-patch, by :func:`~model.text_commit.engine.
+    TieredCommitEngine.prepare` (scratch), :func:`~model.text_commit.engine.
+    TieredCommitEngine.commit` (live -- page_fingerprint does not cover
+    annotation *appearance-stream content*, so scratch and live can agree on
+    the fingerprint while disagreeing on the raster), and
+    :class:`~model.text_commit.preview.PlanPreviewRenderer` (preview
+    scratch, before splice).
+    """
+    clip = fitz.Rect(*growth_bbox)
+    if clip.is_empty or clip.is_infinite:
+        return True  # degenerate/no growth: nothing to prove blank
+    pixmap = page.get_pixmap(dpi=_VERIFY_DPI, clip=clip)
+    width, height, stride, n = pixmap.width, pixmap.height, pixmap.stride, pixmap.n
+    if width <= 0 or height <= 0:
+        return True
+    x0, y0, x1, y1 = 0, 0, width - 1, height - 1
+    ex0, ey0 = x0 + _UNIFORM_ERODE_PX, y0 + _UNIFORM_ERODE_PX
+    ex1, ey1 = x1 - _UNIFORM_ERODE_PX, y1 - _UNIFORM_ERODE_PX
+    if ex0 <= ex1 and ey0 <= ey1:
+        x0, y0, x1, y1 = ex0, ey0, ex1, ey1
+    samples = pixmap.samples
+    first: bytes | None = None
+    for y in range(y0, y1 + 1):
+        row = samples[y * stride : (y + 1) * stride]
+        for x in range(x0, x1 + 1):
+            pixel = row[x * n : (x + 1) * n]
+            if first is None:
+                first = pixel
+            elif pixel != first:
+                return False
+    return True
+
+
 # ======================================================= Tier 1 spike support
 #
 # Everything below is read-only spike instrumentation for candidate Tier 1
@@ -265,9 +384,6 @@ def _clamped_region(
     y0 = max(0, min(y0, height - 1))
     y1 = max(0, min(y1, height - 1))
     return (x0, y0, max(x0, x1), max(y0, y1))
-
-
-_UNIFORM_ERODE_PX = 2  # shrink inward past the rendered edge's own anti-aliasing
 
 
 def _region_is_uniform(

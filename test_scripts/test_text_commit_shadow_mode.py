@@ -155,7 +155,9 @@ def test_shadow_engine_error_never_breaks_the_edit(tmp_path, monkeypatch):
         def _boom(*args, **kwargs):
             raise RuntimeError("injected shadow failure")
 
-        monkeypatch.setattr(pdf_text_edit_module, "prepare_tier0_plan", _boom)
+        # Shadow classifies via prepare_plan since Slice 1 (parity with the
+        # tiered path's common gates); the containment claim is unchanged.
+        monkeypatch.setattr(pdf_text_edit_module, "prepare_plan", _boom)
         result = _edit(model, "Hello World", "Hallo World")
         assert result is EditTextResult.SUCCESS
         assert "Hallo World" in model.doc[0].get_text()

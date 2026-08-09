@@ -732,6 +732,94 @@ incremental/full/reopen/encrypted/legacy-then-tier0) and
 `test_scripts/test_text_commit_boundaries.py` (annotation identity,
 widget/signed rejection, undo/redo replay + stale refusal).
 
+### 10.2 Tier 1 — Transplant + Kern (Task 11 Slice 1, 2026-08-09)
+
+Where Tier 0 refuses `ADVANCE_MISMATCH`, Tier 1 splices `[(new) K] TJ` at the
+source `Tj` operator's exact byte range (`show.op_start:show.op_end`), where
+kern `K` absorbs the advance delta so every following show on the page
+provably keeps its origin. Flag-gated by `TextCommitSettings.max_tier`
+(`0` default, `1` opt-in via `TEXT_COMMIT_MAX_TIER=1`); Tier 0 stays the
+default path either way.
+
+- `plan.py` — `prepare_plan(doc, page, *, max_tier, ...)` is the
+  `max_tier`-parameterized entry point; `prepare_tier0_plan` is now a frozen
+  wrapper over a shared `_classify(..., max_tier=0, slice1_gates=False)`
+  call. `slice1_gates` (never exposed publicly) is what makes
+  `prepare_tier0_plan` and `prepare_plan(max_tier=0)` behaviorally
+  distinct: it gates the two NEW common-path checks — `font_size<=0`
+  (`UNSUPPORTED_TEXT_STATE`, detail contains `"font_size"`) and a shared
+  content stream (`SHARED_CONTENT_STREAM`, via `inspect.is_stream_shared`)
+  — which `prepare_tier0_plan` never applies (existing callers/tests see
+  byte-identical pre-Slice-1 behavior) and `prepare_plan` always does, for
+  both tiers. Past the (relaxed only at `max_tier=1`) advance-equality gate,
+  Tier 1 assembly: growth-direction guard (`page.rotation % 360 != 0` — see
+  PITFALLS, the page-transform matrix does not reliably encode rotation —
+  or the page matrix is not a plain +x mapping) only when
+  `new_advance > old_advance`; kern `K = -100000*(old-new)/(font_size*
+  hscale)` (hscale==100 precondition, gated elsewhere); `growth_bbox_page`
+  computed FROM the already-in-force `target_bbox_page` (never
+  recomputed independently); a page-boundary check on the declared region
+  (target ∪ growth). `PreparedEdit` gains `tier`, `tier0_fallback_reason`,
+  `growth_bbox_page` (`None` = no growth, including every shrink and every
+  Tier 0 candidate), `kern_value`, `old_advance`, `new_advance` — all
+  additive with safe defaults.
+- `patch.py` — `build_transplant_replacement` and
+  `build_advance_preserving_erase` both refuse the operators whose side
+  effects a whole-op splice cannot recover (`'` folds an implicit `T*`; `"`
+  additionally sets `Tw`/`Tc`, both persisting into later shows). The two
+  guards are NOT symmetric: `build_transplant_replacement` refuses anything
+  but `Tj` (nothing needs it to accept `TJ`, and the planner never routes
+  one there); `build_advance_preserving_erase` additionally accepts `TJ`
+  (deleting a `TJ` array's whole op makes its internal kerns irrelevant —
+  see PITFALLS for the pre-existing pinned test this distinction preserves).
+- `verify.py` — `verify_tier0_commit`/`verify_tier1_commit` are thin
+  wrappers over a shared `_verify_commit(..., declared_bbox=...)` core.
+  Declared region (target ∪ growth) drives V0c's extraction clip and V0d's
+  raster halo; **span-origin exclusion always anchors to the source
+  `target_bbox_page`**, regardless of declared region, so a wider clip never
+  stops watching a neighbor span whose origin falls in the growth zone.
+  `verify_tier1_commit` appends `"growth_zone_proven_uniform"` to the verified
+  set exactly when growth occurred; no OCG-membership claim is ever made
+  (transplant inherits OCG by byte position — V0a's byte-identity-outside-
+  range proof already covers what OCG probing would prove). New
+  `growth_zone_is_uniform(page, growth_bbox)` clip-renders ONLY the growth
+  zone and requires whole-pixmap uniformity (2px erosion, skipped ≤4px) —
+  deliberately not `_region_is_uniform`, whose pixel indexing assumes a
+  full-page pixmap, not a clip-origin-relative one.
+- `engine.py` — `prepare()` gains `max_tier` (default 0), forwarded to
+  `prepare_plan`; growth admission runs `growth_zone_is_uniform` on the
+  scratch page pre-patch (`GROWTH_EXCEEDS_BLANK_REGION` → `PlanRejection`)
+  and again on the live page pre-patch in `commit()` (→ `FAILED`, no revert
+  needed — nothing was applied yet). The live re-check is load-bearing:
+  `page_fingerprint` covers stream/font/annotation *xref+rect* but not
+  annotation *appearance-stream content*, so scratch and live can agree on
+  the fingerprint while disagreeing on the growth-zone raster. Both
+  `prepare()` and `commit()` dispatch to `verify_tier1_commit` when
+  `plan.tier >= 1`, looked up as a bare module-level name (so tests can
+  monkeypatch `engine_module.verify_tier1_commit`). A committed Tier 1
+  outcome reports `CommitTier.TIER1_REBUILD_WITH_VALIDATED_FACE`,
+  `fallback_chain=("tier0:advance_mismatch",)`,
+  `warnings=("compensated_transplant_kern",)`, and a `FontOutcome` from
+  `build_tier1_font_outcome` (xref-proven resource reuse — never assumed).
+- `preview.py` — `PreviewSessionInput.max_tier` (session-stable) and
+  `PlanPreviewResult.tier` thread the same choice through the preview path;
+  `PlanPreviewRenderer.render` calls `prepare_plan` and runs the identical
+  `growth_zone_is_uniform` admission, pre-splice, on the preview scratch, so
+  preview and commit agree on every refusal. Token equality (parity) is
+  unaffected: the kern number is a pure function of document state already
+  covered by the fingerprint-derived token.
+- `pdf_text_edit.py` — `_attempt_tiered_commit` threads
+  `settings.max_tier` into `engine.prepare`; the debug log reports the
+  actual committed tier (`outcome.tier.value`) instead of a hardcoded `0`.
+- `controller/pdf_controller.py` threads `settings.max_tier` into
+  `open_preview_session`; `text_commit_coordinator.py` is unchanged — it
+  already passes `PreviewSessionInput`/`PlanPreviewResult` through without
+  touching individual fields.
+
+Explicitly out of Slice 1 (unchanged refusals): deletion, multiline, style/
+geometry overrides, TJ-array targets, `'`/`"` operators, Identity-H, layout
+work. Full design: `plans/2026-08-09-task11-slice1-by-fable.md`.
+
 ## 11. Character-Level Text Selection (Browse Mode)
 
 **Module:** `model/pdf_model.py:get_chars_in_run()`, `get_text_selection_lines()`

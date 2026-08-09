@@ -3542,6 +3542,7 @@ class PDFController:
                     session_key,
                     password=getattr(self.model, "password", None),
                     page_has_pending_maintenance=pending,
+                    max_tier=getattr(settings, "max_tier", 0),
                 )
                 if session is None:
                     # Encrypted document whose password is unavailable: no

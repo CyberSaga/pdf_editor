@@ -1,7 +1,7 @@
-"""Exact plan-backed preview for Tier 0 candidates (Qt-free).
+"""Exact plan-backed preview for Tier 0/Tier 1 candidates (Qt-free).
 
 The preview renders the *same* prepared plan that a later commit would
-apply: ``prepare_tier0_plan`` runs on a scratch document opened from a
+apply: ``prepare_plan`` runs on a scratch document opened from a
 snapshot taken once per edit session, the validated patch is spliced in,
 the clip region is rasterized, and the patch is reverted.  Because the
 plan token is content-derived (page fingerprint + splice bytes), the
@@ -20,15 +20,17 @@ from dataclasses import dataclass
 import fitz
 
 from model.edit_requests import StyleOverrides
+from model.text_commit.dto import RejectReason
 from model.text_commit.fonts import DocumentFontRegistry
-from model.text_commit.inspect import page_fingerprint
+from model.text_commit.inspect import page_fingerprint, scan_shared_streams
 from model.text_commit.patch import (
     PatchSet,
     SpliceError,
     StalePlanError,
     apply_patchset,
 )
-from model.text_commit.plan import PlanRejection, prepare_tier0_plan
+from model.text_commit.plan import PlanRejection, prepare_plan
+from model.text_commit.verify import growth_zone_is_uniform
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,7 @@ class PreviewSessionInput:
     snapshot_bytes: bytes
     page_fingerprint: str
     page_has_pending_maintenance: bool = False
+    max_tier: int = 0  # session-stable, from model.text_commit_settings.max_tier
 
 
 @dataclass(frozen=True)
@@ -63,10 +66,10 @@ class PlanPreviewRequest:
 class PlanPreviewResult:
     """Raster DTO returned to the GUI thread.
 
-    ``plan_token`` is set exactly when the candidate is Tier 0 eligible;
-    ``reject_reason`` carries the sanitized RejectReason code otherwise
-    (the caller falls back to the legacy CSS preview without claiming
-    exactness).
+    ``plan_token`` is set exactly when the candidate is Tier 0 (or, at
+    ``session.max_tier=1``, Tier 1) eligible; ``reject_reason`` carries the
+    sanitized RejectReason code otherwise (the caller falls back to the
+    legacy CSS preview without claiming exactness).
     """
 
     session_key: str
@@ -76,6 +79,7 @@ class PlanPreviewResult:
     png_bytes: bytes
     clip_rect: tuple[float, float, float, float]
     render_scale: float
+    tier: int = 0
 
 
 def _session_snapshot_bytes(
@@ -117,6 +121,7 @@ def open_preview_session(
     *,
     password: str | None = None,
     page_has_pending_maintenance: bool = False,
+    max_tier: int = 0,
 ) -> PreviewSessionInput | None:
     """Snapshot the document once for a whole edit session.
 
@@ -136,6 +141,7 @@ def open_preview_session(
         snapshot_bytes=snapshot_bytes,
         page_fingerprint=page_fingerprint(doc, page),
         page_has_pending_maintenance=page_has_pending_maintenance,
+        max_tier=max_tier,
     )
 
 
@@ -152,11 +158,16 @@ class PlanPreviewRenderer:
         self._session = session
         self._scratch: fitz.Document | None = None
         self._registry: DocumentFontRegistry | None = None
+        self._shared_streams: frozenset[int] | None = None
 
     def _ensure_scratch(self) -> tuple[fitz.Document, DocumentFontRegistry]:
         if self._scratch is None:
             self._scratch = fitz.open("pdf", self._session.snapshot_bytes)
             self._registry = DocumentFontRegistry(self._scratch)
+            # One O(page_count) scan per session, not per keystroke: the
+            # scratch document's page structure never changes (every render
+            # reverts its patch), so the shared-stream set cannot drift.
+            self._shared_streams = scan_shared_streams(self._scratch)
         assert self._registry is not None
         return self._scratch, self._registry
 
@@ -176,9 +187,10 @@ class PlanPreviewRenderer:
 
         scratch, registry = self._ensure_scratch()
         page = scratch[self._session.page_number]
-        plan = prepare_tier0_plan(
+        plan = prepare_plan(
             scratch,
             page,
+            max_tier=self._session.max_tier,
             target_text=request.target_text,
             replacement_text=request.replacement_text,
             expected_origin=request.expected_origin,
@@ -186,9 +198,18 @@ class PlanPreviewRenderer:
             registry=registry,
             style_overrides=request.style_overrides,
             page_has_pending_maintenance=self._session.page_has_pending_maintenance,
+            shared_stream_xrefs=self._shared_streams,
         )
         if isinstance(plan, PlanRejection):
             return _rejection(plan.reason)
+
+        # Growth admission, pre-splice, on this same scratch page: the SAME
+        # helper engine.prepare/commit use, so preview and commit agree on
+        # the refusal (plan.md D11).
+        if plan.growth_bbox_page is not None and not growth_zone_is_uniform(
+            page, plan.growth_bbox_page
+        ):
+            return _rejection(RejectReason.GROWTH_EXCEEDS_BLANK_REGION)
 
         patchset = PatchSet(
             page_xref=plan.page_xref,
@@ -217,6 +238,7 @@ class PlanPreviewRenderer:
             png_bytes=png_bytes,
             clip_rect=request.clip_rect,
             render_scale=request.render_scale,
+            tier=plan.tier,
         )
 
     def close(self) -> None:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 
 import fitz
@@ -21,6 +22,8 @@ from model.text_commit.dto import RejectReason
 from model.text_commit.replay import PageReplay, ShowOp, replay_page_streams
 
 logger = logging.getLogger(__name__)
+
+_CONTENTS_ARRAY_REF_RE = re.compile(r"(\d+)\s+0\s+R")
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,41 @@ def read_page_streams(
 ) -> list[tuple[int, bytes]]:
     """Ordered ``(xref, decoded_bytes)`` list of the page's content streams."""
     return [(xref, doc.xref_stream(xref) or b"") for xref in page.get_contents()]
+
+
+def scan_shared_streams(doc: fitz.Document) -> frozenset[int]:
+    """Content-stream xrefs referenced by more than one page's ``/Contents``.
+
+    Xref-level only -- ``doc.page_xref``/``doc.xref_get_key`` are O(1) C-level
+    table lookups, no page object is ever constructed, so this stays cheap
+    even as a per-``prepare_plan``-call scan (Task 11 Slice 1 D10).
+    ``/Contents`` is not inheritable (PDF spec 7.7.3.3, Table 30), so reading
+    each page's own dict entry -- never a parent's -- cannot miss a page that
+    has no content of its own. An array ``/Contents`` holds only indirect
+    stream refs per spec 7.7.3.4 (never nested arrays/dicts/strings), so a
+    plain ``N 0 R`` scan over the array value cannot misparse an unrelated
+    dictionary value the way a general-purpose ref regex would.
+    """
+    refcount: dict[int, int] = {}
+    for page_number in range(doc.page_count):
+        page_xref = doc.page_xref(page_number)
+        kind, value = doc.xref_get_key(page_xref, "Contents")
+        if kind == "xref":
+            try:
+                ref = int(value.split()[0])
+            except (ValueError, IndexError):
+                continue
+            refcount[ref] = refcount.get(ref, 0) + 1
+        elif kind == "array":
+            for match in _CONTENTS_ARRAY_REF_RE.findall(value):
+                ref = int(match)
+                refcount[ref] = refcount.get(ref, 0) + 1
+    return frozenset(xref for xref, count in refcount.items() if count > 1)
+
+
+def is_stream_shared(doc: fitz.Document, stream_xref: int) -> bool:
+    """True when ``stream_xref`` is one page's content among several."""
+    return stream_xref in scan_shared_streams(doc)
 
 
 # Font dictionary keys whose values feed Tier 0 capability classification:

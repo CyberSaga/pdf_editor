@@ -172,7 +172,22 @@ def build_advance_preserving_erase(
     Carries ``expected_bytes``/``expected_stream_digest`` like every
     :class:`StreamReplacement`, so :func:`~model.text_commit.pdf_lexer.
     splice_stream`'s stale-plan gate still applies.
+
+    ``'``/``"`` refused, ``Tj``/``TJ`` both patchable: unlike
+    :func:`build_transplant_replacement` (a REPLACEMENT, which the planner
+    only ever routes here for a whole single-string ``Tj``), this is a
+    DELETION -- the erased op's own array structure and per-item kerns are
+    irrelevant once the whole thing is gone, so a ``TJ`` target is exactly as
+    safe to erase as a ``Tj`` one (pinned by
+    ``test_text_commit_textwriter_zorder.py``'s TJ-array erase case). ``'``/
+    ``"`` still corrupt subsequent state even when erased, because their
+    implicit ``T*``/``Tw``/``Tc`` side effects happen regardless of what the
+    op draws.
     """
+    if show.operator in ("'", '"'):
+        raise ValueError(
+            f"operator {show.operator!r} refused; only Tj/TJ are patchable"
+        )
     if show.font_size == 0.0 or show.hscale == 0.0:
         raise ValueError(
             "cannot compensate advance under zero font size or horizontal scale"
@@ -201,7 +216,15 @@ def build_transplant_replacement(
     ``BDC``/``EMC`` (OCG) nesting by construction -- unlike a TextWriter
     "append", which draws into a brand-new stream tacked onto the end of
     ``/Contents`` and inherits none of it.
+
+    ``Tj`` only: ``'`` folds an implicit ``T*`` line advance ahead of the
+    show (``replay.py``'s ``_line_advance``), and ``"`` additionally sets
+    ``Tw``/``Tc`` from its own operands, both of which persist into every
+    later show on the page (PDF spec 9.3.3) -- replacing either operator's
+    byte range with a kern-only ``TJ`` would silently drop that state.
     """
+    if show.operator != "Tj":
+        raise ValueError(f"operator {show.operator!r} refused; only Tj is patchable")
     expected = stream_bytes[show.op_start : show.op_end]
     return StreamReplacement(
         stream_xref=show.stream_xref,

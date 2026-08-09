@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 231 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 238 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -236,3 +236,10 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2081 | `pytest … | tail` reports tail's exit code — a hard interpreter abort can read as a passing run | test harness / CI hygiene |
 | 2088 | `doc.xref_get_keys(xref)` returns `[]` for a non-dictionary object — indistinguishable from an empty dictionary | model/text_commit/inspect.py (`_canonical_object_digest`) |
 | 2095 | A mutation fixture can be subsumed by a sibling guard — rotation does not pin `b==c==0`, a mirror does not pin `a>0` | test_scripts/test_text_commit_structural_gates.py (`_uniform_scale` gates) |
+| 2102 | `page.transformation_matrix` does not reflect `/Rotate` on this PyMuPDF build — hardcoded to the unrotated flip matrix | PyMuPDF 1.27.1 (installed `.venv`); affects any code reading `page.transformation_matrix` to detect page rotation |
+| 2109 | `build_advance_preserving_erase`'s operator guard must admit `TJ`, unlike `build_transplant_replacement`'s | model/text_commit/patch.py (Task 11 Slice 1 operator guards) |
+| 2116 | V0c text extraction ignores content-stream clip paths — shared Tier 0/1 blind spot | model/text_commit/verify.py (`_verify_commit` V0c, `get_text("text", clip=...)`) |
+| 2123 | Tier 1 growth widens the V0c extraction clip — a coincidental substring in a neighbor span can false-reject a valid commit | model/text_commit/verify.py (`_verify_commit` V0c, declared-region halo) |
+| 2130 | `growth_zone_is_uniform`'s narrow-zone skip can catch a neighbor glyph's anti-aliased edge | model/text_commit/verify.py (`growth_zone_is_uniform`) |
+| 2137 | The growth-admission raster check proves uniformity, not blankness — name evidence accordingly | model/text_commit/verify.py (`growth_zone_is_uniform`, `growth_zone_proven_uniform`) |
+| 2144 | Tier 1 widens Tier 0's pre-existing "equal advance ≠ equal ink height" exposure | model/text_commit/verify.py (V0d raster-identity-outside-halo), model/text_commit/plan.py (target bbox formula) |
