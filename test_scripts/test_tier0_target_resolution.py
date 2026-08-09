@@ -44,10 +44,11 @@ from model.pdf_text_edit import (  # noqa: E402
     _attempt_tiered_commit,
     _classify_tier0_candidate,
     _EditTextResolveResult,
+    _Tier0Target,
     _tier0_target_from_resolve,
 )
 from model.text_block import TextBlockManager  # noqa: E402
-from model.text_commit.dto import RejectReason  # noqa: E402
+from model.text_commit.dto import CommitStatus, RejectReason  # noqa: E402
 from model.text_commit.fonts import DocumentFontRegistry  # noqa: E402
 from model.text_commit.inspect import SourceSpanBinding, bind_source_text  # noqa: E402
 from model.text_commit.plan import PlanRejection  # noqa: E402
@@ -88,6 +89,43 @@ def _line_doc(*lines: str) -> fitz.Document:
     doc.xref_set_key(page.xref, "Resources", f"<< /Font << /F1 {font_xref} 0 R >> >>")
     # Round-trip: MuPDF's text extractor needs a fully serialized file before
     # the rawdict parse that produces the word runs will see this page.
+    reopened = fitz.open("pdf", doc.tobytes())
+    doc.close()
+    return reopened
+
+
+def _ops_doc(ops: str) -> fitz.Document:
+    """Same xref-surgery construction as :func:`_line_doc`, raw operator string.
+
+    ``/Resources`` carries ``/F1`` Helvetica and ``/F2`` Helvetica-Bold so
+    multi-operator / multi-font-run fixtures (style-split lines, TJ arrays)
+    can be built directly without escaping through ``_line_doc``'s one-Tj-
+    per-line shape.
+    """
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    page = doc[0]
+    content_xref = doc.get_new_xref()
+    doc.update_object(content_xref, "<<>>")
+    doc.update_stream(content_xref, ops.encode("latin-1"))
+    doc.xref_set_key(page.xref, "Contents", f"{content_xref} 0 R")
+    font1_xref = doc.get_new_xref()
+    doc.update_object(
+        font1_xref,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+        "/Encoding /WinAnsiEncoding >>",
+    )
+    font2_xref = doc.get_new_xref()
+    doc.update_object(
+        font2_xref,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold "
+        "/Encoding /WinAnsiEncoding >>",
+    )
+    doc.xref_set_key(
+        page.xref,
+        "Resources",
+        f"<< /Font << /F1 {font1_xref} 0 R /F2 {font2_xref} 0 R >> >>",
+    )
     reopened = fitz.open("pdf", doc.tobytes())
     doc.close()
     return reopened
@@ -192,6 +230,112 @@ def test_shape_single_run_target_resolves() -> None:
         doc.close()
 
 
+def _line_doc_rotated(rotation: int, *lines: str) -> fitz.Document:
+    """Same construction as ``_line_doc``, ``/Rotate``d and reserialized."""
+    doc = _line_doc(*lines)
+    doc[0].set_rotation(rotation)
+    data = doc.tobytes()
+    doc.close()
+    return fitz.open("pdf", data)
+
+
+def _pixmap_ink_bbox(page: fitz.Page) -> fitz.Rect:
+    pix = page.get_pixmap(dpi=72)
+    samples = bytes(pix.samples)
+    n = pix.n
+    minx = miny = 1e9
+    maxx = maxy = -1
+    for y in range(pix.height):
+        for x in range(pix.width):
+            if samples[(y * pix.width + x) * n] < 200:
+                minx, maxx = min(minx, x), max(maxx, x)
+                miny, maxy = min(miny, y), max(maxy, y)
+    assert maxx >= 0, "fixture: no dark pixmap pixels found"
+    return fitz.Rect(minx, miny, maxx, maxy)
+
+
+@pytest.mark.parametrize("rotation", [90, 270])
+def test_shape_single_run_target_bbox_is_visual_space_on_rotated_page(
+    rotation,
+) -> None:
+    """Production-path ``target.bbox``/``origin`` must be VISUAL (pixmap) space.
+
+    ``_tier0_target_from_resolve`` derives ``origin``/``bbox`` straight from
+    the block index's ``EditableSpan`` geometry, which comes from
+    ``page.get_text('dict')``. PyMuPDF keeps that extraction in *unrotated*
+    page space on both axes (see
+    ``test_text_commit_replay.py::test_bind_origin_page_follows_page_rotate``
+    and the annot-geometry entry in ``docs/PITFALLS.md`` for the same
+    quirk). But ``prepared.target_bbox_page`` is compared pixel-for-pixel
+    against ``page.get_pixmap()`` output by ``model.text_commit.verify``
+    (V0c/V0d halo math), which IS visual space. Left unconverted, the
+    derived bbox lands in the wrong region of a rotated page's pixmap.
+    """
+    doc = _line_doc_rotated(rotation, "Total")
+    try:
+        page = doc[0]
+        assert page.rotation == rotation
+        model = _StubModel(doc)
+        runs = _line_group(model, 0)
+        assert len(runs) == 1, "fixture must produce exactly one word run"
+        result = _tier0_target_from_resolve(
+            model, 0, _resolve_result(model, {runs[0].span_id})
+        )
+        assert result is not None
+        bbox = fitz.Rect(result.bbox)
+
+        oracle = _pixmap_ink_bbox(page)
+
+        # Tight containment against the real pixmap ink -- not the mirrored,
+        # unrotated rectangle a dict-space (unconverted) derivation would
+        # produce.
+        margin = 3.0
+        assert bbox.x0 <= oracle.x0 + margin, (bbox, oracle)
+        assert bbox.y0 <= oracle.y0 + margin, (bbox, oracle)
+        assert bbox.x1 >= oracle.x1 - margin, (bbox, oracle)
+        assert bbox.y1 >= oracle.y1 - margin, (bbox, oracle)
+        # Orientation sanity: "Total" is horizontal ink in unrotated space;
+        # at /Rotate 90/270 it must render -- and therefore bound -- vertically.
+        assert (bbox.y1 - bbox.y0) > (bbox.x1 - bbox.x0), bbox
+    finally:
+        doc.close()
+
+
+@pytest.mark.parametrize("rotation", [90, 270])
+def test_full_tiered_commit_succeeds_on_rotated_page(rotation) -> None:
+    """End-to-end: a Tier 0 commit on a ``/Rotate`` page must actually verify.
+
+    Regression guard for the visual-space conversion above: if any verify
+    step still compares dict-space geometry against ``target_bbox_page``
+    (now visual space) or vice versa, this is where it would surface as a
+    spurious rejection rather than as a silently-wrong number in an
+    isolated unit test.
+    """
+    # Helvetica digits share widths, so this replacement is advance-neutral
+    # (the same reasoning REPLACEMENT/SINGLE_SPACE rely on above) -- the
+    # point of this fixture is the rotation conversion, not advance proof.
+    doc = _line_doc_rotated(rotation, "12345")
+    try:
+        model = _StubModel(doc)
+        runs = _line_group(model, 0)
+        assert len(runs) == 1
+
+        outcome, reason = _attempt_tiered_commit(
+            model,
+            doc[0],
+            0,
+            "54321",
+            _resolve_result(model, {runs[0].span_id}),
+            None,
+            None,
+        )
+        assert reason is None, reason
+        assert outcome is not None
+        assert outcome.status is CommitStatus.COMMITTED, outcome
+    finally:
+        doc.close()
+
+
 def test_shape_full_line_member_set_resolves() -> None:
     """A member set covering every run of one line joins in x order."""
     doc = _line_doc(SINGLE_SPACE)
@@ -242,6 +386,17 @@ def test_shape_partial_line_selection_is_refused() -> None:
             )
             is not None
         )
+        # covers_line firewall: a single member run that is not the whole
+        # line must keep its OWN run text, never the recovered whole-line
+        # dict quote -- substituting the whole line there would bind the
+        # whole-line operator and rewrite text the user never selected.
+        mid_run = runs[1]
+        mid_target = _tier0_target_from_resolve(
+            model, 0, _resolve_result(model, {mid_run.span_id})
+        )
+        assert mid_target is not None
+        assert mid_target.text == mid_run.text
+        assert mid_target.text != "Price is 100"
     finally:
         doc.close()
 
@@ -393,18 +548,21 @@ def test_reconstruction_single_space_target_binds() -> None:
 
 
 def test_reconstruction_failure_is_distinguishable_from_absent_target() -> None:
-    """A run-joined target that cannot bind must not claim a plain NO_MATCH.
+    """An extractor-synthesized target that cannot bind must not claim a
+    plain NO_MATCH.
 
-    ``_finalize`` (``text_block_parsing.py``) strips each word run, so the
-    ``" ".join`` at ``pdf_text_edit.py:1223`` collapses ``"Price is  100"``
-    to ``"Price is 100"`` and ``bind_source_text``'s byte-equality test at
-    ``inspect.py:233`` fails.  Before the fix that surfaced as
-    ``NO_MATCH`` — byte-identical to the refusal for text that is genuinely
-    not on the page, which is why this whole failure class was invisible to
-    every corpus number.  The engine's own lossy reconstruction must be
-    named as the suspect instead.
+    ``[(Price is) -500 (100)] TJ`` extracts (via ``page.get_text("dict")``)
+    as ``'Price is 100'`` -- MuPDF materialises the ``-500`` kern advance as
+    a real space character -- while the content stream decodes to
+    ``b'Price is100'`` (no space byte at all). ``bind_source_text``'s
+    byte-equality test therefore fails even against the recovered VERBATIM
+    dict-line quote (F7 in the Task 11 Slice 2 design). Before the fix that
+    surfaced as ``NO_MATCH`` — byte-identical to the refusal for text that
+    is genuinely not on the page, which is why this whole failure class was
+    invisible to every corpus number. The engine's own reconstruction (here,
+    the extractor's synthesized space) must be named as the suspect instead.
     """
-    doc = _line_doc("Price is  100")  # two spaces in the source operand
+    doc = _ops_doc("BT /F1 12 Tf 72 700 Td [(Price is) -500 (100)] TJ ET")
     try:
         model = _StubModel(doc)
         runs = _line_group(model, 0)
@@ -413,8 +571,10 @@ def test_reconstruction_failure_is_distinguishable_from_absent_target() -> None:
             model, 0, _resolve_result(model, {r.span_id for r in runs})
         )
         assert target is not None
-        # Precondition: the reconstruction really did lose the second space.
+        # Precondition: the extracted line quote carries a space the stream
+        # never contained.
         assert target[0] == "Price is 100"
+        assert target.source_kind == "dict_line"
         assert bind_source_text(
             doc, doc[0], target_text=target[0], expected_origin=None
         ).reason == RejectReason.NO_MATCH
@@ -431,39 +591,46 @@ def test_reconstruction_failure_is_distinguishable_from_absent_target() -> None:
         )
         assert isinstance(result, PlanRejection)
         assert result.reason == RejectReason.TARGET_RECONSTRUCTION_UNVERIFIED, (
-            "a target assembled by joining word runs must not report the same "
-            "reason as a target that is genuinely absent from the page"
+            "a target assembled by joining word runs (or an extractor's "
+            "synthesized whitespace) must not report the same reason as a "
+            "target that is genuinely absent from the page"
         )
         assert "whitespace" in result.detail
+        # Live-document safety: nothing mutated on a refusal path.
+        before = doc.xref_length()
+        stream_before = doc.xref_stream(doc[0].get_contents()[0])
+        assert doc.xref_length() == before
+        assert doc.xref_stream(doc[0].get_contents()[0]) == stream_before
     finally:
         doc.close()
 
 
 def test_reconstruction_absent_target_still_reports_plain_no_match() -> None:
-    """The discriminator must not fire for a single-run (unjoined) target.
+    """The discriminator must not fire for a genuinely absent target.
 
-    The other half of the distinction: with no join applied there is no
-    reconstruction to blame, so the refusal must stay ``NO_MATCH``.  Without
-    this the fix could pass its Red test by relabelling *every* miss.
+    The other half of the distinction: a target with no whitespace at all
+    has no reconstruction to blame, so the refusal must stay ``NO_MATCH``.
+    Without this the fix could pass its Red test by relabelling *every*
+    miss.
 
-    The fixture is a real, still-open gap rather than a contrived one: a
-    source operand padded with spaces (``"  Total  "``) parses to the single
-    stripped run ``"Total"``, so the target genuinely fails byte-equality at
-    ``inspect.py:233`` even though only *one* run was involved.  That keeps
-    the assertion unconditional — the planner is guaranteed to reach a
-    ``NO_MATCH`` rejection here, so this test cannot go vacuous the way a
-    fixture whose target binds successfully would.
+    The fixture is a real, still-open gap: ``(To) Tj (tal) Tj`` (two show
+    operators, same font, no space) parses to the single run ``'Total'``
+    (``_finalize`` merges adjacent same-style, no-gap characters), and the
+    recovered dict line quote is also ``'Total'`` -- both by construction
+    carry no whitespace, so ``whitespace_reconstructed`` is ``False`` and
+    the refusal must stay a plain ``NO_MATCH``: two operators, so no single
+    show op carries the whole line and nothing binds.
     """
-    doc = _line_doc("  Total  ")
+    doc = _ops_doc("BT /F1 12 Tf 72 700 Td (To) Tj (tal) Tj ET")
     try:
         model = _StubModel(doc)
         runs = _line_group(model, 0)
-        assert len(runs) == 1, "padded source must still parse to one run"
+        assert len(runs) == 1, "adjacent same-style runs merge with no gap"
         target = _tier0_target_from_resolve(
             model, 0, _resolve_result(model, {runs[0].span_id})
         )
         assert target is not None
-        assert target.text == "Total"  # padding stripped by _finalize
+        assert target.text == "Total"
         assert target.joined_runs == 1
         assert target.whitespace_reconstructed is False
 
@@ -493,7 +660,7 @@ def test_reconstruction_relabel_applies_on_the_live_commit_path_too() -> None:
     by mutation).  A shared helper is not evidence that each of its callers
     uses it.
     """
-    doc = _line_doc("Price is  100")
+    doc = _ops_doc("BT /F1 12 Tf 72 700 Td [(Price is) -500 (100)] TJ ET")
     try:
         model = _StubModel(doc)
         runs = _line_group(model, 0)
@@ -531,3 +698,514 @@ def test_reconstruction_reason_code_is_stable() -> None:
         pdf_text_edit.RejectReason.TARGET_RECONSTRUCTION_UNVERIFIED
         == "target_reconstruction_unverified"
     )
+
+
+# --------------------------------------------------------------------------
+# Task 11 Slice 2 — verbatim dict-line recovery (D5 follow-up)
+#
+# The reconstruction tests above prove the engine correctly REFUSES when it
+# cannot prove its target text.  These prove it can go further: recover the
+# verbatim source line from ``page.get_text("dict")`` when a runtime
+# content-and-geometry proof binds it to the exact runs resolved, so a
+# source gap that is not exactly one space (F1/F2) or a padded operand (F2)
+# no longer needs to be refused at all.
+# --------------------------------------------------------------------------
+
+
+def test_f1_inner_multi_space_recovers_and_commits() -> None:
+    """Headline case: a two-space inner gap recovers, binds, and commits."""
+    doc = _line_doc("Price is  100")  # two spaces in the source operand
+    try:
+        model = _StubModel(doc)
+        runs = _line_group(model, 0)
+        assert len(runs) == 3, "fixture must split into three word runs"
+        target = _tier0_target_from_resolve(
+            model, 0, _resolve_result(model, {r.span_id for r in runs})
+        )
+        assert target is not None
+        assert target.text == "Price is  100"
+        assert target.source_kind == "dict_line"
+        assert target.joined_runs == 3
+
+        binding = bind_source_text(
+            doc, doc[0], target_text=target.text, expected_origin=target.origin
+        )
+        assert isinstance(binding, SourceSpanBinding), (
+            f"recovered target should bind, got "
+            f"{getattr(binding, 'reason', type(binding).__name__)}"
+        )
+        assert binding.show.decoded_bytes == b"Price is  100"
+
+        # User types the COLLAPSED form (Level A) -- what the inline editor
+        # showed -- and the engine must re-project the source's own double
+        # space onto the replacement.
+        outcome, reason = _attempt_tiered_commit(
+            model,
+            doc[0],
+            0,
+            "Price is 200",
+            _resolve_result(model, {r.span_id for r in runs}),
+            None,
+            None,
+        )
+        assert reason is None, reason
+        assert outcome is not None
+        assert outcome.status is CommitStatus.COMMITTED, outcome
+        stream = doc.xref_stream(doc[0].get_contents()[0])
+        assert b"(Price is  200)" in stream, stream
+        assert b"(Price is  100)" not in stream, stream
+    finally:
+        doc.close()
+
+
+def test_f2_leading_trailing_padding_recovers_and_commits() -> None:
+    """A padded single-run operand recovers the dict-line origin, not the
+    stripped run's own origin -- the assertion that fails hardest today."""
+    doc = _line_doc("  12345  ")
+    try:
+        model = _StubModel(doc)
+        runs = _line_group(model, 0)
+        assert len(runs) == 1, "fixture must parse to a single stripped run"
+        target = _tier0_target_from_resolve(
+            model, 0, _resolve_result(model, {runs[0].span_id})
+        )
+        assert target is not None
+        assert target.text == "  12345  "
+        assert target.joined_runs == 1
+        assert target.source_kind == "dict_line"
+        # Dict origin (no padding advance), NOT the run's stripped origin.
+        assert target.origin[0] == pytest.approx(72.0)
+        assert target.origin[0] != pytest.approx(float(runs[0].origin.x))
+        assert target.bbox[0] <= 72.01
+
+        binding = bind_source_text(
+            doc, doc[0], target_text=target.text, expected_origin=target.origin
+        )
+        assert isinstance(binding, SourceSpanBinding)
+
+        outcome, reason = _attempt_tiered_commit(
+            model,
+            doc[0],
+            0,
+            "54321",
+            _resolve_result(model, {runs[0].span_id}),
+            None,
+            None,
+        )
+        assert reason is None, reason
+        assert outcome is not None
+        assert outcome.status is CommitStatus.COMMITTED, outcome
+        stream = doc.xref_stream(doc[0].get_contents()[0])
+        assert b"(  54321  )" in stream, stream
+        assert b"(  12345  )" not in stream, stream
+    finally:
+        doc.close()
+
+
+def test_f3_multi_span_line_recovers_but_still_refuses() -> None:
+    """One line, two operators (style break): recovery proves the quote,
+    but no single show op carries the whole line, so it must still refuse
+    -- and must not mutate the document while refusing."""
+    doc = _ops_doc(
+        "BT /F1 12 Tf 72 700 Td (Price is  ) Tj /F2 12 Tf (100) Tj ET"
+    )
+    try:
+        model = _StubModel(doc)
+        runs = _line_group(model, 0)
+        assert len(runs) == 3
+        target = _tier0_target_from_resolve(
+            model, 0, _resolve_result(model, {r.span_id for r in runs})
+        )
+        assert target is not None
+        assert target.text == "Price is  100"
+        assert target.source_kind == "dict_line"
+
+        before = doc.xref_length()
+        stream_before = doc.xref_stream(doc[0].get_contents()[0])
+        result = _classify_tier0_candidate(
+            model,
+            doc[0],
+            0,
+            "Price is  200",
+            _resolve_result(model, {r.span_id for r in runs}),
+            None,
+            None,
+            DocumentFontRegistry(doc),
+        )
+        assert isinstance(result, PlanRejection)
+        assert result.reason == RejectReason.TARGET_RECONSTRUCTION_UNVERIFIED
+
+        outcome, reason = _attempt_tiered_commit(
+            model,
+            doc[0],
+            0,
+            "Price is  200",
+            _resolve_result(model, {r.span_id for r in runs}),
+            None,
+            None,
+        )
+        assert outcome is None
+        assert reason == RejectReason.TARGET_RECONSTRUCTION_UNVERIFIED
+        assert doc.xref_length() == before
+        assert doc.xref_stream(doc[0].get_contents()[0]) == stream_before
+    finally:
+        doc.close()
+
+
+def test_f4_flags0_dict_never_emits_non_text_blocks() -> None:
+    """Tripwire: at ``flags=0`` a page with an image block still has NO
+    type-1 block in ``get_text("dict")`` -- the block-skip sub-case
+    ``_parse_block`` guards against is empty, not merely untested. If a
+    PyMuPDF upgrade ever starts emitting type != 0 blocks at ``flags=0``,
+    this fails loudly instead of silently misaligning ``block_idx``.
+    """
+    doc = _line_doc("Price is  100")
+    try:
+        page = doc[0]
+        pix = fitz.Pixmap(fitz.csGRAY, (0, 0, 8, 8), False)
+        pix.clear_with(0)
+        page.insert_image(fitz.Rect(72, 60, 172, 110), pixmap=pix)
+        data = doc.tobytes()
+    finally:
+        doc.close()
+    doc = fitz.open("pdf", data)
+    try:
+        blocks = doc[0].get_text("dict", flags=0)["blocks"]
+        assert all(b.get("type") == 0 for b in blocks), (
+            "flags=0 dict emitted a non-text block; block_idx alignment is "
+            "no longer safe -- recovery must be re-audited"
+        )
+
+        model = _StubModel(doc)
+        runs = _line_group(model, 0)
+        assert len(runs) == 3
+        target = _tier0_target_from_resolve(
+            model, 0, _resolve_result(model, {r.span_id for r in runs})
+        )
+        assert target is not None
+        assert target.text == "Price is  100"
+        assert target.source_kind == "dict_line"
+    finally:
+        doc.close()
+
+
+def test_f5a_identical_line_texts_bind_to_their_own_line() -> None:
+    """Two lines with IDENTICAL text: content equality alone cannot
+    distinguish them, so this is the only test that fails if the
+    implementation ever reaches for ``lines[0]`` instead of
+    ``lines[line_idx]``."""
+    doc = _ops_doc(
+        "BT /F1 12 Tf 72 700 Td (  Total  ) Tj 0 -14 Td (  Total  ) Tj ET"
+    )
+    try:
+        model = _StubModel(doc)
+        line0 = _line_group(model, 0)
+        line1 = _line_group(model, 1)
+        assert line0 and line1
+        assert (line0[0].block_idx, line0[0].line_idx) != (
+            line1[0].block_idx,
+            line1[0].line_idx,
+        )
+
+        target0 = _tier0_target_from_resolve(
+            model, 0, _resolve_result(model, {r.span_id for r in line0})
+        )
+        target1 = _tier0_target_from_resolve(
+            model, 0, _resolve_result(model, {r.span_id for r in line1})
+        )
+        assert target0 is not None and target1 is not None
+        assert target0.text == "  Total  "
+        assert target1.text == "  Total  "
+        assert target0.origin == pytest.approx((72.0, 142.0))
+        assert target1.origin == pytest.approx((72.0, 156.0))
+
+        binding0 = bind_source_text(
+            doc, doc[0], target_text=target0.text, expected_origin=target0.origin
+        )
+        binding1 = bind_source_text(
+            doc, doc[0], target_text=target1.text, expected_origin=target1.origin
+        )
+        assert isinstance(binding0, SourceSpanBinding)
+        assert isinstance(binding1, SourceSpanBinding)
+        assert binding0.show.origin_user[1] != binding1.show.origin_user[1]
+    finally:
+        doc.close()
+
+
+def test_f5b_distinct_line_texts_resolve_by_content() -> None:
+    """Two lines with distinct text: neither target crosses into the
+    other's text."""
+    doc = _ops_doc(
+        "BT /F1 12 Tf 72 700 Td (  Total  ) Tj 0 -14 Td (Price is  100) Tj ET"
+    )
+    try:
+        model = _StubModel(doc)
+        line0 = _line_group(model, 0)
+        line1 = _line_group(model, 1)
+        target0 = _tier0_target_from_resolve(
+            model, 0, _resolve_result(model, {r.span_id for r in line0})
+        )
+        target1 = _tier0_target_from_resolve(
+            model, 0, _resolve_result(model, {r.span_id for r in line1})
+        )
+        assert target0 is not None and target1 is not None
+        assert target0.text == "  Total  "
+        assert target1.text == "Price is  100"
+    finally:
+        doc.close()
+
+
+@pytest.mark.parametrize("rotation", [90, 270])
+def test_f6_rotated_page_padding_recovers_and_commits(rotation) -> None:
+    """Rotated-page control: recovery survives ``/Rotate`` because the dict
+    ``dir`` is still ``(1, 0)`` in unrotated space (gate P6 passes)."""
+    doc = _line_doc_rotated(rotation, "  12345  ")
+    try:
+        page = doc[0]
+        model = _StubModel(doc)
+        runs = _line_group(model, 0)
+        assert len(runs) == 1
+        target = _tier0_target_from_resolve(
+            model, 0, _resolve_result(model, {runs[0].span_id})
+        )
+        assert target is not None
+        assert target.text == "  12345  "
+        assert target.source_kind == "dict_line"
+
+        bbox = fitz.Rect(target.bbox)
+        oracle = _pixmap_ink_bbox(page)
+        margin = 3.0
+        assert bbox.x0 <= oracle.x0 + margin, (bbox, oracle)
+        assert bbox.y0 <= oracle.y0 + margin, (bbox, oracle)
+        assert bbox.x1 >= oracle.x1 - margin, (bbox, oracle)
+        assert bbox.y1 >= oracle.y1 - margin, (bbox, oracle)
+        assert (bbox.y1 - bbox.y0) > (bbox.x1 - bbox.x0), bbox
+
+        outcome, reason = _attempt_tiered_commit(
+            model,
+            doc[0],
+            0,
+            "54321",
+            _resolve_result(model, {runs[0].span_id}),
+            None,
+            None,
+        )
+        assert reason is None, reason
+        assert outcome is not None
+        assert outcome.status is CommitStatus.COMMITTED, outcome
+        stream = doc.xref_stream(doc[0].get_contents()[0])
+        assert b"(  54321  )" in stream, stream
+        assert b"(  12345  )" not in stream, stream
+    finally:
+        doc.close()
+
+
+def test_f8_stale_block_index_never_binds_the_wrong_line() -> None:
+    """Fail-closed proof: a block index built against one document snapshot
+    (A), consulted while the live document is a DIFFERENT snapshot (B) with
+    an extra higher line, must never recover B's unrelated line just
+    because the stale index says ``block_idx == 0``."""
+    doc_a = _line_doc("Price is  100")
+    try:
+        data_a = doc_a.tobytes()
+    finally:
+        doc_a.close()
+
+    # doc B: same page, with an extra higher line prepended to the stream.
+    doc_b = fitz.open("pdf", data_a)
+    try:
+        page = doc_b[0]
+        xref = page.get_contents()[0]
+        existing = doc_b.xref_stream(xref)
+        prefix = b"BT /F1 12 Tf 72 750 Td (Other  Line) Tj ET\n"
+        doc_b.update_stream(xref, prefix + existing)
+        data_b = doc_b.tobytes()
+    finally:
+        doc_b.close()
+
+    doc_a = fitz.open("pdf", data_a)  # rebuilt: block_manager indexes THIS
+    doc_b = fitz.open("pdf", data_b)  # live doc the model actually reads
+    try:
+        # Precondition: doc B really did shift block_idx 0 to "Other  Line",
+        # so the test cannot go vacuous.
+        dict_blocks = doc_b[0].get_text("dict", flags=0)["blocks"]
+        assert dict_blocks[0]["lines"][0]["spans"][0]["text"] == "Other  Line"
+        assert dict_blocks[1]["lines"][0]["spans"][0]["text"] == "Price is  100"
+
+        model = _StubModel(doc_a)  # block_manager built on A
+        model.doc = doc_b  # live doc is B -- no mutation, fully deterministic
+        runs = model.block_manager.get_runs(0)
+        assert len(runs) == 3
+
+        target = _tier0_target_from_resolve(
+            model, 0, _resolve_result(model, {r.span_id for r in runs})
+        )
+        assert target is not None
+        assert target.source_kind == "run_join"
+        assert target.text == "Price is 100"
+        assert "Other" not in target.text
+
+        result = _classify_tier0_candidate(
+            model,
+            doc_b[0],
+            0,
+            "Price is  200",
+            _resolve_result(model, {r.span_id for r in runs}),
+            None,
+            None,
+            DocumentFontRegistry(doc_b),
+        )
+        assert isinstance(result, PlanRejection)
+        assert result.reason == RejectReason.TARGET_RECONSTRUCTION_UNVERIFIED
+    finally:
+        doc_a.close()
+        doc_b.close()
+
+
+def test_f8b_content_mismatch_with_aligned_geometry_refuses() -> None:
+    """A1/A2 isolated: geometry gates G1-G4 alone do NOT catch every
+    wrong-line bind.
+
+    F8 (above) happens to be caught by G1 (the prepended line sits at a
+    different baseline than the indexed run). This fixture prepends a
+    DIFFERENT-content line at the SAME baseline, starting to the left of
+    and wide enough to contain the indexed run's bbox, so G1-G4 all pass
+    -- content equality (A1/A2) is the only gate left standing. Mutation-
+    verified: deleting ``if not (a1 or a2): return None`` makes this
+    fixture recover ``'Something else entirely here'`` as the target text,
+    which is exactly the wrong-text catastrophe this stage exists to
+    prevent.
+    """
+    doc_a = _line_doc("Price is  100")
+    try:
+        data_a = doc_a.tobytes()
+    finally:
+        doc_a.close()
+
+    doc_b = fitz.open("pdf", data_a)
+    try:
+        page = doc_b[0]
+        xref = page.get_contents()[0]
+        existing = doc_b.xref_stream(xref)
+        # Same baseline (700 Td == y 142 in dict space), starts left of and
+        # extends past the indexed run's own bbox.
+        prefix = b"BT /F1 12 Tf 40 700 Td (Something else entirely here) Tj ET\n"
+        doc_b.update_stream(xref, prefix + existing)
+        data_b = doc_b.tobytes()
+    finally:
+        doc_b.close()
+
+    doc_a = fitz.open("pdf", data_a)
+    doc_b = fitz.open("pdf", data_b)
+    try:
+        dict_blocks = doc_b[0].get_text("dict", flags=0)["blocks"]
+        line0 = dict_blocks[0]["lines"][0]
+        # Preconditions: same baseline, and the prepended line's bbox
+        # contains the indexed run's bbox -- so G1-G4 cannot be what
+        # refuses this fixture; only a content gate can.
+        assert line0["spans"][0]["text"] == "Something else entirely here"
+        assert line0["spans"][0]["origin"][1] == pytest.approx(142.0)
+
+        model = _StubModel(doc_a)
+        model.doc = doc_b
+        runs = model.block_manager.get_runs(0)
+        assert len(runs) == 3
+
+        target = _tier0_target_from_resolve(
+            model, 0, _resolve_result(model, {r.span_id for r in runs})
+        )
+        assert target is not None
+        assert target.source_kind == "run_join"
+        assert target.text == "Price is 100"
+        assert "Something" not in target.text
+    finally:
+        doc_a.close()
+        doc_b.close()
+
+
+def test_f9_color_split_runs_with_no_whitespace_use_a2_shape() -> None:
+    """A2 shape: two show ops of DIFFERENT color and no space between them
+    split into two runs whose naive ``" ".join`` inserts a space the source
+    never had (``"To tal"``). Recovery's A2 gate (verbatim concatenation)
+    rescues this shape via the dict line quote instead.
+
+    Deviation from the approved design's literal fixture: the design's
+    ``_ops_doc("... /F1 (To) Tj /F2 12 Tf (tal) Tj ...")`` (font-only
+    break) does NOT split into two runs on this PyMuPDF version --
+    ``_parse_runs_from_raw_line`` (text_block_parsing.py:448-451) only
+    breaks on cross-axis delta, gap, size delta, COLOR change, or kind
+    change; font name alone is never compared. Probe-confirmed: that exact
+    op string merges into a single run ``'Total'`` (see
+    ``test_reconstruction_absent_target_still_reports_plain_no_match``,
+    which now uses it). A genuine two-run, no-whitespace split needs a
+    trigger the run-splitter actually checks; a fill-color change between
+    the two ``Tj`` ops (no font change) is the minimal one.
+    """
+    doc = _ops_doc(
+        "BT /F1 12 Tf 72 700 Td 0 0 0 rg (To) Tj 1 0 0 rg (tal) Tj ET"
+    )
+    try:
+        model = _StubModel(doc)
+        runs = _line_group(model, 0)
+        assert len(runs) == 2, "color change must split the run"
+        assert [r.text for r in sorted(runs, key=lambda r: r.origin.x)] == [
+            "To",
+            "tal",
+        ]
+        target = _tier0_target_from_resolve(
+            model, 0, _resolve_result(model, {r.span_id for r in runs})
+        )
+        assert target is not None
+        assert target.text == "Total"  # A2, not " ".join -> "To tal"
+        assert target.whitespace_reconstructed is False
+
+        result = _classify_tier0_candidate(
+            model,
+            doc[0],
+            0,
+            "Value",
+            _resolve_result(model, {r.span_id for r in runs}),
+            None,
+            None,
+            DocumentFontRegistry(doc),
+        )
+        assert isinstance(result, PlanRejection)
+        assert result.reason == RejectReason.NO_MATCH
+        assert result.reason != RejectReason.TARGET_RECONSTRUCTION_UNVERIFIED
+    finally:
+        doc.close()
+
+
+def test_f10_replacement_for_reprojects_whitespace() -> None:
+    """Pure unit table for :meth:`_Tier0Target.replacement_for` -- no
+    document, no bind, no commit; just the string transform."""
+    dict_line = lambda text: _Tier0Target(text, (0.0, 0.0), (0.0, 0.0, 1.0, 1.0), 1, "dict_line")  # noqa: E731
+    run_join = lambda text: _Tier0Target(text, (0.0, 0.0), (0.0, 0.0, 1.0, 1.0), 1, "run_join")  # noqa: E731
+
+    # Level A: collapsed canonical edit -> source gaps + outer padding restored.
+    assert dict_line("Price is  100").replacement_for("Price is 200") == "Price is  200"
+    assert dict_line("  Total  ").replacement_for("Sum") == "  Sum  "
+    # Level B: restructured edit -> only outer padding restored.
+    assert dict_line("  Total  ").replacement_for("Grand Total") == "  Grand Total  "
+    assert (
+        dict_line("Price is  100").replacement_for("Price is  200")
+        == "Price is  200"
+    )
+    # Empty/whitespace-only edits pass through unchanged (EMPTY_REPLACEMENT).
+    assert dict_line("  Total  ").replacement_for("") == ""
+    assert dict_line("  Total  ").replacement_for("   ") == "   "
+    # run_join targets are untouched (today's behaviour).
+    assert run_join("Price is 100").replacement_for("Price is 200") == "Price is 200"
+    # Identity: replacement equals target -> caller hits NO_CHANGE.
+    assert (
+        dict_line("Price is  100").replacement_for("Price is  100")
+        == "Price is  100"
+    )
+    # Editor open/close with no edit: the inline editor shows the COLLAPSED
+    # form, so re-projecting it must reproduce the source exactly, or every
+    # padded/multi-space line would spuriously rewrite on a no-op edit.
+    assert (
+        dict_line("Price is  100").replacement_for("Price is 100")
+        == "Price is  100"
+    )
+    assert dict_line("  12345  ").replacement_for("12345") == "  12345  "

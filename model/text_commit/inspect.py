@@ -32,7 +32,9 @@ class SourceSpanBinding:
     stream_xref: int
     stream_digest: str  # SHA-256 of the bound stream's decoded bytes
     show: ShowOp
-    origin_page: tuple[float, float]  # MuPDF page space (rawdict convention)
+    # Visual (pixmap) page space -- transformation_matrix * rotation_matrix,
+    # NOT raw page.get_text('rawdict') convention (that stays unrotated).
+    origin_page: tuple[float, float]
 
 
 @dataclass(frozen=True)
@@ -293,7 +295,19 @@ def replay_page(doc: fitz.Document, page: fitz.Page) -> PageReplay:
 def _origin_in_page_space(
     page: fitz.Page, show: ShowOp
 ) -> tuple[float, float]:
-    point = fitz.Point(*show.origin_user) * page.transformation_matrix
+    """Map a show op's user-space origin into VISUAL (pixmap) page space.
+
+    ``page.transformation_matrix`` covers the cropbox y-flip and /UserUnit
+    but deliberately omits /Rotate in PyMuPDF; ``page.rotation_matrix``
+    supplies the /Rotate term. This mirrors
+    ``model.text_commit.plan._page_visual_matrix`` -- the same composition
+    ``plan.py``'s fallback halo uses to match ``page.get_pixmap`` output --
+    so ``origin_page`` stays in the same space as ``expected_origin`` values
+    that callers derive from displayed geometry. NOT the same space as raw
+    ``page.get_text('rawdict')`` output, which PyMuPDF keeps unrotated on
+    both read and write (docs/PITFALLS.md).
+    """
+    point = fitz.Point(*show.origin_user) * page.transformation_matrix * page.rotation_matrix
     return (point.x, point.y)
 
 

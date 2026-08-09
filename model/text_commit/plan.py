@@ -57,9 +57,7 @@ logger = logging.getLogger(__name__)
 # width table is not "rounding", so widths get a float-noise tolerance.
 _ADVANCE_TOL_PER_PT = 1e-3  # face-derived: absorbs the face's own float error
 _ADVANCE_TOL_PER_PT_EXACT = 1e-9  # /Widths: exact arithmetic, noise only
-_GROWTH_OUTSIDE_PAGE_REASON = getattr(
-    RejectReason, "GROWTH_OUTSIDE_PAGE", "growth_outside_page"
-)
+_GROWTH_OUTSIDE_PAGE_REASON = RejectReason.GROWTH_OUTSIDE_PAGE
 _PAGE_CONTAINMENT_TOL_PT = 1e-3
 
 

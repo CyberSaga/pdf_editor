@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 238 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 245 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -243,3 +243,10 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2144 | Preview verification must capture pre-patch state and reuse the session scratch | `model/text_commit/preview.py`, `model/text_commit/verify.py` |
 | 2166 | High-fidelity stale undo must refuse, not snapshot-restore | `model/edit_commands.py` (`EditTextCommand.undo`) |
 | 2176 | PDFModel property setters must getattr-guard legacy slots — tests build models via `__new__` | `model/pdf_model.py` (session-fallback properties), `test_scripts/` |
+| 2186 | A reference sample taken inside the region it is proving is self-referential — the load-bearing rule is ink visibility | `model/text_commit/verify.py` (`prove_growth_region_blank`) |
+| 2196 | `sh` inside a Form XObject is invisible to every page-level ink reader — a mechanism blocklist only refuses the mechanisms it enumerates | `model/text_commit/verify.py` (growth occupancy gates) |
+| 2206 | `get_text("dict"/"rawdict")` geometry is UNROTATED page space — comparing it against a visual-space bbox passes on every unrotated page and is wrong on every `/Rotate` page | `model/text_commit/verify.py` (V0c/V0d), `model/pdf_text_edit.py` (target derivation) |
+| 2216 | A verified-candidate cache keyed on a content token still needs the policy gates re-run at commit time | `model/pdf_text_edit.py` (`_attempt_tiered_commit` cached-candidate branch), `controller/pdf_controller.py` |
+| 2226 | A certificate that reads its evidence from the post-patch document proves nothing | `model/text_commit/verify.py` (V0e), `model/text_commit/preview.py` |
+| 2236 | `TJ` kern advances are materialized as synthesized spaces in dict extraction — verbatim dict text is not the source string | `model/pdf_text_edit.py` (`_dict_line_for_runs`) |
+| 2246 | `pytest test_scripts/` in one invocation hangs at PySide6 interpreter teardown — run the suite chunked | test harness (`.venv`, PySide6) |

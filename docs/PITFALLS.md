@@ -2180,3 +2180,73 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** Several unit tests construct model shells with `PDFModel.__new__(PDFModel)` (skipping `__init__`) or hand-rolled `_StubModel` doubles. Turning `doc` into a property whose setter touches `self._legacy_doc`, and routing `_attempt_tiered_commit` through `model.get_tiered_commit_engine()`, broke every such double even though production code was correct.
 **Fix:** Setters/readers on session-fallback properties use `getattr(self, "_legacy_*", None)` (same pattern as `_active_session`), and test doubles that feed `_attempt_tiered_commit` must expose `get_tiered_commit_engine()`. When changing `PDFModel`'s attribute surface, grep tests for `PDFModel.__new__` first — the targeted suite will not warn you.
 **File:** `model/pdf_model.py` (`doc` setter, `_active_session`); `test_scripts/test_tier0_target_resolution.py` (`_StubModel`)
+
+---
+
+## A reference sample taken inside the region it is proving is self-referential — the load-bearing rule is ink visibility
+
+**Area:** `model/text_commit/verify.py` (`prove_growth_region_blank`)
+**Symptom:** A growth zone filled solid black was accepted as blank, so a Tier 1 commit grew the target into ink the verifier had just certified as empty. The "background reference" gate added to stop exactly this was **inert**: monkeypatching every occupancy gate to a no-op left all five growth tests green.
+**Cause:** Two compounding errors. (i) The reference colour was sampled from the target's own tail — inside the band being widened — so on a black background the reference *was* the ink, and "growth matches reference" was a tautology. (ii) The gate was fail-open on ambiguity (no reference resolvable ⇒ accept). Correcting (i) alone is not enough: a large black fill also covers every candidate reference point outside the target, so reference-comparison still accepts.
+**Fix:** Rebuild as a background-*surface* proof with three independent parts. `background_reference_points` samples left/above/below the target, provably disjoint from the widened halo. `_target_background_rgb` takes the strict-majority colour inside the target's own bbox and returns whether the target's ink is *visible* against it — a 100% majority means the glyphs are indistinguishable from their background, i.e. ink-on-same-ink, which is refused outright. That ink-visibility rule, not the reference comparison, is what kills black-on-black. Ambiguity refuses everywhere; a pass requires an affirmative match. Occupancy gates (`get_drawings`/`get_images`/`sh` scan) are kept only as cheap early-outs and the raster proof is pinned standing alone with them neutered.
+**File:** `model/text_commit/verify.py`; tests `test_growth_into_a_black_shading_xobject_region_is_rejected`, `test_growth_into_a_uniform_band_that_mismatches_the_page_background_is_rejected`
+
+---
+
+## `sh` inside a Form XObject is invisible to every page-level ink reader — a mechanism blocklist only refuses the mechanisms it enumerates
+
+**Area:** `model/text_commit/verify.py` (growth occupancy gates)
+**Symptom:** A shading operator painting the growth zone solid black was reported as "no drawings, no images, no shading" by all three occupancy probes.
+**Cause:** `page.get_drawings()`, `page.get_images()`, and the `sh` scan over `read_page_streams` all see only the page's *own* content stream. Ink painted inside an invoked Form XObject is reachable by none of them. Enumerating ink mechanisms is a blocklist, and a blocklist cannot be complete over a format that lets any operator nest one level down.
+**Fix:** Do not prove absence-of-known-ink-sources; prove the rendered surface. The raster background proof reads what MuPDF actually painted, so nesting is irrelevant. Occupancy checks remain as cheap early-outs and must never be the sole gate.
+**File:** `model/text_commit/verify.py`
+
+---
+
+## `get_text("dict"/"rawdict")` geometry is UNROTATED page space — comparing it against a visual-space bbox passes on every unrotated page and is wrong on every `/Rotate` page
+
+**Area:** `model/text_commit/verify.py` (V0c/V0d), `model/pdf_text_edit.py` (target derivation)
+**Symptom:** No tiered commit had **ever** succeeded on a `/Rotate 90/270` page — a pre-existing defect (Defect C) found only when a rotation-parity pass went looking. Every such commit failed verification, and the same mismatch in the other direction is a false-accept risk.
+**Cause:** Dict/rawdict extraction reports coordinates in unrotated page space, while `page.get_pixmap()` and `page.rect` are visual space (the same PyMuPDF quirk already documented for annotation geometry). V0c/V0d compared rawdict span origins and bboxes against a visual-space `target_bbox_page`; the caller-supplied `target_bbox` from `pdf_text_edit.py` was itself unconverted. On an unrotated page the two spaces coincide, so every test and every real edit agreed — the bug is invisible until `/Rotate` is non-zero.
+**Fix:** Convert at the boundary, once: `_dict_space_to_visual` (`pdf_text_edit.py`) maps dict-space origin/bbox through `page.transformation_matrix * page.rotation_matrix` before anything visual-space consumes it, and `verify.py` does the same on the read side. `inspect._origin_in_page_space` composes `rotation_matrix` too. Treat rawdict origin as *not* a visual-space oracle. When adding a geometry comparison, name the space of both operands in the assertion.
+**File:** `model/pdf_text_edit.py` (`_dict_space_to_visual`), `model/text_commit/verify.py`, `model/text_commit/inspect.py`; tests `test_full_tiered_commit_succeeds_on_rotated_page[90/270]`, `test_bind_origin_page_follows_page_rotate`
+
+---
+
+## A verified-candidate cache keyed on a content token still needs the policy gates re-run at commit time
+
+**Area:** `model/pdf_text_edit.py` (`_attempt_tiered_commit` cached-candidate branch), `controller/pdf_controller.py`
+**Symptom:** With a preview candidate cached by `plan_token`, a commit that also carried a style change or a dragged `new_rect` reused the cached candidate and **silently discarded the drag** — UI-reachable, no refusal, no warning. Separately, the cache was populated before the preview PNG was validated.
+**Cause:** The token's preimage covers the *candidate's* semantics, not the *request's*. Style/geometry overrides arrive with the commit request and never entered the token, so an unequal request hashed equal. And document-level facts checked during a fresh prepare (here: shared content streams) were skipped entirely on the cache-hit path — a cache that bypasses gates is a gate.
+**Fix:** The cached branch refuses on `style_overrides.changed` or a supplied `new_rect` and falls through to a fresh prepare (which then produces an honest refusal reason), and re-runs `find_pages_sharing_content_stream` before applying. The controller caches only after the PNG decodes. Rule: a cache hit may skip *work*, never *checks*.
+**File:** `model/pdf_text_edit.py`, `controller/pdf_controller.py`; `test_scripts/test_text_commit_candidate_identity.py` (`TestCachedCandidateBypassesPolicyGates`)
+
+---
+
+## A certificate that reads its evidence from the post-patch document proves nothing
+
+**Area:** `model/text_commit/verify.py` (V0e), `model/text_commit/preview.py`
+**Symptom:** Preview's V0e "reopen probe" passed unconditionally — it compared a page count read on the patched document against a page count read on that *same* patched document.
+**Cause:** The pre-patch value was never captured, so the comparison was `x == x`. A tautological assertion is worse than a missing one: it reports a green certificate.
+**Fix:** `PageState` captures `page_count` **pre**-patch. Preview gets a real per-session KEEP round-trip (`_live_keep_round_trip`) whose single `tobytes(KEEP)` + reopen feeds both the probe verdict and the session snapshot, preserving the one-scratch-per-session keystroke budget; `PreviewSessionInput.reopen_probe_ok` defaults to `False` (fail-closed). When writing a verification step, state which side of the mutation each operand is read from.
+**File:** `model/text_commit/verify.py`, `model/text_commit/preview.py`
+
+---
+
+## `TJ` kern advances are materialized as synthesized spaces in dict extraction — verbatim dict text is not the source string
+
+**Area:** `model/pdf_text_edit.py` (`_dict_line_for_runs`)
+**Symptom:** Recovering whitespace-collapsed edits from the dict parse (which preserves `"Price is  100"` where joined word runs cannot) *raised* the `TARGET_RECONSTRUCTION_UNVERIFIED` rate on the dominant corpus document rather than converting it.
+**Cause:** MuPDF materializes a wide `TJ` kern as a space character in the extracted text. That space exists in the extraction and not in the content stream, so the dict line is a reconstruction too — a different one, failing byte-binding for a different reason.
+**Fix:** The dict line is used only when a runtime content-**and**-geometry alignment proof holds; otherwise the target stays run-joined. The rate rise is an honesty effect, not a regression: previously these were mislabeled `NO_MATCH`, and preview now relabels bare `NO_MATCH` to `TARGET_RECONSTRUCTION_UNVERIFIED` symmetrically with commit. Do not read either extraction as the source string without proving it against the stream.
+**File:** `model/pdf_text_edit.py` (`_dict_line_for_runs`, `_Tier0Target.source_kind`), `model/text_commit/preview.py`
+
+---
+
+## `pytest test_scripts/` in one invocation hangs at PySide6 interpreter teardown — run the suite chunked
+
+**Area:** test harness (`.venv`, PySide6)
+**Symptom:** A whole-suite single invocation stops producing output after the last test and never exits; killing it loses the summary line, so the run reads as "no result" rather than "pass".
+**Cause:** Pre-existing, environment-level: interpreter shutdown with the accumulated Qt state of 200+ test modules in one process. Not caused by, and not fixed by, any change in the text-commit engine.
+**Fix:** Split `test_scripts/test_*.py` into ~4 alphabetical chunks and run one `pytest` invocation per chunk, summing the reported counts. Never quote a full-suite number from a run whose summary line you did not see (cf. the `| tail` pitfall above — a hard abort can read as a passing run).
+**File:** — (harness); chunked runner pattern used for every Task 11 closure gate

@@ -81,10 +81,18 @@ session-scratch document, captures `PageState` before the patch, and invokes
 the same Tier 0/Tier 1 verifier used by live commit before rasterizing. The
 preview clip is the union of the requested clip and
 `PreparedEdit.effective_verify_bbox`, so verified ink growth is visible.
-Preview reuses the already-open session scratch certificate for V0e to avoid a
-full-document serialization per keystroke; live commit retains the real
-KEEP-encrypted reopen probe. `PlanPreviewResult.prepared` is an immutable DTO,
-not a live document handle, and is cached by the controller on the GUI thread.
+V0e is a real per-session KEEP round trip, not a reused assertion: a single
+`_live_keep_round_trip` performs one `tobytes(PDF_ENCRYPT_KEEP)` + reopen at
+session open and feeds *both* the probe verdict and the session snapshot, so
+the one-serialization-per-session keystroke budget is preserved while the
+certificate stays evidence-backed. `PreviewSessionInput.reopen_probe_ok`
+defaults to `False` (fail-closed). Preview also runs
+`patch.build_tier1_font_outcome` and refuses `FONT_RESOURCE_NOT_PROVEN`
+exactly as commit does. `PlanPreviewResult.prepared` is an immutable DTO,
+not a live document handle, and is cached by the controller on the GUI
+thread — but only after the preview PNG decodes, and the commit-side cache
+hit re-runs the policy and shared-stream gates rather than trusting the token
+(see PITFALLS, "a cache hit may skip work, never checks").
 
 #### Structural Page Operations and Text Indexing
 
@@ -760,6 +768,52 @@ Pinned by `test_scripts/test_text_commit_persistence.py` (save/save-as/
 incremental/full/reopen/encrypted/legacy-then-tier0) and
 `test_scripts/test_text_commit_boundaries.py` (annotation identity,
 widget/signed rejection, undo/redo replay + stale refusal).
+
+#### 10.1.1 Tier 1 Slice 1 — transplant + kern compensation (2026-08-04)
+
+Tier 1 Slice 1 replaces a bound show operator in place with
+`[(newtext) K] TJ` at the source op's byte range, inheriting z-order, clip,
+ExtGState and OCG membership by construction; `K` absorbs the advance delta so
+every following show is provably unmoved. **Flag-off** — defaults remain
+`engine=legacy`, `max_tier=0`, `preview=legacy`, `telemetry=off`. Structural
+facts a future reader needs:
+
+- **Growth is proven against the rendered surface, not against a list of ink
+  mechanisms.** When the replacement is wider than its source, the verified
+  region widens to `effective_verify_bbox` and `verify.prove_growth_region_blank`
+  must certify the new band blank on the **pre-edit** render. The proof is a
+  background-surface argument: `background_reference_points` (disjoint from the
+  widened halo by construction) plus `_target_background_rgb`, whose
+  ink-visibility rule refuses a target whose glyphs are indistinguishable from
+  their own background. `get_drawings`/`get_images`/`sh` occupancy checks remain
+  only as cheap early-outs — they cannot see ink inside a Form XObject, and the
+  raster proof is pinned standing alone with them neutered (PITFALLS).
+  `_build_tier1` additionally refuses `GROWTH_OUTSIDE_PAGE` when the widened
+  bbox leaves `page.rect`; clamping is never substituted for proof.
+- **Space discipline.** Everything raster or page-geometry is *visual* space;
+  everything from `get_text("dict"/"rawdict")` is *unrotated page* space.
+  `pdf_text_edit._dict_space_to_visual` converts once at the model boundary
+  (`transformation_matrix * rotation_matrix`), and `inspect._origin_in_page_space`
+  composes the rotation term. Before this pass no tiered commit had ever
+  succeeded on a `/Rotate 90/270` page (PITFALLS).
+- **Target text is a reconstruction, and its provenance is typed.**
+  `_Tier0Target.source_kind` is `"run_join"` or `"dict_line"`. The dict line
+  preserves verbatim inner whitespace that joined word runs destroy, so it
+  recovers whitespace-collapsed edits — but only behind a runtime content-and-
+  geometry alignment proof (`_dict_line_for_runs`), because MuPDF materializes
+  wide `TJ` kerns as synthesized spaces. A target that fails binding *only*
+  because it was reconstructed reports `TARGET_RECONSTRUCTION_UNVERIFIED`
+  rather than `NO_MATCH`, now symmetrically in preview and commit
+  (`PlanPreviewRequest.whitespace_reconstructed`, threaded
+  controller → coordinator → preview).
+- **Live commit is atomic across a raising verifier.** `engine.py` wraps the
+  live `verify_fn` in `except BaseException` (KeyboardInterrupt included),
+  reverts, and re-raises; a revert that itself fails chains both errors and
+  says the document may be inconsistent.
+
+Pinned by `test_scripts/test_text_commit_tier1_slice1.py`,
+`test_text_commit_preview_parity.py`, `test_text_commit_candidate_identity.py`
+and `test_tier0_target_resolution.py`.
 
 ## 11. Character-Level Text Selection (Browse Mode)
 

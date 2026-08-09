@@ -38,8 +38,9 @@ from model.text_commit.dto import (
     legacy_commit_outcome,
 )
 from model.text_commit.fonts import DocumentFontRegistry
+from model.text_commit.inspect import find_pages_sharing_content_stream
 from model.text_commit.plan import PreparedEdit, PlanRejection, prepare_tier0_plan
-from model.text_block import EditableSpan, TextBlock
+from model.text_block import EditableSpan, TextBlock, rotation_degrees_from_dir
 from model.text_normalization import normalize_text, token_coverage_ratio
 
 if TYPE_CHECKING:
@@ -1186,25 +1187,102 @@ class _Tier0Target(NamedTuple):
 
     ``text``/``origin``/``bbox`` keep index positions 0-2 so existing tuple
     consumers are unaffected; ``joined_runs`` is what lets a caller tell a
-    quotation from a reconstruction.
+    quotation from a reconstruction. ``source_kind`` distinguishes a
+    verbatim ``page.get_text("dict")`` line quote (``"dict_line"``) from
+    today's stripped-run join (``"run_join"``); it defaults so every
+    existing 4-arg positional construction still compiles.
     """
 
     text: str
     origin: tuple[float, float]
     bbox: tuple[float, float, float, float]
     joined_runs: int
+    source_kind: str = "run_join"  # "run_join" | "dict_line"
 
     @property
     def whitespace_reconstructed(self) -> bool:
-        """``text`` was assembled from stripped runs, so it may be wrong.
+        """``text`` may not be a byte-exact quotation of the content stream.
 
-        ``text_block_parsing._finalize`` strips each word run, so joining
-        two or more of them with single spaces reproduces the source only
-        when every gap in it was exactly one space.  Wherever it was not —
-        multiple spaces, a tab, a kern-derived gap — the join silently
-        differs from the stream bytes that ``bind_source_text`` demands.
+        For a ``run_join`` target, ``text_block_parsing._finalize`` strips
+        each word run, so joining two or more of them with single spaces
+        reproduces the source only when every gap in it was exactly one
+        space. Wherever it was not — multiple spaces, a tab, a kern-derived
+        gap — the join silently differs from the stream bytes that
+        ``bind_source_text`` demands.
+
+        For a ``dict_line`` target the text is a quotation of the
+        *extractor*, not of the stream: MuPDF materialises a TJ kern
+        advance as a real space character that the content stream never
+        contained (probe: ``[(Price is) -500 (100)] TJ`` extracts as
+        ``'Price is 100'`` while the stream decodes to ``b'Price is100'``).
+        So whitespace in a dict quote still means "our target string may be
+        the thing that is wrong" — exactly what the relabel claims.
         """
+        if self.source_kind == "dict_line":
+            return any(ch.isspace() for ch in self.text)
         return self.joined_runs > 1
+
+    def replacement_for(self, edited: str) -> str:
+        """The string the ENGINE must write for a user edit of ``edited``.
+
+        ``run_join`` targets are untouched (today's behaviour): the editor
+        already showed the run-joined text verbatim, so nothing needs
+        re-projecting. ``dict_line`` targets require re-projection because
+        the inline editor is populated from the stripped/collapsed run text
+        (``TextHit.target_text``) and the view's change detector further
+        normalizes with ``" ".join(text.split())`` — so ``edited`` may carry
+        different whitespace than ``self.text`` even when the user changed
+        nothing but token content.
+        """
+        if self.source_kind != "dict_line":
+            return edited
+        if not edited.strip():
+            # Let plan.py's EMPTY_REPLACEMENT gate refuse a real deletion;
+            # returning ``lead + trail`` here would be non-empty and slip
+            # past that gate with a whitespace-only operand.
+            return edited
+        lead, tokens, gaps, trail = _whitespace_frame(self.text)
+        if not tokens:
+            return edited
+        e_tokens = edited.split()
+        if len(e_tokens) == len(tokens) and edited == " ".join(e_tokens):
+            # Level A: the edit is in the collapsed canonical form the
+            # inline editor showed. The user changed token CONTENT only, so
+            # the source's own gaps and outer padding are restored.
+            out = [lead]
+            for i, tok in enumerate(e_tokens):
+                if i:
+                    out.append(gaps[i - 1])
+                out.append(tok)
+            out.append(trail)
+            return "".join(out)
+        # Level B: the user restructured the text (different token count,
+        # or typed their own multi-space run). Honour it verbatim, but keep
+        # the line's outer padding, which the editor never showed them.
+        return f"{lead}{edited}{trail}"
+
+
+_WS_RUN_RE = re.compile(r"\s+")
+_LEAD_WS_RE = re.compile(r"^\s*")
+_TRAIL_WS_RE = re.compile(r"\s*$")
+
+
+def _whitespace_frame(text: str) -> tuple[str, list[str], list[str], str]:
+    """Split ``text`` into ``(lead, tokens, gaps, trail)``.
+
+    ``len(gaps) == len(tokens) - 1``. Pure string manipulation; used only by
+    :meth:`_Tier0Target.replacement_for`.
+    """
+    lead_match = _LEAD_WS_RE.match(text)
+    lead = lead_match.group(0) if lead_match else ""
+    trail_match = _TRAIL_WS_RE.search(text)
+    trail = trail_match.group(0) if trail_match else ""
+    core = text[len(lead): len(text) - len(trail)] if trail else text[len(lead):]
+    if not core:
+        return lead, [], [], trail
+    tokens = _WS_RUN_RE.split(core)
+    gaps = _WS_RUN_RE.findall(core)
+    return lead, tokens, gaps, trail
 
 
 def _reconstruction_aware_reason(reason: str, target: _Tier0Target) -> str:
@@ -1212,9 +1290,10 @@ def _reconstruction_aware_reason(reason: str, target: _Tier0Target) -> str:
 
     ``NO_MATCH`` claims the document does not contain the text.  That claim
     is only honest when the text is a quotation of the document; when it is
-    a run-join it may be the reconstruction that is wrong, and conflating
-    the two hid this whole failure class from every corpus number (the
-    audits classify shows, not edits).
+    a run-join (or an extractor-synthesized dict quote) it may be the
+    reconstruction that is wrong, and conflating the two hid this whole
+    failure class from every corpus number (the audits classify shows, not
+    edits).
     """
     if reason == RejectReason.NO_MATCH and target.whitespace_reconstructed:
         return RejectReason.TARGET_RECONSTRUCTION_UNVERIFIED
@@ -1222,6 +1301,13 @@ def _reconstruction_aware_reason(reason: str, target: _Tier0Target) -> str:
 
 
 def _reconstruction_detail(target: _Tier0Target) -> str:
+    if target.source_kind == "dict_line":
+        return (
+            "target text is the extractor's verbatim line quote; a "
+            "whitespace character in it may have been synthesised from a "
+            "kern advance rather than present in the content stream, so no "
+            "show operator matched"
+        )
     return (
         f"target text was reconstructed by joining {target.joined_runs} word "
         "runs with single spaces; run parsing strips whitespace, so a source "
@@ -1230,10 +1316,140 @@ def _reconstruction_detail(target: _Tier0Target) -> str:
     )
 
 
+def _dict_space_to_visual(
+    page: fitz.Page,
+    origin: fitz.Point,
+    bbox: fitz.Rect,
+) -> tuple[fitz.Point, fitz.Rect]:
+    """Map ``page.get_text('dict')``-derived geometry into VISUAL page space.
+
+    PyMuPDF keeps ``get_text('dict'/'rawdict')`` extraction geometry in
+    *unrotated* page space on ``/Rotate`` pages (top-level ``width``/
+    ``height`` stay the mediabox dims, not ``page.rect``'s rotated dims;
+    same quirk documented for annot geometry in ``docs/PITFALLS.md`` and
+    fixed there via ``AnnotationTool._rotate_rect_to_displayed``). The
+    downstream consumer -- ``model.text_commit.verify`` -- compares
+    ``target_bbox_page`` pixel-for-pixel against ``page.get_pixmap()``
+    output, which IS visual space, so the block index's dict-space
+    ``origin``/``bbox`` must be converted here, at the model boundary,
+    before either value leaves this module. ``page.rotation_matrix`` alone
+    (not the full ``transformation_matrix * rotation_matrix``) is the
+    correct conversion: the cropbox flip and ``/UserUnit`` are already
+    baked into dict-space coordinates, only the ``/Rotate`` term is
+    missing. At rotation 0 ``rotation_matrix`` is identity, so this is a
+    no-op.
+    """
+    origin_visual = fitz.Point(origin) * page.rotation_matrix
+    bbox_visual = (fitz.Rect(bbox) * page.rotation_matrix).normalize()
+    return origin_visual, bbox_visual
+
+
+_WS_ALIGN_TOL_PT = 0.5  # baseline / origin-x agreement
+_WS_BBOX_TOL_PT = 1.0  # run-union containment slack
+
+
+def _dict_line_for_runs(
+    page: fitz.Page,
+    ordered_runs: list[EditableSpan],
+    *,
+    dict_blocks: list[dict] | None = None,
+) -> tuple[str, fitz.Point, fitz.Rect] | None:
+    """VERBATIM ``(text, origin, bbox)`` of the dict line ``ordered_runs`` came from.
+
+    Returns ``None`` when the correspondence cannot be PROVEN. The caller's
+    ``(block_idx, line_idx)`` pair is only a *candidate* -- it is re-proven
+    here against the live page via a content proof (A1/A2) and four
+    geometry gates (G1-G4); the first failure refuses. All geometry
+    returned is still unrotated dict space -- the caller converts.
+    """
+    if not ordered_runs:
+        return None
+    first = ordered_runs[0]
+    if any(
+        r.block_idx != first.block_idx or r.line_idx != first.line_idx
+        for r in ordered_runs
+    ):
+        return None  # caller invariant (P1)
+
+    blocks = (
+        dict_blocks
+        if dict_blocks is not None
+        else page.get_text("dict", flags=0).get("blocks", [])
+    )
+    if not (0 <= first.block_idx < len(blocks)):
+        return None  # P3: index may be stale/shifted
+    block = blocks[first.block_idx]
+    if block.get("type") != 0:
+        return None  # P3
+
+    lines = block.get("lines") or []
+    if not (0 <= first.line_idx < len(lines)):
+        return None  # P4: index may be stale/shifted
+    line = lines[first.line_idx]
+
+    spans = line.get("spans") or []
+    if not spans:
+        return None  # P5
+    # P5: dict spans concatenate with NO separator (probe-verified).
+    dict_text = "".join(sp.get("text", "") for sp in spans)
+    if dict_text == "":
+        return None
+
+    dir_vec = line.get("dir") or (1.0, 0.0)
+    if abs(float(dir_vec[0]) - 1.0) >= 1e-6 or abs(float(dir_vec[1])) >= 1e-6:
+        return None  # P6: vertical/180 deg text fails closed
+
+    run_texts = [r.text for r in ordered_runs]
+    # A1: run-parser shape -- runs split only at whitespace, so the dict
+    # line's whitespace-delimited tokens equal the run texts exactly.
+    a1 = dict_text.split() == run_texts
+    # A2: _parse_spans fallback shape -- "runs" are verbatim dict spans that
+    # concatenate with no separator.
+    a2 = "".join(run_texts) == dict_text
+    if not (a1 or a2):
+        return None
+
+    span0_origin = spans[0].get("origin")
+    if not span0_origin:
+        return None
+    # G1: same baseline.
+    if abs(float(span0_origin[1]) - float(first.origin.y)) > _WS_ALIGN_TOL_PT:
+        return None
+    # G2: dict origin is at or before the first glyph (equal with no
+    # padding, smaller with leading padding).
+    if float(span0_origin[0]) > float(first.origin.x) + _WS_ALIGN_TOL_PT:
+        return None
+    line_bbox_raw = line.get("bbox")
+    if not line_bbox_raw:
+        return None
+    line_bbox = fitz.Rect(line_bbox_raw)
+    # G3: the runs are physically inside this line.
+    run_union = rect_union([fitz.Rect(r.bbox) for r in ordered_runs])
+    tolerant_line_bbox = fitz.Rect(
+        line_bbox.x0 - _WS_BBOX_TOL_PT,
+        line_bbox.y0 - _WS_BBOX_TOL_PT,
+        line_bbox.x1 + _WS_BBOX_TOL_PT,
+        line_bbox.y1 + _WS_BBOX_TOL_PT,
+    )
+    if not tolerant_line_bbox.contains(run_union):
+        return None
+    # G4: independent orientation check.
+    if rotation_degrees_from_dir(dir_vec) != first.rotation:
+        return None
+
+    return (
+        dict_text,
+        fitz.Point(float(span0_origin[0]), float(span0_origin[1])),
+        line_bbox,
+    )
+
+
 def _tier0_target_from_resolve(
     model: PDFModel,
     page_idx: int,
     resolve_result: _EditTextResolveResult,
+    *,
+    dict_blocks: list[dict] | None = None,
 ) -> _Tier0Target | None:
     """Derive the Tier 0 (text, origin, bbox) target from the edit's members.
 
@@ -1244,9 +1460,12 @@ def _tier0_target_from_resolve(
     line selections, multi-line paragraphs — is not a whole-operator patch
     and returns None.
 
-    The returned ``text`` is a *candidate*: for a multi-run target it is a
-    reconstruction, not a quotation (see
-    :attr:`_Tier0Target.whitespace_reconstructed`).
+    When the member set covers every run of the line, this re-parses
+    ``page.get_text("dict")`` and recovers the VERBATIM source line (see
+    :func:`_dict_line_for_runs`) whenever a runtime content-and-geometry
+    proof binds it to these exact runs; otherwise the returned ``text`` is
+    a *candidate*: for a multi-run target it is a reconstruction, not a
+    quotation (see :attr:`_Tier0Target.whitespace_reconstructed`).
     """
     members = [
         span
@@ -1262,24 +1481,59 @@ def _tier0_target_from_resolve(
         or s.line_idx != first.line_idx
         for s in members
     ):
+        # Subsumed today by the full-line set-equality check below (span_id
+        # encodes page/block/line in both parsers), so mutation testing marks
+        # it insensitive. Kept deliberately as defence-in-depth (decision
+        # 2026-08-04): its protection must not hinge on the span_id format
+        # staying identical across two parsers. Do not fabricate a fixture
+        # to make it look sensitive.
         return None  # spans multiple lines: paragraph re-layout (Tier 1+)
-    if len(members) > 1:
-        line_run_ids = {
-            run.span_id
-            for run in model.block_manager.get_runs(page_idx)
-            if run.block_idx == first.block_idx and run.line_idx == first.line_idx
-        }
-        if line_run_ids != {m.span_id for m in members}:
-            return None  # partial line selection: substring patch unsupported
+    line_runs = [
+        run
+        for run in model.block_manager.get_runs(page_idx)
+        if run.block_idx == first.block_idx and run.line_idx == first.line_idx
+    ]
+    if len(members) > 1 and {r.span_id for r in line_runs} != {
+        m.span_id for m in members
+    }:
+        return None  # partial line selection: substring patch unsupported
+    covers_line = {r.span_id for r in line_runs} == {m.span_id for m in members}
     ordered = sorted(members, key=lambda s: float(s.origin.x))
-    text = " ".join((s.text or "") for s in ordered)
-    origin_span = ordered[0]
-    bbox = rect_union([fitz.Rect(s.bbox) for s in ordered])
+    run_text = " ".join((s.text or "") for s in ordered)
+    if model.doc is None:
+        return None
+    page = model.doc[page_idx]
+    run_bbox = rect_union([fitz.Rect(s.bbox) for s in ordered])
+
+    recovered = (
+        _dict_line_for_runs(page, ordered, dict_blocks=dict_blocks)
+        if covers_line
+        else None
+    )
+    # A single member run that is not the whole line (today's common
+    # per-word Tj edit) must keep its own run text: substituting the whole
+    # dict line there would bind the whole-line operator and rewrite text
+    # the user never selected -- the wrong-text catastrophe recovery must
+    # never risk.
+    if recovered is not None:
+        text, origin_dict, bbox_dict = recovered
+        source_kind = "dict_line"
+    else:
+        text, origin_dict, bbox_dict = run_text, ordered[0].origin, run_bbox
+        source_kind = "run_join"
+
+    origin_visual, bbox_visual = _dict_space_to_visual(page, origin_dict, bbox_dict)
     return _Tier0Target(
         text,
-        (float(origin_span.origin.x), float(origin_span.origin.y)),
-        (float(bbox.x0), float(bbox.y0), float(bbox.x1), float(bbox.y1)),
+        (float(origin_visual.x), float(origin_visual.y)),
+        (
+            float(bbox_visual.x0),
+            float(bbox_visual.y0),
+            float(bbox_visual.x1),
+            float(bbox_visual.y1),
+        ),
         len(ordered),
+        source_kind,
     )
 
 
@@ -1291,7 +1545,7 @@ def derive_tier0_preview_target(
     original_text: str | None,
     target_span_id: str | None,
     target_mode: str | None,
-) -> tuple[str, tuple[float, float], tuple[float, float, float, float]] | None:
+) -> _Tier0Target | None:
     """Resolve the Tier 0 (text, origin, bbox) once per preview session.
 
     Mirrors ``edit_text``'s resolve sequence read-only: the target is fixed
@@ -1333,7 +1587,7 @@ def derive_tier0_preview_target(
     target = _tier0_target_from_resolve(model, page_idx, resolve_result)
     if target is None:
         return None
-    return (target.text, target.origin, target.bbox)
+    return target
 
 
 def _classify_tier0_candidate(
@@ -1352,15 +1606,14 @@ def _classify_tier0_candidate(
             RejectReason.MULTI_SPAN_TARGET,
             "target does not map to one whole line or one whole word run",
         )
-    target_text, expected_origin, target_bbox, _ = target
     pending = any(e.get("page_idx") == page_idx for e in model.pending_edits)
     result = prepare_tier0_plan(
         model.doc,
         page,
-        target_text=target_text,
-        replacement_text=new_text,
-        expected_origin=expected_origin,
-        target_bbox=target_bbox,
+        target_text=target.text,
+        replacement_text=target.replacement_for(new_text),
+        expected_origin=target.origin,
+        target_bbox=target.bbox,
         registry=registry,
         style_overrides=style_overrides,
         new_rect=new_rect,
@@ -1429,7 +1682,7 @@ def _attempt_tiered_commit(
     target = _tier0_target_from_resolve(model, page_idx, resolve_result)
     if target is None:
         return None, RejectReason.MULTI_SPAN_TARGET
-    target_text, expected_origin, target_bbox, _ = target
+    replacement = target.replacement_for(new_text)
     engine = model.get_tiered_commit_engine()
     pending = any(e.get("page_idx") == page_idx for e in model.pending_edits)
 
@@ -1437,8 +1690,40 @@ def _attempt_tiered_commit(
     # cache first — the preview already prepared and scratch-verified this
     # exact candidate, so re-preparing it is wasted work.
     cached = engine.get_verified_candidate(plan_token) if plan_token else None
+    if cached is not None and (
+        (style_overrides is not None and style_overrides.changed)
+        or new_rect is not None
+    ):
+        # The cache holds whatever the PREVIEW classified — it never saw
+        # today's explicit restyle or user-dragged geometry (the preview
+        # request that produced this token carried neither, or it would
+        # have been refused there too). Reusing it here would silently
+        # commit the untouched cached candidate and discard the override.
+        # Fall through to a fresh prepare() so the real gate
+        # (style_override_present / geometry_override_present) refuses.
+        cached = None
+    if cached is not None and (
+        cached.original_text != target.text or cached.replacement_text != replacement
+    ):
+        # The cache may hold a candidate the PREVIEW derived from a
+        # different target/replacement framing than this commit just
+        # derived (e.g. recovery's whitespace re-projection changed between
+        # the preview request and this commit). Trusting it here would
+        # commit a candidate for text the commit path never actually
+        # proved. Fall through to a fresh prepare().
+        cached = None
     prepared: PreparedEdit | PlanRejection
     if cached is not None:
+        # The stream a cached candidate targets may have started being
+        # shared by another page's /Contents since it was prepared — every
+        # tier mutates its stream in place, so committing a stale candidate
+        # here would silently rewrite that other page too. Re-run the same
+        # gate a fresh prepare() would run before trusting the cache.
+        foreign = find_pages_sharing_content_stream(
+            model.doc, stream_xref=cached.stream_xref, page_number=page_idx
+        )
+        if foreign:
+            return None, RejectReason.SHARED_CONTENT_STREAM
         prepared = cached
         logger.debug(
             "text_commit: reusing cached verified candidate token=%s…",
@@ -1447,10 +1732,10 @@ def _attempt_tiered_commit(
     else:
         prepared = engine.prepare(
             page,
-            target_text=target_text,
-            replacement_text=new_text,
-            expected_origin=expected_origin,
-            target_bbox=target_bbox,
+            target_text=target.text,
+            replacement_text=replacement,
+            expected_origin=target.origin,
+            target_bbox=target.bbox,
             style_overrides=style_overrides,
             new_rect=new_rect,
             page_has_pending_maintenance=pending,

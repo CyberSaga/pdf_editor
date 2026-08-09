@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import fitz
@@ -30,7 +31,18 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from model.text_commit.dto import CommitStatus, CommitTier  # noqa: E402
+import model.pdf_text_edit as pdf_text_edit_module  # noqa: E402
+from model.edit_commands import EditTextResult  # noqa: E402
+from model.edit_requests import StyleOverrides  # noqa: E402
+from model.pdf_model import PDFModel  # noqa: E402
+from model.pdf_text_edit import _attempt_tiered_commit  # noqa: E402
+from model.text_block import EditableSpan  # noqa: E402
+from model.text_commit.dto import (  # noqa: E402
+    CommitStatus,
+    CommitTier,
+    RejectReason,
+    TextCommitSettings,
+)
 from model.text_commit.engine import TieredCommitEngine  # noqa: E402
 from model.text_commit.plan import PreparedEdit  # noqa: E402
 from model.text_commit.preview import (  # noqa: E402
@@ -95,61 +107,136 @@ def _target_bbox(page: fitz.Page, probe: str) -> tuple[float, float, float, floa
     raise AssertionError(f"{probe!r} not found")
 
 
+def _make_resolve_result(page: fitz.Page, probe: str) -> SimpleNamespace:
+    """A minimal ``_EditTextResolveResult``-shaped stand-in built from the
+    live page's own rawdict span, for driving ``_attempt_tiered_commit``
+    directly (mirrors the pattern in test_text_commit_preview_parity.py)."""
+    for block in page.get_text("rawdict")["blocks"]:
+        for line in block.get("lines", []):
+            for span in line["spans"]:
+                text = "".join(ch["c"] for ch in span["chars"])
+                if probe in text:
+                    editable = EditableSpan(
+                        span_id="cached-candidate-target",
+                        page_idx=0,
+                        block_idx=0,
+                        line_idx=0,
+                        span_idx=0,
+                        bbox=fitz.Rect(span["bbox"]),
+                        origin=fitz.Point(*span["origin"]),
+                        text=probe,
+                        font="Helvetica",
+                        size=float(span["size"]),
+                        color=(0.0, 0.0, 0.0),
+                        dir_vec=(1.0, 0.0),
+                        rotation=0,
+                    )
+                    return SimpleNamespace(
+                        overlap_cluster=[editable],
+                        target_member_span_ids={editable.span_id},
+                    )
+    raise AssertionError(f"{probe!r} not found")
+
+
 class TestPreviewCommitCandidateIdentity:
     """The preview and commit paths must consume the same PreparedEdit."""
 
-    def test_preview_token_threaded_to_model_edit_text(self):
-        """model.edit_text() receives the plan_token from the preview path.
+    def test_preview_token_threaded_to_model_edit_text(self, tmp_path):
+        """model.edit_text(plan_token=...) actually reaches
+        ``_attempt_tiered_commit`` with the SAME token the preview produced,
+        and the cached candidate is what gets committed.
 
-        Currently RED: model.edit_text() has no plan_token parameter.
+        This is the real signal chain, not a signature inspection: it opens
+        a real ``PDFModel``, runs the preview path to get a token, caches
+        the resulting candidate exactly as the controller does, spies on
+        the module-level ``_attempt_tiered_commit`` to prove the spy is
+        actually invoked with that token, and asserts the edit committed.
         """
-        doc = _stream_doc()
-        page = doc[0]
-        origin = _first_char_origin(page, TARGET)
-        bbox = _target_bbox(page, TARGET)
+        pdf_path = tmp_path / "identity.pdf"
+        seed = _stream_doc()
+        seed.save(str(pdf_path), garbage=0)
+        seed.close()
 
-        # Preview path: compute the token
-        session = open_preview_session(doc, 0, "test-session")
-        assert session is not None
-        renderer = PlanPreviewRenderer(session)
-        result = renderer.render(
-            PlanPreviewRequest(
-                session_key="test-session",
-                generation=1,
-                target_text=TARGET,
-                replacement_text=REPLACEMENT,
-                expected_origin=origin,
-                target_bbox=bbox,
-                clip_rect=bbox,
-                render_scale=2.0,
+        model = PDFModel(
+            text_commit_settings=TextCommitSettings(
+                engine="tiered", preview="plan", max_tier=0
             )
         )
-        renderer.close()
-        preview_token = result.plan_token
-        assert preview_token is not None, "preview must produce a Tier 0 token"
+        model.open_pdf(str(pdf_path))
+        model.ensure_page_index_built(1)
+        try:
+            page = model.doc[0]
+            origin = _first_char_origin(page, TARGET)
+            bbox = _target_bbox(page, TARGET)
 
-        # Commit path: model.edit_text must accept plan_token and pass it down
-        from model.pdf_text_edit import edit_text as _edit_text
-
-        # Capture whether plan_token actually arrives at _attempt_tiered_commit
-        captured_token = [None]
-        original_attempt = sys.modules["model.pdf_text_edit"]._attempt_tiered_commit
-
-        def _spy_attempt(model, page, page_idx, new_text, resolve_result,
-                         style_overrides, new_rect, plan_token=None):
-            captured_token[0] = plan_token
-            return original_attempt(model, page, page_idx, new_text,
-                                    resolve_result, style_overrides, new_rect)
-
-        with patch("model.pdf_text_edit._attempt_tiered_commit", _spy_attempt):
-            # Create a minimal model-like object that edit_text can operate on
-            # We don't need to actually run the full edit -- we just need to
-            # prove plan_token is threaded. The function should accept it.
-            import inspect
-            sig = inspect.signature(_edit_text)
-            assert "plan_token" in sig.parameters, (
-                "model.edit_text() must accept a plan_token keyword argument"
+            # Preview path: compute the token exactly as the controller does.
+            session = open_preview_session(model.doc, 0, "test-session")
+            assert session is not None
+            renderer = PlanPreviewRenderer(session)
+            result = renderer.render(
+                PlanPreviewRequest(
+                    session_key="test-session",
+                    generation=1,
+                    target_text=TARGET,
+                    replacement_text=REPLACEMENT,
+                    expected_origin=origin,
+                    target_bbox=bbox,
+                    clip_rect=bbox,
+                    render_scale=2.0,
+                )
             )
+            renderer.close()
+            preview_token = result.plan_token
+            assert preview_token is not None, "preview must produce a Tier 0 token"
+            assert isinstance(result.prepared, PreparedEdit)
+            model.cache_verified_candidate(preview_token, result.prepared)
+
+            captured_tokens: list[str | None] = []
+            original_attempt = pdf_text_edit_module._attempt_tiered_commit
+
+            def _spy_attempt(model_arg, page_arg, page_idx, new_text,
+                              resolve_result, style_overrides, new_rect,
+                              plan_token=None):
+                captured_tokens.append(plan_token)
+                return original_attempt(
+                    model_arg, page_arg, page_idx, new_text, resolve_result,
+                    style_overrides, new_rect, plan_token=plan_token,
+                )
+
+            # Poison prepare() on the SAME engine model.edit_text() will use:
+            # if the token merely gets threaded down to _attempt_tiered_commit
+            # without the cached candidate actually being reused, the commit
+            # would fall through to a fresh prepare() and this raises --
+            # proving cache-HIT, not just token-threading.
+            def _fail_prepare(*_args, **_kwargs):
+                raise AssertionError("cached candidate must bypass prepare()")
+
+            engine = model.get_tiered_commit_engine()
+            engine.prepare = _fail_prepare  # type: ignore[method-assign]
+
+            with patch.object(
+                pdf_text_edit_module, "_attempt_tiered_commit", _spy_attempt
+            ):
+                block = next(
+                    b for b in model.block_manager.get_blocks(0)
+                    if TARGET in (b.text or "")
+                )
+                outcome = model.edit_text(
+                    1,
+                    fitz.Rect(block.layout_rect),
+                    REPLACEMENT,
+                    original_text=block.text,
+                    plan_token=preview_token,
+                )
+
+            assert captured_tokens, "_attempt_tiered_commit must actually fire"
+            assert captured_tokens[-1] == preview_token, (
+                "the preview token must reach _attempt_tiered_commit"
+            )
+            assert outcome is EditTextResult.SUCCESS
+            assert REPLACEMENT in model.doc[0].get_text()
+        finally:
+            model.close()
 
     def test_commit_reuses_cached_verified_candidate(self):
         """When plan_token matches a cached VerifiedPreparedEdit, the engine
@@ -278,3 +365,153 @@ class TestPreviewCommitCandidateIdentity:
             "EditTextCommand.execute() must pass plan_token= to model.edit_text()"
         )
         assert captured_kwargs["plan_token"] == "test-preview-token-abc123"
+
+
+def _two_page_stream_doc() -> tuple[fitz.Document, int]:
+    """Two-page doc; each page starts with its OWN ``/Contents`` stream, so
+    ``prepare()``'s shared-content-stream scan passes cleanly at prepare
+    time.  Returns ``(doc, page0_content_xref)`` so a test can later make
+    page 1 start sharing page 0's stream, after the candidate is cached."""
+    doc = fitz.open()
+    page0 = doc.new_page(width=595, height=842)
+    stream0 = b"BT /F1 12 Tf 72 700 Td (" + TARGET.encode() + b") Tj ET"
+    content_xref0 = doc.get_new_xref()
+    doc.update_object(content_xref0, "<<>>")
+    doc.update_stream(content_xref0, stream0)
+    doc.xref_set_key(page0.xref, "Contents", f"{content_xref0} 0 R")
+    font_xref = doc.get_new_xref()
+    doc.update_object(font_xref, _FONT_OBJECT)
+    doc.xref_set_key(
+        page0.xref, "Resources", f"<< /Font << /F1 {font_xref} 0 R >> >>"
+    )
+
+    page1 = doc.new_page(width=595, height=842)
+    stream1 = b"BT /F1 12 Tf 72 700 Td (unrelated) Tj ET"
+    content_xref1 = doc.get_new_xref()
+    doc.update_object(content_xref1, "<<>>")
+    doc.update_stream(content_xref1, stream1)
+    doc.xref_set_key(page1.xref, "Contents", f"{content_xref1} 0 R")
+    doc.xref_set_key(
+        page1.xref, "Resources", f"<< /Font << /F1 {font_xref} 0 R >> >>"
+    )
+    return doc, content_xref0
+
+
+class TestCachedCandidateBypassesPolicyGates:
+    """F2: a cached ``VerifiedPreparedEdit`` must not skip the gates a fresh
+    prepare() would enforce.  Each test reproduces one attack: prepare and
+    cache a token under conditions where NO override/sharing was present,
+    then commit with that token under conditions where the SAME check --
+    run fresh -- would refuse.  Before the fix, the cached branch never
+    re-runs the gate and the attack commits; after the fix it must refuse
+    with the same reason a fresh prepare would report.
+    """
+
+    def _prepare_and_cache(
+        self, doc: fitz.Document
+    ) -> tuple[PDFModel, str, SimpleNamespace]:
+        model = PDFModel(
+            text_commit_settings=TextCommitSettings(engine="tiered", max_tier=0)
+        )
+        model.doc = doc
+        page = doc[0]
+        origin = _first_char_origin(page, TARGET)
+        bbox = _target_bbox(page, TARGET)
+        engine = model.get_tiered_commit_engine()
+        prepared = engine.prepare(
+            page,
+            target_text=TARGET,
+            replacement_text=REPLACEMENT,
+            expected_origin=origin,
+            target_bbox=bbox,
+        )
+        assert isinstance(prepared, PreparedEdit)
+        resolve_result = _make_resolve_result(page, TARGET)
+        return model, prepared.token, resolve_result
+
+    def test_cached_candidate_with_dragged_rect_is_refused_not_committed(self):
+        """Attack (a): a cached token plus a user-dragged ``new_rect`` must
+        refuse geometry_override_present, not silently commit and discard
+        the drag -- exactly as a fresh prepare() would refuse it.
+        """
+        doc = _stream_doc()
+        model, token, resolve_result = self._prepare_and_cache(doc)
+        page = doc[0]
+        bbox = _target_bbox(page, TARGET)
+        dragged_rect = fitz.Rect(
+            bbox[0] + 40, bbox[1] + 40, bbox[2] + 40, bbox[3] + 40
+        )
+
+        outcome, reason = _attempt_tiered_commit(
+            model, page, 0, REPLACEMENT, resolve_result, None, dragged_rect,
+            plan_token=token,
+        )
+
+        assert outcome is None, (
+            "a cached candidate plus a dragged new_rect must not commit"
+        )
+        assert reason == RejectReason.GEOMETRY_OVERRIDE_PRESENT
+        assert TARGET in page.get_text(), (
+            "the drag must not silently mutate the page"
+        )
+
+    def test_cached_candidate_with_style_override_is_refused_not_committed(self):
+        """Attack (b): a cached token plus an explicit restyle must refuse
+        style_override_present, not silently commit and discard the
+        restyle -- exactly as a fresh prepare() would refuse it.
+        """
+        doc = _stream_doc()
+        model, token, resolve_result = self._prepare_and_cache(doc)
+        page = doc[0]
+        style = StyleOverrides(font_family="courier", font_size=14.0)
+
+        outcome, reason = _attempt_tiered_commit(
+            model, page, 0, REPLACEMENT, resolve_result, style, None,
+            plan_token=token,
+        )
+
+        assert outcome is None, (
+            "a cached candidate plus a style override must not commit"
+        )
+        assert reason == RejectReason.STYLE_OVERRIDE_PRESENT
+        assert TARGET in page.get_text(), (
+            "the restyle must not silently mutate the page"
+        )
+
+    def test_cached_candidate_refused_when_another_page_starts_sharing_the_stream(
+        self,
+    ):
+        """The verifier's shared-content-stream scenario: prepare and cache
+        a candidate while the target stream is exclusive to its page, then
+        -- before committing -- another page starts referencing that same
+        stream as its own ``/Contents``.  Committing the stale cached
+        candidate must refuse SHARED_CONTENT_STREAM rather than silently
+        rewriting the other page's content too.
+        """
+        doc, content_xref0 = _two_page_stream_doc()
+        model, token, resolve_result = self._prepare_and_cache(doc)
+        page0 = doc[0]
+        stream_before = doc.xref_stream(content_xref0)
+
+        # Another page starts sharing the target's content stream -- this
+        # alone changes what page 1 renders (it now shows page 0's "iii"
+        # instead of its own former "unrelated"); that repoint is not
+        # itself the attack. The attack is a *commit* of the stale cached
+        # candidate silently rewriting the now-shared stream underneath
+        # both pages.
+        page1_xref = doc.page_xref(1)
+        doc.xref_set_key(page1_xref, "Contents", f"{content_xref0} 0 R")
+
+        outcome, reason = _attempt_tiered_commit(
+            model, page0, 0, REPLACEMENT, resolve_result, None, None,
+            plan_token=token,
+        )
+
+        assert outcome is None, (
+            "a cached candidate whose stream is now shared must not commit"
+        )
+        assert reason == RejectReason.SHARED_CONTENT_STREAM
+        assert TARGET in page0.get_text()
+        assert doc.xref_stream(content_xref0) == stream_before, (
+            "the shared content stream must not be mutated by a refused commit"
+        )

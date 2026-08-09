@@ -657,3 +657,9 @@ def test_fallback_target_bbox_follows_page_rotate(rotation):
             break
     assert found, "fixture: no dark pixmap pixels found"
     doc.close()
+
+
+def test_reject_reason_growth_outside_page_constant_exists():
+    """GROWTH_OUTSIDE_PAGE is a defined RejectReason constant."""
+    assert hasattr(RejectReason, "GROWTH_OUTSIDE_PAGE")
+    assert RejectReason.GROWTH_OUTSIDE_PAGE == "growth_outside_page"

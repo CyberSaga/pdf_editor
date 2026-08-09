@@ -705,8 +705,7 @@ def test_growth_verify_bbox_outside_page_is_rejected_during_prepare():
         target_bbox=tuple(span["bbox"]),
     )
     assert isinstance(rejection, PlanRejection)
-    new_reason = getattr(RejectReason, "GROWTH_OUTSIDE_PAGE", "growth_outside_page")
-    assert rejection.reason == new_reason
+    assert rejection.reason == RejectReason.GROWTH_OUTSIDE_PAGE
     assert "page" in rejection.detail.lower()
     doc.close()
 
@@ -765,6 +764,81 @@ def test_live_commit_reverts_and_reraises_when_verifier_raises():
     assert doc.xref_stream(stream_xref) == stream_before
     assert page_fingerprint(doc, doc[0]) == fingerprint_before
     assert TARGET in doc[0].get_text()
+    doc.close()
+
+
+def test_live_commit_reverts_and_reraises_on_keyboard_interrupt():
+    """BaseException (not just Exception) during live verify must revert."""
+    doc = _composite_doc()
+    page = doc[0]
+    span = _span(page, TARGET)
+    stream_xref = page.get_contents()[0]
+    stream_before = doc.xref_stream(stream_xref)
+    fingerprint_before = page_fingerprint(doc, page)
+
+    engine = TieredCommitEngine(doc, max_tier=1)
+    prepared = engine.prepare(
+        page,
+        target_text=TARGET,
+        replacement_text=GROWTH_REPLACEMENT,
+        expected_origin=tuple(span["origin"]),
+        target_bbox=tuple(span["bbox"]),
+    )
+    assert isinstance(prepared, PreparedEdit)
+    real_verify = engine_module.verify_tier1_commit
+
+    def _boom(*args, **kwargs):
+        raise KeyboardInterrupt("injected interrupt during verification")
+
+    engine_module.verify_tier1_commit = _boom
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            engine.commit(prepared)
+    finally:
+        engine_module.verify_tier1_commit = real_verify
+
+    assert doc.xref_stream(stream_xref) == stream_before
+    assert page_fingerprint(doc, doc[0]) == fingerprint_before
+    assert TARGET in doc[0].get_text()
+    doc.close()
+
+
+def test_live_commit_chains_revert_failure_without_masking_original_error():
+    """If revert() itself raises, the original verify error must not be lost."""
+    doc = _composite_doc()
+    page = doc[0]
+    span = _span(page, TARGET)
+
+    engine = TieredCommitEngine(doc, max_tier=1)
+    prepared = engine.prepare(
+        page,
+        target_text=TARGET,
+        replacement_text=GROWTH_REPLACEMENT,
+        expected_origin=tuple(span["origin"]),
+        target_bbox=tuple(span["bbox"]),
+    )
+    assert isinstance(prepared, PreparedEdit)
+    real_verify = engine_module.verify_tier1_commit
+    real_revert = patch_module.AppliedPatch.revert
+
+    def _boom_verify(*args, **kwargs):
+        raise RuntimeError("injected verifier exception")
+
+    def _revert_boom(self, doc_arg):
+        raise OSError("injected revert failure")
+
+    engine_module.verify_tier1_commit = _boom_verify
+    patch_module.AppliedPatch.revert = _revert_boom
+    try:
+        with pytest.raises(OSError) as excinfo:
+            engine.commit(prepared)
+        assert "inconsistent" in str(excinfo.value).lower()
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+        assert "injected verifier exception" in str(excinfo.value.__cause__)
+    finally:
+        engine_module.verify_tier1_commit = real_verify
+        patch_module.AppliedPatch.revert = real_revert
+
     doc.close()
 
 
@@ -1287,3 +1361,249 @@ def test_non_escalating_rejections_stay_terminal_and_max_tier_zero_never_reaches
     assert CommitTier.TIER0_LOSSLESS_STREAM_PATCH in high_fidelity_tiers
     assert CommitTier.TIER1_REBUILD_WITH_VALIDATED_FACE in high_fidelity_tiers
     assert CommitTier.TIER2_LEGACY not in high_fidelity_tiers
+
+
+# ============================================ Task F1: background proof gates
+#
+# The Tier 1 growth gate must prove the growth region belongs to the SAME
+# writable background surface the target sits on.  The pre-F1 gate sampled its
+# "background reference" at ``target_bbox[2] + 2.25..5.0pt`` -- i.e. INSIDE the
+# growth band itself -- so a solid black region covering the whole growth zone
+# supplied its own reference and the gate degenerated into a cross-region
+# consistency check.  The fixtures below paint that black region through a
+# Form XObject shading, which ``get_drawings``/``get_images``/the page-
+# /Contents ``sh`` scan are all blind to, so the raster half must stand alone.
+
+
+def _shading_xobject_doc(
+    shading_bbox: tuple[float, float, float, float],
+) -> fitz.Document:
+    """One page: ``iii`` at 72 700, plus a Form XObject painting a UNIFORM
+    BLACK axial shading over ``shading_bbox`` (PDF user space).
+
+    Deliberately invisible to every cheap occupancy gate: ``sh`` lives in the
+    XObject's own stream (not the page /Contents), the shading is not a
+    drawing (``get_drawings() == []``) and not an image
+    (``get_images() == []``).
+    """
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    font_xref = doc.get_new_xref()
+    doc.update_object(font_xref, _FONT_OBJECT)
+
+    x0, y0, x1, y1 = shading_bbox
+    shading_xref = doc.get_new_xref()
+    doc.update_object(
+        shading_xref,
+        "<< /ShadingType 2 /ColorSpace /DeviceRGB "
+        f"/Coords [{x0} {y0} {x1} {y1}] /Extend [true true] "
+        "/Function << /FunctionType 2 /Domain [0 1] "
+        "/C0 [0 0 0] /C1 [0 0 0] /N 1 >> >>",
+    )
+    form_xref = doc.get_new_xref()
+    doc.update_object(
+        form_xref,
+        "<< /Type /XObject /Subtype /Form "
+        f"/BBox [{x0} {y0} {x1} {y1}] "
+        f"/Resources << /Shading << /Sh0 {shading_xref} 0 R >> >> >>",
+    )
+    doc.update_stream(form_xref, b"/Sh0 sh")
+
+    content_xref = doc.get_new_xref()
+    doc.update_object(content_xref, "<<>>")
+    doc.update_stream(
+        content_xref,
+        b"BT /F1 12 Tf 72 700 Td (" + TARGET.encode() + b") Tj ET /Fx Do",
+    )
+    doc.xref_set_key(page.xref, "Contents", f"{content_xref} 0 R")
+    doc.xref_set_key(
+        page.xref,
+        "Resources",
+        f"<< /Font << /F1 {font_xref} 0 R >> /XObject << /Fx {form_xref} 0 R >> >>",
+    )
+    return doc
+
+
+def _assert_occupancy_gates_report_clear(doc: fitz.Document, page: fitz.Page) -> None:
+    """The shading fixtures' premise: every cheap occupancy gate is blind."""
+    assert page.get_drawings() == []
+    assert page.get_images(full=True) == []
+    growth_rect = fitz.Rect(80.0, 129.0, 104.0, 146.0)
+    assert verify_module._drawings_intersect_growth(page, growth_rect) is False
+    assert verify_module._images_intersect_growth(page, growth_rect) is False
+    assert verify_module._shading_presence(page, doc) is False
+
+
+def _neuter_occupancy_gates(monkeypatch) -> None:
+    monkeypatch.setattr(
+        verify_module, "_drawings_intersect_growth", lambda *a, **k: False
+    )
+    monkeypatch.setattr(
+        verify_module, "_images_intersect_growth", lambda *a, **k: False
+    )
+    monkeypatch.setattr(verify_module, "_shading_presence", lambda *a, **k: False)
+
+
+def test_growth_into_a_black_shading_xobject_region_is_rejected():
+    """The reproduced defect: a growth zone painted solid black by a Form
+    XObject shading was ACCEPTED, because the reference was sampled from
+    inside the very band under proof."""
+    doc = _shading_xobject_doc((60, 680, 200, 730))
+    page = doc[0]
+    _assert_occupancy_gates_report_clear(doc, page)
+    span = _span(page, TARGET)
+    stream_xref = page.get_contents()[0]
+    stream_before = doc.xref_stream(stream_xref)
+
+    engine = TieredCommitEngine(doc, max_tier=1)
+    rejection = engine.prepare(
+        page,
+        target_text=TARGET,
+        replacement_text=GROWTH_REPLACEMENT,
+        expected_origin=tuple(span["origin"]),
+        target_bbox=tuple(span["bbox"]),
+    )
+    assert isinstance(rejection, PlanRejection), (
+        "writing text into a solid black region must never be accepted"
+    )
+    assert rejection.reason == RejectReason.GROWTH_REGION_NOT_BLANK
+    assert rejection.detail.startswith("background:"), rejection.detail
+    assert doc.xref_stream(stream_xref) == stream_before
+    doc.close()
+
+
+def test_background_gate_rejects_the_black_shading_with_occupancy_neutered(monkeypatch):
+    """The raster/background proof must stand ALONE.
+
+    With every occupancy gate forced to report "clear", the background proof
+    is the only thing left -- if it ever goes inert again, this fails.
+    """
+    doc = _shading_xobject_doc((60, 680, 200, 730))
+    page = doc[0]
+    span = _span(page, TARGET)
+    _neuter_occupancy_gates(monkeypatch)
+
+    engine = TieredCommitEngine(doc, max_tier=1)
+    rejection = engine.prepare(
+        page,
+        target_text=TARGET,
+        replacement_text=GROWTH_REPLACEMENT,
+        expected_origin=tuple(span["origin"]),
+        target_bbox=tuple(span["bbox"]),
+    )
+    assert isinstance(rejection, PlanRejection), (
+        "the background/raster proof must reject on its own, with no help "
+        "from the occupancy gates"
+    )
+    assert rejection.reason == RejectReason.GROWTH_REGION_NOT_BLANK
+    assert rejection.detail.startswith("background:"), rejection.detail
+    doc.close()
+
+
+def test_growth_into_a_uniform_band_that_mismatches_the_page_background_is_rejected(
+    monkeypatch,
+):
+    """Pins the MISMATCH branch specifically.
+
+    The black band starts just right of the target's own bbox, so the target
+    stays visible on white and a white reference is obtainable -- the only
+    thing that can reject is "the growth region is uniform but is NOT the
+    target's background colour".
+    """
+    doc = _shading_xobject_doc((80.5, 675, 210, 735))
+    page = doc[0]
+    _assert_occupancy_gates_report_clear(doc, page)
+    span = _span(page, TARGET)
+    _neuter_occupancy_gates(monkeypatch)
+
+    engine = TieredCommitEngine(doc, max_tier=1)
+    rejection = engine.prepare(
+        page,
+        target_text=TARGET,
+        replacement_text=GROWTH_REPLACEMENT,
+        expected_origin=tuple(span["origin"]),
+        target_bbox=tuple(span["bbox"]),
+    )
+    assert isinstance(rejection, PlanRejection), (
+        "a uniform growth band whose colour differs from the target's own "
+        "background must be rejected"
+    )
+    assert rejection.reason == RejectReason.GROWTH_REGION_NOT_BLANK
+    assert rejection.detail.startswith("background:"), rejection.detail
+    doc.close()
+
+
+def test_background_reference_points_are_disjoint_from_the_widened_halo():
+    """The structural guard against ever sampling the reference at the tail.
+
+    Every candidate sampling point (with its own 3x3 neighbourhood) must lie
+    outside ``halo(verify_bbox)`` -- the growth band plus its halo.
+    """
+    background_reference_points = getattr(
+        verify_module, "background_reference_points", None
+    )
+    assert background_reference_points is not None, (
+        "verify.background_reference_points not implemented yet -- the "
+        "reference sampling geometry must be inspectable to be pinned"
+    )
+    doc = _composite_doc()
+    page = doc[0]
+    target_bbox = _target_bbox(page, TARGET)
+    verify_bbox = (
+        target_bbox[0], target_bbox[1], target_bbox[2] + 22.0, target_bbox[3],
+    )
+    pixmap = page.get_pixmap(dpi=96)
+    meta = (pixmap.width, pixmap.height, pixmap.stride, pixmap.n)
+
+    points = background_reference_points(target_bbox, verify_bbox, meta)
+    assert points, "no disjoint reference point offered for an ordinary target"
+
+    hx0, hy0, hx1, hy1 = verify_module._halo_pixels(verify_bbox)
+    for x, y in points:
+        neighborhood_disjoint = (
+            (x + 1 < hx0) or (x - 1 > hx1) or (y + 1 < hy0) or (y - 1 > hy1)
+        )
+        assert neighborhood_disjoint, (
+            f"reference point {(x, y)} is inside the widened halo "
+            f"{(hx0, hy0, hx1, hy1)} -- the band it is supposed to prove"
+        )
+        # ...and never at the tail, which is exactly what the defect did.
+        # KEEP THIS SECOND ASSERTION: the first one recomputes the very
+        # predicate background_reference_points filters on, so it only catches
+        # deletion of that filter. This one is independent of it and is the
+        # real guard against a tail-sampling regression -- do not "simplify"
+        # it away as redundant.
+        assert not (x > hx0 and hy0 <= y <= hy1), (
+            f"reference point {(x, y)} sits to the RIGHT of the target inside "
+            "the growth band's y-range"
+        )
+    doc.close()
+
+
+def test_count_growth_zone_glyphs_sees_a_foreign_glyph_overlapping_the_target_edge():
+    """Blind spot 4: a FOREIGN wide glyph that starts left of the target's
+    right edge and runs across the growth band was skipped as "the target's
+    own glyph" (``bbox[0] < tx1 - 0.5``)."""
+    stream = (
+        b"BT /F1 12 Tf 72 700 Td (" + TARGET.encode() + b") Tj ET "
+        b"BT /F1 12 Tf 77 700 Td (W) Tj ET"
+    )
+    doc = _stream_doc(stream)
+    page = doc[0]
+    target_bbox = _target_bbox(page, TARGET)
+    foreign_bbox = _target_bbox(page, "W")
+    # The fixture's premise, asserted rather than assumed.
+    assert foreign_bbox[0] < target_bbox[2] - 0.5
+    assert foreign_bbox[2] > target_bbox[2] + 1.0
+
+    verify_bbox = (
+        target_bbox[0], target_bbox[1], target_bbox[2] + 22.0, target_bbox[3],
+    )
+    count = verify_module.count_growth_zone_glyphs(
+        page, target_bbox=target_bbox, verify_bbox=verify_bbox
+    )
+    assert count == 1, (
+        "a foreign glyph overhanging the target's right edge must be counted, "
+        "not written off as the target's own"
+    )
+    doc.close()

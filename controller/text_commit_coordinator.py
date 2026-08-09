@@ -182,6 +182,7 @@ class TextCommitPreviewCoordinator(QObject):
         render_scale: float,
         style_overrides: StyleOverrides | None = None,
         new_rect: tuple[float, float, float, float] | None = None,
+        whitespace_reconstructed: bool = False,
     ) -> str | None:
         session = self._session
         if session is None:
@@ -202,6 +203,7 @@ class TextCommitPreviewCoordinator(QObject):
             render_scale=float(render_scale),
             style_overrides=style_overrides,
             new_rect=new_rect,
+            whitespace_reconstructed=bool(whitespace_reconstructed),
         )
         self._latest_generation = identity.generation
         if self._inflight is not None:

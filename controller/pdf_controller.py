@@ -35,7 +35,7 @@ from model.object_requests import (
 )
 from model import pdf_optimizer
 from model.pdf_model import PDFModel
-from model.pdf_text_edit import derive_tier0_preview_target
+from model.pdf_text_edit import _Tier0Target, derive_tier0_preview_target
 from model.text_commit.preview import PlanPreviewResult, open_preview_session
 from model.tools.ocr_tool import is_device_available
 from utils.file_reveal import reveal_in_file_manager
@@ -240,7 +240,7 @@ class PDFController:
         # V2 plan-backed preview (lazy: only built when TEXT_COMMIT_PREVIEW=plan)
         self._text_commit_preview_coordinator: TextCommitPreviewCoordinator | None = None
         self._plan_preview_session_key: str | None = None
-        self._plan_preview_target: tuple | None = None
+        self._plan_preview_target: _Tier0Target | None = None
         self._thumbnail_resume_pending_by_session: set[str] = set()
         self._load_gen_by_session: dict[str, int] = {}
         self._thumb_gen_by_session: dict[str, int] = {}
@@ -3581,17 +3581,18 @@ class PDFController:
                 session_key, generation, "target_unresolved"
             )
             return
-        target_text, expected_origin, target_bbox = self._plan_preview_target
+        target = self._plan_preview_target
         coordinator.request(
             generation=generation,
-            target_text=target_text,
-            replacement_text=replacement_text,
-            expected_origin=expected_origin,
-            target_bbox=target_bbox,
+            target_text=target.text,
+            replacement_text=target.replacement_for(replacement_text),
+            expected_origin=target.origin,
+            target_bbox=target.bbox,
             clip_rect=clip_rect,
             render_scale=render_scale,
             style_overrides=style_overrides,
             new_rect=new_rect,
+            whitespace_reconstructed=target.whitespace_reconstructed,
         )
 
     def _notify_plan_preview_rejected(
@@ -3610,7 +3611,21 @@ class PDFController:
     def _consume_plan_preview(
         self, identity: PlanPreviewIdentity, result: PlanPreviewResult
     ) -> None:
-        if result.plan_token is not None and result.prepared is not None:
+        image = None
+        if result.png_bytes:
+            candidate = QImage.fromData(result.png_bytes, "PNG")
+            if not candidate.isNull():
+                image = candidate
+        # Cache only a candidate whose raster the user can actually see and
+        # confirm: caching before the PNG decode is validated lets an
+        # undecodable-raster candidate evict a live FIFO slot for a token
+        # the view will never present (it reports plan_token=None below
+        # whenever the image failed to decode).
+        if (
+            image is not None
+            and result.plan_token is not None
+            and result.prepared is not None
+        ):
             cache = getattr(self.model, "cache_verified_candidate", None)
             if callable(cache):
                 try:
@@ -3621,11 +3636,6 @@ class PDFController:
                         type(exc).__name__,
                     )
                     return
-        image = None
-        if result.png_bytes:
-            candidate = QImage.fromData(result.png_bytes, "PNG")
-            if not candidate.isNull():
-                image = candidate
         self.view.apply_text_edit_plan_preview(
             session_key=identity.session_key,
             generation=identity.generation,

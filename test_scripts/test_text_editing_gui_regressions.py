@@ -1090,6 +1090,51 @@ def test_escape_still_discards() -> None:
     )
 
 
+class _FakeEditorWidgetWithPlanToken(_FakeEditorWidget):
+    """A fake editor widget exposing a known preview plan_token, mirroring
+    the real editor widget's ``current_plan_token()`` API."""
+
+    def __init__(self, text: str, original_text: str, plan_token: str | None) -> None:
+        super().__init__(text, original_text)
+        self._plan_token = plan_token
+
+    def current_plan_token(self) -> str | None:
+        return self._plan_token
+
+
+def test_finalize_reads_plan_token_before_clearing_editor() -> None:
+    """WS-A regression: finalize must read editor.current_plan_token() BEFORE
+    ``view.text_editor`` is cleared.
+
+    The original bug shape read the token via
+    ``view.text_editor.widget() if view.text_editor else None`` AFTER
+    ``view.text_editor = None`` had already executed, which always yielded
+    None. This drives the REAL ``_finalize_text_edit_impl`` production path
+    (not a copy) with a stubbed editor widget whose ``current_plan_token()``
+    returns a known token, and asserts the emitted ``EditTextRequest``
+    carries that exact token.
+    """
+    token = "preview-plan-token-xyz789"
+    view = _make_view_for_finalize(original_text="Hello", new_text="Hello World")
+    view.text_editor = _FakeProxy(
+        _FakeEditorWidgetWithPlanToken("Hello World", "Hello", token)
+    )
+
+    result = view._finalize_text_edit_impl(pdf_view.TextEditFinalizeReason.CLICK_AWAY)
+
+    assert result.outcome is pdf_view.TextEditOutcome.COMMITTED
+    assert len(view.sig_edit_text.calls) == 1
+    request = view.sig_edit_text.calls[0][0]
+    assert isinstance(request, pdf_view.EditTextRequest)
+    assert request.plan_token == token, (
+        "plan_token must be captured from the local `editor` reference "
+        "before view.text_editor is cleared, not re-derived afterward"
+    )
+    # Finalize does clear view.text_editor -- proving the assertion above is
+    # not vacuously true because the editor was still reachable afterward.
+    assert view.text_editor is None
+
+
 def _outline_controller(model: SimpleNamespace) -> SimpleNamespace:
     """Controller mock exposing the R2.5 read-only facade the block-outline view
     code now calls (controller.iter_text_targets / ensure_page_index_built /

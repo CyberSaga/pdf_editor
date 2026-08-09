@@ -250,8 +250,21 @@ class TieredCommitEngine:
         verify_fn = verify_tier1_commit if is_tier1 else verify_tier0_commit
         try:
             result = verify_fn(doc, page, prepared, pre_state)
-        except Exception:
-            applied.revert(doc)
+        except BaseException as exc:  # noqa: BLE001 - must revert on any raise, then re-raise
+            try:
+                applied.revert(doc)
+            except Exception as revert_exc:
+                logger.exception(
+                    "tier%s live verifier raised %r and the subsequent "
+                    "revert also failed; document may be inconsistent",
+                    prepared.tier.value,
+                    exc,
+                )
+                raise type(revert_exc)(
+                    f"tier{prepared.tier.value} live verifier raised "
+                    f"({exc!r}) and the subsequent revert also failed "
+                    f"({revert_exc!r}): the document may be inconsistent"
+                ) from exc
             logger.exception(
                 "tier%s live verifier raised, reverted",
                 prepared.tier.value,
