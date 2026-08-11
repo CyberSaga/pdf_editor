@@ -1,0 +1,2038 @@
+{
+ "worktree": "C:\\Users\\jiang\\Documents\\python programs\\pdf_editor\\.claude\\worktrees\\by-fable",
+ "gui_mode": "real-view-offscreen",
+ "telemetry_enabled": true,
+ "env": {
+  "TEXT_COMMIT_ENGINE": "tiered",
+  "TEXT_COMMIT_MAX_TIER": "1",
+  "TEXT_COMMIT_TELEMETRY": "local",
+  "QT_QPA_PLATFORM": "offscreen"
+ },
+ "numpy_used": true,
+ "fixtures": [
+  {
+   "fixture": "1.pdf",
+   "source": "C:\\Users\\jiang\\Documents\\python programs\\pdf_editor\\.claude\\worktrees\\by-fable\\test_files\\1.pdf",
+   "page_idx": 0,
+   "qualifying_runs": 13,
+   "picks": [
+    0,
+    2,
+    5
+   ],
+   "discovered_targets": []
+  },
+  {
+   "fixture": "test-complexed-layout.pdf",
+   "source": "C:\\Users\\jiang\\Documents\\python programs\\pdf_editor\\.claude\\worktrees\\by-fable\\test_files\\test-complexed-layout.pdf",
+   "page_idx": 0,
+   "qualifying_runs": 175,
+   "picks": [
+    0,
+    2,
+    5
+   ],
+   "discovered_targets": []
+  },
+  {
+   "fixture": "test-colored-background.pdf",
+   "source": "C:\\Users\\jiang\\Documents\\python programs\\pdf_editor\\.claude\\worktrees\\by-fable\\test_files\\test-colored-background.pdf",
+   "page_idx": 0,
+   "qualifying_runs": 6,
+   "picks": [
+    0,
+    2,
+    5
+   ],
+   "discovered_targets": []
+  },
+  {
+   "fixture": "test-horizontal-texts.pdf",
+   "source": "C:\\Users\\jiang\\Documents\\python programs\\pdf_editor\\.claude\\worktrees\\by-fable\\test_files\\test-horizontal-texts.pdf",
+   "page_idx": 0,
+   "qualifying_runs": 10,
+   "picks": [
+    0,
+    2,
+    5
+   ],
+   "discovered_targets": []
+  },
+  {
+   "fixture": "test-large-file.pdf",
+   "source": "C:\\Users\\jiang\\Documents\\python programs\\pdf_editor\\.claude\\worktrees\\by-fable\\test_files\\test-large-file.pdf",
+   "page_idx": 0,
+   "qualifying_runs": 25,
+   "picks": [
+    0
+   ],
+   "discovered_targets": [
+    {
+     "page_idx": 14,
+     "text": "Standard",
+     "origin": [
+      107.9559097290039,
+      593.9820556640625
+     ]
+    },
+    {
+     "page_idx": 15,
+     "text": "NESC",
+     "origin": [
+      256.7420959472656,
+      586.7999877929688
+     ]
+    },
+    {
+     "page_idx": 18,
+     "text": "MPO-16",
+     "origin": [
+      107.96591186523438,
+      486.4525146484375
+     ]
+    }
+   ]
+  }
+ ],
+ "edits": [
+  {
+   "fixture": "1.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "same",
+   "page": 1,
+   "orig_len": 4,
+   "new_len": 4,
+   "span_id": "p0_b0_l0_s0",
+   "font": "Helvetica",
+   "latency_ms": 247.17,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 139415552,
+   "ws_after": 141467648,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:not_single_literal_tj",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b0_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=26.57"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 2001185,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "1.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "longer",
+   "page": 1,
+   "orig_len": 4,
+   "new_len": 6,
+   "span_id": "p0_b0_l0_s0",
+   "font": "Helvetica",
+   "latency_ms": 243.68,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 141287424,
+   "ws_after": 143806464,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:not_single_literal_tj",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b0_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=20.13"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 2001185,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "1.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "shorter",
+   "page": 1,
+   "orig_len": 4,
+   "new_len": 2,
+   "span_id": "p0_b0_l0_s0",
+   "font": "Helvetica",
+   "latency_ms": 241.07,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 143953920,
+   "ws_after": 146833408,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:not_single_literal_tj",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b0_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=21.01"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 2001185,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "1.pdf",
+   "target": 1,
+   "span_index": 2,
+   "scenario": "same",
+   "page": 1,
+   "orig_len": 7,
+   "new_len": 7,
+   "span_id": "p0_b0_l3_s0",
+   "font": "Helvetica",
+   "latency_ms": 281.68,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 147648512,
+   "ws_after": 149442560,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:not_single_literal_tj",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b0_l3_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=48.35"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 2000186,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "1.pdf",
+   "target": 1,
+   "span_index": 2,
+   "scenario": "longer",
+   "page": 1,
+   "orig_len": 7,
+   "new_len": 10,
+   "span_id": "p0_b0_l3_s0",
+   "font": "Helvetica",
+   "latency_ms": 295.11,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 149274624,
+   "ws_after": 152973312,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:not_single_literal_tj",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b0_l3_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=43.81"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.00014548646975831247,
+    "outside_changed_px": 291,
+    "outside_total_px": 2000186,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "1.pdf",
+   "target": 1,
+   "span_index": 2,
+   "scenario": "shorter",
+   "page": 1,
+   "orig_len": 7,
+   "new_len": 4,
+   "span_id": "p0_b0_l3_s0",
+   "font": "Helvetica",
+   "latency_ms": 285.45,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 151896064,
+   "ws_after": 155594752,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:not_single_literal_tj",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b0_l3_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=42.7"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 2000186,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "1.pdf",
+   "target": 2,
+   "span_index": 5,
+   "scenario": "same",
+   "page": 1,
+   "orig_len": 7,
+   "new_len": 7,
+   "span_id": "p0_b1_l6_s0",
+   "font": "Helvetica",
+   "latency_ms": 290.08,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 154595328,
+   "ws_after": 158167040,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:not_single_literal_tj",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l6_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=47.6"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 6.897189395321407e-05,
+    "outside_changed_px": 138,
+    "outside_total_px": 2000815,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "1.pdf",
+   "target": 2,
+   "span_index": 5,
+   "scenario": "longer",
+   "page": 1,
+   "orig_len": 7,
+   "new_len": 10,
+   "span_id": "p0_b1_l6_s0",
+   "font": "Helvetica",
+   "latency_ms": 290.42,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 157188096,
+   "ws_after": 160747520,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:not_single_literal_tj",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l6_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=38.83"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0002389026471712777,
+    "outside_changed_px": 478,
+    "outside_total_px": 2000815,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "1.pdf",
+   "target": 2,
+   "span_index": 5,
+   "scenario": "shorter",
+   "page": 1,
+   "orig_len": 7,
+   "new_len": 4,
+   "span_id": "p0_b1_l6_s0",
+   "font": "Helvetica",
+   "latency_ms": 340.77,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 162967552,
+   "ws_after": 162824192,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:not_single_literal_tj",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l6_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=70.09"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 2000815,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-complexed-layout.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "same",
+   "page": 1,
+   "orig_len": 27,
+   "new_len": 27,
+   "span_id": "p0_b0_l0_s0",
+   "font": "Type3 (4 0 R)",
+   "latency_ms": 2579.54,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 203255808,
+   "ws_after": 210538496,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b0_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=1458.35"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 5.891880884774449e-05,
+    "outside_changed_px": 114,
+    "outside_total_px": 1934866,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-complexed-layout.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "longer",
+   "page": 1,
+   "orig_len": 27,
+   "new_len": 38,
+   "span_id": "p0_b0_l0_s0",
+   "font": "Type3 (4 0 R)",
+   "latency_ms": 2584.3,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 211505152,
+   "ws_after": 217452544,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b0_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=1436.44"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.00025014652177463454,
+    "outside_changed_px": 484,
+    "outside_total_px": 1934866,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-complexed-layout.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "shorter",
+   "page": 1,
+   "orig_len": 27,
+   "new_len": 16,
+   "span_id": "p0_b0_l0_s0",
+   "font": "Type3 (4 0 R)",
+   "latency_ms": 2479.64,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 221569024,
+   "ws_after": 224333824,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b0_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=1326.56"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 1934866,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-complexed-layout.pdf",
+   "target": 1,
+   "span_index": 2,
+   "scenario": "same",
+   "page": 1,
+   "orig_len": 4,
+   "new_len": 4,
+   "span_id": "p0_b1_l0_s0",
+   "font": "Type3 (17 0 R)",
+   "latency_ms": 2668.05,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 226078720,
+   "ws_after": 228147200,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=1508.69"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 1938112,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-complexed-layout.pdf",
+   "target": 1,
+   "span_index": 2,
+   "scenario": "longer",
+   "page": 1,
+   "orig_len": 4,
+   "new_len": 6,
+   "span_id": "p0_b1_l0_s0",
+   "font": "Type3 (17 0 R)",
+   "latency_ms": 2586.3,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 231485440,
+   "ws_after": 238194688,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=1376.13"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 1.8058811874649143e-05,
+    "outside_changed_px": 35,
+    "outside_total_px": 1938112,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-complexed-layout.pdf",
+   "target": 1,
+   "span_index": 2,
+   "scenario": "shorter",
+   "page": 1,
+   "orig_len": 4,
+   "new_len": 2,
+   "span_id": "p0_b1_l0_s0",
+   "font": "Type3 (17 0 R)",
+   "latency_ms": 2386.38,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 242610176,
+   "ws_after": 248029184,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=1256.79"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 1938112,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-complexed-layout.pdf",
+   "target": 2,
+   "span_index": 5,
+   "scenario": "same",
+   "page": 1,
+   "orig_len": 4,
+   "new_len": 4,
+   "span_id": "p0_b3_l0_s0",
+   "font": "Type3 (17 0 R)",
+   "latency_ms": 2445.91,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 251957248,
+   "ws_after": 252411904,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b3_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=1347.17"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 1938112,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-complexed-layout.pdf",
+   "target": 2,
+   "span_index": 5,
+   "scenario": "longer",
+   "page": 1,
+   "orig_len": 4,
+   "new_len": 6,
+   "span_id": "p0_b3_l0_s0",
+   "font": "Type3 (17 0 R)",
+   "latency_ms": 2548.83,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 252637184,
+   "ws_after": 252743680,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b3_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=1459.37"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 1.8058811874649143e-05,
+    "outside_changed_px": 35,
+    "outside_total_px": 1938112,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-complexed-layout.pdf",
+   "target": 2,
+   "span_index": 5,
+   "scenario": "shorter",
+   "page": 1,
+   "orig_len": 4,
+   "new_len": 2,
+   "span_id": "p0_b3_l0_s0",
+   "font": "Type3 (17 0 R)",
+   "latency_ms": 2331.6,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 256557056,
+   "ws_after": 257163264,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b3_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=1364.35"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 1938112,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-colored-background.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "same",
+   "page": 1,
+   "orig_len": 5,
+   "new_len": 5,
+   "span_id": "p0_b0_l0_s0",
+   "font": "2,Bold",
+   "latency_ms": 471.19,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 283045888,
+   "ws_after": 306946048,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:not_single_literal_tj",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b0_l0_s0 target_mode=run cluster_size=2 protected_count=1 rollback_flag=False duration_ms=82.41"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.011968262485442326,
+    "outside_changed_px": 55360,
+    "outside_total_px": 4625567,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-colored-background.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "longer",
+   "page": 1,
+   "orig_len": 5,
+   "new_len": 7,
+   "span_id": "p0_b0_l0_s0",
+   "font": "2,Bold",
+   "latency_ms": 492.13,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 328302592,
+   "ws_after": 345829376,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:not_single_literal_tj",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b0_l0_s0 target_mode=run cluster_size=2 protected_count=1 rollback_flag=False duration_ms=100.57"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.011765260345380361,
+    "outside_changed_px": 54421,
+    "outside_total_px": 4625567,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-colored-background.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "shorter",
+   "page": 1,
+   "orig_len": 5,
+   "new_len": 3,
+   "span_id": "p0_b0_l0_s0",
+   "font": "2,Bold",
+   "latency_ms": 443.17,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 366800896,
+   "ws_after": 385396736,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:not_single_literal_tj",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b0_l0_s0 target_mode=run cluster_size=2 protected_count=1 rollback_flag=False duration_ms=60.4"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.011969775813430008,
+    "outside_changed_px": 55367,
+    "outside_total_px": 4625567,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-colored-background.pdf",
+   "target": 1,
+   "span_index": 2,
+   "scenario": "same",
+   "page": 1,
+   "orig_len": 5,
+   "new_len": 5,
+   "span_id": "p0_b1_l0_s0",
+   "font": "1",
+   "latency_ms": 416.96,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 406704128,
+   "ws_after": 418152448,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:evidence_mismatch",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=34.77"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 4655940,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-colored-background.pdf",
+   "target": 1,
+   "span_index": 2,
+   "scenario": "longer",
+   "page": 1,
+   "orig_len": 5,
+   "new_len": 7,
+   "span_id": "p0_b1_l0_s0",
+   "font": "1",
+   "latency_ms": 404.5,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 445964288,
+   "ws_after": 457719808,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:evidence_mismatch",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=25.01"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.00016645403506058927,
+    "outside_changed_px": 775,
+    "outside_total_px": 4655940,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-colored-background.pdf",
+   "target": 1,
+   "span_index": 2,
+   "scenario": "shorter",
+   "page": 1,
+   "orig_len": 5,
+   "new_len": 3,
+   "span_id": "p0_b1_l0_s0",
+   "font": "1",
+   "latency_ms": 378.78,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 486174720,
+   "ws_after": 497614848,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:evidence_mismatch",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=25.9"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 4655940,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-colored-background.pdf",
+   "target": 2,
+   "span_index": 5,
+   "scenario": "same",
+   "page": 1,
+   "orig_len": 7,
+   "new_len": 7,
+   "span_id": "p0_b2_l0_s0",
+   "font": "Helvetica",
+   "latency_ms": 430.0,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 525758464,
+   "ws_after": 537219072,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:target_in_form_xobject",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b2_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=44.6"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 4663118,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-colored-background.pdf",
+   "target": 2,
+   "span_index": 5,
+   "scenario": "longer",
+   "page": 1,
+   "orig_len": 7,
+   "new_len": 10,
+   "span_id": "p0_b2_l0_s0",
+   "font": "Helvetica",
+   "latency_ms": 414.34,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 565710848,
+   "ws_after": 541347840,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:target_in_form_xobject",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b2_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=39.35"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 4663118,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-colored-background.pdf",
+   "target": 2,
+   "span_index": 5,
+   "scenario": "shorter",
+   "page": 1,
+   "orig_len": 7,
+   "new_len": 4,
+   "span_id": "p0_b2_l0_s0",
+   "font": "Helvetica",
+   "latency_ms": 404.83,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 552284160,
+   "ws_after": 554029056,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:target_in_form_xobject",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b2_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=31.62"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 4663118,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-horizontal-texts.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "same",
+   "page": 1,
+   "orig_len": 7,
+   "new_len": 7,
+   "span_id": "p0_b1_l0_s0",
+   "font": "Aptos",
+   "latency_ms": 295.68,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 545390592,
+   "ws_after": 546435072,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=45.8"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 9.305811860892859e-05,
+    "outside_changed_px": 183,
+    "outside_total_px": 1966513,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-horizontal-texts.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "longer",
+   "page": 1,
+   "orig_len": 7,
+   "new_len": 10,
+   "span_id": "p0_b1_l0_s0",
+   "font": "Aptos",
+   "latency_ms": 288.92,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 548052992,
+   "ws_after": 546623488,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=35.32"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.001866247515271956,
+    "outside_changed_px": 3670,
+    "outside_total_px": 1966513,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-horizontal-texts.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "shorter",
+   "page": 1,
+   "orig_len": 7,
+   "new_len": 4,
+   "span_id": "p0_b1_l0_s0",
+   "font": "Aptos",
+   "latency_ms": 272.34,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 548270080,
+   "ws_after": 546299904,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=36.62"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 1966513,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-horizontal-texts.pdf",
+   "target": 1,
+   "span_index": 2,
+   "scenario": "same",
+   "page": 1,
+   "orig_len": 11,
+   "new_len": 11,
+   "span_id": "p0_b1_l0_s2",
+   "font": "Aptos",
+   "latency_ms": 223.47,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 547938304,
+   "ws_after": 547348480,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l0_s2 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=15.24"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.00028880304451663383,
+    "outside_changed_px": 564,
+    "outside_total_px": 1952888,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-horizontal-texts.pdf",
+   "target": 1,
+   "span_index": 2,
+   "scenario": "longer",
+   "page": 1,
+   "orig_len": 11,
+   "new_len": 15,
+   "span_id": "p0_b1_l0_s2",
+   "font": "Aptos",
+   "latency_ms": 245.19,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 549122048,
+   "ws_after": 547676160,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l0_s2 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=24.96"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.002229006476561892,
+    "outside_changed_px": 4353,
+    "outside_total_px": 1952888,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-horizontal-texts.pdf",
+   "target": 1,
+   "span_index": 2,
+   "scenario": "shorter",
+   "page": 1,
+   "orig_len": 11,
+   "new_len": 7,
+   "span_id": "p0_b1_l0_s2",
+   "font": "Aptos",
+   "latency_ms": 224.63,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 549339136,
+   "ws_after": 548376576,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l0_s2 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=10.15"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 1952888,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-horizontal-texts.pdf",
+   "target": 2,
+   "span_index": 5,
+   "scenario": "same",
+   "page": 1,
+   "orig_len": 6,
+   "new_len": 6,
+   "span_id": "p0_b1_l1_s5",
+   "font": "Aptos",
+   "latency_ms": 234.19,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 550006784,
+   "ws_after": 547405824,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l1_s5 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=15.91"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0002875857955866447,
+    "outside_changed_px": 569,
+    "outside_total_px": 1978540,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-horizontal-texts.pdf",
+   "target": 2,
+   "span_index": 5,
+   "scenario": "longer",
+   "page": 1,
+   "orig_len": 6,
+   "new_len": 8,
+   "span_id": "p0_b1_l1_s5",
+   "font": "Aptos",
+   "latency_ms": 250.77,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 549466112,
+   "ws_after": 548528128,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l1_s5 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=31.26"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0015748986626502371,
+    "outside_changed_px": 3116,
+    "outside_total_px": 1978540,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-horizontal-texts.pdf",
+   "target": 2,
+   "span_index": 5,
+   "scenario": "shorter",
+   "page": 1,
+   "orig_len": 6,
+   "new_len": 4,
+   "span_id": "p0_b1_l1_s5",
+   "font": "Aptos",
+   "latency_ms": 248.42,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 550293504,
+   "ws_after": 547749888,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:no_source_match",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b1_l1_s5 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=20.32"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 1978540,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-large-file.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "same",
+   "page": 1,
+   "orig_len": 9,
+   "new_len": 9,
+   "span_id": "p0_b4_l0_s0",
+   "font": "Arial-BoldMT",
+   "latency_ms": 1334.91,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 616263680,
+   "ws_after": 614408192,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:target_in_form_xobject",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b4_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=108.06"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0018104124102889872,
+    "outside_changed_px": 3494,
+    "outside_total_px": 1929947,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-large-file.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "longer",
+   "page": 1,
+   "orig_len": 9,
+   "new_len": 13,
+   "span_id": "p0_b4_l0_s0",
+   "font": "Arial-BoldMT",
+   "latency_ms": 1224.84,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 614629376,
+   "ws_after": 616230912,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:target_in_form_xobject",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b4_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=97.88"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0024083562916494597,
+    "outside_changed_px": 4648,
+    "outside_total_px": 1929947,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-large-file.pdf",
+   "target": 0,
+   "span_index": 0,
+   "scenario": "shorter",
+   "page": 1,
+   "orig_len": 9,
+   "new_len": 5,
+   "span_id": "p0_b4_l0_s0",
+   "font": "Arial-BoldMT",
+   "latency_ms": 1098.17,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 616075264,
+   "ws_after": 617742336,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:target_in_form_xobject",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=1 target_span_id=p0_b4_l0_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=86.05"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0017637790053301981,
+    "outside_changed_px": 3404,
+    "outside_total_px": 1929947,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-large-file.pdf",
+   "target": 100,
+   "span_index": -1,
+   "scenario": "same",
+   "page": 15,
+   "discovered": true,
+   "orig_len": 8,
+   "new_len": 8,
+   "span_id": "p14_b20_l2_s0",
+   "font": "Arial-ItalicMT",
+   "latency_ms": 4043.73,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 607485952,
+   "ws_after": 615038976,
+   "outcome": {
+    "present": true,
+    "status": "committed",
+    "tier": 1,
+    "fallback_chain": [
+     "tier0:advance_mismatch"
+    ],
+    "degraded_reason": null,
+    "warnings": [
+     "compensated_transplant_kern"
+    ]
+   },
+   "tiered_engine_handled": true,
+   "tier1_engaged": true,
+   "log_lines": [
+    "model.text_commit.patch:DEBUG:apply_patchset: page=33 streams=[541] replacements=1",
+    "model.text_commit.patch:DEBUG:apply_patchset: page=33 streams=[541] replacements=1",
+    "model.pdf_text_edit:DEBUG:text_commit_tiered page=15 tier=1 committed duration_ms=2969.15"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 2.5830702476286124e-06,
+    "outside_changed_px": 5,
+    "outside_total_px": 1935681,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-large-file.pdf",
+   "target": 100,
+   "span_index": -1,
+   "scenario": "longer",
+   "page": 15,
+   "discovered": true,
+   "orig_len": 8,
+   "new_len": 11,
+   "span_id": "p14_b20_l2_s0",
+   "font": "Arial-ItalicMT",
+   "latency_ms": 4086.45,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 613433344,
+   "ws_after": 606396416,
+   "outcome": {
+    "present": true,
+    "status": "committed",
+    "tier": 1,
+    "fallback_chain": [
+     "tier0:advance_mismatch"
+    ],
+    "degraded_reason": null,
+    "warnings": [
+     "compensated_transplant_kern"
+    ]
+   },
+   "tiered_engine_handled": true,
+   "tier1_engaged": true,
+   "log_lines": [
+    "model.text_commit.patch:DEBUG:apply_patchset: page=33 streams=[541] replacements=1",
+    "model.text_commit.patch:DEBUG:apply_patchset: page=33 streams=[541] replacements=1",
+    "model.pdf_text_edit:DEBUG:text_commit_tiered page=15 tier=1 committed duration_ms=2911.01"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.00012605382808427627,
+    "outside_changed_px": 244,
+    "outside_total_px": 1935681,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-large-file.pdf",
+   "target": 100,
+   "span_index": -1,
+   "scenario": "shorter",
+   "page": 15,
+   "discovered": true,
+   "orig_len": 8,
+   "new_len": 5,
+   "span_id": "p14_b20_l2_s0",
+   "font": "Arial-ItalicMT",
+   "latency_ms": 3756.27,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 607461376,
+   "ws_after": 612302848,
+   "outcome": {
+    "present": true,
+    "status": "committed",
+    "tier": 1,
+    "fallback_chain": [
+     "tier0:advance_mismatch"
+    ],
+    "degraded_reason": null,
+    "warnings": [
+     "compensated_transplant_kern"
+    ]
+   },
+   "tiered_engine_handled": true,
+   "tier1_engaged": true,
+   "log_lines": [
+    "model.text_commit.patch:DEBUG:apply_patchset: page=33 streams=[541] replacements=1",
+    "model.text_commit.patch:DEBUG:apply_patchset: page=33 streams=[541] replacements=1",
+    "model.pdf_text_edit:DEBUG:text_commit_tiered page=15 tier=1 committed duration_ms=2763.1"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 1935681,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-large-file.pdf",
+   "target": 101,
+   "span_index": -1,
+   "scenario": "same",
+   "page": 16,
+   "error": "discovered_span_not_found"
+  },
+  {
+   "fixture": "test-large-file.pdf",
+   "target": 101,
+   "span_index": -1,
+   "scenario": "longer",
+   "page": 16,
+   "error": "discovered_span_not_found"
+  },
+  {
+   "fixture": "test-large-file.pdf",
+   "target": 101,
+   "span_index": -1,
+   "scenario": "shorter",
+   "page": 16,
+   "error": "discovered_span_not_found"
+  },
+  {
+   "fixture": "test-large-file.pdf",
+   "target": 102,
+   "span_index": -1,
+   "scenario": "same",
+   "page": 19,
+   "discovered": true,
+   "orig_len": 6,
+   "new_len": 6,
+   "span_id": "p18_b16_l1_s0",
+   "font": "Arial-ItalicMT",
+   "latency_ms": 1310.32,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 611393536,
+   "ws_after": 615915520,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:encoding_failed",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=19 target_span_id=p18_b16_l1_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=291.74"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 1935912,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-large-file.pdf",
+   "target": 102,
+   "span_index": -1,
+   "scenario": "longer",
+   "page": 19,
+   "discovered": true,
+   "orig_len": 6,
+   "new_len": 8,
+   "span_id": "p18_b16_l1_s0",
+   "font": "Arial-ItalicMT",
+   "latency_ms": 1362.79,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 614666240,
+   "ws_after": 620134400,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:encoding_failed",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=19 target_span_id=p18_b16_l1_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=319.52"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 9.969461421800164e-05,
+    "outside_changed_px": 193,
+    "outside_total_px": 1935912,
+    "inside_changed": true
+   }
+  },
+  {
+   "fixture": "test-large-file.pdf",
+   "target": 102,
+   "span_index": -1,
+   "scenario": "shorter",
+   "page": 19,
+   "discovered": true,
+   "orig_len": 6,
+   "new_len": 4,
+   "span_id": "p18_b16_l1_s0",
+   "font": "Arial-ItalicMT",
+   "latency_ms": 1352.13,
+   "exception": null,
+   "shown_errors": [],
+   "ws_before": 623120384,
+   "ws_after": 611717120,
+   "outcome": {
+    "present": true,
+    "status": "degraded_committed",
+    "tier": 2,
+    "fallback_chain": [
+     "tier0:encoding_failed",
+     "legacy"
+    ],
+    "degraded_reason": "legacy_redact_reinsert",
+    "warnings": [
+     "legacy_engine_fidelity_untracked"
+    ]
+   },
+   "tiered_engine_handled": false,
+   "tier1_engaged": false,
+   "log_lines": [
+    "model.pdf_text_edit:DEBUG:edit_transaction page=19 target_span_id=p18_b16_l1_s0 target_mode=run cluster_size=1 protected_count=0 rollback_flag=False duration_ms=327.12"
+   ],
+   "fidelity": {
+    "outside_diff_ratio": 0.0,
+    "outside_changed_px": 0,
+    "outside_total_px": 1935912,
+    "inside_changed": true
+   }
+  }
+ ],
+ "leak_loop": [
+  {
+   "iter": 0,
+   "latency_ms": 296.32,
+   "ws_before": 567365632,
+   "ws_after": 567259136,
+   "tier": 2,
+   "error": null
+  },
+  {
+   "iter": 1,
+   "latency_ms": 296.6,
+   "ws_before": 568279040,
+   "ws_after": 564609024,
+   "tier": 2,
+   "error": null
+  },
+  {
+   "iter": 2,
+   "latency_ms": 303.2,
+   "ws_before": 567140352,
+   "ws_after": 567164928,
+   "tier": 2,
+   "error": null
+  },
+  {
+   "iter": 3,
+   "latency_ms": 317.32,
+   "ws_before": 568606720,
+   "ws_after": 564215808,
+   "tier": 2,
+   "error": null
+  },
+  {
+   "iter": 4,
+   "latency_ms": 296.7,
+   "ws_before": 566112256,
+   "ws_after": 567201792,
+   "tier": 2,
+   "error": null
+  },
+  {
+   "iter": 5,
+   "latency_ms": 289.84,
+   "ws_before": 568176640,
+   "ws_after": 567459840,
+   "tier": 2,
+   "error": null
+  },
+  {
+   "iter": 6,
+   "latency_ms": 274.57,
+   "ws_before": 565284864,
+   "ws_after": 565682176,
+   "tier": 2,
+   "error": null
+  },
+  {
+   "iter": 7,
+   "latency_ms": 283.7,
+   "ws_before": 568315904,
+   "ws_after": 567611392,
+   "tier": 2,
+   "error": null
+  },
+  {
+   "iter": 8,
+   "latency_ms": 329.35,
+   "ws_before": 569659392,
+   "ws_after": 565428224,
+   "tier": 2,
+   "error": null
+  },
+  {
+   "iter": 9,
+   "latency_ms": 270.52,
+   "ws_before": 567496704,
+   "ws_after": 567934976,
+   "tier": 2,
+   "error": null
+  }
+ ],
+ "aggregates": {
+  "total_edits": 48,
+  "p50_latency_ms": 416.96,
+  "p95_latency_ms": 3756.27,
+  "error_count": 0,
+  "skipped_target_count": 3,
+  "tier_funnel": {
+   "tier0": 0,
+   "tier1": 3,
+   "tier2_legacy_fallback": 42,
+   "no_outcome": 3
+  },
+  "tier0_reject_reasons": {
+   "tier0:not_single_literal_tj": 12,
+   "tier0:no_source_match": 18,
+   "tier0:evidence_mismatch": 3,
+   "tier0:target_in_form_xobject": 6,
+   "tier0:encoding_failed": 3
+  },
+  "peak_working_set": 760020992,
+  "ws_growth_over_loop": 675840,
+  "mean_outside_diff_ratio": 0.0010937505661685024,
+  "max_outside_diff_ratio": 0.011969775813430008
+ }
+}
