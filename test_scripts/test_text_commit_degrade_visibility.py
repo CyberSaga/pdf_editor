@@ -42,6 +42,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from controller.pdf_controller import PDFController  # noqa: E402
+from model.edit_commands import EditTextResult  # noqa: E402
 from model.edit_requests import EditTextRequest  # noqa: E402
 from model.pdf_model import PDFModel  # noqa: E402
 from model.text_commit.dto import (  # noqa: E402
@@ -236,6 +237,28 @@ def _edit_via_signal(
         original_text=block.text,
     )
     view.sig_edit_text.emit(request)
+
+
+class _FakeCommittedFinalizeResult:
+    """Stands in for a real inline-editor finalize result reporting
+    COMMITTED, independent of what the Controller's edit actually did --
+    the real commit (if any) happens separately via ``_edit_via_signal``;
+    this only satisfies ``set_mode()``'s outer
+    ``result.outcome == TextEditOutcome.COMMITTED`` gate, so what actually
+    determines whether the toast fires is the REAL, unmocked
+    ``consume_last_edit_result()`` / ``consume_last_edit_degraded()`` pull
+    downstream (Task 12 P0-C phase 2 verification: ``TextEditOutcome.
+    COMMITTED`` means only "the finalize signal emitted without raising",
+    never "the Controller's edit actually succeeded")."""
+
+    from view.text_editing import TextEditOutcome as _Outcome
+
+    outcome = _Outcome.COMMITTED
+
+
+class _FakeInlineEditorWidget:
+    def widget(self):
+        return None
 
 
 # ---------------------------------------------------------------- tests
@@ -698,29 +721,35 @@ def test_mode_switch_success_toast_suppressed_for_degraded_commit(
     qapp, tmp_path, monkeypatch
 ):
     """PIN: the View's mode-switch finalize path pulls the Controller flag —
-    a degraded commit gets no plain 文字已儲存 toast, and a later
-    non-degraded finalize still gets one (flag was consumed, not latched)."""
-    pdf_path = _write_pdf(tmp_path / "mode_switch.pdf", _tj_array_stream(TARGET))
+    a degraded commit gets no plain 文字已儲存 toast, and a LATER, REAL
+    non-degraded commit still gets one (flags were consumed, not latched).
+
+    Updated for Task 12 P0-C phase 2 verification: the second half now
+    performs an actual second edit (page 2, clean Tier 0) instead of
+    re-mocking the same COMMITTED finalize result with no real commit
+    behind it — under the fixed gating (``consume_last_edit_result()``
+    must return SUCCESS, not just "some finalize reported COMMITTED"), a
+    second call with no genuine commit in between would correctly show no
+    toast, which would have made the old form of this test wrong under the
+    corrected semantics, not a real regression."""
+    doc = fitz.open()
+    _add_raw_page(doc, _tj_array_stream(TARGET))  # page 1: degrades
+    _add_raw_page(doc, _tier0_stream())  # page 2: clean Tier 0
+    pdf_path = tmp_path / "mode_switch.pdf"
+    doc.save(str(pdf_path), garbage=0)
+    doc.close()
+
     model, view, controller = _launch(
         pdf_path, TextCommitSettings(engine="tiered"), monkeypatch
     )
     try:
         spy = _spy_view(view, monkeypatch)
 
-        class _FakeResult:
-            from view.text_editing import TextEditOutcome as _Outcome
-
-            outcome = _Outcome.COMMITTED
-
-        class _FakeEditor:
-            def widget(self):
-                return None
-
-        monkeypatch.setattr(view, "text_editor", _FakeEditor(), raising=False)
+        monkeypatch.setattr(view, "text_editor", _FakeInlineEditorWidget(), raising=False)
         monkeypatch.setattr(
             view,
             "_finalize_text_edit",
-            lambda _reason: _FakeResult(),
+            lambda _reason: _FakeCommittedFinalizeResult(),
             raising=False,
         )
 
@@ -729,10 +758,253 @@ def test_mode_switch_success_toast_suppressed_for_degraded_commit(
         view.set_mode("browse")
         assert all("文字已儲存" not in message for message, _tone in spy.toasts)
 
-        # Same finalize path with no degraded edit pending: toast reappears.
-        monkeypatch.setattr(view, "text_editor", _FakeEditor(), raising=False)
+        # A REAL, non-degraded edit follows -- the toast reappears because
+        # THIS commit genuinely succeeded, not because of latched state.
+        monkeypatch.setattr(view, "text_editor", _FakeInlineEditorWidget(), raising=False)
+        _edit_via_signal(model, view, TARGET, REPLACEMENT, page_num=2)
         view.set_mode("browse")
         saved_toasts = [m for m, _t in spy.toasts if "文字已儲存" in m]
         assert len(saved_toasts) == 1
+    finally:
+        _teardown(model, view, qapp)
+
+
+# ------------------------------------------------- toast-correctness (P0-C phase 2)
+# The View's mode-switch success toast previously gated only on
+# ``TextEditOutcome.COMMITTED``, which the finalize path sets whenever the
+# ``sig_edit_text``/``sig_move_text_across_pages`` emit itself doesn't raise
+# -- it never inspected the Controller's actual ``EditTextResult``. A
+# consent-flow decline (``FALLBACK_DECLINED``) is zero-mutation by design;
+# showing "文字已儲存" for it (or for a pre-existing REJECTED_STRICT /
+# TARGET_BLOCK_NOT_FOUND) would contradict the whole point of asking. These
+# tests pin the fix: the toast requires a real, pulled
+# ``EditTextResult.SUCCESS``, not just "some finalize reported COMMITTED".
+
+
+def test_fallback_declined_does_not_show_saved_toast(qapp, tmp_path, monkeypatch):
+    """RED: declining the P0-C phase 2 consent prompt is zero mutation --
+    the mode-switch finalize must not show 文字已儲存 for it."""
+    pdf_path = _write_pdf(tmp_path / "declined_toast.pdf", _tj_array_stream(TARGET))
+    model, view, controller = _launch(
+        pdf_path, TextCommitSettings(engine="tiered"), monkeypatch
+    )
+    try:
+        spy = _spy_view(view, monkeypatch)
+        monkeypatch.setattr(controller, "_confirm_legacy_fallback", lambda chain: False)
+        monkeypatch.setattr(view, "text_editor", _FakeInlineEditorWidget(), raising=False)
+        monkeypatch.setattr(
+            view,
+            "_finalize_text_edit",
+            lambda _reason: _FakeCommittedFinalizeResult(),
+            raising=False,
+        )
+
+        _edit_via_signal(model, view, TARGET, REPLACEMENT)
+        view.set_mode("browse")
+
+        assert all("文字已儲存" not in message for message, _tone in spy.toasts)
+    finally:
+        _teardown(model, view, qapp)
+
+
+def test_rejected_strict_does_not_show_saved_toast(qapp, tmp_path, monkeypatch):
+    """RED: a strict-mode rejection is zero mutation -- the mode-switch
+    finalize must not show 文字已儲存 for it (pre-existing gap, promoted to
+    a PR #30 blocker per the P0-C phase 2 consent contract)."""
+    pdf_path = _write_pdf(tmp_path / "strict_toast.pdf", _tj_array_stream(TARGET))
+    model, view, controller = _launch(
+        pdf_path, TextCommitSettings(engine="tiered", strict=True), monkeypatch
+    )
+    try:
+        spy = _spy_view(view, monkeypatch)
+        monkeypatch.setattr(view, "text_editor", _FakeInlineEditorWidget(), raising=False)
+        monkeypatch.setattr(
+            view,
+            "_finalize_text_edit",
+            lambda _reason: _FakeCommittedFinalizeResult(),
+            raising=False,
+        )
+
+        _edit_via_signal(model, view, TARGET, REPLACEMENT)
+        view.set_mode("browse")
+
+        assert all("文字已儲存" not in message for message, _tone in spy.toasts)
+    finally:
+        _teardown(model, view, qapp)
+
+
+def test_target_not_found_does_not_show_saved_toast(qapp, tmp_path, monkeypatch):
+    """RED: a target-resolution failure is zero mutation -- the mode-switch
+    finalize must not show 文字已儲存 for it (pre-existing gap, promoted to
+    a PR #30 blocker per the P0-C phase 2 consent contract)."""
+    pdf_path = _write_pdf(tmp_path / "not_found_toast.pdf", _tier0_stream())
+    model, view, controller = _launch(pdf_path, TextCommitSettings(), monkeypatch)
+    try:
+        spy = _spy_view(view, monkeypatch)
+        monkeypatch.setattr(view, "text_editor", _FakeInlineEditorWidget(), raising=False)
+        monkeypatch.setattr(
+            view,
+            "_finalize_text_edit",
+            lambda _reason: _FakeCommittedFinalizeResult(),
+            raising=False,
+        )
+
+        # A rect with no overlapping text block: TARGET_BLOCK_NOT_FOUND.
+        request = EditTextRequest(
+            page=1,
+            rect=fitz.Rect(1, 1, 2, 2),
+            new_text="does not matter",
+            font="helv",
+            size=12.0,
+            color=(0.0, 0.0, 0.0),
+            original_text="text that is not on the page",
+        )
+        view.sig_edit_text.emit(request)
+        view.set_mode("browse")
+
+        assert all("文字已儲存" not in message for message, _tone in spy.toasts)
+    finally:
+        _teardown(model, view, qapp)
+
+
+def test_successful_edit_still_shows_saved_toast_once(qapp, tmp_path, monkeypatch):
+    """PIN: the fix above must not regress the ordinary case -- a genuine
+    successful commit still shows exactly one 文字已儲存 toast."""
+    pdf_path = _write_pdf(tmp_path / "success_toast.pdf", _tier0_stream())
+    model, view, controller = _launch(pdf_path, TextCommitSettings(), monkeypatch)
+    try:
+        spy = _spy_view(view, monkeypatch)
+        monkeypatch.setattr(view, "text_editor", _FakeInlineEditorWidget(), raising=False)
+        monkeypatch.setattr(
+            view,
+            "_finalize_text_edit",
+            lambda _reason: _FakeCommittedFinalizeResult(),
+            raising=False,
+        )
+
+        _edit_via_signal(model, view, TARGET, REPLACEMENT)
+        view.set_mode("browse")
+
+        saved_toasts = [m for m, _t in spy.toasts if "文字已儲存" in m]
+        assert len(saved_toasts) == 1
+    finally:
+        _teardown(model, view, qapp)
+
+
+def test_real_set_mode_toast_gating_never_fires_for_a_declined_fallback(qapp, tmp_path):
+    """RED (production View method, unmonkeypatched ``_show_toast``): every
+    other test in this section replaces ``PDFView._show_toast`` with a spy
+    before asserting -- the REAL production toast path never executes under
+    test, so a mutation that reintroduces the old COMMITTED-only gate would
+    leave the whole suite green (same discipline as Phase 1's F6 finding).
+    This test exercises the unmodified ``set_mode()`` -> ``_show_toast()``
+    path directly: patches only ``QLabel.__init__`` (Qt internals) to track
+    real toast creation, never ``PDFView`` itself."""
+    from unittest import mock
+
+    from PySide6.QtWidgets import QLabel
+
+    pdf_path = _write_pdf(tmp_path / "real_declined_toast.pdf", _tj_array_stream(TARGET))
+    model = PDFModel(text_commit_settings=TextCommitSettings(engine="tiered"))
+    view = PDFView(defer_heavy_panels=True)
+    controller = PDFController(model, view)
+    view.controller = controller
+    controller.activate()
+    controller.open_pdf(str(pdf_path))
+    try:
+        controller.show_page = lambda _page: None
+        controller._invalidate_active_render_state = lambda *a, **k: None
+        controller._update_undo_redo_tooltips = lambda: None
+        view.capture_viewport_anchor = lambda: None
+        controller._confirm_legacy_fallback = lambda chain: False
+        view.text_editor = _FakeInlineEditorWidget()
+        view._finalize_text_edit = lambda _reason: _FakeCommittedFinalizeResult()
+
+        _edit_via_signal(model, view, TARGET, REPLACEMENT)
+
+        created: list[QLabel] = []
+        original_new = QLabel.__init__
+
+        def _tracking_init(self, *args, **kwargs):
+            original_new(self, *args, **kwargs)
+            created.append(self)
+
+        with mock.patch.object(QLabel, "__init__", _tracking_init):
+            view.set_mode("browse")
+
+        saved_toasts = [lbl for lbl in created if lbl.text() == "文字已儲存"]
+        assert saved_toasts == [], (
+            f"expected zero real 文字已儲存 toasts for a declined fallback, "
+            f"got {len(saved_toasts)}"
+        )
+    finally:
+        _teardown(model, view, qapp)
+
+
+def test_stale_last_edit_result_does_not_survive_move_validation_guard(
+    qapp, tmp_path, monkeypatch
+):
+    """RED (adversarial verification finding, high): move_text_across_pages()
+    must reset _last_edit_result BEFORE its own early-return validation
+    guards (empty new_text, doc not open), not after. Otherwise a stale
+    SUCCESS from an EARLIER, unconsumed commit-producing interaction (e.g.
+    finalized via APPLY/FOCUS_OUTSIDE, neither of which ever calls
+    consume_last_edit_result() -- only set_mode()'s MODE_SWITCH path does)
+    survives through the guard and gets misread as THIS interaction's
+    outcome, showing 文字已儲存 for a move that mutated nothing."""
+    pdf_path = _write_pdf(tmp_path / "stale_move.pdf", _tier0_stream())
+    model, view, controller = _launch(pdf_path, TextCommitSettings(), monkeypatch)
+    try:
+        # The empty-new_text guard calls show_error() -> QMessageBox.critical,
+        # a blocking modal with no user present in an offscreen test run
+        # (documented pitfall) -- replace it with a non-blocking recorder.
+        import controller.pdf_controller as controller_module
+
+        errors: list[str] = []
+        monkeypatch.setattr(
+            controller_module, "show_error", lambda parent, message: errors.append(message)
+        )
+
+        # An earlier edit succeeds and is never consumed -- mirrors any
+        # finalize reason other than MODE_SWITCH.
+        _edit_via_signal(model, view, TARGET, REPLACEMENT)
+        assert model.last_commit_outcome is not None
+
+        # A validation-guard failure on a DIFFERENT, later interaction --
+        # empty new_text -- must not let the stale SUCCESS leak forward.
+        controller.move_text_across_pages(
+            source_page=1,
+            source_rect=fitz.Rect(0, 0, 1, 1),
+            destination_page=1,
+            destination_rect=fitz.Rect(0, 0, 1, 1),
+            new_text="",
+        )
+        assert len(errors) == 1  # confirms the guard actually fired
+
+        assert controller.consume_last_edit_result() is not EditTextResult.SUCCESS
+    finally:
+        _teardown(model, view, qapp)
+
+
+def test_stale_last_edit_result_does_not_survive_add_textbox_validation_guard(
+    qapp, tmp_path, monkeypatch
+):
+    """RED (adversarial verification finding, medium): add_textbox() has the
+    same reset-after-guard gap as move_text_across_pages() -- a stale
+    SUCCESS from an earlier, unconsumed commit must not survive its
+    doc/page-range validation guard."""
+    pdf_path = _write_pdf(tmp_path / "stale_add.pdf", _tier0_stream())
+    model, view, controller = _launch(pdf_path, TextCommitSettings(), monkeypatch)
+    try:
+        _edit_via_signal(model, view, TARGET, REPLACEMENT)
+        assert model.last_commit_outcome is not None
+
+        # Page out of range: the reachable guard (empty text is already
+        # filtered upstream by the View before add_textbox is ever called).
+        controller.add_textbox(
+            99, fitz.Rect(0, 0, 10, 10), "new text", font="helv", size=12.0, color=(0.0, 0.0, 0.0)
+        )
+
+        assert controller.consume_last_edit_result() is not EditTextResult.SUCCESS
     finally:
         _teardown(model, view, qapp)

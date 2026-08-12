@@ -263,7 +263,19 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
        AFTER a degraded commit, not the new consent gate itself — verified
        by grep first (only this one file was at risk), not by trusting a
        chunked run to surface a hang. Verification round: workflow
-       `wf_12fc9491-ecf`, see §8.)
+       `wf_12fc9491-ecf`, see §8. Post-review 2026-08-12: a mode-switch
+       success-toast gap — reachable and normal-use once
+       `FALLBACK_DECLINED` existed, not just theoretical — was promoted
+       from "pre-existing, out of scope" to a merge blocker and closed:
+       `PDFController.consume_last_edit_result()` added, `set_mode()`
+       requires a pulled `EditTextResult.SUCCESS` before the toast can
+       fire. 5 reds + 1 pin update, see §8. Cross-page move's
+       every-move-prompts consequence explicitly reviewed and endorsed as
+       correct, not a blocker, per user sign-off — see §8. Toast-fix
+       verification round: workflow `wf_1f9461b8-4cd`, 2 findings both
+       confirmed (stale `_last_edit_result` surviving `move_text_across_
+       pages`/`add_textbox` validation guards placed after, not before,
+       the reset) and fixed red-first, see §8.)
 6. [ ] P0-D: gate-chain slice behind `max_tier`/flag; `/Rotate 270` acceptance.
 7. [ ] Cleanup: `decision_chain`; reflow-hook capture + removal.
 8. [ ] Docs: ARCHITECTURE (guard + streaming lexer + outcome fields), PITFALLS
@@ -466,6 +478,69 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
   path deterministically via a `prepare_plan` monkeypatch rather than
   fabricating real PDF structure for it), plus the original redo-pin
   re-verified to still hold.
+- 2026-08-12 (P0-C phase 2 post-review, promoted from "pre-existing,
+  out-of-scope" to a PR #30 merge blocker): the mode-switch success toast
+  gap noted in the phase-2 pivot entry above (`set_mode()` gating on
+  `TextEditFinalizeResult.outcome == COMMITTED` alone) reached a genuinely
+  reachable, normal-use path once `FALLBACK_DECLINED` existed — a user
+  declining the consent prompt (zero mutation, no undo entry) could still
+  see "文字已儲存" on the next mode switch, directly contradicting the
+  consent contract's own promise ("使用者拒絕 → 零突變 → 無 undo → 不得呈現
+  為成功"). Fixed with `PDFController.consume_last_edit_result()`, a
+  pull-and-clear API mirroring `consume_last_edit_degraded()`, reporting
+  the actual `EditTextResult` of the last commit-producing operation;
+  `set_mode()` now requires exactly `EditTextResult.SUCCESS` before even
+  consulting the degrade-suppression flag, treating `None` (nothing
+  happened, or a controller/mock without the new API) as "not SUCCESS".
+  Four reds shown (`test_fallback_declined_does_not_show_saved_toast`,
+  `test_rejected_strict_does_not_show_saved_toast`,
+  `test_target_not_found_does_not_show_saved_toast`, plus a fifth
+  production-View-method red exercising the real, unmonkeypatched
+  `_show_toast` via `QLabel.__init__` tracking — Phase 1's F6 discipline)
+  plus one pin (`test_successful_edit_still_shows_saved_toast_once`). The
+  pre-existing `test_mode_switch_success_toast_suppressed_for_degraded_
+  commit` pin needed updating: its second half previously re-mocked the
+  same COMMITTED finalize result with no real second edit behind it, which
+  the corrected semantics (requiring a genuinely pulled SUCCESS) would
+  correctly no longer toast for — updated to perform an actual second edit
+  (page 2, clean Tier 0) so the pin tests the real "does a later genuine
+  success still toast" guarantee rather than stale mock state.
+  `EditTextResult` needed a new View-Model import-linter allowlist entry
+  (`view.text_editing -> model.edit_commands`, a plain string Enum, zero
+  mutation surface) alongside the existing `EditTextRequest`/
+  `MoveTextRequest` DTO entries; `lint-imports` reconfirmed all 4 layer
+  contracts kept after the change.
+- 2026-08-12 (cross-page move consent — user sign-off recorded): reviewed
+  and explicitly endorsed as correct, not a blocker. Since the source
+  deletion always uses an empty replacement, which always rejects at the
+  Tier 0 prepare stage, every cross-page move under the tiered engine will
+  prompt for consent every time until a genuine high-fidelity whole-show
+  deletion primitive exists; skipping the prompt for this specific case
+  would itself violate the P0-C consent contract. Future work should add
+  that primitive to eliminate the prompt, not special-case cross-page move
+  into a consent bypass.
+- 2026-08-12 (toast-correctness fix adversarial verification round, workflow
+  `wf_1f9461b8-4cd`, 2 serial agents, 2 findings raised / 2 confirmed):
+  high + medium — `move_text_across_pages()` and `add_textbox()`'s new
+  `self._last_edit_result = None` resets were placed at the SAME point
+  Phase 1's `self._last_edit_degraded = False` already lived — which
+  turned out to sit AFTER both methods' own early-return validation
+  guards, not before. This is a case the author explicitly flagged and
+  decided not to fix during design (reasoning it was "lower-risk" and
+  out of the requested scope); the adversarial round proved it reachable:
+  an earlier, unconsumed commit-producing interaction (finalized via any
+  reason other than `MODE_SWITCH` — `APPLY`/`FOCUS_OUTSIDE` never consume
+  the flag) leaves a stale `SUCCESS` that survives straight through a
+  LATER, unrelated interaction's guard return (e.g. an empty-text
+  cross-page move) and gets read as that interaction's outcome — an error
+  toast and a "文字已儲存" success toast could show simultaneously for a
+  move that mutated nothing. Fixed by moving both resets to the literal
+  first lines of each method, genuinely before any code path that can
+  return; two regression tests pin the reachable scenario for each
+  method. Lesson: copying an existing reset's placement is not the same
+  as verifying it — `edit_text()`'s own reset genuinely was correct,
+  which is exactly what made the same placement look safe to reuse
+  elsewhere without re-deriving "true entry" from scratch.
 
 ## 9. Open questions
 

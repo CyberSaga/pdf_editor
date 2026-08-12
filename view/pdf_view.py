@@ -100,6 +100,7 @@ from view.text_editing import (
     _parse_font_size_str,
     _validated_font_size_input,
     EditTextRequest,  # noqa: F401 — re-exported for controller
+    EditTextResult,
     InlineTextEditor,  # noqa: F401 — re-exported for tests and legacy imports
     MoveTextRequest,  # noqa: F401 — re-exported for controller
     TextEditDragState,
@@ -2425,16 +2426,32 @@ class PDFView(QMainWindow):
         if self.text_editor:
             result = self._finalize_text_edit(TextEditFinalizeReason.MODE_SWITCH)
             if result is not None and result.outcome == TextEditOutcome.COMMITTED:
-                # A degraded commit already showed its warning notice — the
-                # plain success toast would contradict it (P0-C phase 1).
+                # Task 12 P0-C phase 2 verification: TextEditOutcome.COMMITTED
+                # only means the finalize signal emitted without raising — it
+                # does NOT reflect what the Controller's edit actually did.
+                # Pull the real EditTextResult first; REJECTED_STRICT,
+                # TARGET_BLOCK_NOT_FOUND, FALLBACK_DECLINED (and any future
+                # non-SUCCESS value) must never show the success toast, and
+                # an API-less/unknown state (None) is treated the same way —
+                # "assume success" is never the safe default here.
                 controller = getattr(self, "controller", None)
-                degraded = bool(
-                    controller is not None
-                    and hasattr(controller, "consume_last_edit_degraded")
-                    and controller.consume_last_edit_degraded()
+                edit_result = (
+                    controller.consume_last_edit_result()
+                    if controller is not None
+                    and hasattr(controller, "consume_last_edit_result")
+                    else None
                 )
-                if not degraded:
-                    self._show_toast("文字已儲存")
+                if edit_result is EditTextResult.SUCCESS:
+                    # A degraded commit already showed its warning notice —
+                    # the plain success toast would contradict it (P0-C
+                    # phase 1).
+                    degraded = bool(
+                        controller is not None
+                        and hasattr(controller, "consume_last_edit_degraded")
+                        and controller.consume_last_edit_degraded()
+                    )
+                    if not degraded:
+                        self._show_toast("文字已儲存")
         if self.current_mode == 'browse' and mode != 'browse':
             self._reset_browse_hover_cursor()
             self._clear_text_selection()

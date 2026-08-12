@@ -515,10 +515,31 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   command that won cleanly at Tier 0 could silently arm a future redo to
   skip asking, found and fixed red-first). Session-level "always allow" is
   explicitly deferred, not started. **Known, deterministic UX consequence**
-  (not a bug): under the tiered engine, cross-page move's source deletion
-  always uses an empty replacement, which always rejects at the Tier 0
-  prepare stage — so every cross-page move prompts for consent once the
-  tiered engine is enabled, every time.
+  (not a bug, explicitly reviewed and endorsed): under the tiered engine,
+  cross-page move's source deletion always uses an empty replacement,
+  which always rejects at the Tier 0 prepare stage — so every cross-page
+  move prompts for consent once the tiered engine is enabled, every time.
+- 2026-08-12 (Task 12 P0-C phase 2, post-review fix — **RESOLVED**, was
+  registered below as out-of-scope, promoted to a PR #30 merge blocker):
+  the mode-switch success toast gated only on `TextEditFinalizeResult.
+  outcome == COMMITTED` (signal emitted without raising), never the
+  Controller's actual `EditTextResult` — so a user who explicitly declined
+  the new consent prompt (zero mutation, no undo entry) could still see
+  "文字已儲存" on the next mode switch. Fixed with
+  `PDFController.consume_last_edit_result()` (pull-and-clear, mirrors
+  `consume_last_edit_degraded()`); `set_mode()` now requires a pulled
+  `EditTextResult.SUCCESS` before the toast can fire at all. Also closes
+  the same pre-existing gap for `REJECTED_STRICT`/`TARGET_BLOCK_NOT_FOUND`.
+  5 new tests (4 requested + 1 production-View-method red mirroring Phase
+  1's F6 discipline) + 1 existing pin updated to assert a genuine second
+  edit instead of stale mock state. Adversarial verification (workflow
+  `wf_1f9461b8-4cd`) then caught 2 more (high + medium): the new
+  `_last_edit_result` reset in `move_text_across_pages`/`add_textbox` was
+  placed after, not before, each method's own early-return validation
+  guards, so a stale `SUCCESS` from an earlier unconsumed edit could
+  survive a later, unrelated interaction's guard failure. Fixed by moving
+  both resets to each method's true first line; 2 more regression tests
+  added.
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 
@@ -530,14 +551,5 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   Found 2026-08-12 while writing P0-C phase 1's cross-page-move test;
   worked around there with a single-token target text (word-boundary
   tokenization guarantees exactly one candidate span, avoiding the buggy
-  path) rather than fixed, per the standing scope-freeze discipline.
-- `view/pdf_view.py`'s `set_mode()` mode-switch success toast (line ~2427)
-  gates only on `TextEditFinalizeResult.outcome == COMMITTED`, which the
-  View's finalize path sets whenever `sig_edit_text.emit()` itself doesn't
-  raise -- it never inspects the Controller's actual `EditTextResult`. Any
-  non-`SUCCESS` result (`REJECTED_STRICT`, `TARGET_BLOCK_NOT_FOUND`, and
-  now `FALLBACK_DECLINED`) can still show "文字已儲存" at mode-switch
-  unless `consume_last_edit_degraded()` happens to return `True`. Found
-  2026-08-12 while designing P0-C phase 2; predates Phase 2 entirely (it
-  already affected `REJECTED_STRICT`/`TARGET_BLOCK_NOT_FOUND`), so left
-  unfixed as out of scope for this task's changes.
+  path) rather than fixed, per the standing scope-freeze discipline. Still
+  open — unrelated to the toast-gating fix above.

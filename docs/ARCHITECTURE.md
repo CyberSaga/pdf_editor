@@ -333,6 +333,26 @@ detect a commit-stage-only failure in time to pause before it, since that
 information does not exist until `engine.commit()` actually runs, and
 running it during a preflight is unsafe on the success branch.
 
+Toast correctness (Task 12 P0-C phase 2, post-review): the View's
+mode-switch success toast ("文字已儲存") previously gated only on
+`TextEditFinalizeResult.outcome == TextEditOutcome.COMMITTED`, which the
+finalize path sets whenever the commit signal emits without raising —
+never a read of what the Controller's slot actually did. A
+`FALLBACK_DECLINED` decline is zero-mutation by design, so showing success
+for it would directly contradict the consent flow (the same gap
+pre-existed, lower-stakes, for `REJECTED_STRICT`/`TARGET_BLOCK_NOT_FOUND`).
+`PDFController.consume_last_edit_result()` — a pull-and-clear API mirroring
+`consume_last_edit_degraded()` — reports the actual `EditTextResult` of the
+last commit-producing operation (`edit_text`, `move_text_across_pages`,
+`add_textbox`, each resetting it at their own true entry); `set_mode()`
+pulls this first and only evaluates the degrade-suppression flag when it is
+exactly `EditTextResult.SUCCESS` — `None` (nothing happened, or an
+API-less mock/controller) is treated as "not SUCCESS", never as "assume
+success". `EditTextResult` is re-exported View-side through
+`view.text_editing` (a pure-Enum DTO import from `model.edit_commands`,
+allowlisted in `pyproject.toml`'s `view-no-model` contract alongside the
+existing `EditTextRequest`/`MoveTextRequest` DTOs).
+
 Cross-page moves use a separate typed flow. When an inline edit changes page, the view emits `sig_move_text_across_pages(MoveTextRequest)`. Controller resolves the source span, captures a document snapshot, deletes the source text, inserts the destination textbox, and records a single `SnapshotCommand` only if the full move succeeds. Failure restores the document from the pre-move snapshot and refreshes both affected pages.
 
 ### 3.3 Add New Textbox
