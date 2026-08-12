@@ -184,6 +184,22 @@ class TextCommitSettings:
         )
 
 
+def is_real_fallback_commit(outcome: CommitOutcome | None) -> bool:
+    """True when ``outcome`` is a commit that genuinely fell back from an
+    attempted higher-fidelity tier to the legacy engine -- as opposed to
+    the shipped-default baseline (chain == ``("legacy",)``, which every
+    successful edit gets under ``engine="legacy"`` and is not a failed
+    fidelity promise). Shared by the Controller's degrade-notice gate
+    (``PDFController._is_notifiable_degrade``) and ``EditTextCommand``'s
+    redo-reprompt gate (Task 12 P0-C) so the two decisions about the same
+    outcome shape can never drift apart."""
+    return (
+        outcome is not None
+        and outcome.status is CommitStatus.DEGRADED_COMMITTED
+        and outcome.fallback_chain != ("legacy",)
+    )
+
+
 def legacy_commit_outcome() -> CommitOutcome:
     """Outcome describing a legacy redact+reinsert commit (Tier 2)."""
     return CommitOutcome(

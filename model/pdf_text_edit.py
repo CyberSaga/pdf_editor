@@ -22,6 +22,7 @@ import difflib
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import replace as dataclasses_replace
 from typing import TYPE_CHECKING, Literal, NamedTuple
@@ -1756,6 +1757,14 @@ def _attempt_tiered_commit(
     return None, outcome.status.value
 
 
+def _pending_legacy_fallback_chain(tier0_fallback_reason: str) -> tuple[str, ...]:
+    """The chain a legacy-fallback commit will end up recording, computed
+    BEFORE the commit happens so the P0-C phase 2 consent prompt shows the
+    user exactly what phase 1's post-commit notice will later show -- one
+    function, no risk of the two drifting apart."""
+    return (f"tier0:{tier0_fallback_reason}", "legacy")
+
+
 def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
               font: str = "helv", size: float = 12.0,
               color: tuple = (0.0, 0.0, 0.0),
@@ -1765,7 +1774,9 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
               target_span_id: str | None = None,
               target_mode: str | None = None,
               style_overrides: StyleOverrides | None = None,
-              plan_token: str | None = None) -> EditTextResult:
+              plan_token: str | None = None,
+              confirm_fallback: Callable[[tuple[str, ...]], bool] | None = None,
+              ) -> EditTextResult:
     """
     編輯文字：五步流程 + 三策略智能插入。
 
@@ -1785,6 +1796,12 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
         color: 文字顏色 (0-1 float tuple)
         original_text: 原始文字內容（可選，用於精確定位）
         vertical_shift_left: 垂直文字擴展方向（True=左移，False=右移）
+        confirm_fallback: P0-C phase 2 一次性同意回呼。僅在 tiered 引擎真正嘗試
+            過、且非 strict、且將回退至 legacy 時呼叫一次，傳入
+            ``fallback_chain``；回傳 False 則以零突變回傳
+            ``EditTextResult.FALLBACK_DECLINED``。``None``（預設）＝維持呼叫前
+            行為，直接繼續 legacy 提交，不詢問。Model 對此僅視為不透明
+            callable，不引入 Qt 相依。
     """
     # Keep empty text as a valid edit: redact target text and reinsert nothing.
     if new_text is None:
@@ -1879,6 +1896,22 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
                 )
                 return EditTextResult.REJECTED_STRICT
 
+            if tier0_fallback_reason is not None and confirm_fallback is not None:
+                # P0-C phase 2: the exact point today's code already falls
+                # through to the legacy engine -- zero mutation has happened
+                # yet (a prepare-stage PlanRejection never touches the live
+                # doc; a commit-stage failure reverts internally before
+                # returning). This is the one true pause point, reachable
+                # regardless of which stage produced the fallback reason.
+                pending_chain = _pending_legacy_fallback_chain(tier0_fallback_reason)
+                if not confirm_fallback(pending_chain):
+                    logger.info(
+                        "text_commit_fallback_declined page=%s chain=%s",
+                        page_num,
+                        "→".join(pending_chain),
+                    )
+                    return EditTextResult.FALLBACK_DECLINED
+
         new_layout_rect = model._apply_redact_insert(
             page=page,
             page_num=page_num,
@@ -1927,7 +1960,7 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
         if tier0_fallback_reason is not None:
             outcome = dataclasses_replace(
                 outcome,
-                fallback_chain=(f"tier0:{tier0_fallback_reason}", "legacy"),
+                fallback_chain=_pending_legacy_fallback_chain(tier0_fallback_reason),
             )
         model.last_commit_outcome = outcome
         return EditTextResult.SUCCESS

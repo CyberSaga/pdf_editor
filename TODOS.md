@@ -487,7 +487,7 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
 | T12-P1-03 | Target tofu / wrong-glyph not proven (extraction ≠ glyph outline) | `test_verify_rejects_tofu_replacement_glyph` |
 | T12-P1-04 | Fingerprint dependency graph incomplete (FontFile/ExtGState/OCG/geometry/AP) | `test_page_fingerprint_covers_fontfile_extgstate_ocg_ap` |
 | T12-P1-05 | Non-page stream aliasing (Form/Pattern/annot AP sharing target stream) | `test_bind_refuses_shared_form_or_ap_stream` |
-| T12-P1-06 | Non-strict silent legacy fallback consent UX | `test_non_strict_legacy_fallback_requires_consent` |
+| T12-P1-06 | Non-strict silent legacy fallback consent UX | ~~`test_non_strict_legacy_fallback_requires_consent`~~ **RESOLVED 2026-08-12** (P0-C phase 1 visibility + phase 2 consent, see below) |
 
 - 2026-08-12 (Task 12 P0-C phase 1): T12-P1-06's **visibility half landed** — a
   `degraded_committed` edit now surfaces exactly one warning notice carrying the
@@ -496,13 +496,48 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   13 tests after same-day adversarial verification: default-engine
   over-notification, commit-stage detail leak, cross-page-move silent gap, and
   stale-flag leak into add-textbox were all found and fixed red-first). The
-  **consent half stays open** for P0-C phase 2
-  (`test_non_strict_legacy_fallback_requires_consent`). The semantic fidelity gate
-  landed as an acceptance-only harness (`test_scripts/semantic_fidelity_gate.py` +
-  7 tests) pinning the `outside_diff == 0` false negative; runtime enforcement is
-  still an open plan §9 question. **Known, accepted gate scope limits** (low
-  severity, documented in the module docstring — widen before judging real
-  mixed-style or graphical-occlusion commits): the gate is extraction-based and
-  blind to non-text occlusion (an opaque fill/image over a neighbor survives
+  semantic fidelity gate landed as an acceptance-only harness
+  (`test_scripts/semantic_fidelity_gate.py` + 7 tests) pinning the
+  `outside_diff == 0` false negative; runtime enforcement is still an open plan
+  §9 question. **Known, accepted gate scope limits** (low severity, documented
+  in the module docstring — widen before judging real mixed-style or
+  graphical-occlusion commits): the gate is extraction-based and blind to
+  non-text occlusion (an opaque fill/image over a neighbor survives
   undetected); a mixed-style target region (two fonts in one edit's bbox) is
   judged only against its first character's style.
+- 2026-08-12 (Task 12 P0-C phase 2): **T12-P1-06's consent half landed —
+  item CLOSED.** A real tiered→legacy fallback now pauses before the legacy
+  mutation via a Qt-free callback injected into `model.edit_text()`
+  (`confirm_fallback`); a decline is zero-mutation
+  (`EditTextResult.FALLBACK_DECLINED`), a confirm proceeds exactly as before
+  Phase 2 existed (`test_text_commit_consent_flow.py`, 13 tests after
+  same-day adversarial verification: a redo-reprompt-bypass bug where a
+  command that won cleanly at Tier 0 could silently arm a future redo to
+  skip asking, found and fixed red-first). Session-level "always allow" is
+  explicitly deferred, not started. **Known, deterministic UX consequence**
+  (not a bug): under the tiered engine, cross-page move's source deletion
+  always uses an empty replacement, which always rejects at the Tier 0
+  prepare stage — so every cross-page move prompts for consent once the
+  tiered engine is enabled, every time.
+
+#### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
+
+- `PDFModel` has no `_normalize_text_for_compare` method. Referenced by
+  `controller/pdf_controller.py`'s `_resolve_cross_page_move_source_span_id`
+  (its ambiguous-multi-candidate ranking path, reached when
+  `find_overlapping_runs` returns more than one span for a cross-page
+  move's source rect) and by `test_scripts/test_track_ab_model_regressions.py:28`.
+  Found 2026-08-12 while writing P0-C phase 1's cross-page-move test;
+  worked around there with a single-token target text (word-boundary
+  tokenization guarantees exactly one candidate span, avoiding the buggy
+  path) rather than fixed, per the standing scope-freeze discipline.
+- `view/pdf_view.py`'s `set_mode()` mode-switch success toast (line ~2427)
+  gates only on `TextEditFinalizeResult.outcome == COMMITTED`, which the
+  View's finalize path sets whenever `sig_edit_text.emit()` itself doesn't
+  raise -- it never inspects the Controller's actual `EditTextResult`. Any
+  non-`SUCCESS` result (`REJECTED_STRICT`, `TARGET_BLOCK_NOT_FOUND`, and
+  now `FALLBACK_DECLINED`) can still show "文字已儲存" at mode-switch
+  unless `consume_last_edit_degraded()` happens to return `True`. Found
+  2026-08-12 while designing P0-C phase 2; predates Phase 2 entirely (it
+  already affected `REJECTED_STRICT`/`TARGET_BLOCK_NOT_FOUND`), so left
+  unfixed as out of scope for this task's changes.

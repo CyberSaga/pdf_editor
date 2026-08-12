@@ -36,13 +36,13 @@ from model.object_requests import (
 from model import pdf_optimizer
 from model.pdf_model import PDFModel
 from model.pdf_text_edit import _Tier0Target, derive_tier0_preview_target
-from model.text_commit.dto import CommitOutcome, CommitStatus
+from model.text_commit.dto import CommitOutcome, is_real_fallback_commit
 from model.text_commit.preview import PlanPreviewResult, open_preview_session
 from model.tools.ocr_tool import is_device_available
 from utils.file_reveal import reveal_in_file_manager
 from utils.helpers import pixmap_to_qimage, pixmap_to_qpixmap
 from utils.preferences import UserPreferences
-from view.message_boxes import show_error
+from view.message_boxes import confirm_degraded_fallback, show_error
 from view.pdf_view import EditTextRequest, MoveTextRequest, PDFView, ViewportAnchor
 from src.printing.messages import (
     PRINT_CLOSING_MESSAGE as CLEAN_PRINT_CLOSING_MESSAGE,
@@ -2294,6 +2294,10 @@ class PDFController:
             return "找不到要編輯的文字內容"
         if result is EditTextResult.REJECTED_STRICT:
             return "嚴格模式：此編輯不符合高保真條件，已拒絕（文件未變更）"
+        if result is EditTextResult.FALLBACK_DECLINED:
+            # P0-C phase 2: the user declining the consent prompt is not an
+            # error (zero mutation happened as requested) -- no error toast.
+            return None
         return None
 
     def _show_edit_result_feedback(self, result: EditTextResult) -> None:
@@ -2315,12 +2319,12 @@ class PDFController:
         that is today's baseline behavior, not a failed fidelity promise, and
         warning on every default-config edit would ship an unratified UX
         change ahead of rollout (verification finding F1). When rollout flips
-        the default to the tiered engine, degrades surface automatically."""
-        return (
-            outcome is not None
-            and outcome.status is CommitStatus.DEGRADED_COMMITTED
-            and outcome.fallback_chain != ("legacy",)
-        )
+        the default to the tiered engine, degrades surface automatically.
+        Delegates to the Model-layer ``is_real_fallback_commit`` shared with
+        ``EditTextCommand``'s redo-reprompt gate (Task 12 P0-C phase 2
+        verification) so the two "is this outcome a real fallback" checks
+        can never drift apart."""
+        return is_real_fallback_commit(outcome)
 
     def _degraded_commit_message(self, outcome: CommitOutcome) -> str:
         """User-facing degrade notice. Reason codes ONLY — the payload must
@@ -2360,6 +2364,28 @@ class PDFController:
         was_degraded = self._last_edit_degraded
         self._last_edit_degraded = False
         return was_degraded
+
+    def _fallback_confirmation_message(self, chain: tuple[str, ...]) -> str:
+        """Pre-commit consent prompt. Reason codes ONLY -- same privacy
+        contract as _degraded_commit_message (Task 12 P0-C)."""
+        chain_text = " → ".join(chain) or "legacy"
+        return (
+            "此編輯無法以高保真引擎完成，需以降級模式提交"
+            f"（可能未保留原字型或相鄰版面）。\n原因：{chain_text}\n\n是否繼續？"
+        )
+
+    def _confirm_legacy_fallback(self, chain: tuple[str, ...]) -> bool:
+        """P0-C phase 2 consent gate, passed to model.edit_text() as
+        ``confirm_fallback``. The Model only ever sees an opaque callable —
+        this is where the Qt modal actually lives, keeping the Model
+        Qt-free. Invoked at most once per edit, synchronously, before any
+        legacy mutation; see plan §8 for why this pauses inside
+        model.edit_text() rather than via a Controller-side preflight."""
+        view = getattr(self, "view", None)
+        if view is None:
+            return True
+        message = self._fallback_confirmation_message(chain)
+        return confirm_degraded_fallback(view, message)
 
     def edit_text(
         self,
@@ -2501,6 +2527,7 @@ class PDFController:
                 reflow_fn=_reflow_fn,
                 style_overrides=request.style_overrides,
                 plan_token=request.plan_token,
+                confirm_fallback=self._confirm_legacy_fallback,
             )
             self.model.command_manager.execute(cmd)
             if cmd.result is not EditTextResult.SUCCESS:
@@ -2637,7 +2664,11 @@ class PDFController:
             #     -> fail: no mutation + clear error
             #     -> pass:
             #          capture before
-            #          delete source
+            #          delete source (may itself pause for P0-C phase 2
+            #          consent; a decline stops here, before the destination
+            #          insert is ever reached -- atomicity by sequencing,
+            #          not a separate compound-preflight mechanism, since
+            #          add_textbox never itself needs consent)
             #          add destination
             #            -> fail: restore before + refresh UI + error
             #            -> pass: capture after + record one undo entry
@@ -2653,7 +2684,12 @@ class PDFController:
                 new_rect=None,
                 target_span_id=resolved_target_span_id,
                 target_mode=target_mode,
+                confirm_fallback=self._confirm_legacy_fallback,
             )
+            if source_edit_result is EditTextResult.FALLBACK_DECLINED:
+                # Zero mutation happened (the consent gate fires before any
+                # redaction) -- stop silently, not an error.
+                return
             if source_edit_result is not EditTextResult.SUCCESS:
                 raise RuntimeError(self._edit_result_to_message(source_edit_result) or "跨頁移動前無法移除來源文字")
 

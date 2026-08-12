@@ -298,6 +298,41 @@ is an acceptance-only harness — production layers must not import it; its
 never color or baseline (the app's sole override producer never requests
 either).
 
+Pre-commit consent (Task 12 P0-C phase 2): before the notice above can ever
+fire, the user gets a chance to decline the mutation that would produce it.
+`model.edit_text()` accepts a Qt-free `confirm_fallback:
+Callable[[tuple[str, ...]], bool] | None` parameter; when a tiered,
+non-strict attempt genuinely falls back (the same chain-shape check as the
+degrade notice, `is_real_fallback_commit` in `model.text_commit.dto`,
+shared by both so the two decisions can never drift apart), it is invoked
+synchronously with the pending `fallback_chain`, at the exact point the
+code already falls through to the legacy engine — before any mutation, since
+both a prepare-stage rejection and a commit-stage failure are zero-mutation
+on the live document by construction. A decline returns
+`EditTextResult.FALLBACK_DECLINED` with zero mutation and no undo entry; a
+confirm proceeds exactly as Phase 1 already did. `confirm_fallback=None`
+means "proceed without asking" — every existing caller of `model.edit_text()`
+is unaffected unless the Controller explicitly opts in.
+`PDFController._confirm_legacy_fallback` supplies the real callback
+(`view.message_boxes.confirm_degraded_fallback`, a blocking
+`QMessageBox.question`, default No), wired into both `controller.edit_text()`
+(via `EditTextCommand`) and `move_text_across_pages()`'s direct source-deletion
+call — the destination `add_textbox` never itself needs consent, so a
+decline during the source deletion naturally happens before the destination
+insert is ever reached; this is the entire cross-page-move atomicity
+mechanism, not a separate compound preflight. `EditTextCommand` tracks
+`_fallback_ever_confirmed`, set only when the just-completed `execute()`'s
+outcome was a REAL fallback (via the same shared `is_real_fallback_commit`
+check, not bare `EditTextResult.SUCCESS` — a clean Tier 0/1 win must not
+silently arm a bypass for some later re-execution of the same command that
+genuinely needs one); every `execute()` call after that passes
+`confirm_fallback=None`, so redo never re-prompts. A Controller-side
+preflight-then-commit design was considered and rejected before any code was
+written (see `plans/2026-08-12-task12-engine-hardening.md` §8): it cannot
+detect a commit-stage-only failure in time to pause before it, since that
+information does not exist until `engine.commit()` actually runs, and
+running it during a preflight is unsafe on the success branch.
+
 Cross-page moves use a separate typed flow. When an inline edit changes page, the view emits `sig_move_text_across_pages(MoveTextRequest)`. Controller resolves the source span, captures a document snapshot, deletes the source text, inserts the destination textbox, and records a single `SnapshotCommand` only if the full move succeeds. Failure restores the document from the pre-move snapshot and refreshes both affected pages.
 
 ### 3.3 Add New Textbox

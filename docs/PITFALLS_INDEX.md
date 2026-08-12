@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 252 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 254 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -257,3 +257,5 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2286 | A per-command flag reset at only one entry point leaks into sibling commit paths | `controller/pdf_controller.py` (Task 12 P0-C degrade visibility) |
 | 2294 | Redo re-running the full commit pipeline must NOT re-fire a one-shot GUI notice | `controller/pdf_controller.py` / `model/edit_commands.py` (Task 12 P0-C degrade visibility) |
 | 2301 | An acceptance gate's style-override flag must be scoped to what the app can actually request | `test_scripts/semantic_fidelity_gate.py` (Task 12 P0-C semantic fidelity gate) |
+| 2309 | A two-pass preflight-then-commit consent design can't see a commit-stage-only failure in time | `model/pdf_text_edit.py` (Task 12 P0-C phase 2 consent flow — design-time finding, not a shipped bug) |
+| 2317 | A "was this command ever confirmed" flag must check what actually happened, not just that execute() succeeded | `model/edit_commands.py` (Task 12 P0-C phase 2 — adversarial verification finding, high severity) |

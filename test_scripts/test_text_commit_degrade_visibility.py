@@ -192,6 +192,11 @@ def _launch(
     view.controller = controller
     controller.activate()
     controller.open_pdf(str(path))
+    # Task 12 P0-C phase 2: every test in this file predates the consent
+    # gate and asserts on what happens AFTER a degraded commit -- auto-
+    # confirm by default so a real (Qt modal) confirm call never blocks an
+    # offscreen test run. Phase 2's own test file exercises decline/pause.
+    monkeypatch.setattr(controller, "_confirm_legacy_fallback", lambda chain: True)
     # Keep the harness light: rendering and tooltip refresh are not under test.
     monkeypatch.setattr(controller, "show_page", lambda _page: None)
     monkeypatch.setattr(

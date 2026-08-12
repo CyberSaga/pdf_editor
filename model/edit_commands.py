@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -12,6 +13,7 @@ from model.text_commit.dto import (
     CommitOutcome,
     CommitStatus,
     RejectReason,
+    is_real_fallback_commit,
 )
 from model.text_commit.inspect import page_fingerprint, read_page_streams
 from model.text_commit.patch import (
@@ -49,6 +51,11 @@ class EditTextResult(str, Enum):
     # is fingerprint-stale. Undo refused; zero mutation; command retained.
     # Never falls back to page-snapshot restore for these commands.
     STALE_UNDO = "stale_undo"
+    # P0-C phase 2: a tiered attempt genuinely fell back to the legacy
+    # engine and the user declined the pre-mutation consent prompt. Zero
+    # mutation happened -- this is not an error and must not produce an
+    # error toast (see PDFController._edit_result_to_message).
+    FALLBACK_DECLINED = "fallback_declined"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -164,6 +171,7 @@ class EditTextCommand(EditCommand):
         reflow_fn: Any | None = None,    # callable()，在 model.edit_text() 後呼叫做 displacement reflow
         style_overrides: Any | None = None,  # StyleOverrides；使用者實際碰過的樣式欄位
         plan_token: str | None = None,   # V2 prepared-plan token（stale 檢查用）
+        confirm_fallback: Callable[[tuple[str, ...]], bool] | None = None,
     ):
         self._model = model
         self._page_num = page_num
@@ -184,6 +192,15 @@ class EditTextCommand(EditCommand):
         self._reflow_fn = reflow_fn         # displacement reflow callback（Track A/B）
         self.style_overrides = style_overrides  # redo 需保留原始 intent
         self.plan_token = plan_token
+        self._confirm_fallback = confirm_fallback
+        # P0-C phase 2: the user's consent covers THIS command's low-fidelity
+        # execution, not the document forever -- but redo re-runs the whole
+        # model.edit_text() pipeline from scratch for a legacy-tier command
+        # (no retained forward patchset), which would hit the fallback gate
+        # again and re-prompt. This flag makes every execute() after the
+        # first successful one pass confirm_fallback=None (proceed without
+        # asking), which is safe: it is replaying a decision already made.
+        self._fallback_ever_confirmed = False
         self.outcome: Any | None = None     # CommitOutcome，execute() 後由 model 提供
         self._executed = False              # 防止在未 execute 前呼叫 undo
 
@@ -286,6 +303,9 @@ class EditTextCommand(EditCommand):
             target_mode=self._target_mode,
             style_overrides=self.style_overrides,
             plan_token=self.plan_token,
+            confirm_fallback=(
+                None if self._fallback_ever_confirmed else self._confirm_fallback
+            ),
         )
         if self.result is not EditTextResult.SUCCESS:
             self._executed = False
@@ -296,6 +316,14 @@ class EditTextCommand(EditCommand):
             return False
         # V2 plumbing: history keeps the full CommitOutcome of this commit.
         self.outcome = getattr(self._model, "last_commit_outcome", None)
+        # Only a REAL fallback (an attempted higher tier that genuinely
+        # fell back) arms the no-reprompt flag -- a clean Tier 0/1 win
+        # (confirm_fallback never called) must not silently disable asking
+        # on some LATER execute() of this same command that turns out to
+        # need one (verification finding: the flag previously conflated
+        # "this command has run once" with "the user was actually asked").
+        if is_real_fallback_commit(self.outcome):
+            self._fallback_ever_confirmed = True
         self._pre_protected = pre_protected
         if (
             self.outcome is not None
