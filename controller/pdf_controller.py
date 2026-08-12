@@ -36,13 +36,13 @@ from model.object_requests import (
 from model import pdf_optimizer
 from model.pdf_model import PDFModel
 from model.pdf_text_edit import _Tier0Target, derive_tier0_preview_target
-from model.text_commit.dto import CommitOutcome, CommitStatus
+from model.text_commit.dto import CommitOutcome, is_real_fallback_commit
 from model.text_commit.preview import PlanPreviewResult, open_preview_session
 from model.tools.ocr_tool import is_device_available
 from utils.file_reveal import reveal_in_file_manager
 from utils.helpers import pixmap_to_qimage, pixmap_to_qpixmap
 from utils.preferences import UserPreferences
-from view.message_boxes import show_error
+from view.message_boxes import confirm_degraded_fallback, show_error
 from view.pdf_view import EditTextRequest, MoveTextRequest, PDFView, ViewportAnchor
 from src.printing.messages import (
     PRINT_CLOSING_MESSAGE as CLEAN_PRINT_CLOSING_MESSAGE,
@@ -247,6 +247,15 @@ class PDFController:
         # consume_last_edit_degraded() so its mode-switch finalize path never
         # toasts plain success ("文字已儲存") over a degrade notice.
         self._last_edit_degraded = False
+        # Task 12 P0-C phase 2 verification: the actual EditTextResult of
+        # the most recent commit-producing operation (edit_text,
+        # move_text_across_pages, add_textbox). The View pulls-and-clears
+        # this via consume_last_edit_result() so its mode-switch finalize
+        # path can tell a real commit apart from a signal that merely
+        # emitted without raising (TextEditOutcome.COMMITTED is set on the
+        # latter alone) -- otherwise REJECTED_STRICT, TARGET_BLOCK_NOT_FOUND
+        # and FALLBACK_DECLINED can all be misreported as success.
+        self._last_edit_result: EditTextResult | None = None
         self._thumbnail_resume_pending_by_session: set[str] = set()
         self._load_gen_by_session: dict[str, int] = {}
         self._thumb_gen_by_session: dict[str, int] = {}
@@ -2294,6 +2303,10 @@ class PDFController:
             return "找不到要編輯的文字內容"
         if result is EditTextResult.REJECTED_STRICT:
             return "嚴格模式：此編輯不符合高保真條件，已拒絕（文件未變更）"
+        if result is EditTextResult.FALLBACK_DECLINED:
+            # P0-C phase 2: the user declining the consent prompt is not an
+            # error (zero mutation happened as requested) -- no error toast.
+            return None
         return None
 
     def _show_edit_result_feedback(self, result: EditTextResult) -> None:
@@ -2315,12 +2328,12 @@ class PDFController:
         that is today's baseline behavior, not a failed fidelity promise, and
         warning on every default-config edit would ship an unratified UX
         change ahead of rollout (verification finding F1). When rollout flips
-        the default to the tiered engine, degrades surface automatically."""
-        return (
-            outcome is not None
-            and outcome.status is CommitStatus.DEGRADED_COMMITTED
-            and outcome.fallback_chain != ("legacy",)
-        )
+        the default to the tiered engine, degrades surface automatically.
+        Delegates to the Model-layer ``is_real_fallback_commit`` shared with
+        ``EditTextCommand``'s redo-reprompt gate (Task 12 P0-C phase 2
+        verification) so the two "is this outcome a real fallback" checks
+        can never drift apart."""
+        return is_real_fallback_commit(outcome)
 
     def _degraded_commit_message(self, outcome: CommitOutcome) -> str:
         """User-facing degrade notice. Reason codes ONLY — the payload must
@@ -2360,6 +2373,44 @@ class PDFController:
         was_degraded = self._last_edit_degraded
         self._last_edit_degraded = False
         return was_degraded
+
+    def consume_last_edit_result(self) -> EditTextResult | None:
+        """Pull-and-clear the actual EditTextResult of the last
+        commit-producing operation (Task 12 P0-C phase 2 verification).
+
+        Called by the View's finalize path so the mode-switch success toast
+        can never fire for a non-SUCCESS outcome. ``TextEditFinalizeResult.
+        outcome == COMMITTED`` only means the finalize signal emitted
+        without raising -- it does not reflect what the Controller actually
+        did. ``None`` means no commit-producing operation has happened
+        since the last consume (or the value was already consumed):
+        callers must treat that the same as "not SUCCESS", never as
+        "assume success"."""
+        result = self._last_edit_result
+        self._last_edit_result = None
+        return result
+
+    def _fallback_confirmation_message(self, chain: tuple[str, ...]) -> str:
+        """Pre-commit consent prompt. Reason codes ONLY -- same privacy
+        contract as _degraded_commit_message (Task 12 P0-C)."""
+        chain_text = " → ".join(chain) or "legacy"
+        return (
+            "此編輯無法以高保真引擎完成，需以降級模式提交"
+            f"（可能未保留原字型或相鄰版面）。\n原因：{chain_text}\n\n是否繼續？"
+        )
+
+    def _confirm_legacy_fallback(self, chain: tuple[str, ...]) -> bool:
+        """P0-C phase 2 consent gate, passed to model.edit_text() as
+        ``confirm_fallback``. The Model only ever sees an opaque callable —
+        this is where the Qt modal actually lives, keeping the Model
+        Qt-free. Invoked at most once per edit, synchronously, before any
+        legacy mutation; see plan §8 for why this pauses inside
+        model.edit_text() rather than via a Controller-side preflight."""
+        view = getattr(self, "view", None)
+        if view is None:
+            return True
+        message = self._fallback_confirmation_message(chain)
+        return confirm_degraded_fallback(view, message)
 
     def edit_text(
         self,
@@ -2408,6 +2459,10 @@ class PDFController:
         # Each edit attempt owns the degrade flag; a stale True from an
         # earlier edit must never suppress a later edit's success toast.
         self._last_edit_degraded = False
+        # Task 12 P0-C phase 2 verification: same reasoning -- a stale
+        # result from an earlier edit must never be read as this edit's
+        # outcome by the View's finalize path.
+        self._last_edit_result = None
         if not self.model.doc or page < 1 or page > len(self.model.doc):
             return
         # The commit invalidates any plan-backed preview session's scratch
@@ -2501,8 +2556,13 @@ class PDFController:
                 reflow_fn=_reflow_fn,
                 style_overrides=request.style_overrides,
                 plan_token=request.plan_token,
+                confirm_fallback=self._confirm_legacy_fallback,
             )
             self.model.command_manager.execute(cmd)
+            # Recorded BEFORE the SUCCESS branch so every outcome --
+            # REJECTED_STRICT, TARGET_BLOCK_NOT_FOUND, FALLBACK_DECLINED,
+            # SUCCESS -- reaches consume_last_edit_result() uniformly.
+            self._last_edit_result = cmd.result
             if cmd.result is not EditTextResult.SUCCESS:
                 self._show_edit_result_feedback(cmd.result)
                 self._update_undo_redo_tooltips()
@@ -2554,6 +2614,17 @@ class PDFController:
         target_mode: str | None = None,
         **legacy_kwargs,
     ) -> None:
+        # Task 12 P0-C phase 1/2: reset at the TRUE entry, before any
+        # early-return validation guard below -- a stale flag/result from
+        # an earlier, unconsumed commit-producing interaction (e.g.
+        # finalized via APPLY/FOCUS_OUTSIDE, neither of which ever calls
+        # consume_last_edit_degraded()/consume_last_edit_result(); only
+        # set_mode()'s MODE_SWITCH path does) must never survive a guard
+        # return and be misread as THIS interaction's outcome
+        # (verification finding, 2026-08-12: the reset previously sat
+        # after the empty-new_text/doc-not-open guards).
+        self._last_edit_degraded = False
+        self._last_edit_result = None
         if isinstance(request, MoveTextRequest):
             move_request = request
         else:
@@ -2587,10 +2658,6 @@ class PDFController:
             return
         if not self.model.doc:
             return
-        # Task 12 P0-C phase 1: this is a fresh commit-producing interaction
-        # for toast-suppression purposes — a stale flag from an earlier,
-        # unconsumed degraded edit must not leak into this move's outcome.
-        self._last_edit_degraded = False
         if source_page == destination_page:
             self.edit_text(
                 source_page,
@@ -2637,7 +2704,11 @@ class PDFController:
             #     -> fail: no mutation + clear error
             #     -> pass:
             #          capture before
-            #          delete source
+            #          delete source (may itself pause for P0-C phase 2
+            #          consent; a decline stops here, before the destination
+            #          insert is ever reached -- atomicity by sequencing,
+            #          not a separate compound-preflight mechanism, since
+            #          add_textbox never itself needs consent)
             #          add destination
             #            -> fail: restore before + refresh UI + error
             #            -> pass: capture after + record one undo entry
@@ -2653,7 +2724,14 @@ class PDFController:
                 new_rect=None,
                 target_span_id=resolved_target_span_id,
                 target_mode=target_mode,
+                confirm_fallback=self._confirm_legacy_fallback,
             )
+            if source_edit_result is EditTextResult.FALLBACK_DECLINED:
+                # Zero mutation happened (the consent gate fires before any
+                # redaction) -- stop silently, not an error. Recorded so the
+                # View's finalize path never misreports this as a commit.
+                self._last_edit_result = EditTextResult.FALLBACK_DECLINED
+                return
             if source_edit_result is not EditTextResult.SUCCESS:
                 raise RuntimeError(self._edit_result_to_message(source_edit_result) or "跨頁移動前無法移除來源文字")
 
@@ -2690,6 +2768,7 @@ class PDFController:
                 description="跨頁移動文字",
             )
             self.model.command_manager.record(cmd)
+            self._last_edit_result = EditTextResult.SUCCESS
             self._invalidate_active_render_state()
             self._invalidate_thumbnails(sorted({source_page, destination_page}))
             self.show_page(destination_page - 1)
@@ -2766,16 +2845,20 @@ class PDFController:
         size: float,
         color: tuple,
     ) -> None:
+        # Task 12 P0-C phase 1/2: reset at the TRUE entry, before either
+        # early-return validation guard below — add-textbox never produces
+        # a degraded commit or a non-SUCCESS EditTextResult itself, but it
+        # IS a fresh commit-producing interaction for toast-suppression
+        # purposes, and a stale flag/result from an earlier, unconsumed
+        # interaction must not survive a guard return and be misread as
+        # this one's outcome (verification finding, 2026-08-12: the reset
+        # previously sat after both guards).
+        self._last_edit_degraded = False
+        self._last_edit_result = None
         if not text.strip():
             return
         if not self.model.doc or page < 1 or page > len(self.model.doc):
             return
-        # Task 12 P0-C phase 1: add-textbox never produces a degraded
-        # commit itself (it does not route through the tiered engine), but
-        # it IS a fresh commit-producing interaction for toast-suppression
-        # purposes — a stale flag from an earlier, unconsumed degraded edit
-        # must not silently eat this add's success toast.
-        self._last_edit_degraded = False
         try:
             page_idx = page - 1
             before_page_snapshot = self.model._capture_page_snapshot_strict(page_idx)
@@ -2790,6 +2873,9 @@ class PDFController:
                 before_page_snapshot_bytes=before_page_snapshot,
             )
             self.model.command_manager.execute(cmd)
+            # AddTextboxCommand has no EditTextResult-shaped failure mode of
+            # its own -- reaching here without raising means it committed.
+            self._last_edit_result = EditTextResult.SUCCESS
             self._invalidate_active_render_state()
             self.show_page(page_idx)
             self._update_undo_redo_tooltips()

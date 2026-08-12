@@ -111,7 +111,21 @@ Scope is the **default non-strict path only**. Staged:
 2. **Phase 2 — consent**: pause before legacy mutation:
    high-fidelity rejected → "degraded fallback pending confirmation" → user
    confirms → legacy commit. View emits a signal; Controller coordinates;
-   Model stays Qt-free (layer rules).
+   Model stays Qt-free (layer rules). Per-edit confirmation only —
+   session-level "always allow" is explicitly deferred to a later round.
+   **Architecture (see §8 for the full pivot record): a Qt-free callback
+   injected into `model.edit_text()`, not a Controller-side preflight.** A
+   two-pass preflight-then-commit design was considered and rejected: it
+   cannot detect a commit-stage-only failure (prepare succeeds on the
+   scratch copy, live verification fails) because that information does not
+   exist until `engine.commit()` actually runs, and running it during
+   preflight is unsafe on the success branch (double-edit corruption — the
+   real commit path would re-resolve text that preflight already replaced).
+   The callback fires synchronously, inside `edit_text()`, at the exact
+   point today's code already falls through to `_apply_redact_insert` —
+   zero gap between "ask" and "act", so no staleness/revision binding is
+   needed (dropped from an earlier draft of this design together with a
+   digest field once the two-pass shape was dropped).
 3. **Semantic fidelity gate** (acceptance + optional runtime check): without a
    requested style override — font identity/serif/bold/italic, size, color,
    baseline unchanged; replacement ink must not intersect non-target glyphs;
@@ -234,7 +248,34 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
        `outside_diff == 0` false negative is a permanent regression;
        1 more red from the verification round (style-override over-silencing
        color/baseline). Verification round: `wf_a56c0562-a49`, see §8.)
-5. [ ] P0-C phase 2: pre-commit confirmation flow (View→Controller signal).
+5. [x] P0-C phase 2: pre-commit confirmation flow (Qt-free callback into
+       `model.edit_text()`; see §8 for the pivot away from a Controller-side
+       preflight, rejected before any code was written).
+       (2026-08-12: `test_text_commit_consent_flow.py`, 13 tests — 11 reds
+       shown (10 suggested + the extra real-View-path test, mirroring
+       Phase 1's F6 discipline) + 2 more reds from the verification round
+       (redo-reprompt-bypass fix + its regression pin). Merged PR #29
+       (P0-C phase 1) into `task11/slice1-closure` first; this phase built
+       on branch `task12/p0c-consent-flow`, not stacked on phase 1's own
+       branch. `test_text_commit_degrade_visibility.py` (Phase 1, 13 tests)
+       updated with one auto-confirm line in its shared harness so its
+       pre-existing fallback-driving tests keep exercising what happens
+       AFTER a degraded commit, not the new consent gate itself — verified
+       by grep first (only this one file was at risk), not by trusting a
+       chunked run to surface a hang. Verification round: workflow
+       `wf_12fc9491-ecf`, see §8. Post-review 2026-08-12: a mode-switch
+       success-toast gap — reachable and normal-use once
+       `FALLBACK_DECLINED` existed, not just theoretical — was promoted
+       from "pre-existing, out of scope" to a merge blocker and closed:
+       `PDFController.consume_last_edit_result()` added, `set_mode()`
+       requires a pulled `EditTextResult.SUCCESS` before the toast can
+       fire. 5 reds + 1 pin update, see §8. Cross-page move's
+       every-move-prompts consequence explicitly reviewed and endorsed as
+       correct, not a blocker, per user sign-off — see §8. Toast-fix
+       verification round: workflow `wf_1f9461b8-4cd`, 2 findings both
+       confirmed (stale `_last_edit_result` surviving `move_text_across_
+       pages`/`add_textbox` validation guards placed after, not before,
+       the reset) and fixed red-first, see §8.)
 6. [ ] P0-D: gate-chain slice behind `max_tier`/flag; `/Rotate 270` acceptance.
 7. [ ] Cleanup: `decision_chain`; reflow-hook capture + removal.
 8. [ ] Docs: ARCHITECTURE (guard + streaming lexer + outcome fields), PITFALLS
@@ -339,6 +380,168 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
   parent assert it is None; (4) low — strict-`>` boundary unpinned; killed
   with an exact `total == budget` / `budget + 1` boundary pin.
 
+- 2026-08-12 (P0-C phase 2 design pivot, two advisor rounds before any code
+  was written): the first design considered was a Controller-side preflight
+  — classify the fallback need read-only, show the confirm dialog, then
+  invoke the existing unchanged `model.edit_text()`. It has a real hole: the
+  only way to discover a COMMIT-stage-only failure (scratch-copy prepare()
+  succeeds, live verification then fails — the exact case the user's own
+  suggested test `test_commit_stage_fallback_confirmation_uses_coded_chain_only`
+  targets) is to actually run `engine.commit()`, and running it during a
+  preflight is unsafe on the success branch: a tier0/1 success there is a
+  REAL, irreversible mutation, and the subsequent "real" `edit_text()` call
+  would then re-resolve text preflight had already replaced (double-edit
+  corruption). A pure two-pass preflight cannot see this failure mode in
+  time to pause before it. Pivoted to a Qt-free callback
+  (`confirm_fallback: Callable[[tuple[str, ...]], bool] | None`) injected
+  into `model.edit_text()`, invoked synchronously at the exact point the
+  existing code already falls through to `_apply_redact_insert` — the one
+  true pause point, reachable regardless of whether the fallback reason
+  came from a prepare-stage `PlanRejection` or a commit-stage
+  `VerificationFailure` (both already zero-mutation on the live doc before
+  this point: `engine.commit()` reverts internally on any failure). This
+  also eliminates the two-pass design's staleness/consent-binding problem
+  by construction — the callback fires with no time gap between "ask" and
+  "act", so a `doc_revision` + `request_digest` DTO considered in the first
+  draft was dropped as ceremony with nothing to bind against. `confirm_
+  fallback=None` means "proceed without asking" (today's exact behavior) —
+  opt-in from the Controller, so no existing caller of `model.edit_text()`
+  changes semantics. Consent is per-command, not per-document-state: the
+  original suggested test name `test_stale_document_invalidates_pending_
+  consent` was written against the (dropped) token-token architecture and
+  was rewritten to test the invariant that actually holds under the
+  callback design — no consent value outlives the call that produced it, so
+  a second fallback-needing edit always prompts again and a declined one
+  leaves nothing reusable. `EditTextCommand` gates re-prompting on redo
+  with an instance flag (`_fallback_ever_confirmed`, set after the first
+  successful `execute()`) rather than relying on `_executed`, because a
+  legacy-tier command has no retained forward patchset and redo re-runs
+  `model.edit_text()`'s full pipeline from scratch every time (pre-existing
+  behavior) — without the flag, redo would re-invoke the real callback and
+  re-prompt. Cross-page move's atomicity (source untouched, destination
+  untouched, undo stack/dirty flag/edit_count untouched on cancel) is not a
+  separate mechanism: the source deletion is the first mutation attempted
+  and is always sequenced before the destination `add_textbox` call, which
+  never itself needs consent (confirmed: it lives in `pdf_object_ops.py`,
+  entirely separate from the tiered-commit machinery, and never touches
+  `CommitOutcome`/`last_commit_outcome`) — so a decline during the source
+  deletion naturally short-circuits before the destination is ever reached.
+  `EMPTY_REPLACEMENT` always rejects at the tier0 prepare stage
+  (`plan.py:261`), so under the tiered engine a cross-page move's source
+  deletion deterministically needs legacy fallback and will prompt on
+  EVERY move, every time — a real, unavoidable UX consequence of this
+  design (not a bug), called out explicitly here and in the PR body for
+  the user to rule on. A pre-existing, unrelated gap was found and left
+  out of scope (same discipline as the `_normalize_text_for_compare` gap
+  found in Phase 1): the View's mode-switch success toast
+  (`set_mode()`, `view/pdf_view.py:2427`) gates only on
+  `TextEditFinalizeResult.outcome == COMMITTED`, which the finalize path
+  sets whenever `sig_edit_text.emit()` itself doesn't raise — it does NOT
+  inspect the Controller's actual `EditTextResult`. This means ANY
+  non-`SUCCESS` result (not just the new `FALLBACK_DECLINED` — this
+  already affected `REJECTED_STRICT` / `TARGET_BLOCK_NOT_FOUND` before
+  Phase 2 existed) can still show "文字已儲存" at mode-switch even though
+  nothing was saved, unless `consume_last_edit_degraded()` happens to
+  return True. Phase 2's own tests avoid routing through `set_mode()` for
+  invariant checks (asserting on model/controller state via
+  `_edit_via_signal` directly) specifically to not entangle with this
+  pre-existing gap; registering it in TODOS.md as a follow-up.
+- 2026-08-12 (P0-C phase 2 adversarial verification round, workflow
+  `wf_12fc9491-ecf`, 2 serial agents, 1 finding raised / 1 confirmed):
+  high — `EditTextCommand._fallback_ever_confirmed` was set `True` after
+  ANY successful `execute()`, including a genuine Tier 0/1 commit where
+  `confirm_fallback` was never invoked (nothing to consent to) — not only
+  after a real fallback was actually asked and agreed to. The flag
+  conflated "this command has run once" with "the user was actually
+  asked and consented", which matters whenever a legacy-tier redo
+  re-runs the FULL `model.edit_text()` pipeline from scratch (already
+  true for any command with no retained forward patchset —
+  `build_reversal_patchset` documents returning `None` for any commit
+  touching more than one content stream, a real Tier 1 case, not a
+  hypothetical) and lands on a page whose Tier 0 eligibility changed
+  since the first `execute()` (e.g. an out-of-band mutation like OCR,
+  which calls `model.apply_ocr_spans` directly and never touches
+  `command_manager`, so it cannot clear a stale redo entry the normal way
+  a new command would). Net effect: a command the user only ever
+  consented to as a HIGH-FIDELITY edit could silently commit at legacy
+  fidelity on a later redo with zero prompt — precisely the mutation
+  class Phase 2 exists to gate. Fixed by extracting the existing
+  `PDFController._is_notifiable_degrade` chain-shape check into a shared
+  Model-layer helper (`model.text_commit.dto.is_real_fallback_commit`,
+  Qt-free, importable from both layers per the layer rules) and gating
+  `_fallback_ever_confirmed = True` on it instead of on bare
+  `EditTextResult.SUCCESS`; the Controller's own check now delegates to
+  the same helper so the two "is this outcome a real fallback" decisions
+  can never drift apart again. Two tests added red-first: the flag
+  invariant itself (a clean Tier 0 win must leave the flag `False`) and
+  an end-to-end reproduction (force the lost-patchset + reclassify-fails
+  path deterministically via a `prepare_plan` monkeypatch rather than
+  fabricating real PDF structure for it), plus the original redo-pin
+  re-verified to still hold.
+- 2026-08-12 (P0-C phase 2 post-review, promoted from "pre-existing,
+  out-of-scope" to a PR #30 merge blocker): the mode-switch success toast
+  gap noted in the phase-2 pivot entry above (`set_mode()` gating on
+  `TextEditFinalizeResult.outcome == COMMITTED` alone) reached a genuinely
+  reachable, normal-use path once `FALLBACK_DECLINED` existed — a user
+  declining the consent prompt (zero mutation, no undo entry) could still
+  see "文字已儲存" on the next mode switch, directly contradicting the
+  consent contract's own promise ("使用者拒絕 → 零突變 → 無 undo → 不得呈現
+  為成功"). Fixed with `PDFController.consume_last_edit_result()`, a
+  pull-and-clear API mirroring `consume_last_edit_degraded()`, reporting
+  the actual `EditTextResult` of the last commit-producing operation;
+  `set_mode()` now requires exactly `EditTextResult.SUCCESS` before even
+  consulting the degrade-suppression flag, treating `None` (nothing
+  happened, or a controller/mock without the new API) as "not SUCCESS".
+  Four reds shown (`test_fallback_declined_does_not_show_saved_toast`,
+  `test_rejected_strict_does_not_show_saved_toast`,
+  `test_target_not_found_does_not_show_saved_toast`, plus a fifth
+  production-View-method red exercising the real, unmonkeypatched
+  `_show_toast` via `QLabel.__init__` tracking — Phase 1's F6 discipline)
+  plus one pin (`test_successful_edit_still_shows_saved_toast_once`). The
+  pre-existing `test_mode_switch_success_toast_suppressed_for_degraded_
+  commit` pin needed updating: its second half previously re-mocked the
+  same COMMITTED finalize result with no real second edit behind it, which
+  the corrected semantics (requiring a genuinely pulled SUCCESS) would
+  correctly no longer toast for — updated to perform an actual second edit
+  (page 2, clean Tier 0) so the pin tests the real "does a later genuine
+  success still toast" guarantee rather than stale mock state.
+  `EditTextResult` needed a new View-Model import-linter allowlist entry
+  (`view.text_editing -> model.edit_commands`, a plain string Enum, zero
+  mutation surface) alongside the existing `EditTextRequest`/
+  `MoveTextRequest` DTO entries; `lint-imports` reconfirmed all 4 layer
+  contracts kept after the change.
+- 2026-08-12 (cross-page move consent — user sign-off recorded): reviewed
+  and explicitly endorsed as correct, not a blocker. Since the source
+  deletion always uses an empty replacement, which always rejects at the
+  Tier 0 prepare stage, every cross-page move under the tiered engine will
+  prompt for consent every time until a genuine high-fidelity whole-show
+  deletion primitive exists; skipping the prompt for this specific case
+  would itself violate the P0-C consent contract. Future work should add
+  that primitive to eliminate the prompt, not special-case cross-page move
+  into a consent bypass.
+- 2026-08-12 (toast-correctness fix adversarial verification round, workflow
+  `wf_1f9461b8-4cd`, 2 serial agents, 2 findings raised / 2 confirmed):
+  high + medium — `move_text_across_pages()` and `add_textbox()`'s new
+  `self._last_edit_result = None` resets were placed at the SAME point
+  Phase 1's `self._last_edit_degraded = False` already lived — which
+  turned out to sit AFTER both methods' own early-return validation
+  guards, not before. This is a case the author explicitly flagged and
+  decided not to fix during design (reasoning it was "lower-risk" and
+  out of the requested scope); the adversarial round proved it reachable:
+  an earlier, unconsumed commit-producing interaction (finalized via any
+  reason other than `MODE_SWITCH` — `APPLY`/`FOCUS_OUTSIDE` never consume
+  the flag) leaves a stale `SUCCESS` that survives straight through a
+  LATER, unrelated interaction's guard return (e.g. an empty-text
+  cross-page move) and gets read as that interaction's outcome — an error
+  toast and a "文字已儲存" success toast could show simultaneously for a
+  move that mutated nothing. Fixed by moving both resets to the literal
+  first lines of each method, genuinely before any code path that can
+  return; two regression tests pin the reachable scenario for each
+  method. Lesson: copying an existing reset's placement is not the same
+  as verifying it — `edit_text()`'s own reset genuinely was correct,
+  which is exactly what made the same placement look safe to reuse
+  elsewhere without re-deriving "true entry" from scratch.
+
 ## 9. Open questions
 
 - ~~`max_decoded_bytes` default / per-stream vs summed~~ **RESOLVED in P0-A**
@@ -349,7 +552,9 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
   Identity-H was previously marked NO-GO under `font_unsupported_encoding`
   (TODOS Q3-ceiling item) — the slice must either scope it in with the full
   gate chain or explicitly keep it out and say so in the funnel report.
-- P0-C phase 2 UX: per-edit modal vs session-level policy setting.
+- ~~P0-C phase 2 UX: per-edit modal vs session-level policy setting.~~
+  **RESOLVED 2026-08-12**: per-edit modal this round; session-level "always
+  allow" explicitly deferred to a later round (see §8).
 - Runtime semantic gate: always-on vs acceptance-only (render+extract per
   commit has a latency cost; measure in step 3).
 

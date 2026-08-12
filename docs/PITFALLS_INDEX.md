@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 252 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 256 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -257,3 +257,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2286 | A per-command flag reset at only one entry point leaks into sibling commit paths | `controller/pdf_controller.py` (Task 12 P0-C degrade visibility) |
 | 2294 | Redo re-running the full commit pipeline must NOT re-fire a one-shot GUI notice | `controller/pdf_controller.py` / `model/edit_commands.py` (Task 12 P0-C degrade visibility) |
 | 2301 | An acceptance gate's style-override flag must be scoped to what the app can actually request | `test_scripts/semantic_fidelity_gate.py` (Task 12 P0-C semantic fidelity gate) |
+| 2309 | A two-pass preflight-then-commit consent design can't see a commit-stage-only failure in time | `model/pdf_text_edit.py` (Task 12 P0-C phase 2 consent flow — design-time finding, not a shipped bug) |
+| 2317 | A "was this command ever confirmed" flag must check what actually happened, not just that execute() succeeded | `model/edit_commands.py` (Task 12 P0-C phase 2 — adversarial verification finding, high severity) |
+| 2325 | A "did the signal emit" outcome is not "did the edit commit" — the View's success toast must pull the real result | `view/pdf_view.py` / `controller/pdf_controller.py` (Task 12 P0-C phase 2 — post-review finding, promoted to a merge blocker) |
+| 2333 | A "reset at entry" claim is only true if the reset actually runs before every early-return guard | `controller/pdf_controller.py` (Task 12 P0-C phase 2 toast fix — adversarial verification finding, high + medium) |

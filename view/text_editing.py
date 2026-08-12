@@ -23,6 +23,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QTextEdit
 
+from model.edit_commands import EditTextResult  # noqa: F401 — re-exported for view/controller (pure DTO enum, no mutation surface)
 from model.edit_requests import EditTextRequest, MoveTextRequest, StyleOverrides  # re-exported for view/controller
 from utils.render_limits import safe_render_scale as _safe_render_scale
 

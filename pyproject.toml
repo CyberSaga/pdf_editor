@@ -114,6 +114,11 @@ ignore_imports = [
     "view.object_selection -> model.object_requests",
     "view.pdf_view -> model.object_requests",
     "view.text_editing -> model.edit_requests",
+    # Task 12 P0-C phase 2 verification: EditTextResult is a plain string
+    # Enum (model/edit_commands.py) consumed read-only by the View's
+    # mode-switch finalize path to gate the success toast on the
+    # Controller's actual edit outcome, not just "did the signal emit".
+    "view.text_editing -> model.edit_commands",
     # options/report dataclasses consumed/produced by dialogs
     "view.dialogs.optimize -> model.pdf_optimizer",
     "view.dialogs.audit -> model.pdf_optimizer",
