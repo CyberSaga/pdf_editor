@@ -112,7 +112,9 @@ def audit_page(
     stream_owners: dict[int, set[int]],
 ) -> dict[str, object]:
     streams = read_page_streams(doc, page)
-    replay = replay_page_streams(streams)
+    # Diagnostics take a full census: the production resource guard would
+    # silently report an over-budget page as zero shows (Task 12 P0-A).
+    replay = replay_page_streams(streams, max_decoded_bytes=None)
 
     counts: Counter[str] = Counter()
     reject_reasons: Counter[str] = Counter()

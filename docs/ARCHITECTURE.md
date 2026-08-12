@@ -608,10 +608,23 @@ new engine yet** (integration is plan Task 7+).
   raised) + `splice_stream`, the only writer: expected-bytes + SHA-256 stream
   digest + range/overlap validation, all-or-nothing. **No token serializer by
   design** — Tier 0 byte identity depends on its absence (`pdf_content_ops`'s
-  normalized serializer must never be used here).
+  normalized serializer must never be used here). `lex_content_stream` is a
+  **generator** (Task 12 P0-B): the list form materialized ~0.77 tokens/byte
+  before replay read token one (~10 GB on a measured dense page); callers
+  needing random access wrap it in `list()`.
 - `replay.py` — text/graphics-state interpreter (q/Q, cm, BT/ET, Tf, Tm, Td,
   TD, T*, TL, Tc, Tw, Tz, Ts, Tr, Tj, TJ, ', ") across the page's ordered
   stream list; per-stream byte ranges; reliability flags instead of guesses.
+  `replay_page_streams` is the **single production entry into the lexer** and
+  carries the Task 12 P0-A resource guard: `max_decoded_bytes` (default
+  `DEFAULT_MAX_REPLAY_BYTES` = 4 MiB, summed across the page's streams,
+  `None` disables) refuses before tokenization via the dedicated
+  `PageReplay.refusal_reason` channel (`content_stream_too_large_for_safe_
+  replay`), which `bind_source_text` surfaces verbatim — never collapsed
+  into `malformed_stream`/`no_source_match`. `read_page_streams` and the
+  commit verifier are deliberately unguarded (verification must still hash
+  oversized streams). Over-budget pages fall to the legacy engine, which
+  never lexes.
 - `inspect.py` — `bind_source_text` (text match corroborated by rawdict
   geometry; ambiguity/XObject/rotation/malformed refuse with `RejectReason`),
   `page_fingerprint` (streams + fonts + annots + widgets digest).

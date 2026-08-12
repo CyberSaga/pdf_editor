@@ -61,6 +61,11 @@ class RejectReason:
     GROWTH_REGION_NOT_BLANK = "growth_region_not_blank"
     GROWTH_OUTSIDE_PAGE = "growth_outside_page"
     FONT_RESOURCE_NOT_PROVEN = "font_resource_not_proven"
+    # Task 12 P0-A: replay refused to tokenize a page whose decoded content
+    # streams exceed the safe-replay budget (the lexer materializes ~0.77
+    # tokens per byte).  A resource refusal, not a stream-shape verdict --
+    # it must never be collapsed into MALFORMED_STREAM or NO_MATCH.
+    CONTENT_STREAM_TOO_LARGE = "content_stream_too_large_for_safe_replay"
 
 
 class CommitStatus(str, Enum):

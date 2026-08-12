@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from model.text_commit.dto import RejectReason
 from model.text_commit.pdf_lexer import (
     TokenKind,
     decode_hex_string,
@@ -25,6 +26,14 @@ from model.text_commit.pdf_lexer import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Task 12 P0-A: replay is the ONLY production path into lex_content_stream,
+# which materializes ~0.77 tokens/byte at ~133x RSS amplification (a measured
+# 72 MB decoded page peaked near 10 GB).  4 MiB caps the transient at roughly
+# half a GB and the lex walk at a few seconds; an over-budget page refuses
+# here and falls to the legacy engine, which never lexes.  Revisit as a
+# latency budget once the streaming lexer (P0-B) lands.
+DEFAULT_MAX_REPLAY_BYTES = 4 * 1024 * 1024
 
 Matrix = tuple[float, float, float, float, float, float]
 
@@ -120,6 +129,10 @@ class PageReplay:
     malformed: bool
     has_xobject_invocation: bool
     stream_xrefs: tuple[int, ...]
+    # Set when replay refused to run at all (resource guard) -- a distinct
+    # channel from ``malformed`` on purpose: callers must surface it
+    # verbatim, never collapse it into MALFORMED_STREAM/NO_MATCH.
+    refusal_reason: str | None = None
 
 
 @dataclass
@@ -178,8 +191,38 @@ def _decode_operand_string(op: _Operand) -> bytes:
     return decode_hex_string(raw)
 
 
-def replay_page_streams(streams: list[tuple[int, bytes]]) -> PageReplay:
-    """Replay ``[(stream_xref, decoded_bytes), ...]`` in order."""
+def replay_page_streams(
+    streams: list[tuple[int, bytes]],
+    *,
+    max_decoded_bytes: int | None = DEFAULT_MAX_REPLAY_BYTES,
+) -> PageReplay:
+    """Replay ``[(stream_xref, decoded_bytes), ...]`` in order.
+
+    ``max_decoded_bytes`` bounds the SUM of the decoded stream sizes (state
+    carries across the page's stream sequence, so the lexer walks all of
+    them).  Over budget, the replay refuses before any tokenization and
+    returns a ``PageReplay`` whose ``refusal_reason`` is
+    ``RejectReason.CONTENT_STREAM_TOO_LARGE``.  ``None`` disables the guard
+    (diagnostic use only).  ``read_page_streams`` and the commit verifier
+    stay deliberately unguarded: verification must still hash oversized
+    streams, or a perf limit becomes a correctness failure.
+    """
+    if max_decoded_bytes is not None:
+        total = sum(len(data) for _, data in streams)
+        if total > max_decoded_bytes:
+            logger.info(
+                "replay refused: %d decoded bytes over the %d-byte budget",
+                total,
+                max_decoded_bytes,
+            )
+            return PageReplay(
+                shows=(),
+                malformed=False,
+                has_xobject_invocation=False,
+                stream_xrefs=tuple(x for x, _ in streams),
+                refusal_reason=RejectReason.CONTENT_STREAM_TOO_LARGE,
+            )
+
     shows: list[ShowOp] = []
     malformed = False
     has_xobject = False
