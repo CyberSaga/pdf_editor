@@ -1745,7 +1745,15 @@ def _attempt_tiered_commit(
     outcome = engine.commit(prepared)
     if outcome.status is CommitStatus.COMMITTED:
         return outcome, None
-    return None, outcome.degraded_reason or outcome.status.value
+    # Commit-stage failures carry a free-form diagnostic in degraded_reason
+    # (raw exception text, pixel coordinates, resource names — the engine's
+    # own warning log keeps it). The fallback reason must stay a STABLE code
+    # (P0-C reason-codes-only contract: it feeds fallback_chain, which the
+    # GUI notice and telemetry surface verbatim) — recover it from the
+    # engine's coded fallback_chain instead.
+    if outcome.fallback_chain:
+        return None, outcome.fallback_chain[-1].split(":", 1)[-1]
+    return None, outcome.status.value
 
 
 def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,

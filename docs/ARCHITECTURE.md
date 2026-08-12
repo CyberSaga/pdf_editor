@@ -272,6 +272,32 @@ Edit command failure handling is explicit:
 - If model edit execution returns `TARGET_BLOCK_NOT_FOUND` or `TARGET_SPAN_NOT_FOUND`, controller surfaces targeted user feedback and does not record a history entry.
 - No-op / failed edit executions must not create undoable commands.
 
+Degrade visibility (Task 12 P0-C phase 1): after a successful command, the
+controller reads the per-command `EditTextCommand.outcome`; a
+`DEGRADED_COMMITTED` status with a `fallback_chain` other than the bare
+default-engine `("legacy",)` — i.e. a real fallback FROM an attempted
+higher tier, not the shipped baseline — surfaces exactly one user-visible
+notice (`_notify_degraded_commit` → `view.notify_degraded_commit`, warning
+toast) whose body is the `fallback_chain` reason codes only — never
+document text, filenames, or paths. `_is_notifiable_degrade` is the single
+gate for this distinction; any new consumer of `DEGRADED_COMMITTED` must
+make the same check rather than keying on status alone. The view's
+mode-switch success toast is suppressed for that edit via the
+controller-owned pull-and-clear flag `consume_last_edit_degraded()`, reset
+at the entry of every commit-producing controller method — `edit_text`,
+`add_textbox`, `move_text_across_pages` — so a stale flag from one
+interaction can never mute a later, unrelated commit's success toast; the
+cross-page move's source-text deletion (a real tiered-commit attempt that
+can itself degrade) gets the same one-notice treatment by reading
+`model.last_commit_outcome` after the deletion. Redo intentionally does
+NOT re-fire the notice (the edit was already disclosed once at first
+commit). Strict-mode rejections and lossless tier commits emit no degrade
+notice. The semantic fidelity gate (`test_scripts/semantic_fidelity_gate.py`)
+is an acceptance-only harness — production layers must not import it; its
+`style_override_requested` flag silences only font-identity/size checks,
+never color or baseline (the app's sole override producer never requests
+either).
+
 Cross-page moves use a separate typed flow. When an inline edit changes page, the view emits `sig_move_text_across_pages(MoveTextRequest)`. Controller resolves the source span, captures a document snapshot, deletes the source text, inserts the destination textbox, and records a single `SnapshotCommand` only if the full move succeeds. Failure restores the document from the pre-move snapshot and refreshes both affected pages.
 
 ### 3.3 Add New Textbox

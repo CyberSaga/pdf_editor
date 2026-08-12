@@ -488,3 +488,21 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
 | T12-P1-04 | Fingerprint dependency graph incomplete (FontFile/ExtGState/OCG/geometry/AP) | `test_page_fingerprint_covers_fontfile_extgstate_ocg_ap` |
 | T12-P1-05 | Non-page stream aliasing (Form/Pattern/annot AP sharing target stream) | `test_bind_refuses_shared_form_or_ap_stream` |
 | T12-P1-06 | Non-strict silent legacy fallback consent UX | `test_non_strict_legacy_fallback_requires_consent` |
+
+- 2026-08-12 (Task 12 P0-C phase 1): T12-P1-06's **visibility half landed** — a
+  `degraded_committed` edit now surfaces exactly one warning notice carrying the
+  `fallback_chain` reason codes (incl. the P0-A guard reason verbatim), with the
+  plain success toast suppressed for that edit (`test_text_commit_degrade_visibility.py`,
+  13 tests after same-day adversarial verification: default-engine
+  over-notification, commit-stage detail leak, cross-page-move silent gap, and
+  stale-flag leak into add-textbox were all found and fixed red-first). The
+  **consent half stays open** for P0-C phase 2
+  (`test_non_strict_legacy_fallback_requires_consent`). The semantic fidelity gate
+  landed as an acceptance-only harness (`test_scripts/semantic_fidelity_gate.py` +
+  7 tests) pinning the `outside_diff == 0` false negative; runtime enforcement is
+  still an open plan §9 question. **Known, accepted gate scope limits** (low
+  severity, documented in the module docstring — widen before judging real
+  mixed-style or graphical-occlusion commits): the gate is extraction-based and
+  blind to non-text occlusion (an opaque fill/image over a neighbor survives
+  undetected); a mixed-style target region (two fonts in one edit's bbox) is
+  judged only against its first character's style.

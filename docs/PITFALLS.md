@@ -2274,3 +2274,34 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** ctypes defaults every restype to `c_int`, so `GetCurrentProcess()`'s 64-bit pseudo-handle (-1) truncates to 32 bits before being passed to `K32GetProcessMemoryInfo`.
 **Fix:** set `GetCurrentProcess.restype = wintypes.HANDLE` and full argtypes/restype on `K32GetProcessMemoryInfo`; assert walk-coverage side-channels (`token_count`, `last_end == stream_bytes`) so a zeroed reading cannot masquerade as a pass.
 **File:** `test_scripts/_streaming_memory_child.py`
+
+## A GUI notice keyed only on outcome status fires under the shipped default too — gate on the fallback chain shape, not just the status enum
+
+**Area:** `controller/pdf_controller.py` (Task 12 P0-C degrade visibility)
+**Symptom:** a naive `if outcome.status is DEGRADED_COMMITTED: notify()` hookup would warn on literally every successful edit under the SHIPPED DEFAULT (`TextCommitSettings(engine="legacy")`), because the legacy engine's own success path (`legacy_commit_outcome()`, `dto.py`) honestly records `DEGRADED_COMMITTED` with chain `("legacy",)` — that status means "this is a legacy commit" for the default engine, not "a higher tier was attempted and failed." All 8 first-draft GUI tests constructed `TextCommitSettings(engine="tiered")` only, so this gap was invisible until an adversarial review asked "what does the default configuration do."
+**Cause:** `CommitStatus.DEGRADED_COMMITTED` is overloaded — it means both "the baseline legacy engine, as configured" and "a real fidelity loss from an attempted fallback," and only `fallback_chain`'s *shape* distinguishes them.
+**Fix:** gate the notice on `fallback_chain != ("legacy",)` (i.e. a chain with more than one element, meaning something higher was tried first), not on `status` alone. Any new DEGRADED_COMMITTED consumer must make the same distinction — write a test against `TextCommitSettings()` (bare defaults), not only `engine="tiered"`.
+**File:** `controller/pdf_controller.py` (`_is_notifiable_degrade`)
+
+## A per-command flag reset at only one entry point leaks into sibling commit paths
+
+**Area:** `controller/pdf_controller.py` (Task 12 P0-C degrade visibility)
+**Symptom:** `_last_edit_degraded` was reset only at `edit_text()` entry. A degraded edit finalized via a path that never consumes the flag (e.g. `FOCUS_OUTSIDE`/`APPLY` finalize reasons) left it `True`; a LATER, unrelated commit through a sibling method (`add_textbox`, `move_text_across_pages`) that never touches the flag would still trigger the View's mode-switch consumer, silently eating that later commit's success toast.
+**Cause:** treating "reset the flag where I added the notify hookup" as sufficient, instead of auditing every method that can produce a `COMMITTED` result the View's shared finalize path (`text_editing.py` `_finalize_text_edit`) will consume.
+**Fix:** every commit-producing controller entry point resets the flag at ITS OWN entry (`edit_text`, `add_textbox`, `move_text_across_pages`), even the ones that can never themselves degrade — the reset is about not inheriting stale state from a DIFFERENT interaction, not about that method's own outcome.
+**File:** `controller/pdf_controller.py`
+
+## Redo re-running the full commit pipeline must NOT re-fire a one-shot GUI notice
+
+**Area:** `controller/pdf_controller.py` / `model/edit_commands.py` (Task 12 P0-C degrade visibility)
+**Symptom:** an adversarial reviewer flagged that `EditTextCommand.redo()` for a legacy-tier command falls through to a full `model.edit_text()` re-run (no retained forward patchset for Tier 2), re-recording a fresh `DEGRADED_COMMITTED` outcome — and asked whether that should re-notify.
+**Cause / resolution:** it correctly should NOT. "Exactly one notice per degraded edit" was already satisfied when the edit first committed; redo reproduces the SAME already-disclosed degrade against the undo-restored snapshot, so firing a second notice would violate the invariant it looks like it's protecting, not satisfy it. `controller.redo()` never calls the notify hookup (it lives only in `edit_text()`), which is correct by construction, not by accident.
+**File:** `controller/pdf_controller.py` (documents intended behavior; no code change)
+
+## An acceptance gate's style-override flag must be scoped to what the app can actually request
+
+**Area:** `test_scripts/semantic_fidelity_gate.py` (Task 12 P0-C semantic fidelity gate)
+**Symptom:** `style_override_requested=True` silenced ALL four style checks (font identity, size, color, baseline) as one bundle, so a size-only style override commit that also happened to recolor the replacement or drop its baseline by several points would pass — even though the app's one and only override producer (`build_style_overrides`, `view/text_editing.py`) hardcodes `color=None` and has no baseline control at all.
+**Cause:** modeling "was a style override requested" as a single bool guarding every style-adjacent check, instead of scoping the silence to the specific fields an override can actually touch.
+**Fix:** split the guard — `style_override_requested` now silences only `FONT_IDENTITY_CHANGED`/`FONT_SIZE_CHANGED`; `COLOR_CHANGED`/`BASELINE_SHIFTED` stay live unconditionally, since neither is ever a requestable outcome in this app.
+**File:** `test_scripts/semantic_fidelity_gate.py`
