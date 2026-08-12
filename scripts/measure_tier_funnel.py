@@ -378,7 +378,10 @@ def _xobject_replays_for_page(
                 data = doc.xref_stream(xref) or b""
             except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
                 data = b""
-            cache[xref] = replay_page_streams([(xref, data)])
+            # Census, not production: bypass the resource guard (P0-A).
+            cache[xref] = replay_page_streams(
+                [(xref, data)], max_decoded_bytes=None
+            )
         replays.append(cache[xref])
     return replays
 
@@ -461,7 +464,8 @@ def measure_document(
     for page_idx in range(doc.page_count):
         page = doc[page_idx]
         streams = read_page_streams(doc, page)
-        replay = replay_page_streams(streams)
+        # Census, not production: bypass the resource guard (Task 12 P0-A).
+        replay = replay_page_streams(streams, max_decoded_bytes=None)
         stream_map = dict(streams)
         page_widgets_or_signed = page_has_widgets_or_signatures(doc, page)
 

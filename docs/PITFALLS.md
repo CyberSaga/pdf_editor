@@ -2250,3 +2250,27 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** Pre-existing, environment-level: interpreter shutdown with the accumulated Qt state of 200+ test modules in one process. Not caused by, and not fixed by, any change in the text-commit engine.
 **Fix:** Split `test_scripts/test_*.py` into ~4 alphabetical chunks and run one `pytest` invocation per chunk, summing the reported counts. Never quote a full-suite number from a run whose summary line you did not see (cf. the `| tail` pitfall above — a hard abort can read as a passing run).
 **File:** — (harness); chunked runner pattern used for every Task 11 closure gate
+
+## `lex_content_stream` materialized the full token list — a dense page stream is an in-app OOM
+
+**Area:** `model/text_commit` (pdf_lexer, replay)
+**Symptom:** prepare/preview on a vector-heavy page allocated GBs and stalled for minutes: a measured 8 MiB synthetic stream peaked at 1.16 GB RSS; a real ~72 MB decoded stream became ~54.7M `StreamToken`s ≈ 10 GB and ~115 s before the first show op was even bound. The GUI render pipeline was innocent (same document opens at ~470 MB).
+**Cause:** the lexer returned `list[StreamToken]` (~0.77 tokens/byte at ~174–202 B/token incl. list+GC overhead), fully materialized before replay read token one; about half are WHITESPACE trivia that replay discards on sight.
+**Fix:** Task 12 P0-B converted the lexer to a generator (callers needing random access wrap in `list()`), and P0-A added a summed-size budget `max_decoded_bytes` (default 4 MiB, `None` disables) at the single production chokepoint `replay_page_streams`, refusing BEFORE tokenization with the stable reason `content_stream_too_large_for_safe_replay`. Post-fix the same 8 MiB walk peaks at ~26 MB, but latency still scales ~1 s/MiB — the guard survives as a latency ceiling, not just OOM defense.
+**File:** `model/text_commit/pdf_lexer.py`, `model/text_commit/replay.py`
+
+## A resource refusal routed through `malformed` gets re-labelled — refusals need their own channel
+
+**Area:** `model/text_commit` reason propagation (replay → inspect → plan)
+**Symptom:** if the replay guard had signalled via `malformed=True`, the user-facing reason would have read `malformed_stream`; via an empty `shows` it would have read `no_source_match` — which `_reconstruction_aware_reason` can further rewrite into `target_reconstruction_unverified` on run-joined targets. Two hops, two lies.
+**Cause:** `bind_source_text` legitimately collapses `replay.malformed` into `MALFORMED_STREAM`, and empty candidate lists into `NO_MATCH`; any new refusal class that reuses those channels inherits their labels.
+**Fix:** a distinct `PageReplay.refusal_reason` field, surfaced verbatim by `bind_source_text` BEFORE the malformed check; `test_text_commit_replay_guard.py` pins verbatim survival all the way to `PlanRejection`. The field only works if EVERY consumer checks it: the Form-XObject deconfliction scan was missed on day one and collapsed refusals into `NO_MATCH` until the same-day adversarial review caught it. Any new consumer of `PageReplay` must handle `refusal_reason` before reading `shows` — the tri-state `_target_in_invoked_form_xobjects` (`True`/`False`/`None`=unprovable) is the pattern. `replay_page` (`inspect.py`) has no production caller today but carries the same trap for whoever calls it next.
+**File:** `model/text_commit/replay.py`, `model/text_commit/inspect.py`
+
+## ctypes `GetProcessMemoryInfo` silently zeroes without HANDLE restype (64-bit truncation)
+
+**Area:** test harness (subprocess memory measurement)
+**Symptom:** the call returns 0 with an all-zero struct; `GetLastError()` = 6 (ERROR_INVALID_HANDLE) — peak-RSS readings of 0 that can slip through as "under threshold" if unasserted.
+**Cause:** ctypes defaults every restype to `c_int`, so `GetCurrentProcess()`'s 64-bit pseudo-handle (-1) truncates to 32 bits before being passed to `K32GetProcessMemoryInfo`.
+**Fix:** set `GetCurrentProcess.restype = wintypes.HANDLE` and full argtypes/restype on `K32GetProcessMemoryInfo`; assert walk-coverage side-channels (`token_count`, `last_end == stream_bytes`) so a zeroed reading cannot masquerade as a pass.
+**File:** `test_scripts/_streaming_memory_child.py`

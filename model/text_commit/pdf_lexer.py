@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -113,14 +113,18 @@ def _scan_inline_image_payload(data: bytes, pos: int) -> StreamToken:
         search = idx + 1
 
 
-def lex_content_stream(data: bytes) -> list[StreamToken]:
-    """Tile ``data`` into tokens; never raises on arbitrary input.
+def lex_content_stream(data: bytes) -> Iterator[StreamToken]:
+    """Tile ``data`` into a lazily yielded token stream; never raises.
 
     Unlexable constructs become ``MALFORMED`` tokens so callers can reject
     the stream instead of guessing.  Invariant: token ranges are contiguous,
     gap-free, and cover the source exactly.
+
+    A generator, not a list (Task 12 P0-B): the list form materialized
+    ~0.77 tokens/byte before replay read the first token -- a measured
+    72 MB decoded stream became ~54.7M StreamToken objects and ~10 GB of
+    RSS.  Callers needing random access wrap it in ``list()`` explicitly.
     """
-    tokens: list[StreamToken] = []
     pos = 0
     length = len(data)
     while pos < length:
@@ -129,60 +133,62 @@ def lex_content_stream(data: bytes) -> list[StreamToken]:
             end = pos + 1
             while end < length and data[end] in _WHITESPACE:
                 end += 1
-            tokens.append(StreamToken(TokenKind.WHITESPACE, pos, end))
+            token = StreamToken(TokenKind.WHITESPACE, pos, end)
         elif c == 0x25:  # %
             end = pos + 1
             while end < length and data[end] not in b"\r\n":
                 end += 1
-            tokens.append(StreamToken(TokenKind.COMMENT, pos, end))
+            token = StreamToken(TokenKind.COMMENT, pos, end)
         elif c == 0x28:  # (
-            tokens.append(_scan_literal_string(data, pos))
+            token = _scan_literal_string(data, pos)
         elif c == 0x3C:  # <
             if pos + 1 < length and data[pos + 1] == 0x3C:
-                tokens.append(StreamToken(TokenKind.DICT_OPEN, pos, pos + 2))
+                token = StreamToken(TokenKind.DICT_OPEN, pos, pos + 2)
             else:
-                tokens.append(_scan_hex_string(data, pos))
+                token = _scan_hex_string(data, pos)
         elif c == 0x3E:  # >
             if pos + 1 < length and data[pos + 1] == 0x3E:
-                tokens.append(StreamToken(TokenKind.DICT_CLOSE, pos, pos + 2))
+                token = StreamToken(TokenKind.DICT_CLOSE, pos, pos + 2)
             else:
-                tokens.append(StreamToken(TokenKind.MALFORMED, pos, pos + 1))
+                token = StreamToken(TokenKind.MALFORMED, pos, pos + 1)
         elif c == 0x5B:  # [
-            tokens.append(StreamToken(TokenKind.ARRAY_OPEN, pos, pos + 1))
+            token = StreamToken(TokenKind.ARRAY_OPEN, pos, pos + 1)
         elif c == 0x5D:  # ]
-            tokens.append(StreamToken(TokenKind.ARRAY_CLOSE, pos, pos + 1))
+            token = StreamToken(TokenKind.ARRAY_CLOSE, pos, pos + 1)
         elif c == 0x7B:  # {
-            tokens.append(StreamToken(TokenKind.BRACE_OPEN, pos, pos + 1))
+            token = StreamToken(TokenKind.BRACE_OPEN, pos, pos + 1)
         elif c == 0x7D:  # }
-            tokens.append(StreamToken(TokenKind.BRACE_CLOSE, pos, pos + 1))
+            token = StreamToken(TokenKind.BRACE_CLOSE, pos, pos + 1)
         elif c == 0x29:  # stray )
-            tokens.append(StreamToken(TokenKind.MALFORMED, pos, pos + 1))
+            token = StreamToken(TokenKind.MALFORMED, pos, pos + 1)
         elif c == 0x2F:  # /
             end = pos + 1
             while end < length and _is_regular(data[end]):
                 end += 1
-            tokens.append(StreamToken(TokenKind.NAME, pos, end))
+            token = StreamToken(TokenKind.NAME, pos, end)
         else:
             end = pos + 1
             while end < length and _is_regular(data[end]):
                 end += 1
             raw = data[pos:end]
             if _NUMBER_RE.match(raw):
-                tokens.append(StreamToken(TokenKind.NUMBER, pos, end))
+                token = StreamToken(TokenKind.NUMBER, pos, end)
             else:
-                tokens.append(StreamToken(TokenKind.OPERATOR, pos, end))
+                yield StreamToken(TokenKind.OPERATOR, pos, end)
                 if raw == b"ID":
                     # One whitespace byte separates ID from the payload.
                     if end < length and data[end] in _WHITESPACE:
-                        tokens.append(StreamToken(TokenKind.WHITESPACE, end, end + 1))
+                        yield StreamToken(TokenKind.WHITESPACE, end, end + 1)
                         end += 1
                     if end < length:
                         payload = _scan_inline_image_payload(data, end)
                         if payload.end > payload.start:
-                            tokens.append(payload)
+                            yield payload
                         end = payload.end
-        pos = tokens[-1].end
-    return tokens
+                pos = end
+                continue
+        yield token
+        pos = token.end
 
 
 _STRING_DECODE_ESCAPES = {

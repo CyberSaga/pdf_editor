@@ -313,15 +313,24 @@ def _origin_in_page_space(
 
 def _target_in_invoked_form_xobjects(
     doc: fitz.Document, page: fitz.Page, target_bytes: bytes
-) -> bool:
+) -> bool | None:
     """True when ``target_bytes`` decode from a show op inside a Form
     XObject the page's ``/Resources`` invokes (one level; nested ``Do``
     inside a Form is not followed — matches the funnel diagnostic).
+
+    ``None`` (Task 12 P0-A) when at least one invoked XObject's stream was
+    refused by the replay resource guard and the target was not confirmed
+    in another: neither presence nor absence is provable, so the caller
+    must surface the refusal rather than claim NO_MATCH — an unscanned
+    stream proves nothing, and a False here would let
+    ``_reconstruction_aware_reason`` rewrite the collapsed NO_MATCH into a
+    fabricated reconstruction diagnosis.
     """
     try:
         xobjects = page.get_xobjects()
     except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
         return False
+    scan_refused = False
     for entry in xobjects:
         xref = int(entry[0])
         try:
@@ -329,9 +338,12 @@ def _target_in_invoked_form_xobjects(
         except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
             continue
         replay = replay_page_streams([(xref, data)])
+        if replay.refusal_reason is not None:
+            scan_refused = True
+            continue
         if any(s.decoded_bytes == target_bytes for s in replay.shows):
             return True
-    return False
+    return None if scan_refused else False
 
 
 def bind_source_text(
@@ -353,6 +365,15 @@ def bind_source_text(
         return BindingFailure(RejectReason.NO_MATCH, "page has no content streams")
 
     replay = replay_page_streams(streams)
+    if replay.refusal_reason is not None:
+        # Verbatim propagation is a frozen contract (Task 12 P0-A): the
+        # refusal is about resources, not stream shape or match failure.
+        return BindingFailure(
+            replay.refusal_reason,
+            f"decoded content streams total "
+            f"{sum(len(data) for _, data in streams)} bytes, over the safe "
+            "replay budget; refused before tokenization",
+        )
     if replay.malformed:
         return BindingFailure(
             RejectReason.MALFORMED_STREAM,
@@ -373,14 +394,26 @@ def bind_source_text(
         # Target-scoped: only fire TARGET_IN_FORM_XOBJECT when the target
         # bytes are confirmed inside an invoked Form XObject. A page that
         # merely invokes a logo/bullet XObject must not rebrand every miss.
-        if replay.has_xobject_invocation and _target_in_invoked_form_xobjects(
-            doc, page, target_bytes
-        ):
-            return BindingFailure(
-                RejectReason.TARGET_IN_FORM_XOBJECT,
-                "target not in the direct page stream; confirmed inside an "
-                "invoked Form XObject",
+        if replay.has_xobject_invocation:
+            in_xobjects = _target_in_invoked_form_xobjects(
+                doc, page, target_bytes
             )
+            if in_xobjects:
+                return BindingFailure(
+                    RejectReason.TARGET_IN_FORM_XOBJECT,
+                    "target not in the direct page stream; confirmed inside "
+                    "an invoked Form XObject",
+                )
+            if in_xobjects is None:
+                # An invoked XObject was refused by the replay resource
+                # guard: NO_MATCH would be an unprovable claim, and the
+                # refusal must stay verbatim (Task 12 P0-A).
+                return BindingFailure(
+                    RejectReason.CONTENT_STREAM_TOO_LARGE,
+                    "an invoked Form XObject's stream is over the safe "
+                    "replay budget; the target's presence there can be "
+                    "neither confirmed nor ruled out",
+                )
         return BindingFailure(
             RejectReason.NO_MATCH,
             "no show operator decodes to the target text",

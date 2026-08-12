@@ -241,7 +241,9 @@ def _page_show_counts(doc: fitz.Document) -> list[int]:
     for i in range(doc.page_count):
         page = doc[i]
         streams = read_page_streams(doc, page)
-        replay = replay_page_streams(streams)
+        # Census, not production: bypass the resource guard or an
+        # over-budget page silently scores zero shows (Task 12 P0-A).
+        replay = replay_page_streams(streams, max_decoded_bytes=None)
         counts.append(len(replay.shows))
     return counts
 
@@ -313,7 +315,8 @@ def _pick_real_target(
     show's ``decoded_bytes`` always does, by construction of the replay).
     """
     streams = read_page_streams(doc, page)
-    replay = replay_page_streams(streams)
+    # Census, not production: bypass the resource guard (Task 12 P0-A).
+    replay = replay_page_streams(streams, max_decoded_bytes=None)
     for show in replay.shows:
         if not show.decoded_bytes:
             continue
@@ -403,7 +406,8 @@ def _fixture_target_origin(
     try:
         page = doc[page_index]
         streams = read_page_streams(doc, page)
-        replay = replay_page_streams(streams)
+        # Census, not production: bypass the resource guard (Task 12 P0-A).
+        replay = replay_page_streams(streams, max_decoded_bytes=None)
         target_bytes = _INJECT_TARGET.encode("latin-1")
         for show in replay.shows:
             if show.decoded_bytes == target_bytes:

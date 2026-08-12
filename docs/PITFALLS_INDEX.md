@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 245 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 248 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -250,3 +250,6 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2226 | A certificate that reads its evidence from the post-patch document proves nothing | `model/text_commit/verify.py` (V0e), `model/text_commit/preview.py` |
 | 2236 | `TJ` kern advances are materialized as synthesized spaces in dict extraction — verbatim dict text is not the source string | `model/pdf_text_edit.py` (`_dict_line_for_runs`) |
 | 2246 | `pytest test_scripts/` in one invocation hangs at PySide6 interpreter teardown — run the suite chunked | test harness (`.venv`, PySide6) |
+| 2254 | `lex_content_stream` materialized the full token list — a dense page stream is an in-app OOM | `model/text_commit` (pdf_lexer, replay) |
+| 2262 | A resource refusal routed through `malformed` gets re-labelled — refusals need their own channel | `model/text_commit` reason propagation (replay → inspect → plan) |
+| 2270 | ctypes `GetProcessMemoryInfo` silently zeroes without HANDLE restype (64-bit truncation) | test harness (subprocess memory measurement) |
