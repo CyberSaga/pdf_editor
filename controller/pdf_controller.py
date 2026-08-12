@@ -36,6 +36,7 @@ from model.object_requests import (
 from model import pdf_optimizer
 from model.pdf_model import PDFModel
 from model.pdf_text_edit import _Tier0Target, derive_tier0_preview_target
+from model.text_commit.dto import CommitOutcome, CommitStatus
 from model.text_commit.preview import PlanPreviewResult, open_preview_session
 from model.tools.ocr_tool import is_device_available
 from utils.file_reveal import reveal_in_file_manager
@@ -241,6 +242,11 @@ class PDFController:
         self._text_commit_preview_coordinator: TextCommitPreviewCoordinator | None = None
         self._plan_preview_session_key: str | None = None
         self._plan_preview_target: _Tier0Target | None = None
+        # Task 12 P0-C phase 1: whether the most recent edit_text call ended
+        # in a DEGRADED_COMMITTED outcome. The View pulls-and-clears this via
+        # consume_last_edit_degraded() so its mode-switch finalize path never
+        # toasts plain success ("文字已儲存") over a degrade notice.
+        self._last_edit_degraded = False
         self._thumbnail_resume_pending_by_session: set[str] = set()
         self._load_gen_by_session: dict[str, int] = {}
         self._thumb_gen_by_session: dict[str, int] = {}
@@ -2299,6 +2305,62 @@ class PDFController:
             return
         show_error(self.view, message)
 
+    @staticmethod
+    def _is_notifiable_degrade(outcome: CommitOutcome | None) -> bool:
+        """A degrade notice fires only when a HIGHER-fidelity attempt fell
+        back — chain like ``("tier0:<reason>", "legacy")``.
+
+        Under the shipped default (``engine="legacy"``) every successful edit
+        is honestly recorded as DEGRADED_COMMITTED with chain ``("legacy",)``;
+        that is today's baseline behavior, not a failed fidelity promise, and
+        warning on every default-config edit would ship an unratified UX
+        change ahead of rollout (verification finding F1). When rollout flips
+        the default to the tiered engine, degrades surface automatically."""
+        return (
+            outcome is not None
+            and outcome.status is CommitStatus.DEGRADED_COMMITTED
+            and outcome.fallback_chain != ("legacy",)
+        )
+
+    def _degraded_commit_message(self, outcome: CommitOutcome) -> str:
+        """User-facing degrade notice. Reason codes ONLY — the payload must
+        never carry document text, replacement text, filenames, or paths
+        (Task 12 P0-C privacy contract)."""
+        chain = " → ".join(outcome.fallback_chain) or "legacy"
+        return f"已以降級模式完成編輯（可能未保留原字型或相鄰版面）：{chain}"
+
+    def _notify_degraded_commit(self, outcome: CommitOutcome) -> None:
+        """Surface a DEGRADED_COMMITTED outcome on exactly ONE view channel.
+
+        Preference order: the dedicated View API, then a warning toast, then
+        the status bar — never more than one of them per edit."""
+        message = self._degraded_commit_message(outcome)
+        logger.info(
+            "text_commit_degraded_notice chain=%s",
+            "→".join(outcome.fallback_chain),
+        )
+        view = getattr(self, "view", None)
+        if view is None:
+            return
+        if hasattr(view, "notify_degraded_commit"):
+            view.notify_degraded_commit(message)
+            return
+        if hasattr(view, "_show_toast"):
+            view._show_toast(message, duration_ms=5000, tone="warning")
+            return
+        if hasattr(view, "set_status_bar_override_message"):
+            view.set_status_bar_override_message(message)
+
+    def consume_last_edit_degraded(self) -> bool:
+        """Pull-and-clear whether the last edit committed degraded.
+
+        Called by the View's finalize path to decide if the plain success
+        toast may be shown; consuming clears the flag so one degraded edit
+        can suppress at most one success toast."""
+        was_degraded = self._last_edit_degraded
+        self._last_edit_degraded = False
+        return was_degraded
+
     def edit_text(
         self,
         page: int | EditTextRequest,
@@ -2343,6 +2405,9 @@ class PDFController:
         # Empty string is a valid "delete textbox content" intent from inline edit.
         if new_text is None:
             new_text = ""
+        # Each edit attempt owns the degrade flag; a stale True from an
+        # earlier edit must never suppress a later edit's success toast.
+        self._last_edit_degraded = False
         if not self.model.doc or page < 1 or page > len(self.model.doc):
             return
         # The commit invalidates any plan-backed preview session's scratch
@@ -2446,6 +2511,12 @@ class PDFController:
                 self._invalidate_active_render_state()
             self.show_page(page_idx)
             self._update_undo_redo_tooltips()
+            # Task 12 P0-C phase 1: a DEGRADED_COMMITTED outcome must be
+            # visibly different from ordinary success — exactly one notice.
+            outcome = getattr(cmd, "outcome", None)
+            if self._is_notifiable_degrade(outcome):
+                self._last_edit_degraded = True
+                self._notify_degraded_commit(outcome)
             # 還原 viewport anchor（避免頁面重繪後捲軸跳位）
             if anchor is not None and view is not None and hasattr(view, "restore_viewport_anchor"):
                 QTimer.singleShot(0, lambda a=anchor, v=view: v.restore_viewport_anchor(a))
@@ -2516,6 +2587,10 @@ class PDFController:
             return
         if not self.model.doc:
             return
+        # Task 12 P0-C phase 1: this is a fresh commit-producing interaction
+        # for toast-suppression purposes — a stale flag from an earlier,
+        # unconsumed degraded edit must not leak into this move's outcome.
+        self._last_edit_degraded = False
         if source_page == destination_page:
             self.edit_text(
                 source_page,
@@ -2581,6 +2656,16 @@ class PDFController:
             )
             if source_edit_result is not EditTextResult.SUCCESS:
                 raise RuntimeError(self._edit_result_to_message(source_edit_result) or "跨頁移動前無法移除來源文字")
+
+            # Task 12 P0-C phase 1: the source deletion is a real tiered
+            # commit attempt (deleting via empty replacement can fall back
+            # to legacy same as any edit) — it must get the same one-notice
+            # treatment as the same-page path, which routes through
+            # controller.edit_text and already notifies.
+            source_outcome = self.model.last_commit_outcome
+            if self._is_notifiable_degrade(source_outcome):
+                self._last_edit_degraded = True
+                self._notify_degraded_commit(source_outcome)
 
             self.model.ensure_page_index_built(source_page)
             if self.model.block_manager.find_run_by_id(source_page - 1, resolved_target_span_id) is not None:
@@ -2685,6 +2770,12 @@ class PDFController:
             return
         if not self.model.doc or page < 1 or page > len(self.model.doc):
             return
+        # Task 12 P0-C phase 1: add-textbox never produces a degraded
+        # commit itself (it does not route through the tiered engine), but
+        # it IS a fresh commit-producing interaction for toast-suppression
+        # purposes — a stale flag from an earlier, unconsumed degraded edit
+        # must not silently eat this add's success toast.
+        self._last_edit_degraded = False
         try:
             page_idx = page - 1
             before_page_snapshot = self.model._capture_page_snapshot_strict(page_idx)

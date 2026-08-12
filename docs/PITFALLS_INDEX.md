@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 248 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 252 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -253,3 +253,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2254 | `lex_content_stream` materialized the full token list — a dense page stream is an in-app OOM | `model/text_commit` (pdf_lexer, replay) |
 | 2262 | A resource refusal routed through `malformed` gets re-labelled — refusals need their own channel | `model/text_commit` reason propagation (replay → inspect → plan) |
 | 2270 | ctypes `GetProcessMemoryInfo` silently zeroes without HANDLE restype (64-bit truncation) | test harness (subprocess memory measurement) |
+| 2278 | A GUI notice keyed only on outcome status fires under the shipped default too — gate on the fallback chain shape, not just the status enum | `controller/pdf_controller.py` (Task 12 P0-C degrade visibility) |
+| 2286 | A per-command flag reset at only one entry point leaks into sibling commit paths | `controller/pdf_controller.py` (Task 12 P0-C degrade visibility) |
+| 2294 | Redo re-running the full commit pipeline must NOT re-fire a one-shot GUI notice | `controller/pdf_controller.py` / `model/edit_commands.py` (Task 12 P0-C degrade visibility) |
+| 2301 | An acceptance gate's style-override flag must be scoped to what the app can actually request | `test_scripts/semantic_fidelity_gate.py` (Task 12 P0-C semantic fidelity gate) |

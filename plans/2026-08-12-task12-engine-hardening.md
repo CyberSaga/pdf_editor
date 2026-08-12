@@ -223,8 +223,17 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
        decoded stream, so the guard's role as a preview latency ceiling is
        confirmed, and per-keystroke re-prepare stays the open P0-C-adjacent
        cost. Repeats are stable → no hidden caching.)
-4. [ ] P0-C phase 1: reason-code surfacing, GUI visibility; semantic gate as
+4. [x] P0-C phase 1: reason-code surfacing, GUI visibility; semantic gate as
        acceptance harness.
+       (2026-08-12: `test_text_commit_degrade_visibility.py`, 13 tests —
+       5 frozen-contract reds shown + 2 more reds from the verification
+       round (default-engine over-notification, commit-stage detail leak)
+       + 2 more reds (cross-page move silent gap, stale-flag leak into
+       add-textbox) + 4 characterization pins. `semantic_fidelity_gate.py`
+       (acceptance harness, test_scripts-only) + 7 tests — the proven
+       `outside_diff == 0` false negative is a permanent regression;
+       1 more red from the verification round (style-override over-silencing
+       color/baseline). Verification round: `wf_a56c0562-a49`, see §8.)
 5. [ ] P0-C phase 2: pre-commit confirmation flow (View→Controller signal).
 6. [ ] P0-D: gate-chain slice behind `max_tier`/flag; `/Rotate 270` acceptance.
 7. [ ] Cleanup: `decision_chain`; reflow-hook capture + removal.
@@ -253,6 +262,67 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
   `bind_source_text` collapses `malformed` into `MALFORMED_STREAM` — the exact
   dilution the frozen invariant forbids. `max_decoded_bytes=None` disables
   (diagnostic escape hatch, e.g. funnel scripts). Test pin: default ≤ 8 MiB.
+- 2026-08-12 (P0-C phase 1 implementation): the degrade notice reads the
+  per-command `EditTextCommand.outcome` capture, never `model.
+  last_commit_outcome` (which later edits overwrite). Controller is the single
+  notification point (`_notify_degraded_commit`; channel preference: dedicated
+  View API → warning toast → status bar — at most one fires). Message body is
+  `" → ".join(outcome.fallback_chain)` — reason codes only, so the payload is
+  privacy-safe by construction and the sentinel test proves it end-to-end.
+  The View's mode-switch success toast (「文字已儲存」) is suppressed via a
+  Controller-owned pull-and-clear flag (`consume_last_edit_degraded`), reset
+  at the entry of every commit-producing controller method (`edit_text`,
+  `move_text_across_pages`, `add_textbox` — verification finding 4) so a
+  stale flag from one interaction can never mute a later, unrelated
+  commit's toast. The semantic fidelity gate ships as
+  char-extraction (`rawdict`) acceptance harness in `test_scripts/`
+  (production layers must not import it); its font-substitution pair encodes
+  the proven `outside_diff == 0` false negative as a permanent regression.
+- 2026-08-12 (P0-C phase 1 adversarial verification round, workflow
+  `wf_a56c0562-a49`, 2 serial agents, 9 findings raised / 6 confirmed /
+  1 refuted / 2 downgraded): confirmed findings fixed same day, red-first
+  where a behavior gap existed. (1) high — under the SHIPPED DEFAULT
+  (`engine="legacy"`) every successful edit is honestly recorded
+  `DEGRADED_COMMITTED` with chain `("legacy",)`; naively notifying on
+  `status` alone would warn on every default-config edit, an unratified
+  UX change ahead of rollout. Fixed with `_is_notifiable_degrade`: a
+  notice fires only for chain `!= ("legacy",)` — i.e. an attempted
+  higher-tier fallback, never the baseline. (2) medium — a COMMIT-stage
+  (not plan-stage) failure carries a free-form `degraded_reason` detail
+  (raw exception text, pixel coordinates, resource names) that
+  `_attempt_tiered_commit` was surfacing verbatim, breaking the
+  reason-codes-only contract on a path the privacy sentinel test didn't
+  reach (it only exercised plan-stage `PlanRejection`, which is
+  reason-code by construction). Fixed by deriving the fallback reason from
+  the engine's own coded `fallback_chain` tail instead of
+  `degraded_reason`. (3) medium — cross-page move deletes the source via
+  `model.edit_text(...)` directly, bypassing `controller.edit_text`
+  (and its notice hookup); a degraded source deletion produced ZERO
+  signals. Fixed: `move_text_across_pages` reads
+  `model.last_commit_outcome` after the source deletion and notifies.
+  (4) medium — the degrade flag was reset only at `edit_text` entry;
+  `add_textbox` and `move_text_across_pages` never touched it, so a stale
+  unconsumed flag from an earlier edit (e.g. finalized via FOCUS_OUTSIDE)
+  could wrongly suppress a LATER, unrelated commit's success toast. Fixed:
+  both methods now reset the flag at their own entry, mirroring
+  `edit_text`. (5) medium — every existing test monkeypatched away the
+  real `PDFView.notify_degraded_commit`/`_show_toast` before asserting, so
+  the production View method executed in zero tests; a double-toast or
+  dropped-warning-tone mutation would leave the suite green. Fixed with a
+  characterization test exercising the unmodified View method directly.
+  (6) low — the semantic gate's `style_override_requested` flag silenced
+  ALL four style checks (font/size/color/baseline), but the app's sole
+  override producer (`build_style_overrides`) never requests a color
+  change and no override licenses a baseline drop. Fixed: the flag now
+  silences only font-identity/size; color and baseline stay live under
+  override. Two findings accepted as documented scope limits, not fixed
+  (test-side acceptance harness, neither exercised by the motivating
+  evidence): the gate is extraction-based and blind to non-text occlusion
+  (opaque fill/image over a neighbor); a mixed-style target region is
+  judged only against its first character's style. One finding refuted:
+  redo of a degraded command intentionally does NOT re-notify — the edit
+  was already disclosed once at first commit, and firing again would
+  violate exactly-once, not satisfy it.
 - 2026-08-12 (adversarial verification round, workflow `wf_e06e4c05-e6f`,
   2 serial agents): generator tiling parity proven branch-by-branch incl.
   ID/inline-image edges; spy namespace, escalation exclusion, rewrite gates,
