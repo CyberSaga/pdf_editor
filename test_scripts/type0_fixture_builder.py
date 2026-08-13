@@ -33,6 +33,7 @@ CID facts this builder relies on (spike-verified for PyMuPDF 1.27.x):
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import fitz
@@ -399,6 +400,45 @@ def inline_descendant(fixture: Type0Fixture) -> None:
         fixture.font_xref, "DescendantFonts", f"[ {body} ]"
     )
     fixture.descendant_xref = 0
+
+
+def hybrid_indirect_array_descendant(fixture: Type0Fixture) -> int:
+    """Rewrite ``/DescendantFonts`` as an INDIRECT array object whose one
+    element is the descendant INLINE — the hybrid of the two corpus forms.
+
+    Spec-legal (any PDF value may be indirect) with zero corpus incidence;
+    pinned because the capability builder ACCEPTS it, so the staleness
+    closure must cover it too (post-review finding, wf_1757a5fb-8e9).
+    Like :func:`inline_descendant`, descendant mutators must run BEFORE
+    this one; returns the new array object's xref — the mutation surface.
+    """
+    body = " ".join(fixture.doc.xref_object(fixture.descendant_xref).split())
+    array_xref = fixture.doc.get_new_xref()
+    fixture.doc.update_object(array_xref, f"[ {body} ]")
+    fixture.doc.xref_set_key(
+        fixture.font_xref, "DescendantFonts", f"{array_xref} 0 R"
+    )
+    fixture.descendant_xref = 0
+    return array_xref
+
+
+def literalize_hex_show(fixture: Type0Fixture) -> None:
+    """Respell every ``<hex> Tj`` operand as the equivalent LITERAL string.
+
+    Same show bytes, different operand spelling — all-octal escapes keep
+    every byte unambiguous (parens and backslashes included).  No
+    conforming CJK producer emits this, but the spec permits it; the
+    hex-only scope pin needs it present and refused.
+    """
+    stream = fixture.content_bytes()
+
+    def _to_literal(match: re.Match[bytes]) -> bytes:
+        data = bytes.fromhex(match.group(1).decode("ascii"))
+        return b"(" + b"".join(b"\\%03o" % byte for byte in data) + b") Tj"
+
+    rewritten = re.sub(rb"<([0-9A-Fa-f]+)>\s*Tj", _to_literal, stream)
+    assert rewritten != stream, "fixture stream carries no hex Tj operand"
+    fixture.doc.update_stream(fixture.content_xref, rewritten)
 
 
 def embedded_font_buffer(fixture: Type0Fixture) -> bytes:

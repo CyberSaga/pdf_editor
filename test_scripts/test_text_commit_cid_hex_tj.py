@@ -72,9 +72,11 @@ from test_scripts.type0_fixture_builder import (  # noqa: E402
     default_tounicode_mappings,
     document_object_snapshot,
     fontfile2_xref,
+    hybrid_indirect_array_descendant,
     identity_cidtogid_bytes,
     indirect_w_xref,
     inline_descendant,
+    literalize_hex_show,
     render_cid_ink,
     set_cidtogid_dangling,
     set_cidtogid_name,
@@ -983,6 +985,51 @@ def test_commit_is_stale_after_inline_descendant_indirect_w_mutation() -> None:
         outcome.reason,
     )
     assert fixture.content_bytes() == before
+    fixture.doc.close()
+
+
+def test_commit_is_stale_after_hybrid_indirect_array_descendant_mutation() -> None:
+    """The HYBRID descendant form — ``/DescendantFonts N 0 R`` where object
+    N is an array holding the descendant dict INLINE — is accepted by the
+    capability builder, so DIRECT values inside that inline dict (here
+    ``/DW``) are width evidence and must be staleness-gated exactly like
+    both sibling forms (post-review blocking finding, wf_1757a5fb-8e9:
+    today only the PdfRef-element branch folds the descendant canonically,
+    so this mutation leaves the fingerprint byte-identical and the stale
+    plan COMMITs against dead width evidence)."""
+    fixture = build_identity_h_fixture()
+    set_dw(fixture, "1000")
+    array_xref = hybrid_indirect_array_descendant(fixture)
+    engine = _engine(fixture)
+    prepared = _prepare(engine, fixture, REPLACEMENT_EQUAL_ADVANCE)
+    assert isinstance(prepared, PreparedEdit), (
+        "capability must ACCEPT the hybrid form for this pin to bite"
+    )
+    before = fixture.content_bytes()
+    body = " ".join(fixture.doc.xref_object(array_xref).split())
+    assert "/DW 1000" in body, body
+    fixture.doc.update_object(array_xref, body.replace("/DW 1000", "/DW 500"))
+    outcome = engine.commit(prepared)
+    # CommitOutcome carries no .reason — attribution lives in the chain.
+    assert outcome.status is CommitStatus.STALE_PLAN, (
+        outcome.status,
+        tuple(outcome.fallback_chain),
+    )
+    assert fixture.content_bytes() == before, "stale commit must mutate nothing"
+    fixture.doc.close()
+
+
+def test_literal_string_type0_tj_refused_hex_only_scope() -> None:
+    """The locked v1 scope is single HEX ``Tj``: an Identity-H show whose
+    operand is respelled as a LITERAL string must be refused with the
+    operand-form scope code — not silently widened into the CID path
+    (post-review finding, wf_1757a5fb-8e9: today it binds and COMMITs).
+    """
+    fixture = build_identity_h_fixture()
+    literalize_hex_show(fixture)
+    _assert_fail_closed(
+        fixture, REPLACEMENT_EQUAL_ADVANCE, "not_single_literal_tj"
+    )
     fixture.doc.close()
 
 
