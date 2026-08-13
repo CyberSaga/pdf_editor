@@ -303,6 +303,56 @@ def set_cidtogid_dangling(fixture: Type0Fixture) -> None:
     )
 
 
+def set_cidtogid_name(fixture: Type0Fixture, name: str) -> None:
+    """Write /CIDToGIDMap as an explicit name (e.g. ``Identity``)."""
+    fixture.doc.xref_set_key(fixture.descendant_xref, "CIDToGIDMap", f"/{name}")
+
+
+def write_bfrange_tounicode(
+    fixture: Type0Fixture, mappings: list[tuple[int, str]]
+) -> None:
+    """Author the ToUnicode CMap as SCALAR-destination bfranges only.
+
+    One single-CID range per mapping — the other spec-legal scalar syntax
+    a v1 parser must accept, so positive coverage never silently depends
+    on which form PyMuPDF happened to author for the base fixture.
+    """
+    lines = [f"{len(mappings)} beginbfrange"]
+    for cid, text in mappings:
+        lines.append(f"<{cid:04X}> <{cid:04X}> <{_utf16be_hex(text)}>")
+    lines.append("endbfrange")
+    write_tounicode_cmap(fixture, "\n".join(lines))
+
+
+def fontfile2_xref(fixture: Type0Fixture) -> int:
+    """xref of the embedded FontFile2 stream (via the descriptor)."""
+    kind, value = fixture.doc.xref_get_key(
+        fixture.descendant_xref, "FontDescriptor"
+    )
+    assert kind == "xref", "builder fixtures always carry an indirect descriptor"
+    descriptor_xref = int(value.split()[0])
+    ff_kind, ff_value = fixture.doc.xref_get_key(descriptor_xref, "FontFile2")
+    assert ff_kind == "xref", "builder fixtures always embed via FontFile2"
+    return int(ff_value.split()[0])
+
+
+def indirect_w_xref(fixture: Type0Fixture) -> int:
+    """xref of the descendant's indirect /W array, for either form.
+
+    Works before AND after :func:`inline_descendant`: the xref form reads
+    the key directly; the inline form scans the serialized array body for
+    ``/W N 0 R``.
+    """
+    if fixture.descendant_xref:
+        kind, value = fixture.doc.xref_get_key(fixture.descendant_xref, "W")
+        assert kind == "xref", "fixture /W must be indirect for this helper"
+        return int(value.split()[0])
+    _, body = fixture.doc.xref_get_key(fixture.font_xref, "DescendantFonts")
+    marker = body.index("/W")
+    tail = body[marker + 2 :].lstrip()
+    return int(tail.split()[0])
+
+
 def set_w_array(fixture: Type0Fixture, w_literal: str) -> None:
     fixture.doc.xref_set_key(fixture.descendant_xref, "W", w_literal)
 

@@ -71,10 +71,13 @@ from test_scripts.type0_fixture_builder import (  # noqa: E402
     cid_for,
     default_tounicode_mappings,
     document_object_snapshot,
+    fontfile2_xref,
     identity_cidtogid_bytes,
+    indirect_w_xref,
     inline_descendant,
     render_cid_ink,
     set_cidtogid_dangling,
+    set_cidtogid_name,
     set_cidtogid_stream,
     set_descendant_subtype,
     set_dw,
@@ -85,6 +88,7 @@ from test_scripts.type0_fixture_builder import (  # noqa: E402
     unembed_font,
     validate_fixture,
     w_literal_for,
+    write_bfrange_tounicode,
     write_minimal_tounicode,
     write_tounicode_cmap,
 )
@@ -251,6 +255,30 @@ def test_cidtogid_identity_stream_variant_commits() -> None:
     set_cidtogid_stream(fixture, identity_cidtogid_bytes(20000))
     _, outcome = _commit_committed(fixture, REPLACEMENT_EQUAL_ADVANCE)
     assert outcome.tier is CommitTier.TIER0_LOSSLESS_STREAM_PATCH
+    fixture.doc.close()
+
+
+def test_explicit_identity_cidtogid_name_commits() -> None:
+    """The census's 6 explicit ``/CIDToGIDMap /Identity`` fonts: the NAME
+    form must commit, not just the absent-key implicit default."""
+    fixture = build_identity_h_fixture()
+    set_cidtogid_name(fixture, "Identity")
+    _, outcome = _commit_committed(fixture, REPLACEMENT_EQUAL_ADVANCE)
+    assert outcome.tier is CommitTier.TIER0_LOSSLESS_STREAM_PATCH
+    fixture.doc.close()
+
+
+def test_single_destination_bfrange_tounicode_commits() -> None:
+    """Scalar-destination bfrange syntax must be accepted — positive
+    coverage must not silently depend on whichever ToUnicode form PyMuPDF
+    authors for the base fixture (bfchar)."""
+    fixture = build_identity_h_fixture()
+    write_bfrange_tounicode(
+        fixture,
+        default_tounicode_mappings(fixture, extra_text=REPLACEMENT_EQUAL_ADVANCE),
+    )
+    validate_fixture(fixture)
+    _commit_committed(fixture, REPLACEMENT_EQUAL_ADVANCE)
     fixture.doc.close()
 
 
@@ -669,6 +697,66 @@ def test_commit_is_stale_after_tounicode_mutation() -> None:
         fixture,
         default_tounicode_mappings(fixture, extra_text=REPLACEMENT_EQUAL_ADVANCE),
     )
+    outcome = engine.commit(prepared)
+    assert outcome.status is CommitStatus.STALE_PLAN, (
+        outcome.status,
+        outcome.reason,
+    )
+    assert fixture.content_bytes() == before
+    fixture.doc.close()
+
+
+def test_commit_is_stale_after_cidtogid_stream_mutation() -> None:
+    """Every evidence object the codec reads must be staleness-gated —
+    the CIDToGIDMap stream included, not only /W and ToUnicode."""
+    fixture = build_identity_h_fixture()
+    set_cidtogid_stream(fixture, identity_cidtogid_bytes(20000))
+    engine = _engine(fixture)
+    prepared = _prepare(engine, fixture, REPLACEMENT_EQUAL_ADVANCE)
+    assert isinstance(prepared, PreparedEdit)
+    before = fixture.content_bytes()
+    set_cidtogid_stream(fixture, identity_cidtogid_bytes(1000))
+    outcome = engine.commit(prepared)
+    assert outcome.status is CommitStatus.STALE_PLAN, (
+        outcome.status,
+        outcome.reason,
+    )
+    assert fixture.content_bytes() == before
+    fixture.doc.close()
+
+
+def test_commit_is_stale_after_fontfile2_stream_mutation() -> None:
+    """The glyph program itself is width/glyph evidence — swapping the
+    embedded FontFile2 bytes after prepare must invalidate the plan."""
+    fixture = build_identity_h_fixture()
+    engine = _engine(fixture)
+    prepared = _prepare(engine, fixture, REPLACEMENT_EQUAL_ADVANCE)
+    assert isinstance(prepared, PreparedEdit)
+    before = fixture.content_bytes()
+    program_xref = fontfile2_xref(fixture)
+    original = fixture.doc.xref_stream(program_xref) or b""
+    fixture.doc.update_stream(program_xref, original + b"\x00")
+    outcome = engine.commit(prepared)
+    assert outcome.status is CommitStatus.STALE_PLAN, (
+        outcome.status,
+        outcome.reason,
+    )
+    assert fixture.content_bytes() == before
+    fixture.doc.close()
+
+
+def test_commit_is_stale_after_inline_descendant_indirect_w_mutation() -> None:
+    """The corpus-dominant inline-descendant form keeps /W as an indirect
+    object INSIDE the inline array — mutating that target between prepare
+    and commit must invalidate the plan even though the font dict and the
+    inline array text are byte-identical."""
+    fixture = build_identity_h_fixture()
+    inline_descendant(fixture)
+    engine = _engine(fixture)
+    prepared = _prepare(engine, fixture, REPLACEMENT_EQUAL_ADVANCE)
+    assert isinstance(prepared, PreparedEdit)
+    before = fixture.content_bytes()
+    fixture.doc.update_object(indirect_w_xref(fixture), "[ 1 [ 500 ] ]")
     outcome = engine.commit(prepared)
     assert outcome.status is CommitStatus.STALE_PLAN, (
         outcome.status,

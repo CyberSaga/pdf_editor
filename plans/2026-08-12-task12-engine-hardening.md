@@ -159,6 +159,12 @@ Unicode → unique reversible code → valid CID (Encoding CMap)
 - **P1**: subset augmentation / font re-embedding (unlocks missing-glyph
   replacements — the doc's flagship example class). Existing T12-P1-01..05
   fixtures list still applies where relevant.
+- **P1 (registered 2026-08-13, immediately after P0-D)**: array-destination
+  `bfrange` ToUnicode support — tiny font count (2/262 corpus fonts) but
+  large document-weighted impact (one is doc_1's ONLY Type0 font, 18/18 of
+  its Type0 page-references). v1 fail-closes them with
+  `type0_tounicode_unparseable`; a follow-up slice can lift exactly that
+  gate without touching the rest of the chain.
 - **P2**: whole-`TJ` simple-font; 100–200-cycle lifecycle attribution with
   per-subsystem counters (Qt/MuPDF/engine caches) to close the ~1.2 MB/iter
   residual question.
@@ -571,9 +577,21 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
   **Scope decision**: the proposed v1 scope (Identity-H; horizontal only;
   2-byte identity codes; CIDFontType2; ToUnicode required + reversible;
   CIDToGIDMap `/Identity` or fully readable stream; embedded program
-  required; single hex `Tj`; direct page content stream) hits **100% of
-  corpus Type0 fonts** (262/262; page-weighted 281/281) — adopted
-  unchanged. Exclusions stand: Identity-V, custom embedded CMaps,
+  required; single hex `Tj`; direct page content stream) — adopted
+  unchanged. Coverage claim is TWO-LAYERED (corrected 2026-08-13, user
+  review — do not blend when publishing the funnel):
+  | layer | hit |
+  |---|---|
+  | outer structural family (Identity-H + CIDFontType2 + embedded + Identity CIDToGID + readable /W) | 262/262 — 100% |
+  | v1 ToUnicode grammar actually acceptable (excludes array-destination bfrange) | 260/262 — **99.24%** |
+  | page-reference weighted, after that gate | 260/281 — **92.53%** |
+  The outer font-family scope covers 100%; "P0-D v1 can actually process
+  100% of Type0 fonts" is NOT true and must never be published that way.
+  The 2 array-destination fonts return `type0_tounicode_unparseable` per
+  the locked contract; one of them is doc_1's only Type0 font, so the
+  document-weighted impact is large while the font count is tiny —
+  registered as a small follow-up slice immediately after P0-D (see §4
+  P1), not smuggled into this PR. Exclusions stand: Identity-V, custom embedded CMaps,
   CIDFontType0/CFF, Form-XObject text, `TJ` arrays, ambiguous/one-to-many
   ToUnicode mappings, subset augmentation/re-embedding, style/geometry
   overrides, multiline.
