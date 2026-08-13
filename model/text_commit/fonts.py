@@ -27,6 +27,12 @@ from dataclasses import dataclass, field
 
 import fitz
 
+from model.text_commit.cid_fonts import (
+    CidCapabilityFailure,
+    IdentityHCidCapability,
+    build_identity_h_cid_capability,
+    compute_cid_evidence_digest,
+)
 from model.text_commit.dto import RejectReason
 
 # Unembedded families whose printable-ASCII repertoire may be assumed: every
@@ -188,13 +194,21 @@ class FontCapability:
     # ``face_source``, which stays a statement about the *face* alone: an
     # embedded font can carry both a real extracted face and a /Widths
     # table that overrides it, and conflating the two would misreport one.
-    advance_source: str = "none"  # "widths" | "face" | "none"
+    advance_source: str = "none"  # "widths" | "face" | "cid" | "none"
     first_char: int = 0
     widths: tuple[float, ...] | None = None
     # Whether printable-ASCII glyph coverage may be assumed with no face.
     # Separate from the advance question: /Widths proves an advance, never an
     # outline.  See :meth:`missing_glyphs`.
     ascii_repertoire_attested: bool = False
+    # Task 12 P0-D: the Identity-H/CIDFontType2 codec, present exactly when
+    # this Type0 font passed the full evidence chain (tier0_reject_reason is
+    # then None). Simple-font callers never consult it; the planner and
+    # binding branch on it explicitly.
+    cid: IdentityHCidCapability | None = None
+    # Sanitized (code-only) detail for a type0_* rejection — the planner
+    # surfaces THIS for Type0 fonts, never the basefont name (§10 privacy).
+    tier0_reject_detail: str | None = None
 
     def width_of_code(self, code: int) -> float | None:
         """Declared advance of one character code, in 1/1000 text-space units.
@@ -416,15 +430,30 @@ def _build_capability(
     face: fitz.Font | None = None
     face_source = "none"
     reject: str | None = None
+    reject_detail: str | None = None
     simple = False
     advance_source = "none"
     first_char = 0
     widths: tuple[float, ...] | None = None
+    cid: IdentityHCidCapability | None = None
 
     if subtype == "Type3":
         # A Type3 /Widths is in glyph space, scaled by /FontMatrix rather
         # than by 1/1000, so it is not read here at all.
         reject = RejectReason.FONT_TYPE3
+    elif subtype == "Type0":
+        # Task 12 P0-D: the Identity-H/CIDFontType2 evidence chain. No
+        # fitz face is loaded — glyph presence is proven GID-level from
+        # the embedded program (subset fonts strip the cmap, so Unicode
+        # lookups are useless there; docs/PITFALLS.md), and advances come
+        # from the descendant's /W and /DW, never from a face.
+        cid_result = build_identity_h_cid_capability(doc, font_xref)
+        if isinstance(cid_result, CidCapabilityFailure):
+            reject = cid_result.reason
+            reject_detail = cid_result.detail
+        else:
+            cid = cid_result
+            advance_source = "cid"
     else:
         if embedded:
             face = _load_extracted_face(doc, font_xref)
@@ -484,6 +513,8 @@ def _build_capability(
             and _family_stem(basefont) in _FULL_ASCII_FAMILIES
             and not _is_symbolic(doc, font_xref)
         ),
+        cid=cid,
+        tier0_reject_detail=reject_detail,
     )
 
 
@@ -514,6 +545,15 @@ class DocumentFontRegistry:
             resource_name = entry[4]
             key = (self.generation, owner_xref, resource_name, int(entry[0]))
             cached = self._cache.get(key)
+            if cached is not None and cached.cid is not None:
+                # Type0 evidence can change while (generation, xref) stays
+                # equal — e.g. an external write bypassing the model's
+                # mutation hooks. Re-verify the raw evidence digest on
+                # every lookup; a mismatch rebuilds rather than serving a
+                # stale codec (Task 12 P0-D).
+                current = compute_cid_evidence_digest(self.doc, int(entry[0]))
+                if cached.cid.evidence_digest != current:
+                    cached = None
             if cached is None:
                 cached = _build_capability(self.doc, owner_xref, entry)
                 self._cache[key] = cached

@@ -85,14 +85,24 @@ def test_same_basename_different_xrefs_stay_distinct(embedded_doc):
     assert copied.basefont == original.basefont  # same basename, distinct identity
 
 
-def test_embedded_type0_extracts_and_loads(embedded_doc):
+def test_embedded_type0_carries_no_face_and_gates_on_descendant(embedded_doc):
+    """Task 12 P0-D contract update (was: Type0 extracts a fitz face).
+
+    Type0 fonts no longer load a face at all: glyph presence is proven
+    GID-level from the embedded program (subset cmaps are stripped, so a
+    face's Unicode lookups are worthless there — docs/PITFALLS.md), and
+    the helv TextWriter embedding lands as a CIDFontType0 descendant,
+    which the v1 slice fail-closes with its own stable code.
+    """
     registry = DocumentFontRegistry(embedded_doc)
     caps = registry.page_capabilities(embedded_doc[0])
     cap = next(iter(caps.values()))
     assert cap.embedded
-    assert cap.face is not None
-    assert cap.face_source == "extracted"
-    assert cap.face.has_glyph(ord("A"))
+    assert cap.subtype == "Type0"
+    assert cap.face is None
+    assert cap.face_source == "none"
+    assert cap.cid is None
+    assert cap.tier0_reject_reason == "type0_descendant_unsupported"
 
 
 def test_base14_unembedded_resolves_named_metrics_face(base14_doc):
@@ -135,12 +145,19 @@ def test_type3_font_rejected_without_helvetica_fallback():
     doc.close()
 
 
-def test_identity_h_rejected_for_simple_encoding(embedded_doc):
+def test_identity_h_never_supports_simple_encoding(embedded_doc):
+    """Identity-H is not a SIMPLE encoding — that half of the old pin
+    stands forever. The old second half (a blanket
+    ``FONT_UNSUPPORTED_ENCODING``) died with Task 12 P0-D: Type0 fonts now
+    gate through the CID evidence chain and report per-gate ``type0_*``
+    codes (this helv fixture: an out-of-scope CIDFontType0 descendant).
+    """
     registry = DocumentFontRegistry(embedded_doc)
     cap = next(iter(registry.page_capabilities(embedded_doc[0]).values()))
     assert cap.encoding.startswith("Identity")
     assert not cap.supports_simple_encoding
-    assert cap.tier0_reject_reason == RejectReason.FONT_UNSUPPORTED_ENCODING
+    assert cap.encode_simple("Alpha") is None
+    assert cap.tier0_reject_reason == "type0_descendant_unsupported"
 
 
 def test_custom_differences_encoding_rejected():

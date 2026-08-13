@@ -560,8 +560,28 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   `type0_*` per-gate reason codes in the test module ARE the P0-D
   contract. This partially
   addresses the Q3-ceiling item below (Identity-H NO-GO is exactly what
-  P0-D lifts). Production implementation (steps 5–7) NOT started —
-  awaiting go-ahead per the plan's execution order.
+  P0-D lifts).
+- 2026-08-13 (Task 12 P0-D steps 5–7 — implementation GREEN): after the
+  user's go-ahead + 5 more red pins (explicit /Identity name, scalar
+  bfrange positive, 3 more STALE_PLAN staleness pins), the CID codec
+  landed: new leaf `model/text_commit/cid_fonts.py`, Type0 capabilities in
+  `fonts.py` (no face; per-lookup evidence-digest revalidation),
+  registry-driven Type0 binding leg + full Type0 fingerprint closure in
+  `inspect.py`, per-capability planner branch with hex operand
+  serialization in `plan.py`/`patch.py`/`pdf_lexer.py`, legacy
+  `_parse_tounicode` fabrication fixed + inline-descendant support in
+  `verify.py`. **All 43 P0-D tests green on the first run**; full suite
+  2319 passed / 0 failed; ruff/mypy/import-linter clean; 3 obsolete
+  Type0 pins updated (helv TextWriter → CIDFontType0 descendant, see
+  PITFALLS). Acceptance funnel (`scripts/measure_type0_funnel.py`,
+  aggregate-only) reported HONESTLY: 0 source-bindable shows on the
+  reference corpus today — 59% of Type0 shows behind the P0-A budget
+  (intact by design), 100% of the budget-eligible remainder inside
+  BDC/EMC layer wrappers (`mc_depth`), 95% on rotated text matrices —
+  all outside P0-D's locked scope; registered as the mc_depth/rotated-Tm
+  P1 follow-ups + the §9 budget-relaxation item. The Q3-ceiling item
+  below now has REAL per-condition decomposition data from the funnel.
+  Rollout defaults unchanged (legacy, max_tier=0).
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

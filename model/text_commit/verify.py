@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 
 import fitz
 
+from model.text_commit.cid_fonts import PdfRef as CidPdfRef
+from model.text_commit.cid_fonts import resolve_descendant as cid_resolve_descendant
 from model.text_commit.dto import RejectReason
 from model.text_commit.inspect import read_page_streams
 
@@ -1241,10 +1243,13 @@ def _parse_tounicode(
     """Parse ``beginbfchar``/``beginbfrange`` entries of a /ToUnicode CMap.
 
     Only the single-destination forms (``<src> <dst>`` and
-    ``<lo> <hi> <dst>``) are handled -- the array-destination bfrange form
-    (``<lo> <hi> [<d1> <d2> ...]``) does not appear in the CMaps this spike
-    characterizes and is deliberately left unsupported rather than guessed
-    at.
+    ``<lo> <hi> <dst>``) are handled.  A bfrange block containing an
+    array destination (``<lo> <hi> [<d1> <d2> ...]``) contributes NO
+    mappings at all: striding a flat hex-token walk across one fabricates
+    garbage ranges out of the array elements (Task 12 P0-D adversarial
+    finding, docs/PITFALLS.md) — skipping the block keeps this legacy
+    reader honest, and the strict P0-D grammar lives in
+    ``cid_fonts.parse_tounicode_strict``.
     """
     bfchars: list[tuple[int, str]] = []
     for block in re.findall(rb"beginbfchar(.*?)endbfchar", data, re.DOTALL):
@@ -1254,6 +1259,8 @@ def _parse_tounicode(
 
     bfranges: list[tuple[int, int, str]] = []
     for block in re.findall(rb"beginbfrange(.*?)endbfrange", data, re.DOTALL):
+        if b"[" in block:
+            continue  # array-destination form: refuse, never fabricate
         tokens = _HEX_TOKEN_RE.findall(block)
         for i in range(0, len(tokens) - 2, 3):
             lo = int(tokens[i], 16)
@@ -1321,29 +1328,27 @@ def collect_cid_encoding_evidence(
             RejectReason.FONT_UNSUPPORTED_ENCODING, "font has no readable /Encoding"
         )
 
-    desc_kind, desc_value = doc.xref_get_key(font_xref, "DescendantFonts")
-    if desc_kind != "array":
-        return VerificationFailure(
-            RejectReason.FONT_UNSUPPORTED_ENCODING,
-            "font has no /DescendantFonts array",
-        )
-    descendant_xref = _first_indirect_ref(desc_value)
-    if descendant_xref is None:
+    # Task 12 P0-D: the descendant may be an indirect ref OR an inline
+    # dictionary in the /DescendantFonts array — the inline form is the
+    # census-DOMINANT corpus shape (256/262 fonts, AutoCAD; plan §8), so
+    # rejecting it as unreadable would blind this reader to almost every
+    # real Type0 font. Delegated to cid_fonts' bounded object parser.
+    descendant_xref, descendant = cid_resolve_descendant(doc, font_xref)
+    if descendant is None:
         return VerificationFailure(
             RejectReason.FONT_UNSUPPORTED_ENCODING,
             "unreadable /DescendantFonts entry",
         )
 
-    cid_to_gid_kind, cid_to_gid_value = doc.xref_get_key(descendant_xref, "CIDToGIDMap")
-    if cid_to_gid_kind == "name":
+    cid_to_gid_value = descendant.get("CIDToGIDMap")
+    if isinstance(cid_to_gid_value, str) and cid_to_gid_value.startswith("/"):
         cid_to_gid = cid_to_gid_value.lstrip("/")
-    elif cid_to_gid_kind == "xref":
-        cid_to_gid = cid_to_gid_value.split()[0]
+    elif isinstance(cid_to_gid_value, CidPdfRef):
+        cid_to_gid = str(cid_to_gid_value.xref)
     else:
         cid_to_gid = "Identity"  # PDF spec 9.7.4.3 implicit default; absent != missing
 
-    w_kind, _ = doc.xref_get_key(descendant_xref, "W")
-    has_widths = w_kind != "null"
+    has_widths = descendant.get("W") is not None
 
     tounicode_kind, tounicode_value = doc.xref_get_key(font_xref, "ToUnicode")
     if tounicode_kind != "xref":

@@ -18,7 +18,15 @@ from dataclasses import dataclass
 
 import fitz
 
+from model.text_commit.cid_fonts import (
+    CidCapabilityFailure,
+    PdfParseError,
+    PdfRef,
+    canonical_pdf_text,
+    parse_pdf_value,
+)
 from model.text_commit.dto import RejectReason
+from model.text_commit.fonts import DocumentFontRegistry, FontCapability
 from model.text_commit.replay import PageReplay, ShowOp, replay_page_streams
 
 logger = logging.getLogger(__name__)
@@ -93,6 +101,107 @@ def _canonical_object_digest(doc: fitz.Document, xref: int) -> bytes:
     return "\x1e".join(parts).encode("utf-8")
 
 
+def _fold_stream(digest: "hashlib._Hash", doc: fitz.Document, xref: int) -> None:
+    """Fold one stream's DECODED bytes (raw bytes are not stable across a
+    ``tobytes()`` scratch round trip that recompresses)."""
+    try:
+        digest.update(doc.xref_stream(xref) or b"")
+    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+        digest.update(b"<unreadable-stream>")
+    digest.update(b"\x1f")
+
+
+def _fold_canonical_value(
+    digest: "hashlib._Hash", doc: fitz.Document, kind: str, value: str
+) -> None:
+    """Fold one key's value in a serialization-independent form.
+
+    Container values (dicts/arrays — most importantly the INLINE
+    descendant form of ``/DescendantFonts``) are parsed and canonicalized:
+    MuPDF may re-order a dictionary's keys across a ``tobytes()`` round
+    trip, and hashing the raw value text would then make every live→
+    scratch comparison falsely stale.  Scalars fold as-is.
+    """
+    if kind in ("dict", "array"):
+        try:
+            canonical = canonical_pdf_text(parse_pdf_value(value))
+        except PdfParseError:
+            canonical = "raw:" + " ".join(value.split())
+        digest.update(canonical.encode("utf-8"))
+    else:
+        digest.update(f"{kind}:{value}".encode("utf-8", "replace"))
+    digest.update(b"\x1f")
+
+
+def _update_type0_dependencies(
+    digest: "hashlib._Hash", doc: fitz.Document, font_xref: int
+) -> None:
+    """Fold the FULL Type0 evidence closure (Task 12 P0-D).
+
+    Mirrors exactly what ``cid_fonts.build_identity_h_cid_capability``
+    reads — the auditable-enumeration rule below applies here too: the
+    font dictionary itself (canonical per key), the /ToUnicode stream, the
+    descendant (inline or indirect, canonical), its indirect /W and
+    /FontDescriptor targets, the /CIDToGIDMap stream, and the /FontFile2
+    program bytes.  Without this closure, mutating any of those between
+    prepare and commit leaves the fingerprint byte-identical and a stale
+    plan commits against dead width/glyph evidence.
+    """
+    for key in sorted(doc.xref_get_keys(font_xref)):
+        kind, value = doc.xref_get_key(font_xref, key)
+        digest.update(key.encode("utf-8", "replace"))
+        digest.update(b"\x1d")
+        _fold_canonical_value(digest, doc, kind, value)
+    tounicode_target = _indirect_target(doc, font_xref, "ToUnicode")
+    if tounicode_target is not None:
+        _fold_stream(digest, doc, tounicode_target)
+
+    try:
+        kind, value = doc.xref_get_key(font_xref, "DescendantFonts")
+        if kind == "xref":
+            value = doc.xref_object(int(value.split()[0]))
+        parsed = parse_pdf_value(value)
+    except (RuntimeError, ValueError, IndexError, fitz.mupdf.FzErrorBase, PdfParseError):
+        digest.update(b"<unreadable-descendants>")
+        return
+    descendant: object = parsed[0] if isinstance(parsed, list) and parsed else None
+    if isinstance(descendant, PdfRef):
+        try:
+            descendant = parse_pdf_value(doc.xref_object(descendant.xref))
+        except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase, PdfParseError):
+            digest.update(b"<unreadable-descendant>")
+            return
+        digest.update(canonical_pdf_text(descendant).encode("utf-8"))
+        digest.update(b"\x1f")
+    if not isinstance(descendant, dict):
+        return
+    for key in ("W", "DW", "FontDescriptor"):
+        target = descendant.get(key)
+        if isinstance(target, PdfRef):
+            try:
+                digest.update(
+                    canonical_pdf_text(
+                        parse_pdf_value(doc.xref_object(target.xref))
+                    ).encode("utf-8")
+                )
+            except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase, PdfParseError):
+                digest.update(b"<unreadable-target>")
+            digest.update(b"\x1f")
+    cidtogid = descendant.get("CIDToGIDMap")
+    if isinstance(cidtogid, PdfRef):
+        _fold_stream(digest, doc, cidtogid.xref)
+    descriptor = descendant.get("FontDescriptor")
+    if isinstance(descriptor, PdfRef):
+        try:
+            descriptor = parse_pdf_value(doc.xref_object(descriptor.xref))
+        except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase, PdfParseError):
+            descriptor = None
+    if isinstance(descriptor, dict):
+        font_file = descriptor.get("FontFile2")
+        if isinstance(font_file, PdfRef):
+            _fold_stream(digest, doc, font_file.xref)
+
+
 def _update_font_dependencies(
     digest: "hashlib._Hash", doc: fitz.Document, font_xref: int
 ) -> None:
@@ -102,6 +211,14 @@ def _update_font_dependencies(
     capability classification starts reading another key, it belongs here in
     the same change, or a plan measured under the old value stays "fresh".
     """
+    kind, subtype_value = doc.xref_get_key(font_xref, "Subtype")
+    if kind == "name" and subtype_value == "/Type0":
+        # The Type0 closure REPLACES the generic path: the generic
+        # _canonical_object_digest folds the raw /DescendantFonts value
+        # text, which is not serialization-stable for the inline form.
+        _update_type0_dependencies(digest, doc, font_xref)
+        digest.update(b"\x06")
+        return
     digest.update(_canonical_object_digest(doc, font_xref))
     for key in _FONT_DEPENDENCY_KEYS:
         target = _indirect_target(doc, font_xref, key)
@@ -346,6 +463,53 @@ def _target_in_invoked_form_xobjects(
     return None if scan_refused else False
 
 
+def _cid_show_candidates(
+    page: fitz.Page,
+    replay: PageReplay,
+    target_text: str,
+    registry: DocumentFontRegistry,
+) -> tuple[list[ShowOp], BindingFailure | None]:
+    """Type0 leg of binding: decode each CID show and match the target.
+
+    Target-scoped by construction: a failing capability or an undecodable
+    show is only REMEMBERED (first one wins) and surfaces solely when no
+    show matches at all — a broken, unrelated Type0 font never blocks a
+    target that another show satisfies.
+    """
+    matches: list[ShowOp] = []
+    remembered: BindingFailure | None = None
+    # One capability resolution per distinct resource, not per show: a
+    # Type0 lookup re-verifies the evidence digest (a full font-program
+    # hash), and corpus pages carry hundreds of shows sharing one font.
+    resolved: dict[str, FontCapability | None] = {}
+    for show in replay.shows:
+        if show.font_resource is None:
+            continue
+        if show.font_resource not in resolved:
+            resolved[show.font_resource] = registry.capability(
+                page, show.font_resource
+            )
+        capability = resolved[show.font_resource]
+        if capability is None or capability.subtype != "Type0":
+            continue
+        if capability.cid is None:
+            if remembered is None and capability.tier0_reject_reason:
+                remembered = BindingFailure(
+                    capability.tier0_reject_reason,
+                    capability.tier0_reject_detail
+                    or "type0 evidence gate refused this font resource",
+                )
+            continue
+        decoded = capability.cid.decode_show_bytes(show.decoded_bytes)
+        if isinstance(decoded, CidCapabilityFailure):
+            if remembered is None:
+                remembered = BindingFailure(decoded.reason, decoded.detail)
+            continue
+        if decoded == target_text:
+            matches.append(show)
+    return matches, remembered
+
+
 def bind_source_text(
     doc: fitz.Document,
     page: fitz.Page,
@@ -353,12 +517,17 @@ def bind_source_text(
     target_text: str,
     expected_origin: tuple[float, float] | None,
     tol: float = 0.5,
+    registry: DocumentFontRegistry | None = None,
 ) -> SourceSpanBinding | BindingFailure:
     """Bind ``target_text`` at ``expected_origin`` (page space) to one show op.
 
-    Matching is byte-level (latin-1) against decoded string operands, which
-    covers simple-encoded fonts; CID/GID-coded strings do not match here
-    and surface as ``NO_MATCH`` until font-aware decoding exists (Task 4+).
+    Matching is byte-level (latin-1) against decoded string operands for
+    simple-encoded fonts. When ``registry`` is provided (Task 12 P0-D) and
+    the simple leg finds nothing, Type0/Identity-H shows are decoded
+    through their capability's ToUnicode evidence and matched by text; a
+    unique CID match must additionally survive the source-reproduction
+    proof (deterministic reverse encoding byte-equals the show operand).
+    Without a registry, CID text keeps the historical refusal.
     """
     streams = read_page_streams(doc, page)
     if not streams:
@@ -380,17 +549,52 @@ def bind_source_text(
             "content stream contains constructs the replay cannot account for",
         )
 
+    target_bytes: bytes | None
     try:
         target_bytes = target_text.encode("latin-1")
     except UnicodeEncodeError:
+        target_bytes = None
+    if target_bytes is None and registry is None:
         return BindingFailure(
             RejectReason.UNDECODABLE_TARGET,
             "target text is outside byte-level (latin-1) matching; "
             "font-aware decoding not yet available",
         )
 
-    candidates = [s for s in replay.shows if s.decoded_bytes == target_bytes]
+    candidates = (
+        [s for s in replay.shows if s.decoded_bytes == target_bytes]
+        if target_bytes is not None
+        else []
+    )
+    cid_candidate_ids: frozenset[int] = frozenset()
+    cid_failure: BindingFailure | None = None
+    if registry is not None:
+        # The CID leg ALWAYS runs alongside the simple leg (adversarial
+        # round wf_a93b4e6c-e0f, F5): a target present as both simple
+        # bytes and CID text must be bindable at either occurrence's
+        # origin, and duplicates across the two legs must trip the same
+        # ambiguity contract as duplicates within one leg.
+        cid_candidates, cid_failure = _cid_show_candidates(
+            page, replay, target_text, registry
+        )
+        seen = {id(s) for s in candidates}
+        candidates = candidates + [
+            s for s in cid_candidates if id(s) not in seen
+        ]
+        cid_candidate_ids = frozenset(id(s) for s in cid_candidates)
     if not candidates:
+        if target_bytes is None:
+            # Only an undecodable (non-latin-1) target is something the
+            # Type0 leg alone could have explained — surface its remembered
+            # failure there and ONLY there. A latin-1 miss must never be
+            # rebranded with a type0_* code by an unrelated broken font
+            # (F1), and must keep the Form-XObject / P0-A refusals below.
+            if cid_failure is not None:
+                return cid_failure
+            return BindingFailure(
+                RejectReason.NO_MATCH,
+                "no Type0 show operator decodes to the target text",
+            )
         # Target-scoped: only fire TARGET_IN_FORM_XOBJECT when the target
         # bytes are confirmed inside an invoked Form XObject. A page that
         # merely invokes a logo/bullet XObject must not rebrand every miss.
@@ -457,6 +661,30 @@ def bind_source_text(
             "combined text/transform matrix is rotated, sheared, reflected, "
             "or non-uniformly scaled",
         )
+
+    if id(show) in cid_candidate_ids and registry is not None:
+        # Source-reproduction proof (its own gate, never skipped): the
+        # ToUnicode forward decode matching the target is NOT enough — the
+        # deterministic reverse encoding must reproduce the show operand
+        # byte-for-byte, or the encoding contract used for the replacement
+        # is unproven for this very string.
+        assert show.font_resource is not None
+        capability = registry.capability(page, show.font_resource)
+        cid = capability.cid if capability is not None else None
+        if cid is None:
+            return BindingFailure(
+                RejectReason.FONT_FACE_UNAVAILABLE,
+                "type0 capability vanished between decode and reproduction",
+            )
+        reproduced = cid.encode_first_wins(target_text)
+        if isinstance(reproduced, CidCapabilityFailure):
+            return BindingFailure(reproduced.reason, reproduced.detail)
+        if reproduced != show.decoded_bytes:
+            return BindingFailure(
+                RejectReason.TYPE0_SOURCE_BYTES_NOT_REPRODUCED,
+                "deterministic reverse encoding does not reproduce the "
+                "source show operand bytes",
+            )
 
     stream_bytes = dict(streams)[show.stream_xref]
     return SourceSpanBinding(

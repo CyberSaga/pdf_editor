@@ -26,6 +26,7 @@ from dataclasses import dataclass
 import fitz
 
 from model.edit_requests import StyleOverrides
+from model.text_commit.cid_fonts import CidCapabilityFailure
 from model.text_commit.dto import CommitTier, RejectReason, StreamReplacement
 from model.text_commit.fonts import DocumentFontRegistry, FontCapability
 from model.text_commit.inspect import (
@@ -37,7 +38,7 @@ from model.text_commit.inspect import (
     page_has_widgets_or_signatures,
 )
 from model.text_commit.patch import build_kern_compensated_transplant, kern_for_displacement
-from model.text_commit.pdf_lexer import encode_literal_string
+from model.text_commit.pdf_lexer import encode_hex_string, encode_literal_string
 from model.text_commit.replay import ShowOp
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,9 @@ class _ClassifiedTarget:
     fingerprint: str
     style_overrides: StyleOverrides | None
     geometry_intent: tuple[float, float, float, float] | None
+    # "literal" (simple fonts) or "hex" (Identity-H CID operands): decides
+    # how ``replacement_encoded`` is serialized into the spliced operator.
+    operand_kind: str
 
 
 def _advance(
@@ -287,7 +291,11 @@ def _classify_common(
         )
 
     binding = bind_source_text(
-        doc, page, target_text=target_text, expected_origin=expected_origin
+        doc,
+        page,
+        target_text=target_text,
+        expected_origin=expected_origin,
+        registry=registry,
     )
     if isinstance(binding, BindingFailure):
         return PlanRejection(binding.reason, binding.detail)
@@ -360,55 +368,111 @@ def _classify_common(
             f"font resource /{show.font_resource} not resolvable on this page",
         )
     if capability.tier0_reject_reason is not None:
+        if capability.subtype == "Type0":
+            # Code-only detail (§10 privacy): the type0_* gates never
+            # surface the basefont name — a subset-tagged basename can
+            # identify a private document's producer pipeline.
+            return PlanRejection(
+                capability.tier0_reject_reason,
+                capability.tier0_reject_detail
+                or "type0 evidence gate refused this font resource",
+            )
         return PlanRejection(
             capability.tier0_reject_reason,
             f"font /{show.font_resource} ({capability.basefont})",
         )
 
-    # Verify the reverse encoder against the *source* bytes before trusting
-    # it for the replacement (the make-or-break sanity check).
-    source_encoded = capability.encode_simple(target_text)
-    if source_encoded is None or source_encoded != show.decoded_bytes:
-        return PlanRejection(
-            RejectReason.ENCODING_FAILED,
-            "reverse encoder does not reproduce the source string bytes",
+    if capability.cid is not None:
+        # ---- Task 12 P0-D: the Identity-H/CIDFontType2 codec path ----
+        cid = capability.cid
+        # Source-reproduction proof (binding already ran it; re-proven here
+        # because the capability may have been rebuilt since, and this
+        # plan's evidence must be the one the splice is built from).
+        reproduced = cid.encode_first_wins(target_text)
+        if isinstance(reproduced, CidCapabilityFailure):
+            return PlanRejection(reproduced.reason, reproduced.detail)
+        if reproduced != show.decoded_bytes:
+            return PlanRejection(
+                RejectReason.TYPE0_SOURCE_BYTES_NOT_REPRODUCED,
+                "deterministic reverse encoding does not reproduce the "
+                "source show operand bytes",
+            )
+        source_cids = tuple(
+            int.from_bytes(show.decoded_bytes[i : i + 2], "big")
+            for i in range(0, len(show.decoded_bytes), 2)
         )
-    replacement_encoded = capability.encode_simple(replacement_text)
-    if replacement_encoded is None:
-        return PlanRejection(
-            RejectReason.ENCODING_FAILED,
-            "replacement contains characters outside the verified simple "
-            "encoding or the font's glyph set",
+        strict = cid.encode_strict(replacement_text)
+        if isinstance(strict, CidCapabilityFailure):
+            return PlanRejection(strict.reason, strict.detail)
+        replacement_cids = strict
+        # GID + glyph-repertoire gates for EVERY cid the edit touches:
+        # source first (broken map evidence for glyphs already on the page
+        # is broken evidence, full stop), then the replacement.
+        glyph_failure = cid.glyph_gate(source_cids, target_text) or cid.glyph_gate(
+            replacement_cids, replacement_text
         )
+        if glyph_failure is not None:
+            return PlanRejection(glyph_failure.reason, glyph_failure.detail)
 
-    # Both strings must be measurable before either is measured: a code with
-    # no usable /Widths entry (out of [FirstChar, LastChar], or declared
-    # zero) has no advance the document proves, and /MissingWidth is never
-    # substituted for it.  Counts only — never the characters themselves.
-    uncovered = capability.uncovered_codes(target_text) or capability.uncovered_codes(
-        replacement_text
-    )
-    if uncovered:
-        return PlanRejection(
-            RejectReason.FONT_WIDTHS_INCOMPLETE,
-            f"font /{show.font_resource} ({capability.basefont}) declares no "
-            f"usable /Widths entry for {len(uncovered)} character code(s)",
+        source_encoded = show.decoded_bytes
+        replacement_encoded = cid.encode_cids(replacement_cids)
+        old_advance = cid.advance_points(
+            source_cids, show.font_size, show.char_spacing
         )
-
-    old_advance = _advance(
-        capability, target_text, show.font_size, show.char_spacing, show.word_spacing
-    )
-    new_advance = _advance(
-        capability,
-        replacement_text,
-        show.font_size,
-        show.char_spacing,
-        show.word_spacing,
-    )
-    if capability.advance_source == "widths":
+        new_advance = cid.advance_points(
+            replacement_cids, show.font_size, show.char_spacing
+        )
+        # /W and /DW are exact rational arithmetic, same as simple /Widths.
         tolerance = max(_ADVANCE_TOL_PER_PT_EXACT * show.font_size, 1e-9)
+        operand_kind = "hex"
     else:
-        tolerance = max(_ADVANCE_TOL_PER_PT * show.font_size, 1e-4)
+        # Verify the reverse encoder against the *source* bytes before trusting
+        # it for the replacement (the make-or-break sanity check).
+        source_encoded_simple = capability.encode_simple(target_text)
+        if source_encoded_simple is None or source_encoded_simple != show.decoded_bytes:
+            return PlanRejection(
+                RejectReason.ENCODING_FAILED,
+                "reverse encoder does not reproduce the source string bytes",
+            )
+        source_encoded = source_encoded_simple
+        replacement_encoded_simple = capability.encode_simple(replacement_text)
+        if replacement_encoded_simple is None:
+            return PlanRejection(
+                RejectReason.ENCODING_FAILED,
+                "replacement contains characters outside the verified simple "
+                "encoding or the font's glyph set",
+            )
+        replacement_encoded = replacement_encoded_simple
+
+        # Both strings must be measurable before either is measured: a code with
+        # no usable /Widths entry (out of [FirstChar, LastChar], or declared
+        # zero) has no advance the document proves, and /MissingWidth is never
+        # substituted for it.  Counts only — never the characters themselves.
+        uncovered = capability.uncovered_codes(target_text) or capability.uncovered_codes(
+            replacement_text
+        )
+        if uncovered:
+            return PlanRejection(
+                RejectReason.FONT_WIDTHS_INCOMPLETE,
+                f"font /{show.font_resource} ({capability.basefont}) declares no "
+                f"usable /Widths entry for {len(uncovered)} character code(s)",
+            )
+
+        old_advance = _advance(
+            capability, target_text, show.font_size, show.char_spacing, show.word_spacing
+        )
+        new_advance = _advance(
+            capability,
+            replacement_text,
+            show.font_size,
+            show.char_spacing,
+            show.word_spacing,
+        )
+        if capability.advance_source == "widths":
+            tolerance = max(_ADVANCE_TOL_PER_PT_EXACT * show.font_size, 1e-9)
+        else:
+            tolerance = max(_ADVANCE_TOL_PER_PT * show.font_size, 1e-4)
+        operand_kind = "literal"
 
     streams = dict(
         (xref, doc.xref_stream(xref) or b"") for xref in page.get_contents()
@@ -468,6 +532,7 @@ def _classify_common(
             if new_rect is not None
             else None
         ),
+        operand_kind=operand_kind,
     )
 
 
@@ -495,7 +560,11 @@ def _build_tier0(
         start=show.string_start,
         end=show.string_end,
         expected_bytes=expected,
-        replacement_bytes=encode_literal_string(classified.replacement_encoded),
+        replacement_bytes=(
+            encode_hex_string(classified.replacement_encoded)
+            if classified.operand_kind == "hex"
+            else encode_literal_string(classified.replacement_encoded)
+        ),
         expected_stream_digest=classified.binding.stream_digest,
     )
     token = _content_token(
@@ -601,6 +670,7 @@ def _build_tier1(
         replacement_encoded=classified.replacement_encoded,
         source_advance=classified.source_advance,
         replacement_advance=classified.replacement_advance,
+        string_kind=classified.operand_kind,
     )
     token = _content_token(
         classified.fingerprint,

@@ -66,6 +66,28 @@ class RejectReason:
     # tokens per byte).  A resource refusal, not a stream-shape verdict --
     # it must never be collapsed into MALFORMED_STREAM or NO_MATCH.
     CONTENT_STREAM_TOO_LARGE = "content_stream_too_large_for_safe_replay"
+    # Task 12 P0-D (CID/Type0 single-hex-Tj slice): one stable code per
+    # independent evidence gate, adopted VERBATIM from the red contract in
+    # test_scripts/test_text_commit_cid_hex_tj.py (which keeps its own
+    # literal constants on purpose — a rename here must fail those tests,
+    # never silently follow). The funnel attributes losses by layer:
+    # encoding form / descendant / embedding / ToUnicode / reverse map /
+    # CIDToGID / GID / glyph repertoire / width.
+    TYPE0_ENCODING_UNSUPPORTED = "type0_encoding_unsupported"
+    TYPE0_DESCENDANT_UNSUPPORTED = "type0_descendant_unsupported"
+    TYPE0_FONT_NOT_EMBEDDED = "type0_font_not_embedded"
+    TYPE0_TOUNICODE_MISSING = "type0_tounicode_missing"
+    TYPE0_TOUNICODE_UNPARSEABLE = "type0_tounicode_unparseable"
+    TYPE0_TOUNICODE_MULTICHAR = "type0_tounicode_multichar"
+    TYPE0_TOUNICODE_AMBIGUOUS = "type0_tounicode_ambiguous"
+    TYPE0_UNICODE_UNMAPPED = "type0_unicode_unmapped"
+    TYPE0_SOURCE_BYTES_NOT_REPRODUCED = "type0_source_bytes_not_reproduced"
+    TYPE0_CIDTOGID_UNREADABLE = "type0_cidtogid_unreadable"
+    TYPE0_CID_OUT_OF_MAP_RANGE = "type0_cid_out_of_map_range"
+    TYPE0_GID_ZERO = "type0_gid_zero"
+    TYPE0_GID_BEYOND_GLYPH_COUNT = "type0_gid_beyond_glyph_count"
+    TYPE0_GLYPH_MISSING = "type0_glyph_missing"
+    TYPE0_WIDTH_UNPROVABLE = "type0_width_unprovable"
 
 
 class CommitStatus(str, Enum):

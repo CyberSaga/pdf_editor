@@ -25,7 +25,12 @@ from model.text_commit.dto import (
 )
 from model.text_commit.fonts import DocumentFontRegistry
 from model.text_commit.inspect import page_fingerprint, read_page_streams
-from model.text_commit.pdf_lexer import SpliceError, encode_literal_string, splice_stream
+from model.text_commit.pdf_lexer import (
+    SpliceError,
+    encode_hex_string,
+    encode_literal_string,
+    splice_stream,
+)
 from model.text_commit.replay import ShowOp
 from model.text_commit.verify import prove_source_resource_reuse
 
@@ -276,6 +281,7 @@ def build_kern_compensated_transplant(
     replacement_encoded: bytes,
     source_advance: float,
     replacement_advance: float,
+    string_kind: str = "literal",
 ) -> StreamReplacement:
     """Tier 1 Slice 1: ``"[(new) K] TJ"`` spliced at the SOURCE op's range.
 
@@ -288,12 +294,14 @@ def build_kern_compensated_transplant(
     """
     _require_spliceable_show(show)
     kern = kern_for_displacement(show, source_advance - replacement_advance)
-    new_op = (
-        b"["
-        + encode_literal_string(replacement_encoded)
-        + f" {kern:.6f}".encode("ascii")
-        + b"] TJ"
+    # Task 12 P0-D: Identity-H CID operands serialize as hex strings, the
+    # same operand kind the source show used; simple fonts keep literals.
+    payload = (
+        encode_hex_string(replacement_encoded)
+        if string_kind == "hex"
+        else encode_literal_string(replacement_encoded)
     )
+    new_op = b"[" + payload + f" {kern:.6f}".encode("ascii") + b"] TJ"
     return build_transplant_replacement(stream_bytes, show, new_op)
 
 

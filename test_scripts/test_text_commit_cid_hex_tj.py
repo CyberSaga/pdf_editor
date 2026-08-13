@@ -568,6 +568,226 @@ def test_replay_budget_guard_still_rejects_oversized_type0_page() -> None:
 
 
 # ==========================================================================
+# Adversarial round 2 pins (workflow wf_a93b4e6c-e0f, 8 confirmed findings)
+# ==========================================================================
+
+def test_absent_latin_target_on_broken_type0_page_stays_no_match() -> None:
+    """F1: a remembered Type0 failure must never rebrand a plain miss.
+
+    A latin-1 target that simply is not on the page reports NO_MATCH even
+    when the page carries a broken Type0 font; the type0_* code is
+    reserved for targets only the Type0 leg could explain (undecodable
+    ones), where it IS the right answer.
+    """
+    from model.text_commit.fonts import DocumentFontRegistry
+    from model.text_commit.inspect import BindingFailure, bind_source_text
+
+    fixture = build_identity_h_fixture()
+    strip_tounicode(fixture)
+    registry = DocumentFontRegistry(fixture.doc)
+    latin_miss = bind_source_text(
+        fixture.doc,
+        fixture.page,
+        target_text="Hello",
+        expected_origin=None,
+        registry=registry,
+    )
+    assert isinstance(latin_miss, BindingFailure)
+    assert latin_miss.reason == RejectReason.NO_MATCH, latin_miss
+
+    cjk_target = bind_source_text(
+        fixture.doc,
+        fixture.page,
+        target_text=fixture.text,
+        expected_origin=None,
+        registry=registry,
+    )
+    assert isinstance(cjk_target, BindingFailure)
+    assert cjk_target.reason == TYPE0_TOUNICODE_MISSING, cjk_target
+    fixture.doc.close()
+
+
+def test_two_level_indirect_w_element_fails_closed() -> None:
+    """F2: a /W element that is ITSELF an indirect reference is evidence
+    the staleness closure cannot follow — it must refuse, never resolve."""
+    fixture = build_identity_h_fixture()
+    inner_xref = fixture.doc.get_new_xref()
+    fixture.doc.update_object(inner_xref, "[ 1000 ]")
+    covered = sorted({cid_for(c) for c in CJK_TEXT + REPLACEMENT_EQUAL_ADVANCE})
+    tail = " ".join(f"{cid} [ 1000 ]" for cid in covered[1:])
+    set_w_array(fixture, f"[ {covered[0]} {inner_xref} 0 R {tail} ]")
+    _assert_fail_closed(
+        fixture, REPLACEMENT_EQUAL_ADVANCE, TYPE0_WIDTH_UNPROVABLE
+    )
+    fixture.doc.close()
+
+
+def test_registry_rebuilds_when_indirect_dw_target_changes() -> None:
+    """F3: the cache-revalidation digest must cover an indirect /DW target."""
+    from model.text_commit.fonts import DocumentFontRegistry
+
+    fixture = build_identity_h_fixture()
+    dw_xref = fixture.doc.get_new_xref()
+    fixture.doc.update_object(dw_xref, "1000")
+    set_dw(fixture, f"{dw_xref} 0 R")
+    registry = DocumentFontRegistry(fixture.doc)
+    first = registry.capability(fixture.page, fixture.resource_name)
+    assert first is not None and first.cid is not None
+    assert first.cid.default_width == 1000.0
+
+    fixture.doc.update_object(dw_xref, "2000")
+    second = registry.capability(fixture.page, fixture.resource_name)
+    assert second is not None and second.cid is not None
+    assert second.cid.default_width == 2000.0, (
+        "stale capability served after the /DW target changed"
+    )
+    fixture.doc.close()
+
+
+def test_corrupt_loca_never_proves_glyph_presence() -> None:
+    """F4: out-of-bounds or non-monotonic loca entries prove NOTHING."""
+    from model.text_commit.cid_fonts import parse_truetype_glyph_program
+
+    def sfnt(loca_words: tuple[int, ...], glyf: bytes) -> bytes:
+        # Minimal long-format sfnt: head, maxp, loca, glyf.
+        tables = {
+            b"head": b"\x00" * 50 + (1).to_bytes(2, "big"),
+            b"maxp": b"\x00\x00\x50\x00" + (len(loca_words) - 1).to_bytes(2, "big"),
+            b"loca": b"".join(w.to_bytes(4, "big") for w in loca_words),
+            b"glyf": glyf,
+        }
+        header = b"\x00\x01\x00\x00" + len(tables).to_bytes(2, "big") + b"\x00" * 6
+        records = b""
+        body = b""
+        offset = 12 + 16 * len(tables)
+        for tag in sorted(tables):
+            data = tables[tag]
+            records += tag + b"\x00" * 4 + offset.to_bytes(4, "big")
+            records += len(data).to_bytes(4, "big")
+            body += data
+            offset += len(data)
+        return header + records + body
+
+    oob = parse_truetype_glyph_program(sfnt((0, 0, 500, 500), b"\x00" * 4))
+    assert oob is not None
+    assert oob.glyph_data_length(1) is None, (
+        "a loca range beyond the glyf table must not read as an outline"
+    )
+    backwards = parse_truetype_glyph_program(sfnt((0, 100, 50, 50), b"\x00" * 120))
+    assert backwards is not None
+    assert backwards.glyph_data_length(1) is None, (
+        "a non-monotonic loca range must not read as an outline"
+    )
+
+
+def test_cid_leg_merges_with_simple_candidates_on_mixed_pages() -> None:
+    """F5: a target present as BOTH simple bytes and CID text must be
+    bindable at the CID occurrence's origin, and ambiguous without one."""
+    from model.text_commit.fonts import DocumentFontRegistry
+    from model.text_commit.inspect import (
+        BindingFailure,
+        SourceSpanBinding,
+        bind_source_text,
+    )
+
+    fixture = build_identity_h_fixture(text="Hello")
+    doc = fixture.doc
+    helv_xref = doc.get_new_xref()
+    doc.update_object(
+        helv_xref,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+        "/Encoding /WinAnsiEncoding >>",
+    )
+    # Resolve Resources/Font indirection before adding the key — a path
+    # write through an indirect object raises in PyMuPDF.
+    owner, path = fixture.page.xref, "Resources/Font"
+    kind, value = doc.xref_get_key(owner, "Resources")
+    if kind == "xref":
+        owner, path = int(value.split()[0]), "Font"
+        fkind, fvalue = doc.xref_get_key(owner, "Font")
+        if fkind == "xref":
+            owner, path = int(fvalue.split()[0]), ""
+    doc.xref_set_key(
+        owner, f"{path}/F9" if path else "F9", f"{helv_xref} 0 R"
+    )
+    stream = fixture.content_bytes()
+    doc.update_stream(
+        fixture.content_xref,
+        stream + b" BT /F9 12 Tf 1 0 0 1 72 400 Tm (Hello) Tj ET",
+    )
+    registry = DocumentFontRegistry(doc)
+
+    # expected_origin is in VISUAL page space (transformation × rotation),
+    # not raw user coordinates.
+    visual = fixture.page.transformation_matrix * fixture.page.rotation_matrix
+    cid_origin = fitz.Point(72.0, 700.0) * visual
+    at_cid_origin = bind_source_text(
+        doc,
+        fixture.page,
+        target_text="Hello",
+        expected_origin=(cid_origin.x, cid_origin.y),
+        registry=registry,
+    )
+    assert isinstance(at_cid_origin, SourceSpanBinding), at_cid_origin
+    assert at_cid_origin.show.string_kind == "hex"
+
+    unanchored = bind_source_text(
+        doc,
+        fixture.page,
+        target_text="Hello",
+        expected_origin=None,
+        registry=registry,
+    )
+    assert isinstance(unanchored, BindingFailure)
+    assert unanchored.reason == RejectReason.AMBIGUOUS_MATCH, unanchored
+    doc.close()
+
+
+def test_w_records_refuse_boolean_bounds() -> None:
+    """F8: PDF booleans are not CID range bounds (isinstance quirk)."""
+    from model.text_commit.cid_fonts import parse_pdf_value, parse_w_records
+
+    fixture = build_identity_h_fixture()
+    assert parse_w_records(fixture.doc, parse_pdf_value(b"[true [500]]")) is None
+    assert parse_w_records(fixture.doc, parse_pdf_value(b"[true true 500]")) is None
+    fixture.doc.close()
+
+
+def test_tounicode_comments_ignored_and_hex_whitespace_accepted() -> None:
+    """F9: %-comments are not evidence; hex-string whitespace is legal."""
+    from model.text_commit.cid_fonts import (
+        CidCapabilityFailure,
+        parse_tounicode_strict,
+    )
+
+    commented = parse_tounicode_strict(
+        b"% 1 beginbfchar <0041> <0058> endbfchar\n"
+        b"1 beginbfchar\n<0042> <0043>\nendbfchar"
+    )
+    assert not isinstance(commented, CidCapabilityFailure)
+    assert commented.decode_cid(0x41) is None, (
+        "a commented-out bfchar block must contribute no mappings"
+    )
+    assert commented.decode_cid(0x42) == "C"
+
+    with_commented_range = parse_tounicode_strict(
+        b"1 beginbfchar\n<0042> <0043>\nendbfchar\n"
+        b"% 1 beginbfrange <00> <02> <0041> endbfrange"
+    )
+    assert not isinstance(with_commented_range, CidCapabilityFailure), (
+        "a commented-out bfrange must not poison the map"
+    )
+
+    spaced_hex = parse_tounicode_strict(
+        b"1 beginbfchar\n<00 42> <0043>\nendbfchar"
+    )
+    assert not isinstance(spaced_hex, CidCapabilityFailure), (
+        "whitespace inside a hex string is spec-legal"
+    )
+    assert spaced_hex.decode_cid(0x42) == "C"
+
+
+# ==========================================================================
 # End-to-end contracts (red: they require a commit that cannot happen yet)
 # ==========================================================================
 
