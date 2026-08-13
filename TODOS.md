@@ -540,6 +540,28 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   survive a later, unrelated interaction's guard failure. Fixed by moving
   both resets to each method's true first line; 2 more regression tests
   added.
+- 2026-08-13 (Task 12 P0-D steps 1–4 — census, scope lock, fixtures, RED):
+  Type0 encoding census landed (`scripts/audit_type0_census.py`, read-only,
+  aggregate-only): private corpus is **100% Identity-H + CIDFontType2 +
+  Identity CIDToGIDMap + readable /W + embedded** (262/262 fonts; ToUnicode
+  260/262 structurally parseable — 2 use array-destination bfranges and
+  fail closed under `type0_tounicode_unparseable` in v1) — v1 scope locked
+  unchanged in plan §8; the §9 CMap-scope open question is RESOLVED.
+  Census also surfaced the corpus-dominant INLINE `/DescendantFonts
+  [<<...>>]` form (256/262, AutoCAD) that `collect_cid_encoding_evidence`
+  currently rejects — implementation must handle it (see PITFALLS).
+  Synthetic fixture builder (`test_scripts/type0_fixture_builder.py`) +
+  red matrix (`test_scripts/test_text_commit_cid_hex_tj.py`) landed, then
+  were adversarially hardened (workflow `wf_a084d864-566`, 7/7 findings
+  confirmed and fixed red-first — incl. the census correction above, which
+  the round's structural-validation finding forced): final state **38
+  tests — 35 red / 2 fixture-sanity / 1 replay-budget pin**, every red
+  failing on the pre-P0-D `undecodable_target` binding refusal. The
+  `type0_*` per-gate reason codes in the test module ARE the P0-D
+  contract. This partially
+  addresses the Q3-ceiling item below (Identity-H NO-GO is exactly what
+  P0-D lifts). Production implementation (steps 5–7) NOT started —
+  awaiting go-ahead per the plan's execution order.
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

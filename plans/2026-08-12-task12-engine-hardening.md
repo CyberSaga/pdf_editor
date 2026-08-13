@@ -277,6 +277,12 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
        pages`/`add_textbox` validation guards placed after, not before,
        the reset) and fixed red-first, see §8.)
 6. [ ] P0-D: gate-chain slice behind `max_tier`/flag; `/Rotate 270` acceptance.
+       (2026-08-13: steps 1–4 done — census + scope lock (§8), synthetic
+       fixture builder `test_scripts/type0_fixture_builder.py`, red matrix
+       `test_scripts/test_text_commit_cid_hex_tj.py`, adversarially
+       hardened (7/7 findings fixed, see §8): 38 tests — 35 red / 2
+       fixture-sanity / 1 budget pin, all reds on `undecodable_target`.
+       Implementation (steps 5–7) awaits go-ahead.)
 7. [ ] Cleanup: `decision_chain`; reflow-hook capture + removal.
 8. [ ] Docs: ARCHITECTURE (guard + streaming lexer + outcome fields), PITFALLS
        (token materialization, gid-0 subset trap, slots-vs-3.9), TODOS sync,
@@ -541,6 +547,100 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
   as verifying it — `edit_text()`'s own reset genuinely was correct,
   which is exactly what made the same placement look safe to reuse
   elsewhere without re-deriving "true entry" from scratch.
+- 2026-08-13 (P0-D step 1 — Type0 encoding census; first-slice scope LOCKED):
+  read-only census via the new `scripts/audit_type0_census.py` (aggregate
+  bucket counts only; documents positional; no font names/filenames/text —
+  §10). Private corpus = 2 documents, 73 pages, 274 fonts, **262 Type0**:
+  - `/Encoding`: **262/262 Identity-H** — zero Identity-V, zero other
+    predefined named CMaps, zero embedded/custom CMap streams.
+  - Descendant: **262/262 CIDFontType2** — zero CIDFontType0/CFF.
+  - `/ToUnicode`: 262/262 present; **260/262 structurally parseable**
+    single-destination bfchar/bfrange; 2/262 use the array-destination
+    bfrange form (PDF 32000-1 §9.10.3) — 1 font in doc_0 (3 page-refs of
+    263) and doc_1's ONLY Type0 font (18 page-refs). (Corrected
+    2026-08-13: the census first bucketed all 262 as parseable via a
+    substring grep; the adversarial round exposed the check, and the
+    structural re-run found these 2. Under v1 scope they fail closed with
+    `type0_tounicode_unparseable`; array-destination support is a cheap
+    later add if doc_1-class coverage matters.)
+  - `/CIDToGIDMap`: 256 absent (spec-implicit Identity), 6 explicit
+    `/Identity` name, **zero stream form**.
+  - `/W`: 262/262 readable; `/DW`: 256 absent (spec default 1000),
+    6 readable.
+  - Font program: 262/262 embedded.
+  **Scope decision**: the proposed v1 scope (Identity-H; horizontal only;
+  2-byte identity codes; CIDFontType2; ToUnicode required + reversible;
+  CIDToGIDMap `/Identity` or fully readable stream; embedded program
+  required; single hex `Tj`; direct page content stream) hits **100% of
+  corpus Type0 fonts** (262/262; page-weighted 281/281) — adopted
+  unchanged. Exclusions stand: Identity-V, custom embedded CMaps,
+  CIDFontType0/CFF, Form-XObject text, `TJ` arrays, ambiguous/one-to-many
+  ToUnicode mappings, subset augmentation/re-embedding, style/geometry
+  overrides, multiline.
+  **Corpus-shape findings the implementation must honor**:
+  1. **256/262 fonts carry the descendant CIDFont as an INLINE dictionary**
+     (`/DescendantFonts [<<...>>]`, AutoCAD producer) — no indirect ref.
+     `verify.collect_cid_encoding_evidence` today rejects exactly this
+     form ("unreadable /DescendantFonts entry"), so without inline-descendant
+     support the slice would reach 6/262 fonts (2.3%). The census script's
+     first run had the same blind spot and misbucketed all 256 as
+     `missing_or_unreadable` — fixed before recording these numbers.
+  2. `/DW` absent (→ spec default 1000) and `/CIDToGIDMap` absent
+     (→ spec-implicit Identity) are the DOMINANT forms, not edge cases;
+     both defaults must be first-class, not fallbacks.
+  3. The CIDToGIDMap stream form does not occur in the corpus at all; it
+     stays in scope per the contract but is fixture-only coverage.
+  4. AutoCAD descendants carry nonstandard `/CIDSystemInfo` registry/
+     ordering strings — the slice must gate on the Type0 `/Encoding` name
+     (Identity-H), never on CIDSystemInfo contents.
+  Classifier sanity check: the same script over 2,919 public corpus PDFs
+  (13,211 pages, 229 Type0 fonts) discriminates every bucket the private
+  corpus lacks (69 embedded custom CMaps, 5 predefined named, 3 Identity-V,
+  103 CIDFontType0, 22 missing ToUnicode, 5 unembedded, 1 CIDToGIDMap
+  stream) — the private corpus's 100% uniformity is a corpus property, not
+  classifier blindness.
+- 2026-08-13 (P0-D red-matrix adversarial round — workflow
+  `wf_a084d864-566`, 2 serial agents, 7 findings raised / **7 confirmed**;
+  all fixed red-first before the round's commit):
+  1. GLYPH-CODE-COLLAPSE (med): GID-0, GID-beyond-glyph-count, and
+     subset-outline-missing all pinned one code; DSF's `.notdef` draws no
+     ink, so an ink-probe-only implementation could delete the explicit
+     GID checks undetected. Split into `type0_gid_zero` /
+     `type0_gid_beyond_glyph_count` / `type0_glyph_missing`.
+  2. TOUNICODE-UNPARSEABLE-GAP (med): no code/fixture for
+     present-but-unparseable ToUnicode; `verify._parse_tounicode` silently
+     fabricates mappings from spec-legal array-destination bfranges (live
+     Task 10 code — see PITFALLS), and the census's substring grep could
+     not see the form. Added `type0_tounicode_unparseable` + red fixture;
+     census upgraded to structural validation — which then CORRECTED the
+     scope evidence itself (2/262 fonts use the array form; §8 numbers
+     above updated). Implementation obligation: `_parse_tounicode` must
+     refuse array-destination blocks instead of mis-parsing them.
+  3. TYPE0-STALENESS-UNPINNED (med): `page_fingerprint`'s font dependency
+     enumeration is simple-font-only (blind to descendant `/W`, `/DW`,
+     CIDToGIDMap, ToUnicode). Added two red prepare→mutate→commit pins
+     asserting `STALE_PLAN`; implementation must extend the enumeration
+     through `/DescendantFonts` per inspect.py's own audit rule.
+  4. WEAK-ZERO-MUTATION-ORACLE (med): fail-closed tests compared only one
+     content stream + extraction; gates read font objects outside both.
+     `_assert_fail_closed` now snapshots the whole object table
+     (`document_object_snapshot`; `doc.tobytes()` was probed and is NOT
+     deterministic, so per-xref serialization is the oracle).
+  5. UNICODE-GATE-UNDERPINNED (low): added `type0_unicode_unmapped` (no
+     CID exists for a replacement char) and `type0_tounicode_multichar`
+     (ligature one-CID→many-chars exclusion) reds; fixed the builder
+     docstring that overclaimed multi-char usage.
+  6. DW-DEFAULT-UNPINNED (low): the corpus-dominant "W gap + NO /DW key →
+     spec default 1000" shape had zero tests; added the positive red
+     (`test_width_of_unlisted_cid_uses_spec_default_dw_when_absent`).
+  7. CENSUS-W-INDIRECT-ELEMENT (low): census `/W` walk misbucketed
+     spec-legal indirect array elements as malformed and conflated
+     unreadable-descendant with malformed-width; fixed (one-level
+     indirect-element resolution + `font_unreadable` buckets). Private
+     re-run: `/W` 262/262 readable unchanged.
+  Final red-matrix state after hardening: **38 tests — 35 red / 2
+  fixture-sanity / 1 replay-budget pin**, every red still failing on the
+  pre-P0-D `undecodable_target` refusal.
 
 ## 9. Open questions
 
@@ -548,10 +648,13 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
   (see Decisions: summed budget, 4 MiB initial default, `None` disables).
   Still open: post-P0-B the constant should relax into a latency budget —
   revisit after step 3 measurements.
-- P0-D encoding scope for the first slice: which CMaps are in scope?
-  Identity-H was previously marked NO-GO under `font_unsupported_encoding`
-  (TODOS Q3-ceiling item) — the slice must either scope it in with the full
-  gate chain or explicitly keep it out and say so in the funnel report.
+- ~~P0-D encoding scope for the first slice: which CMaps are in scope?~~
+  **RESOLVED 2026-08-13** by the Type0 encoding census (see §8): v1 scope
+  is Identity-H / CIDFontType2 / ToUnicode-required / Identity-or-readable-
+  stream CIDToGIDMap / embedded-only / single hex `Tj` / direct page
+  stream — 100% of corpus Type0 fonts. Identity-H's previous NO-GO under
+  `font_unsupported_encoding` is exactly what P0-D lifts, behind the full
+  gate chain.
 - ~~P0-C phase 2 UX: per-edit modal vs session-level policy setting.~~
   **RESOLVED 2026-08-12**: per-edit modal this round; session-level "always
   allow" explicitly deferred to a later round (see §8).

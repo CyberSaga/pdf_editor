@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 256 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 260 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -261,3 +261,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2317 | A "was this command ever confirmed" flag must check what actually happened, not just that execute() succeeded | `model/edit_commands.py` (Task 12 P0-C phase 2 — adversarial verification finding, high severity) |
 | 2325 | A "did the signal emit" outcome is not "did the edit commit" — the View's success toast must pull the real result | `view/pdf_view.py` / `controller/pdf_controller.py` (Task 12 P0-C phase 2 — post-review finding, promoted to a merge blocker) |
 | 2333 | A "reset at entry" claim is only true if the reset actually runs before every early-return guard | `controller/pdf_controller.py` (Task 12 P0-C phase 2 toast fix — adversarial verification finding, high + medium) |
+| 2341 | AutoCAD-produced Type0 fonts inline their descendant CIDFont in /DescendantFonts | `model/text_commit` (Type0/CID evidence readers), `scripts/audit_type0_census.py` (Task 12 P0-D census) |
+| 2349 | Path-based xref_set_key cannot null a nested key — it plants a placeholder string | PyMuPDF xref surgery (`test_scripts/type0_fixture_builder.py`, Task 12 P0-D fixtures) |
+| 2357 | subset_fonts strips the cmap — Unicode lookups cannot prove glyph presence in a subset | PyMuPDF font subsetting (`test_scripts/type0_fixture_builder.py`, Task 12 P0-D fixtures; future P0-D glyph-presence gate) |
+| 2365 | _parse_tounicode silently fabricates mappings from array-destination bfranges | `model/text_commit/verify.py` (`_parse_tounicode`, used by `collect_cid_encoding_evidence` — live Task 10 code), `scripts/audit_type0_census.py` (Task 12 P0-D adversarial finding) |
