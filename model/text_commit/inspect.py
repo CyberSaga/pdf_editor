@@ -171,10 +171,17 @@ def _update_type0_dependencies(
         except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase, PdfParseError):
             digest.update(b"<unreadable-descendant>")
             return
-        digest.update(canonical_pdf_text(descendant).encode("utf-8"))
-        digest.update(b"\x1f")
     if not isinstance(descendant, dict):
         return
+    # Fold the descendant canonically on EVERY arrival path, not only the
+    # PdfRef one: an inline dict reached through an INDIRECT /DescendantFonts
+    # array object otherwise leaves its direct /W, /DW, /CIDToGIDMap-name and
+    # /Subtype values outside the fingerprint while the capability builder
+    # accepts the form (post-review pin, wf_1757a5fb-8e9).  The direct-inline
+    # form gets folded twice (font-dict key loop + here) — harmless, both
+    # sides of a staleness comparison fold identically.
+    digest.update(canonical_pdf_text(descendant).encode("utf-8"))
+    digest.update(b"\x1f")
     for key in ("W", "DW", "FontDescriptor"):
         target = descendant.get(key)
         if isinstance(target, PdfRef):

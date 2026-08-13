@@ -384,6 +384,15 @@ def _classify_common(
 
     if capability.cid is not None:
         # ---- Task 12 P0-D: the Identity-H/CIDFontType2 codec path ----
+        # The locked v1 scope is single HEX Tj: a literal-string spelling
+        # of a Type0 operand is spec-legal but stays out of scope rather
+        # than silently widening it (post-review pin, wf_1757a5fb-8e9).
+        # Detail stays code-only (§10 privacy).
+        if show.string_kind != "hex":
+            return PlanRejection(
+                RejectReason.NOT_SINGLE_LITERAL_TJ,
+                "type0 v1 scope admits only single HEX-string Tj operands",
+            )
         cid = capability.cid
         # Source-reproduction proof (binding already ran it; re-proven here
         # because the capability may have been rebuilt since, and this

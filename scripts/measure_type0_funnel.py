@@ -4,7 +4,7 @@
 Walks every text-showing operator of the given documents through the
 P0-D evidence chain and reports the DUAL funnel the plan requires:
 
-- **source-bindable**: direct single hex/literal ``Tj`` on a Type0 font →
+- **source-bindable**: direct single hex ``Tj`` on a Type0 font →
   within the production replay budget → default text state → capability
   (scope) accepted → source decodes → reverse encoding reproduces the
   source bytes → source CIDs pass the GID/glyph/width gates;
@@ -56,7 +56,7 @@ from model.text_commit.replay import (  # noqa: E402
 _STAGES = (
     "shows_total",
     "on_type0_font",
-    "single_hex_or_literal_tj",
+    "single_hex_tj",
     "within_replay_budget",
     "default_text_state",
     "scope_accepted",
@@ -115,13 +115,12 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
             if capability is None or capability.subtype != "Type0":
                 continue
             shows_counter["on_type0_font"] += 1
-            if show.operator != "Tj" or show.string_kind not in (
-                "literal",
-                "hex",
-            ):
-                loss_reasons["not_single_string_tj"] += 1
+            # Hex-only, mirroring the production plan gate (the locked v1
+            # scope refuses literal-string Type0 operands).
+            if show.operator != "Tj" or show.string_kind != "hex":
+                loss_reasons["not_single_hex_tj"] += 1
                 continue
-            shows_counter["single_hex_or_literal_tj"] += 1
+            shows_counter["single_hex_tj"] += 1
             if not within_budget:
                 loss_reasons["content_stream_too_large_for_safe_replay"] += 1
                 continue

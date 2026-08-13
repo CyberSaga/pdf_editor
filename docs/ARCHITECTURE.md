@@ -946,13 +946,17 @@ Identity-or-readable-stream CIDToGIDMap + embedded FontFile2 + single hex
   the byte-exact source-reproduction proof. Failures are target-scoped: a
   broken unrelated Type0 font never blocks a target another show
   satisfies. `page_fingerprint` folds the full Type0 evidence closure
-  (font dict canonical-per-key, ToUnicode stream, descendant inline-or-
-  indirect canonical, indirect /W//FontDescriptor targets, CIDToGIDMap
+  (font dict canonical-per-key, ToUnicode stream, the descendant dict
+  folded canonically on EVERY arrival form — direct inline, indirect ref,
+  and the hybrid indirect-array-holding-an-inline-dict (post-review pin,
+  wf_1757a5fb-8e9) — indirect /W//FontDescriptor targets, CIDToGIDMap
   stream, FontFile2 bytes — decoded digests and parsed canonical forms so
   a `tobytes()` scratch that reorders inline dict keys or recompresses
   streams stays fingerprint-identical, while any real evidence change
   goes stale).
 - **`plan.py`** — the classifier branches per capability: the CID path
+  admits HEX operands only (a literal-string Type0 `Tj` is spec-legal but
+  refused — the locked scope is single hex `Tj`, never silently widened),
   re-proves source reproduction, strict-encodes the replacement, runs the
   GID/glyph gates over source AND replacement CIDs, measures advances
   from /W//DW (exact tolerance), and serializes operands as hex
@@ -962,9 +966,10 @@ Identity-or-readable-stream CIDToGIDMap + embedded FontFile2 + single hex
 - **Rollout defaults unchanged**: `legacy/off`, `max_tier=0` — nothing
   reaches a user until the Task 12 rollout gates pass.
 
-Pinned by `test_scripts/test_text_commit_cid_hex_tj.py` (43 tests: the
+Pinned by `test_scripts/test_text_commit_cid_hex_tj.py` (52 tests: the
 full gate chain, `/Rotate 270` both tiers, the inline-descendant corpus
-shape, five staleness pins, preview↔commit identity, byte-exact undo,
+shape, six staleness pins (incl. the hybrid indirect-array descendant),
+the hex-only operand scope, preview↔commit identity, byte-exact undo,
 atomic rollback, and code-only privacy).
 
 ## 11. Character-Level Text Selection (Browse Mode)

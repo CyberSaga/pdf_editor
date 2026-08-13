@@ -773,6 +773,57 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
   Post-fix state: matrix 50/50 green, full suite 2326 passed / 21
   skipped / 5 xfailed / 0 failed, ruff + mypy + import-linter clean;
   funnel re-run byte-identical on the recorded numbers.
+- 2026-08-13 (pre-PR plan-conformance review — workflow `wf_1757a5fb-8e9`,
+  2 serial agents: `plan-code-reviewer` + independent skeptical verifier,
+  both reproducing end-to-end on `.venv`; verdict **ship-with-fixes**, 2
+  confirmed findings, both fixed red-first; matrix now **52**):
+  1. BLOCKING (fail-open): the HYBRID `/DescendantFonts` form — an
+     INDIRECT array object whose element is the descendant dict INLINE —
+     is accepted by `resolve_descendant`/capability build, but
+     `_update_type0_dependencies` folded the descendant canonically only
+     on the PdfRef-element path, so direct values inside the inline dict
+     (inline `/W`, `/DW`, `/CIDToGIDMap` name, `/Subtype`) never entered
+     `page_fingerprint`: both agents reproduced prepare → mutate → commit
+     returning COMMITTED where the five sibling staleness pins require
+     STALE_PLAN (`compute_cid_evidence_digest` DID see the mutation —
+     evidence/closure misalignment, the exact F2 contract). Fixed: the
+     canonical descendant fold now keys on the RESOLVED dict, not the
+     arrival path (the direct-inline form folds twice — harmless, both
+     sides of a staleness comparison fold identically). Zero corpus
+     incidence (256 direct-inline + 6 indirect-ref, both already
+     covered); fixed under the F2 precedent — an ACCEPTED shape's
+     closure must cover it, corpus-zero or not.
+  2. MINOR (scope conformance): a literal-string Identity-H `Tj` operand
+     bound and COMMITTED through the CID path — silent widening of the
+     locked single-HEX-`Tj` scope (correctness held: whole-token splice +
+     byte-exact reproduction + verify all fired). Fixed the conservative
+     way: the `plan.py` CID branch refuses non-hex operands with
+     `not_single_literal_tj` (code-only detail); the funnel stage is now
+     `single_hex_tj` (hex-only) so the diagnostic mirrors production.
+  - Registered follow-ups from the same review (no code this round, all
+    fail-closed today): `ToUnicodeMap` linear-scan decode/encode indexes
+    (perf; joins the F7 preview-latency item); `page_capabilities` keyed
+    by resource name can shadow a same-named XObject font (PRE-EXISTING
+    at `c8b883a` `fonts.py:520`, V0c + rollback backstop); cached Type0
+    REJECTIONS are never digest-revalidated (asymmetric with the
+    accepted-capability invariant, refuses-only); literal-string escape
+    sequences not decoded by `canonical_pdf_text` (false-stale direction
+    only); odd-length show operand labeled
+    `type0_source_bytes_not_reproduced` (attribution wording; 2-byte CID
+    operands are always even in practice); composite-glyph COMPONENT GIDs
+    not walked by `glyph_gate` (unverified — subsetters close over
+    components; needs a hand-built composite fixture); `ttcf` table
+    offsets are file-absolute vs the slice taken (unverified — TTC-in-PDF
+    essentially nonexistent, bounds checks fail closed).
+  - Post-fix state: matrix 52/52 green, full suite **2328** passed / 21
+    skipped / 5 xfailed / 0 failed (the +2 are the new pins), ruff +
+    mypy + import-linter 4/4 clean. Corpus funnel re-run with the
+    hex-only operand stage (`single_hex_tj`): every count byte-identical
+    to the recorded numbers above (doc_0 27,250 operand-stage / 16,549
+    over budget / 10,701 state-gated / 0 bindable; doc_1 543 `TJ`-array
+    shows all refused at the operand stage) — the corpus contains ZERO
+    literal-string Type0 `Tj` operands, so the hex-only scope gate costs
+    nothing on real documents.
 
 ## 9. Open questions
 

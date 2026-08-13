@@ -582,6 +582,20 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   P1 follow-ups + the §9 budget-relaxation item. The Q3-ceiling item
   below now has REAL per-condition decomposition data from the funnel.
   Rollout defaults unchanged (legacy, max_tier=0).
+- 2026-08-13 (Task 12 P0-D pre-PR review round — `wf_1757a5fb-8e9`,
+  plan-code-reviewer + skeptical verifier, verdict ship-with-fixes): 2
+  confirmed findings fixed red-first — (1) BLOCKING: the hybrid
+  indirect-array-holding-inline-descendant form was accepted by the
+  capability builder but invisible to the fingerprint's canonical
+  descendant fold → prepare→mutate→commit COMMITTED instead of
+  STALE_PLAN; fold now keys on the resolved dict, not the arrival path.
+  (2) MINOR: literal-string Identity-H `Tj` silently widened the locked
+  hex-only scope; the CID plan branch now refuses non-hex operands
+  (`not_single_literal_tj`) and the funnel stage is `single_hex_tj`.
+  Matrix 52/52; full suite 2328/21/5/0; review follow-ups registered in
+  plan §8 (perf indexes, XObject name-shadowing [pre-existing],
+  cached-rejection revalidation, literal-escape canonicalization,
+  odd-length code attribution, composite-component walk, ttcf offsets).
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 
