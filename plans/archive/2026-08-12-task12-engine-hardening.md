@@ -1,9 +1,9 @@
 # Task 12 — Tiered Engine Hardening & CID Coverage
 
-**Status:** COMPLETE (sealed 2026-08-14 — all eight steps done; P0-A/B/C/D
-merged via PRs #29/#30/#31, Step 7–8 cleanup via the `task12/closure-cleanup`
-PR; final acceptance record in §8. Capability implemented and contracts
-honest; corpus rollout has NOT begun — the three corpus blockers move to
+**Status:** COMPLETE (sealed 2026-08-14 — all eight steps done; P0-A/B via PR #28,
+P0-C Phase 1/2 via PRs #29/#30, P0-D via PR #31, Step 7–8 cleanup via PR #32;
+final acceptance record in §8. Capability implemented and contracts honest;
+corpus rollout has NOT begun — the three corpus blockers move to
 `plans/task13-cad-binding-unlock.md`.)
 **Base lineage:** `task11/slice1-closure` (merge-base decision confirmed twice; by-fable is NOT cherry-picked — see Decisions)
 **Defaults untouched until rollout gates pass:** `engine=legacy`, `max_tier=0` (same rule as Task 11 acceptance).
