@@ -1,6 +1,10 @@
 # Task 12 — Tiered Engine Hardening & CID Coverage
 
-**Status:** PLANNING (created 2026-08-12)
+**Status:** COMPLETE (sealed 2026-08-14 — all eight steps done; P0-A/B/C/D
+merged via PRs #29/#30/#31, Step 7–8 cleanup via the `task12/closure-cleanup`
+PR; final acceptance record in §8. Capability implemented and contracts
+honest; corpus rollout has NOT begun — the three corpus blockers move to
+`plans/task13-cad-binding-unlock.md`.)
 **Base lineage:** `task11/slice1-closure` (merge-base decision confirmed twice; by-fable is NOT cherry-picked — see Decisions)
 **Defaults untouched until rollout gates pass:** `engine=legacy`, `max_tier=0` (same rule as Task 11 acceptance).
 
@@ -307,10 +311,19 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
        recorded honestly in §8 (0 corpus-bindable today — losses owned by
        budget/mc_depth/rotated-Tm follow-ups, not the codec). Rollout
        defaults unchanged: legacy, max_tier=0.)
-7. [ ] Cleanup: `decision_chain`; reflow-hook capture + removal.
-8. [ ] Docs: ARCHITECTURE (guard + streaming lexer + outcome fields), PITFALLS
+7. [x] Cleanup: `decision_chain`; reflow-hook capture + removal.
+       (2026-08-14: six red pins first, then one implementation commit —
+       `CommitOutcome.decision_chain` records the tier decision trail on
+       successful tiered commits while `fallback_chain` stays `()`; the
+       dead Track A/B reflow hook was removed after its logger evidence
+       was CAPTURED (not just agent-reported) by the red pin's failing
+       run. See §8 sealing entry.)
+8. [x] Docs: ARCHITECTURE (guard + streaming lexer + outcome fields), PITFALLS
        (token materialization, gid-0 subset trap, slots-vs-3.9), TODOS sync,
        `git mv` this plan to `plans/archive/` on completion.
+       (2026-08-14: sealed — final anonymized funnel in §8; the earlier
+       PITFALLS items listed above had already landed with their own
+       workstreams; this round adds the dead-hook entry.)
 
 ## 8. Decisions record
 
@@ -824,6 +837,69 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
     shows all refused at the operand stage) — the corpus contains ZERO
     literal-string Type0 `Tj` operands, so the hex-only scope gate costs
     nothing on real documents.
+
+- 2026-08-14 (**SEALING** — Step 7–8 closure, `task12/closure-cleanup`):
+  - PR #31 merged into `task11/slice1-closure` as a TRUE merge commit
+    (`d961342`) — squash was rejected deliberately: the 5-commit red-first
+    sequence (red matrix → red pins → implementation → review red pins →
+    review fixes) is itself verification evidence. Post-merge CI status:
+    the repo's CI triggers only on push-to-main and pull_request, so no
+    branch run exists by design; run #68 validated the exact merge result
+    (the `pull_request` event builds the merge-preview ref and the base
+    did not move before the merge).
+  - Step 7a `decision_chain`: six red pins first (five in the new
+    `test_scripts/test_text_commit_decision_chain.py`), then one
+    implementation commit. `CommitOutcome.decision_chain` (default `()`)
+    records `("tier0:committed",)` / `("tier0:rejected:advance_mismatch",
+    "tier1:committed")` on successful tiered commits; derivable from the
+    committed tier because `plan._TIER1_ESCALATION_REASONS` is
+    single-member (the same fact `_tier1_chain` already rests on).
+    `fallback_chain` stays `()` on success and keeps sole ownership of
+    failure attribution; `is_real_fallback_commit` pinned as blind to the
+    new field. As specified: no by-fable port, no
+    `compensated_transplant_kern` warning, no `strategy` field until a
+    second Tier 1 strategy exists.
+  - Step 7b reflow hook: evidence CAPTURED (upgrading the plan's
+    "agent-reported" grade) by the red pin's failing run — every
+    successful reflow-allowed edit logged `No module named 'reflow'` from
+    `pdf_controller.py:2537` AND pushed a spurious `⚠ Reflow 例外`
+    status-bar override at the user. Adjudication: the `reflow` package
+    never existed on this lineage (spike-era branches only, deleted there
+    in `eaeae7f`), is not a declared dependency, and is not installed →
+    hook REMOVED (closure + `reflow_fn=` wiring + display block).
+    `EditTextCommand.reflow_fn` and `allows_external_reflow` stay as the
+    model-layer contract. PITFALLS entry added (dead optional hooks that
+    catch their own ImportError; index regenerated, 264 entries).
+  - Step 8 final anonymized funnel (fresh run, modified
+    `scripts/measure_type0_funnel.py` with explicit survival stages;
+    validated on a synthetic Identity-H fixture first — 13/13 stages +
+    e2e commit 1/1):
+    | stage | doc_0 (50 pp) | doc_1 (23 pp) |
+    |---|---|---|
+    | shows_total | 28,043 | 2,237 |
+    | on_type0_font | 27,820 | 543 |
+    | structural family (fonts, census) | 262/262 corpus-wide | — |
+    | v1-ToUnicode-acceptable (fonts) | 260/262 corpus-wide (99.24% font-weighted, 92.53% page-weighted) | — |
+    | single_hex_tj | 27,250 | 0 (543 `TJ`-array) |
+    | within_replay_budget | 10,701 (16,549 lost) | 0 |
+    | **outside_marked_content** | **0 (10,701 lost — the single common dominant gate)** | 0 |
+    | uniform_trm | 0 (stage-shadowed; overlap analysis: 10,211/10,701 also rotated, 1,993 hscale≠100) | 0 |
+    | source_bindable | 0 | 0 |
+    | replacement_encodable_proxy | 0 | 0 |
+    Every count is consistent with the two P0-D-era runs. Verdict stands:
+    capability complete, contracts honest, corpus rollout not begun —
+    the unlock order is marked-content → rotated-Tm → replay-budget
+    indexing, now planned in `plans/task13-cad-binding-unlock.md`.
+    Diagnostic-run cost note (feeds the F7/Task 13 P3 latency item): the
+    full-corpus funnel costs ~28 min CPU because it measures THROUGH the
+    real production gates, including the per-lookup evidence-digest
+    re-verification — production never replays with `None` budget, but
+    the per-lookup re-hash cost is real and stays on the pre-rollout
+    measurement list.
+  - Gates at sealing: matrix + full suite green (recorded in the
+    closure-cleanup PR), ruff whole-repo clean, mypy clean, import-linter
+    4/4 kept, data-policy sweep over the branch diff zero hits. Defaults
+    unchanged: `engine=legacy`, `max_tier=0`.
 
 ## 9. Open questions
 

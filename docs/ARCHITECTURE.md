@@ -682,8 +682,18 @@ new engine yet** (integration is plan Task 7+).
 
 - `dto.py` — `RejectReason` (stable refusal codes), `CommitStatus`/`CommitTier`,
   `FontResourceAction`/`FontOutcome`, `CommitOutcome` (stored on
-  `EditTextCommand.outcome`; `allows_external_reflow=False` blocks Track A/B),
-  `TextCommitSettings`, `StreamReplacement`.
+  `EditTextCommand.outcome`; `allows_external_reflow=False` blocks external
+  displacement reflow; `decision_chain` — Task 12 Step 7 — records the tier
+  decision trail on successful tiered commits, `("tier0:committed",)` or
+  `("tier0:rejected:advance_mismatch", "tier1:committed")`, while
+  `fallback_chain` stays `()` on success and remains reserved for true
+  degrades + failure attribution), `TextCommitSettings`, `StreamReplacement`.
+  The vestigial controller-side Track A/B displacement-reflow callback was
+  removed in Task 12 Step 7 (its `reflow` import had been dead on this
+  lineage since the spike branches, logging a warning and pushing a spurious
+  status-bar override on every reflow-allowed edit);
+  `EditTextCommand.reflow_fn` stays as the model-layer extension point, with
+  no production wiring.
 - `pdf_lexer.py` — lossless lexer (tokens tile the source exactly; whitespace/
   comments/inline-image payloads are tokens; malformed constructs flagged, never
   raised) + `splice_stream`, the only writer: expected-bytes + SHA-256 stream
