@@ -2482,61 +2482,6 @@ class PDFController:
             # Phase 4: 透過 CommandManager 執行，支援頁面快照 undo/redo
             snapshot = self.model._capture_page_snapshot(page_idx)
 
-            # Displacement reflow callback（Track B → Track A fallback）
-            # 在 model.edit_text() 完成後，只移動後續受影響塊，不重新處理 edited block。
-            #
-            # Bug fixes:
-            # 1. 用 _model 而非 _doc 閉包，redo 時透過 _model.doc 取到目前有效的 doc 物件，
-            #    避免 full-GC / save-reopen 後對已關閉的舊 doc 執行 reflow。
-            # 2. drag-move 場景：以 new_rect 作為定位 edited block 的 rect（block 已在新位置），
-            #    否則用原始 rect 在 move 後找不到 block，displacement 靜默失敗。
-            # 3. Track B fallback 條件：plan is None（span not found）也要 fallback，
-            #    不能只看 success flag（Track B 找不到 span 時仍回傳 success=True）。
-            _model = self.model
-            _edit_rect = fitz.Rect(new_rect if new_rect is not None else rect)
-            _orig_rect = fitz.Rect(rect)
-            _new_text = new_text
-            _original_text = original_text or ""
-            _font = font
-            _size = float(size)
-            _color = color
-            _page_idx = page_idx
-            # mutable container：_reflow_fn 在 cmd.execute() 期間寫入，
-            # show_page() 完成後再讀取，確保警告不被 _update_status_bar() 覆蓋
-            _reflow_warning: list = [None]
-
-            def _reflow_fn():
-                try:
-                    _doc = _model.doc   # 每次執行時取當前有效 doc（非閉包時的舊 doc）
-                    if _doc is None:
-                        return
-                    from reflow.track_A_core import TrackAEngine
-                    from reflow.track_B_core import TrackBEngine
-                    result_b = TrackBEngine().apply_displacement_only(
-                        doc=_doc, page_idx=_page_idx,
-                        edited_rect=_edit_rect, new_text=_new_text,
-                        original_text=_original_text,
-                        font=_font, size=_size, color=_color,
-                    )
-                    # fallback 條件：明確失敗 OR Track B 未找到 span（plan is None）
-                    b_ok = result_b.get("success", False) and result_b.get("plan") is not None
-                    if not b_ok:
-                        result_a = TrackAEngine().apply_displacement_only(
-                            doc=_doc, page_idx=_page_idx,
-                            edited_rect=_edit_rect, new_text=_new_text,
-                            original_text=_original_text,
-                            font=_font, size=_size, color=_color,
-                        )
-                        a_ok = result_a.get("success", False) and result_a.get("plan") is not None
-                        if not a_ok:
-                            logger.warning(
-                                "edit_text reflow: Track A/B 均無法定位段落（displacement 跳過）"
-                            )
-                            _reflow_warning[0] = "⚠ 段落位移未執行（版面結構未識別），請手動調整"
-                except Exception as _e:
-                    logger.warning(f"edit_text reflow_fn 失敗（不影響主編輯）: {_e}")
-                    _reflow_warning[0] = f"⚠ Reflow 例外（主編輯不受影響）: {_e}"
-
             cmd = EditTextCommand(
                 model=self.model,
                 page_num=page,
@@ -2553,7 +2498,6 @@ class PDFController:
                 new_rect=new_rect,
                 target_span_id=target_span_id,
                 target_mode=target_mode,
-                reflow_fn=_reflow_fn,
                 style_overrides=request.style_overrides,
                 plan_token=request.plan_token,
                 confirm_fallback=self._confirm_legacy_fallback,
@@ -2581,20 +2525,6 @@ class PDFController:
             if anchor is not None and view is not None and hasattr(view, "restore_viewport_anchor"):
                 QTimer.singleShot(0, lambda a=anchor, v=view: v.restore_viewport_anchor(a))
                 QTimer.singleShot(180, lambda a=anchor, v=view: v.restore_viewport_anchor(a))
-            # 顯示 reflow 警告：使用 override 機制確保不被 _update_status_bar 覆蓋
-            if _reflow_warning[0]:
-                _msg = _reflow_warning[0]
-                _view_ref = view
-                if hasattr(_view_ref, "set_status_bar_override_message"):
-                    _view_ref.set_status_bar_override_message(_msg)
-                    # 5 秒後自動清除 override
-                    QTimer.singleShot(5000, lambda v=_view_ref:
-                        v.set_status_bar_override_message(None))
-                else:
-                    _sb = getattr(_view_ref, "status_bar", None)
-                    if _sb is not None:
-                        QTimer.singleShot(200, lambda m=_msg, sb=_sb:
-                            sb.showMessage(m, 5000))
         except Exception as e:
             logger.error(f"編輯文字失敗: {e}")
             show_error(self.view, f"編輯失敗: {e}")

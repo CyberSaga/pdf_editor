@@ -284,6 +284,18 @@ class TieredCommitEngine:
             )
 
         self.registry.bump_generation()
+        # Derivable from the committed tier alone: Tier 1 is only ever
+        # reached by escalating a Tier 0 ADVANCE_MISMATCH refusal
+        # (plan._TIER1_ESCALATION_REASONS is single-member; _tier1_chain
+        # rests on the same fact).
+        decision_chain: tuple[str, ...]
+        if is_tier1:
+            decision_chain = (
+                f"tier0:rejected:{RejectReason.ADVANCE_MISMATCH}",
+                "tier1:committed",
+            )
+        else:
+            decision_chain = ("tier0:committed",)
         return CommitOutcome(
             status=CommitStatus.COMMITTED,
             tier=prepared.tier,
@@ -293,6 +305,7 @@ class TieredCommitEngine:
             verified_properties=result,
             degraded_reason=None,
             allows_external_reflow=False,
+            decision_chain=decision_chain,
         )
 
     # ------------------------------------------------------------ helpers
