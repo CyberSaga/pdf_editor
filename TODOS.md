@@ -540,6 +540,62 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   survive a later, unrelated interaction's guard failure. Fixed by moving
   both resets to each method's true first line; 2 more regression tests
   added.
+- 2026-08-13 (Task 12 P0-D steps 1–4 — census, scope lock, fixtures, RED):
+  Type0 encoding census landed (`scripts/audit_type0_census.py`, read-only,
+  aggregate-only): private corpus is **100% Identity-H + CIDFontType2 +
+  Identity CIDToGIDMap + readable /W + embedded** (262/262 fonts; ToUnicode
+  260/262 structurally parseable — 2 use array-destination bfranges and
+  fail closed under `type0_tounicode_unparseable` in v1) — v1 scope locked
+  unchanged in plan §8; the §9 CMap-scope open question is RESOLVED.
+  Census also surfaced the corpus-dominant INLINE `/DescendantFonts
+  [<<...>>]` form (256/262, AutoCAD) that `collect_cid_encoding_evidence`
+  currently rejects — implementation must handle it (see PITFALLS).
+  Synthetic fixture builder (`test_scripts/type0_fixture_builder.py`) +
+  red matrix (`test_scripts/test_text_commit_cid_hex_tj.py`) landed, then
+  were adversarially hardened (workflow `wf_a084d864-566`, 7/7 findings
+  confirmed and fixed red-first — incl. the census correction above, which
+  the round's structural-validation finding forced): final state **38
+  tests — 35 red / 2 fixture-sanity / 1 replay-budget pin**, every red
+  failing on the pre-P0-D `undecodable_target` binding refusal. The
+  `type0_*` per-gate reason codes in the test module ARE the P0-D
+  contract. This partially
+  addresses the Q3-ceiling item below (Identity-H NO-GO is exactly what
+  P0-D lifts).
+- 2026-08-13 (Task 12 P0-D steps 5–7 — implementation GREEN): after the
+  user's go-ahead + 5 more red pins (explicit /Identity name, scalar
+  bfrange positive, 3 more STALE_PLAN staleness pins), the CID codec
+  landed: new leaf `model/text_commit/cid_fonts.py`, Type0 capabilities in
+  `fonts.py` (no face; per-lookup evidence-digest revalidation),
+  registry-driven Type0 binding leg + full Type0 fingerprint closure in
+  `inspect.py`, per-capability planner branch with hex operand
+  serialization in `plan.py`/`patch.py`/`pdf_lexer.py`, legacy
+  `_parse_tounicode` fabrication fixed + inline-descendant support in
+  `verify.py`. **All 43 P0-D tests green on the first run**; full suite
+  2319 passed / 0 failed; ruff/mypy/import-linter clean; 3 obsolete
+  Type0 pins updated (helv TextWriter → CIDFontType0 descendant, see
+  PITFALLS). Acceptance funnel (`scripts/measure_type0_funnel.py`,
+  aggregate-only) reported HONESTLY: 0 source-bindable shows on the
+  reference corpus today — 59% of Type0 shows behind the P0-A budget
+  (intact by design), 100% of the budget-eligible remainder inside
+  BDC/EMC layer wrappers (`mc_depth`), 95% on rotated text matrices —
+  all outside P0-D's locked scope; registered as the mc_depth/rotated-Tm
+  P1 follow-ups + the §9 budget-relaxation item. The Q3-ceiling item
+  below now has REAL per-condition decomposition data from the funnel.
+  Rollout defaults unchanged (legacy, max_tier=0).
+- 2026-08-13 (Task 12 P0-D pre-PR review round — `wf_1757a5fb-8e9`,
+  plan-code-reviewer + skeptical verifier, verdict ship-with-fixes): 2
+  confirmed findings fixed red-first — (1) BLOCKING: the hybrid
+  indirect-array-holding-inline-descendant form was accepted by the
+  capability builder but invisible to the fingerprint's canonical
+  descendant fold → prepare→mutate→commit COMMITTED instead of
+  STALE_PLAN; fold now keys on the resolved dict, not the arrival path.
+  (2) MINOR: literal-string Identity-H `Tj` silently widened the locked
+  hex-only scope; the CID plan branch now refuses non-hex operands
+  (`not_single_literal_tj`) and the funnel stage is `single_hex_tj`.
+  Matrix 52/52; full suite 2328/21/5/0; review follow-ups registered in
+  plan §8 (perf indexes, XObject name-shadowing [pre-existing],
+  cached-rejection revalidation, literal-escape canonicalization,
+  odd-length code attribution, composite-component walk, ttcf offsets).
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

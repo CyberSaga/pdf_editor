@@ -909,6 +909,69 @@ Pinned by `test_scripts/test_text_commit_tier1_slice1.py`,
 `test_text_commit_preview_parity.py`, `test_text_commit_candidate_identity.py`
 and `test_tier0_target_resolution.py`.
 
+#### 10.1.2 P0-D — CID/Type0 single-hex-`Tj` slice (2026-08-13)
+
+Task 12 P0-D teaches the SAME two tiers a second font codec — it adds no
+new tier, writer, or layout strategy. Scope (locked by census, plan §8):
+Identity-H + CIDFontType2 + reversible single-scalar ToUnicode +
+Identity-or-readable-stream CIDToGIDMap + embedded FontFile2 + single hex
+`Tj` on the direct page stream. Everything else fails closed under one of
+15 per-gate `type0_*` `RejectReason` codes whose details are code-only
+(never text/font names/paths — §10 privacy of the Task 12 plan).
+
+- **`cid_fonts.py` (new, leaf)** — imports only `dto`; `plan`/`inspect`/
+  `fonts`/`verify` all consume it, so one set of parsed evidence serves
+  binding, planning, fingerprinting, and the legacy evidence reader
+  without an import cycle. Contents: a bounded token-aware PDF object
+  parser (`parse_pdf_value`/`canonical_pdf_text` — the inline
+  `/DescendantFonts [<<...>>]` descendant is the census-DOMINANT corpus
+  form and regex key search is forbidden), `parse_tounicode_strict`
+  (bfchar + scalar-destination bfrange only; array-destination refuses as
+  `type0_tounicode_unparseable`; multi-char cluster mappings refuse
+  lazily, only when a touched CID uses one), `parse_truetype_glyph_program`
+  (GID-level presence from maxp/head/loca/glyf — subset cmaps are
+  stripped, so Unicode lookups prove nothing), `parse_w_records` (/W both
+  record forms, one-level indirect elements, DW default 1000 first-class),
+  and `IdentityHCidCapability` (deterministic `encode_first_wins` for the
+  source-reproduction proof vs strict ambiguity-refusing `encode_strict`
+  for replacements; `glyph_gate` with three DISTINCT codes for GID-0 /
+  GID-beyond-count / outline-missing).
+- **`fonts.py`** — Type0 fonts build a CID capability instead of loading a
+  face (`face is None`, `advance_source == "cid"`); registry lookups
+  re-verify a raw-bytes `evidence_digest` per hit so an external mutation
+  bypassing `bump_generation` cannot serve a stale codec.
+- **`inspect.py`** — `bind_source_text(..., registry=)` adds the Type0
+  leg: simple byte-matching first and unchanged; CID shows decode through
+  ToUnicode evidence, match by text, and a unique candidate must survive
+  the byte-exact source-reproduction proof. Failures are target-scoped: a
+  broken unrelated Type0 font never blocks a target another show
+  satisfies. `page_fingerprint` folds the full Type0 evidence closure
+  (font dict canonical-per-key, ToUnicode stream, the descendant dict
+  folded canonically on EVERY arrival form — direct inline, indirect ref,
+  and the hybrid indirect-array-holding-an-inline-dict (post-review pin,
+  wf_1757a5fb-8e9) — indirect /W//FontDescriptor targets, CIDToGIDMap
+  stream, FontFile2 bytes — decoded digests and parsed canonical forms so
+  a `tobytes()` scratch that reorders inline dict keys or recompresses
+  streams stays fingerprint-identical, while any real evidence change
+  goes stale).
+- **`plan.py`** — the classifier branches per capability: the CID path
+  admits HEX operands only (a literal-string Type0 `Tj` is spec-legal but
+  refused — the locked scope is single hex `Tj`, never silently widened),
+  re-proves source reproduction, strict-encodes the replacement, runs the
+  GID/glyph gates over source AND replacement CIDs, measures advances
+  from /W//DW (exact tolerance), and serializes operands as hex
+  (`operand_kind`) — Tier 0 splices `<...> Tj`, Tier 1 splices
+  `[<...> kern] TJ` via `build_kern_compensated_transplant(string_kind=)`.
+  Simple-font classification is byte-identical to before.
+- **Rollout defaults unchanged**: `legacy/off`, `max_tier=0` — nothing
+  reaches a user until the Task 12 rollout gates pass.
+
+Pinned by `test_scripts/test_text_commit_cid_hex_tj.py` (52 tests: the
+full gate chain, `/Rotate 270` both tiers, the inline-descendant corpus
+shape, six staleness pins (incl. the hybrid indirect-array descendant),
+the hex-only operand scope, preview↔commit identity, byte-exact undo,
+atomic rollback, and code-only privacy).
+
 ## 11. Character-Level Text Selection (Browse Mode)
 
 **Module:** `model/pdf_model.py:get_chars_in_run()`, `get_text_selection_lines()`

@@ -258,6 +258,17 @@ def encode_literal_string(value: bytes) -> bytes:
     return bytes(out)
 
 
+def encode_hex_string(value: bytes) -> bytes:
+    """Encode bytes as a hex string token that round-trips exactly.
+
+    Task 12 P0-D: Identity-H CID operands keep the hex form on the way
+    back out — a literal string could carry the same bytes, but the
+    source shape was hex and staying in-kind keeps the splice reviewable
+    byte-for-byte against the original operand.
+    """
+    return b"<" + value.hex().upper().encode("ascii") + b">"
+
+
 def decode_hex_string(raw: bytes) -> bytes:
     """Decode a lexed hex-string token (including its angle brackets)."""
     if len(raw) < 2 or raw[0] != 0x3C or raw[-1] != 0x3E:

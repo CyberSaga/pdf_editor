@@ -159,6 +159,26 @@ Unicode → unique reversible code → valid CID (Encoding CMap)
 - **P1**: subset augmentation / font re-embedding (unlocks missing-glyph
   replacements — the doc's flagship example class). Existing T12-P1-01..05
   fixtures list still applies where relevant.
+- **P1 (registered 2026-08-13, immediately after P0-D)**: array-destination
+  `bfrange` ToUnicode support — tiny font count (2/262 corpus fonts) but
+  large document-weighted impact (one is doc_1's ONLY Type0 font, 18/18 of
+  its Type0 page-references). v1 fail-closes them with
+  `type0_tounicode_unparseable`; a follow-up slice can lift exactly that
+  gate without touching the rest of the chain.
+- **P1 (registered 2026-08-13, post-implementation funnel discovery)**:
+  **marked-content tolerance + rotated-Tm support** — the two gates that
+  actually wall off the reference document's text now that the CID codec
+  exists. Measured (`scripts/measure_type0_funnel.py`, aggregate-only):
+  every one of the 10,701 budget-eligible single-hex-`Tj` shows sits
+  inside a BDC/EMC wrapper (AutoCAD layers → `mc_depth != 0` fails 100%),
+  95% additionally use a rotated text matrix compensating `/Rotate 270`
+  in content space (`trm_uniform_scaled` fails 10,211), and 19% carry
+  `hscale != 100` (1,993). The existing Cleanup note "mc_depth plausibly
+  clears via transplant inheritance" is hereby promoted alongside a NEW
+  rotated-Tm item (uniform-rotation Tm forms are advance-preserving in
+  their own axis and plausibly safe for the transplant strategy — needs
+  its own gate-relaxation proof). Neither belongs to P0-D's locked scope
+  (non-default text state was an explicit exclusion).
 - **P2**: whole-`TJ` simple-font; 100–200-cycle lifecycle attribution with
   per-subsystem counters (Qt/MuPDF/engine caches) to close the ~1.2 MB/iter
   residual question.
@@ -276,7 +296,17 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
        confirmed (stale `_last_edit_result` surviving `move_text_across_
        pages`/`add_textbox` validation guards placed after, not before,
        the reset) and fixed red-first, see §8.)
-6. [ ] P0-D: gate-chain slice behind `max_tier`/flag; `/Rotate 270` acceptance.
+6. [x] P0-D: gate-chain slice behind `max_tier`/flag; `/Rotate 270` acceptance.
+       (2026-08-13: steps 1–4 — census + scope lock (§8), fixture builder,
+       red matrix, adversarial round 1 (7/7 fixed): 35 red / 2 sanity / 1
+       pin. Steps 5–7 after user go-ahead + 5 more red pins (`52d9338`):
+       `cid_fonts.py` codec + capability, Type0 binding leg + fingerprint
+       closure, hex-operand tier integration — all 43 green first run;
+       adversarial round 2 (8/9 confirmed, all fixed red-first, +7 pins →
+       matrix 50 tests); full suite 2326/0; acceptance funnel run and
+       recorded honestly in §8 (0 corpus-bindable today — losses owned by
+       budget/mc_depth/rotated-Tm follow-ups, not the codec). Rollout
+       defaults unchanged: legacy, max_tier=0.)
 7. [ ] Cleanup: `decision_chain`; reflow-hook capture + removal.
 8. [ ] Docs: ARCHITECTURE (guard + streaming lexer + outcome fields), PITFALLS
        (token materialization, gid-0 subset trap, slots-vs-3.9), TODOS sync,
@@ -541,6 +571,259 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
   as verifying it — `edit_text()`'s own reset genuinely was correct,
   which is exactly what made the same placement look safe to reuse
   elsewhere without re-deriving "true entry" from scratch.
+- 2026-08-13 (P0-D step 1 — Type0 encoding census; first-slice scope LOCKED):
+  read-only census via the new `scripts/audit_type0_census.py` (aggregate
+  bucket counts only; documents positional; no font names/filenames/text —
+  §10). Private corpus = 2 documents, 73 pages, 274 fonts, **262 Type0**:
+  - `/Encoding`: **262/262 Identity-H** — zero Identity-V, zero other
+    predefined named CMaps, zero embedded/custom CMap streams.
+  - Descendant: **262/262 CIDFontType2** — zero CIDFontType0/CFF.
+  - `/ToUnicode`: 262/262 present; **260/262 structurally parseable**
+    single-destination bfchar/bfrange; 2/262 use the array-destination
+    bfrange form (PDF 32000-1 §9.10.3) — 1 font in doc_0 (3 page-refs of
+    263) and doc_1's ONLY Type0 font (18 page-refs). (Corrected
+    2026-08-13: the census first bucketed all 262 as parseable via a
+    substring grep; the adversarial round exposed the check, and the
+    structural re-run found these 2. Under v1 scope they fail closed with
+    `type0_tounicode_unparseable`; array-destination support is a cheap
+    later add if doc_1-class coverage matters.)
+  - `/CIDToGIDMap`: 256 absent (spec-implicit Identity), 6 explicit
+    `/Identity` name, **zero stream form**.
+  - `/W`: 262/262 readable; `/DW`: 256 absent (spec default 1000),
+    6 readable.
+  - Font program: 262/262 embedded.
+  **Scope decision**: the proposed v1 scope (Identity-H; horizontal only;
+  2-byte identity codes; CIDFontType2; ToUnicode required + reversible;
+  CIDToGIDMap `/Identity` or fully readable stream; embedded program
+  required; single hex `Tj`; direct page content stream) — adopted
+  unchanged. Coverage claim is TWO-LAYERED (corrected 2026-08-13, user
+  review — do not blend when publishing the funnel):
+  | layer | hit |
+  |---|---|
+  | outer structural family (Identity-H + CIDFontType2 + embedded + Identity CIDToGID + readable /W) | 262/262 — 100% |
+  | v1 ToUnicode grammar actually acceptable (excludes array-destination bfrange) | 260/262 — **99.24%** |
+  | page-reference weighted, after that gate | 260/281 — **92.53%** |
+  The outer font-family scope covers 100%; "P0-D v1 can actually process
+  100% of Type0 fonts" is NOT true and must never be published that way.
+  The 2 array-destination fonts return `type0_tounicode_unparseable` per
+  the locked contract; one of them is doc_1's only Type0 font, so the
+  document-weighted impact is large while the font count is tiny —
+  registered as a small follow-up slice immediately after P0-D (see §4
+  P1), not smuggled into this PR. Exclusions stand: Identity-V, custom embedded CMaps,
+  CIDFontType0/CFF, Form-XObject text, `TJ` arrays, ambiguous/one-to-many
+  ToUnicode mappings, subset augmentation/re-embedding, style/geometry
+  overrides, multiline.
+  **Corpus-shape findings the implementation must honor**:
+  1. **256/262 fonts carry the descendant CIDFont as an INLINE dictionary**
+     (`/DescendantFonts [<<...>>]`, AutoCAD producer) — no indirect ref.
+     `verify.collect_cid_encoding_evidence` today rejects exactly this
+     form ("unreadable /DescendantFonts entry"), so without inline-descendant
+     support the slice would reach 6/262 fonts (2.3%). The census script's
+     first run had the same blind spot and misbucketed all 256 as
+     `missing_or_unreadable` — fixed before recording these numbers.
+  2. `/DW` absent (→ spec default 1000) and `/CIDToGIDMap` absent
+     (→ spec-implicit Identity) are the DOMINANT forms, not edge cases;
+     both defaults must be first-class, not fallbacks.
+  3. The CIDToGIDMap stream form does not occur in the corpus at all; it
+     stays in scope per the contract but is fixture-only coverage.
+  4. AutoCAD descendants carry nonstandard `/CIDSystemInfo` registry/
+     ordering strings — the slice must gate on the Type0 `/Encoding` name
+     (Identity-H), never on CIDSystemInfo contents.
+  Classifier sanity check: the same script over 2,919 public corpus PDFs
+  (13,211 pages, 229 Type0 fonts) discriminates every bucket the private
+  corpus lacks (69 embedded custom CMaps, 5 predefined named, 3 Identity-V,
+  103 CIDFontType0, 22 missing ToUnicode, 5 unembedded, 1 CIDToGIDMap
+  stream) — the private corpus's 100% uniformity is a corpus property, not
+  classifier blindness.
+- 2026-08-13 (P0-D red-matrix adversarial round — workflow
+  `wf_a084d864-566`, 2 serial agents, 7 findings raised / **7 confirmed**;
+  all fixed red-first before the round's commit):
+  1. GLYPH-CODE-COLLAPSE (med): GID-0, GID-beyond-glyph-count, and
+     subset-outline-missing all pinned one code; DSF's `.notdef` draws no
+     ink, so an ink-probe-only implementation could delete the explicit
+     GID checks undetected. Split into `type0_gid_zero` /
+     `type0_gid_beyond_glyph_count` / `type0_glyph_missing`.
+  2. TOUNICODE-UNPARSEABLE-GAP (med): no code/fixture for
+     present-but-unparseable ToUnicode; `verify._parse_tounicode` silently
+     fabricates mappings from spec-legal array-destination bfranges (live
+     Task 10 code — see PITFALLS), and the census's substring grep could
+     not see the form. Added `type0_tounicode_unparseable` + red fixture;
+     census upgraded to structural validation — which then CORRECTED the
+     scope evidence itself (2/262 fonts use the array form; §8 numbers
+     above updated). Implementation obligation: `_parse_tounicode` must
+     refuse array-destination blocks instead of mis-parsing them.
+  3. TYPE0-STALENESS-UNPINNED (med): `page_fingerprint`'s font dependency
+     enumeration is simple-font-only (blind to descendant `/W`, `/DW`,
+     CIDToGIDMap, ToUnicode). Added two red prepare→mutate→commit pins
+     asserting `STALE_PLAN`; implementation must extend the enumeration
+     through `/DescendantFonts` per inspect.py's own audit rule.
+  4. WEAK-ZERO-MUTATION-ORACLE (med): fail-closed tests compared only one
+     content stream + extraction; gates read font objects outside both.
+     `_assert_fail_closed` now snapshots the whole object table
+     (`document_object_snapshot`; `doc.tobytes()` was probed and is NOT
+     deterministic, so per-xref serialization is the oracle).
+  5. UNICODE-GATE-UNDERPINNED (low): added `type0_unicode_unmapped` (no
+     CID exists for a replacement char) and `type0_tounicode_multichar`
+     (ligature one-CID→many-chars exclusion) reds; fixed the builder
+     docstring that overclaimed multi-char usage.
+  6. DW-DEFAULT-UNPINNED (low): the corpus-dominant "W gap + NO /DW key →
+     spec default 1000" shape had zero tests; added the positive red
+     (`test_width_of_unlisted_cid_uses_spec_default_dw_when_absent`).
+  7. CENSUS-W-INDIRECT-ELEMENT (low): census `/W` walk misbucketed
+     spec-legal indirect array elements as malformed and conflated
+     unreadable-descendant with malformed-width; fixed (one-level
+     indirect-element resolution + `font_unreadable` buckets). Private
+     re-run: `/W` 262/262 readable unchanged.
+  Final red-matrix state after hardening: **38 tests — 35 red / 2
+  fixture-sanity / 1 replay-budget pin**, every red still failing on the
+  pre-P0-D `undecodable_target` refusal.
+- 2026-08-13 (P0-D steps 5–7 — implementation GREEN): after the user's
+  go-ahead and 5 more red pins (explicit `/Identity` name positive,
+  scalar-bfrange ToUnicode positive, `STALE_PLAN` after CIDToGIDMap-
+  stream / FontFile2 / inline-indirect-`/W` mutations — commit `52d9338`,
+  red state 40/2/1), the implementation landed and **all 43 P0-D tests
+  went green on the first full run**; full suite 2319 passed / 21 skipped
+  / 5 xfailed / 0 failed; ruff + mypy + all 4 import-linter contracts
+  clean. Architecture: new leaf module `model/text_commit/cid_fonts.py`
+  (bounded token-aware object parser + canonical serializer, strict
+  ToUnicode parser with lazy multichar refusal, GID-level TrueType glyph
+  evidence, /W//DW reader, `IdentityHCidCapability` with deterministic
+  `encode_first_wins` vs strict `encode_strict`); `fonts.py` builds CID
+  capabilities (no face load; per-lookup evidence-digest revalidation);
+  `bind_source_text` gained the registry-driven Type0 leg (simple leg
+  byte-identical, target-scoped remembered failures, source-reproduction
+  proof after unique selection); `page_fingerprint` folds the full Type0
+  evidence closure in canonical/decoded form (live↔scratch stable, the
+  five staleness pins prove mutation sensitivity); `plan.py` branches per
+  capability with hex operand serialization (`operand_kind`,
+  `encode_hex_string`, `build_kern_compensated_transplant(string_kind=)`);
+  `verify.py`'s legacy `_parse_tounicode` no longer fabricates mappings
+  from array-destination bfranges and `collect_cid_encoding_evidence`
+  reads inline descendants. THREE obsolete pins updated (documented):
+  helv TextWriter embeds as Type0 with a **CIDFontType0** descendant, so
+  `test_identity_h_rejected_for_simple_encoding` /
+  `test_embedded_type0_extracts_and_loads` /
+  `test_embedded_font_still_uses_its_extracted_face` now pin the new
+  contract (Type0 loads no face; per-gate `type0_*` codes). Rollout
+  defaults unchanged (`legacy`, `max_tier=0`).
+- 2026-08-13 (P0-D acceptance funnel — `scripts/measure_type0_funnel.py`,
+  read-only, aggregate-only, dual-funnel): **the honest number is 0
+  source-bindable shows on the reference corpus TODAY**, and the losses
+  attribute entirely to gates OUTSIDE P0-D's locked scope:
+  - doc_0 (28,043 shows): 27,820 on Type0 fonts; 27,250 single-hex-`Tj`
+    (97.2% — matches the §2 campaign ceiling exactly); 16,549 on pages
+    over the P0-A 4 MiB replay budget (guard intact by design); ALL
+    10,701 budget-eligible shows fail the default-text-state gate —
+    `mc_depth` 10,701/10,701 (AutoCAD BDC/EMC layer wrappers), rotated
+    Tm 10,211 (content-space compensation of `/Rotate 270`), `hscale`
+    1,993, unreliable origin 15.
+  - doc_1 (2,237 shows): all 543 Type0 shows are `TJ` arrays
+    (whole-`TJ` = P2) on top of the array-destination ToUnicode font.
+  - Consequence recorded verbatim: the §2 "default-text-state 82.7%"
+    campaign figure used a NARROWER state definition than the implemented
+    Task 10/11 gates (it did not deduct marked-content or rotated-Tm);
+    the real-document unlock now depends on the three registered
+    follow-ups (budget relaxation §9, mc_depth tolerance, rotated-Tm) —
+    NOT on the CID codec, which is no longer the binding constraint.
+    Synthetic acceptance (incl. `/Rotate 270` pages, both tiers) is fully
+    green; the corpus e2e sample attempted 0 pages because nothing is
+    source-bindable yet — reported as-is, never blended (§8 two-layer
+    rule).
+- 2026-08-13 (P0-D implementation adversarial round — workflow
+  `wf_a93b4e6c-e0f`, 2 serial agents, 9 findings raised / **8 confirmed,
+  1 refuted**; all 8 fixed red-first, 7 new pins, matrix now 50 tests):
+  1. F1 (high): a remembered Type0 capability failure was returned for
+     ANY no-candidate outcome — rebranding plain latin-1 misses (and
+     preempting the Form-XObject probe and the P0-A verbatim refusal)
+     with `type0_*` codes. Fixed: the remembered failure surfaces ONLY
+     for undecodable (non-latin-1) targets; latin misses keep
+     `no_source_match`/XObject/P0-A semantics.
+  2. F2 (high): a `/W` ELEMENT that is itself an indirect ref was
+     resolved by the width reader but invisible to BOTH staleness
+     surfaces (page fingerprint + cache digest) — a stale plan could
+     reach live commit and rely on the verification backstop. Fixed
+     fail-closed: element-level indirection now refuses with
+     `type0_width_unprovable` (evidence and closure stay aligned; the
+     corpus has zero such fonts).
+  3. F3 (med): the cache-revalidation digest missed indirect `/DW`
+     targets and FontFile2 under an inline FontDescriptor. Fixed: both
+     folded for both descriptor forms.
+  4. F4 (med): corrupt loca (out-of-bounds or non-monotonic) read as
+     glyph presence — fail-open in a fail-closed module. Fixed:
+     `glyph_data_length` refuses ranges outside glyf or backwards.
+  5. F5 (med): the CID leg only ran when the simple leg found nothing —
+     a target present as BOTH simple bytes and CID text was unbindable
+     at the CID occurrence's origin, and cross-leg duplicates never
+     tripped `AMBIGUOUS_MATCH`. Fixed: both legs always run and merge
+     before the origin/uniqueness gates.
+  6. F6 (med): the funnel's e2e failure-attribution path read a
+     nonexistent `CommitOutcome.reason` (AttributeError on first failed
+     commit) and ignored `replay.malformed`. Fixed.
+  7. F8/F9 (low): `/W` bounds accepted PDF booleans (`isinstance(True,
+     int)`); the strict ToUnicode parser was comment-blind (fabricated
+     records from commented-out CMap text) and refused spec-legal
+     whitespace inside hex strings. All fixed.
+  - F7 REFUTED (cost-not-correctness): per-lookup evidence-digest
+    revalidation re-hashed the 3.5 MB font program once per Type0 show
+    per bind (~3.3 ms each). No pinned budget broken; filed as follow-up
+    — and the F5 fix's per-bind capability memoization (one lookup per
+    distinct resource) already removes the per-show multiplier. Remaining
+    known cost: page_fingerprint decodes FontFile2 per call on CID pages
+    (~tens of ms) — measure in the preview-latency pass before rollout.
+  Post-fix state: matrix 50/50 green, full suite 2326 passed / 21
+  skipped / 5 xfailed / 0 failed, ruff + mypy + import-linter clean;
+  funnel re-run byte-identical on the recorded numbers.
+- 2026-08-13 (pre-PR plan-conformance review — workflow `wf_1757a5fb-8e9`,
+  2 serial agents: `plan-code-reviewer` + independent skeptical verifier,
+  both reproducing end-to-end on `.venv`; verdict **ship-with-fixes**, 2
+  confirmed findings, both fixed red-first; matrix now **52**):
+  1. BLOCKING (fail-open): the HYBRID `/DescendantFonts` form — an
+     INDIRECT array object whose element is the descendant dict INLINE —
+     is accepted by `resolve_descendant`/capability build, but
+     `_update_type0_dependencies` folded the descendant canonically only
+     on the PdfRef-element path, so direct values inside the inline dict
+     (inline `/W`, `/DW`, `/CIDToGIDMap` name, `/Subtype`) never entered
+     `page_fingerprint`: both agents reproduced prepare → mutate → commit
+     returning COMMITTED where the five sibling staleness pins require
+     STALE_PLAN (`compute_cid_evidence_digest` DID see the mutation —
+     evidence/closure misalignment, the exact F2 contract). Fixed: the
+     canonical descendant fold now keys on the RESOLVED dict, not the
+     arrival path (the direct-inline form folds twice — harmless, both
+     sides of a staleness comparison fold identically). Zero corpus
+     incidence (256 direct-inline + 6 indirect-ref, both already
+     covered); fixed under the F2 precedent — an ACCEPTED shape's
+     closure must cover it, corpus-zero or not.
+  2. MINOR (scope conformance): a literal-string Identity-H `Tj` operand
+     bound and COMMITTED through the CID path — silent widening of the
+     locked single-HEX-`Tj` scope (correctness held: whole-token splice +
+     byte-exact reproduction + verify all fired). Fixed the conservative
+     way: the `plan.py` CID branch refuses non-hex operands with
+     `not_single_literal_tj` (code-only detail); the funnel stage is now
+     `single_hex_tj` (hex-only) so the diagnostic mirrors production.
+  - Registered follow-ups from the same review (no code this round, all
+    fail-closed today): `ToUnicodeMap` linear-scan decode/encode indexes
+    (perf; joins the F7 preview-latency item); `page_capabilities` keyed
+    by resource name can shadow a same-named XObject font (PRE-EXISTING
+    at `c8b883a` `fonts.py:520`, V0c + rollback backstop); cached Type0
+    REJECTIONS are never digest-revalidated (asymmetric with the
+    accepted-capability invariant, refuses-only); literal-string escape
+    sequences not decoded by `canonical_pdf_text` (false-stale direction
+    only); odd-length show operand labeled
+    `type0_source_bytes_not_reproduced` (attribution wording; 2-byte CID
+    operands are always even in practice); composite-glyph COMPONENT GIDs
+    not walked by `glyph_gate` (unverified — subsetters close over
+    components; needs a hand-built composite fixture); `ttcf` table
+    offsets are file-absolute vs the slice taken (unverified — TTC-in-PDF
+    essentially nonexistent, bounds checks fail closed).
+  - Post-fix state: matrix 52/52 green, full suite **2328** passed / 21
+    skipped / 5 xfailed / 0 failed (the +2 are the new pins), ruff +
+    mypy + import-linter 4/4 clean. Corpus funnel re-run with the
+    hex-only operand stage (`single_hex_tj`): every count byte-identical
+    to the recorded numbers above (doc_0 27,250 operand-stage / 16,549
+    over budget / 10,701 state-gated / 0 bindable; doc_1 543 `TJ`-array
+    shows all refused at the operand stage) — the corpus contains ZERO
+    literal-string Type0 `Tj` operands, so the hex-only scope gate costs
+    nothing on real documents.
 
 ## 9. Open questions
 
@@ -548,10 +831,13 @@ All fixtures synthetic — nothing derived from the private corpus (§10).
   (see Decisions: summed budget, 4 MiB initial default, `None` disables).
   Still open: post-P0-B the constant should relax into a latency budget —
   revisit after step 3 measurements.
-- P0-D encoding scope for the first slice: which CMaps are in scope?
-  Identity-H was previously marked NO-GO under `font_unsupported_encoding`
-  (TODOS Q3-ceiling item) — the slice must either scope it in with the full
-  gate chain or explicitly keep it out and say so in the funnel report.
+- ~~P0-D encoding scope for the first slice: which CMaps are in scope?~~
+  **RESOLVED 2026-08-13** by the Type0 encoding census (see §8): v1 scope
+  is Identity-H / CIDFontType2 / ToUnicode-required / Identity-or-readable-
+  stream CIDToGIDMap / embedded-only / single hex `Tj` / direct page
+  stream — 100% of corpus Type0 fonts. Identity-H's previous NO-GO under
+  `font_unsupported_encoding` is exactly what P0-D lifts, behind the full
+  gate chain.
 - ~~P0-C phase 2 UX: per-edit modal vs session-level policy setting.~~
   **RESOLVED 2026-08-12**: per-edit modal this round; session-level "always
   allow" explicitly deferred to a later round (see §8).
