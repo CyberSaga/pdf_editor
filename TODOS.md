@@ -613,6 +613,22 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   stages); PITFALLS +1 (dead-hook entry, index 264); plan `git mv`-ed
   to `plans/archive/`. Corpus-unlock follow-ups live in
   `plans/task13-cad-binding-unlock.md`.
+- 2026-08-14 (Task 13 step 1 — wrapper-taxonomy census, read-only,
+  aggregate-only): replay now captures marked-content wrapper EVIDENCE
+  (`McWrapper` table + `ShowOp.mc_stack`, `mc_depth` semantics frozen,
+  BDC/BMC oddities never set malformed); taxonomy classifier lives in
+  `scripts/wrapper_taxonomy.py` (census-before-code — no admission logic
+  in model); funnel gained the `mc_census` aggregate block with a
+  data-policy pin test (no document strings in the report). 31-test
+  red-first matrix; Codex review round fixed 2 findings red-first
+  (exact-shape BDC/BMC operand parsing fail-closed; bare
+  `true`/`false`/`null` retained as operands). Corpus result: of the
+  10,701 mc-gated shows, **64.2% sit under pure default-visible `/OC`
+  layers (admissible)**, 35.8% in the v1 `malformed_pairing` bucket; no
+  nesting (depth 1 everywhere), zero semantic wrappers; only 376
+  admissible shows also have uniform `Tm` + default state — Priority 2
+  (rotated `Tm`) stays the bulk unlock. Recorded in the Task 13 plan §7;
+  base funnel stages re-verified byte-identical to the sealed record.
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

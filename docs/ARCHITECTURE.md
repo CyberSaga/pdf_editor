@@ -715,7 +715,14 @@ new engine yet** (integration is plan Task 7+).
   into `malformed_stream`/`no_source_match`. `read_page_streams` and the
   commit verifier are deliberately unguarded (verification must still hash
   oversized streams). Over-budget pages fall to the legacy engine, which
-  never lexes.
+  never lexes. Task 13 P1 census adds marked-content wrapper EVIDENCE
+  (pure capture, no admission logic): `PageReplay.mc_wrappers` (per-wrapper
+  `McWrapper`: operator, tag, props kind/name/top-level dict KEYS — never
+  values — open gs-depth, closed, crossed-q) + `mc_emc_underflows`, and
+  `ShowOp.mc_stack` (open wrapper ids, outermost-first). `mc_depth`'s clamp
+  semantics are unchanged. Taxonomy classification lives OUTSIDE model in
+  `scripts/wrapper_taxonomy.py` (census-before-code) until the Priority-1
+  admission slice promotes the accepted classes behind its own red matrix.
 - `inspect.py` — `bind_source_text` (text match corroborated by rawdict
   geometry; ambiguity/XObject/rotation/malformed refuse with `RejectReason`),
   `page_fingerprint` (streams + fonts + annots + widgets digest).
