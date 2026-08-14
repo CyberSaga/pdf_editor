@@ -1008,3 +1008,38 @@ def test_stale_last_edit_result_does_not_survive_add_textbox_validation_guard(
         assert controller.consume_last_edit_result() is not EditTextResult.SUCCESS
     finally:
         _teardown(model, view, qapp)
+
+
+def test_dead_reflow_hook_never_surfaces_after_successful_edit(
+    qapp, tmp_path, monkeypatch, caplog
+):
+    """RED (Task 12 Step 7 cleanup — dead reflow hook, evidence captured
+    2026-08-14 by this test's Red run): the Controller's ``_reflow_fn``
+    imports a ``reflow`` package that exists nowhere in the repo or its
+    declared dependencies, so EVERY successful reflow-allowed edit both
+    logged ``edit_text reflow_fn 失敗（不影響主編輯）: No module named
+    'reflow'`` AND pushed a spurious ``⚠ Reflow 例外`` status-bar override
+    at the user via ``set_status_bar_override_message``.  With the dead
+    hook removed, a successful legacy edit must complete with no
+    reflow-related warning on any channel — log or GUI."""
+    pdf_path = _write_pdf(tmp_path / "reflow_hook_pin.pdf", _tier0_stream())
+    model, view, controller = _launch(pdf_path, TextCommitSettings(), monkeypatch)
+    try:
+        spy = _spy_view(view, monkeypatch)
+        with caplog.at_level(logging.WARNING):
+            _edit_via_signal(model, view, TARGET, REPLACEMENT)
+        assert controller._last_edit_result is EditTextResult.SUCCESS
+
+        reflow_log_lines = [
+            record.getMessage()
+            for record in caplog.records
+            if "reflow" in record.getMessage().lower()
+        ]
+        assert reflow_log_lines == []
+
+        reflow_payloads = [
+            message for message in spy.all_payloads() if "reflow" in message.lower()
+        ]
+        assert reflow_payloads == []
+    finally:
+        _teardown(model, view, qapp)
