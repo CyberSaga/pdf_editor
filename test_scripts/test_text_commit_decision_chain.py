@@ -195,6 +195,23 @@ def test_legacy_outcome_keeps_decision_chain_empty():
     assert outcome.fallback_chain == ("legacy",)  # unchanged baseline
 
 
+def test_tier1_escalation_reason_set_is_single_member_and_matches_chain():
+    """PIN (passes at introduction — review round wf_907a1243-99f, minor):
+    ``engine.commit`` derives the escalated decision_chain from the committed
+    tier ALONE, which is honest only while ``plan._TIER1_ESCALATION_REASONS``
+    stays single-member (the same fact ``engine._tier1_chain`` rests on).
+    Adding a second escalation reason MUST break this pin so both derivation
+    sites are revisited together instead of silently recording the wrong
+    tier0 rejection reason."""
+    from model.text_commit import plan as plan_module
+
+    assert plan_module._TIER1_ESCALATION_REASONS == frozenset(
+        {"advance_mismatch"}
+    )
+    # And the chain literal the engine emits spells exactly that reason.
+    assert TIER1_ESCALATED_CHAIN[0] == "tier0:rejected:advance_mismatch"
+
+
 def test_degrade_gate_reads_fallback_chain_not_decision_chain():
     """P0-C isolation: a populated decision_chain must never flip
     ``is_real_fallback_commit`` — the two chains answer different questions."""

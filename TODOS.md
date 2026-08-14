@@ -605,8 +605,11 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   Track A/B reflow hook was removed after the red pin CAPTURED its
   per-edit warning + spurious status-bar override from the production
   wiring (evidence grade upgraded from agent-reported). Step 8: final
-  anonymized seven-stage funnel recorded in the archived plan §8
-  (marked-content and uniform-Tm survival are now explicit funnel
+  anonymized staged funnel recorded in the archived plan §8 (the seven
+  user-specified survival stages — structural family, ToUnicode-
+  acceptable, replay-budget, marked-content, rotated-Tm, source-
+  bindable, replacement-encodable — plus the base show counts;
+  marked-content and uniform-Tm survival are now explicit funnel
   stages); PITFALLS +1 (dead-hook entry, index 264); plan `git mv`-ed
   to `plans/archive/`. Corpus-unlock follow-ups live in
   `plans/task13-cad-binding-unlock.md`.
