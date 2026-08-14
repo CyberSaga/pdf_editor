@@ -5,9 +5,14 @@ Walks every text-showing operator of the given documents through the
 P0-D evidence chain and reports the DUAL funnel the plan requires:
 
 - **source-bindable**: direct single hex ``Tj`` on a Type0 font →
-  within the production replay budget → default text state → capability
-  (scope) accepted → source decodes → reverse encoding reproduces the
-  source bytes → source CIDs pass the GID/glyph/width gates;
+  within the production replay budget → outside any BDC/EMC
+  marked-content wrapper → uniform-scaled (unrotated, unsheared) text
+  matrix → residual default text state → capability (scope) accepted →
+  source decodes → reverse encoding reproduces the source bytes →
+  source CIDs pass the GID/glyph/width gates.  Marked-content and Tm
+  survival are their own stages (Task 12 sealing record) because they
+  are the corpus's dominant losses; the residual state conditions
+  attribute first-fail ``state:*`` loss slugs;
 - **replacement-encodable (self-proxy)**: the source's own text put back
   through the strict replacement gates (encode, glyph, width) — the
   corpus text's own encodability, before any user intent exists.
@@ -58,6 +63,8 @@ _STAGES = (
     "on_type0_font",
     "single_hex_tj",
     "within_replay_budget",
+    "outside_marked_content",
+    "uniform_trm",
     "default_text_state",
     "scope_accepted",
     "source_decoded",
@@ -68,16 +75,21 @@ _STAGES = (
 )
 
 
-def _default_state(show: object) -> bool:
-    return (
-        getattr(show, "render_mode", 1) == 0
-        and getattr(show, "rise", 1.0) == 0.0
-        and getattr(show, "hscale", 0.0) == 100.0
-        and getattr(show, "mc_depth", 1) == 0
-        and getattr(show, "in_bt", False)
-        and getattr(show, "trm_uniform_scaled", False)
-        and getattr(show, "origin_reliable", False)
-    )
+def _residual_state_loss(show: object) -> str | None:
+    """First failing residual default-state condition, as a stable
+    ``state:*`` loss slug — or None when clear.  Marked-content and Tm
+    uniformity are NOT here: they are their own funnel stages."""
+    if getattr(show, "render_mode", 1) != 0:
+        return "state:render_mode"
+    if getattr(show, "rise", 1.0) != 0.0:
+        return "state:rise"
+    if getattr(show, "hscale", 0.0) != 100.0:
+        return "state:hscale"
+    if not getattr(show, "in_bt", False):
+        return "state:not_in_bt"
+    if not getattr(show, "origin_reliable", False):
+        return "state:origin_unreliable"
+    return None
 
 
 def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
@@ -125,8 +137,17 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
                 loss_reasons["content_stream_too_large_for_safe_replay"] += 1
                 continue
             shows_counter["within_replay_budget"] += 1
-            if not _default_state(show):
-                loss_reasons["unsupported_text_state"] += 1
+            if getattr(show, "mc_depth", 1) != 0:
+                loss_reasons["state:marked_content_wrapper"] += 1
+                continue
+            shows_counter["outside_marked_content"] += 1
+            if not getattr(show, "trm_uniform_scaled", False):
+                loss_reasons["state:trm_not_uniform_scaled"] += 1
+                continue
+            shows_counter["uniform_trm"] += 1
+            residual_loss = _residual_state_loss(show)
+            if residual_loss is not None:
+                loss_reasons[residual_loss] += 1
                 continue
             shows_counter["default_text_state"] += 1
             if capability.cid is None:

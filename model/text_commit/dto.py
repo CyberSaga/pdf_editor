@@ -149,6 +149,13 @@ class CommitOutcome:
     verified_properties: tuple[str, ...]
     degraded_reason: str | None
     allows_external_reflow: bool
+    # Tier decision trail for SUCCESSFUL tiered commits, reason codes only
+    # (never document data): ("tier0:committed",) for a direct Tier 0
+    # commit, ("tier0:rejected:advance_mismatch", "tier1:committed") for an
+    # escalated one. Empty on legacy and failure outcomes — failure
+    # attribution stays in fallback_chain, which remains reserved for true
+    # fidelity degrades (Task 12 Step 7 cleanup).
+    decision_chain: tuple[str, ...] = ()
 
 
 _ENGINE_VALUES = ("legacy", "shadow", "tiered")

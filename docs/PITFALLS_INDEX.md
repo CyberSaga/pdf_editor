@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 263 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 264 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -268,3 +268,4 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2373 | PyMuPDF TextWriter embeds EVERYTHING as Type0 — Helvetica lands with a CIDFontType0 descendant | test fixtures (`test_scripts/test_text_commit_fonts.py`, `test_text_commit_font_widths.py`), `model/text_commit/fonts.py` (Task 12 P0-D) |
 | 2381 | A "default text state" percentage is only as good as its condition list | Task 12 coverage evidence (`scripts/measure_type0_funnel.py` vs the 2026-08-12 campaign numbers) |
 | 2389 | Canonical-fold gaps hide in HYBRID object forms, not the named ones | model/text_commit (Type0 fingerprint staleness closure) |
+| 2396 | A dead optional hook that catches its own ImportError becomes a per-edit user-visible defect | `controller/pdf_controller.py` (`edit_text` displacement-reflow callback, removed Task 12 Step 7) |

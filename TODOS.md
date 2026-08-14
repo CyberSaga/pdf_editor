@@ -475,7 +475,7 @@ structural ceiling of redact+reinsert, not a collapse of the May five-layer edit
 - [ ] **Zero-tolerance correctness gates — any one blocks rollout:** mutation after a stale/rejected prepare; changed non-target stream bytes; moved following text; changed font/resource binding without a declared outcome; raster difference outside the declared affected region; preview candidate ≠ committed candidate; a "preserved" result where verification was not evaluable; failed undo/redo/encryption/save-reopen matrix
 - [ ] **Pivot conditions, agreed in advance:** D1 — if verified edit-level acceptance stays near zero outside the dominant PDF, keep it opt-in and stop quoting 15% as coverage. Slice 1 — if the composite cannot preserve following origins and outside-region pixels, stop Tier 1 transplant rather than weakening verification. Whole-array `TJ` — defer if binding survival is negligible. Paragraph layout — narrow scope rather than silently degrading fidelity if it needs ambiguous multi-show reconstruction or uncontrolled resource mutation
 - [ ] **Report the Q3 ceiling decomposed, not blended:** Task 11's real ceiling is materially below the 72.79% structural figure — Identity-H stays NO-GO so `font_unsupported_encoding` (14.74%) never clears; `render_mode` (5.55%) is unaddressed by Task 11 scope; `mc_depth` (6.51%) plausibly clears via transplant inheritance. Nothing currently computes the actual ceiling; the rollout decision needs it
-- [ ] Task 12 as planned — blocking fidelity/performance CI, rollout gates (default is still legacy: nothing from D1/Slice 1 reaches a user until these pass), docs, `git mv` plan archive
+- [x] Task 12 as planned — **sealed 2026-08-14** (plan archived to `plans/archive/2026-08-12-task12-engine-hardening.md`; P0-A/B via PR #28, P0-C Phase 1/2 via PRs #29/#30, P0-D via PR #31, Step 7–8 cleanup via PR #32). Rollout gates remain OPEN by design: defaults are still `legacy`/`max_tier=0`, and the three corpus blockers (marked-content tolerance, rotated-Tm, replay-budget latency) move to `plans/task13-cad-binding-unlock.md` — nothing reaches a user until those gates pass
 
 #### Task 12 named P1 defects (GPT 5.6 Pro review — register only; do not implement in Task 11)
 Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
@@ -596,6 +596,23 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   plan §8 (perf indexes, XObject name-shadowing [pre-existing],
   cached-rejection revalidation, literal-escape canonicalization,
   odd-length code attribution, composite-component walk, ttcf offsets).
+- 2026-08-14 (Task 12 sealed — Step 7–8 closure): PR #31 merged into
+  `task11/slice1-closure` as a true merge commit (`d961342`, red-first
+  history preserved). Step 7: `CommitOutcome.decision_chain` records the
+  tier decision trail on successful tiered commits (`fallback_chain`
+  stays `()` — reserved for true degrades; no by-fable port, no
+  `strategy` field until a second Tier 1 strategy exists); the dead
+  Track A/B reflow hook was removed after the red pin CAPTURED its
+  per-edit warning + spurious status-bar override from the production
+  wiring (evidence grade upgraded from agent-reported). Step 8: final
+  anonymized staged funnel recorded in the archived plan §8 (the seven
+  user-specified survival stages — structural family, ToUnicode-
+  acceptable, replay-budget, marked-content, rotated-Tm, source-
+  bindable, replacement-encodable — plus the base show counts;
+  marked-content and uniform-Tm survival are now explicit funnel
+  stages); PITFALLS +1 (dead-hook entry, index 264); plan `git mv`-ed
+  to `plans/archive/`. Corpus-unlock follow-ups live in
+  `plans/task13-cad-binding-unlock.md`.
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 
