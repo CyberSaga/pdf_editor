@@ -483,7 +483,14 @@ def test_visibility_flip_between_prepare_and_commit_is_stale() -> None:
     engine, prepared = _prepare_with_engine(fixture)
     plan = _assert_prepared(prepared)
     fixture.doc.set_layer(-1, off=[ocg_xref])
-    assert fixture.doc.get_ocgs()[ocg_xref]["on"] is False, "flip did not take"
+    # The flip must be asserted on the SERIALIZED /OCProperties: PyMuPDF's
+    # get_ocgs()/rendering reflect a load-time snapshot that set_layer does
+    # not refresh, while the saved artifact (and hence admission + the
+    # fingerprint) resolves the serialized state.
+    _, off_value = fixture.doc.xref_get_key(
+        fixture.doc.pdf_catalog(), "OCProperties/D/OFF"
+    )
+    assert f"{ocg_xref} 0 R" in off_value, ("flip did not serialize", off_value)
     outcome = engine.commit(plan)
     assert outcome.status is CommitStatus.STALE_PLAN, outcome.status
     fixture.doc.close()

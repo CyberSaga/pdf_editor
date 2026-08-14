@@ -147,6 +147,12 @@ class McWrapper:
     open_gs_depth: int
     closed: bool
     crossed_q: bool
+    # Byte spans for the splice boundary guard (Task 13 P1 obligation 4):
+    # end of the opening BDC/BMC operator token, and the stream/offset of
+    # the EMC that closed this wrapper (None while unclosed).
+    open_op_end: int = 0
+    close_stream_xref: int | None = None
+    close_op_start: int | None = None
 
 
 @dataclass
@@ -163,6 +169,9 @@ class _McRecord:
     props_dict_keys: tuple[str, ...] = ()
     closed: bool = False
     crossed_q: bool = False
+    open_op_end: int = 0
+    close_stream_xref: int | None = None
+    close_op_start: int | None = None
 
     def freeze(self) -> McWrapper:
         return McWrapper(
@@ -176,6 +185,9 @@ class _McRecord:
             open_gs_depth=self.open_gs_depth,
             closed=self.closed,
             crossed_q=self.crossed_q,
+            open_op_end=self.open_op_end,
+            close_stream_xref=self.close_stream_xref,
+            close_op_start=self.close_op_start,
         )
 
 
@@ -701,6 +713,7 @@ def replay_page_streams(
                         stream_xref=stream_xref,
                         operator="BDC" if op == b"BDC" else "BMC",
                         open_gs_depth=len(gs_stack),
+                        open_op_end=token.end,
                     )
                     _parse_mc_operands(op, operands, data, record)
                     mc_records.append(record)
@@ -710,6 +723,8 @@ def replay_page_streams(
                     if mc_open:
                         wrapper = mc_records[mc_open.pop()]
                         wrapper.closed = True
+                        wrapper.close_stream_xref = stream_xref
+                        wrapper.close_op_start = token.start
                         if len(gs_stack) != wrapper.open_gs_depth:
                             wrapper.crossed_q = True
                     else:

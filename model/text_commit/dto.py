@@ -88,6 +88,16 @@ class RejectReason:
     TYPE0_GID_BEYOND_GLYPH_COUNT = "type0_gid_beyond_glyph_count"
     TYPE0_GLYPH_MISSING = "type0_glyph_missing"
     TYPE0_WIDTH_UNPROVABLE = "type0_width_unprovable"
+    # Task 13 Priority 1 (marked-content admission): one code per
+    # independent gate, adopted VERBATIM from the red contract in
+    # test_scripts/test_text_commit_mc_admission.py (which keeps its own
+    # literal constants on purpose).  The blanket "inside a marked-content
+    # sequence" UNSUPPORTED_TEXT_STATE rejection is replaced by these:
+    # only a default-visible pure /OC layer stack is admitted.
+    MC_WRAPPER_NOT_PURE_LAYER = "mc_wrapper_not_pure_layer"
+    MC_LAYER_NOT_DEFAULT_VISIBLE = "mc_layer_not_default_visible"
+    MC_MALFORMED_PAIRING = "mc_malformed_pairing"
+    MC_SPLICE_CROSSES_WRAPPER_BOUNDARY = "mc_splice_crosses_wrapper_boundary"
 
 
 class CommitStatus(str, Enum):

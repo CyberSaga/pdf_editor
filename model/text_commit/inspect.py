@@ -27,7 +27,13 @@ from model.text_commit.cid_fonts import (
 )
 from model.text_commit.dto import RejectReason
 from model.text_commit.fonts import DocumentFontRegistry, FontCapability
-from model.text_commit.replay import PageReplay, ShowOp, replay_page_streams
+from model.text_commit.marked_content import update_marked_content_dependencies
+from model.text_commit.replay import (
+    McWrapper,
+    PageReplay,
+    ShowOp,
+    replay_page_streams,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +49,11 @@ class SourceSpanBinding:
     # Visual (pixmap) page space -- transformation_matrix * rotation_matrix,
     # NOT raw page.get_text('rawdict') convention (that stays unrotated).
     origin_page: tuple[float, float]
+    # Task 13 P1: the show's marked-content stack resolved against
+    # ``PageReplay.mc_wrappers`` (outermost-first) plus the page's EMC
+    # underflow count -- the evidence ``plan.py``'s admission gate folds.
+    mc_wrappers: tuple[McWrapper, ...] = ()
+    mc_emc_underflows: int = 0
 
 
 @dataclass(frozen=True)
@@ -251,9 +262,11 @@ def _update_font_dependencies(
 def page_fingerprint(doc: fitz.Document, page: fitz.Page) -> str:
     """Digest of everything a Tier 0 commit promises not to disturb.
 
-    Covers decoded content-stream bytes, the font resource table, and
-    annotation/widget identity+geometry.  A prepared plan whose fingerprint
-    no longer matches is stale and must not mutate anything.
+    Covers decoded content-stream bytes, the font resource table, the
+    marked-content wrapper evidence closure (/Properties mapping, OCG
+    objects and their resolved default visibility), and annotation/widget
+    identity+geometry.  A prepared plan whose fingerprint no longer
+    matches is stale and must not mutate anything.
     """
     digest = hashlib.sha256()
     for xref, data in read_page_streams(doc, page):
@@ -273,6 +286,10 @@ def page_fingerprint(doc: fitz.Document, page: fitz.Page) -> str:
         except (RuntimeError, ValueError, IndexError, fitz.mupdf.FzErrorBase):
             digest.update(b"<unreadable-font-object>")
         digest.update(b"\x05")
+    # Task 13 P1 (proof obligation 5): fold the marked-content wrapper
+    # evidence closure -- the resolved /Properties mapping, its targets,
+    # and each OCG's default-config visibility bit (RESOLVED shape).
+    update_marked_content_dependencies(digest, doc, page)
     for annot in page.annots():
         digest.update(f"{annot.xref}:{tuple(annot.rect)}".encode("utf-8"))
         digest.update(b"\x03")
@@ -700,4 +717,13 @@ def bind_source_text(
         stream_digest=hashlib.sha256(stream_bytes).hexdigest(),
         show=show,
         origin_page=_origin_in_page_space(page, show),
+        # An out-of-range wrapper id is silently dropped HERE, but never
+        # admitted: the admission gate re-checks stack length against
+        # ``mc_depth`` and refuses the inconsistency (fail-closed net).
+        mc_wrappers=tuple(
+            replay.mc_wrappers[i]
+            for i in show.mc_stack
+            if 0 <= i < len(replay.mc_wrappers)
+        ),
+        mc_emc_underflows=replay.mc_emc_underflows,
     )

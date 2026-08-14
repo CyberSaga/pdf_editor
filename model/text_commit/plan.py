@@ -37,6 +37,7 @@ from model.text_commit.inspect import (
     page_fingerprint,
     page_has_widgets_or_signatures,
 )
+from model.text_commit.marked_content import admit_show_wrappers
 from model.text_commit.patch import build_kern_compensated_transplant, kern_for_displacement
 from model.text_commit.pdf_lexer import encode_hex_string, encode_literal_string
 from model.text_commit.replay import ShowOp
@@ -351,11 +352,20 @@ def _classify_common(
             f"render_mode={show.render_mode} rise={show.rise} "
             f"hscale={show.hscale}",
         )
-    if show.mc_depth != 0:
-        return PlanRejection(
-            RejectReason.UNSUPPORTED_TEXT_STATE,
-            "target is inside a marked-content sequence",
-        )
+    # Task 13 P1: the blanket "inside a marked-content sequence" refusal
+    # is replaced by the taxonomy admission — a stack of default-visible
+    # pure /OC layer wrappers is provably splice-inert (proof obligations
+    # 1-5, test_text_commit_mc_admission.py); everything else keeps a
+    # fail-closed refusal with its own stable MC_* code.
+    mc_rejection = admit_show_wrappers(
+        doc,
+        page,
+        show,
+        wrappers=binding.mc_wrappers,
+        emc_underflows=binding.mc_emc_underflows,
+    )
+    if mc_rejection is not None:
+        return PlanRejection(mc_rejection.reason, mc_rejection.detail)
 
     if show.font_resource is None:
         return PlanRejection(

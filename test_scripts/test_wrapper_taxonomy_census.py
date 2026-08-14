@@ -432,10 +432,13 @@ def test_funnel_reports_mc_census_aggregates():
     wrap_content_in_marked_content(fixture, "/OC /LyrRes7Q BDC")
     report = funnel_document(fixture.doc, run_e2e=False)
 
-    # legacy funnel stages keep their exact semantics
+    # Task 13 step 2: the funnel gate mirrors the production admission, so
+    # an admissible pure-layer show now SURVIVES the marked-content stage
+    # (stage name unchanged; the blanket state:marked_content_wrapper loss
+    # slug is retired with the blanket gate).
     assert report["funnel_shows"]["single_hex_tj"] == 1
-    assert report["funnel_shows"]["outside_marked_content"] == 0
-    assert report["loss_reasons"]["state:marked_content_wrapper"] == 1
+    assert report["funnel_shows"]["outside_marked_content"] == 1
+    assert "state:marked_content_wrapper" not in report["loss_reasons"]
 
     census = report["mc_census"]
     assert census["wrapper_classes"] == {"oc_layer_visible_default": 1}

@@ -1328,8 +1328,11 @@ def test_non_escalating_rejections_stay_terminal_and_max_tier_zero_never_reaches
         max_tier=1,
     )
     assert isinstance(mc_rejection, PlanRejection)
-    assert mc_rejection.reason == RejectReason.UNSUPPORTED_TEXT_STATE
-    assert "marked-content" in mc_rejection.detail
+    # Task 13 P1: the blanket UNSUPPORTED_TEXT_STATE became the taxonomy
+    # admission — this /P <</MCID 0>> wrapper is structure content, still
+    # terminal at max_tier=1 (the MC_* gates are tier-independent).
+    assert mc_rejection.reason == RejectReason.MC_WRAPPER_NOT_PURE_LAYER
+    assert "struct_content" in mc_rejection.detail
     assert page_fingerprint(mc_doc, mc_page) == mc_fp_before
     mc_doc.close()
 

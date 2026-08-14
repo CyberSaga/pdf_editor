@@ -52,6 +52,7 @@ from model.text_commit.dto import CommitStatus  # noqa: E402
 from model.text_commit.engine import TieredCommitEngine  # noqa: E402
 from model.text_commit.fonts import DocumentFontRegistry  # noqa: E402
 from model.text_commit.inspect import read_page_streams  # noqa: E402
+from model.text_commit.marked_content import admit_show_wrappers  # noqa: E402
 from model.text_commit.plan import PlanRejection  # noqa: E402
 from model.text_commit.replay import (  # noqa: E402
     DEFAULT_MAX_REPLAY_BYTES,
@@ -151,8 +152,7 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
                 loss_reasons["content_stream_too_large_for_safe_replay"] += 1
                 continue
             shows_counter["within_replay_budget"] += 1
-            if getattr(show, "mc_depth", 1) != 0:
-                loss_reasons["state:marked_content_wrapper"] += 1
+            if getattr(show, "mc_depth", 1) != 0 or show.mc_stack:
                 verdict = show_verdict(show, wrapper_classes, replay)
                 census_show_verdicts[verdict] += 1
                 # 2 bytes per CID across the whole v1 scope — cheap,
@@ -169,7 +169,26 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
                     and _residual_state_loss(show) is None
                 ):
                     census_overlap["admissible_uniform_trm_default_state"] += 1
-                continue
+                # Task 13 P1: the gate now mirrors the PRODUCTION admission
+                # (boundary guard included); a wrapped show that fails it is
+                # attributed to its stable MC_* code — the old blanket
+                # "state:marked_content_wrapper" slug is retired with the
+                # blanket gate itself.
+                wrappers = tuple(
+                    replay.mc_wrappers[i]
+                    for i in show.mc_stack
+                    if 0 <= i < len(replay.mc_wrappers)
+                )
+                rejection = admit_show_wrappers(
+                    doc,
+                    page,
+                    show,
+                    wrappers=wrappers,
+                    emc_underflows=replay.mc_emc_underflows,
+                )
+                if rejection is not None:
+                    loss_reasons[rejection.reason] += 1
+                    continue
             shows_counter["outside_marked_content"] += 1
             if not getattr(show, "trm_uniform_scaled", False):
                 loss_reasons["state:trm_not_uniform_scaled"] += 1

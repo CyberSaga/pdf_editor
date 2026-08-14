@@ -60,7 +60,7 @@ _NOMINAL: dict[str, object] = {
     "render_mode": 0,  # plan.py G2 -> UNSUPPORTED_TEXT_STATE
     "rise": 0.0,  # plan.py G3 -> UNSUPPORTED_TEXT_STATE
     "hscale": 100.0,  # plan.py G4 -> UNSUPPORTED_TEXT_STATE
-    "mc_depth": 0,  # plan.py G1 -> UNSUPPORTED_TEXT_STATE
+    "mc_depth": 0,  # plan.py G1 -> MC_* taxonomy admission (Task 13 P1)
 }
 
 
@@ -159,7 +159,14 @@ def _assert_control_plans_cleanly(stream: bytes) -> None:
 
 
 def test_planner_rejects_marked_content_target():
-    """G1: a Tj inside BDC/EMC (tagged PDF) is not patchable in place."""
+    """G1: a Tj inside a NON-admissible wrapper is not patchable in place.
+
+    Task 13 P1 replaced the blanket UNSUPPORTED_TEXT_STATE refusal with
+    the taxonomy admission: this /P <</MCID 0>> wrapper is structure
+    content, so the gate still refuses — now with its own stable code
+    (the admissible pure-/OC-layer path is pinned in
+    test_text_commit_mc_admission.py).
+    """
     doc = _stream_doc(
         b"/P <</MCID 0>> BDC BT /F1 12 Tf 72 700 Td ("
         + TARGET.encode()
@@ -171,8 +178,8 @@ def test_planner_rejects_marked_content_target():
 
     rejection = _plan(doc)
     assert isinstance(rejection, PlanRejection), rejection
-    assert rejection.reason == RejectReason.UNSUPPORTED_TEXT_STATE
-    assert "marked-content" in rejection.detail
+    assert rejection.reason == RejectReason.MC_WRAPPER_NOT_PURE_LAYER
+    assert "struct_content" in rejection.detail
     doc.close()
 
     _assert_control_plans_cleanly(
