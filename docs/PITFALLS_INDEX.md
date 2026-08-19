@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 266 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 268 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -271,3 +271,5 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2396 | A dead optional hook that catches its own ImportError becomes a per-edit user-visible defect | `controller/pdf_controller.py` (`edit_text` displacement-reflow callback, removed Task 12 Step 7) |
 | 2403 | Bare object keywords in content streams lex as OPERATOR tokens and silently clear accumulated operands | `model/text_commit/pdf_lexer.py` consumers (`replay.py` operand accumulation) |
 | 2410 | PyMuPDF's OC state (get_ocgs, rendering) is a load-time snapshot — /OCProperties writes don't refresh it | `model/text_commit/marked_content.py` — OCG default-config visibility resolution (Task 13 P1 admission) |
+| 2417 | PDF numbers have no exponent notation — %g-formatted matrix coefficients silently void the whole operator | `test_scripts/type0_fixture_builder.py` (`set_text_matrix`), any code writing numbers into content streams |
+| 2424 | Single-process full-suite pytest runs hang or abort nondeterministically inside Qt GUI tests | test harness (whole-suite runs of `test_scripts/`), PySide6 offscreen platform |

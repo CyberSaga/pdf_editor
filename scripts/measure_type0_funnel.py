@@ -58,6 +58,17 @@ from model.text_commit.replay import (  # noqa: E402
     DEFAULT_MAX_REPLAY_BYTES,
     replay_page_streams,
 )
+from scripts.trm_taxonomy import (  # noqa: E402
+    ABS_SCALE_FLOOR,
+    CARDINAL_DIRECTIONS,
+    LOOSE_REL_TOL,
+    SHAPE_UNIFORM_ROTATED,
+    baseline_scale,
+    classify_user_matrix,
+    combined_linear,
+    page_rotate_slug,
+    visual_baseline_direction,
+)
 from scripts.wrapper_taxonomy import (  # noqa: E402
     VERDICT_ADMISSIBLE,
     classify_wrappers,
@@ -98,6 +109,99 @@ def _residual_state_loss(show: object) -> str | None:
     return None
 
 
+def _trm_census(
+    show: object,
+    page: fitz.Page,
+    capability: object,
+    user_shape: Counter[str],
+    visual_direction: Counter[str],
+    page_rotate: Counter[str],
+    overlap: Counter[str],
+    predicted: Counter[str],
+    near_miss: Counter[str],
+) -> None:
+    """Task 13 P2 census fold for ONE show dying at the TRM gate.
+
+    Read-only aggregation, slugs only.  The ``predicted`` chain runs the
+    SAME downstream gates the funnel's main path runs, under BOTH
+    candidate admission scopes (plan §3's any-uniform-rotation and the
+    quarter-turn v1 candidate) — its terminal counts are the exact sets
+    the Priority 2 implementation must newly admit.  ``near_miss``
+    surfaces quarter turns written with rounded decimals that the strict
+    tolerance misses (diagnostic only, never predicted).
+    """
+    linear = combined_linear(show.tm, show.ctm)
+    shape = classify_user_matrix(linear)
+    user_shape[shape] += 1
+    direction = visual_baseline_direction(page, linear)
+    visual_direction[direction] += 1
+    page_rotate[page_rotate_slug(getattr(page, "rotation", 0))] += 1
+    overlap["wrapped_p1_admitted" if show.mc_stack else "never_wrapped"] += 1
+
+    strict_uniform = shape == SHAPE_UNIFORM_ROTATED
+    strict_cardinal = direction in CARDINAL_DIRECTIONS
+    loose_uniform = (
+        classify_user_matrix(linear, rel_tol=LOOSE_REL_TOL)
+        == SHAPE_UNIFORM_ROTATED
+    )
+    loose_cardinal = (
+        visual_baseline_direction(page, linear, rel_tol=LOOSE_REL_TOL)
+        in CARDINAL_DIRECTIONS
+    )
+    if loose_uniform and not strict_uniform:
+        near_miss["shape_uniform_only_at_1e3"] += 1
+    if loose_cardinal and not strict_cardinal:
+        near_miss["direction_cardinal_only_at_1e3"] += 1
+    if (loose_uniform and loose_cardinal) and not (
+        strict_uniform and strict_cardinal
+    ):
+        near_miss["quarter_turn_only_at_1e3"] += 1
+
+    # Production's replay floor is ABSOLUTE (a <= _EPS): a degenerate
+    # scale passing the relative shape gates must never be predicted.
+    if not strict_uniform or baseline_scale(linear) <= ABS_SCALE_FLOOR:
+        return
+    predicted["any_uniform_rotation"] += 1
+    if strict_cardinal:
+        predicted["quarter_turn_uniform"] += 1
+    if _residual_state_loss(show) is not None:
+        return
+    predicted["and_default_state"] += 1
+    cid = getattr(capability, "cid", None)
+    if cid is None:
+        return
+    predicted["and_scope_accepted"] += 1
+    decoded = cid.decode_show_bytes(show.decoded_bytes)
+    if isinstance(decoded, CidCapabilityFailure):
+        return
+    predicted["and_source_decoded"] += 1
+    reproduced = cid.encode_first_wins(decoded)
+    if (
+        isinstance(reproduced, CidCapabilityFailure)
+        or reproduced != show.decoded_bytes
+    ):
+        return
+    predicted["and_bytes_reproduced"] += 1
+    source_cids = tuple(
+        int.from_bytes(show.decoded_bytes[i : i + 2], "big")
+        for i in range(0, len(show.decoded_bytes), 2)
+    )
+    if cid.glyph_gate(source_cids, decoded) is not None:
+        return
+    predicted["predicted_source_bindable"] += 1
+    predicted["predicted_source_bindable_chars"] += len(decoded)
+    if strict_cardinal:
+        predicted["predicted_source_bindable_quarter_turn"] += 1
+    strict = cid.encode_strict(decoded)
+    if isinstance(strict, CidCapabilityFailure):
+        return
+    if cid.glyph_gate(strict, decoded) is not None:
+        return
+    predicted["predicted_replacement_encodable"] += 1
+    if strict_cardinal:
+        predicted["predicted_replacement_encodable_quarter_turn"] += 1
+
+
 def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
     registry = DocumentFontRegistry(doc)
     shows_counter: Counter[str] = Counter()
@@ -110,6 +214,14 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
     census_char_verdicts: Counter[str] = Counter()
     census_stack_depth: Counter[str] = Counter()
     census_overlap: Counter[str] = Counter()
+    # Task 13 P2 census: matrix taxonomy of the shows dying at the TRM
+    # gate below — aggregate slugs only (plan §10), no admission change.
+    trm_user_shape: Counter[str] = Counter()
+    trm_visual_direction: Counter[str] = Counter()
+    trm_page_rotate: Counter[str] = Counter()
+    trm_overlap: Counter[str] = Counter()
+    trm_predicted: Counter[str] = Counter()
+    trm_near_miss: Counter[str] = Counter()
     e2e = {
         "pages_attempted": 0,
         "prepared": 0,
@@ -192,6 +304,17 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
             shows_counter["outside_marked_content"] += 1
             if not getattr(show, "trm_uniform_scaled", False):
                 loss_reasons["state:trm_not_uniform_scaled"] += 1
+                _trm_census(
+                    show,
+                    page,
+                    capability,
+                    trm_user_shape,
+                    trm_visual_direction,
+                    trm_page_rotate,
+                    trm_overlap,
+                    trm_predicted,
+                    trm_near_miss,
+                )
                 continue
             shows_counter["uniform_trm"] += 1
             residual_loss = _residual_state_loss(show)
@@ -260,6 +383,14 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
             "char_verdicts": dict(sorted(census_char_verdicts.items())),
             "stack_depth": dict(sorted(census_stack_depth.items())),
             "overlap": dict(sorted(census_overlap.items())),
+        },
+        "trm_census": {
+            "user_shape": dict(sorted(trm_user_shape.items())),
+            "visual_direction": dict(sorted(trm_visual_direction.items())),
+            "page_rotate": dict(sorted(trm_page_rotate.items())),
+            "overlap": dict(sorted(trm_overlap.items())),
+            "predicted": dict(sorted(trm_predicted.items())),
+            "near_miss": dict(sorted(trm_near_miss.items())),
         },
         "e2e_sample": e2e,
         "e2e_reject_reasons": dict(sorted(e2e_reject_reasons.items())),

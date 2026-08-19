@@ -441,6 +441,31 @@ def literalize_hex_show(fixture: Type0Fixture) -> None:
     fixture.doc.update_stream(fixture.content_xref, rewritten)
 
 
+def set_text_matrix(
+    fixture: Type0Fixture, linear: tuple[float, float, float, float]
+) -> None:
+    """Replace the authored ``1 0 0 1 x y Tm`` linear part with ``linear``.
+
+    The translation (the authored origin) is kept, so the show stays on
+    the page; only the a/b/c/d coefficients change (rotation, shear,
+    mirror, non-uniform scale fixtures for the Task 13 P2 census).
+    """
+    stream = fixture.content_bytes()
+    origin_x, origin_y = fixture.origin
+    old = f"1 0 0 1 {origin_x:g} {origin_y:g} Tm".encode("ascii")
+    assert old in stream, "fixture stream carries no authored Tm"
+
+    def _pdf_num(value: float) -> str:
+        # PDF numbers have no exponent notation — %g's "6.12e-17" would
+        # silently void the whole Tm operand list under a real lexer.
+        text = f"{value:.8f}".rstrip("0").rstrip(".")
+        return "0" if text in ("", "-0") else text
+
+    coeffs = " ".join(_pdf_num(v) for v in linear)
+    new = f"{coeffs} {origin_x:g} {origin_y:g} Tm".encode("ascii")
+    fixture.doc.update_stream(fixture.content_xref, stream.replace(old, new, 1))
+
+
 def _set_page_property(fixture: Type0Fixture, name: str, ref: str) -> None:
     """Set ``/Resources /Properties /<name>`` = ``ref`` on the fixture page.
 

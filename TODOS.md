@@ -651,6 +651,26 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   parse-budget fold asymmetry (structured-surface fold), duplicate
   dict keys (shared parser refuses). 9 more red pins; corpus numbers
   re-verified identical after all fixes.
+- 2026-08-19 (Task 13 step 4 census-before-code — rotated-TRM census,
+  read-only, aggregate-only): matrix taxonomy of the 6,444 post-P1
+  TRM-gate deaths (`scripts/trm_taxonomy.py` classifier — user-space
+  shape of `Tm × CTM` + visual baseline direction through
+  `transformation_matrix × rotation_matrix`; funnel `trm_census` block;
+  70-test red-first matrix). Corpus: **6,417 uniform rotations (98.8%
+  visual quarter-turn, `right` 6,212), all on `/Rotate 270` pages, all
+  P1-admitted wrapped shows; zero near-miss rounded matrices; predicted
+  newly bindable 5,558 (quarter-turn) vs 5,561 (any-uniform — +3
+  only)**. v1 scope LOCKED to the quarter-turn family; acceptance for
+  the P2 implementation = census prediction exactly (6,413 gate /
+  5,558 downstream). Adversarial round (serial 2-agent Attack→Verify)
+  fixed 3 findings red-first: `near_miss` diagnostic (rounded quarter
+  turns), `ABS_SCALE_FLOOR` in front of the predicted chain (mirrors
+  replay's absolute `_EPS` floor), dual-scope predicted counters;
+  `/Rotate` folded to a closed 0/90/180/270/`other` vocabulary. Fixture
+  pitfall: PDF numbers have no exponent notation — `%g` writing
+  `6.12e-17` silently voids the whole `Tm` under a real lexer. Next:
+  P2-B red matrix (stable `trm_*` codes, rotated kern axis, directional
+  growth proof, page-geometry staleness pins) — plan §7 step-4 record.
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

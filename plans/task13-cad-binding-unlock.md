@@ -155,6 +155,13 @@ coverage number — it feeds the TODOS "latency half stays open" item.
        §7 step-2 record.)
 4. [ ] Priority 2 red matrix (uniform-rotation predicate boundaries, rotated
        kern axis, visual-space verify), then implementation; separate PR.
+       (2026-08-19 census-before-code sub-step DONE: rotated-TRM census on
+       the post-P1 TRM-gate population — **6,417/6,444 uniform rotations,
+       98.8% visual quarter-turn, 5,558 predicted newly bindable**; v1
+       scope locked to the quarter-turn family — §7 census record and
+       scope decision; classifier in `scripts/trm_taxonomy.py`, funnel
+       `trm_census` block; 70-test red-first matrix + 2-agent adversarial
+       round, 3 findings fixed red-first.)
 5. [ ] Re-run funnel; record rotated-Tm survival.
 6. [ ] Priority 3 spike: index design + latency measurement harness (ties
        into the preview-latency follow-up from Task 12 §8); own PR(s).
@@ -349,6 +356,80 @@ Reading: Priority 1 is DONE at 64.2% of its gated population; the funnel
 now shows the Priority 2 bottleneck directly (6,444 rotated-Tm losses on
 admitted-or-unwrapped shows).  doc_1 unchanged (all TJ-array).
 
+- 2026-08-19 (step 4 census-before-code — rotated-TRM census tooling;
+  red-first, 70-test matrix in `test_scripts/test_trm_census.py`):
+  - **Classifier lives in `scripts/trm_taxonomy.py`**, outside `model/`
+    until the Priority-2 admission slice promotes it (same discipline as
+    the step-1 wrapper taxonomy).  Two orthogonal dimensions: user-space
+    SHAPE of the `Tm × CTM` linear part (`non_finite` / `singular` /
+    `reflected` / `sheared` / `non_uniform_scale` /
+    `axis_aligned_uniform_positive` / `uniform_rotated_positive`, fixed
+    gate precedence finite → non-singular → orientation → orthogonality
+    → equal norms, RELATIVE tolerance 1e-6), and visual baseline
+    DIRECTION after `transformation_matrix × rotation_matrix` (`right` /
+    `left` / `up` / `down` / `oblique` / `degenerate`, visual y down —
+    the same chain production `inspect`/`plan` use).  Shape is
+    angle-blind on purpose: a rotated `Tm` compensating a page
+    `/Rotate` is only classifiable against the visual matrix.
+  - **Funnel `trm_census` block** hangs off the existing
+    `state:trm_not_uniform_scaled` gate — population = exactly the
+    post-P1 TRM-gate deaths, membership decided by the production
+    predicate itself; no admission change, all sealed stages/slugs
+    byte-identical (cross-checked between two runs).
+  - **Adversarial round (2-agent Attack → skeptical Verify, serial):
+    3 confirmed findings, all fixed red-first before the corpus run;
+    3 refuted.**  F1: strict tolerance could silently drop ROUNDED
+    quarter turns → added the diagnostic `near_miss` section (loose
+    1e-3 re-classification, never predicted).  F2: predicted chain had
+    no absolute scale floor while production's `_uniform_scale` rejects
+    `a <= _EPS` → added `ABS_SCALE_FLOOR` (1e-6) in front of the
+    predicted chain.  F3: predicted front gate was quarter-turn-only
+    while plan §3 pins any-uniform-rotation → the chain now measures
+    BOTH candidate scopes (`any_uniform_rotation` and the quarter-turn
+    subset at each terminal).  Refuted: conditioning-style singular test
+    on extreme aspect ratios (defensible, not corpus-real); `/Rotate`
+    int as a §10 leak (bounded reason-code-level telemetry — still
+    hardened to a closed 0/90/180/270/`other` vocabulary); `_pdf_num`
+    sub-5e-9 collapse in the fixture mutator (latent footgun, no test
+    invalidated).
+  - **Geometry pin worth recording**: `/Rotate 270` displays the page
+    turned 90° counter-clockwise, so the compensating CAD idiom is a
+    **−90° `Tm`** (baseline down on the paper → visually right); a +90°
+    `Tm` on the same page reads LEFT.  The census direction tests pin
+    both readings.
+  - **PDF numbers have no exponent notation**: `%g`-formatting a
+    quarter-turn matrix emits `6.12e-17`, which a real content-stream
+    lexer refuses — the whole `Tm` silently voids and the fixture tests
+    nothing.  `set_text_matrix` formats fixed-point; quarter-turn
+    fixtures use exact 0/±1 coefficients.
+
+### Step-4 census record (corpus aggregates, 2026-08-19, read-only)
+
+Population: the 6,444 `state:trm_not_uniform_scaled` deaths (doc_0 only;
+doc_1 has zero TRM losses — all its mass is TJ-array).  All 6,444 are
+`wrapped_p1_admitted` (the P1 unlock feeds this gate directly) and all
+sit on `/Rotate 270` pages.
+
+| aggregate | doc_0 |
+|---|---|
+| `user_shape` | `uniform_rotated_positive` **6,417**, `reflected` 27 — zero sheared / non-uniform / singular / non-finite |
+| `visual_direction` | `right` **6,212**, `left` 123, `down` 100, `up` 5, `oblique` **4** |
+| `near_miss` | **empty** — no rounded quarter turns; the strict 1e-6 tolerance loses nothing on this corpus |
+| `predicted` (any-uniform scope) | 6,417 → default-state 5,576 → decoded/reproduced **5,561** bindable + encodable (33,605 chars) |
+| `predicted` (quarter-turn scope) | gate 6,413 → **5,558** bindable + encodable |
+
+**Scope decision (v1 lock)**: quarter-turn family — positive-orientation
+uniform rotation+scale with visual baseline 0°/90°/180°/270° only.  The
+census's decision rule (advisory): dominant eligible bucket must be the
+visual quarter-turn family — it is, at 98.8% of uniform rotations; the
+broad any-uniform scope would add only **3** bindable shows while
+forcing arbitrary-angle verifier geometry.  Non-quarter-turn uniform
+rotations stay fail-closed with their own stable reason
+(`trm_rotation_not_quarter_turn` in the P2-B red matrix); `reflected`
+27 stay fail-closed permanently (plan §3).  **Acceptance for the P2
+implementation**: newly admitted set == census prediction exactly —
+6,413 at the TRM gate, 5,558 through every downstream gate.
+
 ## 8. Open questions
 
 - OCG default-visibility resolution: which configuration dictionary governs
@@ -373,6 +454,13 @@ admitted-or-unwrapped shows).  doc_1 unchanged (all TJ-array).
 - Rotated growth-zone gates: how do the occupancy/background probes transform
   under 90°-family rotations vs arbitrary angles — same code path or a
   restricted 90°-family v1?
+  (Step-4 census answer: restricted 90°-family v1 — the corpus is 98.8%
+  visual quarter-turn and the broad scope buys only 3 shows; the probes
+  generalize through ONE shared cardinal `growth_direction`, not four
+  divergent implementations and not arbitrary-angle polygons.  The 4
+  oblique + 27 reflected shows stay fail-closed with their own codes;
+  arbitrary-angle admission would be its own later slice with new census
+  evidence.)
 - Index persistence: per-session only, or survives save/reopen via digest
   keys? (Privacy: digests only, never text.)
 - `malformed_pairing` tolerance (census 2026-08-14): 35.8% of the gated
