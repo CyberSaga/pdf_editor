@@ -141,7 +141,15 @@ def _parse_value(tokens: list[bytes], pos: int, depth: int) -> tuple[object, int
             if not key_token.startswith(b"/"):
                 raise PdfParseError("dictionary key is not a name")
             value, pos = _parse_value(tokens, pos + 1, depth + 1)
-            result[key_token[1:].decode("latin-1")] = value
+            key = key_token[1:].decode("latin-1")
+            # Duplicate keys are refused outright (Task 13 P1 review
+            # round): last-key-wins here vs whichever entry mupdf's
+            # lookup returns is a real divergence, and viewer behavior on
+            # duplicates is undefined — an object that cannot be read
+            # unambiguously is not provable evidence.
+            if key in result:
+                raise PdfParseError("duplicate dictionary key")
+            result[key] = value
         if pos >= len(tokens):
             raise PdfParseError("unterminated dictionary")
         return result, pos + 1

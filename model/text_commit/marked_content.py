@@ -143,6 +143,13 @@ def resolve_default_visibility(doc: fitz.Document) -> dict[int, bool]:
     Only OCGs listed in ``/OCProperties /OCGs`` appear; an OCG in BOTH
     ``/ON`` and ``/OFF`` resolves hidden (fail-closed on ambiguity), and
     an unreadable or absent config yields ``{}`` (nothing provable).
+    Further fail-closed rules (Codex review round, 2026-08-14):
+    ``/BaseState`` admits exactly ``/ON``, ``/OFF``, or absence; an
+    ``/ON``/``/OFF``/``/AS`` entry PRESENT but not resolvable to its
+    expected shape poisons the whole config; and any OCG selected by a
+    ``/D /AS`` auto-state entry is dropped from the map entirely — usage
+    application can override its base state in a conforming viewer, so
+    its default visibility is not provable.
     """
     try:
         cat_obj = parse_pdf_value(doc.xref_object(doc.pdf_catalog()))
@@ -160,19 +167,68 @@ def resolve_default_visibility(doc: fitz.Document) -> dict[int, bool]:
     if not isinstance(config, dict):
         return {}
 
-    def _ref_set(key: str) -> set[int]:
-        array = _deref(doc, config.get(key))
-        if not isinstance(array, list):
+    def _ref_set(key: str) -> set[int] | None:
+        """Ref xrefs under ``key``; ``set()`` when absent; ``None``
+        (poison) when present but not provably a list of refs."""
+        value = config.get(key)
+        if value is None:
             return set()
-        return {item.xref for item in array if isinstance(item, PdfRef)}
+        array = _deref(doc, value)
+        if not isinstance(array, list):
+            return None
+        refs: set[int] = set()
+        for item in array:
+            if not isinstance(item, PdfRef):
+                return None
+            refs.add(item.xref)
+        return refs
 
-    base_on = config.get("BaseState", "/ON") != "/OFF"
+    raw_base = config.get("BaseState")
+    if raw_base is None:
+        base_on = True  # spec default
+    else:
+        # Spec-legal as an indirect name — resolve it; anything that does
+        # not resolve to exactly /ON or /OFF (garbage names, /Unchanged,
+        # unreadable targets, wrong types) poisons the whole config.
+        base_state = _deref(doc, raw_base)
+        if base_state == "/ON":
+            base_on = True
+        elif base_state == "/OFF":
+            base_on = False
+        else:
+            return {}
     on_set = _ref_set("ON")
     off_set = _ref_set("OFF")
+    if on_set is None or off_set is None:
+        return {}
+
+    as_selected: set[int] = set()
+    as_value = config.get("AS")
+    if as_value is not None:
+        as_array = _deref(doc, as_value)
+        if not isinstance(as_array, list):
+            return {}
+        for entry in as_array:
+            entry = _deref(doc, entry)
+            if not isinstance(entry, dict):
+                return {}
+            members = _deref(doc, entry.get("OCGs"))
+            if not isinstance(members, list):
+                # /OCGs is required in a usage-application dictionary; an
+                # absent or unresolvable one leaves the affected set
+                # unknowable.
+                return {}
+            for member in members:
+                if not isinstance(member, PdfRef):
+                    return {}
+                as_selected.add(member.xref)
+
     visibility: dict[int, bool] = {}
     for item in registered:
         if not isinstance(item, PdfRef):
             continue
+        if item.xref in as_selected:
+            continue  # usage-application may override: unprovable
         if item.xref in off_set:
             visibility[item.xref] = False
         elif item.xref in on_set:
@@ -368,6 +424,41 @@ def admit_show_wrappers(
 # ------------------------------------------------- fingerprint dependencies
 
 
+def _fold_target_structured(
+    digest: "hashlib._Hash", doc: fitz.Document, xref: int
+) -> None:
+    """Fold one property target's structured key/value surface.
+
+    Deliberately the SAME API family classification reads
+    (``xref_get_keys``/``xref_get_key``) rather than a whole-object
+    parse: an over-parse-budget object still classifies via its ``/Type``
+    key, so it must still fold that key (Codex review round — a /Type
+    flip on a parse-hostile object previously bypassed STALE_PLAN).
+    Sorted keys for order independence; raw ``xref_object`` text is not
+    round-trip stable for dictionaries (see
+    ``inspect._canonical_object_digest``), the structured surface is.
+    """
+    try:
+        keys = sorted(doc.xref_get_keys(xref) or ())
+    except _READ_ERRORS:
+        digest.update(b"<unreadable-target>")
+        return
+    if not keys:
+        try:
+            digest.update(
+                " ".join(doc.xref_object(xref).split()).encode("utf-8", "replace")
+            )
+        except _READ_ERRORS:
+            digest.update(b"<unreadable-target>")
+        return
+    for key in keys:
+        try:
+            kind, value = doc.xref_get_key(xref, key)
+        except _READ_ERRORS:
+            kind, value = "?", "<unreadable>"
+        digest.update(f"{key}\x1f{kind}\x1f{value}\x1e".encode("utf-8", "replace"))
+
+
 def update_marked_content_dependencies(
     digest: "hashlib._Hash", doc: fitz.Document, page: fitz.Page
 ) -> None:
@@ -382,8 +473,10 @@ def update_marked_content_dependencies(
       identity (the target xref for indirect entries), so re-pointing a
       name at a different object goes stale even when both objects'
       contents digest identically;
-    - each indirect target's canonical parsed object (OCG, OCMD, or
-      property-list dict — covers renames and any key mutation);
+    - each indirect target's structured key/value surface (OCG, OCMD, or
+      property-list dict — covers renames and any key mutation, INCLUDING
+      on objects too large for the value parser, which classification
+      still reads via ``xref_get_key``);
     - each target's RESOLVED default-config visibility bit from the
       SERIALIZED ``/OCProperties`` (on/off/absent, via
       :func:`resolve_default_visibility` — the same source admission
@@ -403,16 +496,17 @@ def update_marked_content_dependencies(
     visibility = resolve_default_visibility(doc)
     for name in sorted(mapping):
         value = mapping[name]
-        digest.update(name.encode("utf-8", "replace"))
+        # Length-prefixed so the frame stays injective even for a name
+        # containing the separator bytes (legal PDF name characters).
+        encoded_name = name.encode("utf-8", "replace")
+        digest.update(str(len(encoded_name)).encode("ascii"))
+        digest.update(b":")
+        digest.update(encoded_name)
         digest.update(b"\x1d")
         if isinstance(value, PdfRef):
             digest.update(str(value.xref).encode("ascii"))
             digest.update(b"\x1d")
-            try:
-                resolved = parse_pdf_value(doc.xref_object(value.xref))
-                digest.update(canonical_pdf_text(resolved).encode("utf-8"))
-            except _READ_ERRORS:
-                digest.update(b"<unreadable-target>")
+            _fold_target_structured(digest, doc, value.xref)
             state = visibility.get(value.xref)
             if state is None:
                 digest.update(b"\x1dabsent")

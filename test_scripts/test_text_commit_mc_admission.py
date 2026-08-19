@@ -558,3 +558,177 @@ def test_rejection_details_never_echo_fixture_names() -> None:
     # And the sweep must be exercising the NEW gates, not the blanket
     # UNSUPPORTED_TEXT_STATE rejection this slice replaces.
     assert result.reason in _ALL_MC_CODES
+
+
+# ==========================================================================
+# Part E — review-round pins (Codex adversarial round, 2026-08-14):
+# /OCProperties resolution must stay fail-closed under /AS usage rules and
+# malformed configs, and the fingerprint must read the SAME structured
+# surface classification reads.
+# ==========================================================================
+
+
+def _oc_config_owner(doc: fitz.Document) -> tuple[int, str]:
+    """(owner xref, key prefix) for setting keys under /OCProperties.
+
+    ``xref_set_key`` cannot create keys through an INDIRECT /OCProperties,
+    so hop to it when needed (same pitfall as the fixture builder's
+    ``_set_page_property``)."""
+    catalog = doc.pdf_catalog()
+    kind, value = doc.xref_get_key(catalog, "OCProperties")
+    if kind == "xref":
+        return int(value.split()[0]), ""
+    return catalog, "OCProperties/"
+
+
+def test_as_usage_rule_makes_visibility_unprovable() -> None:
+    """An OCG selected by a /D /AS auto-state entry can be hidden by
+    usage application in a conforming viewer even while listed /ON —
+    its default visibility is not provable, so it must not admit."""
+    fixture = build_identity_h_fixture()
+    ocg_xref = _install_and_wrap(fixture)
+    owner, prefix = _oc_config_owner(fixture.doc)
+    fixture.doc.xref_set_key(
+        owner,
+        f"{prefix}D/AS",
+        f"[<</Event /View /Category [/View] /OCGs [{ocg_xref} 0 R]>>]",
+    )
+    _assert_rejected(
+        _prepare(fixture), MC_WRAPPER_NOT_PURE_LAYER, "props_unresolved"
+    )
+    fixture.doc.close()
+
+
+def test_bogus_basestate_makes_visibility_unprovable() -> None:
+    """/BaseState admits exactly /ON, /OFF, or absence; any other value
+    poisons the whole config (never 'default visible')."""
+    fixture = build_identity_h_fixture()
+    _install_and_wrap(fixture)
+    owner, prefix = _oc_config_owner(fixture.doc)
+    fixture.doc.xref_set_key(owner, f"{prefix}D/BaseState", "/Bogus7Q")
+    _assert_rejected(
+        _prepare(fixture), MC_WRAPPER_NOT_PURE_LAYER, "props_unresolved"
+    )
+    fixture.doc.close()
+
+
+def test_unresolvable_off_array_makes_visibility_unprovable() -> None:
+    """An /OFF entry that is PRESENT but not resolvable to an array means
+    the hidden-set is unknown — nothing on the page is provably visible."""
+    fixture = build_identity_h_fixture()
+    _install_and_wrap(fixture)
+    bogus_xref = fixture.doc.get_new_xref()
+    fixture.doc.update_object(bogus_xref, "7")  # resolves to an int, not a list
+    owner, prefix = _oc_config_owner(fixture.doc)
+    fixture.doc.xref_set_key(owner, f"{prefix}D/OFF", f"{bogus_xref} 0 R")
+    _assert_rejected(
+        _prepare(fixture), MC_WRAPPER_NOT_PURE_LAYER, "props_unresolved"
+    )
+    fixture.doc.close()
+
+
+def test_as_rule_added_after_prepare_is_stale() -> None:
+    """Proof obligation 5 under the /AS fix: adding an auto-state rule
+    that de-proves the admitted OCG's visibility must invalidate the
+    plan (the fold reads the same resolver)."""
+    fixture = build_identity_h_fixture()
+    ocg_xref = _install_and_wrap(fixture)
+    engine, prepared = _prepare_with_engine(fixture)
+    plan = _assert_prepared(prepared)
+    owner, prefix = _oc_config_owner(fixture.doc)
+    fixture.doc.xref_set_key(
+        owner,
+        f"{prefix}D/AS",
+        f"[<</Event /View /Category [/View] /OCGs [{ocg_xref} 0 R]>>]",
+    )
+    outcome = engine.commit(plan)
+    assert outcome.status is CommitStatus.STALE_PLAN, outcome.status
+    fixture.doc.close()
+
+
+def test_indirect_basestate_resolving_on_admits() -> None:
+    """/BaseState is spec-legal as an indirect name: resolve it through
+    the reference instead of poisoning the config (over-reject) or —
+    worse, the pre-review shape — treating any non-/OFF value as ON."""
+    fixture = build_identity_h_fixture()
+    ocg_xref = _install_and_wrap(fixture)
+    owner, prefix = _oc_config_owner(fixture.doc)
+    base_xref = fixture.doc.get_new_xref()
+    fixture.doc.update_object(base_xref, "/ON")
+    fixture.doc.xref_set_key(owner, f"{prefix}D/BaseState", f"{base_xref} 0 R")
+    # Take the OCG out of both arrays so BaseState alone decides.
+    fixture.doc.xref_set_key(owner, f"{prefix}D/ON", "[]")
+    fixture.doc.xref_set_key(owner, f"{prefix}D/OFF", "[]")
+    assert ocg_xref  # registration in /OCGs is untouched
+    _assert_prepared(_prepare(fixture))
+    fixture.doc.close()
+
+
+def test_indirect_basestate_resolving_off_hides() -> None:
+    fixture = build_identity_h_fixture()
+    _install_and_wrap(fixture)
+    owner, prefix = _oc_config_owner(fixture.doc)
+    base_xref = fixture.doc.get_new_xref()
+    fixture.doc.update_object(base_xref, "/OFF")
+    fixture.doc.xref_set_key(owner, f"{prefix}D/BaseState", f"{base_xref} 0 R")
+    fixture.doc.xref_set_key(owner, f"{prefix}D/ON", "[]")
+    fixture.doc.xref_set_key(owner, f"{prefix}D/OFF", "[]")
+    _assert_rejected(
+        _prepare(fixture), MC_LAYER_NOT_DEFAULT_VISIBLE, "oc_layer_hidden_default"
+    )
+    fixture.doc.close()
+
+
+def test_basestate_target_flip_after_prepare_is_stale() -> None:
+    """The resolved-visibility fold must close over an indirect
+    BaseState's target: flipping it de-visibilizes the admitted OCG."""
+    fixture = build_identity_h_fixture()
+    _install_and_wrap(fixture)
+    owner, prefix = _oc_config_owner(fixture.doc)
+    base_xref = fixture.doc.get_new_xref()
+    fixture.doc.update_object(base_xref, "/ON")
+    fixture.doc.xref_set_key(owner, f"{prefix}D/BaseState", f"{base_xref} 0 R")
+    fixture.doc.xref_set_key(owner, f"{prefix}D/ON", "[]")
+    fixture.doc.xref_set_key(owner, f"{prefix}D/OFF", "[]")
+    engine, prepared = _prepare_with_engine(fixture)
+    plan = _assert_prepared(prepared)
+    fixture.doc.update_object(base_xref, "/OFF")
+    outcome = engine.commit(plan)
+    assert outcome.status is CommitStatus.STALE_PLAN, outcome.status
+    fixture.doc.close()
+
+
+def test_duplicate_dict_keys_are_unparseable() -> None:
+    """mupdf and this parser may disagree on which duplicate wins (and
+    viewer behavior is undefined) — a duplicate-key object is not
+    provable evidence, so the shared parser refuses it outright."""
+    import pytest
+
+    from model.text_commit.cid_fonts import PdfParseError, parse_pdf_value
+
+    with pytest.raises(PdfParseError):
+        parse_pdf_value("<< /A 1 /A 2 >>")
+    with pytest.raises(PdfParseError):
+        parse_pdf_value("<< /Outer << /A 1 /A 2 >> >>")  # nested dicts too
+    # Distinct keys keep parsing.
+    assert parse_pdf_value("<< /A 1 /B 2 >>") == {"A": 1, "B": 2}
+
+
+def test_type_flip_on_parse_hostile_target_after_prepare_is_stale() -> None:
+    """The fingerprint must fold the structured key/value surface the
+    classification reads (xref_get_key), not only a whole-object parse:
+    an over-parse-budget OCG still classifies via /Type, so mutating
+    /Type after prepare must go stale even though the object never
+    parsed."""
+    fixture = build_identity_h_fixture()
+    ocg_xref = _install_and_wrap(fixture)
+    # Balloon the OCG object past the 1 MiB parse budget while keeping
+    # every key readable through the structured API.
+    pad = "A" * 1_100_000
+    fixture.doc.xref_set_key(ocg_xref, "Pad7Q", f"({pad})")
+    engine, prepared = _prepare_with_engine(fixture)
+    plan = _assert_prepared(prepared)
+    fixture.doc.xref_set_key(ocg_xref, "Type", "/OCMD")
+    outcome = engine.commit(plan)
+    assert outcome.status is CommitStatus.STALE_PLAN, outcome.status
+    fixture.doc.close()
