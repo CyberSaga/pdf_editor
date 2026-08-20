@@ -613,6 +613,44 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   stages); PITFALLS +1 (dead-hook entry, index 264); plan `git mv`-ed
   to `plans/archive/`. Corpus-unlock follow-ups live in
   `plans/task13-cad-binding-unlock.md`.
+- 2026-08-14 (Task 13 step 1 — wrapper-taxonomy census, read-only,
+  aggregate-only): replay now captures marked-content wrapper EVIDENCE
+  (`McWrapper` table + `ShowOp.mc_stack`, `mc_depth` semantics frozen,
+  BDC/BMC oddities never set malformed); taxonomy classifier lives in
+  `scripts/wrapper_taxonomy.py` (census-before-code — no admission logic
+  in model); funnel gained the `mc_census` aggregate block with a
+  data-policy pin test (no document strings in the report). 31-test
+  red-first matrix; Codex review round fixed 2 findings red-first
+  (exact-shape BDC/BMC operand parsing fail-closed; bare
+  `true`/`false`/`null` retained as operands). Corpus result: of the
+  10,701 mc-gated shows, **64.2% sit under pure default-visible `/OC`
+  layers (admissible)**, 35.8% in the v1 `malformed_pairing` bucket; no
+  nesting (depth 1 everywhere), zero semantic wrappers; only 376
+  admissible shows also have uniform `Tm` + default state — Priority 2
+  (rotated `Tm`) stays the bulk unlock. Recorded in the Task 13 plan §7;
+  base funnel stages re-verified byte-identical to the sealed record.
+- 2026-08-14 (Task 13 steps 2+3 — Priority 1 marked-content admission):
+  the blanket mc gate became a fail-closed taxonomy admission
+  (`model/text_commit/marked_content.py`, promoted from the census
+  classifier): only default-visible pure `/OC` layer stacks admit, four
+  new stable `MC_*` reject codes, splice boundary guard on new
+  `McWrapper` byte spans, and the page fingerprint folds the wrapper
+  evidence closure (visibility flip / properties re-point / OCG mutation
+  between prepare and commit all go STALE_PLAN). 28-test red-first
+  matrix (5 proof obligations pinned). Key discovery: PyMuPDF
+  `get_ocgs`/rendering are a LOAD-TIME snapshot — `/OCProperties` writes
+  don't refresh them; admission + fingerprint parse the SERIALIZED
+  catalog instead (PITFALLS, index 266). Step-3 funnel:
+  `outside_marked_content` 0 → **6,872** (census-exact), **376 shows now
+  clear every plan gate** (was 0), corpus e2e sample 8/8 committed with
+  reopen-extraction OK; bottleneck moves to Priority 2 rotated-Tm
+  (6,444 `state:trm_not_uniform_scaled`). Adversarial round (Codex +
+  serial deep-reasoner workflow) fixed 4 admits-unprovable findings
+  red-first: `/D /AS` auto-states (AS-selected OCG → unprovable),
+  fail-open `/BaseState` (now deref'd, exactly `/ON`/`/OFF`),
+  parse-budget fold asymmetry (structured-surface fold), duplicate
+  dict keys (shared parser refuses). 9 more red pins; corpus numbers
+  re-verified identical after all fixes.
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

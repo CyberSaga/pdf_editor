@@ -135,11 +135,24 @@ coverage number — it feeds the TODOS "latency half stays open" item.
 
 ## 6. Step list
 
-1. [ ] Wrapper-taxonomy census on the corpus (aggregate-only, read-only) —
+1. [x] Wrapper-taxonomy census on the corpus (aggregate-only, read-only) —
        measure the admissible pure-layer share BEFORE any code.
-2. [ ] Priority 1 red matrix (taxonomy admissions + the 5 proof obligations +
+       (2026-08-14: **64.2% admissible pure-layer** — §7 decisions record
+       and census results; evidence capture in replay, classifier in
+       `scripts/wrapper_taxonomy.py`, funnel `mc_census` block; 31-test
+       red-first matrix + Codex review round, 2 findings fixed red-first.)
+2. [x] Priority 1 red matrix (taxonomy admissions + the 5 proof obligations +
        staleness pins), then implementation; separate PR.
-3. [ ] Re-run funnel; record the new marked-content survival honestly.
+       (2026-08-14: 28-test red matrix (27 red / 1 explicit control) →
+       green; four stable `MC_*` codes; classification promoted into
+       `model/text_commit/marked_content.py`; serialized-`/OCProperties`
+       visibility resolution — see §7 and the get_ocgs PITFALLS entry.)
+3. [x] Re-run funnel; record the new marked-content survival honestly.
+       (2026-08-14: `outside_marked_content` 0 → **6,872** — exactly the
+       census-predicted admissible set; **376 shows now clear every
+       plan gate** (was 0); corpus e2e sample: 22 pages attempted,
+       8 prepared, 8 committed, 8 reopen-extraction OK, 0 failures.
+       §7 step-2 record.)
 4. [ ] Priority 2 red matrix (uniform-rotation predicate boundaries, rotated
        kern axis, visual-space verify), then implementation; separate PR.
 5. [ ] Re-run funnel; record rotated-Tm survival.
@@ -147,10 +160,214 @@ coverage number — it feeds the TODOS "latency half stays open" item.
        into the preview-latency follow-up from Task 12 §8); own PR(s).
 7. [ ] Docs per protocol; keep this plan updated with decisions/dead ends.
 
-## 7. Open questions
+## 7. Decisions record
+
+- 2026-08-14 (step 1 — wrapper-taxonomy census tooling; red-first, 27-test
+  matrix in `test_scripts/test_wrapper_taxonomy_census.py`):
+  - **Evidence capture lives in `model/text_commit/replay.py`** as pure
+    read-only enrichment: `McWrapper` (operator, tag, props kind/name,
+    top-level inline-dict KEYS only — values never retained), per-wrapper
+    `closed`/`crossed_q`/`open_gs_depth`, `PageReplay.mc_emc_underflows`,
+    and `ShowOp.mc_stack` (open wrapper ids, outermost-first).  The
+    existing `mc_depth` clamp semantics are untouched and BDC/BMC operand
+    oddities NEVER set `malformed` (they never did — evidence stays
+    evidence: `props_kind="unparsed"`).  Rationale: the funnel must
+    measure THROUGH production evidence (P0-D discipline), and the step-2
+    fingerprint closure needs exactly this evidence anyway.
+  - **Taxonomy classification lives OUTSIDE model** in
+    `scripts/wrapper_taxonomy.py` (census-before-code): stable class slugs
+    per plan §2 (`oc_layer_visible_default` — the only admissible class —
+    `oc_layer_hidden_default`, `oc_ocmd`, `actual_text`, `alt_text`,
+    `artifact`, `struct_content` (/MCID), `bmc_bare`, `bdc_other`,
+    `props_unresolved`, `props_unparsed`, `malformed_pairing`).  Show
+    verdict folds the stack outermost-first; EMC underflow poisons the
+    whole page's verdicts (fail-closed).  Step 2 promotes accepted classes
+    into `plan.py` behind its own red matrix.
+  - **Crossing detection**: a wrapper is `crossed_q` when a `Q` pops below
+    its opening gs-depth while it is open, OR its `EMC` closes at a
+    different gs-depth than it opened.  Both directions red-pinned.
+  - **Default-config visibility** resolves via `Document.get_ocgs()`
+    (`on` flag = default config); an OCG absent from `/OCProperties` has
+    no provable visibility → `props_unresolved` (fail-closed).  The §8
+    open question (D vs alternate configs) stays open for step 2.
+    **SUPERSEDED by step 2**: `get_ocgs` (and rendering) turned out to be
+    a load-time snapshot that `set_layer`/raw `/OCProperties` writes never
+    refresh — step 2 resolves visibility by PARSING the serialized
+    catalog `/OCProperties` instead (`resolve_default_visibility`), which
+    is what every future opener of the committed artifact resolves.
+    Census numbers unaffected (corpus docs are opened fresh from disk, so
+    snapshot == serialized) — re-verified byte-identical in the step-3
+    run.
+  - **Char weighting** for census verdicts uses
+    `len(decoded_bytes) // 2` (2-byte CIDs — the locked v1 scope), not a
+    decode pass: decode-free, and identical for the dominant population.
+  - Funnel output gains one `mc_census` block (wrapper_classes counted
+    once per wrapper enclosing ≥1 gated show, show/char verdicts,
+    stack-depth histogram, and the unlock predictor overlap
+    `admissible_uniform_trm_default_state`).  All existing funnel stages
+    and loss slugs unchanged (numbers stay comparable with Task 12 §8).
+  - Data-policy pin added as a TEST: the serialized funnel report must
+    not contain ActualText values, OCG layer labels, properties resource
+    names, or shown text (synthetic sentinels asserted absent).
+  - Fixture note: `xref_set_key` cannot create keys through indirect
+    paths — known pitfall (PITFALLS "path to 'X' has indirects" entry);
+    `install_oc_layer`/`install_ocmd` hop to the innermost indirect dict
+    first.
+
+### Census results (corpus aggregates, 2026-08-14)
+
+Read-only run of the extended funnel (`--no-e2e`) over the private
+corpus; every base funnel stage byte-identical to the Task 12 §8 sealed
+record (numbers stay comparable).  The census population is the 10,701
+budget-eligible single-hex-`Tj` shows lost at the marked-content gate
+(doc_0; doc_1 contributes zero — all 543 Type0 shows are `TJ`-array, as
+sealed).  Re-run after the review-round strictness fixes:
+**byte-identical** — the corpus contains no garbage-preceded BDC operand
+lists and no keyword-valued inline dicts, so the fail-closed tightening
+cost nothing.
+
+| aggregate | doc_0 |
+|---|---|
+| wrapper classes (wrappers enclosing ≥1 gated show) | 946 `oc_layer_visible_default`, 106 `malformed_pairing` — nothing else |
+| show verdicts | **6,872 / 10,701 (64.2%) `admissible_pure_layer`**; 3,829 (35.8%) `mc:malformed_pairing` |
+| char verdicts (2-byte-CID weighting) | 41,471 admissible / 27,588 malformed |
+| stack depth | 100% depth 1 — the corpus has NO nested wrappers |
+| unlock predictor (`admissible_uniform_trm_default_state`) | **376** shows |
+
+Readings:
+
+1. The taxonomy is maximally clean: every wrapper on the gated population
+   is either a pure default-visible `/OC` layer or structurally malformed
+   under our v1 pairing definition.  Zero ActualText / Alt / Artifact /
+   OCMD / hidden-layer / struct-content / BMC / unresolved wrappers —
+   plan §2's "AutoCAD layer wrapper" hypothesis confirmed.
+2. **Priority 1's admissible share is 64.2%** (show-weighted).  The
+   35.8% `malformed_pairing` share is a v1 POLICY bucket (unbalanced or
+   q/Q-crossing by the plan §2 definition, or page-level EMC underflow) —
+   whether any of it is a tolerable legal shape (PDF permits BDC/EMC to
+   straddle q/Q) is a step-2+ question, registered under Open questions;
+   v1 stays fail-closed.
+3. The nested-depth open question is ANSWERED for this corpus: max depth
+   1 — v1 needs no depth budget, but keeps the every-wrapper-qualifies
+   rule for safety.
+4. Only **376** of the 6,872 admissible shows also carry a uniform `Tm`
+   and default residual state: Priority 1 alone unlocks ~376 candidates
+   into the downstream gates; the bulk stays behind Priority 2
+   (rotated `Tm`), matching the sealed ~95%-rotated overlap analysis.
+
+- 2026-08-14 (step 2 — Priority 1 admission; red-first, 28-test matrix in
+  `test_scripts/test_text_commit_mc_admission.py`, 27 red / 1 explicit
+  control pinning that underflow pages keep admitting UNwrapped shows):
+  - **Four stable reject codes**, one per independent gate, test keeps its
+    own literals: `mc_wrapper_not_pure_layer` (any non-/OC semantic class,
+    detail = class slug), `mc_layer_not_default_visible` (hidden OCG or
+    OCMD), `mc_malformed_pairing` (unclosed / q-Q-crossing / EMC-underflow
+    page / evidence-depth mismatch), `mc_splice_crosses_wrapper_boundary`
+    (proof obligation 4).  Details carry class slugs ONLY (§10 pin: the
+    `7Q` fixture marker asserted absent from every detail).
+  - **Classification promoted to `model/text_commit/marked_content.py`**;
+    `scripts/wrapper_taxonomy.py` delegates (single source of truth), the
+    census `show_verdict` fold stays script-side.  Resolution is
+    parse-based (`resolve_properties_mapping` over the page object via
+    `parse_pdf_value`; inherited `/Resources` → unresolved, fail-closed).
+  - **Serialized-truth visibility** (`resolve_default_visibility`): parse
+    catalog `/OCProperties` (`/OCGs` registration + `/D` `/BaseState`,
+    `/ON`, `/OFF`; OFF wins a dual listing — fail-closed on ambiguity).
+    NOT `get_ocgs`: PyMuPDF's OC descriptor (and rendering) is a
+    load-time snapshot that `set_layer`/raw writes never refresh
+    (verified empirically; PITFALLS entry, index 266).  Alternate
+    (`/Configs`) configurations are NOT consulted: default config only,
+    per plan §2's "default configuration" contract.
+  - **Boundary guard** (obligation 4): `McWrapper` now records
+    `open_op_end`/`close_stream_xref`/`close_op_start`; the whole-op
+    range must sit strictly inside EVERY enclosing wrapper's span, same
+    stream both ends — cross-stream wrappers refuse with the boundary
+    code (unit-pinned so deleting the guard fails a test).
+  - **Fingerprint closure** (obligation 5): `page_fingerprint` folds the
+    resolved `/Properties` mapping (name + binding xref identity +
+    canonical target object) and each target's resolved visibility bit
+    (on/off/absent — RESOLVED shape, Task 12 lesson).  Pinned stale:
+    visibility flip via `set_layer`, `/Properties` re-point to another
+    (also-visible) OCG, OCG object key mutation.  Stable across the
+    `tobytes()` scratch round trip (fingerprint-roundtrip suite green).
+  - **Funnel gate now mirrors production admission** (same
+    `admit_show_wrappers` call); the `state:marked_content_wrapper` loss
+    slug is retired for the `MC_*` codes; stage NAMES unchanged, and
+    `outside_marked_content` now counts admissibly-wrapped survivors too.
+  - Obligations 1–3 pinned as tests: encode round-trip and splice bytes
+    identical inside vs outside a wrapper; save→reopen extraction
+    equality; render-hash (pixmap sha256) equality wrapped vs unwrapped
+    before AND after commit.
+  - **Adversarial review round** (Codex + serial deep-reasoner workflow,
+    both on the same diff independently; 9 red pins added, all fixes
+    red-first):
+    1. `/D /AS` usage auto-states can hide an `/ON`-listed OCG in a
+       conforming viewer → any AS-selected OCG is now UNPROVABLE (dropped
+       from the visibility map; a poisoned /AS shape poisons the whole
+       config); adding an AS rule post-prepare goes stale via the
+       resolved-bit fold.
+    2. `/BaseState` was fail-open (any non-`/OFF` value → visible) → now
+       deref'd and required to resolve to exactly `/ON`/`/OFF` (absence =
+       ON per spec); indirect-BaseState-target flips post-prepare go
+       stale; `/ON`/`/OFF`/`/AS` entries present-but-unresolvable poison
+       the config.
+    3. Parse-budget asymmetry: classification reads targets via the
+       unbudgeted `xref_get_key` surface while the fold parsed
+       whole-object (over-budget targets collapsed to a constant
+       sentinel absorbing all mutations) → the fold now digests the SAME
+       structured key/value surface (`_fold_target_structured`);
+       `/Type`-flip on a >1 MiB object red-pinned stale.
+    4. Duplicate dict keys parsed last-wins vs mupdf's lookup order
+       (viewer behavior undefined = unprovable) → the shared
+       `parse_pdf_value` now refuses duplicates outright
+       (`PdfParseError`); Type0 suites and the corpus funnel re-verified
+       unchanged.
+    5. Fold name field length-prefixed (frame injectivity — defense in
+       depth, no observable pin).
+    Rejected finding: "details must be bare slugs" — repo §10 contract is
+    no-document-values; prose + slug is house style.
+
+### Step-3 funnel record (corpus aggregates, 2026-08-14, admission live)
+
+Full funnel with the e2e sample enabled.  Base stages and every census
+aggregate byte-identical to the step-1 record; the only loss-slug change
+is the retirement of `state:marked_content_wrapper` (10,701) for
+`mc_malformed_pairing` (3,829) — no other `MC_*` code fires on the
+corpus (zero boundary violations, zero hidden/semantic wrappers, exactly
+as the census predicted).
+
+| stage / aggregate | doc_0 before → after |
+|---|---|
+| `outside_marked_content` | 0 → **6,872** |
+| `uniform_trm` | 0 → 428 (then 52 `state:hscale` losses) |
+| `default_text_state` … `replacement_encodable_proxy` | 0 → **376** (every downstream gate passes) |
+| new losses at the mc gate | `mc_malformed_pairing` 3,829 (only) |
+| rotated-Tm loss (now visible) | `state:trm_not_uniform_scaled` 6,444 |
+| e2e sample (in-memory copies) | 22 pages attempted, 8 prepared, **8 committed, 8 reopen-extraction OK, 0 failures**; refusals: 12 `ambiguous_source_match`, 2 `verification_failed` (both correct fail-closed behavior) |
+
+Reading: Priority 1 is DONE at 64.2% of its gated population; the funnel
+now shows the Priority 2 bottleneck directly (6,444 rotated-Tm losses on
+admitted-or-unwrapped shows).  doc_1 unchanged (all TJ-array).
+
+## 8. Open questions
 
 - OCG default-visibility resolution: which configuration dictionary governs
   (D vs alternate configs), and is visibility stable across viewers?
+  (Step 2 partial answer: v1 resolves the SERIALIZED default config `/D`
+  only, fail-closed on anything else; alternate `/Configs` are ignored —
+  an OCG visible only under an alternate config still admits via /D. The
+  cross-viewer stability half stays open.)
+- Registered over-reject precision items from the step-2 review round
+  (all fail-closed, none block v1; recover in later slices if the corpus
+  demands): inherited `/Resources` from `/Pages` ancestors (no `/Parent`
+  walk — a page with hoisted resources zeroes the unlock for that doc);
+  whole-catalog/`/OCProperties` parse under the 1 MiB / 50k-token budget
+  (a ~16.7k-layer doc would reject everything with an unhelpful code —
+  targeted `xref_get_key` hops would fix); `#xx` hex escapes in
+  content-stream name operands not decoded (an escaped `/O#43` tag
+  mismatches `OC`); indirect `/Type` on property targets not deref'd
+  (genuine OCG with `/Type 15 0 R` rejects; if ever deref'd, the target
+  must join the fingerprint fold in the same change).
 - Nested wrapper depth cap: is there a corpus-measured maximum, or does v1
   need an explicit depth budget with its own reject code?
 - Rotated growth-zone gates: how do the occupancy/background probes transform
@@ -158,3 +375,11 @@ coverage number — it feeds the TODOS "latency half stays open" item.
   restricted 90°-family v1?
 - Index persistence: per-session only, or survives save/reopen via digest
   keys? (Privacy: digests only, never text.)
+- `malformed_pairing` tolerance (census 2026-08-14): 35.8% of the gated
+  population sits in the v1 malformed bucket (unbalanced / q/Q-crossing /
+  EMC-underflow-poisoned pages).  The PDF spec permits marked-content
+  sequences to straddle q/Q — is the corpus's crossing shape provably
+  inert (pure `/OC` wrapper whose splice never crosses the BDC/EMC
+  boundary), and can a later slice admit it with its own proof
+  obligations?  Needs the structural-vs-page-poison decomposition first;
+  v1 stays fail-closed.

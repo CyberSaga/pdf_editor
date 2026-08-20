@@ -52,10 +52,16 @@ from model.text_commit.dto import CommitStatus  # noqa: E402
 from model.text_commit.engine import TieredCommitEngine  # noqa: E402
 from model.text_commit.fonts import DocumentFontRegistry  # noqa: E402
 from model.text_commit.inspect import read_page_streams  # noqa: E402
+from model.text_commit.marked_content import admit_show_wrappers  # noqa: E402
 from model.text_commit.plan import PlanRejection  # noqa: E402
 from model.text_commit.replay import (  # noqa: E402
     DEFAULT_MAX_REPLAY_BYTES,
     replay_page_streams,
+)
+from scripts.wrapper_taxonomy import (  # noqa: E402
+    VERDICT_ADMISSIBLE,
+    classify_wrappers,
+    show_verdict,
 )
 
 _STAGES = (
@@ -97,6 +103,13 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
     shows_counter: Counter[str] = Counter()
     chars_counter: Counter[str] = Counter()
     loss_reasons: Counter[str] = Counter()
+    # Task 13 P1 census: taxonomy of the wrappers behind the
+    # state:marked_content_wrapper loss, aggregate slugs only (plan §10).
+    census_wrapper_classes: Counter[str] = Counter()
+    census_show_verdicts: Counter[str] = Counter()
+    census_char_verdicts: Counter[str] = Counter()
+    census_stack_depth: Counter[str] = Counter()
+    census_overlap: Counter[str] = Counter()
     e2e = {
         "pages_attempted": 0,
         "prepared": 0,
@@ -118,6 +131,8 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
             loss_reasons["page_replay_malformed"] += 1
         within_budget = total_bytes <= DEFAULT_MAX_REPLAY_BYTES
         page_bindable: list[tuple[object, str]] = []
+        wrapper_classes = classify_wrappers(doc, page, replay)
+        page_counted_wrappers: set[int] = set()
 
         for show in replay.shows:
             shows_counter["shows_total"] += 1
@@ -137,9 +152,43 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
                 loss_reasons["content_stream_too_large_for_safe_replay"] += 1
                 continue
             shows_counter["within_replay_budget"] += 1
-            if getattr(show, "mc_depth", 1) != 0:
-                loss_reasons["state:marked_content_wrapper"] += 1
-                continue
+            if getattr(show, "mc_depth", 1) != 0 or show.mc_stack:
+                verdict = show_verdict(show, wrapper_classes, replay)
+                census_show_verdicts[verdict] += 1
+                # 2 bytes per CID across the whole v1 scope — cheap,
+                # decode-free char weighting for the gated population
+                census_char_verdicts[verdict] += len(show.decoded_bytes) // 2
+                census_stack_depth[str(len(show.mc_stack))] += 1
+                for wrapper_id in show.mc_stack:
+                    if wrapper_id not in page_counted_wrappers:
+                        page_counted_wrappers.add(wrapper_id)
+                        census_wrapper_classes[wrapper_classes[wrapper_id]] += 1
+                if (
+                    verdict == VERDICT_ADMISSIBLE
+                    and getattr(show, "trm_uniform_scaled", False)
+                    and _residual_state_loss(show) is None
+                ):
+                    census_overlap["admissible_uniform_trm_default_state"] += 1
+                # Task 13 P1: the gate now mirrors the PRODUCTION admission
+                # (boundary guard included); a wrapped show that fails it is
+                # attributed to its stable MC_* code — the old blanket
+                # "state:marked_content_wrapper" slug is retired with the
+                # blanket gate itself.
+                wrappers = tuple(
+                    replay.mc_wrappers[i]
+                    for i in show.mc_stack
+                    if 0 <= i < len(replay.mc_wrappers)
+                )
+                rejection = admit_show_wrappers(
+                    doc,
+                    page,
+                    show,
+                    wrappers=wrappers,
+                    emc_underflows=replay.mc_emc_underflows,
+                )
+                if rejection is not None:
+                    loss_reasons[rejection.reason] += 1
+                    continue
             shows_counter["outside_marked_content"] += 1
             if not getattr(show, "trm_uniform_scaled", False):
                 loss_reasons["state:trm_not_uniform_scaled"] += 1
@@ -205,6 +254,13 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
         "funnel_shows": {stage: shows_counter[stage] for stage in _STAGES},
         "funnel_chars": dict(sorted(chars_counter.items())),
         "loss_reasons": dict(sorted(loss_reasons.items())),
+        "mc_census": {
+            "wrapper_classes": dict(sorted(census_wrapper_classes.items())),
+            "show_verdicts": dict(sorted(census_show_verdicts.items())),
+            "char_verdicts": dict(sorted(census_char_verdicts.items())),
+            "stack_depth": dict(sorted(census_stack_depth.items())),
+            "overlap": dict(sorted(census_overlap.items())),
+        },
         "e2e_sample": e2e,
         "e2e_reject_reasons": dict(sorted(e2e_reject_reasons.items())),
     }

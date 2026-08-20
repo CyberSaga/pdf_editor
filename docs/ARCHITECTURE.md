@@ -715,10 +715,29 @@ new engine yet** (integration is plan Task 7+).
   into `malformed_stream`/`no_source_match`. `read_page_streams` and the
   commit verifier are deliberately unguarded (verification must still hash
   oversized streams). Over-budget pages fall to the legacy engine, which
-  never lexes.
+  never lexes. Task 13 P1 census adds marked-content wrapper EVIDENCE
+  (pure capture, no admission logic): `PageReplay.mc_wrappers` (per-wrapper
+  `McWrapper`: operator, tag, props kind/name/top-level dict KEYS — never
+  values — open gs-depth, closed, crossed-q, plus BDC/EMC byte spans for
+  the splice boundary guard) + `mc_emc_underflows`, and `ShowOp.mc_stack`
+  (open wrapper ids, outermost-first). `mc_depth`'s clamp semantics are
+  unchanged.
+- `marked_content.py` — Task 13 P1 admission slice (promoted from the
+  census `scripts/wrapper_taxonomy.py`, which now delegates here):
+  wrapper classification (census slugs verbatim), `admit_show_wrappers`
+  (fail-closed: only a stack of default-visible pure `/OC` layers is
+  admitted, splice range strictly inside every wrapper's BDC..EMC span,
+  four stable `MC_*` reject codes with class-slug-only details),
+  `resolve_properties_mapping` (parse-based page `/Resources /Properties`
+  resolution), `resolve_default_visibility` (parses the SERIALIZED catalog
+  `/OCProperties` — never `get_ocgs`, whose load-time snapshot mutations
+  don't refresh; see PITFALLS), and `update_marked_content_dependencies`
+  (the fingerprint fold mirroring exactly what admission reads).
 - `inspect.py` — `bind_source_text` (text match corroborated by rawdict
-  geometry; ambiguity/XObject/rotation/malformed refuse with `RejectReason`),
-  `page_fingerprint` (streams + fonts + annots + widgets digest).
+  geometry; ambiguity/XObject/rotation/malformed refuse with `RejectReason`;
+  `SourceSpanBinding` carries the show's resolved `mc_wrappers` +
+  `mc_emc_underflows` for the admission gate), `page_fingerprint` (streams
+  + fonts + marked-content wrapper closure + annots + widgets digest).
 - `fonts.py` — `DocumentFontRegistry`: capabilities keyed by (generation,
   owner xref, resource name, font xref) — never by basename; explicit face
   provenance (`extracted`/`base14`/`system`/`none`); strict-ASCII verified

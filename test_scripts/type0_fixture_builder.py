@@ -441,6 +441,65 @@ def literalize_hex_show(fixture: Type0Fixture) -> None:
     fixture.doc.update_stream(fixture.content_xref, rewritten)
 
 
+def _set_page_property(fixture: Type0Fixture, name: str, ref: str) -> None:
+    """Set ``/Resources /Properties /<name>`` = ``ref`` on the fixture page.
+
+    ``xref_set_key`` refuses paths that traverse indirect objects, so hop
+    to the innermost indirect dict first and set the remaining direct path
+    from there."""
+    doc = fixture.doc
+    owner = fixture.page.xref
+    prefix: list[str] = []
+    for part in ("Resources", "Properties"):
+        kind, value = doc.xref_get_key(owner, "/".join([*prefix, part]))
+        if kind == "xref":
+            owner = int(value.split()[0])
+            prefix = []
+        else:
+            prefix.append(part)
+    doc.xref_set_key(owner, "/".join([*prefix, name]), ref)
+
+
+def install_oc_layer(
+    fixture: Type0Fixture, *, name: str, label: str, on: bool = True
+) -> int:
+    """Create a real OCG — registered in ``/OCProperties`` with the given
+    default-config visibility — and expose it as the page's named
+    ``/Resources /Properties`` entry ``name``.  Returns the OCG xref."""
+    ocg_xref = fixture.doc.add_ocg(label, on=on)
+    _set_page_property(fixture, name, f"{ocg_xref} 0 R")
+    return ocg_xref
+
+
+def install_ocmd(
+    fixture: Type0Fixture, *, name: str, ocg_xrefs: list[int]
+) -> int:
+    """Create an OCMD referencing ``ocg_xrefs`` and expose it as the named
+    ``/Properties`` entry ``name``.  Returns the OCMD xref."""
+    doc = fixture.doc
+    ocmd_xref = doc.get_new_xref()
+    refs = " ".join(f"{xref} 0 R" for xref in ocg_xrefs)
+    doc.update_object(ocmd_xref, f"<< /Type /OCMD /OCGs [ {refs} ] >>")
+    _set_page_property(fixture, name, f"{ocmd_xref} 0 R")
+    return ocmd_xref
+
+
+def wrap_content_in_marked_content(
+    fixture: Type0Fixture, prelude: str, *, suffix: str = " EMC"
+) -> None:
+    """Wrap the page's whole content stream in ``<prelude> ... <suffix>``.
+
+    ``prelude`` is raw content-stream source ending in ``BDC``/``BMC``
+    (e.g. ``"/OC /P0 BDC"`` or ``"/Span <</ActualText (x)>> BDC"``);
+    custom suffixes build the malformed/crossing shapes.  Apply twice for
+    nested wrappers — the later call becomes the OUTER wrapper."""
+    body = fixture.content_bytes()
+    fixture.doc.update_stream(
+        fixture.content_xref,
+        prelude.encode("ascii") + b" " + body + suffix.encode("ascii"),
+    )
+
+
 def embedded_font_buffer(fixture: Type0Fixture) -> bytes:
     """The embedded font program bytes (for glyph-repertoire assertions)."""
     _, _, _, buffer = fixture.doc.extract_font(fixture.font_xref)
