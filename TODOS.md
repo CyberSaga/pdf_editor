@@ -672,6 +672,24 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   `6.12e-17` silently voids the whole `Tm` under a real lexer. Next:
   P2-B red matrix (stable `trm_*` codes, rotated kern axis, directional
   growth proof, page-geometry staleness pins) — plan §7 step-4 record.
+- 2026-08-20 (Task 13 step 4 P2-B — rotated-TRM admission red matrix,
+  tests only): four new files (`test_text_commit_trm_admission` 44 red /
+  1 control, `_trm_tier1_kern` 12 red / 1 control,
+  `_trm_growth_directions` 32 red, `_trm_page_geometry` 7 red /
+  3 controls — **95 red confirmed before any implementation**) pin SEVEN
+  literal `trm_*` codes with fixed gate precedence (absolute
+  `trm_scale_below_floor` promoted to its own code), relative-tolerance
+  boundaries at three scales, the full /Rotate × quarter-turn-Tm visual
+  direction truth table, the new `model/text_commit/transforms.py`
+  contract (census `scripts/trm_taxonomy.py` must delegate; no-drift
+  probe grid), rotation-invariant text-space kern with successor-origin
+  preservation in both visual coordinates (kern-gap `[-2000] TJ`
+  fixture), four-direction growth gates through one shared
+  `growth_direction`, and prepare→mutate /Rotate //UserUnit/CropBox/
+  MediaBox (incl. raw-xref and page-tree-inherited) → `STALE_PLAN` pins.
+  Contract details in plan §7. Next: quarter-turn admission
+  implementation; acceptance = census prediction exactly (6,413 gate /
+  5,558 downstream, SET identity not just counts).
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

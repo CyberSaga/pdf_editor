@@ -432,6 +432,77 @@ rotations stay fail-closed with their own stable reason
 implementation**: newly admitted set == census prediction exactly —
 6,413 at the TRM gate, 5,558 through every downstream gate.
 
+- 2026-08-20 (step 4 P2-B — rotated-TRM admission red matrix, tests only;
+  no production change in this commit):
+  - **Contract module decision**: the census taxonomy is promoted to a new
+    production leaf `model/text_commit/transforms.py` — the single source
+    replay/inspect/plan/verify share and `scripts/trm_taxonomy.py` must
+    delegate to (pinned: the module never imports `scripts/`, the census
+    classifier imports it, and a probe-grid equivalence test keeps the two
+    from drifting).  Pinned API: `combined_linear(tm, ctm)`,
+    `shape_reject_reason(linear, rel_tol=REL_TOL)`,
+    `visual_baseline_direction(page, linear, rel_tol=REL_TOL)`,
+    `admission_verdict(page, tm, ctm) -> TrmVerdict(reject_reason,
+    direction, scale)`, `map_text_quad_to_visual(page, tm, ctm, quad)`,
+    with `REL_TOL = 1e-6` (relative) and `ABS_SCALE_FLOOR = 1e-6`
+    (absolute, closed boundary — mirrors replay's `_EPS` floor).
+  - **Seven stable codes** (not six): the census adversarial round proved
+    the absolute scale floor is an independent condition, so it gets its
+    own `trm_scale_below_floor` instead of hiding inside another code.
+    Fixed precedence: finite → singular det → absolute scale floor →
+    positive orientation → orthogonal axes → equal axis norms → cardinal
+    visual direction; dual-defect matrices pin the attribution.
+  - **Boundaries at three scales** (1e-3 / 1 / 1e3), just-inside 9e-7 vs
+    just-outside 1.1e-6 for every relative gate; the /Rotate ×
+    quarter-turn-Tm visual truth table is pinned in full (numerically
+    verified through `transformation_matrix × rotation_matrix`).
+  - **PreparedEdit gains `growth_direction`** (cardinal slug, pinned on
+    every ink-growth candidate; defaulted so existing constructions stay
+    valid), and the four visual growth directions each pin: blank→admit
+    (growth on the correct visual edge only), glyph→`glyphs:`,
+    vector/image/page-shading→`occupancy:`, uniform mismatched
+    form-xobject band→`background:`, off-page→`growth_outside_page`, and
+    obstacle-behind-the-baseline→still admits (forward-only proof).
+  - **Kern oracle fixture**: the successor show must stay
+    advance-dependent but clear of the growth strip, so the fixture
+    inserts a kern-only `[-2000] TJ` (24pt pure text-space advance, no
+    repositioning) between target and tail — an immediately-adjacent
+    successor sits IN the growth zone and is *correctly* refused by the
+    blank-growth gate (the axis-aligned control proved this red-first).
+    The kern scalar itself is pinned rotation-invariant (same advances →
+    same `%.6f` number, rotated or not).
+  - **Page-geometry staleness**: prepare → mutate `/Rotate` (page API and
+    raw xref), `/UserUnit`, `/CropBox`, `/MediaBox`, and the INHERITED
+    `/Rotate` on the `/Pages` ancestor → all must go `STALE_PLAN` with
+    zero mutation (today they slip the fingerprint and die later as
+    dishonest `FAILED`/committed).  Controls pin the fold canonical:
+    direct-vs-inherited fingerprints equivalent, stable across
+    `tobytes`→reopen, and no false-stale on unmutated commits.
+  - **Adversarial round on the red contract** (serial 2-agent
+    Attack→skeptical Verify, wf_77bdb1c6): 3 findings, all confirmed,
+    all addressed red-first.  F1 (important): two precedence links were
+    unpinned — added reflected∧sheared → `trm_reflected`
+    (orientation-beats-orthogonality; the mirror probe only pins
+    orientation-beats-direction) and oblique∧non-uniform /
+    oblique∧sheared → shape codes at unit, verdict, AND prepare level
+    (kills direction-first short-circuits).  F2 (minor): census
+    aggregate counts in test docstrings — explicit KEEP decision:
+    aggregates are precedent-consistent with this committed plan and
+    outside the data policy's prohibited raw-evidence categories
+    (which bans text/filenames/paths/coefficients, never slug-level
+    counts).  F3 (minor): the reference-point sampling-POSITION clause
+    was docstring-claimed but unpinned — docstring softened;
+    **implementation-phase obligation**: when
+    `background_reference_points` gains its direction parameter, add
+    the direction-parametrized unit pin that every returned point's
+    3×3 neighbourhood is disjoint from the forward strip.
+  - **Red tallies** (true red confirmed before any implementation):
+    admission 44 red / 1 control; kern 12 red / 1 control; growth
+    directions 32 red / 0; page geometry 7 red / 3 controls — 95 red,
+    5 explicitly-labeled green controls, every red failing via today's
+    blanket `unsupported_text_state`, the missing `transforms` module, or
+    the missing `growth_direction` field.
+
 ## 8. Open questions
 
 - OCG default-visibility resolution: which configuration dictionary governs
