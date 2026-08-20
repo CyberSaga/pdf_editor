@@ -690,6 +690,22 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   Contract details in plan §7. Next: quarter-turn admission
   implementation; acceptance = census prediction exactly (6,413 gate /
   5,558 downstream, SET identity not just counts).
+- 2026-08-20 (Task 13 step 4 P2 — quarter-turn admission
+  IMPLEMENTATION): red matrix 95→green (104/104 incl. 4 new F3
+  invariant pins); NEW `model/text_commit/transforms.py` single source
+  (census `scripts/trm_taxonomy.py` delegates); binding gate =
+  `admission_verdict` with seven `trm_*` codes; plan geometry rides
+  `map_text_quad_to_visual` + directional `_grown_verify_bbox` +
+  `PreparedEdit.growth_direction`; verify growth gates direction-aware
+  with dict-space conversion (PITFALLS 269: `get_drawings`/
+  `get_image_rects` speak UNROTATED page space); fingerprint folds
+  resolved page geometry + live visual matrices; funnel gate mirrors
+  production with per-code `state:trm_*` slugs + SET-identity
+  acceptance block. Replaced-contract pins updated (structural gates,
+  replay, audit, census funnel test). Full per-file sweep green.
+  Registered follow-up: `scripts/measure_tier_funnel.py` (legacy
+  simple-font tier funnel) still models the OLD blanket TRM gate —
+  update when that funnel is next used.
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

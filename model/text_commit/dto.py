@@ -98,6 +98,24 @@ class RejectReason:
     MC_LAYER_NOT_DEFAULT_VISIBLE = "mc_layer_not_default_visible"
     MC_MALFORMED_PAIRING = "mc_malformed_pairing"
     MC_SPLICE_CROSSES_WRAPPER_BOUNDARY = "mc_splice_crosses_wrapper_boundary"
+    # Task 13 Priority 2 (rotated-TRM admission): one code per independent
+    # shape/direction gate, adopted VERBATIM from the red contract in
+    # test_scripts/test_text_commit_trm_admission.py (which keeps its own
+    # literal constants on purpose).  The blanket "matrix is rotated,
+    # sheared, reflected, or non-uniformly scaled" UNSUPPORTED_TEXT_STATE
+    # rejection is replaced by these: only the census-locked quarter-turn
+    # family (positive-orientation uniform rotation+scale with a cardinal
+    # visual baseline) is admitted.  Attribution follows the FIXED gate
+    # precedence in model/text_commit/transforms.py — finite → singular →
+    # absolute scale floor → orientation → orthogonality → equal norms →
+    # cardinal direction — so telemetry can never drift.
+    TRM_NON_FINITE = "trm_non_finite"
+    TRM_SINGULAR = "trm_singular"
+    TRM_SCALE_BELOW_FLOOR = "trm_scale_below_floor"
+    TRM_REFLECTED = "trm_reflected"
+    TRM_SHEARED = "trm_sheared"
+    TRM_NON_UNIFORM_SCALE = "trm_non_uniform_scale"
+    TRM_ROTATION_NOT_QUARTER_TURN = "trm_rotation_not_quarter_turn"
 
 
 class CommitStatus(str, Enum):

@@ -52,7 +52,7 @@ LEAD_IN = "Lead-in"  # distinct bytes: never collides with TARGET when matching
 _NOMINAL: dict[str, object] = {
     "origin_reliable": True,  # inspect.py G6 -> UNTRACKED_ADVANCE
     "in_bt": True,  # inspect.py G5 -> UNSUPPORTED_TEXT_STATE
-    "trm_uniform_scaled": True,  # inspect.py G7 -> UNSUPPORTED_TEXT_STATE
+    "trm_uniform_scaled": True,  # inspect.py G7 -> trm_* admission (Task 13 P2)
     "operator": "Tj",  # plan.py    -> NOT_SINGLE_LITERAL_TJ
     # "hex" is equally admissible since 2026-08-01; every fixture here is
     # literal, so one nominal value still suffices.
@@ -380,20 +380,25 @@ def test_planner_accepts_uniformly_scaled_text_matrix():
     doc.close()
 
 
-# Deleting the ``abs(b) > _EPS or abs(c) > _EPS`` half of
-# ``replay._uniform_scale`` makes every matrix below return its ``a``, so
-# each of these three MUST fail on that mutation.  A 90-degree rotation
-# would not: its ``a`` is 0 and the ``a > 0`` guard catches it anyway.
+# Task 13 P2: the blanket G7 refusal became the fail-closed quarter-turn
+# admission — every off-axis shape keeps its own stable ``trm_*`` code
+# from the transforms gate chain (oblique rotations die at the DIRECTION
+# gate, shears at the orthogonality gate).
 @pytest.mark.parametrize(
-    ("label", "text_matrix"),
+    ("label", "text_matrix", "expected_reason"),
     [
-        ("rotation_45", b"0.7071 0.7071 -0.7071 0.7071"),  # b and c both set
-        ("shear_b", b"1 0.5 0 1"),  # only b set
-        ("shear_c", b"1 0 0.5 1"),  # only c set
+        (
+            "rotation_45",
+            b"0.7071 0.7071 -0.7071 0.7071",  # b and c both set
+            RejectReason.TRM_ROTATION_NOT_QUARTER_TURN,
+        ),
+        ("shear_b", b"1 0.5 0 1", RejectReason.TRM_SHEARED),  # only b set
+        ("shear_c", b"1 0 0.5 1", RejectReason.TRM_SHEARED),  # only c set
     ],
 )
-def test_planner_rejects_off_axis_text_matrix(label, text_matrix):
-    """G7: rotation and shear keep ``a == d > 0`` but are not Tier 0."""
+def test_planner_rejects_off_axis_text_matrix(label, text_matrix, expected_reason):
+    """G7: oblique rotation and shear keep ``a == d > 0`` but are not
+    admissible — each with its own code, never a blanket refusal."""
     doc = _stream_doc(
         b"BT /F1 12 Tf " + text_matrix + b" 72 700 Tm ("
         + TARGET.encode()
@@ -407,8 +412,7 @@ def test_planner_rejects_off_axis_text_matrix(label, text_matrix):
 
     rejection = _plan(doc)
     assert isinstance(rejection, PlanRejection), rejection
-    assert rejection.reason == RejectReason.UNSUPPORTED_TEXT_STATE
-    assert "rotated, sheared, reflected" in rejection.detail
+    assert rejection.reason == expected_reason
     doc.close()
 
     _assert_control_plans_cleanly(
@@ -416,23 +420,16 @@ def test_planner_rejects_off_axis_text_matrix(label, text_matrix):
     )
 
 
-# ``point_reflection`` is the only fixture here that pins the ``a > 0``
-# guard: delete it and ``_uniform_scale`` returns -10.0, so upside-down
-# text would plan (and the fallback bbox would come out inverted).  The
-# other two are guarded by ``a == d`` / ``b == c == 0`` and pin nothing on
-# their own — they are kept as documentation of the refused shapes.
-@pytest.mark.parametrize(
-    ("label", "text_matrix"),
-    [
-        ("point_reflection", b"-10 0 0 -10"),  # a == d < 0
-        ("mirror_x", b"-10 0 0 10"),  # a == -d
-        ("rotation_90", b"0 10 -10 0"),  # a == d == 0
-    ],
-)
-def test_planner_rejects_reflected_or_rotated_text_matrix(label, text_matrix):
-    """G7: a negative or degenerate scale is never a Tier 0 candidate."""
+# Task 13 P2: a TRUE reflection (negative determinant) stays fail-closed
+# with its own code, while the point reflection (= a 180° rotation, det >
+# 0) and the 90° rotation are now ADMITTED as quarter-turn candidates —
+# the fallback bbox rides the transformed baseline, so "upside-down"
+# text plans correctly instead of being refused wholesale
+# (test_text_commit_trm_admission.py pins the full admission story).
+def test_planner_rejects_mirror_text_matrix():
+    """G7: negative orientation is never a candidate — its own code."""
     doc = _stream_doc(
-        b"BT /F1 1 Tf " + text_matrix + b" 300 400 Tm ("
+        b"BT /F1 1 Tf -10 0 0 10 300 400 Tm ("  # a == -d: det < 0
         + TARGET.encode()
         + b") Tj ET"
     )
@@ -443,13 +440,34 @@ def test_planner_rejects_reflected_or_rotated_text_matrix(label, text_matrix):
 
     rejection = _plan(doc)
     assert isinstance(rejection, PlanRejection), rejection
-    assert rejection.reason == RejectReason.UNSUPPORTED_TEXT_STATE
-    assert "rotated, sheared, reflected" in rejection.detail
+    assert rejection.reason == RejectReason.TRM_REFLECTED
     doc.close()
 
     _assert_control_plans_cleanly(
         b"BT /F1 1 Tf 10 0 0 10 300 400 Tm (" + TARGET.encode() + b") Tj ET"
     )
+
+
+@pytest.mark.parametrize(
+    ("label", "text_matrix"),
+    [
+        ("point_reflection", b"-10 0 0 -10"),  # 180° turn × 10: det > 0
+        ("rotation_90", b"0 10 -10 0"),  # quarter turn × 10
+    ],
+)
+def test_planner_admits_quarter_turn_text_matrix(label, text_matrix):
+    """Task 13 P2: the quarter-turn family PLANS (was a G7 refusal)."""
+    doc = _stream_doc(
+        b"BT /F1 1 Tf " + text_matrix + b" 300 400 Tm ("
+        + TARGET.encode()
+        + b") Tj ET"
+    )
+    show = _target_show(doc)
+    assert show.trm_uniform_scale is None  # replay's Tier 0 idiom flag only
+    result = _plan(doc)
+    assert isinstance(result, PreparedEdit), result
+    assert result.growth_direction in ("right", "left", "up", "down")
+    doc.close()
 
 
 # ------------------------------------------------- fallback target geometry

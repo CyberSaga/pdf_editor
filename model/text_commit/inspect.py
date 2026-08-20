@@ -28,6 +28,7 @@ from model.text_commit.cid_fonts import (
 from model.text_commit.dto import RejectReason
 from model.text_commit.fonts import DocumentFontRegistry, FontCapability
 from model.text_commit.marked_content import update_marked_content_dependencies
+from model.text_commit.transforms import admission_verdict
 from model.text_commit.replay import (
     McWrapper,
     PageReplay,
@@ -36,6 +37,34 @@ from model.text_commit.replay import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Task 13 P2 (§10 privacy): one fixed, code-only detail per trm_* refusal —
+# never a matrix coefficient, which can fingerprint a private document's
+# producer pipeline.
+_TRM_REJECT_DETAILS = {
+    RejectReason.TRM_NON_FINITE: (
+        "combined text/transform matrix has non-finite components"
+    ),
+    RejectReason.TRM_SINGULAR: "combined text/transform matrix is singular",
+    RejectReason.TRM_SCALE_BELOW_FLOOR: (
+        "combined text/transform matrix baseline scale is below the "
+        "absolute floor"
+    ),
+    RejectReason.TRM_REFLECTED: (
+        "combined text/transform matrix has negative orientation "
+        "(reflection)"
+    ),
+    RejectReason.TRM_SHEARED: (
+        "combined text/transform matrix has non-orthogonal axes (shear)"
+    ),
+    RejectReason.TRM_NON_UNIFORM_SCALE: (
+        "combined text/transform matrix scales its axes unequally"
+    ),
+    RejectReason.TRM_ROTATION_NOT_QUARTER_TURN: (
+        "combined text/transform matrix rotation is not a visual "
+        "quarter turn"
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -259,6 +288,42 @@ def _update_font_dependencies(
     digest.update(b"\x06")
 
 
+def _update_page_geometry(
+    digest: hashlib._Hash, doc: fitz.Document, page: fitz.Page
+) -> None:
+    """Fold the resolved page geometry into a fingerprint digest.
+
+    RESOLVED values only (never raw dict shape): ``page.rotation`` /
+    ``page.mediabox`` / ``page.cropbox`` resolve page-tree inheritance, so
+    a direct ``/Rotate 270`` and the same value inherited from ``/Pages``
+    fold identically while an ancestor mutation still changes the fold.
+    ``/UserUnit`` is not inheritable; it is read off the page dict with
+    one indirect hop resolved.  The live visual matrices are folded too:
+    they are what plan/verify geometry actually consumes, so any
+    divergence between serialized state and a computed view goes stale
+    instead of slipping through.
+    """
+    try:
+        kind, value = doc.xref_get_key(page.xref, "UserUnit")
+        if kind == "xref":
+            value = doc.xref_object(int(value.split()[0]))
+        user_unit = f"{kind}:{value}"
+    except (RuntimeError, ValueError, IndexError, fitz.mupdf.FzErrorBase):
+        user_unit = "<unreadable-user-unit>"
+    tm = page.transformation_matrix
+    rm = page.rotation_matrix
+    parts = (
+        str(page.rotation),
+        repr(tuple(page.mediabox)),
+        repr(tuple(page.cropbox)),
+        user_unit,
+        repr((tm.a, tm.b, tm.c, tm.d, tm.e, tm.f)),
+        repr((rm.a, rm.b, rm.c, rm.d, rm.e, rm.f)),
+    )
+    digest.update("|".join(parts).encode("utf-8"))
+    digest.update(b"\x06")
+
+
 def page_fingerprint(doc: fitz.Document, page: fitz.Page) -> str:
     """Digest of everything a Tier 0 commit promises not to disturb.
 
@@ -290,6 +355,14 @@ def page_fingerprint(doc: fitz.Document, page: fitz.Page) -> str:
     # evidence closure -- the resolved /Properties mapping, its targets,
     # and each OCG's default-config visibility bit (RESOLVED shape).
     update_marked_content_dependencies(digest, doc, page)
+    # Task 13 P2: fold the RESOLVED page geometry every P2 geometric proof
+    # rides -- /Rotate, /MediaBox, /CropBox via PyMuPDF's inheritance-
+    # resolving accessors (a page-tree ancestor mutation must go stale,
+    # and a direct-vs-inherited value must fingerprint identically), the
+    # page-local /UserUnit (not inheritable; one indirect hop resolved),
+    # AND the live computed visual matrices (transformation x rotation),
+    # so a cached-view/serialized-state divergence can never slip through.
+    _update_page_geometry(digest, doc, page)
     for annot in page.annots():
         digest.update(f"{annot.xref}:{tuple(annot.rect)}".encode("utf-8"))
         digest.update(b"\x03")
@@ -679,11 +752,18 @@ def bind_source_text(
             RejectReason.UNSUPPORTED_TEXT_STATE,
             "show operator outside BT/ET",
         )
-    if not show.trm_uniform_scaled:
+    # Task 13 P2: the blanket "rotated, sheared, reflected, or
+    # non-uniformly scaled" refusal is replaced by the fail-closed
+    # quarter-turn admission — the combined Tm×CTM must be a
+    # positive-orientation uniform rotation+scale whose VISUAL baseline
+    # is cardinal; every defect keeps its own stable trm_* code.  Details
+    # are code-only (§10 privacy): matrix coefficients can fingerprint a
+    # private document's producer and never appear here.
+    trm_verdict = admission_verdict(page, show.tm, show.ctm)
+    if trm_verdict.reject_reason is not None:
         return BindingFailure(
-            RejectReason.UNSUPPORTED_TEXT_STATE,
-            "combined text/transform matrix is rotated, sheared, reflected, "
-            "or non-uniformly scaled",
+            trm_verdict.reject_reason,
+            _TRM_REJECT_DETAILS[trm_verdict.reject_reason],
         )
 
     if id(show) in cid_candidate_ids and registry is not None:

@@ -362,6 +362,34 @@ def test_growth_past_the_page_edge_is_rejected(case: _DirectionCase) -> None:
 
 
 @pytest.mark.parametrize("case", _CASES, ids=_IDS)
+def test_background_reference_points_stay_off_the_forward_side(
+    case: _DirectionCase,
+) -> None:
+    """Review obligation F3 (wf_77bdb1c6): for every direction's
+    (target, verify) pair, each returned sampling point's 3×3
+    neighbourhood is provably disjoint from halo(verify) — the growth
+    band and everything the raster gate newly stops checking — so a
+    forward-side sample can never supply its own reference."""
+    from model.text_commit.verify import (
+        _halo_pixels,
+        background_reference_points,
+    )
+
+    target = (200.0, 200.0, 260.0, 216.0)
+    index, sign = case.moved_edge
+    verify = list(target)
+    verify[index] += sign * 16.0
+    meta = (2000, 2000, 8000, 4)
+    points = background_reference_points(target, tuple(verify), meta)
+    assert points, "the sampler must offer at least one candidate"
+    hx0, hy0, hx1, hy1 = _halo_pixels(tuple(verify))
+    for x, y in points:
+        assert (
+            (x + 1 < hx0) or (x - 1 > hx1) or (y + 1 < hy0) or (y - 1 > hy1)
+        ), (case.slug, (x, y))
+
+
+@pytest.mark.parametrize("case", _CASES, ids=_IDS)
 def test_obstacle_behind_the_baseline_start_still_admits(
     case: _DirectionCase,
 ) -> None:

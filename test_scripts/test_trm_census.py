@@ -298,10 +298,23 @@ def test_funnel_reports_trm_census_for_rotated_show() -> None:
     set_text_matrix(fixture, (0.0, 1.0, -1.0, 0.0))
     report = funnel_document(fixture.doc, run_e2e=False)
 
-    # Admission unchanged: the rotated show still dies at the TRM gate.
+    # Task 13 P2: the quarter-turn show is ADMITTED at the (now
+    # production-mirroring) TRM gate and flows downstream; the blanket
+    # "state:trm_not_uniform_scaled" slug is retired with the blanket
+    # gate.  The census fold still records the same population.
     assert report["funnel_shows"]["outside_marked_content"] == 1
-    assert report["funnel_shows"]["uniform_trm"] == 0
-    assert report["loss_reasons"]["state:trm_not_uniform_scaled"] == 1
+    assert report["funnel_shows"]["trm_rotated_admitted"] == 1
+    assert report["funnel_shows"]["uniform_trm"] == 1
+    assert "state:trm_not_uniform_scaled" not in report["loss_reasons"]
+    acceptance = report["trm_census"]["acceptance"]
+    assert acceptance["predicted_gate"] == 1
+    assert acceptance["production_gate"] == 1
+    assert acceptance["gate_symmetric_difference"] == 0
+    assert acceptance["gate_membership_exact"] is True
+    assert acceptance["predicted_downstream"] == 1
+    assert acceptance["production_downstream"] == 1
+    assert acceptance["downstream_symmetric_difference"] == 0
+    assert acceptance["downstream_membership_exact"] is True
 
     census = report["trm_census"]
     assert census["user_shape"] == {"uniform_rotated_positive": 1}

@@ -153,7 +153,7 @@ coverage number — it feeds the TODOS "latency half stays open" item.
        plan gate** (was 0); corpus e2e sample: 22 pages attempted,
        8 prepared, 8 committed, 8 reopen-extraction OK, 0 failures.
        §7 step-2 record.)
-4. [ ] Priority 2 red matrix (uniform-rotation predicate boundaries, rotated
+4. [x] Priority 2 red matrix (uniform-rotation predicate boundaries, rotated
        kern axis, visual-space verify), then implementation; separate PR.
        (2026-08-19 census-before-code sub-step DONE: rotated-TRM census on
        the post-P1 TRM-gate population — **6,417/6,444 uniform rotations,
@@ -163,6 +163,11 @@ coverage number — it feeds the TODOS "latency half stays open" item.
        scope decision; classifier in `scripts/trm_taxonomy.py`, funnel
        `trm_census` block; 70-test red-first matrix + 2-agent adversarial
        round, 3 findings fixed red-first.)
+       (2026-08-20 red matrix DONE: 95 red / 5 controls across four files
+       + review round, 3 findings fixed red-first — §7 P2-B record.
+       2026-08-20 implementation DONE: red matrix green, transforms.py
+       single source, directional geometry/growth/fingerprint — §7
+       implementation record.)
 5. [ ] Re-run funnel; record rotated-Tm survival.
 6. [ ] Priority 3 spike: index design + latency measurement harness (ties
        into the preview-latency follow-up from Task 12 §8); own PR(s).
@@ -492,16 +497,69 @@ implementation**: newly admitted set == census prediction exactly —
     (which bans text/filenames/paths/coefficients, never slug-level
     counts).  F3 (minor): the reference-point sampling-POSITION clause
     was docstring-claimed but unpinned — docstring softened;
-    **implementation-phase obligation**: when
-    `background_reference_points` gains its direction parameter, add
-    the direction-parametrized unit pin that every returned point's
-    3×3 neighbourhood is disjoint from the forward strip.
+    **implementation-phase obligation** (FULFILLED in the implementation:
+    a direction-parametrized invariant pin now asserts every returned
+    sampling point's 3×3 neighbourhood is disjoint from halo(verify)
+    for all four directions — the sampler needed no new parameter, its
+    disjointness filter is the structural guarantee).
   - **Red tallies** (true red confirmed before any implementation):
     admission 44 red / 1 control; kern 12 red / 1 control; growth
     directions 32 red / 0; page geometry 7 red / 3 controls — 95 red,
     5 explicitly-labeled green controls, every red failing via today's
     blanket `unsupported_text_state`, the missing `transforms` module, or
     the missing `growth_direction` field.
+
+- 2026-08-20 (step 4 P2 — quarter-turn admission IMPLEMENTATION; the
+  red matrix above turned green — 104/104 across the four files (95 red
+  → green, 5 controls still green, plus the 4 new F3 invariant pins)):
+  - **`model/text_commit/transforms.py`** is the production single
+    source (shape gates / visual direction / admission verdict / the
+    text-quad→visual mapping); `scripts/trm_taxonomy.py` is now a thin
+    delegate (`shape_reject_reason(..., abs_floor=0.0)` reproduces the
+    census's floor-free shape vocabulary byte-identically; the floor
+    stays in its predicted chain).  Seven `trm_*` codes on
+    `RejectReason`; `inspect.bind_source_text`'s blanket refusal
+    replaced by `admission_verdict` with fixed, coefficient-free
+    details.
+  - **Geometry**: plan's fallback target box now rides
+    `map_text_quad_to_visual` (reproduces the historical axis-aligned
+    halo exactly); `_grown_verify_bbox` extends the USER-space rect
+    edge chosen by the combined baseline vector (caller-bbox cross
+    extent preserved; axis-aligned path arithmetically unchanged);
+    `PreparedEdit.growth_direction` (cardinal slug) rides the plan
+    token.  Kern arithmetic untouched — proven rotation-invariant by
+    the red matrix, not re-derived.
+  - **Verify**: `_growth_zone_rect` infers the forward strip from the
+    DOMINANT extended edge (immune to sub-point cross-edge slivers;
+    existing unit-call signatures unchanged); `count_growth_zone_glyphs`
+    generalizes the own-glyph exclusion per direction and converts to
+    dict space; occupancy intersects convert the growth rect through
+    `derotation_matrix` — `get_drawings`/`get_image_rects` speak
+    UNROTATED page space (new PITFALLS entry 269; found by the
+    four-direction red matrix's CAD-idiom cases).
+  - **Fingerprint**: `_update_page_geometry` folds inheritance-RESOLVED
+    /Rotate//MediaBox//CropBox (PyMuPDF accessors), page-local
+    /UserUnit (one indirect hop), and the live visual matrices — the
+    prepare→mutate→commit matrix (page API, raw xref, and /Pages
+    ancestor) now dies STALE_PLAN with zero mutation; canonical
+    equivalence and round-trip stability pinned by controls.
+  - **Funnel** (`measure_type0_funnel.py`): the TRM gate now mirrors
+    the production admission; the blanket `state:trm_not_uniform_scaled`
+    slug is retired for per-code `state:trm_*` slugs (same pattern as
+    P1's retirement of `state:marked_content_wrapper`); new stage
+    `trm_rotated_admitted`; `trm_census.acceptance` block compares the
+    census-predicted vs production-admitted sets IN MEMORY and emits
+    counts + symmetric differences + membership booleans only.
+    (`scripts/measure_tier_funnel.py` — the legacy simple-font tier
+    funnel — still models the OLD blanket gate; registered in TODOS,
+    not this slice.)
+  - **Replaced-contract test updates** (the old pins the red matrix
+    supersedes): structural gates (off-axis → per-code; the point
+    reflection = 180°×10 and the 90° turn now PLAN — the mirror keeps
+    `trm_reflected`), replay's rotated-bind refusal → now binds, the
+    audit script's rotated count → binds with a sheared fixture keeping
+    the refusal path pinned, and the census funnel test → admission +
+    acceptance block.
 
 ## 8. Open questions
 
@@ -535,6 +593,12 @@ implementation**: newly admitted set == census prediction exactly —
   oblique + 27 reflected shows stay fail-closed with their own codes;
   arbitrary-angle admission would be its own later slice with new census
   evidence.)
+  (Step-4 implementation answer, 2026-08-20: SAME code path for all four
+  directions — `_growth_zone_rect` infers the forward strip from the
+  dominant extended edge, the glyph counter and occupancy intersects
+  convert to unrotated dict space first (PITFALLS 269), and the
+  axis-aligned visual strip proved sufficient exactly as the census
+  predicted.  CLOSED.)
 - Index persistence: per-session only, or survives save/reopen via digest
   keys? (Privacy: digests only, never text.)
 - `malformed_pairing` tolerance (census 2026-08-14): 35.8% of the gated

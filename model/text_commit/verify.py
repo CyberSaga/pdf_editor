@@ -633,14 +633,42 @@ def _growth_zone_rect(
     target_bbox: tuple[float, float, float, float],
     verify_bbox: tuple[float, float, float, float],
 ) -> fitz.Rect | None:
-    if verify_bbox[2] <= target_bbox[2]:
+    """The forward growth strip in visual space, for ANY cardinal growth
+    direction (Task 13 P2) — never a ``+x`` assumption.
+
+    The direction is the DOMINANT edge by which ``verify_bbox`` extends
+    beyond ``target_bbox`` (plan's ``_grown_verify_bbox`` extends exactly
+    one edge, chosen by the shared ``growth_direction``; the dominant-edge
+    read is immune to sub-point float slivers on the cross edges):
+
+        right → target.x1 … verify.x1      left → verify.x0 … target.x0
+        down  → target.y1 … verify.y1      up   → verify.y0 … target.y0
+    """
+    extents = (
+        ("right", verify_bbox[2] - target_bbox[2]),
+        ("left", target_bbox[0] - verify_bbox[0]),
+        ("down", verify_bbox[3] - target_bbox[3]),
+        ("up", target_bbox[1] - verify_bbox[1]),
+    )
+    direction, amount = max(extents, key=lambda pair: pair[1])
+    if amount <= 0.0:
         return None
-    rect = fitz.Rect(
-        target_bbox[2],
+    cross_y = (
         min(target_bbox[1], verify_bbox[1]),
-        verify_bbox[2],
         max(target_bbox[3], verify_bbox[3]),
     )
+    cross_x = (
+        min(target_bbox[0], verify_bbox[0]),
+        max(target_bbox[2], verify_bbox[2]),
+    )
+    if direction == "right":
+        rect = fitz.Rect(target_bbox[2], cross_y[0], verify_bbox[2], cross_y[1])
+    elif direction == "left":
+        rect = fitz.Rect(verify_bbox[0], cross_y[0], target_bbox[0], cross_y[1])
+    elif direction == "down":
+        rect = fitz.Rect(cross_x[0], target_bbox[3], cross_x[1], verify_bbox[3])
+    else:
+        rect = fitz.Rect(cross_x[0], verify_bbox[1], cross_x[1], target_bbox[1])
     rect.normalize()
     if rect.is_empty:
         return None
@@ -659,18 +687,31 @@ def _rects_overlap(a: fitz.Rect, b: fitz.Rect, *, tol: float = 1e-3) -> bool:
     return (ix1 - ix0) > tol and (iy1 - iy0) > tol
 
 
+def _growth_rect_in_dict_space(page: fitz.Page, growth_rect: fitz.Rect) -> fitz.Rect:
+    """``get_drawings``/``get_image_rects`` report UNROTATED page space on
+    /Rotate pages (the same quirk as ``get_text``) — intersect there, not
+    in the visual space the growth rect lives in (identity at /Rotate 0)."""
+    return fitz.Rect(
+        _visual_bbox_to_dict_space(
+            page,
+            (growth_rect.x0, growth_rect.y0, growth_rect.x1, growth_rect.y1),
+        )
+    )
+
+
 def _drawings_intersect_growth(page: fitz.Page, growth_rect: fitz.Rect) -> bool | None:
     try:
         drawings = page.get_drawings()
     except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
         return None
+    growth_dict = _growth_rect_in_dict_space(page, growth_rect)
     for drawing in drawings:
         rect = drawing.get("rect")
         if rect is None:
             if drawing.get("items"):
                 return None
             continue
-        if _rects_overlap(fitz.Rect(rect), growth_rect):
+        if _rects_overlap(fitz.Rect(rect), growth_dict):
             return True
     return False
 
@@ -680,6 +721,7 @@ def _images_intersect_growth(page: fitz.Page, growth_rect: fitz.Rect) -> bool | 
         images = page.get_images(full=True)
     except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
         return None
+    growth_dict = _growth_rect_in_dict_space(page, growth_rect)
     for image in images:
         xref = int(image[0])
         if xref <= 0:
@@ -689,7 +731,7 @@ def _images_intersect_growth(page: fitz.Page, growth_rect: fitz.Rect) -> bool | 
         except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
             return None
         for placement in placements:
-            if _rects_overlap(fitz.Rect(placement), growth_rect):
+            if _rects_overlap(fitz.Rect(placement), growth_dict):
                 return True
     return False
 
@@ -839,8 +881,9 @@ def count_growth_zone_glyphs(
     verify_bbox: tuple[float, float, float, float],
 ) -> int:
     """Count of non-whitespace rawdict characters already occupying the
-    growth zone -- the rectangle from ``target_bbox``'s right edge to
-    ``verify_bbox``'s right edge, over ``target_bbox``'s y-range.
+    growth zone -- the forward strip between the target's growth-side edge
+    and the verify bbox's, for ANY cardinal growth direction
+    (:func:`_growth_zone_rect`).
 
     A COUNT only, never text: this is the character half of the growth-
     blank proof, exact and size-independent, complementary to the raster
@@ -856,9 +899,41 @@ def count_growth_zone_glyphs(
     target's own last char ends exactly at ``tx1`` (which is the max of its
     chars' right edges), so it is still excluded.
     """
-    tx1 = target_bbox[2]
-    ty0, ty1 = target_bbox[1], target_bbox[3]
-    vx1 = verify_bbox[2]
+    zone_visual = _growth_zone_rect(target_bbox, verify_bbox)
+    if zone_visual is None:
+        return 0
+    # ``get_text`` bboxes stay in UNROTATED page space on /Rotate pages —
+    # convert the zone and target (visual space) instead of every char.
+    zone = fitz.Rect(
+        _visual_bbox_to_dict_space(
+            page, (zone_visual.x0, zone_visual.y0, zone_visual.x1, zone_visual.y1)
+        )
+    )
+    target = fitz.Rect(_visual_bbox_to_dict_space(page, target_bbox))
+    # The forward boundary in dict space: the zone edge adjacent to the
+    # target (direction-agnostic — whichever cardinal side the shared
+    # growth_direction put the strip on ends up adjacent by construction).
+    adjacency = (
+        ("x+", abs(zone.x0 - target.x1)),
+        ("x-", abs(zone.x1 - target.x0)),
+        ("y+", abs(zone.y0 - target.y1)),
+        ("y-", abs(zone.y1 - target.y0)),
+    )
+    axis = min(adjacency, key=lambda pair: pair[1])[0]
+
+    def _is_targets_own(bbox: tuple[float, float, float, float]) -> bool:
+        # The target's own glyph sits behind the forward boundary (its
+        # last char ENDS there); a foreign wide glyph that starts behind
+        # the boundary but runs on across the growth band fails the
+        # containment half and is counted.
+        if axis == "x+":
+            return bbox[0] < target.x1 - 0.5 and bbox[2] <= target.x1 + 0.5
+        if axis == "x-":
+            return bbox[2] > target.x0 + 0.5 and bbox[0] >= target.x0 - 0.5
+        if axis == "y+":
+            return bbox[1] < target.y1 - 0.5 and bbox[3] <= target.y1 + 0.5
+        return bbox[3] > target.y0 + 0.5 and bbox[1] >= target.y0 - 0.5
+
     count = 0
     for block in page.get_text("rawdict")["blocks"]:
         for line in block.get("lines", []):
@@ -867,12 +942,12 @@ def count_growth_zone_glyphs(
                     if ch["c"].isspace():
                         continue
                     bbox = ch["bbox"]
-                    if bbox[0] < tx1 - 0.5 and bbox[2] <= tx1 + 0.5:
-                        continue  # the target's own glyph
-                    if bbox[2] <= tx1 or bbox[0] >= vx1:
-                        continue  # outside the growth rectangle's x-range
-                    if bbox[3] <= ty0 or bbox[1] >= ty1:
-                        continue  # outside the growth rectangle's y-range
+                    if _is_targets_own(bbox):
+                        continue
+                    if bbox[2] <= zone.x0 or bbox[0] >= zone.x1:
+                        continue  # outside the growth strip's x-range
+                    if bbox[3] <= zone.y0 or bbox[1] >= zone.y1:
+                        continue  # outside the growth strip's y-range
                     count += 1
     return count
 

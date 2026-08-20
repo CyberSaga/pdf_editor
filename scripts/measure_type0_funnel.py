@@ -54,6 +54,7 @@ from model.text_commit.fonts import DocumentFontRegistry  # noqa: E402
 from model.text_commit.inspect import read_page_streams  # noqa: E402
 from model.text_commit.marked_content import admit_show_wrappers  # noqa: E402
 from model.text_commit.plan import PlanRejection  # noqa: E402
+from model.text_commit.transforms import admission_verdict  # noqa: E402
 from model.text_commit.replay import (  # noqa: E402
     DEFAULT_MAX_REPLAY_BYTES,
     replay_page_streams,
@@ -81,6 +82,7 @@ _STAGES = (
     "single_hex_tj",
     "within_replay_budget",
     "outside_marked_content",
+    "trm_rotated_admitted",
     "uniform_trm",
     "default_text_state",
     "scope_accepted",
@@ -119,8 +121,8 @@ def _trm_census(
     overlap: Counter[str],
     predicted: Counter[str],
     near_miss: Counter[str],
-) -> None:
-    """Task 13 P2 census fold for ONE show dying at the TRM gate.
+) -> tuple[bool, bool]:
+    """Task 13 P2 census fold for ONE show reaching the TRM gate rotated.
 
     Read-only aggregation, slugs only.  The ``predicted`` chain runs the
     SAME downstream gates the funnel's main path runs, under BOTH
@@ -129,6 +131,11 @@ def _trm_census(
     the Priority 2 implementation must newly admit.  ``near_miss``
     surfaces quarter turns written with rounded decimals that the strict
     tolerance misses (diagnostic only, never predicted).
+
+    Returns ``(gate_member, downstream_member)`` for the quarter-turn v1
+    scope — the SET-identity acceptance (predicted vs production
+    admission) compares memberships in memory; only counts are ever
+    emitted.
     """
     linear = combined_linear(show.tm, show.ctm)
     shape = classify_user_matrix(linear)
@@ -160,46 +167,48 @@ def _trm_census(
     # Production's replay floor is ABSOLUTE (a <= _EPS): a degenerate
     # scale passing the relative shape gates must never be predicted.
     if not strict_uniform or baseline_scale(linear) <= ABS_SCALE_FLOOR:
-        return
+        return (False, False)
+    gate_member = strict_cardinal
     predicted["any_uniform_rotation"] += 1
     if strict_cardinal:
         predicted["quarter_turn_uniform"] += 1
     if _residual_state_loss(show) is not None:
-        return
+        return (gate_member, False)
     predicted["and_default_state"] += 1
     cid = getattr(capability, "cid", None)
     if cid is None:
-        return
+        return (gate_member, False)
     predicted["and_scope_accepted"] += 1
     decoded = cid.decode_show_bytes(show.decoded_bytes)
     if isinstance(decoded, CidCapabilityFailure):
-        return
+        return (gate_member, False)
     predicted["and_source_decoded"] += 1
     reproduced = cid.encode_first_wins(decoded)
     if (
         isinstance(reproduced, CidCapabilityFailure)
         or reproduced != show.decoded_bytes
     ):
-        return
+        return (gate_member, False)
     predicted["and_bytes_reproduced"] += 1
     source_cids = tuple(
         int.from_bytes(show.decoded_bytes[i : i + 2], "big")
         for i in range(0, len(show.decoded_bytes), 2)
     )
     if cid.glyph_gate(source_cids, decoded) is not None:
-        return
+        return (gate_member, False)
     predicted["predicted_source_bindable"] += 1
     predicted["predicted_source_bindable_chars"] += len(decoded)
     if strict_cardinal:
         predicted["predicted_source_bindable_quarter_turn"] += 1
     strict = cid.encode_strict(decoded)
     if isinstance(strict, CidCapabilityFailure):
-        return
+        return (gate_member, False)
     if cid.glyph_gate(strict, decoded) is not None:
-        return
+        return (gate_member, False)
     predicted["predicted_replacement_encodable"] += 1
     if strict_cardinal:
         predicted["predicted_replacement_encodable_quarter_turn"] += 1
+    return (gate_member, gate_member)
 
 
 def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
@@ -222,6 +231,13 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
     trm_overlap: Counter[str] = Counter()
     trm_predicted: Counter[str] = Counter()
     trm_near_miss: Counter[str] = Counter()
+    # Task 13 P2 acceptance: predicted vs production admission compared as
+    # SETS (identity keys stay in memory; the report emits counts and the
+    # symmetric difference only — never a key).
+    trm_predicted_gate: set[tuple[int, int, int]] = set()
+    trm_predicted_downstream: set[tuple[int, int, int]] = set()
+    trm_production_gate: set[tuple[int, int, int]] = set()
+    trm_production_downstream: set[tuple[int, int, int]] = set()
     e2e = {
         "pages_attempted": 0,
         "prepared": 0,
@@ -302,9 +318,19 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
                     loss_reasons[rejection.reason] += 1
                     continue
             shows_counter["outside_marked_content"] += 1
-            if not getattr(show, "trm_uniform_scaled", False):
-                loss_reasons["state:trm_not_uniform_scaled"] += 1
-                _trm_census(
+            trm_rotated_candidate = not getattr(
+                show, "trm_uniform_scaled", False
+            )
+            if trm_rotated_candidate:
+                # Census population unchanged: exactly the shows the
+                # pre-P2 blanket gate killed.  The gate itself now mirrors
+                # the PRODUCTION quarter-turn admission; a refused show is
+                # attributed to its stable trm_* code — the old blanket
+                # "state:trm_not_uniform_scaled" slug is retired with the
+                # blanket gate itself (same pattern as P1's retirement of
+                # "state:marked_content_wrapper").
+                show_key = (page_index, show.stream_xref, show.seq)
+                predicted_gate, predicted_downstream = _trm_census(
                     show,
                     page,
                     capability,
@@ -315,7 +341,16 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
                     trm_predicted,
                     trm_near_miss,
                 )
-                continue
+                if predicted_gate:
+                    trm_predicted_gate.add(show_key)
+                if predicted_downstream:
+                    trm_predicted_downstream.add(show_key)
+                verdict = admission_verdict(page, show.tm, show.ctm)
+                if verdict.reject_reason is not None:
+                    loss_reasons[f"state:{verdict.reject_reason}"] += 1
+                    continue
+                trm_production_gate.add(show_key)
+                shows_counter["trm_rotated_admitted"] += 1
             shows_counter["uniform_trm"] += 1
             residual_loss = _residual_state_loss(show)
             if residual_loss is not None:
@@ -365,6 +400,10 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
                 continue
             shows_counter["replacement_encodable_proxy"] += 1
             chars_counter["replacement_encodable_proxy"] += len(decoded)
+            if trm_rotated_candidate:
+                trm_production_downstream.add(
+                    (page_index, show.stream_xref, show.seq)
+                )
             page_bindable.append((show, decoded))
 
         if run_e2e and page_bindable:
@@ -391,6 +430,26 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
             "overlap": dict(sorted(trm_overlap.items())),
             "predicted": dict(sorted(trm_predicted.items())),
             "near_miss": dict(sorted(trm_near_miss.items())),
+            # SET-identity acceptance (Task 13 P2): counts and symmetric
+            # differences only — the membership keys never leave memory.
+            "acceptance": {
+                "predicted_gate": len(trm_predicted_gate),
+                "production_gate": len(trm_production_gate),
+                "gate_symmetric_difference": len(
+                    trm_predicted_gate ^ trm_production_gate
+                ),
+                "gate_membership_exact": (
+                    trm_predicted_gate == trm_production_gate
+                ),
+                "predicted_downstream": len(trm_predicted_downstream),
+                "production_downstream": len(trm_production_downstream),
+                "downstream_symmetric_difference": len(
+                    trm_predicted_downstream ^ trm_production_downstream
+                ),
+                "downstream_membership_exact": (
+                    trm_predicted_downstream == trm_production_downstream
+                ),
+            },
         },
         "e2e_sample": e2e,
         "e2e_reject_reasons": dict(sorted(e2e_reject_reasons.items())),

@@ -733,11 +733,30 @@ new engine yet** (integration is plan Task 7+).
   `/OCProperties` — never `get_ocgs`, whose load-time snapshot mutations
   don't refresh; see PITFALLS), and `update_marked_content_dependencies`
   (the fingerprint fold mirroring exactly what admission reads).
+- `transforms.py` — Task 13 P2 production TRM classifier (promoted from the
+  census `scripts/trm_taxonomy.py`, which now delegates here): the single
+  source for rotated-text geometry shared by inspect/plan/verify.
+  `shape_reject_reason` proves the combined `Tm × CTM` linear map through a
+  FIXED gate precedence (finite → singular → absolute scale floor →
+  orientation → orthogonality → equal axis norms; relative 1e-6 tolerance,
+  absolute 1e-6 baseline floor), `visual_baseline_direction` classifies the
+  on-screen baseline through `transformation_matrix × rotation_matrix`
+  (visual y down), `admission_verdict` admits exactly the census-locked
+  quarter-turn family (positive-orientation uniform rotation+scale with a
+  cardinal visual baseline; seven stable `trm_*` codes otherwise), and
+  `map_text_quad_to_visual` is the ONE text-space→visual mapping every
+  fallback target box and growth strip rides — no caller may reintroduce a
+  user-space `+x` assumption.
 - `inspect.py` — `bind_source_text` (text match corroborated by rawdict
-  geometry; ambiguity/XObject/rotation/malformed refuse with `RejectReason`;
-  `SourceSpanBinding` carries the show's resolved `mc_wrappers` +
-  `mc_emc_underflows` for the admission gate), `page_fingerprint` (streams
-  + fonts + marked-content wrapper closure + annots + widgets digest).
+  geometry; ambiguity/XObject/malformed refuse with `RejectReason`; the
+  Task 13 P2 TRM gate consults `transforms.admission_verdict` — the
+  quarter-turn family binds, everything else keeps its own fail-closed
+  `trm_*` code with a coefficient-free detail; `SourceSpanBinding` carries
+  the show's resolved `mc_wrappers` + `mc_emc_underflows` for the
+  admission gate), `page_fingerprint` (streams + fonts + marked-content
+  wrapper closure + RESOLVED page geometry — inheritance-resolved
+  /Rotate//MediaBox//CropBox, page-local /UserUnit, live visual matrices
+  (Task 13 P2) — + annots + widgets digest).
 - `fonts.py` — `DocumentFontRegistry`: capabilities keyed by (generation,
   owner xref, resource name, font xref) — never by basename; explicit face
   provenance (`extracted`/`base14`/`system`/`none`); strict-ASCII verified
@@ -756,12 +775,23 @@ new engine yet** (integration is plan Task 7+).
   `Tj`, simple encoding, equal consumed advance (Tc/Tw folded), no style/
   geometry override, no widgets/signatures, no pending maintenance. Encoder is
   verified against the *source* bytes before it may encode the replacement.
+  Task 13 P2: the fallback target box is the text-space metric quad through
+  `transforms.map_text_quad_to_visual`; `_grown_verify_bbox` widens along
+  the transformed baseline's forward direction (caller-bbox cross extent
+  preserved); `PreparedEdit.growth_direction` carries the shared cardinal
+  slug (folded into the plan token).
 - `patch.py` — `PatchSet`/`apply_patchset`: fingerprint-gated, revertible; the
   sole mutation primitive of the high-fidelity tiers.
 - `verify.py` — V0a–V0e post-conditions: stream identity outside the declared
   range (re-diffed), font/annotation identity, non-target span origins,
   extractable replacement, exact raster identity outside a 2pt halo (96 dpi;
-  calibrated ε=0 on the maintainer machine), reopenability.
+  calibrated ε=0 on the maintainer machine), reopenability. Task 13 P2: the
+  Tier 1 growth gates are direction-aware — `_growth_zone_rect` infers the
+  forward strip from the dominant extended edge (right/left/down/up),
+  `count_growth_zone_glyphs` and the occupancy intersects convert to
+  UNROTATED dict space first (`get_text`/`get_drawings`/`get_image_rects`
+  all ignore /Rotate), and the background reference sampler stays provably
+  off the forward side.
 - `engine.py` — `TieredCommitEngine.prepare()` classifies then *refutes the
   candidate on a scratch copy* (`fitz.open("pdf", doc.tobytes())` preserves
   xrefs and decoded stream bytes; the live doc is untouched);
