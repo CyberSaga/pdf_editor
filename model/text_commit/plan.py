@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 from dataclasses import dataclass
 
 import fitz
@@ -41,6 +42,11 @@ from model.text_commit.marked_content import admit_show_wrappers
 from model.text_commit.patch import build_kern_compensated_transplant, kern_for_displacement
 from model.text_commit.pdf_lexer import encode_hex_string, encode_literal_string
 from model.text_commit.replay import ShowOp
+from model.text_commit.transforms import (
+    admission_verdict,
+    combined_linear,
+    map_text_quad_to_visual,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +97,15 @@ class PreparedEdit:
     kern_adjustment: float = 0.0
     style_overrides: StyleOverrides | None = None
     geometry_intent: tuple[float, float, float, float] | None = None
+    # Task 13 P2: the admitted show's cardinal visual baseline direction
+    # ("right"/"left"/"up"/"down"), bound into the plan token (review F5:
+    # verify does NOT read this field — it re-derives the grown edge from
+    # target/verify bbox geometry, which agrees by construction because
+    # ``_grown_verify_bbox`` extends exactly the edge this slug names).
+    # Defaulted so pre-P2 hand-built PreparedEdits stay valid; None also
+    # marks the axis path (replay-uniform shows, including admitted
+    # boundary residuals the shape checks would refuse).
+    growth_direction: str | None = None
 
     @property
     def effective_verify_bbox(self) -> tuple[float, float, float, float]:
@@ -141,6 +156,10 @@ class _ClassifiedTarget:
     # "literal" (simple fonts) or "hex" (Identity-H CID operands): decides
     # how ``replacement_encoded`` is serialized into the spliced operator.
     operand_kind: str
+    # Task 13 P2: the admitted show's cardinal visual baseline direction
+    # (transforms.admission_verdict) — the ONE direction every growth
+    # probe shares.
+    trm_direction: str | None = None
 
 
 def _advance(
@@ -184,6 +203,7 @@ def _content_token(
     font_xref: int = 0,
     style_overrides: StyleOverrides | None = None,
     geometry_intent: tuple[float, float, float, float] | None = None,
+    growth_direction: str | None = None,
 ) -> str:
     """Content-derived plan token shared by every tier and by preview.
 
@@ -233,6 +253,7 @@ def _content_token(
                 str(font_xref),
                 style_str,
                 geometry_str,
+                growth_direction or "",
             )
         ).encode("ascii")
     ).hexdigest()
@@ -499,36 +520,34 @@ def _classify_common(
     stream_bytes = streams[show.stream_xref]
 
     fingerprint = page_fingerprint(doc, page)
+    # Task 13 P2: the show's cardinal visual baseline direction — it is
+    # recomputed (cheap, pure) rather than threaded through the binding.
+    # Usually an admission (binding proved it); the exception is a bound
+    # replay-uniform show whose boundary residuals the relative shape
+    # checks would refuse (review F2) — its direction is None and it
+    # rides the axis path exactly as before P2.
+    trm_direction = admission_verdict(page, show.tm, show.ctm).direction
     if target_bbox is None:
-        # ``old_advance``/``font_size`` are text space. Build the halo in
-        # user space (advance along +x, ascent along +y), then map through
-        # the full page→visual matrix (``transformation_matrix`` covers the
-        # cropbox flip and /UserUnit; ``rotation_matrix`` covers /Rotate).
-        # PyMuPDF's ``transformation_matrix`` alone does NOT include /Rotate
-        # — without the rotation term a /Rotate 90/270 page keeps a
-        # horizontal halo while pixmap ink runs vertically (V0d false-
-        # reject / false-accept risk).
-        trm_scale = (
-            show.trm_uniform_scale if show.trm_uniform_scale is not None else 1.0
-        )
-        user_size = show.font_size * trm_scale
-        user_advance = old_advance * trm_scale
-        ox, oy = show.origin_user
-        # User space: +y is up. Visual above-baseline ≈ +size; below ≈
-        # 0.35*size. After the page flip this matches the historical
-        # unrotated page-space formula at /Rotate 0.
-        user = fitz.Rect(
-            ox,
-            oy - 0.35 * user_size,
-            ox + user_advance,
-            oy + user_size,
-        )
-        mapped = user * _page_visual_matrix(page)
-        target_bbox = (
-            float(mapped.x0),
-            float(mapped.y0),
-            float(mapped.x1),
-            float(mapped.y1),
+        # ``old_advance``/``font_size`` are text space.  Build the metric
+        # quad IN TEXT SPACE (advance along the baseline, ascent toward
+        # the ascender; below-baseline ≈ 0.35·size, above ≈ 1.0·size) and
+        # map it through the show's full ``Tm × CTM`` and then
+        # ``transformation_matrix × rotation_matrix`` — never a user-space
+        # ``+x`` assumption.  PyMuPDF's ``transformation_matrix`` alone
+        # does NOT include /Rotate — without the rotation term a /Rotate
+        # 90/270 page keeps a horizontal halo while pixmap ink runs
+        # vertically (V0d false-reject / false-accept risk).  For the
+        # axis-aligned idiom this reproduces the historical halo exactly.
+        target_bbox = map_text_quad_to_visual(
+            page,
+            show.tm,
+            show.ctm,
+            (
+                0.0,
+                -0.35 * show.font_size,
+                old_advance,
+                show.font_size,
+            ),
         )
 
     return _ClassifiedTarget(
@@ -552,6 +571,7 @@ def _classify_common(
             else None
         ),
         operand_kind=operand_kind,
+        trm_direction=trm_direction,
     )
 
 
@@ -596,6 +616,7 @@ def _build_tier0(
         font_xref=classified.capability.font_xref,
         style_overrides=classified.style_overrides,
         geometry_intent=classified.geometry_intent,
+        growth_direction=classified.trm_direction,
     )
     return PreparedEdit(
         token=token,
@@ -612,6 +633,7 @@ def _build_tier0(
         page_fingerprint=classified.fingerprint,
         style_overrides=classified.style_overrides,
         geometry_intent=classified.geometry_intent,
+        growth_direction=classified.trm_direction,
     )
 
 
@@ -621,10 +643,17 @@ def _grown_verify_bbox(
     target_bbox_page: tuple[float, float, float, float],
     growth_advance: float,
 ) -> tuple[float, float, float, float]:
-    """``target_bbox_page`` widened forward by ``growth_advance`` text-space
-    points, mapped through the full page→visual matrix so /Rotate and
-    /UserUnit are handled correctly by construction (same matrix as the
-    fallback ``target_bbox`` in :func:`_classify_common`).
+    """``target_bbox_page`` widened FORWARD along the show's transformed
+    baseline by ``growth_advance`` text-space points, mapped through the
+    full page→visual matrix so /Rotate and /UserUnit are handled correctly
+    by construction (same matrix as the fallback ``target_bbox`` in
+    :func:`_classify_common`).
+
+    The forward direction comes from the combined ``Tm × CTM`` baseline
+    vector — never a user-space ``+x`` assumption.  The admitted family is
+    quarter-turn only, so the user-space baseline is axis-aligned and the
+    caller box's CROSS extent is preserved exactly (the growth strip
+    inherits the target's own thickness, not the metric quad's).
 
     Returns ``target_bbox_page`` UNCHANGED (no round trip, no float noise)
     when there is no growth: callers rely on exact equality to decide
@@ -632,10 +661,27 @@ def _grown_verify_bbox(
     """
     if growth_advance <= 0.0:
         return target_bbox_page
-    scale = show.trm_uniform_scale if show.trm_uniform_scale is not None else 1.0
+    linear = combined_linear(show.tm, show.ctm)
+    norm = math.hypot(linear[0], linear[1])
+    if norm <= 0.0 or not math.isfinite(norm):
+        # Unreachable for admitted shows (the binding gate refused these);
+        # fail toward the historical axis assumption rather than crash.
+        norm = 1.0
+    ux = linear[0] / norm
+    uy = linear[1] / norm
+    growth_user = growth_advance * norm
     visual = _page_visual_matrix(page)
     user = fitz.Rect(*target_bbox_page) * ~visual
-    user.x1 = user.x1 + growth_advance * scale
+    if abs(ux) >= abs(uy):
+        if ux >= 0.0:
+            user.x1 = user.x1 + growth_user
+        else:
+            user.x0 = user.x0 - growth_user
+    else:
+        if uy >= 0.0:
+            user.y1 = user.y1 + growth_user
+        else:
+            user.y0 = user.y0 - growth_user
     mapped = user * visual
     return (
         min(target_bbox_page[0], float(mapped.x0)),
@@ -703,6 +749,7 @@ def _build_tier1(
         font_xref=classified.capability.font_xref,
         style_overrides=classified.style_overrides,
         geometry_intent=classified.geometry_intent,
+        growth_direction=classified.trm_direction,
     )
     return PreparedEdit(
         token=token,
@@ -724,6 +771,7 @@ def _build_tier1(
         kern_adjustment=kern,
         style_overrides=classified.style_overrides,
         geometry_intent=classified.geometry_intent,
+        growth_direction=classified.trm_direction,
     )
 
 

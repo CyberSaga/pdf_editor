@@ -651,6 +651,82 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   parse-budget fold asymmetry (structured-surface fold), duplicate
   dict keys (shared parser refuses). 9 more red pins; corpus numbers
   re-verified identical after all fixes.
+- 2026-08-19 (Task 13 step 4 census-before-code — rotated-TRM census,
+  read-only, aggregate-only): matrix taxonomy of the 6,444 post-P1
+  TRM-gate deaths (`scripts/trm_taxonomy.py` classifier — user-space
+  shape of `Tm × CTM` + visual baseline direction through
+  `transformation_matrix × rotation_matrix`; funnel `trm_census` block;
+  70-test red-first matrix). Corpus: **6,417/6,444 uniform rotations;
+  6,413/6,417 of those (99.94%) are visual quarter-turn (`right` 6,212;
+  6,413/6,444 = 99.52% of all TRM-gate deaths), all on `/Rotate 270` pages, all
+  P1-admitted wrapped shows; zero near-miss rounded matrices; predicted
+  newly bindable 5,558 (quarter-turn) vs 5,561 (any-uniform — +3
+  only)**. v1 scope LOCKED to the quarter-turn family; acceptance for
+  the P2 implementation = census prediction exactly (6,413 gate /
+  5,558 downstream). Adversarial round (serial 2-agent Attack→Verify)
+  fixed 3 findings red-first: `near_miss` diagnostic (rounded quarter
+  turns), `ABS_SCALE_FLOOR` in front of the predicted chain (mirrors
+  replay's absolute `_EPS` floor), dual-scope predicted counters;
+  `/Rotate` folded to a closed 0/90/180/270/`other` vocabulary. Fixture
+  pitfall: PDF numbers have no exponent notation — `%g` writing
+  `6.12e-17` silently voids the whole `Tm` under a real lexer. Next:
+  P2-B red matrix (stable `trm_*` codes, rotated kern axis, directional
+  growth proof, page-geometry staleness pins) — plan §7 step-4 record.
+- 2026-08-20 (Task 13 step 4 P2-B — rotated-TRM admission red matrix,
+  tests only): four new files (`test_text_commit_trm_admission` 44 red /
+  1 control, `_trm_tier1_kern` 12 red / 1 control,
+  `_trm_growth_directions` 32 red, `_trm_page_geometry` 7 red /
+  3 controls — **95 red confirmed before any implementation**) pin SEVEN
+  literal `trm_*` codes with fixed gate precedence (absolute
+  `trm_scale_below_floor` promoted to its own code), relative-tolerance
+  boundaries at three scales, the full /Rotate × quarter-turn-Tm visual
+  direction truth table, the new `model/text_commit/transforms.py`
+  contract (census `scripts/trm_taxonomy.py` must delegate; no-drift
+  probe grid), rotation-invariant text-space kern with successor-origin
+  preservation in both visual coordinates (kern-gap `[-2000] TJ`
+  fixture), four-direction growth gates through one shared
+  `growth_direction`, and prepare→mutate /Rotate //UserUnit/CropBox/
+  MediaBox (incl. raw-xref and page-tree-inherited) → `STALE_PLAN` pins.
+  Contract details in plan §7. Next: quarter-turn admission
+  implementation; acceptance = census prediction exactly (6,413 gate /
+  5,558 downstream, SET identity not just counts).
+- 2026-08-20 (Task 13 step 4 P2 — quarter-turn admission
+  IMPLEMENTATION): red matrix 95→green (104/104 incl. 4 new F3
+  invariant pins); NEW `model/text_commit/transforms.py` single source
+  (census `scripts/trm_taxonomy.py` delegates); binding gate =
+  `admission_verdict` with seven `trm_*` codes; plan geometry rides
+  `map_text_quad_to_visual` + directional `_grown_verify_bbox` +
+  `PreparedEdit.growth_direction`; verify growth gates direction-aware
+  with dict-space conversion (PITFALLS 269: `get_drawings`/
+  `get_image_rects` speak UNROTATED page space); fingerprint folds
+  resolved page geometry + live visual matrices; funnel gate mirrors
+  production with per-code `state:trm_*` slugs + SET-identity
+  acceptance block. Replaced-contract pins updated (structural gates,
+  replay, audit, census funnel test). Full per-file sweep green.
+  Registered follow-up: `scripts/measure_tier_funnel.py` (legacy
+  simple-font tier funnel) still models the OLD blanket TRM gate —
+  update when that funnel is next used.
+- 2026-08-20 (Task 13 step 4 P2 — implementation review round,
+  wf_3cb287ec Attack + hand verification after the Verify agent hit the
+  session limit): 5 findings — F2 CONFIRMED fixed red-first (admission
+  gate now skips replay-uniform shows except `trm_non_finite`, keeping
+  the pre-P2 admitted boundary sliver admitted and re-aligning
+  funnel↔production); F4 CONFIRMED fixed red-first (fingerprint folds
+  numeric `/UserUnit` canonically — MuPDF re-prints integer-valued
+  reals as ints, PITFALLS 270); F1 documented (funnel acceptance sets
+  are one-directional predicted ⊆ production — fail-loud only); F3
+  accepted as documented (~1 ulp axis-path drift, fail-closed); F5
+  docstrings corrected (verify re-derives the growth edge; slug is
+  token-bound, not threaded). Details in plan §7.
+- 2026-08-20 (Task 13 step 5 — funnel acceptance, corpus, --no-e2e):
+  SET-identity acceptance PASS at the sealed tip — gate 6,413
+  predicted == 6,413 production, downstream 5,558 == 5,558, both
+  symmetric differences 0, membership exact; census counters identical
+  to the pre-implementation baseline; blanket slug decomposes exactly
+  (6,444 = 6,413 admitted + 27 reflected + 4 not-quarter-turn).
+  Corpus e2e pass deferred (optional per step-4 advisory — ride the
+  rollout-gate work). P2 slice ready for its PR (base
+  task11/slice1-closure) — do not push/open until instructed.
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

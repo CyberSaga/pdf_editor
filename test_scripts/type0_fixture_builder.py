@@ -44,6 +44,9 @@ import fitz
 CJK_TEXT = "你好世界"
 REPLACEMENT_EQUAL_ADVANCE = "再見世界"
 REPLACEMENT_SHORTER = "你好"
+# Five full-width chars vs the four-char source: +1 em of consumed advance,
+# the Tier 1 ink-growth candidate (12pt growth at the builder's 12pt size).
+REPLACEMENT_LONGER = "再見新世界"
 TAIL_TEXT = "後綴"
 
 _PAGE_W = 595.0
@@ -439,6 +442,144 @@ def literalize_hex_show(fixture: Type0Fixture) -> None:
     rewritten = re.sub(rb"<([0-9A-Fa-f]+)>\s*Tj", _to_literal, stream)
     assert rewritten != stream, "fixture stream carries no hex Tj operand"
     fixture.doc.update_stream(fixture.content_xref, rewritten)
+
+
+def _pdf_num(value: float) -> str:
+    # PDF numbers have no exponent notation — %g's "6.12e-17" would
+    # silently void the whole Tm operand list under a real lexer.
+    text = f"{value:.8f}".rstrip("0").rstrip(".")
+    return "0" if text in ("", "-0") else text
+
+
+def set_text_matrix(
+    fixture: Type0Fixture, linear: tuple[float, float, float, float]
+) -> None:
+    """Replace the authored ``1 0 0 1 x y Tm`` linear part with ``linear``.
+
+    The translation (the authored origin) is kept, so the show stays on
+    the page; only the a/b/c/d coefficients change (rotation, shear,
+    mirror, non-uniform scale fixtures for the Task 13 P2 census).
+    """
+    stream = fixture.content_bytes()
+    origin_x, origin_y = fixture.origin
+    old = f"1 0 0 1 {origin_x:g} {origin_y:g} Tm".encode("ascii")
+    assert old in stream, "fixture stream carries no authored Tm"
+
+    coeffs = " ".join(_pdf_num(v) for v in linear)
+    new = f"{coeffs} {origin_x:g} {origin_y:g} Tm".encode("ascii")
+    fixture.doc.update_stream(fixture.content_xref, stream.replace(old, new, 1))
+
+
+def wrap_content_in_cm(
+    fixture: Type0Fixture,
+    linear: tuple[float, float, float, float],
+    translate: tuple[float, float] = (0.0, 0.0),
+) -> None:
+    """Wrap the whole content stream in ``q <a b c d e f> cm ... Q``.
+
+    Puts (part of) a rotation into the CTM instead of the ``Tm``, so the
+    Task 13 P2 red matrix can pin that the admission classifier proves the
+    COMBINED ``Tm × CTM`` shape, never the ``Tm`` alone.
+    """
+    a, b, c, d = linear
+    e, f = translate
+    coeffs = " ".join(_pdf_num(v) for v in (a, b, c, d, e, f))
+    body = fixture.content_bytes()
+    fixture.doc.update_stream(
+        fixture.content_xref,
+        f"q {coeffs} cm ".encode("ascii") + body + b" Q",
+    )
+
+
+def append_page_content(fixture: Type0Fixture, raw: str) -> None:
+    """Append raw content-stream source after the existing content.
+
+    For authoring growth-zone obstacles (vector fills, extra shows,
+    ``Do``/``sh`` invocations) in USER-space coordinates with no PyMuPDF
+    coordinate-translation guesswork in between.
+    """
+    body = fixture.content_bytes()
+    fixture.doc.update_stream(
+        fixture.content_xref, body + b" " + raw.encode("ascii")
+    )
+
+
+def _set_page_xobject(fixture: Type0Fixture, name: str, ref: str) -> None:
+    """Set ``/Resources /XObject /<name>`` = ``ref`` on the fixture page.
+
+    Same indirect-hop dance as :func:`_set_page_property` (``xref_set_key``
+    refuses paths that traverse indirect objects)."""
+    doc = fixture.doc
+    owner = fixture.page.xref
+    prefix: list[str] = []
+    for part in ("Resources", "XObject"):
+        kind, value = doc.xref_get_key(owner, "/".join([*prefix, part]))
+        if kind == "xref":
+            owner = int(value.split()[0])
+            prefix = []
+        else:
+            prefix.append(part)
+    doc.xref_set_key(owner, "/".join([*prefix, name]), ref)
+
+
+def install_image_xobject(
+    fixture: Type0Fixture, *, name: str, rgb: tuple[int, int, int]
+) -> int:
+    """Register a tiny solid-color raw RGB image XObject as ``/<name>``.
+
+    Placement stays with the caller (``q w 0 0 h x y cm /<name> Do Q`` via
+    :func:`append_page_content`), so obstacle coordinates are authored in
+    USER space directly.  Returns the image xref.
+    """
+    doc = fixture.doc
+    image_xref = doc.get_new_xref()
+    doc.update_object(
+        image_xref,
+        "<< /Type /XObject /Subtype /Image /Width 4 /Height 4 "
+        "/ColorSpace /DeviceRGB /BitsPerComponent 8 >>",
+    )
+    doc.update_stream(image_xref, bytes(rgb) * 16, compress=False)
+    _set_page_xobject(fixture, name, f"{image_xref} 0 R")
+    return image_xref
+
+
+def install_shading_form_xobject(
+    fixture: Type0Fixture,
+    *,
+    name: str,
+    bbox: tuple[float, float, float, float],
+    rgb: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> int:
+    """Register a Form XObject painting a UNIFORM axial shading over
+    ``bbox`` (PDF user space) as ``/<name>``; caller invokes it with
+    ``/<name> Do`` via :func:`append_page_content`.
+
+    Deliberately invisible to every cheap occupancy gate (the Tier 1
+    background-proof fixture shape from ``test_text_commit_tier1_slice1``):
+    ``sh`` lives in the XObject's own stream, and the paint is neither a
+    drawing nor an image to PyMuPDF.  Returns the form xref.
+    """
+    doc = fixture.doc
+    x0, y0, x1, y1 = bbox
+    r, g, b = rgb
+    shading_xref = doc.get_new_xref()
+    doc.update_object(
+        shading_xref,
+        "<< /ShadingType 2 /ColorSpace /DeviceRGB "
+        f"/Coords [{x0:g} {y0:g} {x1:g} {y1:g}] /Extend [true true] "
+        "/Function << /FunctionType 2 /Domain [0 1] "
+        f"/C0 [{r:g} {g:g} {b:g}] /C1 [{r:g} {g:g} {b:g}] /N 1 >> >>",
+    )
+    form_xref = doc.get_new_xref()
+    doc.update_object(
+        form_xref,
+        "<< /Type /XObject /Subtype /Form "
+        f"/BBox [{x0:g} {y0:g} {x1:g} {y1:g}] "
+        f"/Resources << /Shading << /Sh0 {shading_xref} 0 R >> >> >>",
+    )
+    doc.update_stream(form_xref, b"/Sh0 sh")
+    _set_page_xobject(fixture, name, f"{form_xref} 0 R")
+    return form_xref
 
 
 def _set_page_property(fixture: Type0Fixture, name: str, ref: str) -> None:

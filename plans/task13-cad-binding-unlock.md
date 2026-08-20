@@ -153,8 +153,21 @@ coverage number — it feeds the TODOS "latency half stays open" item.
        plan gate** (was 0); corpus e2e sample: 22 pages attempted,
        8 prepared, 8 committed, 8 reopen-extraction OK, 0 failures.
        §7 step-2 record.)
-4. [ ] Priority 2 red matrix (uniform-rotation predicate boundaries, rotated
+4. [x] Priority 2 red matrix (uniform-rotation predicate boundaries, rotated
        kern axis, visual-space verify), then implementation; separate PR.
+       (2026-08-19 census-before-code sub-step DONE: rotated-TRM census on
+       the post-P1 TRM-gate population — **6,417/6,444 uniform rotations,
+       6,413/6,417 (99.94%) visual quarter-turn, 5,558 predicted newly
+       bindable**; v1
+       scope locked to the quarter-turn family — §7 census record and
+       scope decision; classifier in `scripts/trm_taxonomy.py`, funnel
+       `trm_census` block; 70-test red-first matrix + 2-agent adversarial
+       round, 3 findings fixed red-first.)
+       (2026-08-20 red matrix DONE: 95 red / 5 controls across four files
+       + review round, 3 findings fixed red-first — §7 P2-B record.
+       2026-08-20 implementation DONE: red matrix green, transforms.py
+       single source, directional geometry/growth/fingerprint — §7
+       implementation record.)
 5. [ ] Re-run funnel; record rotated-Tm survival.
 6. [ ] Priority 3 spike: index design + latency measurement harness (ties
        into the preview-latency follow-up from Task 12 §8); own PR(s).
@@ -349,6 +362,307 @@ Reading: Priority 1 is DONE at 64.2% of its gated population; the funnel
 now shows the Priority 2 bottleneck directly (6,444 rotated-Tm losses on
 admitted-or-unwrapped shows).  doc_1 unchanged (all TJ-array).
 
+- 2026-08-19 (step 4 census-before-code — rotated-TRM census tooling;
+  red-first, 70-test matrix in `test_scripts/test_trm_census.py`):
+  - **Classifier lives in `scripts/trm_taxonomy.py`**, outside `model/`
+    until the Priority-2 admission slice promotes it (same discipline as
+    the step-1 wrapper taxonomy).  Two orthogonal dimensions: user-space
+    SHAPE of the `Tm × CTM` linear part (`non_finite` / `singular` /
+    `reflected` / `sheared` / `non_uniform_scale` /
+    `axis_aligned_uniform_positive` / `uniform_rotated_positive`, fixed
+    gate precedence finite → non-singular → orientation → orthogonality
+    → equal norms, RELATIVE tolerance 1e-6), and visual baseline
+    DIRECTION after `transformation_matrix × rotation_matrix` (`right` /
+    `left` / `up` / `down` / `oblique` / `degenerate`, visual y down —
+    the same chain production `inspect`/`plan` use).  Shape is
+    angle-blind on purpose: a rotated `Tm` compensating a page
+    `/Rotate` is only classifiable against the visual matrix.
+  - **Funnel `trm_census` block** hangs off the existing
+    `state:trm_not_uniform_scaled` gate — population = exactly the
+    post-P1 TRM-gate deaths, membership decided by the production
+    predicate itself; no admission change, all sealed stages/slugs
+    byte-identical (cross-checked between two runs).
+  - **Adversarial round (2-agent Attack → skeptical Verify, serial):
+    3 confirmed findings, all fixed red-first before the corpus run;
+    3 refuted.**  F1: strict tolerance could silently drop ROUNDED
+    quarter turns → added the diagnostic `near_miss` section (loose
+    1e-3 re-classification, never predicted).  F2: predicted chain had
+    no absolute scale floor while production's `_uniform_scale` rejects
+    `a <= _EPS` → added `ABS_SCALE_FLOOR` (1e-6) in front of the
+    predicted chain.  F3: predicted front gate was quarter-turn-only
+    while plan §3 pins any-uniform-rotation → the chain now measures
+    BOTH candidate scopes (`any_uniform_rotation` and the quarter-turn
+    subset at each terminal).  Refuted: conditioning-style singular test
+    on extreme aspect ratios (defensible, not corpus-real); `/Rotate`
+    int as a §10 leak (bounded reason-code-level telemetry — still
+    hardened to a closed 0/90/180/270/`other` vocabulary); `_pdf_num`
+    sub-5e-9 collapse in the fixture mutator (latent footgun, no test
+    invalidated).
+  - **Geometry pin worth recording**: `/Rotate 270` displays the page
+    turned 90° counter-clockwise, so the compensating CAD idiom is a
+    **−90° `Tm`** (baseline down on the paper → visually right); a +90°
+    `Tm` on the same page reads LEFT.  The census direction tests pin
+    both readings.
+  - **PDF numbers have no exponent notation**: `%g`-formatting a
+    quarter-turn matrix emits `6.12e-17`, which a real content-stream
+    lexer refuses — the whole `Tm` silently voids and the fixture tests
+    nothing.  `set_text_matrix` formats fixed-point; quarter-turn
+    fixtures use exact 0/±1 coefficients.
+
+### Step-4 census record (corpus aggregates, 2026-08-19, read-only)
+
+Population: the 6,444 `state:trm_not_uniform_scaled` deaths (doc_0 only;
+doc_1 has zero TRM losses — all its mass is TJ-array).  All 6,444 are
+`wrapped_p1_admitted` (the P1 unlock feeds this gate directly) and all
+sit on `/Rotate 270` pages.
+
+| aggregate | doc_0 |
+|---|---|
+| `user_shape` | `uniform_rotated_positive` **6,417**, `reflected` 27 — zero sheared / non-uniform / singular / non-finite |
+| `visual_direction` | `right` **6,212**, `left` 123, `down` 100, `up` 5, `oblique` **4** |
+| `near_miss` | **empty** — no rounded quarter turns; the strict 1e-6 tolerance loses nothing on this corpus |
+| `predicted` (any-uniform scope) | 6,417 → default-state 5,576 → decoded/reproduced **5,561** bindable + encodable (33,605 chars) |
+| `predicted` (quarter-turn scope) | gate 6,413 → **5,558** bindable + encodable |
+
+**Scope decision (v1 lock)**: quarter-turn family — positive-orientation
+uniform rotation+scale with visual baseline 0°/90°/180°/270° only.  The
+census's decision rule (advisory): dominant eligible bucket must be the
+visual quarter-turn family — it is, at 6,413/6,417 uniform rotations
+(99.94%; equivalently 6,413/6,444 = 99.52% of all TRM-gate deaths); the
+broad any-uniform scope would add only **3** bindable shows while
+forcing arbitrary-angle verifier geometry.  Non-quarter-turn uniform
+rotations stay fail-closed with their own stable reason
+(`trm_rotation_not_quarter_turn` in the P2-B red matrix); `reflected`
+27 stay fail-closed permanently (plan §3).  **Acceptance for the P2
+implementation**: newly admitted set == census prediction exactly —
+6,413 at the TRM gate, 5,558 through every downstream gate.
+
+- 2026-08-20 (step 4 P2-B — rotated-TRM admission red matrix, tests only;
+  no production change in this commit):
+  - **Contract module decision**: the census taxonomy is promoted to a new
+    production leaf `model/text_commit/transforms.py` — the single source
+    replay/inspect/plan/verify share and `scripts/trm_taxonomy.py` must
+    delegate to (pinned: the module never imports `scripts/`, the census
+    classifier imports it, and a probe-grid equivalence test keeps the two
+    from drifting).  Pinned API: `combined_linear(tm, ctm)`,
+    `shape_reject_reason(linear, rel_tol=REL_TOL)`,
+    `visual_baseline_direction(page, linear, rel_tol=REL_TOL)`,
+    `admission_verdict(page, tm, ctm) -> TrmVerdict(reject_reason,
+    direction, scale)`, `map_text_quad_to_visual(page, tm, ctm, quad)`,
+    with `REL_TOL = 1e-6` (relative) and `ABS_SCALE_FLOOR = 1e-6`
+    (absolute, closed boundary — mirrors replay's `_EPS` floor).
+  - **Seven stable codes** (not six): the census adversarial round proved
+    the absolute scale floor is an independent condition, so it gets its
+    own `trm_scale_below_floor` instead of hiding inside another code.
+    Fixed precedence: finite → singular det → absolute scale floor →
+    positive orientation → orthogonal axes → equal axis norms → cardinal
+    visual direction; dual-defect matrices pin the attribution.
+  - **Boundaries at three scales** (1e-3 / 1 / 1e3), just-inside 9e-7 vs
+    just-outside 1.1e-6 for every relative gate; the /Rotate ×
+    quarter-turn-Tm visual truth table is pinned in full (numerically
+    verified through `transformation_matrix × rotation_matrix`).
+  - **PreparedEdit gains `growth_direction`** (cardinal slug, pinned on
+    every ink-growth candidate; defaulted so existing constructions stay
+    valid), and the four visual growth directions each pin: blank→admit
+    (growth on the correct visual edge only), glyph→`glyphs:`,
+    vector/image/page-shading→`occupancy:`, uniform mismatched
+    form-xobject band→`background:`, off-page→`growth_outside_page`, and
+    obstacle-behind-the-baseline→still admits (forward-only proof).
+  - **Kern oracle fixture**: the successor show must stay
+    advance-dependent but clear of the growth strip, so the fixture
+    inserts a kern-only `[-2000] TJ` (24pt pure text-space advance, no
+    repositioning) between target and tail — an immediately-adjacent
+    successor sits IN the growth zone and is *correctly* refused by the
+    blank-growth gate (the axis-aligned control proved this red-first).
+    The kern scalar itself is pinned rotation-invariant (same advances →
+    same `%.6f` number, rotated or not).
+  - **Page-geometry staleness**: prepare → mutate `/Rotate` (page API and
+    raw xref), `/UserUnit`, `/CropBox`, `/MediaBox`, and the INHERITED
+    `/Rotate` on the `/Pages` ancestor → all must go `STALE_PLAN` with
+    zero mutation (today they slip the fingerprint and die later as
+    dishonest `FAILED`/committed).  Controls pin the fold canonical:
+    direct-vs-inherited fingerprints equivalent, stable across
+    `tobytes`→reopen, and no false-stale on unmutated commits.
+  - **Adversarial round on the red contract** (serial 2-agent
+    Attack→skeptical Verify, wf_77bdb1c6): 3 findings, all confirmed,
+    all addressed red-first.  F1 (important): two precedence links were
+    unpinned — added reflected∧sheared → `trm_reflected`
+    (orientation-beats-orthogonality; the mirror probe only pins
+    orientation-beats-direction) and oblique∧non-uniform /
+    oblique∧sheared → shape codes at unit, verdict, AND prepare level
+    (kills direction-first short-circuits).  F2 (minor): census
+    aggregate counts in test docstrings — explicit KEEP decision:
+    aggregates are precedent-consistent with this committed plan and
+    outside the data policy's prohibited raw-evidence categories
+    (which bans text/filenames/paths/coefficients, never slug-level
+    counts).  F3 (minor): the reference-point sampling-POSITION clause
+    was docstring-claimed but unpinned — docstring softened;
+    **implementation-phase obligation** (FULFILLED in the implementation:
+    a direction-parametrized invariant pin now asserts every returned
+    sampling point's 3×3 neighbourhood is disjoint from halo(verify)
+    for all four directions — the sampler needed no new parameter, its
+    disjointness filter is the structural guarantee).
+  - **Red tallies** (true red confirmed before any implementation):
+    admission 44 red / 1 control; kern 12 red / 1 control; growth
+    directions 32 red / 0; page geometry 7 red / 3 controls — 95 red,
+    5 explicitly-labeled green controls, every red failing via today's
+    blanket `unsupported_text_state`, the missing `transforms` module, or
+    the missing `growth_direction` field.
+
+- 2026-08-20 (step 4 P2 — quarter-turn admission IMPLEMENTATION; the
+  red matrix above turned green — 104/104 across the four files (95 red
+  → green, 5 controls still green, plus the 4 new F3 invariant pins)):
+  - **`model/text_commit/transforms.py`** is the production single
+    source (shape gates / visual direction / admission verdict / the
+    text-quad→visual mapping); `scripts/trm_taxonomy.py` is now a thin
+    delegate (`shape_reject_reason(..., abs_floor=0.0)` reproduces the
+    census's floor-free shape vocabulary byte-identically; the floor
+    stays in its predicted chain).  Seven `trm_*` codes on
+    `RejectReason`; `inspect.bind_source_text`'s blanket refusal
+    replaced by `admission_verdict` with fixed, coefficient-free
+    details.
+  - **Geometry**: plan's fallback target box now rides
+    `map_text_quad_to_visual` (reproduces the historical axis-aligned
+    halo exactly); `_grown_verify_bbox` extends the USER-space rect
+    edge chosen by the combined baseline vector (caller-bbox cross
+    extent preserved; axis-aligned path arithmetically unchanged);
+    `PreparedEdit.growth_direction` (cardinal slug) rides the plan
+    token.  Kern arithmetic untouched — proven rotation-invariant by
+    the red matrix, not re-derived.
+  - **Verify**: `_growth_zone_rect` infers the forward strip from the
+    DOMINANT extended edge (immune to sub-point cross-edge slivers;
+    existing unit-call signatures unchanged); `count_growth_zone_glyphs`
+    generalizes the own-glyph exclusion per direction and converts to
+    dict space; occupancy intersects convert the growth rect through
+    `derotation_matrix` — `get_drawings`/`get_image_rects` speak
+    UNROTATED page space (new PITFALLS entry 269; found by the
+    four-direction red matrix's CAD-idiom cases).
+  - **Fingerprint**: `_update_page_geometry` folds inheritance-RESOLVED
+    /Rotate//MediaBox//CropBox (PyMuPDF accessors), page-local
+    /UserUnit (one indirect hop), and the live visual matrices — the
+    prepare→mutate→commit matrix (page API, raw xref, and /Pages
+    ancestor) now dies STALE_PLAN with zero mutation; canonical
+    equivalence and round-trip stability pinned by controls.
+  - **Funnel** (`measure_type0_funnel.py`): the TRM gate now mirrors
+    the production admission; the blanket `state:trm_not_uniform_scaled`
+    slug is retired for per-code `state:trm_*` slugs (same pattern as
+    P1's retirement of `state:marked_content_wrapper`); new stage
+    `trm_rotated_admitted`; `trm_census.acceptance` block compares the
+    census-predicted vs production-admitted sets IN MEMORY and emits
+    counts + symmetric differences + membership booleans only.
+    (`scripts/measure_tier_funnel.py` — the legacy simple-font tier
+    funnel — still models the OLD blanket gate; registered in TODOS,
+    not this slice.)
+  - **Replaced-contract test updates** (the old pins the red matrix
+    supersedes): structural gates (off-axis → per-code; the point
+    reflection = 180°×10 and the 90° turn now PLAN — the mirror keeps
+    `trm_reflected`), replay's rotated-bind refusal → now binds, the
+    audit script's rotated count → binds with a sheared fixture keeping
+    the refusal path pinned, and the census funnel test → admission +
+    acceptance block.
+
+- 2026-08-20 (step 4 P2 — implementation review round, serial
+  Attack→Verify workflow wf_3cb287ec; the Verify agent died on the
+  session limit, so every finding was verified by hand — two confirmed
+  and fixed red-first, three documented):
+  - **F2 (important, CONFIRMED → fixed red-first)**: the admission gate
+    ran for EVERY bound show, so replay-uniform matrices carrying
+    boundary residuals exactly ON replay's absolute tolerance
+    (`|b| == 1e-6`) — previously bound and planned — flipped to
+    `trm_sheared` under the relative shape checks, violating "the
+    pre-P2 admitted set stays admitted byte-identically"; the funnel
+    (which gates its admission mirror on `not trm_uniform_scaled`) also
+    diverged from production on exactly those shows.  Fix:
+    `bind_source_text` skips the shape gate for replay-uniform shows —
+    with the single exception of `trm_non_finite`, which replay's
+    comparison-based idiom test cannot flag (NaN compares False
+    everywhere) and which stays refused unconditionally (a deliberate,
+    strictly-fail-closed delta from pre-P2, unreachable from real
+    numeric content).  Such a sliver show plans with
+    `growth_direction=None` and rides the axis path exactly as before
+    P2.  Pin: `test_planner_still_admits_replay_uniform_boundary_residuals`
+    (red as `trm_sheared` before the fix).  The non-finite corner is the
+    one residual funnel/production divergence — documented, not mirrored
+    (the instrument would have crashed on NaN upstream anyway).
+  - **F4 (CONFIRMED empirically → fixed red-first)**: `/UserUnit 2.0`
+    reads `('float','2')` live but `('int','2')` after `tobytes`→reopen
+    (MuPDF prints integer-valued reals minimally), so the raw
+    `kind:value` fold broke live-vs-scratch fingerprint equality — every
+    prepare on such a document would fail its scratch-apply forever.
+    Fix: numeric values fold as canonical `num:{float(value)!r}`;
+    `kind:value` survives only for non-numeric kinds.  New PITFALLS
+    entry 270.  Pin:
+    `test_fingerprint_is_stable_when_userunit_is_spelled_as_a_real`
+    (red before the fix).
+  - **F1 (verified — instrument property, documented not changed)**: the
+    funnel acceptance sets are one-directional by construction:
+    predicted-gate membership uses the census's STRICT
+    `SHAPE_UNIFORM_ROTATED` classification while the production side
+    uses `admission_verdict`, so a replay-rotated show whose combined
+    linear classifies axis-aligned under the relative tolerance (e.g.
+    sub-relative residuals at large CTM scale) can be
+    production-admitted but predicted-excluded — never the reverse
+    (predicted ⊆ production).  A nonzero symmetric difference is
+    therefore always a TRUE report that production admits something the
+    census did not predict — the instrument can only fail loudly, never
+    pass wrongly.  Kept as-is: that fail-loud asymmetry is exactly what
+    the census-before-code acceptance is for; the committed census shows
+    `user_shape axis_aligned = 0` among rotated candidates, so the
+    corpus run is expected to close at difference 0.
+  - **F3 (verified — accepted as documented)**: `_grown_verify_bbox`'s
+    axis path round-trips the caller bbox through `~visual`/`visual`, so
+    the three unchanged edges can drift ~1 ulp of the page dimension
+    (~1e-13 pt) relative to the historical direct edge extension, and
+    the growth norm uses `hypot(a, b)` vs the old scalar `a` (~5e-13
+    relative for admitted residuals).  Bounded, fail-closed (a
+    knife-edge pixel lands as an extra probe or hands back to the
+    outside-halo check — never unchecked), and absorbed by the 1e-6
+    token quantization and every pinned tolerance; the plan §7 claim
+    "arithmetically unchanged" is hereby corrected to "unchanged within
+    ~1 ulp, one-sided clamped by the min/max union".
+  - **F5 (verified — doc drift, docstrings corrected)**: verify never
+    reads `PreparedEdit.growth_direction` — the strip edge is re-derived
+    from target/verify bbox geometry (dominant-edge), which agrees with
+    the stored slug by construction since `_grown_verify_bbox` extends
+    exactly the edge the slug names, and the slug itself is token-bound.
+    The `plan.py`/`verify.py` docstrings claiming verify "consumes" the
+    shared direction were corrected to state the re-derivation and the
+    agreement argument; threading the field through verify's signatures
+    was declined (no behavioral gap for engine-built plans; hand-built
+    `PreparedEdit`s are already outside the token's protection).
+
+### Step-5 funnel acceptance record (corpus aggregates, 2026-08-20, --no-e2e)
+
+Run at the sealed P2 tip (feat 0d5333b + fix 0862906), same two-document
+corpus as every prior record; counts and set-membership results only.
+
+- **Set-identity acceptance (the verdict's contract 6 — sets, not just
+  numbers): PASS.** `trm_census.acceptance` (doc_0): predicted_gate
+  **6,413** == production_gate **6,413**, gate_symmetric_difference
+  **0**, gate_membership_exact **true**; predicted_downstream **5,558**
+  == production_downstream **5,558**, downstream_symmetric_difference
+  **0**, downstream_membership_exact **true**.  Membership was compared
+  in memory on `(page_index, stream_xref, seq)` keys; only counts /
+  differences / booleans are published.  F1's fail-loud asymmetry
+  (predicted ⊆ production by construction) did not materialize.
+- **Census counters unchanged vs the pre-implementation baseline**
+  (7ea5f56-era run): shows_total 28,043; on_type0_font 27,820;
+  single_hex_tj 27,250; within_replay_budget 10,701;
+  outside_marked_content 6,872; the full `trm_census` block
+  (user_shape / visual_direction / page_rotate / overlap / predicted)
+  is identical.
+- **The retired blanket slug decomposes exactly**: old
+  `state:trm_not_uniform_scaled` 6,444 = 6,413 `trm_rotated_admitted`
+  + 27 `state:trm_reflected` + 4 `state:trm_rotation_not_quarter_turn`.
+  Downstream `replacement_encodable_proxy` 5,934 = 376 (axis-aligned,
+  unchanged) + 5,558 (quarter-turn family) — the +5,558 newly bindable
+  shows predicted by the step-4 census, landed exactly.
+- doc_1 unchanged: no budget-eligible single-hex-`Tj` shows (all
+  stages 0 past `on_type0_font` 543), as in every prior record.
+- E2E sample: not run in this pass (`--no-e2e`); the corpus e2e pass
+  stays optional per the step-4 advisory and can ride the rollout-gate
+  work.
+
 ## 8. Open questions
 
 - OCG default-visibility resolution: which configuration dictionary governs
@@ -373,6 +687,20 @@ admitted-or-unwrapped shows).  doc_1 unchanged (all TJ-array).
 - Rotated growth-zone gates: how do the occupancy/background probes transform
   under 90°-family rotations vs arbitrary angles — same code path or a
   restricted 90°-family v1?
+  (Step-4 census answer: restricted 90°-family v1 — 6,413/6,417 uniform
+  rotations (99.94%) are visual quarter-turn and the broad scope buys
+  only 3 shows; the probes
+  generalize through ONE shared cardinal `growth_direction`, not four
+  divergent implementations and not arbitrary-angle polygons.  The 4
+  oblique + 27 reflected shows stay fail-closed with their own codes;
+  arbitrary-angle admission would be its own later slice with new census
+  evidence.)
+  (Step-4 implementation answer, 2026-08-20: SAME code path for all four
+  directions — `_growth_zone_rect` infers the forward strip from the
+  dominant extended edge, the glyph counter and occupancy intersects
+  convert to unrotated dict space first (PITFALLS 269), and the
+  axis-aligned visual strip proved sufficient exactly as the census
+  predicted.  CLOSED.)
 - Index persistence: per-session only, or survives save/reopen via digest
   keys? (Privacy: digests only, never text.)
 - `malformed_pairing` tolerance (census 2026-08-14): 35.8% of the gated

@@ -351,7 +351,11 @@ def test_bind_geometry_disagreement_is_evidence_mismatch():
     doc.close()
 
 
-def test_bind_rotated_text_refused_as_unsupported_state():
+def test_bind_rotated_text_now_binds_as_a_quarter_turn_candidate():
+    """Task 13 P2: a 90°-rotated show BINDS (was a blanket
+    UNSUPPORTED_TEXT_STATE refusal) — the quarter-turn family is admitted
+    at the TRM gate; every non-quarter-turn shape keeps its own fail-closed
+    ``trm_*`` code (pinned in test_text_commit_trm_admission.py)."""
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
     page.insert_text(
@@ -361,8 +365,10 @@ def test_bind_rotated_text_refused_as_unsupported_state():
     binding = bind_source_text(
         doc, page, target_text="Rotated 90", expected_origin=origin
     )
-    assert isinstance(binding, BindingFailure)
-    assert binding.reason == RejectReason.UNSUPPORTED_TEXT_STATE
+    assert not isinstance(binding, BindingFailure), (
+        binding.reason,
+        binding.detail,
+    )
     doc.close()
 
 
