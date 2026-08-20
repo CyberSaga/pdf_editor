@@ -656,8 +656,9 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   TRM-gate deaths (`scripts/trm_taxonomy.py` classifier — user-space
   shape of `Tm × CTM` + visual baseline direction through
   `transformation_matrix × rotation_matrix`; funnel `trm_census` block;
-  70-test red-first matrix). Corpus: **6,417 uniform rotations (98.8%
-  visual quarter-turn, `right` 6,212), all on `/Rotate 270` pages, all
+  70-test red-first matrix). Corpus: **6,417/6,444 uniform rotations;
+  6,413/6,417 of those (99.94%) are visual quarter-turn (`right` 6,212;
+  6,413/6,444 = 99.52% of all TRM-gate deaths), all on `/Rotate 270` pages, all
   P1-admitted wrapped shows; zero near-miss rounded matrices; predicted
   newly bindable 5,558 (quarter-turn) vs 5,561 (any-uniform — +3
   only)**. v1 scope LOCKED to the quarter-turn family; acceptance for

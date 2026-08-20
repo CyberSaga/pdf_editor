@@ -157,7 +157,8 @@ coverage number — it feeds the TODOS "latency half stays open" item.
        kern axis, visual-space verify), then implementation; separate PR.
        (2026-08-19 census-before-code sub-step DONE: rotated-TRM census on
        the post-P1 TRM-gate population — **6,417/6,444 uniform rotations,
-       98.8% visual quarter-turn, 5,558 predicted newly bindable**; v1
+       6,413/6,417 (99.94%) visual quarter-turn, 5,558 predicted newly
+       bindable**; v1
        scope locked to the quarter-turn family — §7 census record and
        scope decision; classifier in `scripts/trm_taxonomy.py`, funnel
        `trm_census` block; 70-test red-first matrix + 2-agent adversarial
@@ -421,7 +422,8 @@ sit on `/Rotate 270` pages.
 **Scope decision (v1 lock)**: quarter-turn family — positive-orientation
 uniform rotation+scale with visual baseline 0°/90°/180°/270° only.  The
 census's decision rule (advisory): dominant eligible bucket must be the
-visual quarter-turn family — it is, at 98.8% of uniform rotations; the
+visual quarter-turn family — it is, at 6,413/6,417 uniform rotations
+(99.94%; equivalently 6,413/6,444 = 99.52% of all TRM-gate deaths); the
 broad any-uniform scope would add only **3** bindable shows while
 forcing arbitrary-angle verifier geometry.  Non-quarter-turn uniform
 rotations stay fail-closed with their own stable reason
@@ -454,8 +456,9 @@ implementation**: newly admitted set == census prediction exactly —
 - Rotated growth-zone gates: how do the occupancy/background probes transform
   under 90°-family rotations vs arbitrary angles — same code path or a
   restricted 90°-family v1?
-  (Step-4 census answer: restricted 90°-family v1 — the corpus is 98.8%
-  visual quarter-turn and the broad scope buys only 3 shows; the probes
+  (Step-4 census answer: restricted 90°-family v1 — 6,413/6,417 uniform
+  rotations (99.94%) are visual quarter-turn and the broad scope buys
+  only 3 shows; the probes
   generalize through ONE shared cardinal `growth_direction`, not four
   divergent implementations and not arbitrary-angle polygons.  The 4
   oblique + 27 reflected shows stay fail-closed with their own codes;
