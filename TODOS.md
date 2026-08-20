@@ -718,6 +718,15 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   accepted as documented (~1 ulp axis-path drift, fail-closed); F5
   docstrings corrected (verify re-derives the growth edge; slug is
   token-bound, not threaded). Details in plan §7.
+- 2026-08-20 (Task 13 step 5 — funnel acceptance, corpus, --no-e2e):
+  SET-identity acceptance PASS at the sealed tip — gate 6,413
+  predicted == 6,413 production, downstream 5,558 == 5,558, both
+  symmetric differences 0, membership exact; census counters identical
+  to the pre-implementation baseline; blanket slug decomposes exactly
+  (6,444 = 6,413 admitted + 27 reflected + 4 not-quarter-turn).
+  Corpus e2e pass deferred (optional per step-4 advisory — ride the
+  rollout-gate work). P2 slice ready for its PR (base
+  task11/slice1-closure) — do not push/open until instructed.
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

@@ -631,6 +631,38 @@ implementation**: newly admitted set == census prediction exactly —
     was declined (no behavioral gap for engine-built plans; hand-built
     `PreparedEdit`s are already outside the token's protection).
 
+### Step-5 funnel acceptance record (corpus aggregates, 2026-08-20, --no-e2e)
+
+Run at the sealed P2 tip (feat 0d5333b + fix 0862906), same two-document
+corpus as every prior record; counts and set-membership results only.
+
+- **Set-identity acceptance (the verdict's contract 6 — sets, not just
+  numbers): PASS.** `trm_census.acceptance` (doc_0): predicted_gate
+  **6,413** == production_gate **6,413**, gate_symmetric_difference
+  **0**, gate_membership_exact **true**; predicted_downstream **5,558**
+  == production_downstream **5,558**, downstream_symmetric_difference
+  **0**, downstream_membership_exact **true**.  Membership was compared
+  in memory on `(page_index, stream_xref, seq)` keys; only counts /
+  differences / booleans are published.  F1's fail-loud asymmetry
+  (predicted ⊆ production by construction) did not materialize.
+- **Census counters unchanged vs the pre-implementation baseline**
+  (7ea5f56-era run): shows_total 28,043; on_type0_font 27,820;
+  single_hex_tj 27,250; within_replay_budget 10,701;
+  outside_marked_content 6,872; the full `trm_census` block
+  (user_shape / visual_direction / page_rotate / overlap / predicted)
+  is identical.
+- **The retired blanket slug decomposes exactly**: old
+  `state:trm_not_uniform_scaled` 6,444 = 6,413 `trm_rotated_admitted`
+  + 27 `state:trm_reflected` + 4 `state:trm_rotation_not_quarter_turn`.
+  Downstream `replacement_encodable_proxy` 5,934 = 376 (axis-aligned,
+  unchanged) + 5,558 (quarter-turn family) — the +5,558 newly bindable
+  shows predicted by the step-4 census, landed exactly.
+- doc_1 unchanged: no budget-eligible single-hex-`Tj` shows (all
+  stages 0 past `on_type0_font` 543), as in every prior record.
+- E2E sample: not run in this pass (`--no-e2e`); the corpus e2e pass
+  stays optional per the step-4 advisory and can ride the rollout-gate
+  work.
+
 ## 8. Open questions
 
 - OCG default-visibility resolution: which configuration dictionary governs
