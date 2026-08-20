@@ -561,6 +561,76 @@ implementation**: newly admitted set == census prediction exactly —
     the refusal path pinned, and the census funnel test → admission +
     acceptance block.
 
+- 2026-08-20 (step 4 P2 — implementation review round, serial
+  Attack→Verify workflow wf_3cb287ec; the Verify agent died on the
+  session limit, so every finding was verified by hand — two confirmed
+  and fixed red-first, three documented):
+  - **F2 (important, CONFIRMED → fixed red-first)**: the admission gate
+    ran for EVERY bound show, so replay-uniform matrices carrying
+    boundary residuals exactly ON replay's absolute tolerance
+    (`|b| == 1e-6`) — previously bound and planned — flipped to
+    `trm_sheared` under the relative shape checks, violating "the
+    pre-P2 admitted set stays admitted byte-identically"; the funnel
+    (which gates its admission mirror on `not trm_uniform_scaled`) also
+    diverged from production on exactly those shows.  Fix:
+    `bind_source_text` skips the shape gate for replay-uniform shows —
+    with the single exception of `trm_non_finite`, which replay's
+    comparison-based idiom test cannot flag (NaN compares False
+    everywhere) and which stays refused unconditionally (a deliberate,
+    strictly-fail-closed delta from pre-P2, unreachable from real
+    numeric content).  Such a sliver show plans with
+    `growth_direction=None` and rides the axis path exactly as before
+    P2.  Pin: `test_planner_still_admits_replay_uniform_boundary_residuals`
+    (red as `trm_sheared` before the fix).  The non-finite corner is the
+    one residual funnel/production divergence — documented, not mirrored
+    (the instrument would have crashed on NaN upstream anyway).
+  - **F4 (CONFIRMED empirically → fixed red-first)**: `/UserUnit 2.0`
+    reads `('float','2')` live but `('int','2')` after `tobytes`→reopen
+    (MuPDF prints integer-valued reals minimally), so the raw
+    `kind:value` fold broke live-vs-scratch fingerprint equality — every
+    prepare on such a document would fail its scratch-apply forever.
+    Fix: numeric values fold as canonical `num:{float(value)!r}`;
+    `kind:value` survives only for non-numeric kinds.  New PITFALLS
+    entry 270.  Pin:
+    `test_fingerprint_is_stable_when_userunit_is_spelled_as_a_real`
+    (red before the fix).
+  - **F1 (verified — instrument property, documented not changed)**: the
+    funnel acceptance sets are one-directional by construction:
+    predicted-gate membership uses the census's STRICT
+    `SHAPE_UNIFORM_ROTATED` classification while the production side
+    uses `admission_verdict`, so a replay-rotated show whose combined
+    linear classifies axis-aligned under the relative tolerance (e.g.
+    sub-relative residuals at large CTM scale) can be
+    production-admitted but predicted-excluded — never the reverse
+    (predicted ⊆ production).  A nonzero symmetric difference is
+    therefore always a TRUE report that production admits something the
+    census did not predict — the instrument can only fail loudly, never
+    pass wrongly.  Kept as-is: that fail-loud asymmetry is exactly what
+    the census-before-code acceptance is for; the committed census shows
+    `user_shape axis_aligned = 0` among rotated candidates, so the
+    corpus run is expected to close at difference 0.
+  - **F3 (verified — accepted as documented)**: `_grown_verify_bbox`'s
+    axis path round-trips the caller bbox through `~visual`/`visual`, so
+    the three unchanged edges can drift ~1 ulp of the page dimension
+    (~1e-13 pt) relative to the historical direct edge extension, and
+    the growth norm uses `hypot(a, b)` vs the old scalar `a` (~5e-13
+    relative for admitted residuals).  Bounded, fail-closed (a
+    knife-edge pixel lands as an extra probe or hands back to the
+    outside-halo check — never unchecked), and absorbed by the 1e-6
+    token quantization and every pinned tolerance; the plan §7 claim
+    "arithmetically unchanged" is hereby corrected to "unchanged within
+    ~1 ulp, one-sided clamped by the min/max union".
+  - **F5 (verified — doc drift, docstrings corrected)**: verify never
+    reads `PreparedEdit.growth_direction` — the strip edge is re-derived
+    from target/verify bbox geometry (dominant-edge), which agrees with
+    the stored slug by construction since `_grown_verify_bbox` extends
+    exactly the edge the slug names, and the slug itself is token-bound.
+    The `plan.py`/`verify.py` docstrings claiming verify "consumes" the
+    shared direction were corrected to state the re-derivation and the
+    agreement argument; threading the field through verify's signatures
+    was declined (no behavioral gap for engine-built plans; hand-built
+    `PreparedEdit`s are already outside the token's protection).
+
 ## 8. Open questions
 
 - OCG default-visibility resolution: which configuration dictionary governs

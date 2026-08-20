@@ -298,7 +298,12 @@ def _update_page_geometry(
     a direct ``/Rotate 270`` and the same value inherited from ``/Pages``
     fold identically while an ancestor mutation still changes the fold.
     ``/UserUnit`` is not inheritable; it is read off the page dict with
-    one indirect hop resolved.  The live visual matrices are folded too:
+    one indirect hop resolved and folded as a canonical NUMBER (review
+    F4): MuPDF re-serializes an integer-valued real spelling (``2.0``)
+    minimally as the int ``2`` on save, so a raw ``kind:value`` fold
+    would flip ``float:2`` → ``int:2`` across the live→scratch round
+    trip and fail every prepare on such a document.  The live visual
+    matrices are folded too:
     they are what plan/verify geometry actually consumes, so any
     divergence between serialized state and a computed view goes stale
     instead of slipping through.
@@ -307,7 +312,12 @@ def _update_page_geometry(
         kind, value = doc.xref_get_key(page.xref, "UserUnit")
         if kind == "xref":
             value = doc.xref_object(int(value.split()[0]))
-        user_unit = f"{kind}:{value}"
+        try:
+            user_unit = f"num:{float(value)!r}"
+        except ValueError:
+            # Non-numeric (including the "null:null" absent case): the
+            # raw pair is the only stable identity available.
+            user_unit = f"{kind}:{value}"
     except (RuntimeError, ValueError, IndexError, fitz.mupdf.FzErrorBase):
         user_unit = "<unreadable-user-unit>"
     tm = page.transformation_matrix
@@ -759,8 +769,19 @@ def bind_source_text(
     # is cardinal; every defect keeps its own stable trm_* code.  Details
     # are code-only (§10 privacy): matrix coefficients can fingerprint a
     # private document's producer and never appear here.
+    #
+    # Replay-uniform shows NEVER enter the new gate (review F2): replay's
+    # absolute tolerances admit residuals (|b| == 1e-6) that the relative
+    # shape checks would refuse, and the pre-P2 admitted set must stay
+    # admitted byte-identically.  The one exception is a non-finite
+    # combined matrix, which replay's comparison-based idiom test cannot
+    # flag (NaN compares False everywhere) — that defect stays refused
+    # regardless of the replay flag.
     trm_verdict = admission_verdict(page, show.tm, show.ctm)
-    if trm_verdict.reject_reason is not None:
+    if trm_verdict.reject_reason is not None and (
+        not show.trm_uniform_scaled
+        or trm_verdict.reject_reason == RejectReason.TRM_NON_FINITE
+    ):
         return BindingFailure(
             trm_verdict.reject_reason,
             _TRM_REJECT_DETAILS[trm_verdict.reject_reason],

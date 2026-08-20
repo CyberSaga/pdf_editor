@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 269 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 270 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -274,3 +274,4 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2417 | PDF numbers have no exponent notation — %g-formatted matrix coefficients silently void the whole operator | `test_scripts/type0_fixture_builder.py` (`set_text_matrix`), any code writing numbers into content streams |
 | 2424 | Single-process full-suite pytest runs hang or abort nondeterministically inside Qt GUI tests | test harness (whole-suite runs of `test_scripts/`), PySide6 offscreen platform |
 | 2431 | get_drawings/get_image_rects report UNROTATED page space — occupancy gates silently miss obstacles on /Rotate pages | model/text_commit/verify.py (Tier 1 growth occupancy gates), PyMuPDF geometry conventions |
+| 2438 | MuPDF re-serializes integer-valued reals as ints — raw kind:value folds break across a tobytes round trip | model/text_commit/inspect.py (page fingerprint), PyMuPDF object serialization |

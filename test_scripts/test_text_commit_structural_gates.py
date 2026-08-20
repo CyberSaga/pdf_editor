@@ -470,6 +470,30 @@ def test_planner_admits_quarter_turn_text_matrix(label, text_matrix):
     doc.close()
 
 
+def test_planner_still_admits_replay_uniform_boundary_residuals():
+    """Review F2 (red-first): the pre-P2 admitted set stays admitted.
+
+    ``0.000001`` residuals sit exactly ON replay's absolute tolerance
+    (``abs(b) > 1e-6`` is False), so the show is ``trm_uniform_scaled``
+    and was bound and planned before P2.  The quarter-turn admission's
+    RELATIVE shear check would refuse it (|a·c + b·d| = 2e-6 > rel·scale²
+    ≈ 1e-6), so the new gate must never run for replay-uniform shows —
+    axis-aligned Tier 0/1 behavior stays byte-identical.
+    """
+    doc = _stream_doc(
+        b"BT /F1 1 Tf 1 0.000001 0.000001 1 300 400 Tm ("
+        + TARGET.encode()
+        + b") Tj ET"
+    )
+    show = _target_show(doc)
+    assert show.trm_uniform_scale is not None  # replay says uniform
+    result = _plan(doc)
+    assert isinstance(result, PreparedEdit), result
+    # The sliver rides the axis path: no cardinal slug is claimed for it.
+    assert result.growth_direction is None
+    doc.close()
+
+
 # ------------------------------------------------- fallback target geometry
 
 

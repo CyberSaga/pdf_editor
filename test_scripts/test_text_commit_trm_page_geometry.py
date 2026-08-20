@@ -213,6 +213,23 @@ def test_fingerprint_is_stable_across_a_tobytes_reopen_round_trip() -> None:
     reopened.close()
 
 
+def test_fingerprint_is_stable_when_userunit_is_spelled_as_a_real() -> None:
+    """Review F4 (red-first): ``/UserUnit 2.0`` — an integer value spelled
+    as a PDF real — must fingerprint identically live and after a
+    tobytes→reopen.  MuPDF re-serializes the token minimally as the int
+    ``2``, so a raw ``kind:value`` fold flips ``float:2`` → ``int:2`` on
+    the scratch copy and EVERY prepare on such a document would fail its
+    scratch-apply forever (fail-closed, but a whole-feature loss)."""
+    fixture = build_identity_h_fixture(rotate=270)
+    fixture.doc.xref_set_key(fixture.page.xref, "UserUnit", "2.0")
+    live = page_fingerprint(fixture.doc, fixture.page)
+    data = fixture.doc.tobytes()
+    fixture.doc.close()
+    reopened = fitz.open(stream=data, filetype="pdf")
+    assert page_fingerprint(reopened, reopened[0]) == live
+    reopened.close()
+
+
 def test_unmutated_prepare_commit_still_commits_on_geometry_rich_pages() -> None:
     """CONTROL (green today): the geometry fold must not false-stale an
     honest prepare→commit on a page that HAS nontrivial geometry."""

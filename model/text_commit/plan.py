@@ -98,9 +98,13 @@ class PreparedEdit:
     style_overrides: StyleOverrides | None = None
     geometry_intent: tuple[float, float, float, float] | None = None
     # Task 13 P2: the admitted show's cardinal visual baseline direction
-    # ("right"/"left"/"up"/"down") — the ONE shared direction every growth
-    # probe consumes. Defaulted so pre-P2 hand-built PreparedEdits stay
-    # valid; the tiered planner always sets it.
+    # ("right"/"left"/"up"/"down"), bound into the plan token (review F5:
+    # verify does NOT read this field — it re-derives the grown edge from
+    # target/verify bbox geometry, which agrees by construction because
+    # ``_grown_verify_bbox`` extends exactly the edge this slug names).
+    # Defaulted so pre-P2 hand-built PreparedEdits stay valid; None also
+    # marks the axis path (replay-uniform shows, including admitted
+    # boundary residuals the shape checks would refuse).
     growth_direction: str | None = None
 
     @property
@@ -516,10 +520,12 @@ def _classify_common(
     stream_bytes = streams[show.stream_xref]
 
     fingerprint = page_fingerprint(doc, page)
-    # Task 13 P2: the show's cardinal visual baseline direction — binding
-    # already proved the quarter-turn admission, so the verdict here is
-    # always an admission; it is recomputed (cheap, pure) rather than
-    # threaded through the binding.
+    # Task 13 P2: the show's cardinal visual baseline direction — it is
+    # recomputed (cheap, pure) rather than threaded through the binding.
+    # Usually an admission (binding proved it); the exception is a bound
+    # replay-uniform show whose boundary residuals the relative shape
+    # checks would refuse (review F2) — its direction is None and it
+    # rides the axis path exactly as before P2.
     trm_direction = admission_verdict(page, show.tm, show.ctm).direction
     if target_bbox is None:
         # ``old_advance``/``font_size`` are text space.  Build the metric

@@ -706,6 +706,18 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   Registered follow-up: `scripts/measure_tier_funnel.py` (legacy
   simple-font tier funnel) still models the OLD blanket TRM gate —
   update when that funnel is next used.
+- 2026-08-20 (Task 13 step 4 P2 — implementation review round,
+  wf_3cb287ec Attack + hand verification after the Verify agent hit the
+  session limit): 5 findings — F2 CONFIRMED fixed red-first (admission
+  gate now skips replay-uniform shows except `trm_non_finite`, keeping
+  the pre-P2 admitted boundary sliver admitted and re-aligning
+  funnel↔production); F4 CONFIRMED fixed red-first (fingerprint folds
+  numeric `/UserUnit` canonically — MuPDF re-prints integer-valued
+  reals as ints, PITFALLS 270); F1 documented (funnel acceptance sets
+  are one-directional predicted ⊆ production — fail-loud only); F3
+  accepted as documented (~1 ulp axis-path drift, fail-closed); F5
+  docstrings corrected (verify re-derives the growth edge; slug is
+  token-bound, not threaded). Details in plan §7.
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

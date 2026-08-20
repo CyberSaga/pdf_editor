@@ -637,9 +637,12 @@ def _growth_zone_rect(
     direction (Task 13 P2) — never a ``+x`` assumption.
 
     The direction is the DOMINANT edge by which ``verify_bbox`` extends
-    beyond ``target_bbox`` (plan's ``_grown_verify_bbox`` extends exactly
-    one edge, chosen by the shared ``growth_direction``; the dominant-edge
-    read is immune to sub-point float slivers on the cross edges):
+    beyond ``target_bbox``.  It is re-derived here from the two boxes
+    alone (review F5: ``PreparedEdit.growth_direction`` is token-bound
+    but not threaded into verify); the read agrees with the stored slug
+    by construction because plan's ``_grown_verify_bbox`` extends exactly
+    the one edge that slug names, and the dominant-edge read is immune to
+    sub-point float slivers on the cross edges:
 
         right → target.x1 … verify.x1      left → verify.x0 … target.x0
         down  → target.y1 … verify.y1      up   → verify.y0 … target.y0
