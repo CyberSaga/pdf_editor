@@ -152,33 +152,42 @@ latency optimization, never a correctness dependency. Additional pins:
 
 ## 5. Step list
 
-1. [ ] Serial analysis round (workflow, 2 agents, serial): (a) invalidation
-       census over every mutation path with file:line evidence; (b)
-       checkpoint-state contract for Shape B (exact `_State`+tm/tlm/
-       stack/mc fields, placement constraints, equivalence obligations).
-2. [ ] Red matrix (`test_scripts/test_replay_index_spike.py`): prototype
-       equivalence + refusal + data-policy pins. Show failing output.
-3. [ ] Implement harness + prototypes in `scripts/`; matrix green;
-       ruff/mypy clean.
-4. [ ] Adversarial review round (serial Attack→Verify workflow) on the
-       diff; findings fixed red-first.
-5. [ ] Corpus measurement run (aggregate-only), recorded here in §7.
-6. [ ] Docs (PITFALLS if any, ARCHITECTURE no — no production change),
-       TODOS housekeeping (P2-merged note; this spike's status), commit,
+1. [x] Serial analysis round (workflow wf_2d232d0d-211, 2 agents,
+       serial): invalidation census + checkpoint-state contract — §4 and
+       the 2026-08-21 §7 record.
+2. [x] Red matrix (`test_scripts/test_replay_index_spike.py`): 40 tests,
+       38 red at collection + 2 labeled controls; failing output shown
+       before implementation (§7 steps-2+3 record).
+3. [x] Implement harness + prototypes in `scripts/`; 40/40 green on the
+       first post-implementation run; ruff clean (feat commit).
+4. [x] Adversarial review round (workflow wf_d916552a-52f, serial
+       Attack→Verify): 8 findings (4 important CONFIRMED), all fixed —
+       stage-pin red-first for F3, mutation-verified pin for F4
+       (fix commit; §7 step-4 record).
+5. [x] Corpus measurement run (aggregate-only) — §7 step-5 record:
+       replay is ~90% of the per-keystroke cost; warm validated lookups
+       8–14 ms vs 2.7–4.8 s cold (~250–400×); **Shape A wins, Shape B
+       rejected for v1 on measured memory** (checkpoints cost 4–6× more
+       than Shape A retains in total on dense pages).
+6. [x] Docs (PITFALLS entries added: tracemalloc bias, json.dumps
+       backslash-inert assertion, getsizeof `__dict__` undercount),
+       TODOS housekeeping (P2-merged note; spike status), commit,
        push branch for remote review.
 
-## 6. Open questions going in
+## 6. Open questions going in (all but the last ANSWERED by §7 step 5)
 
 - Where does the ~1.05 s/MiB actually go — lexing, ShowOp allocation, or
-  the double stream read? (The decomposition answers this; the answer
-  picks Shape A vs B.)
-- Is Shape B's checkpoint restore even sound mid-page? Tokens may split
-  only BETWEEN streams, but operands accumulate across arbitrary
-  distances; checkpoints must sit at operator boundaries with empty
-  operand stacks — census agent to confirm the exact constraint set.
+  the double stream read? **ANSWERED: the replay walk is ~90% (2.74 s of
+  a ~3 s prepare on dense pages); the double read is 5 ms.**
+- Is Shape B's checkpoint restore even sound mid-page? **ANSWERED:
+  sound under the analysis-round placement contract (empty operands,
+  token boundaries, BI..EI exclusion, retained page globals) — pinned
+  by the equivalence matrix — but the shape is REJECTED for v1 anyway:
+  at interval 64 its checkpoints retain 4–6× more than Shape A total.**
 - Memory: is retaining a full `PageReplay` for a 4 MiB page acceptable
-  (Shape A), or does `decoded_bytes` duplication across ShowOps force
-  Shape B? Measure, don't guess.
+  (Shape A)? **ANSWERED: yes — 0.78–1.19 MB per dense corpus page
+  (~1.1–1.7 KB/show, `__dict__`-dominated); `decoded_bytes` duplication
+  is negligible (8–12 KB/page) on this corpus.**
 - Index persistence across save/reopen (parent plan §8) stays OPEN —
   explicitly out of this spike (no persistent cache fence).
 
@@ -338,3 +347,77 @@ latency optimization, never a correctness dependency. Additional pins:
     fences 1 (no model/ edits) and 4 (no persistence, no doc mutation)
     verified against the staged diff.
   - Post-fix state: 41/41 green, ruff clean.
+
+### Step-5 measurement record (corpus aggregates, 2026-08-21)
+
+Run: both corpus documents, 3 iterations, top-4 WITHIN-budget pages per
+doc + 2 over-budget refusal probes (doc_0: 50 pages, 11 over budget;
+doc_1: 23 pages, 0 over).  Raw JSON stays in the gitignored local
+`benchmarks/p3a-spike-2026-08-21.json`; aggregates only here.
+
+**1. The per-keystroke cost is REPLAY, almost entirely.**  doc_0 dense
+pages (1.95–3.47 MiB decoded, 667–1,075 shows): cold `prepare_plan`
+median 2.70–4.77 s (~1.4 s/MiB — the Task 12 "~1.05 s/MiB" story,
+re-confirmed on this machine); the replay stage alone is 2.74 s median
+of medians vs read_streams 5.4 ms, fingerprint 50.6 ms.  A repeated
+keystroke (changed replacement) pays the same full cost again
+(2.66–4.73 s).  The double stream READ is a rounding error; the
+re-REPLAY per generation is ~90% of the bill.
+
+**2. Warm lookups under the honest pull-validation contract are
+~8–14 ms on dense pages** — `key_validation` (mandatory re-read +
+sha256 compare) is 8.3 ms median and dominates the warm path; the
+validated index-warm keystroke share is 8.5–11.4 ms and the validated
+second-target lookup 7.2–13.5 ms.  Against the 2.7–4.8 s cold replay
+share that is a **~250–400× reduction**, leaving plan/verify stages and
+validation as the new floor.
+
+**3. Shape A wins, decisively.**  Build == one production replay
+(2.80 s vs 2.74 s — i.e. the build costs what every keystroke already
+pays today, once per page generation); retained memory 0.78–1.19 MB per
+dense page (1,106–1,688 bytes/show — the slotless-`__dict__` overhead
+the analysis round predicted dominates; `decoded_bytes` duplication is
+negligible on this corpus, 8–12 KB/page of 2-byte CIDs); correctness is
+inherited (it IS the production `PageReplay`).  Single-build tracemalloc
+peak ≈ retained size (~1.2 MB) — no transient blow-up.
+
+**4. Shape B LOSES on this corpus at the default interval.**  Retained
+3.9–7.3 MB per dense page — 4–6× MORE than Shape A — because dense CAD
+pages emit thousands of checkpoints (3,887–7,042 at interval 64) at
+~1 KB each (full gs_stack + state tuples); the sparse rows themselves
+are small (209–336 KB).  Its raw warm lookup is also ~30× slower than
+Shape A's (1.3 ms vs 0.04 ms) and its build ~12% dearer (checkpoint
+capture).  The hybrid's extra complexity buys nothing here: Shape B
+would only win where retaining decoded bytes is expensive, and this
+corpus's shows are tiny.  On doc_1's small pages Shape B does retain
+less (e.g. 708 KB vs 1.00 MB) — but those pages replay in 58 ms and
+need no index at all.
+
+**5. Over-budget pages: even the refusal pays the DECODE.**  The two
+~72 MB probe pages refuse in microseconds at the guard — but
+`read_page_streams` (xref_stream decode) costs 190–240 ms before the
+guard ever sees a byte count.  The budget's latency role is now
+measured cleanly: within-budget dense pages are the index's target;
+over-budget pages stay refused (revisiting them is P3-B's
+indexing-SLO question per parent plan §4, NOT a budget raise).
+
+**6. Probe honesty notes.**  Dense doc_0 targets die at
+`type0_unicode_unmapped`/`mc_malformed_pairing` (the harness binds the
+longest show, not a bindable one) — reject-path timings, like the Task
+11 baseline benchmark, which still exercise the full replay+bind cost
+that dominates real keystrokes.  On 2 of 4 doc_1 pages the picked
+target contained a line break, so `prepare_plan` exited at
+`multiline_replacement` before any stream work (cold ≈ 0 ms, 0 stream
+reads) — the stage rows for those pages still measured replay/bind
+directly.
+
+**Scope verdict for P3-B (the production slice):** Materialized ShowOp
+table (Shape A), keyed by the digest-verified `IndexKey`
+(pull-validation per §4; hooks only as eviction optimizations), owned
+by the engine so the doc-setter reset inherits every doc-replacement
+invalidation.  Shape B (checkpoints) is REJECTED for v1 on measured
+evidence.  Candidate follow-ups for P3-B, in order: reuse one replay
+across bind→plan within a single prepare (pure plumbing, no cache
+semantics), then the per-generation table for the preview keystroke
+loop.  A `__slots__` ShowOp would cut the dominant 1.1 KB/show — but
+that is a production change owned by P3-B, not this spike.
