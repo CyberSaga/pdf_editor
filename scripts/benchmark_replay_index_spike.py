@@ -29,6 +29,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import statistics
 import sys
@@ -62,6 +63,7 @@ from scripts.replay_index_spike import (  # noqa: E402
     MaterializedShowTable,
     ReplayIndexRefusedError,
     SparseCheckpointIndex,
+    index_key_for_streams,
 )
 
 STAGE_NAMES: tuple[str, ...] = (
@@ -71,6 +73,9 @@ STAGE_NAMES: tuple[str, ...] = (
     "fingerprint",
     "prepare_plan",
     "engine_prepare",
+    # the pull-validation cost (re-read + digest compare) the plan §4
+    # contract charges to every warm lookup — review round F3
+    "key_validation",
     "shape_a_build",
     "shape_a_lookup",
     "shape_b_build",
@@ -95,6 +100,19 @@ def _timed(fn, iterations: int) -> tuple[list[float], object]:
         result = fn()
         samples.append((time.perf_counter() - start) * 1000.0)
     return samples, result
+
+
+def _single_build_peak(build_fn) -> int:
+    """tracemalloc peak around exactly ONE build (review F2): no prior
+    iteration's retained index is alive inside the tracing window, and the
+    timed stage samples are taken elsewhere with tracing off (review F1)."""
+    gc.collect()
+    tracemalloc.start()
+    throwaway = build_fn()
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    del throwaway
+    return peak
 
 
 def _stat(samples: list[float]) -> dict[str, object]:
@@ -231,12 +249,21 @@ def _measure_page(
         )
         stages["prepare_plan"] = _stat(plan_samples)
         record["prepare_plan_reason"] = _reason_of(plan_outcome)
-        scenarios["cold_first_edit"] = _stat(plan_samples)
+        scenarios["cold_first_edit"] = {
+            **_stat(plan_samples),
+            "path": "production_full_prepare",
+        }
 
+        # Review F5: this is TODAY'S full prepare cost for the keystroke
+        # case, labeled as such — the index-warm share of the same
+        # scenario is measured separately below (index_warm_replay_share).
         keystroke_samples, _ = _timed(
             lambda: _plan((target[:-1] or "Y") + "Z"), iterations
         )
-        scenarios["warm_changed_replacement"] = _stat(keystroke_samples)
+        scenarios["warm_changed_replacement"] = {
+            **_stat(keystroke_samples),
+            "path": "production_full_prepare",
+        }
 
         engine_samples, engine_outcome = _timed(
             lambda: engine.prepare(
@@ -251,22 +278,43 @@ def _measure_page(
         record["engine_prepare_reason"] = _reason_of(engine_outcome)
 
     # ---------------------------------------------------------- Shape A
-    tracemalloc.start()
+    # Review F1: build stage timings run with tracemalloc OFF so they are
+    # comparable with every other stage; review F2: the peak is measured
+    # around exactly ONE separate throwaway build so no prior iteration's
+    # retained index inflates it.
     a_build_samples, table = _timed(
         lambda: MaterializedShowTable.build(
             page_xref, streams, max_decoded_bytes=max_decoded_bytes
         ),
         iterations,
     )
-    _, a_peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
     stages["shape_a_build"] = _stat(a_build_samples)
     shape_a: dict[str, object] = {
-        "build_peak_tracemalloc_bytes": a_peak,
+        "build_peak_tracemalloc_bytes": _single_build_peak(
+            lambda: MaterializedShowTable.build(
+                page_xref, streams, max_decoded_bytes=max_decoded_bytes
+            )
+        ),
         "refused": table.refusal_reason is not None,
     }
     if table.refusal_reason is None:
         shape_a["memory_footprint"] = table.memory_footprint()
+
+        # Review F3: the plan §4 contract charges EVERY warm lookup a
+        # pull-validation pass (re-read streams + digest compare against
+        # the key). Timed as its own stage; the warm SCENARIOS below are
+        # contract-honest composites (validation + lookup), while the
+        # shape_*_lookup stages stay raw scan/restore decompositions.
+        validation_samples, _ = _timed(
+            lambda: (
+                index_key_for_streams(page_xref, read_page_streams(doc, page))
+                == table.key
+            ),
+            iterations,
+        )
+        stages["key_validation"] = _stat(validation_samples)
+        record["raw_lookup_stages_exclude_key_validation"] = True
+
         if targets:
             target_bytes = targets[0].encode("latin-1")
             a_lookup_samples, hits = _timed(
@@ -276,23 +324,34 @@ def _measure_page(
             shape_a["lookup_hits"] = len(hits)  # type: ignore[arg-type]
             if len(targets) == 2:
                 second = targets[1].encode("latin-1")
-                second_samples, _ = _timed(lambda: table.lookup(second), iterations)
-                scenarios["warm_second_target"] = _stat(second_samples)
+
+                def _validated_second_lookup() -> int:
+                    fresh = read_page_streams(doc, page)
+                    if index_key_for_streams(page_xref, fresh) != table.key:
+                        return -1  # pragma: no cover - streams are stable here
+                    return len(table.lookup(second))
+
+                second_samples, _ = _timed(_validated_second_lookup, iterations)
+                scenarios["warm_second_target"] = {
+                    **_stat(second_samples),
+                    "path": "index_warm_validated",
+                }
     record["shape_a"] = shape_a
 
     # ---------------------------------------------------------- Shape B
-    tracemalloc.start()
     b_build_samples, index = _timed(
         lambda: SparseCheckpointIndex.build(
             page_xref, streams, max_decoded_bytes=max_decoded_bytes
         ),
         iterations,
     )
-    _, b_peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
     stages["shape_b_build"] = _stat(b_build_samples)
     shape_b: dict[str, object] = {
-        "build_peak_tracemalloc_bytes": b_peak,
+        "build_peak_tracemalloc_bytes": _single_build_peak(
+            lambda: SparseCheckpointIndex.build(
+                page_xref, streams, max_decoded_bytes=max_decoded_bytes
+            )
+        ),
         "refused": index.refusal_reason is not None,
     }
     if index.refusal_reason is None:
@@ -313,15 +372,41 @@ def _measure_page(
             stages["shape_b_lookup"] = _stat(b_lookup_samples)
             shape_b["lookup_hits"] = n_hits
 
-    # post-mutation rebuild: in-memory stream-list copy only, never the doc
+            # Review F5: the index-warm share of the keystroke case —
+            # validation + candidate scan + restores for the SAME target
+            # (a changed replacement re-binds the same source show).
+            def _b_warm_keystroke() -> int:
+                fresh = read_page_streams(doc, page)
+                if index_key_for_streams(page_xref, fresh) != index.key:
+                    return -1  # pragma: no cover - streams are stable here
+                seqs = index.candidate_seqs(fresh, target_bytes)
+                for seq in seqs:
+                    index.restore_show(fresh, seq)
+                return len(seqs)
+
+            keystroke_warm_samples, _ = _timed(_b_warm_keystroke, iterations)
+            existing = scenarios["warm_changed_replacement"]
+            existing["index_warm_replay_share"] = {  # type: ignore[index]
+                **_stat(keystroke_warm_samples),
+                "path": "index_warm_validated",
+            }
+
+    # post-mutation rebuild: in-memory stream-list copy only, never the doc.
+    # Review F7: a page within n_streams bytes of the budget flips over it
+    # under the +1-byte-per-stream mutation and the rebuild REFUSES — flag
+    # that outcome instead of presenting a refusal timing as rebuild cost.
     mutated = [(xref, data + b" ") for xref, data in streams]
-    rebuild_samples, _ = _timed(
+    rebuild_samples, rebuilt = _timed(
         lambda: SparseCheckpointIndex.build(
             page_xref, mutated, max_decoded_bytes=max_decoded_bytes
         ),
         iterations,
     )
-    scenarios["post_mutation_rebuild"] = _stat(rebuild_samples)
+    scenarios["post_mutation_rebuild"] = {
+        **_stat(rebuild_samples),
+        "path": "index_rebuild",
+        "refused": rebuilt.refusal_reason is not None,  # type: ignore[union-attr]
+    }
     record["shape_b"] = shape_b
 
     if other_page_index is not None:
@@ -335,7 +420,10 @@ def _measure_page(
             ),
             iterations,
         )
-        scenarios["different_page"] = _stat(other_samples)
+        scenarios["different_page"] = {
+            **_stat(other_samples),
+            "path": "index_build_other_page",
+        }
 
     record["stages"] = stages
     record["scenarios"] = scenarios
@@ -368,15 +456,9 @@ def measure_document(
         sizes.append((_page_decoded_size(doc, doc[page_index]), page_index))
     sizes.sort(reverse=True)
     within = [
-        page_index
-        for size, page_index in sizes
-        if size <= DEFAULT_MAX_REPLAY_BYTES
+        page_index for size, page_index in sizes if size <= DEFAULT_MAX_REPLAY_BYTES
     ]
-    over = [
-        page_index
-        for size, page_index in sizes
-        if size > DEFAULT_MAX_REPLAY_BYTES
-    ]
+    over = [page_index for size, page_index in sizes if size > DEFAULT_MAX_REPLAY_BYTES]
     selected = within[:max_pages]
     if unbounded:
         selected = selected + over[:2]
@@ -411,9 +493,7 @@ def measure_document(
         refusal_probes.append(
             {
                 "page_index": page_index,
-                "decoded_bytes_total": sum(
-                    len(data) for _, data in probe_streams
-                ),
+                "decoded_bytes_total": sum(len(data) for _, data in probe_streams),
                 "read_streams": _stat(probe_read_samples),
                 "refused_replay": _stat(probe_replay_samples),
                 "refusal_reason": probe_replay.refusal_reason,

@@ -252,6 +252,12 @@ def test_shape_a_over_budget_build_refuses_verbatim_without_lexing(
     monkeypatch.setattr(spike_mod, "lex_content_stream", _bomb)
     table = MaterializedShowTable.build(PAGE_XREF, _over_budget_streams())
     assert table.refusal_reason == CONTENT_STREAM_TOO_LARGE
+    # Review round F4: a refused Shape A lookup must SURFACE the refusal,
+    # never collapse into an empty miss (production refusal carries
+    # shows=(), so an unguarded scan would silently return ()).
+    with pytest.raises(ReplayIndexRefusedError) as caught:
+        table.lookup(b"K7Q")
+    assert caught.value.reason == CONTENT_STREAM_TOO_LARGE
 
 
 def test_shape_b_over_budget_build_refuses_verbatim_without_lexing(
@@ -585,6 +591,18 @@ def test_restores_are_isolated_and_idempotent():
     assert index.mc_wrappers == before_wrappers
 
 
+def test_sparse_interval_default_nearest_restore_parity():
+    """Review round F6: the harness restores via DEFAULT nearest-checkpoint
+    selection at a sparse interval — pin field-by-field parity for every
+    show without interval=1 crutches or explicit from_checkpoint."""
+    for fixture in (STATE_RICH, GS_NEST, CROSS_STREAM):
+        index, full, streams = _build_b(fixture, interval=8)
+        assert full.shows, "fixture must produce shows"
+        for show in full.shows:
+            restored = index.restore_show(streams, show.seq)
+            _assert_show_identical(restored, show)
+
+
 def test_shape_b_memory_footprint_reports_accounting_keys():
     index, _, _ = _build_b(STATE_RICH, interval=1)
     footprint = index.memory_footprint()
@@ -612,6 +630,8 @@ def _harness():
 
 def test_harness_stage_and_scenario_names_are_pinned():
     harness = _harness()
+    # key_validation is the pull-validation cost (re-read + digest compare)
+    # the plan §4 contract charges to EVERY warm lookup — review round F3.
     assert set(harness.STAGE_NAMES) == {
         "read_streams",
         "replay",
@@ -619,6 +639,7 @@ def test_harness_stage_and_scenario_names_are_pinned():
         "fingerprint",
         "prepare_plan",
         "engine_prepare",
+        "key_validation",
         "shape_a_build",
         "shape_a_lookup",
         "shape_b_build",
@@ -657,7 +678,11 @@ def test_harness_report_carries_no_text_or_paths(tmp_path):
     serialized = json.dumps(report)
     assert "7Q" not in serialized
     assert "secret" not in serialized
-    assert str(tmp_path) not in serialized
+    # Review round F8: json.dumps escapes backslashes, so the raw Windows
+    # path can never match — assert the JSON-ENCODED spelling (and the
+    # forward-slash form) so a verbatim path embedding is actually caught.
+    assert json.dumps(str(tmp_path))[1:-1] not in serialized
+    assert tmp_path.as_posix() not in serialized
     for stage in harness.STAGE_NAMES:
         assert stage in report["stages"]
 

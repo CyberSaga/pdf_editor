@@ -272,3 +272,69 @@ latency optimization, never a correctness dependency. Additional pins:
     a slotless dataclass misses the per-instance `__dict__` container —
     exactly the dominant bytes/ShowOp driver the analysis round named —
     so `_deep_size` sizes `vars(obj)` for slotless dataclasses.
+
+- 2026-08-21 (step 4 — adversarial review round, serial Attack→Verify
+  workflow wf_d916552a-52f; 8 findings filed, verified verdicts: 4
+  important CONFIRMED, 3 minor CONFIRMED, 1 minor PARTIAL — all 8
+  addressed before the corpus run, which the Verify agent explicitly
+  gated on F1/F2/F3):
+  - **F1 (important)**: shape build stage timings ran with tracemalloc
+    tracing active while every competing stage ran without it —
+    systematically biasing the census's central build-vs-replay
+    comparison against both index shapes.  Fix: builds are timed clean;
+    the peak is measured separately.
+  - **F2 (important)**: `build_peak_tracemalloc_bytes` was read after N
+    iterated builds with the previous iteration's retained index still
+    referenced — inflating the peak by roughly one whole retained index
+    (worst for Shape A, whose retained size is the plan §6 memory
+    question).  Fix: `_single_build_peak` traces exactly one throwaway
+    build after a `gc.collect()`.
+  - **F3 (important)**: warm-lookup timings omitted the pull-validation
+    cost §4 charges to EVERY warm lookup (re-read + digest compare), so
+    the cold-vs-warm headline was overstated by orders of magnitude on
+    dense pages.  Fix: new pinned stage `key_validation`; the warm
+    SCENARIOS are contract-honest validated composites (labeled
+    `index_warm_validated`) while the raw `shape_*_lookup` stages stay
+    pure scan/restore decompositions, with an explicit
+    `raw_lookup_stages_exclude_key_validation` marker.  (Fixed
+    test-first: the stage-name pin went red before the harness change.)
+  - **F4 (important)**: the refused-lookup obligation was pinned only
+    for Shape B; deleting Shape A's guard collapsed a refused lookup
+    into the forbidden empty miss with the whole matrix green.  Fix:
+    refusal-surfacing pin added to the Shape A over-budget test —
+    mutation-verified SENSITIVE (guard neutered → red; restored →
+    green).
+  - **F5 (minor)**: `warm_changed_replacement` reported today's full
+    prepare under a warm label with no index-warm counterpart.  Fix:
+    every scenario carries a `path` label
+    (`production_full_prepare` / `index_warm_validated` /
+    `index_rebuild` / `index_build_other_page`) and the keystroke
+    scenario gains `index_warm_replay_share` — the validated
+    candidate-scan+restore share an index could actually replace.
+  - **F6 (minor, PARTIAL)**: every restore-parity test ran at
+    interval=1 or with an explicit checkpoint, so the harness's actual
+    configuration (default nearest-selection at a sparse interval) had
+    no direct pin — though the claimed silent-wrong-restore consequence
+    was refuted (earlier-checkpoint selection is invariant-correct and
+    past-the-row selection self-detects via `LookupError`).  Fix: new
+    test restores every show of three fixtures at interval=8 via
+    default nearest selection, field-by-field.
+  - **F7 (minor)**: the +1-byte-per-stream mutation can flip a
+    within-budget page over the budget, and the scenario then reported
+    a refusal timing as rebuild cost.  Fix: the scenario records a
+    `refused` flag.  (Verify correction absorbed: the refused path
+    costs milliseconds, not microseconds — the sha256 key is computed
+    before the budget check.)
+  - **F8 (minor)**: the data-policy path assertion was inert on Windows
+    (`json.dumps` escapes backslashes, so the raw path can never
+    match).  Fix: assert the JSON-encoded spelling and the
+    forward-slash form.
+  - Attack notes worth keeping: the loop-copy fidelity audit
+    (operator-by-operator normalized diff vs production) found ZERO
+    semantic divergence; checkpoint capture, restore soundness (a
+    misused later-position checkpoint raises rather than returning a
+    wrong show), TJ re-lex decode parity, `_count_stream_reads`
+    restoration, and the data-policy key audit all came back clean;
+    fences 1 (no model/ edits) and 4 (no persistence, no doc mutation)
+    verified against the staged diff.
+  - Post-fix state: 41/41 green, ruff clean.
