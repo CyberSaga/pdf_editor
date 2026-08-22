@@ -21,6 +21,7 @@ import fitz
 
 from model.edit_requests import StyleOverrides
 from model.text_commit.dto import FontResourceAction, RejectReason
+from model.text_commit.evidence import ReplayEvidenceCache
 from model.text_commit.fonts import DocumentFontRegistry
 from model.text_commit.inspect import page_fingerprint
 from model.text_commit.patch import (
@@ -238,6 +239,12 @@ class PlanPreviewRenderer:
         self._session = session
         self._scratch: fitz.Document | None = None
         self._registry: DocumentFontRegistry | None = None
+        # P3-B: one single-slot replay-evidence cache per preview session
+        # -- the retained Shape A PageReplay for THE scratch page's current
+        # content generation.  Reuse is gated by lookup-time
+        # pull-validation inside prepare_plan, never by this object's
+        # lifetime; close() releases it with the session.
+        self._evidence_cache = ReplayEvidenceCache()
 
     def _ensure_scratch(self) -> tuple[fitz.Document, DocumentFontRegistry]:
         if self._scratch is None:
@@ -285,6 +292,7 @@ class PlanPreviewRenderer:
             new_rect=request.new_rect,
             page_has_pending_maintenance=self._session.page_has_pending_maintenance,
             max_tier=self._session.max_tier,
+            evidence_cache=self._evidence_cache,
         )
         if isinstance(plan, PlanRejection):
             return _rejection(plan.reason)
@@ -369,6 +377,7 @@ class PlanPreviewRenderer:
         )
 
     def close(self) -> None:
+        self._evidence_cache.clear()
         if self._scratch is not None:
             self._scratch.close()
             self._scratch = None
