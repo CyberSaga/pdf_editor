@@ -15,7 +15,7 @@ text-state parameters (Tc, Tw, Tz, TL, Tf, Tr, Ts) along with the CTM.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from model.text_commit.dto import RejectReason
 from model.text_commit.pdf_lexer import (
@@ -203,6 +203,18 @@ class PageReplay:
     refusal_reason: str | None = None
     mc_wrappers: tuple[McWrapper, ...] = ()
     mc_emc_underflows: int = 0
+    # The decoded-byte budget this replay actually ran under (P3-B
+    # review F3): ``None`` marks the diagnostic-unbounded path, which
+    # ``evidence.ReplayEvidence`` refuses to retain -- an unbounded
+    # replay of an over-budget page has no ``refusal_reason``, and
+    # without this attestation it would be indistinguishable from a
+    # legitimately admitted one.
+    # ``compare=False``: the attestation is provenance metadata, not
+    # replay semantics -- two replays of the same bytes are equal
+    # regardless of which admitted budget ran them.
+    max_decoded_bytes: int | None = field(
+        default=DEFAULT_MAX_REPLAY_BYTES, compare=False
+    )
 
 
 @dataclass
@@ -387,6 +399,7 @@ def replay_page_streams(
                 has_xobject_invocation=False,
                 stream_xrefs=tuple(x for x, _ in streams),
                 refusal_reason=RejectReason.CONTENT_STREAM_TOO_LARGE,
+                max_decoded_bytes=max_decoded_bytes,
             )
 
     shows: list[ShowOp] = []
@@ -744,4 +757,5 @@ def replay_page_streams(
         stream_xrefs=tuple(x for x, _ in streams),
         mc_wrappers=tuple(record.freeze() for record in mc_records),
         mc_emc_underflows=mc_emc_underflows,
+        max_decoded_bytes=max_decoded_bytes,
     )

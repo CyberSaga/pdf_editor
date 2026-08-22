@@ -292,6 +292,34 @@ def test_replay_evidence_refuses_malformed_replay():
         ev.ReplayEvidence(key=ev.compute_evidence_key(1, streams), replay=replay)
 
 
+def test_replay_evidence_refuses_unbounded_replay():
+    """Review F3a: a diagnostic-unbounded replay of an over-budget page has
+    no refusal_reason, but wrapping it would collapse the 4 MiB refusal on
+    warm hits only — construction must refuse on budget attestation."""
+    ev = _evidence()
+    streams = [(3, _OVER_BUDGET_STREAM)]
+    unbounded = replay_page_streams(streams, max_decoded_bytes=None)
+    assert unbounded.refusal_reason is None, "diagnostic path admits it"
+    with pytest.raises(ValueError):
+        ev.ReplayEvidence(
+            key=ev.compute_evidence_key(1, streams), replay=unbounded
+        )
+
+
+def test_replay_evidence_refuses_mispaired_key():
+    """Review F3b: a key computed from streams A paired with a replay of
+    streams B must not construct — the resolver's key self-check alone
+    cannot see a coherent-looking forgery with the right key."""
+    ev = _evidence()
+    streams_a = [(7, _TEXT_STREAM)]
+    streams_b = [(9, _TEXT_STREAM)]
+    replay_b = replay_page_streams(streams_b)
+    with pytest.raises(ValueError):
+        ev.ReplayEvidence(
+            key=ev.compute_evidence_key(1, streams_a), replay=replay_b
+        )
+
+
 def test_resolve_replay_cold_miss_builds_evidence():
     ev = _evidence()
     snapshot = _mk_snapshot(ev, 11, [(3, _TEXT_STREAM)])
@@ -603,9 +631,12 @@ def test_rotate_mutation_hits_replay_but_fingerprint_stays_fresh(monkeypatch):
     assert counter.count == 0, "/Rotate does not change content streams: HIT"
     fresh_fp = page_fingerprint(doc, doc[0])
     assert fresh_fp != plan_before.page_fingerprint
-    if isinstance(result, PreparedEdit):
-        assert result.page_fingerprint == fresh_fp
-        assert result.token != plan_before.token
+    # Review F2a: acceptance is asserted, not assumed — a regression that
+    # rejects the post-/Rotate warm prepare would otherwise silently skip
+    # the only pin that non-stream evidence stays fresh on a replay hit.
+    assert isinstance(result, PreparedEdit), result
+    assert result.page_fingerprint == fresh_fp
+    assert result.token != plan_before.token
 
 
 def test_annotation_mutation_hits_replay_but_fingerprint_stays_fresh(monkeypatch):
@@ -624,6 +655,65 @@ def test_annotation_mutation_hits_replay_but_fingerprint_stays_fresh(monkeypatch
     assert result.page_fingerprint == fresh_fp
     assert result.page_fingerprint != plan_before.page_fingerprint
     assert result.token != plan_before.token
+
+
+def test_font_object_mutation_hits_replay_but_fingerprint_stays_fresh(monkeypatch):
+    """Review F1: the fonts mutation class (P3-A §4 'must not invalidate
+    replay' side).  An in-place font-object rewrite leaves content streams
+    untouched — replay must HIT — while the fingerprint's font-dependency
+    hash must go fresh so the apply-time staleness gate still fires.
+
+    Known residual OUTSIDE this slice's fences (pre-existing, engine path
+    only): DocumentFontRegistry serves cached simple-font capabilities
+    without per-lookup revalidation until bump_generation — tracked in
+    TODOS.md as a registry follow-up, deliberately not 'fixed' here by
+    weakening the no-font-capability-rework fence."""
+    ev = _evidence()
+    doc = _tier0_doc()
+    registry = DocumentFontRegistry(doc)
+    cache = ev.ReplayEvidenceCache()
+    plan_before = _prepare(doc, registry, evidence_cache=cache)
+    assert isinstance(plan_before, PreparedEdit)
+    # In-place mutation at the same font xref: adds a harmless legacy key
+    # the canonical object digest folds, without disturbing capability.
+    doc.xref_set_key(plan_before.font_xref, "Name", "/F1")
+    counter = _ReplayCounter(monkeypatch)
+    result = _prepare(doc, registry, evidence_cache=cache)
+    assert counter.count == 0, "font objects are not content streams: HIT"
+    assert isinstance(result, PreparedEdit), result
+    fresh_fp = page_fingerprint(doc, doc[0])
+    assert result.page_fingerprint == fresh_fp
+    assert result.page_fingerprint != plan_before.page_fingerprint
+    assert result.token != plan_before.token
+
+
+def test_empty_contents_page_rejects_without_replay_or_store(monkeypatch):
+    """Review F4: a page with no /Contents must keep the pre-slice surface
+    exactly — NO_MATCH, zero replays, and nothing stored (an empty-page
+    'evidence' must never evict a valid entry from the single slot)."""
+    ev = _evidence()
+    doc = fitz.open()
+    doc.new_page(width=595, height=842)
+    page = doc[0]
+    assert page.get_contents() == []
+    registry = DocumentFontRegistry(doc)
+    cache = ev.ReplayEvidenceCache()
+    counter = _ReplayCounter(monkeypatch)
+    result = prepare_plan(
+        doc,
+        page,
+        target_text=TARGET,
+        replacement_text=REPLACEMENT,
+        expected_origin=None,
+        target_bbox=None,
+        registry=registry,
+        evidence_cache=cache,
+    )
+    assert isinstance(result, PlanRejection)
+    assert result.reason == RejectReason.NO_MATCH
+    assert result.detail == "page has no content streams"
+    assert counter.count == 0, "a degenerate page must not replay"
+    assert cache.entry_count == 0, "empty-page evidence must not be stored"
 
 
 def test_mutation_after_lookup_still_stale_at_apply():
@@ -770,11 +860,16 @@ def test_preview_second_target_same_page_hits(monkeypatch):
         cold = renderer.render(_preview_request(doc, 1))
         assert cold.plan_token, cold.reject_reason
         counter = _ReplayCounter(monkeypatch)
-        renderer.render(
+        second = renderer.render(
             _preview_request(
                 doc, 2, target=DOWNSTREAM, replacement=DOWNSTREAM_REPLACEMENT
             )
         )
+        # Review F2b: an early-gate rejection also replays zero times, so
+        # count==0 alone is trivially satisfiable — the second target must
+        # actually succeed through the reused evidence.
+        assert second.plan_token, second.reject_reason
+        assert second.plan_token != cold.plan_token
         assert counter.count == 0, "same page generation: any target reuses"
     finally:
         renderer.close()

@@ -90,6 +90,16 @@ class ReplayEvidence:
             raise ValueError(
                 "a malformed replay must never become warm evidence"
             )
+        if self.replay.max_decoded_bytes is None:
+            raise ValueError(
+                "a diagnostic-unbounded replay must never become warm "
+                "evidence"
+            )
+        if self.key.stream_xrefs != self.replay.stream_xrefs:
+            raise ValueError(
+                "evidence key does not match the replay's stream "
+                "identity"
+            )
 
 
 @dataclass(frozen=True)

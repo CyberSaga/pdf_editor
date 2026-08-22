@@ -123,10 +123,10 @@ D. Memory: repeated keystrokes keep entry_count == 1; replaced/cleared
 ## 5. Step list
 
 1. [x] Context: seam mapped (`plan.py` 3-read census confirmed at source level).
-2. [ ] Red matrix committed with failing log (`test:`).
-3. [ ] Evidence module + plumbing green (`feat:` evidence plumbing).
-4. [ ] Preview session reuse green (`feat:` session-scoped Shape A reuse).
-5. [ ] Adversarial review (serial attack → verify) findings fixed (`fix:`).
+2. [x] Red matrix committed with failing log (`test:` — 33 red / 3 guard-pins).
+3. [x] Evidence module + plumbing green (`feat:` evidence plumbing).
+4. [x] Preview session reuse green (`feat:` session-scoped Shape A reuse).
+5. [x] Adversarial review (serial attack → verify) findings fixed (`fix:` — R1–R4, see §7).
 6. [ ] Latency/memory acceptance harness + measured record (`perf:`).
 7. [ ] Docs seal: ARCHITECTURE / PITFALLS / TODOS (`docs:`), push.
 
@@ -134,7 +134,10 @@ D. Memory: repeated keystrokes keep entry_count == 1; replaced/cleared
 
 - Does the preview splice+revert round trip restore byte-identical stream
   bytes (⇒ next keystroke hits) or re-encode (⇒ digest miss, correct but
-  cold)? Answered by the acceptance harness, not assumed.
+  cold)? **ANSWERED — byte-identical.** The matrix's
+  `test_preview_warm_keystroke_replays_zero_times` and the acceptance
+  harness's 30-keystroke warm loop (30/30 cache hits, 0 replays) both
+  prove consecutive renders hit through the splice+revert cycle.
 - Engine-side bounded cache: deferred, see §3.3.
 
 ## 7. Decisions & dead ends (running log)
@@ -148,3 +151,46 @@ D. Memory: repeated keystrokes keep entry_count == 1; replaced/cleared
   cache handing back wrong-keyed evidence cannot cause a false hit.
 - 2026-08-22: snapshot capture placed AFTER the cheap early gates —
   early-rejected prepares keep paying zero stream reads (today's behavior).
+
+### Adversarial review round (2026-08-22, serial attack → verify workflow)
+
+One attack pass (4 findings: 2 important, 2 minor); the top 3 verified
+serially by independent refute-first agents, all 3 CONFIRMED with executed
+probes; the 4th confirmed by hand. All fixed before the `perf:` commit:
+
+- **R1 (important, = attack F1):** the review-prompt invariant "capability
+  recomputed fresh every prepare" overreaches — `DocumentFontRegistry`
+  serves cached *simple-font* capabilities with no per-lookup revalidation
+  until `bump_generation` (Type0 is digest-revalidated; `fonts.py:546-559`).
+  **Pre-existing engine-path behavior, NOT introduced by P3-B**, unreachable
+  in preview (private scratch, splice+revert only) — and rewriting the
+  registry is explicitly outside this slice's fences. Fixed in-scope: the
+  missing fonts-mutation matrix test was added
+  (`test_font_object_mutation_hits_replay_but_fingerprint_stays_fresh`:
+  replay HIT + fingerprint fresh, so the apply-time gate still fires), and
+  the registry revalidation follow-up is recorded in TODOS.md.
+- **R2 (important, = F2):** two regression-permeable matrix assertions —
+  the /Rotate test guarded its load-bearing freshness pins behind
+  `if isinstance(...)` (probe confirmed the post-/Rotate prepare accepts, so
+  hard-asserting is safe), and the second-target preview test never asserted
+  the second render succeeds (an early-gate rejection also yields 0
+  replays). Both hardened.
+- **R3 (minor, = F3):** `ReplayEvidence.__post_init__` could wrap (a) a
+  diagnostic-unbounded replay of an over-budget page (refusal collapses on
+  warm hits only — probe demonstrated it) and (b) a key/replay mis-pairing
+  with the right key. Fixed: `PageReplay` now records the budget it ran
+  under (`max_decoded_bytes`, `compare=False` — provenance metadata, not
+  replay semantics, so every existing equality pin holds), and the
+  constructor refuses `None`-budget replays and
+  `key.stream_xrefs != replay.stream_xrefs`. Residual (documented, accepted):
+  same-xrefs-different-bytes forgery is undetectable without retaining
+  digests inside `PageReplay`; Python cannot stop deliberate forgery — the
+  constructor now enforces the module's own posture, no more.
+- **R4 (minor, = F4):** an empty-`/Contents` page replayed `[]` and stored
+  empty-key evidence into the slot (pre-change: NO_MATCH with zero replay
+  work, no store). Fixed: `_classify_common` short-circuits to the verbatim
+  `NO_MATCH` / "page has no content streams" rejection before resolve/store;
+  pinned by `test_empty_contents_page_rejects_without_replay_or_store`.
+
+Matrix after fixes: 40/40 green (36 original + 4 new pins), replay/guard/
+spike/gates/tier0/preview/lexer/mc suites green, ruff + mypy clean.

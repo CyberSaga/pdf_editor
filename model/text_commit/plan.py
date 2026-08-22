@@ -322,6 +322,13 @@ def _classify_common(
     # PageReplay (Shape A), a mismatch replays and replaces the slot.
     # Refused/malformed replays never produce evidence to store.
     snapshot = capture_page_streams(doc, page)
+    if not snapshot.streams:
+        # Review F4: preserve the pre-P3-B surface verbatim -- bind's
+        # empty-streams gate, reached with zero replay work and nothing
+        # stored (empty-page evidence must never evict a valid entry).
+        return PlanRejection(
+            RejectReason.NO_MATCH, "page has no content streams"
+        )
     cached = (
         evidence_cache.lookup(snapshot.key)
         if evidence_cache is not None
