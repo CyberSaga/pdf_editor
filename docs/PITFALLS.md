@@ -2462,3 +2462,17 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** `sys.getsizeof(instance)` returns only the object header; the instance `__dict__` is a separate object, and iterating `dataclasses.fields` sizes the VALUES while never sizing the dict container holding them.
 **Fix:** For slotless dataclasses, recurse into `vars(obj)` (the `__dict__` itself) so the container, its keys, and its values are all counted; fall back to per-field walking only for `__slots__` classes (no `__dict__` to size).
 **File:** `scripts/replay_index_spike.py` (`_deep_size`)
+
+## Simple-font capabilities are served stale within a registry generation
+**Area:** `model/text_commit/fonts.py` (`DocumentFontRegistry`), engine prepare path
+**Symptom:** After an in-place font-object mutation (e.g. `/Widths` rewritten at the same xref) between two prepares sharing one registry, the second prepare's Tier 0 advance gate consumes the OLD widths while the page fingerprint (which hashes the defining font objects) is computed fresh — so the plan token and the apply-time staleness compare are fresh-vs-fresh and cannot catch the stale capability.
+**Cause:** The capability cache key is `(generation, owner, name, xref)` and the per-lookup evidence-digest revalidation runs ONLY for Type0 (`cached.cid is not None`); simple fonts are returned without any pull-validation until `bump_generation`, which the engine calls only after a successful tiered commit. Pre-existing behavior surfaced by the P3-B adversarial review (R1); unreachable in preview (private scratch, splice+revert only).
+**Fix:** Follow-up tracked in TODOS.md: extend the Type0-style digest revalidation to simple-font cache hits (store an evidence digest on every `FontCapability`, re-verify on hit, rebuild on mismatch). Deliberately NOT changed inside the P3-B slice — its fences exclude font-capability rework; the P3-B matrix pins the P3-B-owned half (font mutation -> replay HIT + fresh fingerprint).
+**File:** `model/text_commit/fonts.py` (capability cache hit path), `test_scripts/test_text_commit_replay_reuse.py::test_font_object_mutation_hits_replay_but_fingerprint_stays_fresh`
+
+## Provenance fields on compared dataclasses silently break equality pins
+**Area:** `model/text_commit/replay.py` (`PageReplay`), frozen-dataclass contracts generally
+**Symptom:** Adding the P3-B budget-attestation field `max_decoded_bytes` to `PageReplay` broke `test_streams_within_budget_replay_identically`, which asserts a smaller-budget replay of in-budget streams equals the default-budget replay — dataclass `__eq__` folds every field, so recording HOW a result was produced changed WHAT it compares as.
+**Cause:** Dataclass equality is field-wise by default; provenance/attestation metadata is not part of a result's semantic identity, but a plain field makes it so.
+**Fix:** Declare provenance metadata with `field(compare=False)` (repr keeps it visible, consumers still read the value, equality stays semantic). `ReplayEvidence.__post_init__` still refuses `max_decoded_bytes is None` — the attestation's purpose — without perturbing any equality pin.
+**File:** `model/text_commit/replay.py` (`PageReplay.max_decoded_bytes`)

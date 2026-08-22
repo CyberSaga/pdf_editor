@@ -850,6 +850,29 @@ it never claims exactness).
   or a sanitized `RejectReason`). Because the token hashes the page
   fingerprint + splice bytes, preview token == commit token iff the
   document is unchanged in between — the exactness guarantee.
+- `model/text_commit/evidence.py` (Task 13 P3-B, pure — no fitz import) —
+  the replay-reuse contract: `ReplayEvidenceKey` (page xref + ordered
+  content-stream xrefs + per-stream sha256 of decoded bytes),
+  immutable `ReplayEvidence` (retains the production `PageReplay`
+  verbatim — Shape A; construction refuses refused/malformed/
+  diagnostic-unbounded replays and key/replay stream-identity
+  mis-pairings), `PageStreamSnapshot` + `inspect.capture_page_streams`
+  (the ONE decoded stream read per prepare), `resolve_replay`
+  (lookup-time pull-validation: fresh bytes are read and digest-compared
+  before any reuse; the resolver re-checks the key itself and never
+  trusts the caller's cache), and the single-slot session-scoped
+  `ReplayEvidenceCache`. `_classify_common` feeds the same snapshot to
+  `bind_source_text(resolved=...)`, the plan's stream selection, and
+  `page_fingerprint(streams=...)` — collapsing the accepted path's three
+  stream reads to one — and `PlanPreviewRenderer` owns one cache per
+  session (passed via `prepare_plan(evidence_cache=...)`, cleared in
+  `close()`), so warm preview keystrokes replay zero times.
+  `TieredCommitEngine.prepare` stays deliberately ephemeral. Push hooks
+  remain eviction-only concepts; freshness is proven exclusively by the
+  pull-validation read. Governing record:
+  `plans/task13-p3b-replay-reuse.md`; pinned by
+  `test_scripts/test_text_commit_replay_reuse.py` (40 tests) and gated by
+  `scripts/benchmark_p3b_preview_reuse.py` (replay-count acceptance).
 - `controller/text_commit_coordinator.py` — session-scoped QThread worker
   (modeled on `page_render_coordinator.py`): one worker thread and one
   scratch renderer live for the whole inline-edit session; latest-wins

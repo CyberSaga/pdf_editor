@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 273 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 275 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -278,3 +278,5 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2445 | tracemalloc-wrapped timing windows and iterated-build peaks corrupt benchmark numbers two different ways | measurement harnesses (`scripts/benchmark_*`), tracemalloc + timing interaction |
 | 2452 | json.dumps backslash escaping makes Windows path-leak assertions silently inert | data-policy tests asserting "no paths in the serialized report" |
 | 2459 | sys.getsizeof on a slotless dataclass misses the per-instance __dict__ that dominates its memory | memory accounting (`_deep_size`-style recursive sizeof), dataclass instances |
+| 2466 | Simple-font capabilities are served stale within a registry generation | `model/text_commit/fonts.py` (`DocumentFontRegistry`), engine prepare path |
+| 2473 | Provenance fields on compared dataclasses silently break equality pins | `model/text_commit/replay.py` (`PageReplay`), frozen-dataclass contracts generally |
