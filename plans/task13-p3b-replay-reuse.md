@@ -127,7 +127,7 @@ D. Memory: repeated keystrokes keep entry_count == 1; replaced/cleared
 3. [x] Evidence module + plumbing green (`feat:` evidence plumbing).
 4. [x] Preview session reuse green (`feat:` session-scoped Shape A reuse).
 5. [x] Adversarial review (serial attack → verify) findings fixed (`fix:` — R1–R4, see §7).
-6. [ ] Latency/memory acceptance harness + measured record (`perf:`).
+6. [x] Latency/memory acceptance harness + measured record (`perf:` — §6b).
 7. [ ] Docs seal: ARCHITECTURE / PITFALLS / TODOS (`docs:`), push.
 
 ## 6. Open questions
@@ -139,6 +139,40 @@ D. Memory: repeated keystrokes keep entry_count == 1; replaced/cleared
   harness's 30-keystroke warm loop (30/30 cache hits, 0 replays) both
   prove consecutive renders hit through the splice+revert cycle.
 - Engine-side bounded cache: deferred, see §3.3.
+
+## 6b. Acceptance record (2026-08-22, `scripts/benchmark_p3b_preview_reuse.py`)
+
+Re-run AFTER the review-fix round (`fix:` R1-R4), so every figure below
+describes the shipped code.
+
+Synthetic deterministic corpus (in-script generator: 401-show page padded
+with raster-free `q/cm/Q` tokens to 2,631,102 decoded bytes — CAD-shaped
+lexing burden, within the 4 MiB budget), `.venv` PyMuPDF 1.27.1. Raw
+aggregate JSON: gitignored `benchmarks/p3b-acceptance-2026-08-22.json`.
+
+**Replay-count contract (the gate) — all PASS:** cold prepare/render = 1
+replay; 30 warm keystrokes + 10 warm prepares + 1 second-target = 0
+replays (30/30 validated cache hits, 30/30 accepted); 8 missed-hook
+mutation rounds (direct `update_stream`, no signal) = 1 replay each with
+8 distinct fingerprints (false hits = 0); fresh-renderer cold = 1 replay.
+
+**Bounded memory — all PASS:** 100-keystroke loop holds `entry_count == 1`
+with exactly 1 store; 12 open/close renderer cycles leak 0 retained
+replays (weakref + gc); replaced replays collectible (≤1 alive, the live
+slot); warm-loop tracemalloc peak 16.6 MB (dominated by pixmap rasters,
+not the ~0.4 MB-class retained index).
+
+**Latency (informational, NOT a gate; synthetic page, this machine):**
+cold `prepare_plan` 11,897 ms (replay-dominated) vs warm validated
+prepare p50 31.2 ms / p95 34.4 ms — the replay walk is gone from warm
+keystrokes (~390× on the prepare stage alone, pull-validation included).
+End-to-end warm `PlanPreviewRenderer.render` is p50 3,264 ms / p95
+3,380 ms with **zero** replays: on a page this dense the remaining bill
+is splice + verify + raster + revert, which this slice deliberately does
+not touch — the honest P3-A-style caveat is that replay reuse removes the
+dominant prepare term, it does not make dense-page preview instant. That
+residual verify/apply/raster share is the measured candidate for the next
+P3 lever.
 
 ## 7. Decisions & dead ends (running log)
 
