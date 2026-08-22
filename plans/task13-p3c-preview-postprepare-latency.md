@@ -1,0 +1,170 @@
+# Task 13 P3-C — preview post-prepare latency (one complete bounded slice)
+
+**Status:** IN PROGRESS (created 2026-08-22)
+**Branch:** `task13/p3c-preview-postprepare-latency` (cut from `task11/slice1-closure` post-PR-#36 merge, `f57f590`)
+**Parent evidence:** `plans/task13-p3b-replay-reuse.md` §6b — after P3-B, warm `prepare_plan` is
+p50 31 ms (replay-free), but warm end-to-end `PlanPreviewRenderer.render` stayed p50 ~3.3 s on the
+dense synthetic page; that residual splice+verify+raster share was named the next P3 lever there,
+deliberately not solved.
+
+## 1. Goal
+
+Attribute the residual post-prepare cost of one preview keystroke by phase, then remove the single
+largest attributable phase without touching prepare, admission, or the live commit path. Scope is
+explicitly the **preview renderer's** per-keystroke work (`PlanPreviewRenderer.render`) — the engine
+commit path (`TieredCommitEngine.commit`, called once per accepted edit, not per keystroke) and the
+engine's own scratch-proof path (`TieredCommitEngine.prepare`, confirmed below to be off the
+interactive keystroke path entirely) are out of scope by name.
+
+## 2. Hard fences
+
+- No change to admission, the 4 MiB replay budget, plan semantics, or rollout defaults
+  (`engine="legacy"`, `max_tier=0`).
+- No change to `TieredCommitEngine.commit`'s live-document apply/revert (`engine.py:240,255,274`) or
+  to `model/edit_commands.py`'s undo/redo `apply_patchset` calls — those mutate the document that
+  will actually be saved, so their stream-storage encoding stays exactly as it is today.
+- No change to `TieredCommitEngine.prepare`'s scratch-proof call (`engine.py:175`) — confirmed below
+  to be off the interactive per-keystroke path in production; revisiting it is a separate decision.
+- No new caching layer, no persistence, no admission widening. Verify's V0a–V0e post-conditions and
+  `apply_patchset`'s fingerprint/digest staleness gates are unchanged in substance — only how the
+  *storage encoding* of an already-decided splice is written may change, and only for a target whose
+  bytes are never read back as a serialized artifact.
+- R1 (simple-font capability staleness, P3-B review) stays out — already registered, prepare-path,
+  unrelated to this slice.
+
+## 3. Census (2026-08-22, `.venv` PyMuPDF 1.27.1)
+
+### 3.1 Confirming the interactive call graph
+
+`controller/text_commit_coordinator.py` calls only `PlanPreviewRenderer.render()` per keystroke.
+Its result's `PreparedEdit` (`result.prepared`) is injected directly into the engine's verified-
+candidate cache via `PDFController._consume_plan_preview` → `self.model.cache_verified_candidate`
+(`controller/pdf_controller.py:3736`) — `TieredCommitEngine.commit()` then consumes that cached
+candidate at actual accept time and never calls `engine.prepare()` again. `engine.prepare()`'s own
+scratch-apply (`engine.py:175`) has no production caller on the interactive path (only benchmark/
+spike scripts call it) — confirming it is correctly out of this slice's scope.
+
+### 3.2 Phase attribution (ad hoc instrumentation, no production code changed; dense synthetic
+page reused verbatim from `scripts/benchmark_p3b_preview_reuse.py::_build_doc(dense=True)`,
+2,621,460 decoded bytes; 30 warm keystrokes after one warming prepare; span resolution hoisted out
+of every timed section, closing P3-B review finding #2)
+
+| phase                 | p50 (ms) | share of total p50 |
+|------------------------|---------:|--------------------:|
+| prepare (warm)          |    11.3  |   1.3% |
+| capture_page_state      |    68.1  |   7.8% |
+| **apply_patchset**      | **338.7**| **38.7%** |
+| verify                  |    98.8  |  11.3% |
+| final preview pixmap    |    29.1  |   3.3% |
+| **revert**              | **322.0**| **36.8%** |
+| **total**               |   874.4  | 100% |
+
+`apply_patchset` + `revert` = **75.5%** of total render time — each is exactly one
+`fitz.Document.update_stream()` call on the page's ~2.5 MiB content stream (one to splice the
+replacement in, one to restore the prior bytes so the next keystroke sees the unmodified scratch).
+
+### 3.3 Root cause
+
+`Document.update_stream(xref, stream, new=1, compress=1)` — `compress` defaults to `True` and pays
+FlateDecode compression proportional to the stream's decoded size. Microbenchmark on an isolated
+2.6 MiB stream: `compress=1` median 307 ms vs `compress=0` median 0.57 ms (~540×). Verified
+empirically: `xref_stream()` (decoded bytes) is byte-identical regardless of `compress`; the flag is
+a pure storage-encoding choice, never observed by any downstream reader (`page_fingerprint`, the
+P3-B evidence digest, `page.get_text()`, `page.get_pixmap()` all operate on decoded content).
+
+**This is safe to disable *only* where the written bytes are never serialized to a persisted
+artifact.** `PlanPreviewRenderer`'s scratch document (`preview.py:251`, opened once per session from
+`snapshot_bytes`) is never saved or `tobytes()`'d after a splice — every keystroke's `apply_patchset`
+is immediately followed by `.revert()` inside the same `render()` call
+(`preview.py:330-361`), and `close()` (`preview.py:379`) just calls `scratch.close()`. No code path
+serializes the scratch's stream storage encoding to anything the user or the live document ever sees.
+`TieredCommitEngine.commit()`'s live-document write is the opposite case — its output *is* what gets
+saved — so it keeps `compress=True`, unchanged.
+
+Re-measured with `compress=0` forced on both calls (simulated, no production code changed yet):
+`apply_patchset` 338.7→7.3 ms, `revert` 322.0→0.9 ms, **total 874.4→184.2 ms (4.75× on this
+corpus)**. Residual phases (`capture_page_state` 57.2 ms + `verify` 87.3 ms + `final_pixmap` 25.3 ms
+≈ 92% of the new total) are dominated by three `page.get_pixmap()` calls per keystroke (pre-state,
+post-verify, final preview raster) plus repeated `page.get_fonts(full=True)` scans (6.1 calls/
+keystroke) — named as the next P3 lever, deliberately not touched here (see §6).
+
+## 4. Design
+
+- `apply_patchset(doc, page, patchset, *, compress: bool = True) -> AppliedPatch` — thread `compress`
+  through to each `doc.update_stream(stream_xref, new_bytes, compress=compress)` call. Default
+  preserves today's behavior for every existing caller (`engine.py`, `edit_commands.py`, benchmark
+  scripts, the whole test suite) with zero call-site changes required outside `preview.py`.
+- `AppliedPatch.revert(doc, *, compress: bool = True) -> None` — same treatment, independently
+  settable at the revert call site (matches how `apply_patchset`'s `compress` is settable at the
+  apply call site; a caller reverting on a different document/path than it applied to is free to
+  choose differently, though no current caller does).
+- `PlanPreviewRenderer.render()` (`preview.py:330,361`): the only two call sites in the codebase that
+  pass `compress=False`, both on the session-scoped scratch. One-line comment at each site records
+  *why* (never serialized) so a future reader does not "fix" it back to the default.
+- No new parameters on `prepare_plan`, `PatchSet`, or anything upstream of `apply_patchset` — the
+  splice bytes and validation logic are completely unchanged; only the storage encoding of an
+  already-decided write differs.
+
+## 5. Test matrix (red first — new file `test_scripts/test_text_commit_apply_compress.py`)
+
+A. `apply_patchset` contract: `compress=False` produces decoded bytes identical to `compress=True`
+   for the same patchset (byte-for-byte `xref_stream()` equality); the stream's raw (on-disk-shape)
+   representation is smaller under `compress=True` than `compress=False` (proves the flag actually
+   took effect, not a no-op); default (`compress` omitted) behaves exactly as `compress=True`
+   (backward-compatible default, existing callers unaffected).
+B. `AppliedPatch.revert` contract: same identity + default-equivalence pair for revert; a
+   compress=False apply followed by a compress=False revert round-trips to decoded-byte-identical
+   original content (splice+revert stays exact, matching the P3-B module docstring's exactness
+   guarantee — preview's plan token must still equal a fresh cold prepare's token afterward).
+C. Cross-cutting correctness: `page_fingerprint` / the P3-B `ReplayEvidenceKey` digest are identical
+   regardless of the compress state a stream happens to be stored in (digests hash decoded bytes,
+   never storage encoding) — a mutation-detection regression test proving compress state itself
+   is never mistaken for a content change.
+D. Preview integration (extend `test_scripts/test_text_commit_preview_parity.py` or the P3-B replay-
+   reuse matrix, whichever the red run shows is the natural home): `PlanPreviewRenderer.render()`'s
+   observable outputs (`plan_token`, `png_bytes`, `prepared`, `reject_reason`) are byte-identical
+   between the shipped (`compress=False`) code and a `compress=True` control run of the same
+   keystroke sequence — proves the optimization changes nothing a caller can observe. A count-based
+   regression gate (the `_ReplayCounter`-style pattern): install a shim counting
+   `fitz.Document.update_stream` calls by their resolved `compress` value; assert every
+   `PlanPreviewRenderer.render()` call makes exactly 0 `compress=True` update_stream calls and
+   exactly 2 `compress=False` calls (apply + revert) for an accepted Tier 0 candidate, while a
+   parallel `TieredCommitEngine.commit()` scenario on the live document continues to make its
+   existing `compress=True` calls unchanged (regression guard against accidentally flipping the
+   live path).
+E. Memory bound: repeated preview keystrokes (reuse the P3-B acceptance harness's 100-keystroke
+   loop shape) show the scratch document's traced memory stabilizes rather than growing per
+   keystroke — the uncompressed content-stream representation is a one-time expansion (replaced in
+   place every keystroke), never an accumulation.
+
+## 6. Step list
+
+1. [x] Census: call-graph confirmation + phase attribution + root-cause microbenchmark (§3).
+2. [ ] Red matrix committed with failing log (`test:`).
+3. [ ] `compress` plumbing through `apply_patchset`/`AppliedPatch.revert` + `preview.py` call sites,
+   green (`feat:`).
+4. [ ] Adversarial review (serial attack → verify); findings fixed if any (`fix:`).
+5. [ ] Latency/count acceptance harness + measured record (`perf:`).
+6. [ ] Docs seal: ARCHITECTURE / PITFALLS / TODOS (`docs:`), push (no PR unless asked).
+
+## 7. Open questions
+
+- Does disabling compression change the scratch document's own internal xref/object-stream layout
+  in a way that could shift *other* xrefs (page tree, fonts) between keystrokes, which downstream
+  fingerprint/digest logic might misread as structural change? **ANSWERED — no.** Verified
+  empirically (isolated probe, page/content/font xrefs, `xref_length()`, and every object's byte
+  string compared before vs. after a `compress=0` apply+revert round trip): identical in every
+  field; only the content stream's own storage encoding differs mid-cycle, restored exactly by
+  revert.
+- Named next lever (not solved here): `capture_page_state` + `verify` + `final_pixmap`'s three
+  `page.get_pixmap()` calls and six `page.get_fonts(full=True)` scans per keystroke, ~92% of the
+  post-fix total. Numbers above are pre-fix census baselines for whoever picks this up next.
+
+## 8. Decisions & dead ends (running log)
+
+- 2026-08-22: Confirmed via `pdf_controller.py`/`text_commit_coordinator.py` reading that
+  `TieredCommitEngine.prepare()`'s own scratch-apply never runs on the interactive keystroke path —
+  ruled out of scope by evidence, not just by branch-name convention.
+- 2026-08-22: Considered compressing only on `close()`/session teardown instead of leaving every
+  keystroke uncompressed — rejected: the scratch is never read back as a serialized artifact at any
+  point in its life, so a compress-on-teardown step would be pure wasted work with no reader.
