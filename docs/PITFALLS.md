@@ -2441,3 +2441,24 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** MuPDF prints numbers minimally on save: an integer-valued real loses its `.0` and comes back typed as an int, flipping the reported KIND while the VALUE stays equal. The earlier scalar-fold precedent ("not observed to reformat") was measured on font keys, which are virtually never integer-valued reals; `/UserUnit` is exactly the key where that spelling occurs.
 **Fix:** Fold numeric keys as a canonical NUMBER, never as the raw `kind:value` pair: parse the resolved value with `float()` and fold `num:{float(value)!r}` (`int:2` and `float:2` both fold `num:2.0`); keep `kind:value` only for non-numeric kinds. Applies to any future fingerprint surface that reads typed scalars off an xref.
 **File:** model/text_commit/inspect.py (`_update_page_geometry`); pinned by test_scripts/test_text_commit_trm_page_geometry.py::test_fingerprint_is_stable_when_userunit_is_spelled_as_a_real
+
+## tracemalloc-wrapped timing windows and iterated-build peaks corrupt benchmark numbers two different ways
+**Area:** measurement harnesses (`scripts/benchmark_*`), tracemalloc + timing interaction
+**Symptom:** A benchmark comparing an index build against plain replay reported a build premium that was instrumentation, not work; separately, the reported "single build peak" was roughly one whole retained index too high (P3-A review findings F1/F2, both confirmed).
+**Cause:** Two distinct mechanisms. (1) Timing samples taken while `tracemalloc` is tracing carry per-allocation overhead (2-4x on allocation-heavy code) that competing stages timed without tracing do not — a systematic cross-stage bias, not noise. (2) A timing loop that keeps `result = fn()` bound across iterations holds iteration N-1's fully-built object alive while iteration N allocates inside the same tracing window, so the peak read once after N builds ≈ true single-build peak + one retained result.
+**Fix:** Never report timings from inside a tracemalloc window; time clean first, then trace exactly ONE extra throwaway build in its own `gc.collect()` → `start()` → build → `get_traced_memory()` → `stop()` window for the peak.
+**File:** `scripts/benchmark_replay_index_spike.py` (`_single_build_peak`; stage timings taken outside tracing)
+
+## json.dumps backslash escaping makes Windows path-leak assertions silently inert
+**Area:** data-policy tests asserting "no paths in the serialized report"
+**Symptom:** `assert str(tmp_path) not in json.dumps(report)` passes even when the harness embeds the path verbatim in the report — the fence tests nothing on Windows (P3-A review finding F8).
+**Cause:** `json.dumps` escapes every backslash to two characters, so the single-backslash needle (`C:\Users\...`) can never match the doubled-backslash haystack (`C:\Users\...`); the assertion fails at the first backslash from every alignment.
+**Fix:** Assert the JSON-ENCODED spelling — `json.dumps(str(path))[1:-1] not in serialized` — plus the forward-slash form (`path.as_posix()`), so both verbatim and normalized embeddings are caught.
+**File:** `test_scripts/test_replay_index_spike.py::test_harness_report_carries_no_text_or_paths`
+
+## sys.getsizeof on a slotless dataclass misses the per-instance __dict__ that dominates its memory
+**Area:** memory accounting (`_deep_size`-style recursive sizeof), dataclass instances
+**Symptom:** A "deep" recursive `sys.getsizeof` walker that recursed into dataclass FIELDS reported bytes/ShowOp far below reality — the walker skipped the ~1 KB per-instance `__dict__` container that IS the dominant cost of a 24-field slotless dataclass.
+**Cause:** `sys.getsizeof(instance)` returns only the object header; the instance `__dict__` is a separate object, and iterating `dataclasses.fields` sizes the VALUES while never sizing the dict container holding them.
+**Fix:** For slotless dataclasses, recurse into `vars(obj)` (the `__dict__` itself) so the container, its keys, and its values are all counted; fall back to per-field walking only for `__slots__` classes (no `__dict__` to size).
+**File:** `scripts/replay_index_spike.py` (`_deep_size`)

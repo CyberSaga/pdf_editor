@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 270 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 273 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -275,3 +275,6 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2424 | Single-process full-suite pytest runs hang or abort nondeterministically inside Qt GUI tests | test harness (whole-suite runs of `test_scripts/`), PySide6 offscreen platform |
 | 2431 | get_drawings/get_image_rects report UNROTATED page space — occupancy gates silently miss obstacles on /Rotate pages | model/text_commit/verify.py (Tier 1 growth occupancy gates), PyMuPDF geometry conventions |
 | 2438 | MuPDF re-serializes integer-valued reals as ints — raw kind:value folds break across a tobytes round trip | model/text_commit/inspect.py (page fingerprint), PyMuPDF object serialization |
+| 2445 | tracemalloc-wrapped timing windows and iterated-build peaks corrupt benchmark numbers two different ways | measurement harnesses (`scripts/benchmark_*`), tracemalloc + timing interaction |
+| 2452 | json.dumps backslash escaping makes Windows path-leak assertions silently inert | data-policy tests asserting "no paths in the serialized report" |
+| 2459 | sys.getsizeof on a slotless dataclass misses the per-instance __dict__ that dominates its memory | memory accounting (`_deep_size`-style recursive sizeof), dataclass instances |

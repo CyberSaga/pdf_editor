@@ -727,6 +727,35 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   Corpus e2e pass deferred (optional per step-4 advisory — ride the
   rollout-gate work). P2 slice ready for its PR (base
   task11/slice1-closure) — do not push/open until instructed.
+  **P2 MERGED 2026-08-20**: PR #34 → `task11/slice1-closure` @ 137a50b,
+  all 9 CI checks green, 6 commits preserved unsquashed.
+- 2026-08-21 (Task 13 step 6 first half — P3-A replay-index spike,
+  branch `task13/p3-replay-indexing`, read-only, zero `model/` change):
+  serial analysis round (invalidation census: pull-validation is the
+  contract — four mutation classes have NO push signal; checkpoint
+  contract: Shape B is necessarily a hybrid), 41-test red matrix +
+  two spike prototypes + latency harness (`scripts/replay_index_spike
+  .py`, `scripts/benchmark_replay_index_spike.py`), serial
+  Attack→Verify review (8 findings, 4 important, all fixed — three
+  were measurement-integrity defects gating the census run), corpus
+  measurement DONE: **replay is ~90% of the 2.7–4.8 s per-keystroke
+  cost on dense pages; honest validated warm lookups are 8–14 ms
+  (page-paired prototype-lookup comparison ~310×–430×, standalone spike
+  path with pull-validation included, excludes plan/verify/apply/
+  render, not a production speedup — see plan §7 post-PR audit
+  correction); Shape A (materialized ShowOp table) wins — Shape B
+  (sparse checkpoints) REJECTED for v1 on measured memory (3.3×–6.1×
+  Shape A's total retained, page-paired).**  4 MiB budget untouched; no
+  persistent cache.  Scope verdict + P3-B follow-up order in
+  `plans/task13-p3a-replay-index-spike.md` §7.  **PR #35 opened
+  2026-08-22** against `task11/slice1-closure`; a 2026-08-22
+  post-PR-audit docs-only reconciliation commit corrected the numbers
+  above — see plan §7's "Post-PR claim audit correction" record for
+  the full derivation. This partially
+  addresses the "latency half stays open" item above: the fix is now
+  measured and shaped (reuse one replay across bind→plan, then the
+  per-generation Shape A table), but nothing lands in production until
+  the P3-B slice.
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 
