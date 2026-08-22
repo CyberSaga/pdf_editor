@@ -1,6 +1,6 @@
 # Task 13 P3-B — production replay reuse (one complete bounded slice)
 
-**Status:** IN PROGRESS (created 2026-08-22)
+**Status:** COMPLETE — pushed 2026-08-22, PR not yet opened (created 2026-08-22)
 **Branch:** `task13/p3b-replay-evidence-plumbing` (cut from `task11/slice1-closure` post-PR-#35 merge, `e71b13e`)
 **Parent evidence:** `plans/task13-p3a-replay-index-spike.md` (Shape A selected; invalidation contract §4; measured replay ≈ 90% of dense prepare cost, warm validated lookup 8–14 ms vs 2.7–4.8 s cold on the standalone spike path).
 
@@ -128,7 +128,7 @@ D. Memory: repeated keystrokes keep entry_count == 1; replaced/cleared
 4. [x] Preview session reuse green (`feat:` session-scoped Shape A reuse).
 5. [x] Adversarial review (serial attack → verify) findings fixed (`fix:` — R1–R4, see §7).
 6. [x] Latency/memory acceptance harness + measured record (`perf:` — §6b).
-7. [ ] Docs seal: ARCHITECTURE / PITFALLS / TODOS (`docs:`), push.
+7. [x] Docs seal: ARCHITECTURE / PITFALLS / TODOS (`docs:`), push.
 
 ## 6. Open questions
 

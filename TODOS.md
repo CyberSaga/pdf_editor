@@ -757,6 +757,35 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   per-generation Shape A table), but nothing lands in production until
   the P3-B slice.
 
+- 2026-08-22 (Task 13 step 6 second half — **P3-B production replay
+  reuse, COMPLETE**, branch `task13/p3b-replay-evidence-plumbing` cut
+  from the post-PR-#35 closure merge `e71b13e`): one complete bounded
+  slice — evidence seam (`model/text_commit/evidence.py`; one coherent
+  stream read per prepare feeding bind + stream selection + the
+  fingerprint's stream portion), retained Shape A (`ReplayEvidence`
+  wraps the production `PageReplay` verbatim), lookup-time
+  pull-validation (fresh read + sha256 digest compare before any reuse;
+  refused/malformed/unbounded replays can never become evidence),
+  renderer-owned single-slot `ReplayEvidenceCache` (engine.prepare stays
+  ephemeral), 40-test red-first matrix, serial Attack->Verify review
+  (4 findings R1-R4, top 3 independently CONFIRMED, all fixed), and a
+  replay-count acceptance harness (`scripts/benchmark_p3b_preview_reuse
+  .py`): cold = 1 replay, 30 warm keystrokes = 0 replays (30/30
+  validated hits), unsignalled mutations rebuild every time, false
+  hits = 0, memory bounded (entry_count pinned at 1, close releases).
+  Measured on the synthetic dense page: cold prepare 11.9 s vs warm
+  validated prepare p50 31 ms; warm end-to-end render p50 ~3.3 s with
+  zero replays — the residual splice/verify/raster share is the next
+  P3 lever, explicitly NOT claimed solved. Fences held: 4 MiB budget
+  untouched, no admission widening, no persistent/document-wide cache,
+  rollout defaults unchanged. Record: `plans/task13-p3b-replay-reuse.md`.
+  **Follow-up (from review R1, pre-existing, NOT a P3-B regression):**
+  `DocumentFontRegistry` serves cached simple-font capabilities without
+  per-lookup revalidation until `bump_generation` (Type0 already
+  digest-revalidates) — extend the Type0-style evidence-digest check to
+  simple-font cache hits on the engine path; see PITFALLS "Simple-font
+  capabilities are served stale within a registry generation".
+
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 
 - `PDFModel` has no `_normalize_text_for_compare` method. Referenced by
