@@ -88,6 +88,11 @@ class AppliedPatch:
         preserves prior behavior for every caller; pass ``False`` only for
         a document whose stream storage encoding is never serialized to a
         persisted artifact (``PlanPreviewRenderer``'s session scratch).
+        Reverting the LIVE document with ``compress=False`` would leave its
+        content stream permanently uncompressed (revert does not restore
+        the ORIGINAL storage encoding, only the original decoded bytes --
+        every existing live-document caller keeps the default and must not
+        change it).
         """
         for xref, data in self.prior_streams:
             doc.update_stream(xref, data, compress=compress)

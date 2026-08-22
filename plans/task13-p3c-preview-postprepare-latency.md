@@ -39,10 +39,23 @@ interactive keystroke path entirely) are out of scope by name.
 `controller/text_commit_coordinator.py` calls only `PlanPreviewRenderer.render()` per keystroke.
 Its result's `PreparedEdit` (`result.prepared`) is injected directly into the engine's verified-
 candidate cache via `PDFController._consume_plan_preview` → `self.model.cache_verified_candidate`
-(`controller/pdf_controller.py:3736`) — `TieredCommitEngine.commit()` then consumes that cached
-candidate at actual accept time and never calls `engine.prepare()` again. `engine.prepare()`'s own
-scratch-apply (`engine.py:175`) has no production caller on the interactive path (only benchmark/
-spike scripts call it) — confirming it is correctly out of this slice's scope.
+(`controller/pdf_controller.py:3736`) — `TieredCommitEngine.commit()` prefers that cached candidate
+at actual accept time and skips re-preparing when it's usable.
+
+**Correction (P3-C adversarial review, 2026-08-22):** the first-pass census claimed
+`engine.prepare()`'s scratch-apply (`engine.py:175`) "has no production caller on the interactive
+path (only benchmark/spike scripts call it)" — **that is false.** `model/pdf_text_edit.py:1734`
+(`_attempt_tiered_commit`) calls `engine.prepare()` in production whenever the verified-candidate
+cache misses at accept time: an explicit style override or a user-dragged `new_rect` (the same-page
+move flow, `controller/pdf_controller.py:2591-2602`, always supplies one) forces `cached = None`
+(`pdf_text_edit.py:1694-1705`), a target/replacement framing drift does the same
+(`pdf_text_edit.py:1706-1715`), and the cache is bounded (`engine.py:100-103`, LRU eviction). None of
+these is per-keystroke — they all fire once at the moment a candidate is actually accepted, which is
+the correct scope boundary: `engine.prepare()`'s scratch-apply (including its own compressed
+`apply_patchset`, `engine.py:175`) is a genuine production cost, just not a keystroke-multiplied one,
+so it stays out of this slice by the *once-per-accept* argument, not by nonexistence. Revisiting it
+(the same `compress=False` trick would help the move-flow / restyle-at-accept path too) is a
+reasonable follow-up, not part of this slice.
 
 ### 3.2 Phase attribution (ad hoc instrumentation, no production code changed; dense synthetic
 page reused verbatim from `scripts/benchmark_p3b_preview_reuse.py::_build_doc(dense=True)`,
@@ -132,10 +145,11 @@ D. Preview integration (extend `test_scripts/test_text_commit_preview_parity.py`
    parallel `TieredCommitEngine.commit()` scenario on the live document continues to make its
    existing `compress=True` calls unchanged (regression guard against accidentally flipping the
    live path).
-E. Memory bound: repeated preview keystrokes (reuse the P3-B acceptance harness's 100-keystroke
-   loop shape) show the scratch document's traced memory stabilizes rather than growing per
-   keystroke — the uncompressed content-stream representation is a one-time expansion (replaced in
-   place every keystroke), never an accumulation.
+E. Memory bound: repeated preview keystrokes show the scratch's stored content-stream
+   representation (`xref_stream_raw` length, the actual C-side storage PyMuPDF reports — NOT
+   `tracemalloc`, which only traces the Python heap and cannot see MuPDF's C-side `fz_buffer`, so it
+   could pass vacuously while the C-side representation grew unbounded) is IDENTICAL after every
+   keystroke — a one-time expansion, replaced in place, never an accumulation.
 
 ## 6. Step list
 
@@ -151,11 +165,17 @@ E. Memory bound: repeated preview keystrokes (reuse the P3-B acceptance harness'
 
 - Does disabling compression change the scratch document's own internal xref/object-stream layout
   in a way that could shift *other* xrefs (page tree, fonts) between keystrokes, which downstream
-  fingerprint/digest logic might misread as structural change? **ANSWERED — no.** Verified
-  empirically (isolated probe, page/content/font xrefs, `xref_length()`, and every object's byte
-  string compared before vs. after a `compress=0` apply+revert round trip): identical in every
-  field; only the content stream's own storage encoding differs mid-cycle, restored exactly by
-  revert.
+  fingerprint/digest logic might misread as structural change? **ANSWERED — no**, with one
+  correction from the adversarial review (2026-08-22): every OTHER object (page tree, fonts,
+  `xref_length()`) is identical before vs. after a `compress=0` apply+revert round trip. The content
+  stream's own object dict is **not** restored to its original encoding — since `revert` also passes
+  `compress=False`, the stream stays permanently uncompressed (no `/Filter` key) after the first
+  keystroke for the rest of the session; only its DECODED bytes are restored exactly. This is safe
+  (nothing in this codebase reads a content stream's storage encoding — see §3's root-cause
+  paragraph) but the original wording here ("restored exactly by revert") overclaimed; corrected
+  after `test_apply_then_revert_compress_false_leaves_non_stream_objects_unchanged` was found to
+  omit checking the one object that actually changes. See
+  `test_revert_compress_false_does_not_restore_original_storage_encoding` for the pinned invariant.
 - Named next lever (not solved here): `capture_page_state` + `verify` + `final_pixmap`'s three
   `page.get_pixmap()` calls and six `page.get_fonts(full=True)` scans per keystroke, ~92% of the
   post-fix total. Numbers above are pre-fix census baselines for whoever picks this up next.
@@ -163,8 +183,53 @@ E. Memory bound: repeated preview keystrokes (reuse the P3-B acceptance harness'
 ## 8. Decisions & dead ends (running log)
 
 - 2026-08-22: Confirmed via `pdf_controller.py`/`text_commit_coordinator.py` reading that
-  `TieredCommitEngine.prepare()`'s own scratch-apply never runs on the interactive keystroke path —
-  ruled out of scope by evidence, not just by branch-name convention.
+  `TieredCommitEngine.prepare()`'s own scratch-apply never runs on the interactive PER-KEYSTROKE
+  path — ruled out of scope by evidence, not by branch-name convention. **Corrected 2026-08-22
+  (adversarial review):** it DOES run in production, once per accepted edit on a verified-candidate
+  cache miss (`pdf_text_edit.py:1734`) — see §3.1's correction. Out of scope by the once-per-accept
+  argument, not by nonexistence.
 - 2026-08-22: Considered compressing only on `close()`/session teardown instead of leaving every
   keystroke uncompressed — rejected: the scratch is never read back as a serialized artifact at any
   point in its life, so a compress-on-teardown step would be pure wasted work with no reader.
+
+### Adversarial review round (2026-08-22, deep-reasoner attack pass)
+
+One attack pass, 6 findings (1 high, 1 medium-high, 1 medium, 3 low/low-medium), all independently
+verified before fixing (Findings 1 and 3 by direct empirical re-probe; the rest accepted on the
+attack's own executed evidence — file:line citations and probes, not assertions):
+
+- **F1 (high):** §7's original "restored exactly by revert" claim was false for the shipped
+  combination (revert also passes `compress=False`) — the content stream's own object dict stays
+  permanently uncompressed post-revert; only decoded bytes are restored exactly. The companion test
+  omitted checking the one object that changes. Fixed: §7 corrected; test renamed
+  (`test_apply_then_revert_compress_false_leaves_non_stream_objects_unchanged`, scoped to what it
+  actually proves) plus a new test pinning the true invariant
+  (`test_revert_compress_false_does_not_restore_original_storage_encoding`).
+- **F2 (medium-high):** the memory test used `tracemalloc`, which only traces the Python heap —
+  blind to the uncompressed stream's actual storage in MuPDF's C-side `fz_buffer`, so it could pass
+  vacuously under a real C-heap accumulation regression. Fixed: replaced with a structural assertion
+  directly on PyMuPDF's reported storage (`xref_stream_raw` length identical across 21 keystrokes —
+  `test_repeated_preview_keystrokes_stream_storage_stays_single_representation`).
+- **F3 (medium):** §3.1's claim that `engine.prepare()`'s scratch-apply "has no production caller...
+  only benchmark/spike scripts call it" was false — see the §3.1/§8 corrections above. The scope
+  conclusion (out of this slice) survives on the correct argument (once-per-accept, not per-keystroke).
+- **F4 (medium-low):** the two default-compress-equivalence tests compared raw stream LENGTH, not
+  bytes — a weaker proxy than necessary. Fixed: both now compare `xref_stream_raw()` bytes directly.
+- **F5 (low-medium):** mismatched apply/revert `compress` pairs (legal by the API, argued safe, but
+  untested) and a latent footgun (a future live-document caller reverting with `compress=False`
+  would permanently decompress it). Fixed: two new round-trip tests for both mismatched pairs
+  (`test_mismatched_compress_apply_true_revert_false_still_round_trips` and its inverse); strengthened
+  `AppliedPatch.revert`'s docstring with the live-document warning.
+- **F6 (low):** the render-pipeline-identity test hand-replicated `render()`'s internals rather than
+  calling it, and had drifted from the real clip/verify-verdict logic. Fixed: renamed the hand-built
+  version to `test_render_primitives_output_identical_between_compress_true_and_false` (kept as a
+  cheap primitive-level sanity check) and added
+  `test_preview_renderer_output_identical_between_compress_true_and_false`, which drives the REAL
+  `PlanPreviewRenderer.render()` twice, monkeypatching both scratch-only call sites to force
+  `compress=True` for the control run.
+- Also fixed: a stale `PlanPreviewRenderer` docstring claiming the scratch "stays byte-identical to
+  the session snapshot" (now correctly scoped to decoded bytes).
+
+Matrix after fixes: 16/16 green (12 original + 4 new: F1's extra pin, F5's two mismatched-pair
+tests, F6's real-renderer test; F2's and F6's other fixes were renames/rewrites of existing tests,
+not additions). Ruff + mypy clean.

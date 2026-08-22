@@ -10,9 +10,7 @@ unchanged. See ``plans/task13-p3c-preview-postprepare-latency.md``.
 """
 from __future__ import annotations
 
-import gc
 import sys
-import tracemalloc
 from pathlib import Path
 
 import fitz
@@ -185,8 +183,11 @@ def test_apply_patchset_default_compress_matches_explicit_true():
     plan_b = _prepare(doc_b, doc_b[0])
     apply_patchset(doc_a, doc_a[0], _patchset_for(plan_a))  # default
     apply_patchset(doc_b, doc_b[0], _patchset_for(plan_b), compress=True)
-    assert len(doc_a.xref_stream_raw(plan_a.stream_xref)) == len(
-        doc_b.xref_stream_raw(plan_b.stream_xref)
+    # Raw BYTES, not just length -- same PyMuPDF build + same input must
+    # produce deterministic Flate output; a length-only check would not
+    # catch a default that compresses correctly but differently.
+    assert doc_a.xref_stream_raw(plan_a.stream_xref) == doc_b.xref_stream_raw(
+        plan_b.stream_xref
     )
     doc_a.close()
     doc_b.close()
@@ -216,14 +217,18 @@ def test_revert_default_compress_matches_explicit_true():
     applied_b = apply_patchset(doc_b, doc_b[0], _patchset_for(plan_b))
     applied_a.revert(doc_a)  # default
     applied_b.revert(doc_b, compress=True)
-    assert len(doc_a.xref_stream_raw(plan_a.stream_xref)) == len(
-        doc_b.xref_stream_raw(plan_b.stream_xref)
+    assert doc_a.xref_stream_raw(plan_a.stream_xref) == doc_b.xref_stream_raw(
+        plan_b.stream_xref
     )
     doc_a.close()
     doc_b.close()
 
 
-def test_apply_then_revert_compress_false_leaves_object_graph_unchanged():
+def test_apply_then_revert_compress_false_leaves_non_stream_objects_unchanged():
+    """Every OTHER object (page tree, fonts, xref count) is untouched by a
+    compress=False apply+revert cycle -- only the content stream's own
+    storage encoding changes, and (see the next test) it does NOT revert to
+    its original encoding, by design."""
     original = _padded_stream()
     doc = _stream_doc(original)
     page = doc[0]
@@ -242,6 +247,57 @@ def test_apply_then_revert_compress_false_leaves_object_graph_unchanged():
         "font_obj": doc.xref_object(font_xref),
     }
     assert before == after
+    assert doc.xref_stream(plan.stream_xref) == original
+    doc.close()
+
+
+def test_revert_compress_false_does_not_restore_original_storage_encoding():
+    """Documents the true (not the initially-assumed) invariant: revert
+    restores DECODED bytes exactly, but a compress=False apply+revert cycle
+    leaves the content stream's own object dict permanently uncompressed --
+    it is NOT restored to the stream's original (possibly compressed)
+    encoding. Safe because nothing in this codebase reads a content
+    stream's storage encoding (only ``xref_stream()``/decoded content), but
+    a future reader must not assume "revert" means "byte-identical stream
+    object," only "byte-identical decoded content."""
+    original = _padded_stream()
+    doc = _stream_doc(original)  # built with default compress=True
+    page = doc[0]
+    content_xref = page.get_contents()[0]
+    original_obj = doc.xref_object(content_xref)
+    assert "/Filter" in original_obj  # the original IS compressed
+
+    plan = _prepare(doc, page)
+    applied = apply_patchset(doc, page, _patchset_for(plan), compress=False)
+    applied.revert(doc, compress=False)
+
+    reverted_obj = doc.xref_object(content_xref)
+    assert "/Filter" not in reverted_obj  # storage encoding NOT restored
+    assert reverted_obj != original_obj
+    assert doc.xref_stream(content_xref) == original  # decoded content IS
+    doc.close()
+
+
+def test_mismatched_compress_apply_true_revert_false_still_round_trips():
+    """apply and revert set ``compress`` independently by design (a caller
+    reverting on a different document/path than it applied to is free to
+    choose differently) -- decoded content must stay exact even when the
+    two calls disagree, since neither reads storage encoding."""
+    original = _padded_stream()
+    doc = _stream_doc(original)
+    plan = _prepare(doc, doc[0])
+    applied = apply_patchset(doc, doc[0], _patchset_for(plan), compress=True)
+    applied.revert(doc, compress=False)
+    assert doc.xref_stream(plan.stream_xref) == original
+    doc.close()
+
+
+def test_mismatched_compress_apply_false_revert_true_still_round_trips():
+    original = _padded_stream()
+    doc = _stream_doc(original)
+    plan = _prepare(doc, doc[0])
+    applied = apply_patchset(doc, doc[0], _patchset_for(plan), compress=False)
+    applied.revert(doc, compress=True)
     assert doc.xref_stream(plan.stream_xref) == original
     doc.close()
 
@@ -280,9 +336,10 @@ def test_evidence_key_identical_regardless_of_stream_compress_state():
 # preview integration + count-based regression gate
 
 
-def test_render_pipeline_output_identical_between_compress_true_and_false():
-    """The compress flag on the scratch-only splice/revert changes nothing a
-    caller of PlanPreviewRenderer.render() can observe."""
+def test_render_primitives_output_identical_between_compress_true_and_false():
+    """Sanity check on the raw primitive sequence (not PlanPreviewRenderer
+    itself -- see the next test for that): token + PNG bytes are identical
+    whichever compress value the apply/revert pair uses."""
 
     def _run(compress: bool) -> tuple[str, bytes]:
         doc = _stream_doc(_padded_stream())
@@ -308,6 +365,48 @@ def test_render_pipeline_output_identical_between_compress_true_and_false():
     token_false, png_false = _run(False)
     assert token_true == token_false
     assert png_true == png_false
+
+
+def test_preview_renderer_output_identical_between_compress_true_and_false():
+    """The compress flag changes nothing a caller of the REAL
+    ``PlanPreviewRenderer.render()`` can observe -- proven by monkeypatching
+    both scratch-only call sites to force compress=True for a control run,
+    never by hand-replicating the pipeline (which could silently drift from
+    what render() actually does)."""
+    import model.text_commit.patch as patch_module
+    import model.text_commit.preview as preview_module
+
+    def _run(force_compress_true: bool) -> tuple[str | None, bytes]:
+        doc = _stream_doc(_padded_stream())
+        session = open_preview_session(doc, 0, "p3c-parity")
+        assert session is not None
+        renderer = PlanPreviewRenderer(session)
+        orig_apply = preview_module.apply_patchset
+        orig_revert = patch_module.AppliedPatch.revert
+        if force_compress_true:
+
+            def forced_apply(scratch, page, patchset, *, compress=False):
+                return orig_apply(scratch, page, patchset, compress=True)
+
+            def forced_revert(self, doc_, *, compress=False):
+                return orig_revert(self, doc_, compress=True)
+
+            preview_module.apply_patchset = forced_apply
+            patch_module.AppliedPatch.revert = forced_revert
+        try:
+            result = renderer.render(_preview_request(doc, 1, "Price 2025"))
+        finally:
+            preview_module.apply_patchset = orig_apply
+            patch_module.AppliedPatch.revert = orig_revert
+        renderer.close()
+        doc.close()
+        return result.plan_token, result.png_bytes
+
+    token_shipped, png_shipped = _run(False)
+    token_forced_true, png_forced_true = _run(True)
+    assert token_shipped is not None
+    assert token_shipped == token_forced_true
+    assert png_shipped == png_forced_true
 
 
 def test_preview_render_makes_zero_compressed_update_stream_calls():
@@ -353,7 +452,21 @@ def test_engine_commit_still_uses_compressed_update_stream():
 # bounded memory: the uncompressed stream is a one-time expansion
 
 
-def test_repeated_preview_keystrokes_stream_memory_stays_bounded():
+def test_repeated_preview_keystrokes_stream_storage_stays_single_representation():
+    """The scratch's uncompressed content-stream storage is a ONE-TIME
+    expansion, replaced in place every keystroke, never an accumulation.
+
+    ``tracemalloc`` cannot prove this: the uncompressed bytes live in
+    MuPDF's C heap (an ``fz_buffer`` inside the scratch ``fitz.Document``),
+    not the Python allocator, so a Python-heap-only instrument would stay
+    flat even if the C-side representation grew without bound every
+    keystroke. This asserts directly on the stored representation
+    PyMuPDF reports (``xref_stream_raw``) instead: every keystroke reverts
+    the same content stream back to its untouched original bytes, so the
+    raw (uncompressed) length after revert must be IDENTICAL every single
+    time -- any growth at all is exactly the accumulation regression this
+    test exists to catch.
+    """
     doc = _stream_doc(_padded_stream(n_pad=200_000))
     session = open_preview_session(doc, 0, "p3c-mem")
     assert session is not None
@@ -361,26 +474,15 @@ def test_repeated_preview_keystrokes_stream_memory_stays_bounded():
 
     result = renderer.render(_preview_request(doc, 0, "Price 2025"))
     assert result.plan_token is not None, result.reject_reason
-    gc.collect()
+    scratch = renderer._scratch
+    content_xref = scratch[0].get_contents()[0]
 
-    tracemalloc.start()
-    result = renderer.render(_preview_request(doc, 1, "Price 2126"))
-    assert result.plan_token is not None, result.reject_reason
-    gc.collect()
-    _, peak_early = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-
-    tracemalloc.start()
-    for i in range(2, 22):
+    raw_lens = [len(scratch.xref_stream_raw(content_xref))]
+    for i in range(1, 21):
         result = renderer.render(_preview_request(doc, i, f"Price 2{i % 10}25"))
         assert result.plan_token is not None, result.reject_reason
-    gc.collect()
-    _, peak_late = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
+        raw_lens.append(len(scratch.xref_stream_raw(content_xref)))
 
-    # 20 more keystrokes on the same single content stream must not
-    # multiply the peak footprint -- the uncompressed representation
-    # replaces itself in place every keystroke, never accumulates.
-    assert peak_late < peak_early * 3, (peak_early, peak_late)
+    assert len(set(raw_lens)) == 1, raw_lens
     renderer.close()
     doc.close()
