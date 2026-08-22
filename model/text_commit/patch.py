@@ -80,13 +80,21 @@ class AppliedPatch:
     page_xref: int
     prior_streams: tuple[tuple[int, bytes], ...]
 
-    def revert(self, doc: fitz.Document) -> None:
+    def revert(self, doc: fitz.Document, *, compress: bool = True) -> None:
+        """Restore the prior decoded bytes.
+
+        ``compress`` (Task 13 P3-C) is a pure storage-encoding choice --
+        ``xref_stream()`` decodes identically either way. Default ``True``
+        preserves prior behavior for every caller; pass ``False`` only for
+        a document whose stream storage encoding is never serialized to a
+        persisted artifact (``PlanPreviewRenderer``'s session scratch).
+        """
         for xref, data in self.prior_streams:
-            doc.update_stream(xref, data)
+            doc.update_stream(xref, data, compress=compress)
 
 
 def apply_patchset(
-    doc: fitz.Document, page: fitz.Page, patchset: PatchSet
+    doc: fitz.Document, page: fitz.Page, patchset: PatchSet, *, compress: bool = True
 ) -> AppliedPatch:
     """Validate and apply ``patchset`` to the live document.
 
@@ -95,6 +103,16 @@ def apply_patchset(
     digest or expected bytes drifted.  All new stream contents are computed
     before the first ``update_stream`` call, so validation failures leave
     the document byte-identical.
+
+    ``compress`` (Task 13 P3-C): forwarded verbatim to every
+    ``doc.update_stream`` call.  FlateDecode compression costs are
+    proportional to decoded stream size and dominate warm preview-keystroke
+    latency on dense pages (~540x on a 2.6 MiB stream); ``compress=False``
+    is safe exactly where the written bytes are never read back as a
+    serialized artifact -- decoded content, ``page_fingerprint``, and every
+    replay-evidence digest are unaffected by storage encoding. Default
+    ``True`` preserves existing behavior for every caller other than the
+    preview scratch.
     """
     if page.xref != patchset.page_xref:
         raise StalePlanError(
@@ -117,7 +135,7 @@ def apply_patchset(
         updated.append((stream_xref, new_bytes))
 
     for stream_xref, new_bytes in updated:
-        doc.update_stream(stream_xref, new_bytes)
+        doc.update_stream(stream_xref, new_bytes, compress=compress)
     logger.debug(
         "apply_patchset: page=%s streams=%s replacements=%s",
         patchset.page_xref,

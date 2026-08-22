@@ -327,7 +327,15 @@ class PlanPreviewRenderer:
         )
         pre_state = capture_page_state(scratch, page, plan)
         try:
-            applied = apply_patchset(scratch, page, patchset)
+            # P3-C: this scratch is never saved or tobytes()'d -- every
+            # splice is reverted before render() returns (below), and
+            # close() just drops the handle. Flate compression on the
+            # write is therefore pure cost with no reader; disabling it
+            # only here (never on the live commit path) is what turns the
+            # dominant per-keystroke cost (~75% of render time on dense
+            # pages) into a near-zero one. Decoded content, fingerprints,
+            # and replay-evidence digests are unaffected either way.
+            applied = apply_patchset(scratch, page, patchset, compress=False)
         except (StalePlanError, SpliceError) as exc:
             logger.warning("plan preview splice failed: %s", type(exc).__name__)
             return _rejection("preview_splice_failed")
@@ -358,7 +366,7 @@ class PlanPreviewRenderer:
             )
             png_bytes = pixmap.tobytes("png")
         finally:
-            applied.revert(scratch)
+            applied.revert(scratch, compress=False)  # P3-C: see apply above
         return PlanPreviewResult(
             session_key=request.session_key,
             generation=request.generation,
