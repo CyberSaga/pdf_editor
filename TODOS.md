@@ -740,11 +740,18 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   were measurement-integrity defects gating the census run), corpus
   measurement DONE: **replay is ~90% of the 2.7–4.8 s per-keystroke
   cost on dense pages; honest validated warm lookups are 8–14 ms
-  (~250–400×); Shape A (materialized ShowOp table) wins — Shape B
-  (sparse checkpoints) REJECTED for v1 on measured memory (4–6×
-  Shape A's total retained).**  4 MiB budget untouched; no persistent
-  cache.  Scope verdict + P3-B follow-up order in
-  `plans/task13-p3a-replay-index-spike.md` §7.  This partially
+  (page-paired prototype-lookup comparison ~310×–430×, standalone spike
+  path with pull-validation included, excludes plan/verify/apply/
+  render, not a production speedup — see plan §7 post-PR audit
+  correction); Shape A (materialized ShowOp table) wins — Shape B
+  (sparse checkpoints) REJECTED for v1 on measured memory (3.3×–6.1×
+  Shape A's total retained, page-paired).**  4 MiB budget untouched; no
+  persistent cache.  Scope verdict + P3-B follow-up order in
+  `plans/task13-p3a-replay-index-spike.md` §7.  **PR #35 opened
+  2026-08-22** against `task11/slice1-closure`; a 2026-08-22
+  post-PR-audit docs-only reconciliation commit corrected the numbers
+  above — see plan §7's "Post-PR claim audit correction" record for
+  the full derivation. This partially
   addresses the "latency half stays open" item above: the fix is now
   measured and shaped (reuse one replay across bind→plan, then the
   per-generation Shape A table), but nothing lands in production until

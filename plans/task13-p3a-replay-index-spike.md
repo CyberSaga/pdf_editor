@@ -1,6 +1,6 @@
 # Task 13 P3-A — replay index spike: latency census + invalidation contract
 
-**Status:** IN PROGRESS (created 2026-08-21)
+**Status:** COMPLETE — PR #35 pending merge (created 2026-08-21)
 **Branch:** `task13/p3-replay-indexing` (off `task11/slice1-closure` @ 137a50b, P2 merged)
 **Parent plan:** `plans/task13-cad-binding-unlock.md` §4 (Priority 3) — this is
 step 6's first half: the read-only spike that must precede any production
@@ -68,7 +68,7 @@ Cold path (per keystroke today, `preview.py` → `prepare_plan`):
 
 | stage | code | notes |
 |---|---|---|
-| stream read/decode | `inspect.read_page_streams` | called TWICE per prepare today (bind + plan re-read) — measure both |
+| stream read/decode | `inspect.read_page_streams` | read ≥3 times on an accepted classification (bind, a direct `doc.xref_stream` re-read, fingerprint) — see §7 post-PR audit correction; harness measures per-call cost, not an assumed multiple |
 | lex + replay walk | `replay.replay_page_streams` | tokenization + state machine + ShowOp construction; budget guard entry |
 | font capability | `fonts.DocumentFontRegistry` | generation-keyed cache already exists — measure hit vs miss |
 | target binding | `inspect.bind_source_text` | linear scan over shows |
@@ -166,9 +166,13 @@ latency optimization, never a correctness dependency. Additional pins:
        (fix commit; §7 step-4 record).
 5. [x] Corpus measurement run (aggregate-only) — §7 step-5 record:
        replay is ~90% of the per-keystroke cost; warm validated lookups
-       8–14 ms vs 2.7–4.8 s cold (~250–400×); **Shape A wins, Shape B
-       rejected for v1 on measured memory** (checkpoints cost 4–6× more
-       than Shape A retains in total on dense pages).
+       8–14 ms vs 2.7–4.8 s cold (page-paired prototype-lookup
+       comparison ~310×–430×, standalone spike path with
+       pull-validation included, excludes plan/verify/apply/render, not
+       a production speedup — §7 post-PR audit correction);
+       **Shape A wins, Shape B rejected for v1 on measured memory**
+       (checkpoints retain 3.3×–6.1× more than Shape A, page-paired, on
+       dense pages).
 6. [x] Docs (PITFALLS entries added: tracemalloc bias, json.dumps
        backslash-inert assertion, getsizeof `__dict__` undercount),
        TODOS housekeeping (P2-merged note; spike status), commit,
@@ -177,17 +181,26 @@ latency optimization, never a correctness dependency. Additional pins:
 ## 6. Open questions going in (all but the last ANSWERED by §7 step 5)
 
 - Where does the ~1.05 s/MiB actually go — lexing, ShowOp allocation, or
-  the double stream read? **ANSWERED: the replay walk is ~90% (2.74 s of
-  a ~3 s prepare on dense pages); the double read is 5 ms.**
+  repeated stream reads? **ANSWERED: the replay walk is ~90% (2.74 s of
+  a ~3 s prepare on dense pages). On the measured reject-path prepares,
+  exactly one `read_page_streams` call cost 5.4 ms median — this run did
+  not measure an accepted path's aggregate repeated-read cost. A static
+  call-site census (§7 post-PR audit correction) found an accepted
+  classification reads stream bytes 3 times inside
+  `plan._classify_common` (bind, a direct `doc.xref_stream` re-read,
+  fingerprint); regardless of count, single-digit-millisecond reads
+  cannot approach the 2.74 s replay share.**
 - Is Shape B's checkpoint restore even sound mid-page? **ANSWERED:
   sound under the analysis-round placement contract (empty operands,
   token boundaries, BI..EI exclusion, retained page globals) — pinned
   by the equivalence matrix — but the shape is REJECTED for v1 anyway:
-  at interval 64 its checkpoints retain 4–6× more than Shape A total.**
+  at interval 64 its checkpoints retain 3.3×–6.1× more than Shape A,
+  page-paired on the four dense doc_0 pages (§7 post-PR audit
+  correction).**
 - Memory: is retaining a full `PageReplay` for a 4 MiB page acceptable
   (Shape A)? **ANSWERED: yes — 0.78–1.19 MB per dense corpus page
-  (~1.1–1.7 KB/show, `__dict__`-dominated); `decoded_bytes` duplication
-  is negligible (8–12 KB/page) on this corpus.**
+  (1,106–1,167 bytes/show, `__dict__`-dominated); `decoded_bytes`
+  duplication is negligible (8–12 KB/page) on this corpus.**
 - Index persistence across save/reopen (parent plan §8) stays OPEN —
   explicitly out of this spike (no persistent cache fence).
 
@@ -361,32 +374,57 @@ median 2.70–4.77 s (~1.4 s/MiB — the Task 12 "~1.05 s/MiB" story,
 re-confirmed on this machine); the replay stage alone is 2.74 s median
 of medians vs read_streams 5.4 ms, fingerprint 50.6 ms.  A repeated
 keystroke (changed replacement) pays the same full cost again
-(2.66–4.73 s).  The double stream READ is a rounding error; the
-re-REPLAY per generation is ~90% of the bill.
+(2.66–4.73 s).  On the measured reject-path prepares, exactly one
+`read_page_streams` call cost 5.4 ms median (the instrumented
+`prepare_plan_stream_reads` counter recorded `n=1` on every page that
+reached a stream read at all); this run did not measure an accepted
+path's aggregate repeated-read cost.  A static call-site census (not a
+measurement — see "Post-PR claim audit correction" below) found an
+accepted classification in `plan._classify_common` reads stream bytes
+3 times: `bind_source_text` (line 315, via `read_page_streams`), a
+direct `doc.xref_stream` re-read building the `streams` dict (lines
+517–519), and `page_fingerprint` (line 522, via `read_page_streams`
+again) — `verify.py` holds 4 more `read_page_streams` call sites
+further downstream in the separate `engine_prepare` stage, out of
+scope for this count.  Regardless of the true multiple, single-digit
+milliseconds cannot approach the 2.74 s replay share: the re-REPLAY
+per generation is ~90% of the bill.
 
 **2. Warm lookups under the honest pull-validation contract are
 ~8–14 ms on dense pages** — `key_validation` (mandatory re-read +
 sha256 compare) is 8.3 ms median and dominates the warm path; the
 validated index-warm keystroke share is 8.5–11.4 ms and the validated
-second-target lookup 7.2–13.5 ms.  Against the 2.7–4.8 s cold replay
-share that is a **~250–400× reduction**, leaving plan/verify stages and
-validation as the new floor.
+second-target lookup 7.2–13.5 ms.  Page-paired against that same
+page's `cold_first_edit` median (not independent min/max
+cross-division), that is a **~310×–430× reduction** (exact per-page
+range 309×–431×) — a standalone-spike-path, pull-validation-included
+comparison of the replay-related cold share against the validated
+prototype lookup; it excludes the plan, fingerprint-dependency
+resolution beyond stream validation, scratch-apply, verification, and
+raster stages every real keystroke still pays, and it is **not** a
+production or end-to-end preview speedup.  Plan/verify stages and
+validation remain the new floor for any future production path.
 
 **3. Shape A wins, decisively.**  Build == one production replay
 (2.80 s vs 2.74 s — i.e. the build costs what every keystroke already
 pays today, once per page generation); retained memory 0.78–1.19 MB per
-dense page (1,106–1,688 bytes/show — the slotless-`__dict__` overhead
-the analysis round predicted dominates; `decoded_bytes` duplication is
-negligible on this corpus, 8–12 KB/page of 2-byte CIDs); correctness is
-inherited (it IS the production `PageReplay`).  Single-build tracemalloc
-peak ≈ retained size (~1.2 MB) — no transient blow-up.
+dense page (1,106–1,167 bytes/show, page-paired across the four dense
+doc_0 pages — the slotless-`__dict__` overhead the analysis round
+predicted dominates; `decoded_bytes` duplication is negligible on this
+corpus, 8–12 KB/page of 2-byte CIDs); correctness is inherited (it IS
+the production `PageReplay`).  Single-build tracemalloc peak ≈ retained
+size (~1.2 MB) — no transient blow-up.
 
 **4. Shape B LOSES on this corpus at the default interval.**  Retained
-3.9–7.3 MB per dense page — 4–6× MORE than Shape A — because dense CAD
+3.9–7.3 MB per dense page — **3.3×–6.1× more than Shape A, page-paired**
+(computed per page, not cross-divided independent min/max: 6.15×,
+5.30×, 5.06×, 3.34× across the four dense pages) — because dense CAD
 pages emit thousands of checkpoints (3,887–7,042 at interval 64) at
 ~1 KB each (full gs_stack + state tuples); the sparse rows themselves
-are small (209–336 KB).  Its raw warm lookup is also ~30× slower than
-Shape A's (1.3 ms vs 0.04 ms) and its build ~12% dearer (checkpoint
+are small (209–336 KB).  Its raw warm lookup (excludes pull-validation)
+is **~35× slower** than Shape A's using full-precision medians
+(1.321 ms / 0.038 ms = 34.8×, i.e. 1.3 ms vs 0.04 ms rounded) and its
+build **~10% dearer** (3,080.151 ms / 2,802.195 ms = 1.099×, checkpoint
 capture).  The hybrid's extra complexity buys nothing here: Shape B
 would only win where retaining decoded bytes is expensive, and this
 corpus's shows are tiny.  On doc_1's small pages Shape B does retain
@@ -421,3 +459,77 @@ across bind→plan within a single prepare (pure plumbing, no cache
 semantics), then the per-generation table for the preview keystroke
 loop.  A `__slots__` ShowOp would cut the dominant 1.1 KB/show — but
 that is a production change owned by P3-B, not this spike.
+
+### Post-PR claim audit correction (2026-08-22, docs commit #4)
+
+PR #35's own drafting pass (Draft→Audit workflow + independent
+hand-verification against the raw JSON) caught claim-precision defects
+that had already been committed in this plan's step-5 record and had
+propagated into `TODOS.md`. This record — and the in-place edits made
+alongside it in this same commit — supersede the numeric wording in the
+2026-08-21 step-5 record above. **The prototype-shape decision (Shape A
+selected, Shape B rejected for v1) and the P3-B scope verdict are
+UNCHANGED** — every correction here is claim-precision only, re-derived
+from the same gitignored raw JSON (`benchmarks/p3a-spike-2026-08-21
+.json`) already cited by that record, with no harness, prototype, or
+test change and no new corpus run.
+
+Corrections, each re-derived from raw per-page records (methodology in
+parentheses):
+
+1. **Stream-read claim.** "the double read is 5 ms" is retired. The
+   measured reject-path prepares recorded exactly ONE `read_page_streams`
+   call (5.4 ms median; `prepare_plan_stream_reads.n == 1` on every page
+   that reached a read). Separately, a static call-site census (not a
+   measurement) of `plan._classify_common` found an ACCEPTED
+   classification reads stream bytes 3 times — `bind_source_text`
+   (plan.py:315), a direct `doc.xref_stream` re-read building the
+   `streams` dict (plan.py:517–519), and `page_fingerprint`
+   (plan.py:522) — each via a genuinely separate code path (two through
+   `read_page_streams`, one a direct `xref_stream` loop). This count is
+   NOT multiplied by 5.4 ms to manufacture a measured total; it is
+   reported as a static fact only. `verify.py` (lines 116, 205, 744,
+   1189) holds further `read_page_streams` call sites inside the
+   separate `engine_prepare` stage, out of scope for this count.
+2. **Shape B/A retained-memory ratio.** Recomputed page-paired (not
+   independent min/max cross-division): 6.15×, 5.30×, 5.06×, 3.34×
+   across the four dense doc_0 pages → **3.3×–6.1×**, replacing every
+   "4–6×" occurrence.
+3. **Raw lookup ratio.** Full-precision doc_0 aggregate medians:
+   1.321 ms / 0.038 ms = 34.8× → **~35×**, replacing "~30×". Both
+   absolute medians are retained in the text; the ratio explicitly
+   excludes pull-validation (`key_validation`), which is charged
+   separately to every warm lookup.
+4. **Bytes/show range.** The committed "1,106–1,688 bytes/show" mixed
+   a dense doc_0 page's minimum (1,106.27, page 36) with a SMALL doc_1
+   page's maximum (1,687.72, page 13) — the two figures were never
+   dense-page-paired. Recomputed from `shape_a.memory_footprint
+   .bytes_per_show` across the four dense doc_0 pages only (the same
+   page set the surrounding "0.78–1.19 MB per dense page" sentence
+   already uses): 1,106.27 (page 36) to 1,166.76 (page 26) →
+   **1,106–1,167 bytes/show**. The 1,688 figure was a real doc_1 sample,
+   not a typo, but out of the dense-page population this sentence
+   describes.
+5. **Shape B build overhead.** Full-precision doc_0 aggregate medians:
+   Shape A 2,802.195 ms, Shape B 3,080.151 ms →
+   (3,080.151 − 2,802.195) / 2,802.195 = 9.92% → **~10%**, replacing
+   "~12%".
+6. **"~250–400×" warm-vs-cold reduction.** Recomputed page-paired
+   (`cold_first_edit.median_ms` ÷ each same-page validated-lookup
+   median, both `index_warm_replay_share` and `warm_second_target`,
+   across the four dense pages): 309.4×–431.3× → displayed as
+   **~310×–430×**. Every occurrence now states in the same sentence
+   that this is a standalone-spike-path, pull-validation-included
+   comparison of the replay-related cold share against the validated
+   prototype lookup, excluding plan/fingerprint-dependency resolution
+   beyond stream validation/scratch-apply/verification/raster, and is
+   NOT a production or end-to-end preview speedup claim. This ratio
+   was not in the PR-drafting audit's original scope; it was caught in
+   this reconciliation pass by applying the same page-paired discipline
+   as correction 2.
+
+Also folded in: the "~1.1–1.7 KB/show" figure in §6's open-question
+answer was the same dense/small-page mixing as correction 4 above,
+corrected to 1,106–1,167 bytes/show; the §3 latency-decomposition
+table's "called TWICE" note and the §6 "double read is 5 ms" answer are
+corrected per correction 1 above.
