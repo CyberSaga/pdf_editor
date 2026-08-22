@@ -2476,3 +2476,17 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** Dataclass equality is field-wise by default; provenance/attestation metadata is not part of a result's semantic identity, but a plain field makes it so.
 **Fix:** Declare provenance metadata with `field(compare=False)` (repr keeps it visible, consumers still read the value, equality stays semantic). `ReplayEvidence.__post_init__` still refuses `max_decoded_bytes is None` — the attestation's purpose — without perturbing any equality pin.
 **File:** `model/text_commit/replay.py` (`PageReplay.max_decoded_bytes`)
+
+## fitz.Document.update_stream(compress=False) never restores the original storage encoding
+**Area:** `model/text_commit/patch.py` (`apply_patchset`, `AppliedPatch.revert`), PyMuPDF stream storage
+**Symptom:** After a `compress=False` apply followed by a `compress=False` revert, the DECODED bytes (`xref_stream()`) are exactly the original content — but the stream object's own dict is not: `/Filter /FlateDecode` is gone and `/Length` reflects the uncompressed size, permanently, for the rest of the object's life. "Revert" restores decoded content, never the storage encoding a write happened to use (P3-C adversarial review F1 — the plan's first-pass claim that revert restored the object "exactly" was itself wrong, caught only because a test checked the wrong objects).
+**Cause:** `compress` is a per-call encoding instruction to `update_stream`, not a property PyMuPDF tracks or restores; a write with `compress=False` always produces an uncompressed object, whatever the stream previously was.
+**Fix:** Safe only where nothing reads a content stream's storage encoding (this codebase never does — every reader goes through `xref_stream()`/decoded bytes). Never assume "reverted" means "byte-identical stream object" — only "byte-identical decoded content." A test asserting object-graph stability across such a round trip must explicitly check the mutated stream's own object dict, not just its neighbors.
+**File:** `model/text_commit/patch.py`; pinned by `test_scripts/test_text_commit_apply_compress.py::test_revert_compress_false_does_not_restore_original_storage_encoding`
+
+## tracemalloc cannot see memory PyMuPDF stores in its own C heap
+**Area:** memory-bound tests/harnesses for anything touching `fitz.Document` internals
+**Symptom:** A memory-bound test using `tracemalloc.get_traced_memory()` around repeated `Document.update_stream` calls would pass even if the written bytes accumulated without bound on the C side (P3-C adversarial review F2) — `tracemalloc` traces only the Python allocator.
+**Cause:** PyMuPDF stores stream bytes in MuPDF's own C-side `fz_buffer` structures, reached through the Python binding but never allocated via Python's `malloc` hooks — invisible to any `tracemalloc` window regardless of placement or scope.
+**Fix:** For a bound on PyMuPDF-internal storage, assert directly on what PyMuPDF itself reports (e.g. `len(doc.xref_stream_raw(xref))` held constant across repeated writes), not on a Python-heap-only instrument. `tracemalloc` stays correct for genuinely Python-side allocations (e.g. P3-B's retained `ReplayEvidence` objects).
+**File:** `test_scripts/test_text_commit_apply_compress.py::test_repeated_preview_keystrokes_stream_storage_stays_single_representation`

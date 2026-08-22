@@ -1,6 +1,6 @@
 # Task 13 P3-C — preview post-prepare latency (one complete bounded slice)
 
-**Status:** IN PROGRESS (created 2026-08-22)
+**Status:** COMPLETE — pushed 2026-08-23, PR not yet opened (created 2026-08-22)
 **Branch:** `task13/p3c-preview-postprepare-latency` (cut from `task11/slice1-closure` post-PR-#36 merge, `f57f590`)
 **Parent evidence:** `plans/task13-p3b-replay-reuse.md` §6b — after P3-B, warm `prepare_plan` is
 p50 31 ms (replay-free), but warm end-to-end `PlanPreviewRenderer.render` stayed p50 ~3.3 s on the
@@ -159,7 +159,7 @@ E. Memory bound: repeated preview keystrokes show the scratch's stored content-s
    green (`feat:`).
 4. [x] Adversarial review (deep-reasoner attack pass); findings fixed (`fix:` — F1–F6, see §8).
 5. [x] Latency/count acceptance harness + measured record (`perf:` — §6b).
-6. [ ] Docs seal: ARCHITECTURE / PITFALLS / TODOS (`docs:`), push (no PR unless asked).
+6. [x] Docs seal: ARCHITECTURE / PITFALLS / TODOS (`docs:`), push (no PR unless asked).
 
 ## 6b. Acceptance record (2026-08-23, `scripts/benchmark_p3c_postprepare_latency.py`)
 

@@ -786,6 +786,38 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   simple-font cache hits on the engine path; see PITFALLS "Simple-font
   capabilities are served stale within a registry generation".
 
+- 2026-08-23 (Task 13 step 6 third pass — **P3-C preview post-prepare
+  latency, COMPLETE**, branch `task13/p3c-preview-postprepare-latency`
+  cut from the post-PR-#36 closure merge `f57f590`): the P3-B-named
+  residual lever, one complete census->implementation->acceptance
+  slice. Census phase-attributed warm `PlanPreviewRenderer.render()`
+  on the dense synthetic page: `apply_patchset` (38.7%) +
+  `AppliedPatch.revert` (36.8%) = 75.5% of render time, each exactly
+  one `Document.update_stream()` call on the ~2.5 MiB content stream;
+  root-caused to FlateDecode compression (`compress=1` default, ~540x
+  cost vs `compress=0` on an isolated 2.6 MiB stream). Fix: both
+  gained a `compress: bool = True` keyword (default preserves every
+  existing caller); `PlanPreviewRenderer` alone passes `False` at both
+  call sites, since its scratch is never saved or `tobytes()`'d — the
+  live commit path (`TieredCommitEngine.commit`) is untouched. 16-test
+  red-first matrix, deep-reasoner adversarial review (6 findings
+  F1-F6, all independently re-verified, all fixed), and a
+  compress-count acceptance harness
+  (`scripts/benchmark_p3c_postprepare_latency.py`): every preview
+  keystroke = 0 compressed / 2 uncompressed `update_stream` calls,
+  live commit keeps its existing >=1 compressed / 0 uncompressed calls
+  unchanged (regression guard), memory bounded structurally (stored
+  representation size identical across 100 keystrokes — NOT
+  `tracemalloc`, which is blind to PyMuPDF's C-side storage, see
+  PITFALLS). Measured: warm render p50 874 ms -> 267 ms (~3.3x) on the
+  same dense corpus; cold render (replay-dominated) 5.2 s. Fences
+  held: no admission/budget/plan-semantics/rollout-default change,
+  live document write path untouched. Record:
+  `plans/task13-p3c-preview-postprepare-latency.md`. **Named next
+  lever (not solved here):** three `page.get_pixmap()` calls + six
+  `page.get_fonts(full=True)` scans per keystroke (`capture_page_state`
+  + `verify` + the final preview raster), ~92% of the post-fix total.
+
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 
 - `PDFModel` has no `_normalize_text_for_compare` method. Referenced by
