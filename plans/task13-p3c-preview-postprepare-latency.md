@@ -154,12 +154,36 @@ E. Memory bound: repeated preview keystrokes show the scratch's stored content-s
 ## 6. Step list
 
 1. [x] Census: call-graph confirmation + phase attribution + root-cause microbenchmark (§3).
-2. [ ] Red matrix committed with failing log (`test:`).
-3. [ ] `compress` plumbing through `apply_patchset`/`AppliedPatch.revert` + `preview.py` call sites,
+2. [x] Red matrix committed with failing log (`test:` — 10 red / 2 guard-pins).
+3. [x] `compress` plumbing through `apply_patchset`/`AppliedPatch.revert` + `preview.py` call sites,
    green (`feat:`).
-4. [ ] Adversarial review (serial attack → verify); findings fixed if any (`fix:`).
-5. [ ] Latency/count acceptance harness + measured record (`perf:`).
+4. [x] Adversarial review (deep-reasoner attack pass); findings fixed (`fix:` — F1–F6, see §8).
+5. [x] Latency/count acceptance harness + measured record (`perf:` — §6b).
 6. [ ] Docs seal: ARCHITECTURE / PITFALLS / TODOS (`docs:`), push (no PR unless asked).
+
+## 6b. Acceptance record (2026-08-23, `scripts/benchmark_p3c_postprepare_latency.py`)
+
+Synthetic deterministic corpus (same generator shape as P3-B's harness: 401-show page padded with
+raster-free `q/cm/Q` tokens to ~2.5 MiB decoded, within the 4 MiB budget), `.venv` PyMuPDF 1.27.1.
+Raw aggregate JSON: gitignored `benchmarks/p3c-acceptance-2026-08-23.json`.
+
+**Compress-count contract (the gate) — all PASS:** cold render = 0 compressed / 2 uncompressed
+`update_stream` calls; 30 warm keystrokes = 0 compressed / 60 uncompressed calls total (2 per
+keystroke, 30/30 accepted); live `TieredCommitEngine.commit()` = 1 compressed / 0 uncompressed calls
+(the regression guard — the live path is provably untouched).
+
+**Structural memory bound — PASS:** 100 keystrokes on a small page hold the scratch's stored
+content-stream representation (`xref_stream_raw` length) at exactly one distinct size throughout —
+no accumulation, measured on PyMuPDF's own reported C-side storage (not `tracemalloc`, which the F2
+review finding showed is blind to it).
+
+**Latency (informational, NOT a gate; synthetic page, this machine; span resolution hoisted out of
+every timed section per the P3-B review's finding #2):** cold render 5,227.7 ms (replay-dominated,
+comparable to P3-B's cold-prepare figure) vs warm render p50 267.3 ms / p95 315.6 ms — down from this
+slice's own pre-fix census baseline of p50 874.4 ms on the same corpus shape (§3.2), a ~3.3× warm
+render speedup from removing FlateDecode compression on the two scratch-only stream writes alone.
+The remaining ~267 ms is the named next lever (§7): three `page.get_pixmap()` calls and six
+`page.get_fonts(full=True)` scans per keystroke, not touched here.
 
 ## 7. Open questions
 
