@@ -29,11 +29,13 @@ import fitz
 from model.edit_requests import StyleOverrides
 from model.text_commit.cid_fonts import CidCapabilityFailure
 from model.text_commit.dto import CommitTier, RejectReason, StreamReplacement
+from model.text_commit.evidence import ReplayEvidenceCache, resolve_replay
 from model.text_commit.fonts import DocumentFontRegistry, FontCapability
 from model.text_commit.inspect import (
     BindingFailure,
     SourceSpanBinding,
     bind_source_text,
+    capture_page_streams,
     find_pages_sharing_content_stream,
     page_fingerprint,
     page_has_widgets_or_signatures,
@@ -271,6 +273,7 @@ def _classify_common(
     style_overrides: StyleOverrides | None,
     new_rect: object | None,
     page_has_pending_maintenance: bool,
+    evidence_cache: ReplayEvidenceCache | None = None,
 ) -> _ClassifiedTarget | PlanRejection:
     """Classify and bind the candidate; shared by every tier.
 
@@ -312,12 +315,33 @@ def _classify_common(
             "form widgets or signatures present; high-fidelity edit refused",
         )
 
+    # P3-B: the ONE decoded stream read of this prepare.  Placed after
+    # the cheap early gates on purpose -- early rejects keep paying zero
+    # stream reads.  The snapshot's fresh-bytes key is the lookup-time
+    # pull-validation; a digest match reuses the retained production
+    # PageReplay (Shape A), a mismatch replays and replaces the slot.
+    # Refused/malformed replays never produce evidence to store.
+    snapshot = capture_page_streams(doc, page)
+    cached = (
+        evidence_cache.lookup(snapshot.key)
+        if evidence_cache is not None
+        else None
+    )
+    resolved = resolve_replay(snapshot, cached)
+    if (
+        evidence_cache is not None
+        and resolved.evidence is not None
+        and not resolved.from_cache
+    ):
+        evidence_cache.store(resolved.evidence)
+
     binding = bind_source_text(
         doc,
         page,
         target_text=target_text,
         expected_origin=expected_origin,
         registry=registry,
+        resolved=resolved,
     )
     if isinstance(binding, BindingFailure):
         return PlanRejection(binding.reason, binding.detail)
@@ -514,12 +538,10 @@ def _classify_common(
             tolerance = max(_ADVANCE_TOL_PER_PT * show.font_size, 1e-4)
         operand_kind = "literal"
 
-    streams = dict(
-        (xref, doc.xref_stream(xref) or b"") for xref in page.get_contents()
-    )
+    streams = dict(snapshot.streams)
     stream_bytes = streams[show.stream_xref]
 
-    fingerprint = page_fingerprint(doc, page)
+    fingerprint = page_fingerprint(doc, page, streams=snapshot.streams)
     # Task 13 P2: the show's cardinal visual baseline direction — it is
     # recomputed (cheap, pure) rather than threaded through the binding.
     # Usually an admission (binding proved it); the exception is a bound
@@ -826,12 +848,17 @@ def prepare_plan(
     new_rect: object | None = None,
     page_has_pending_maintenance: bool = False,
     max_tier: int = 0,
+    evidence_cache: ReplayEvidenceCache | None = None,
 ) -> PreparedEdit | PlanRejection:
     """Classify once; try Tier 0, escalate to Tier 1 only on ADVANCE_MISMATCH.
 
     The single product both preview and commit consume, so a Tier 1
     candidate's token is automatically identical on both paths. Tier 0
     always runs first and always wins when it accepts.
+
+    ``evidence_cache`` (P3-B) opts into session-scoped replay reuse --
+    the preview keystroke loop passes its renderer-owned single-slot
+    cache; every other caller stays ephemeral by default.
     """
     classified = _classify_common(
         doc,
@@ -844,6 +871,7 @@ def prepare_plan(
         style_overrides=style_overrides,
         new_rect=new_rect,
         page_has_pending_maintenance=page_has_pending_maintenance,
+        evidence_cache=evidence_cache,
     )
     if isinstance(classified, PlanRejection):
         return classified

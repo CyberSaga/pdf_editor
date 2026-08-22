@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import fitz
@@ -26,6 +27,11 @@ from model.text_commit.cid_fonts import (
     parse_pdf_value,
 )
 from model.text_commit.dto import RejectReason
+from model.text_commit.evidence import (
+    PageStreamSnapshot,
+    ResolvedPageStreams,
+    compute_evidence_key,
+)
 from model.text_commit.fonts import DocumentFontRegistry, FontCapability
 from model.text_commit.marked_content import update_marked_content_dependencies
 from model.text_commit.transforms import admission_verdict
@@ -96,6 +102,23 @@ def read_page_streams(
 ) -> list[tuple[int, bytes]]:
     """Ordered ``(xref, decoded_bytes)`` list of the page's content streams."""
     return [(xref, doc.xref_stream(xref) or b"") for xref in page.get_contents()]
+
+
+def capture_page_streams(
+    doc: fitz.Document, page: fitz.Page
+) -> PageStreamSnapshot:
+    """The ONE decoded content-stream read of a P3-B prepare.
+
+    Reads the ordered streams once and derives the invalidation key from
+    exactly those bytes -- the fresh-read + digest half of the lookup-time
+    pull-validation contract (``model.text_commit.evidence``).
+    """
+    streams = tuple(read_page_streams(doc, page))
+    return PageStreamSnapshot(
+        page_xref=page.xref,
+        streams=streams,
+        key=compute_evidence_key(page.xref, streams),
+    )
 
 
 # Font dictionary keys whose values feed Tier 0 capability classification:
@@ -334,7 +357,12 @@ def _update_page_geometry(
     digest.update(b"\x06")
 
 
-def page_fingerprint(doc: fitz.Document, page: fitz.Page) -> str:
+def page_fingerprint(
+    doc: fitz.Document,
+    page: fitz.Page,
+    *,
+    streams: Sequence[tuple[int, bytes]] | None = None,
+) -> str:
     """Digest of everything a Tier 0 commit promises not to disturb.
 
     Covers decoded content-stream bytes, the font resource table, the
@@ -342,9 +370,17 @@ def page_fingerprint(doc: fitz.Document, page: fitz.Page) -> str:
     objects and their resolved default visibility), and annotation/widget
     identity+geometry.  A prepared plan whose fingerprint no longer
     matches is stale and must not mutate anything.
+
+    ``streams`` (P3-B) feeds the stream portion from a same-prepare
+    ``capture_page_streams`` snapshot so classification hashes the very
+    bytes it bound -- callers must pass the CURRENT read or nothing.
+    Every non-stream dependency is always read fresh, and the apply/
+    verify staleness gates keep the no-argument fresh-read form.
     """
     digest = hashlib.sha256()
-    for xref, data in read_page_streams(doc, page):
+    if streams is None:
+        streams = read_page_streams(doc, page)
+    for xref, data in streams:
         digest.update(str(xref).encode("ascii"))
         digest.update(b"\x00")
         digest.update(data)
@@ -625,6 +661,7 @@ def bind_source_text(
     expected_origin: tuple[float, float] | None,
     tol: float = 0.5,
     registry: DocumentFontRegistry | None = None,
+    resolved: ResolvedPageStreams | None = None,
 ) -> SourceSpanBinding | BindingFailure:
     """Bind ``target_text`` at ``expected_origin`` (page space) to one show op.
 
@@ -635,12 +672,22 @@ def bind_source_text(
     unique CID match must additionally survive the source-reproduction
     proof (deterministic reverse encoding byte-equals the show operand).
     Without a registry, CID text keeps the historical refusal.
+
+    ``resolved`` (P3-B) supplies an already-captured read + replay from
+    ``model.text_commit.evidence.resolve_replay``; binding then performs
+    no stream read and no replay of its own.  Gate order and every
+    failure surface are identical on both paths.
     """
-    streams = read_page_streams(doc, page)
+    if resolved is not None:
+        streams: list[tuple[int, bytes]] = list(resolved.snapshot.streams)
+    else:
+        streams = read_page_streams(doc, page)
     if not streams:
         return BindingFailure(RejectReason.NO_MATCH, "page has no content streams")
 
-    replay = replay_page_streams(streams)
+    replay = (
+        resolved.replay if resolved is not None else replay_page_streams(streams)
+    )
     if replay.refusal_reason is not None:
         # Verbatim propagation is a frozen contract (Task 12 P0-A): the
         # refusal is about resources, not stream shape or match failure.
