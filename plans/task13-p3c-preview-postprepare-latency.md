@@ -185,6 +185,59 @@ render speedup from removing FlateDecode compression on the two scratch-only str
 The remaining ~267 ms is the named next lever (§7): three `page.get_pixmap()` calls and six
 `page.get_fonts(full=True)` scans per keystroke, not touched here.
 
+## 6c. Bridge-round acceptance record (2026-08-23, `scripts/benchmark_p3c_stage_census.py`)
+
+The committed, reproducible successor to §3.2's ad-hoc census — dual-mode (shipped `compress=False`
+vs a forced `compress=True` control recreating pre-P3-C behavior in the same process), dense + small
+corpora, clean pass (counters only, source of end-to-end numbers) + probed pass (stage/primitive
+wrappers, source of the decomposition). Gates all-PASS: compress counts per mode (0/2 shipped, 2/0
+control — the control's own count also proves the override engaged), P3-B replay contract re-asserted
+(cold render replays exactly 1, thirty warm keystrokes replay exactly 0, both modes, both corpora),
+plan-token identity between modes on both corpora. Raw JSON: gitignored
+`benchmarks/p3c-stage-census-2026-08-23.json`.
+
+**Dense, clean, same-process (n=30 warm):** control p50 2,715.8 / p95 2,755.3 ms → shipped p50
+538.4 / p95 579.0 ms — **5.04×**. Cold: 14,590.5 → 11,085.9 ms (the delta ≈ the two compressed
+writes; cold is otherwise replay-dominated — the probed cold decomposition puts 94.7% of it inside
+`prepare`'s one-time replay walk).
+
+**Prediction vs actual, reconciled:** §3.3's simulation predicted 4.75×; the committed dual-mode
+instrument measures 5.04× — the ratio reproduced. Absolute milliseconds did NOT reproduce across
+sessions (the same shipped code: 267.3 ms p50 in §6b's session vs 538.4 ms here, measured minutes
+after a 40-minute full-load pytest sweep — thermal/frequency state), which is empirical vindication
+of this slice's counts-not-milliseconds gate. The §3.3-simulation-vs-§6b gap (184.2 predicted vs
+267.3 measured) decomposes as: the simulation summed only the five stage sections; the probed pass
+shows `render_other` (final clip raster + PNG encode + result assembly) is a real ~86–102 ms p50
+stage the simulation never counted.
+
+**Shipped dense warm per-stage p50/p95 ms (probed pass, n=30; probed total runs ~30% above clean —
+wrapper overhead — so shares, not absolutes, are the decomposition's product):** prepare 17.2/19.4,
+capture 215.5/259.6, apply 19.7/22.1 (page_fingerprint 7.3 + xref reads 3.6 + uncompressed write
+2.5 + splice), verify 338.6/386.4, final-raster+assembly (`render_other`) 102.0/126.1, revert
+2.5/2.8. capture+verify+raster = **93.3%** of warm render. Control mode's probed pass confirms
+§3.2's original attribution on the committed instrument: apply 1,063.7 + revert 1,020.7 = 77% of
+its 2,702.9 total.
+
+**Primitive truth for the next lever (per warm keystroke, shipped):** three DisplayList builds
+(~99 ms each: capture pixmap, verify pixmap, final raster) + three TextPage builds (~99 ms each:
+capture rawdict, verify clip-extraction, verify rawdict origins) — **six independent full
+content-stream interpretations, none reused** — while the six `get_fonts(full=True)` calls total
+only ~1.5 ms and the two fingerprints ~12 ms. This CORRECTS §6b/§7's earlier next-lever framing:
+`get_fonts` was named alongside `get_pixmap` on call count, but it is latency-trivial; the lever is
+the six-fold page interpretation (nested-primitive caveat: `get_text` ms includes its `get_textpage`,
+`get_pixmap` ms includes its `get_displaylist` — counts are exact, nested ms must not be summed).
+
+**Small-page control: no reproducible regression.** Recorded run: shipped p50 25.5 vs control
+22.1 ms (+3.4 ms); but the shipped-small cell's own spread across two runs of identical code
+(15.0 → 25.5 ms) exceeds that delta — noise-dominated at this duration, with no candidate
+mechanism (storage encoding of a ~234-byte stream), and the deterministic count contract holds on
+the small corpus in both modes.
+
+**Memory (informational):** process working set settles at 48–49 MB after every mode/corpus (no
+retained growth); peak 68.5 MB is process-wide-monotonic (first heavy scenario sets it — caveated
+in the harness). The authoritative per-object bound remains §6b's structural `xref_stream_raw`
+check. The spec's private-real-corpus leg remains OPEN: no real-PDF corpus exists on this machine.
+
 ## 7. Open questions
 
 - Does disabling compression change the scratch document's own internal xref/object-stream layout
@@ -203,6 +256,11 @@ The remaining ~267 ms is the named next lever (§7): three `page.get_pixmap()` c
 - Named next lever (not solved here): `capture_page_state` + `verify` + `final_pixmap`'s three
   `page.get_pixmap()` calls and six `page.get_fonts(full=True)` scans per keystroke, ~92% of the
   post-fix total. Numbers above are pre-fix census baselines for whoever picks this up next.
+  **Refined by the bridge round (§6c):** the lever is precisely SIX independent content-stream
+  interpretations per keystroke — three DisplayList builds + three TextPage builds, none reused —
+  while `get_fonts` (originally named on call count) is latency-trivial (~1.5 ms for all six calls).
+  The P3-D-candidate design is one post-patch DisplayList + one post-patch TextPage shared across
+  verify extraction/raster and the final preview raster (§8's deferred-design record).
 
 ## 8. Decisions & dead ends (running log)
 
@@ -215,6 +273,24 @@ The remaining ~267 ms is the named next lever (§7): three `page.get_pixmap()` c
 - 2026-08-22: Considered compressing only on `close()`/session teardown instead of leaving every
   keystroke uncompressed — rejected: the scratch is never read back as a serialized artifact at any
   point in its life, so a compress-on-teardown step would be pure wasted work with no reader.
+- 2026-08-23 (bridge round — explicit rejected-design record): the alternative Phase B design for
+  this slice — a session-scoped pre-patch baseline (retained pre-state pixmap/TextPage/font
+  evidence) plus at most one post-patch DisplayList interpretation reused across clip extraction,
+  verification raster, and the final preview raster — was **deferred, not rejected on principle**.
+  The census (§3.2–3.3) attributed 75.5% of pre-fix warm render time to storage-encoding
+  compression versus ~22% to ALL interpretation/raster stages combined, so the compress flag was
+  the single largest attributable phase by ~3.4× and the smallest-diff fix (one keyword, two call
+  sites, zero verification-semantics change). Post-fix the balance inverts: interpretation/raster
+  is now ~92% of the remaining warm render, and the committed stage census
+  (`scripts/benchmark_p3c_stage_census.py`, bridge round) shows the true shape of that cost: no
+  `model/text_commit` source line calls `get_displaylist`/`get_textpage`, yet the path builds
+  **three DisplayLists and three TextPages per warm keystroke** — PyMuPDF's `get_pixmap`/`get_text`
+  utils each construct their own internally (source-level grep cannot see this; the census's
+  class-level probes do) — and none is ever reused across the capture pixmap, verify pixmap,
+  verify extractions, or the final preview raster. That per-keystroke rebuild is exactly the
+  evidence base the baseline/DisplayList design needs.
+  It is the natural P3-D slice, gated on its own correctness fences (per-target evidence
+  derivation, artifact invalidation across replacements), not on anything this slice shipped.
 
 ### Adversarial review round (2026-08-22, deep-reasoner attack pass)
 
