@@ -10,16 +10,18 @@ unchanged. See ``plans/task13-p3c-preview-postprepare-latency.md``.
 """
 from __future__ import annotations
 
+import dataclasses
 import sys
 from pathlib import Path
 
 import fitz
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from model.text_commit.dto import CommitStatus  # noqa: E402
+from model.text_commit.dto import CommitStatus, RejectReason  # noqa: E402
 from model.text_commit.engine import TieredCommitEngine  # noqa: E402
 from model.text_commit.evidence import compute_evidence_key  # noqa: E402
 from model.text_commit.fonts import DocumentFontRegistry  # noqa: E402
@@ -31,7 +33,20 @@ from model.text_commit.preview import (  # noqa: E402
     PlanPreviewRequest,
     open_preview_session,
 )
-from model.text_commit.verify import capture_page_state, verify_tier0_commit  # noqa: E402
+from model.text_commit.verify import (  # noqa: E402
+    VerificationFailure,
+    capture_page_state,
+    verify_tier0_commit,
+)
+from test_scripts.type0_fixture_builder import (  # noqa: E402
+    CJK_TEXT,
+    REPLACEMENT_EQUAL_ADVANCE,
+    REPLACEMENT_LONGER,
+    build_identity_h_fixture,
+    install_oc_layer,
+    set_text_matrix,
+    wrap_content_in_marked_content,
+)
 
 TARGET = "Price 2024"
 
@@ -484,5 +499,370 @@ def test_repeated_preview_keystrokes_stream_storage_stays_single_representation(
         raw_lens.append(len(scratch.xref_stream_raw(content_xref)))
 
     assert len(set(raw_lens)) == 1, raw_lens
+    renderer.close()
+    doc.close()
+
+
+# ---------------------------------------------------------------- Group F
+# tier / font-class coverage: the compress flag is observationally invisible
+# through the REAL PlanPreviewRenderer.render() for every admitted candidate
+# class, not just the Tier 0 simple-font case Groups A-E use.  Guard-pins
+# (green by design): each drives render() twice -- shipped (compress=False)
+# vs a forced compress=True control -- and any behavioral difference the
+# flag ever grows breaks the byte-equality below.
+
+_T1_TARGET = "iii"
+_T1_GROWTH = "MMM"  # helv M=833/1000 vs i=222/1000: ~22pt ink growth at 12pt
+_T1_TAIL = " " * 12 + "tail"
+
+
+def _tier1_composite_doc() -> fitz.Document:
+    """The Tier 1 Slice 1 composite fixture (same-line kern oracle), copied
+    from ``test_text_commit_tier1_slice1._composite_doc`` per the house
+    copy-not-import pattern for simple-font builders."""
+    stream = (
+        b"BT /F1 12 Tf 72 700 Td (" + _T1_TARGET.encode() + b") Tj "
+        b"/F1 9 Tf (" + _T1_TAIL.encode() + b") Tj "
+        b"0 -20 Td /F1 12 Tf (world) Tj ET"
+    )
+    return _stream_doc(stream)
+
+
+def _cid_doc() -> fitz.Document:
+    return build_identity_h_fixture().doc
+
+
+def _cid_oc_doc() -> fitz.Document:
+    """Default-visible pure /OC layer around the CID show -- the admitted
+    marked-content class (``test_text_commit_mc_admission``'s idiom)."""
+    fixture = build_identity_h_fixture()
+    install_oc_layer(fixture, name="Lyr7Q", label="L7Q", on=True)
+    wrap_content_in_marked_content(fixture, "/OC /Lyr7Q BDC")
+    return fixture.doc
+
+
+def _cid_rot90_doc() -> fitz.Document:
+    fixture = build_identity_h_fixture()
+    set_text_matrix(fixture, (0.0, 1.0, -1.0, 0.0))  # quarter-turn Tm
+    return fixture.doc
+
+
+def _render_class_case(
+    doc: fitz.Document,
+    *,
+    target: str,
+    replacement: str,
+    max_tier: int,
+    force_compress_true: bool,
+    counter: _UpdateStreamCounter | None = None,
+):
+    """One real render() pass over an arbitrary fixture class."""
+    import model.text_commit.patch as patch_module
+    import model.text_commit.preview as preview_module
+
+    session = open_preview_session(doc, 0, "p3c-class-matrix", max_tier=max_tier)
+    assert session is not None
+    renderer = PlanPreviewRenderer(session)
+    span = _span(doc[0], target)
+    request = PlanPreviewRequest(
+        session_key="p3c-class-matrix",
+        generation=1,
+        target_text=target,
+        replacement_text=replacement,
+        expected_origin=tuple(float(v) for v in span["origin"]),
+        target_bbox=tuple(float(v) for v in span["bbox"]),
+        clip_rect=tuple(doc[0].rect),
+        render_scale=1.0,
+    )
+    orig_apply = preview_module.apply_patchset
+    orig_revert = patch_module.AppliedPatch.revert
+    if force_compress_true:
+
+        def forced_apply(scratch, page, patchset, *, compress=False):
+            return orig_apply(scratch, page, patchset, compress=True)
+
+        def forced_revert(self, doc_, *, compress=False):
+            return orig_revert(self, doc_, compress=True)
+
+        preview_module.apply_patchset = forced_apply
+        patch_module.AppliedPatch.revert = forced_revert
+    if counter is not None:
+        counter.install()
+    try:
+        result = renderer.render(request)
+    finally:
+        if counter is not None:
+            counter.uninstall()
+        preview_module.apply_patchset = orig_apply
+        patch_module.AppliedPatch.revert = orig_revert
+    renderer.close()
+    return result
+
+
+def _assert_class_case_identical_and_uncompressed(
+    doc_factory, *, target: str, replacement: str, max_tier: int, expect_tier: int
+):
+    counter = _UpdateStreamCounter()
+    doc = doc_factory()
+    shipped = _render_class_case(
+        doc,
+        target=target,
+        replacement=replacement,
+        max_tier=max_tier,
+        force_compress_true=False,
+        counter=counter,
+    )
+    doc.close()
+    compressed, uncompressed = counter.take()
+    assert shipped.plan_token is not None, shipped.reject_reason
+    assert (compressed, uncompressed) == (0, 2), (compressed, uncompressed)
+    assert shipped.prepared is not None
+    assert shipped.prepared.tier.value == expect_tier, shipped.prepared.tier
+
+    doc = doc_factory()
+    control = _render_class_case(
+        doc,
+        target=target,
+        replacement=replacement,
+        max_tier=max_tier,
+        force_compress_true=True,
+    )
+    doc.close()
+    assert control.reject_reason is None, control.reject_reason
+    assert control.plan_token == shipped.plan_token
+    assert control.png_bytes == shipped.png_bytes
+    return shipped
+
+
+def test_preview_render_tier1_kern_growth_identical_and_uncompressed():
+    """Tier 1 kern-compensated transplant WITH ink growth: the compress flag
+    must be invisible through verify_tier1_commit + the growth-zone gates,
+    and the growth evidence must be present on the shipped candidate."""
+    shipped = _assert_class_case_identical_and_uncompressed(
+        _tier1_composite_doc,
+        target=_T1_TARGET,
+        replacement=_T1_GROWTH,
+        max_tier=1,
+        expect_tier=1,
+    )
+    assert shipped.prepared.has_ink_growth is True
+    assert shipped.prepared.growth_direction
+
+
+def test_preview_render_type0_cid_tier0_identical_and_uncompressed():
+    _assert_class_case_identical_and_uncompressed(
+        _cid_doc,
+        target=CJK_TEXT,
+        replacement=REPLACEMENT_EQUAL_ADVANCE,
+        max_tier=0,
+        expect_tier=0,
+    )
+
+
+def test_preview_render_type0_cid_tier1_identical_and_uncompressed():
+    _assert_class_case_identical_and_uncompressed(
+        _cid_doc,
+        target=CJK_TEXT,
+        replacement=REPLACEMENT_LONGER,
+        max_tier=1,
+        expect_tier=1,
+    )
+
+
+def test_preview_render_visible_oc_wrapper_identical_and_uncompressed():
+    _assert_class_case_identical_and_uncompressed(
+        _cid_oc_doc,
+        target=CJK_TEXT,
+        replacement=REPLACEMENT_EQUAL_ADVANCE,
+        max_tier=0,
+        expect_tier=0,
+    )
+
+
+def test_preview_render_rotated_quarter_turn_identical_and_uncompressed():
+    _assert_class_case_identical_and_uncompressed(
+        _cid_rot90_doc,
+        target=CJK_TEXT,
+        replacement=REPLACEMENT_EQUAL_ADVANCE,
+        max_tier=0,
+        expect_tier=0,
+    )
+
+
+# ---------------------------------------------------------------- Group G
+# verification failures REMAIN failures under compress=False, and revert
+# still restores the decoded bytes afterward.  These are the first tests in
+# the suite to FORCE the V0a-V0d gates (every pre-existing test pins them
+# positively); guard-pins for the compress slice, forced-failure firsts for
+# the verifier.
+
+
+def _apply_uncompressed_for_failure(doc: fitz.Document):
+    page = doc[0]
+    plan = _prepare(doc, page)
+    pre_state = capture_page_state(doc, page, plan)
+    applied = apply_patchset(doc, page, _patchset_for(plan), compress=False)
+    return page, plan, pre_state, applied
+
+
+def _assert_verify_fails(doc, page, plan, pre_state, detail_substring: str):
+    failure = verify_tier0_commit(
+        doc, page, plan, pre_state, reopen_probe=False, cached_reopen_probe_ok=True
+    )
+    assert isinstance(failure, VerificationFailure), failure
+    assert failure.reason == RejectReason.VERIFICATION_FAILED
+    assert detail_substring in failure.detail, failure.detail
+    return failure
+
+
+def _assert_reverts_exactly(doc, plan, pre_state, applied) -> None:
+    xref = plan.replacement.stream_xref
+    applied.revert(doc, compress=False)
+    assert doc.xref_stream(xref) == dict(pre_state.streams)[xref]
+
+
+def test_outside_range_stream_mutation_still_fails_verify_under_compress_false():
+    """V0a: bytes outside the declared splice range changed after apply."""
+    doc = _stream_doc(_padded_stream())
+    page, plan, pre_state, applied = _apply_uncompressed_for_failure(doc)
+    xref = plan.replacement.stream_xref
+    doc.update_stream(xref, doc.xref_stream(xref) + b" ")
+    _assert_verify_fails(
+        doc, page, plan, pre_state, "target stream changed outside the declared range"
+    )
+    # revert restores the pre-apply decoded bytes, overwriting the
+    # injected mutation along with the splice.
+    _assert_reverts_exactly(doc, plan, pre_state, applied)
+    doc.close()
+
+
+def test_nontarget_origin_movement_still_fails_verify_under_compress_false():
+    """V0c: a non-target span origin that differs from the pre-state."""
+    doc = _stream_doc(_padded_stream())
+    page, plan, pre_state, applied = _apply_uncompressed_for_failure(doc)
+    tampered = dataclasses.replace(pre_state, nontarget_origins=((0.0, 0.0),))
+    _assert_verify_fails(doc, page, plan, tampered, "non-target span geometry changed")
+    _assert_reverts_exactly(doc, plan, pre_state, applied)
+    doc.close()
+
+
+def test_outside_halo_pixel_change_still_fails_verify_under_compress_false():
+    """V0d: one flipped pixel byte far outside the target halo (the page's
+    bottom-right corner; the target sits near the top-left)."""
+    doc = _stream_doc(_padded_stream())
+    page, plan, pre_state, applied = _apply_uncompressed_for_failure(doc)
+    samples = pre_state.pixmap_samples
+    flipped = samples[:-1] + bytes([samples[-1] ^ 0xFF])
+    tampered = dataclasses.replace(pre_state, pixmap_samples=flipped)
+    _assert_verify_fails(
+        doc, page, plan, tampered, "pixels changed outside the target halo"
+    )
+    _assert_reverts_exactly(doc, plan, pre_state, applied)
+    doc.close()
+
+
+def test_font_resource_mutation_still_fails_verify_under_compress_false():
+    """V0b (fonts): a font resource added between apply and verify."""
+    doc = _stream_doc(_padded_stream())
+    page, plan, pre_state, applied = _apply_uncompressed_for_failure(doc)
+    extra_font = doc.get_new_xref()
+    doc.update_object(extra_font, _FONT_OBJECT)
+    doc.xref_set_key(page.xref, "Resources/Font/F9", f"{extra_font} 0 R")
+    _assert_verify_fails(doc, page, plan, pre_state, "font resource table changed")
+    _assert_reverts_exactly(doc, plan, pre_state, applied)
+    doc.close()
+
+
+def test_annotation_mutation_still_fails_verify_under_compress_false():
+    """V0b (annots): an annotation added between apply and verify."""
+    doc = _stream_doc(_padded_stream())
+    page, plan, pre_state, applied = _apply_uncompressed_for_failure(doc)
+    page.add_highlight_annot(fitz.Rect(300.0, 300.0, 340.0, 320.0))
+    _assert_verify_fails(doc, page, plan, pre_state, "annotations changed")
+    _assert_reverts_exactly(doc, plan, pre_state, applied)
+    doc.close()
+
+
+def test_unextractable_replacement_still_fails_verify_under_compress_false():
+    """V0c (extraction): verify against a plan whose replacement_text was
+    never spliced.  (The sibling 'source text still present' branch is not
+    forcible on this fixture: the halo clip contains only the replacement,
+    and every substring of it is a substring of replacement_text, which
+    short-circuits the gate's first condition.)"""
+    doc = _stream_doc(_padded_stream())
+    page, plan, pre_state, applied = _apply_uncompressed_for_failure(doc)
+    tampered_plan = dataclasses.replace(plan, replacement_text="Absent Zebra")
+    _assert_verify_fails(
+        doc, page, tampered_plan, pre_state, "replacement text not extractable"
+    )
+    _assert_reverts_exactly(doc, plan, pre_state, applied)
+    doc.close()
+
+
+def test_preview_verify_failure_reverts_scratch_and_rejects_under_compress_false():
+    """A VerificationFailure returned inside the REAL render() still yields
+    a rejection result AND a decoded-byte-exact scratch revert, with the
+    same 0-compressed / 2-uncompressed call shape as an accepted render."""
+    import model.text_commit.preview as preview_module
+
+    doc = _stream_doc(_padded_stream())
+    live_xref = doc[0].get_contents()[0]
+    live_bytes = doc.xref_stream(live_xref)
+    session = open_preview_session(doc, 0, "p3c-inject")
+    assert session is not None
+    renderer = PlanPreviewRenderer(session)
+    orig_verify = preview_module.verify_tier0_commit
+    counter = _UpdateStreamCounter()
+
+    def failing_verify(*args, **kwargs):
+        return VerificationFailure(RejectReason.VERIFICATION_FAILED, "injected by test")
+
+    preview_module.verify_tier0_commit = failing_verify
+    counter.install()
+    try:
+        result = renderer.render(_preview_request(doc, 1, "Price 2025"))
+    finally:
+        counter.uninstall()
+        preview_module.verify_tier0_commit = orig_verify
+    compressed, uncompressed = counter.take()
+    assert result.plan_token is None
+    assert result.reject_reason == RejectReason.VERIFICATION_FAILED
+    assert result.png_bytes == b""
+    assert (compressed, uncompressed) == (0, 2)  # apply + revert both ran
+    scratch = renderer._scratch
+    assert scratch.xref_stream(live_xref) == live_bytes
+    renderer.close()
+    doc.close()
+
+
+def test_preview_verifier_exception_still_reverts_scratch_under_compress_false():
+    """A verifier that RAISES inside render() propagates, but the finally
+    clause still reverts the scratch to decoded-byte identity."""
+    import model.text_commit.preview as preview_module
+
+    doc = _stream_doc(_padded_stream())
+    live_xref = doc[0].get_contents()[0]
+    live_bytes = doc.xref_stream(live_xref)
+    session = open_preview_session(doc, 0, "p3c-crash")
+    assert session is not None
+    renderer = PlanPreviewRenderer(session)
+    orig_verify = preview_module.verify_tier0_commit
+    counter = _UpdateStreamCounter()
+
+    def raising_verify(*args, **kwargs):
+        raise RuntimeError("injected verifier crash")
+
+    preview_module.verify_tier0_commit = raising_verify
+    counter.install()
+    try:
+        with pytest.raises(RuntimeError, match="injected verifier crash"):
+            renderer.render(_preview_request(doc, 1, "Price 2025"))
+    finally:
+        counter.uninstall()
+        preview_module.verify_tier0_commit = orig_verify
+    compressed, uncompressed = counter.take()
+    assert (compressed, uncompressed) == (0, 2)  # apply + revert both ran
+    scratch = renderer._scratch
+    assert scratch.xref_stream(live_xref) == live_bytes
     renderer.close()
     doc.close()
