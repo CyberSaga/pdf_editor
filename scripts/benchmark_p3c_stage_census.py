@@ -41,10 +41,10 @@ reported separately, never mixed with the clean numbers).
 
 Synthetic corpus only — deterministic, privacy-free, reproducible by any
 reviewer; no document text or paths beyond this script appear in the
-report.  The spec's private-real-corpus leg remains open: no real-PDF
-corpus exists on this machine (``test_corpus/`` is absent; the fidelity
-corpus is synthetic and generated on demand).  Aggregate-only JSON is
-written under the gitignored ``benchmarks/``.
+report.  The spec's private-real-corpus leg requires a locally provided
+real-PDF corpus (absent by default; the fidelity corpus is synthetic and
+generated on demand) and remains open until one exists.  Aggregate-only
+JSON is written under the gitignored ``benchmarks/``.
 
 Run:  .venv\\Scripts\\python.exe scripts/benchmark_p3c_stage_census.py
 """
@@ -380,7 +380,7 @@ def _working_set_snapshot() -> dict[str, float] | None:
 
         # Typed argtypes are load-bearing: the untyped ``windll`` call path
         # truncates GetCurrentProcess()'s 64-bit pseudo-handle and the API
-        # fails with ok=0 / GetLastError()=0 (measured on this machine).
+        # was observed to fail with ok=0 / GetLastError()=0.
         psapi = ctypes.WinDLL("psapi", use_last_error=True)
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.GetCurrentProcess.restype = wintypes.HANDLE
@@ -570,8 +570,8 @@ def main(argv: list[str] | None = None) -> int:
         "harness": "p3c-stage-census-dual-mode",
         "corpus": (
             "synthetic-deterministic (scripts/benchmark_p3c_postprepare_latency"
-            "._build_doc); private real-PDF corpus leg remains OPEN -- no such"
-            " corpus exists on this machine"
+            "._build_doc); private real-PDF corpus leg remains OPEN -- requires"
+            " a locally provided corpus, absent by default"
         ),
         "warm_keystrokes_per_cell": WARM_KEYSTROKES,
         "acceptance": {"passed": not failures, "failures": failures},

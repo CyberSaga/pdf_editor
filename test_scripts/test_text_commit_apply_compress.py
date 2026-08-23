@@ -391,7 +391,7 @@ def test_preview_renderer_output_identical_between_compress_true_and_false():
     import model.text_commit.patch as patch_module
     import model.text_commit.preview as preview_module
 
-    def _run(force_compress_true: bool) -> tuple[str | None, bytes]:
+    def _run(force_compress_true: bool) -> tuple[str | None, bytes, tuple[int, int]]:
         doc = _stream_doc(_padded_stream())
         session = open_preview_session(doc, 0, "p3c-parity")
         assert session is not None
@@ -408,20 +408,26 @@ def test_preview_renderer_output_identical_between_compress_true_and_false():
 
             preview_module.apply_patchset = forced_apply
             patch_module.AppliedPatch.revert = forced_revert
+        counter = _UpdateStreamCounter()
+        counter.install()
         try:
             result = renderer.render(_preview_request(doc, 1, "Price 2025"))
         finally:
+            counter.uninstall()
             preview_module.apply_patchset = orig_apply
             patch_module.AppliedPatch.revert = orig_revert
         renderer.close()
         doc.close()
-        return result.plan_token, result.png_bytes
+        return result.plan_token, result.png_bytes, counter.take()
 
-    token_shipped, png_shipped = _run(False)
-    token_forced_true, png_forced_true = _run(True)
+    token_shipped, png_shipped, counts_shipped = _run(False)
+    token_forced_true, png_forced_true, counts_forced = _run(True)
     assert token_shipped is not None
     assert token_shipped == token_forced_true
     assert png_shipped == png_forced_true
+    assert counts_shipped == (0, 2)
+    # Bridge review B-F3: prove the control actually engaged.
+    assert counts_forced == (2, 0)
 
 
 def test_preview_render_makes_zero_compressed_update_stream_calls():
@@ -626,8 +632,14 @@ def _assert_class_case_identical_and_uncompressed(
         replacement=replacement,
         max_tier=max_tier,
         force_compress_true=True,
+        counter=counter,
     )
     doc.close()
+    # Bridge review B-F3: the control leg must PROVE the forced-compress
+    # monkeypatch engaged -- without this, a preview.py import-style
+    # refactor would silently turn the comparison into shipped-vs-shipped
+    # while the test stayed green.
+    assert counter.take() == (2, 0)
     assert control.reject_reason is None, control.reject_reason
     assert control.plan_token == shipped.plan_token
     assert control.png_bytes == shipped.png_bytes

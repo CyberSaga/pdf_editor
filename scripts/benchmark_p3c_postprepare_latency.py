@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import sys
 import time
@@ -151,10 +152,13 @@ def _request(doc: fitz.Document, generation: int, replacement: str, span: dict) 
 def _percentiles(samples_ms: list[float]) -> dict:
     ordered = sorted(samples_ms)
     n = len(ordered)
+    # Nearest-rank p95 (bridge review B-F5): round() banker's-rounds
+    # round(30*0.95)=28, one order statistic LOW for the n=30 cells every
+    # harness in this series uses. ceil is the standard nearest-rank rule.
     return {
         "n": n,
         "p50_ms": round(statistics.median(ordered), 3),
-        "p95_ms": round(ordered[min(n - 1, max(0, round(n * 0.95) - 1))], 3),
+        "p95_ms": round(ordered[min(n - 1, max(0, math.ceil(n * 0.95) - 1))], 3),
         "min_ms": round(ordered[0], 3),
         "max_ms": round(ordered[-1], 3),
     }

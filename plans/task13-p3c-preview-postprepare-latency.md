@@ -197,18 +197,25 @@ plan-token identity between modes on both corpora. Raw JSON: gitignored
 `benchmarks/p3c-stage-census-2026-08-23.json`.
 
 **Dense, clean, same-process (n=30 warm):** control p50 2,715.8 / p95 2,755.3 ms → shipped p50
-538.4 / p95 579.0 ms — **5.04×**. Cold: 14,590.5 → 11,085.9 ms (the delta ≈ the two compressed
-writes; cold is otherwise replay-dominated — the probed cold decomposition puts 94.7% of it inside
-`prepare`'s one-time replay walk).
+538.4 / p95 579.0 ms — **5.04×**. Cold: 14,590.5 → 11,085.9 ms (roughly 2.0–2.1 s of the 3.5 s
+delta is the two compressed writes — probed cold apply+revert 2,068.8 → 48.8 ms; the remainder is
+single-sample cold variance; cold is otherwise replay-dominated — the probed cold decomposition
+puts 94.7% of it inside `prepare`'s one-time replay walk). p95 convention note (B-F5): the recorded
+JSON was produced with the earlier `round()`-rank percentile (one order statistic low at n=30,
+≈p92–93); both harnesses now use nearest-rank `ceil` — latency is informational, so the record was
+not re-run.
 
 **Prediction vs actual, reconciled:** §3.3's simulation predicted 4.75×; the committed dual-mode
 instrument measures 5.04× — the ratio reproduced. Absolute milliseconds did NOT reproduce across
 sessions (the same shipped code: 267.3 ms p50 in §6b's session vs 538.4 ms here, measured minutes
 after a 40-minute full-load pytest sweep — thermal/frequency state), which is empirical vindication
 of this slice's counts-not-milliseconds gate. The §3.3-simulation-vs-§6b gap (184.2 predicted vs
-267.3 measured) decomposes as: the simulation summed only the five stage sections; the probed pass
-shows `render_other` (final clip raster + PNG encode + result assembly) is a real ~86–102 ms p50
-stage the simulation never counted.
+267.3 measured) is the SAME cross-session drift, not an uncounted stage (corrected per bridge
+review B-F1 — the first draft here claimed `render_other` was "never counted", which §3.2/§3.3
+contradict): §3.3's simulation did count the final raster (`final_pixmap` 25.3 ms in that session's
+machine state), and the probed pass shows the same stage at ~86–102 ms p50 in this session
+(`render_other` is ≈99% the final clip raster); the genuinely uncounted remainder (PNG encode +
+result assembly) is ~2 ms.
 
 **Shipped dense warm per-stage p50/p95 ms (probed pass, n=30; probed total runs ~30% above clean —
 wrapper overhead — so shares, not absolutes, are the decomposition's product):** prepare 17.2/19.4,
@@ -228,10 +235,12 @@ the six-fold page interpretation (nested-primitive caveat: `get_text` ms include
 `get_pixmap` ms includes its `get_displaylist` — counts are exact, nested ms must not be summed).
 
 **Small-page control: no reproducible regression.** Recorded run: shipped p50 25.5 vs control
-22.1 ms (+3.4 ms); but the shipped-small cell's own spread across two runs of identical code
-(15.0 → 25.5 ms) exceeds that delta — noise-dominated at this duration, with no candidate
-mechanism (storage encoding of a ~234-byte stream), and the deterministic count contract holds on
-the small corpus in both modes.
+22.1 ms (+3.4 ms); the recorded within-cell min–max spreads overlap heavily and exceed that delta
+(shipped 22.2–34.2 ms vs control 21.3–29.8 ms) — noise-dominated at this duration, with no
+candidate mechanism (storage encoding of a ~234-byte stream), and the deterministic count contract
+holds on the small corpus in both modes. (An earlier draft cited an unrecorded smoke-run number
+here — removed per bridge review B-F2: the default `--json-out` overwrites, so only the recorded
+artifact's within-cell spread is citable evidence.)
 
 **Memory (informational):** process working set settles at 48–49 MB after every mode/corpus (no
 retained growth); peak 68.5 MB is process-wide-monotonic (first heavy scenario sets it — caveated
@@ -333,3 +342,38 @@ attack's own executed evidence — file:line citations and probes, not assertion
 Matrix after fixes: 16/16 green (12 original + 4 new: F1's extra pin, F5's two mismatched-pair
 tests, F6's real-renderer test; F2's and F6's other fixes were renames/rewrites of existing tests,
 not additions). Ruff + mypy clean.
+
+### Bridge-round adversarial review (2026-08-23, workflow attack → skeptical verify, two serial agents)
+
+One attack pass over the two bridge commits (`4012114` test matrix, `d8e2b03` census harness +
+record), then an independent skeptical-verify pass that attempted to refute each finding with its
+own executed evidence — 6 findings, **all 6 CONFIRMED** by the verifier, all fixed in the bridge
+`fix:` commit:
+
+- **B-F1 (medium, plan):** §6c's first-draft reconciliation claimed the §3.3 simulation "never
+  counted" the final raster — contradicted by §3.2/§3.3 themselves (`final_pixmap` 25.3 ms was
+  counted; the ~92% residual is only arithmetically reachable WITH it). Rewritten: the 184.2-vs-267.3
+  gap is cross-session drift of a counted stage; genuinely uncounted ≈ 2 ms (PNG encode + assembly).
+  The same overclaim class the original round's F1/F3 caught — caught again, by process, not luck.
+- **B-F2 (medium, plan):** the small-page noise argument cited a 15.0 ms smoke-run number that
+  exists in no recorded artifact (the harness's default `--json-out` overwrites). Replaced with the
+  recorded within-cell min–max spreads, which support the same conclusion verifiably.
+- **B-F3 (medium, tests):** all six forced-compress control legs (Group F ×5 + Group D's
+  real-renderer test) never asserted the monkeypatch ENGAGED — a preview.py import-style refactor
+  would have silently turned them into shipped-vs-shipped comparisons, green forever. Fixed: every
+  control leg now asserts `(compressed, uncompressed) == (2, 0)`; sensitivity proven by a
+  mutation-red run (patch neutralized → the new assert fails; the pre-fix test passed).
+- **B-F4 (low, plan):** "cold delta ≈ the two compressed writes" overstated — probed cold
+  attribution supports ~2.0–2.1 s of the 3.5 s; remainder is single-sample cold variance. Softened.
+- **B-F5 (low, harness):** `_percentiles`' `round()`-rank p95 banker's-rounds one order statistic
+  low at n=30 (≈p92–93). Fixed to nearest-rank `ceil` in the shared helper; recorded JSON kept
+  (informational) with the convention note in §6c.
+- **B-F6 (low, harness):** three "this machine" machine-status phrases in the committed census
+  script (device-specific-data policy). Reworded machine-neutrally; the plan's dated instances stay
+  as point-in-time records. The verifier also confirmed the clean bill: no paths/usernames/document
+  text anywhere in the diff, `benchmarks/` gitignored.
+
+Matrix after fixes: 29/29 green. Clean areas the attack certified: Group F tier discrimination is
+loud (IntEnum assert), monkeypatch hygiene is finally-guarded throughout, StageProbe/CompressOverride
+install/uninstall is LIFO-correct on every exit path, the update_stream arg classification matches
+the real signature, and the multi-namespace replay counter cannot double-count one execution.
