@@ -891,10 +891,20 @@ it never claims exactness).
   commit path (`TieredCommitEngine.commit`) is untouched — it keeps
   `compress=True` since its output is what actually gets saved. Governing
   record: `plans/task13-p3c-preview-postprepare-latency.md`; pinned by
-  `test_scripts/test_text_commit_apply_compress.py` (16 tests) and gated
-  by `scripts/benchmark_p3c_postprepare_latency.py` (compress-count
-  acceptance). Named next lever (not solved): three `page.get_pixmap()`
-  calls and six `page.get_fonts(full=True)` scans per keystroke.
+  `test_scripts/test_text_commit_apply_compress.py` (29 tests after the
+  bridge round: tier/font-class equivalence through the real `render()`
+  for Tier 1 kern+growth / Type0-CID / visible /OC / rotated Tm, plus the
+  suite's first FORCED V0a–V0d verification failures, all under
+  `compress=False`) and gated by
+  `scripts/benchmark_p3c_postprepare_latency.py` (compress-count
+  acceptance) plus `scripts/benchmark_p3c_stage_census.py` (committed
+  dual-mode stage census: same-process old-vs-new per-stage p50/p95,
+  primitive counter table, small-page control, replay-contract re-pins).
+  Named next lever (not solved), refined by the census: six independent
+  content-stream interpretations per keystroke — three DisplayList and
+  three TextPage builds hidden inside PyMuPDF's `get_pixmap`/`get_text`
+  utils, none reused (see PITFALLS) — the one-post-patch-interpretation
+  reuse design is the registered P3-D candidate.
 - `controller/text_commit_coordinator.py` — session-scoped QThread worker
   (modeled on `page_render_coordinator.py`): one worker thread and one
   scratch renderer live for the whole inline-edit session; latest-wins

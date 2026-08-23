@@ -2490,3 +2490,17 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** PyMuPDF stores stream bytes in MuPDF's own C-side `fz_buffer` structures, reached through the Python binding but never allocated via Python's `malloc` hooks — invisible to any `tracemalloc` window regardless of placement or scope.
 **Fix:** For a bound on PyMuPDF-internal storage, assert directly on what PyMuPDF itself reports (e.g. `len(doc.xref_stream_raw(xref))` held constant across repeated writes), not on a Python-heap-only instrument. `tracemalloc` stays correct for genuinely Python-side allocations (e.g. P3-B's retained `ReplayEvidence` objects).
 **File:** `test_scripts/test_text_commit_apply_compress.py::test_repeated_preview_keystrokes_stream_storage_stays_single_representation`
+
+## PyMuPDF get_pixmap/get_text each build a private DisplayList/TextPage per call
+**Area:** `model/text_commit/verify.py` / `preview.py` render pipeline, any PyMuPDF perf work
+**Symptom:** Source-level grep shows zero `get_displaylist`/`get_textpage` calls in `model/text_commit`, yet the P3-C bridge census's class-level probes count THREE DisplayList builds and THREE TextPage builds per warm preview keystroke (~99 ms each on the dense synthetic page) — six independent full content-stream interpretations, none reused, ≈93% of post-P3-C warm render time.
+**Cause:** `Page.get_pixmap` internally constructs its own DisplayList before rasterizing, and `Page.get_text` constructs its own TextPage — every call re-parses the page's content stream from scratch. The interpretation cost hides inside convenience utils, so call-site inspection undercounts it structurally; also note the nesting when timing (a wrapped `get_pixmap`'s elapsed INCLUDES its nested `get_displaylist`'s — never sum nested primitive timings).
+**Fix:** Attribute interpretation cost by wrapping the `fitz.Page` class methods, not by grepping call sites (`scripts/benchmark_p3c_stage_census.py`'s `StageProbe`). The reuse lever (one post-patch DisplayList + one TextPage shared across verify extraction/raster and the final preview raster) is the registered P3-D candidate — see the plan's §6c/§8.
+**File:** `scripts/benchmark_p3c_stage_census.py`; `plans/task13-p3c-preview-postprepare-latency.md` §6c
+
+## Untyped ctypes windll call silently truncates GetCurrentProcess's pseudo-handle
+**Area:** Windows harness/instrumentation code using ctypes (`GetProcessMemoryInfo` etc.)
+**Symptom:** `ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.windll.kernel32.GetCurrentProcess(), ...)` fails with return 0 — and `GetLastError()` reads 0, so there is no diagnostic at all; a broad `except`/fallback then hides the failure as a silent `None` (the P3-C bridge census's memory snapshots came back null until probed directly).
+**Cause:** Without an explicit `restype`, `GetCurrentProcess()`'s HANDLE comes back through the default c_int conversion, and without `argtypes` the 64-bit pseudo-handle is truncated on the way into the next call; `use_last_error=True` is also required for `ctypes.get_last_error()` to capture anything.
+**Fix:** Use `ctypes.WinDLL(..., use_last_error=True)`, set `GetCurrentProcess.restype = wintypes.HANDLE`, and give the consuming function full `argtypes`/`restype` (`[wintypes.HANDLE, POINTER(struct), wintypes.DWORD]` → `BOOL`). Typed, the same call succeeds.
+**File:** `scripts/benchmark_p3c_stage_census.py` (`_working_set_snapshot`)

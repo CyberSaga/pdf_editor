@@ -818,6 +818,39 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   `page.get_fonts(full=True)` scans per keystroke (`capture_page_state`
   + `verify` + the final preview raster), ~92% of the post-fix total.
 
+- 2026-08-23 (**P3-C bridge round, COMPLETE** — same branch, 4 more
+  commits `4012114`..`docs`): closed the gaps between the shipped slice
+  and the fuller P3-C spec. (1) Extended matrix 16->29 tests: the
+  compress flag proven observationally invisible through the REAL
+  `render()` for Tier 1 kern+growth, Type0/CID Tier 0/1, visible /OC,
+  rotated quarter-turn Tm; plus the suite's FIRST forced V0a-V0d
+  verification failures (previously only positively pinned) and
+  preview-path injected-failure/raising-verifier revert pins — all
+  under `compress=False`, each control leg proving its monkeypatch
+  engaged. (2) Committed dual-mode stage census
+  (`scripts/benchmark_p3c_stage_census.py`): same-process old-vs-new
+  per-stage p50/p95, full primitive counter table, small-page control
+  (no reproducible regression), replay contract re-asserted
+  (cold=1/warm=0), token identity between modes, working-set snapshots;
+  dense warm p50 2,715.8->538.4 ms same-process (5.04x vs predicted
+  4.75x — ratio reproduced, absolutes drift with machine state,
+  vindicating counts-not-milliseconds). (3) Complete per-file pytest
+  sweep at `3c502b4`: 227 files, 0 FAIL. (4) Second adversarial round
+  (workflow attack -> skeptical verify, serial): 6 findings B-F1..B-F6
+  all CONFIRMED and fixed (control-leg engagement asserts + mutation-red
+  proof; plan-record overclaims corrected; nearest-rank p95; machine-
+  neutral wording). **Next-lever REFINED by the census:** six
+  independent content-stream interpretations per keystroke (3
+  DisplayList + 3 TextPage builds inside PyMuPDF's own
+  `get_pixmap`/`get_text`, ~99 ms each, none reused — `get_fonts` is
+  latency-trivial at ~1.5 ms total, correcting the earlier framing);
+  the one-post-patch-DisplayList+TextPage reuse design is the P3-D
+  candidate (plan §6c/§8). **Still OPEN from the spec:** the private
+  real-PDF corpus census leg (requires a locally provided corpus,
+  absent by default) and repo-wide `ruff format --check` (fails on 302
+  pre-existing files incl. pre-P3-C ones; the enforced gate is `ruff
+  check`, which is clean). `lint-imports` verified 4/4 KEPT locally.
+
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 
 - `PDFModel` has no `_normalize_text_for_compare` method. Referenced by

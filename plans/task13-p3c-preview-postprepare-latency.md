@@ -1,6 +1,8 @@
 # Task 13 P3-C — preview post-prepare latency (one complete bounded slice)
 
-**Status:** COMPLETE — pushed 2026-08-23, PR not yet opened (created 2026-08-22)
+**Status:** COMPLETE incl. bridge round — pushed 2026-08-23, PR not yet opened (created 2026-08-22;
+bridge round 2026-08-23 closed the gaps vs the fuller P3-C spec: §5's F/G groups, §6c, §8's
+bridge-round records)
 **Branch:** `task13/p3c-preview-postprepare-latency` (cut from `task11/slice1-closure` post-PR-#36 merge, `f57f590`)
 **Parent evidence:** `plans/task13-p3b-replay-reuse.md` §6b — after P3-B, warm `prepare_plan` is
 p50 31 ms (replay-free), but warm end-to-end `PlanPreviewRenderer.render` stayed p50 ~3.3 s on the
@@ -160,6 +162,12 @@ E. Memory bound: repeated preview keystrokes show the scratch's stored content-s
 4. [x] Adversarial review (deep-reasoner attack pass); findings fixed (`fix:` — F1–F6, see §8).
 5. [x] Latency/count acceptance harness + measured record (`perf:` — §6b).
 6. [x] Docs seal: ARCHITECTURE / PITFALLS / TODOS (`docs:`), push (no PR unless asked).
+7. [x] Bridge round (2026-08-23, four commits appended, never rewriting 1–6): extended tier/
+   font-class + forced-V0-failure matrix (16→29, `test:`), committed dual-mode stage census +
+   §6c record (`perf:`), attack→skeptical-verify workflow round with all 6 findings fixed
+   (`fix:`), this seal (`docs:`). Complete per-file sweep at `3c502b4`: 227 files, 0 FAIL.
+   Still open from the fuller spec: private real-PDF corpus leg (no corpus provided);
+   repo-wide `ruff format --check` (302 pre-existing files; enforced gate is `ruff check`).
 
 ## 6b. Acceptance record (2026-08-23, `scripts/benchmark_p3c_postprepare_latency.py`)
 
