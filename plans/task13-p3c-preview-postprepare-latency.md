@@ -385,3 +385,55 @@ Matrix after fixes: 29/29 green. Clean areas the attack certified: Group F tier 
 loud (IntEnum assert), monkeypatch hygiene is finally-guarded throughout, StageProbe/CompressOverride
 install/uninstall is LIFO-correct on every exit path, the update_stream arg classification matches
 the real signature, and the multi-namespace replay counter cannot double-count one execution.
+
+### PR #37 CI follow-up (2026-08-25, single-process suite failure → fixture-portability fix)
+
+CI run #76 at `b3258f1`: 8/9 jobs green; `Functional suite (windows - BLOCKING)` failed exactly one
+test, `test_preview_render_type0_cid_tier1_identical_and_uncompressed`, with `reject_reason =
+growth_region_not_blank` (the advisory Ubuntu job failed the same test plus five unrelated,
+pre-existing ones). Diagnostic matrix at `b3258f1`, tree unchanged, local venv at the CI-resolved
+versions (Python 3.10, PyMuPDF 1.27.1, PySide6 6.10.2, pytest 9.0.3, `QT_QPA_PLATFORM=offscreen`):
+
+| leg | shipped `compress=False` | forced `compress=True` |
+|---|---|---|
+| test alone (6 `PYTHONHASHSEED` values) | pass | pass |
+| whole file alone | 29/29 | (each test's own control leg) |
+| after `test_1pdf_horizontal.py` in ONE process | REJECT `growth_region_not_blank` | REJECT `growth_region_not_blank` |
+| whole file with the flag pre-set | 1 failed / 28 passed | same test, same reason |
+
+Exact detail (captured by wrapping `verify_tier1_commit`): `background: the target's own bbox has
+no majority background colour` — the FIRST gate of the raster background proof, evaluated after apply on the `PageState` captured
+before apply plus the caller-supplied `target_bbox`, i.e. independent of how the scratch stream is
+stored. Cause: `PDFModel.__init__` (`model/pdf_model.py`) sets the process-global
+`fitz.TOOLS.set_small_glyph_heights(True)` and nothing resets it; CI runs one interpreter, and the
+first collected test (`test_1pdf_horizontal.py::test_horizontal_edit_and_verify`) constructs a
+`PDFModel`. Under the flag the fixture's rawdict span bbox goes from `(72.0, 129.5, 120.0, 145.18)`
+to `(72.0, 132.43, 120.0, 144.43)` (15.68 pt → exactly 12.0 pt: PyMuPDF substitutes 0.8/-0.2 em
+ascender/descender under the flag), non-background pixels (ink plus anti-aliased fringe) reach
+≥ 50 % of it, and the strict-majority rule fails closed. The trigger needs a caller-supplied
+text-extraction bbox (this pin's `_span` rawdict bbox; the app's preview and commit paths both pass
+`target_bbox=target.bbox`) — `target_bbox=None` callers get plan.py's flag-immune 1.35 em metric
+quad, which is why `test_text_commit_trm_tier1_kern.py` / `test_text_commit_trm_growth_directions.py`
+admitted the same `+1 em` CID candidate in the same CI run. `REPLACEMENT_SHORTER` (Tier 1, no growth) passes in both
+flag states and both compress modes.
+
+Decision (the "both modes reject" case): the Type0/CID Tier 1 pin switches to `REPLACEMENT_SHORTER`
+and asserts `has_ink_growth is False`; the simple-font Tier 1 pin keeps the positive growth +
+compress-parity responsibility (its `iii`→`MMM` target keeps a majority background under both bbox
+modes — it passed in the same CI runs). No production change; the growth proof is not weakened.
+Rejected alternative: pinning `set_small_glyph_heights(False)` inside the test would keep CID growth
+coverage only for a configuration the app never runs in, hiding the admission gap now recorded in
+TODOS. The predecessor was found with a scratch pytest plugin (not committed) that reports the first
+test during which the flag flips.
+
+Adversarial round on the fix (workflow attack → skeptical verify, two serial read-only agents):
+2 findings, both CONFIRMED by the verifier and applied in the same commit — **F1 (medium, docs):**
+the rejection needs a caller-supplied extraction bbox; `target_bbox=None` callers are flag-immune
+via the planner's metric quad (added to all four records above). **F2 (low, wording):** "tight
+glyph box" → fontsize-tall 0.8/-0.2 em box (the captured bbox is exactly 1 em tall), "ink ≥ 50 %"
+→ non-background pixels ≥ 50 % (exact-colour counting includes the anti-aliased fringe), and the
+gate runs after apply on the pre-apply `PageState`. Certified clean: gate ordering (strict-majority
+is the first gate that can fire here), `REPLACEMENT_SHORTER` still reaches Tier 1 through the
+`ADVANCE_MISMATCH` escalation with a non-zero kern and `verify_tier1_commit`, names/numbers, the
+user's no-skip/xfail/retry/tolerance rules, residual flag sensitivity of the other Group F pins,
+and the PITFALLS entry format.

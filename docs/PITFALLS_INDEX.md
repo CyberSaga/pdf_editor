@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 279 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 280 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -284,3 +284,4 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2487 | tracemalloc cannot see memory PyMuPDF stores in its own C heap | memory-bound tests/harnesses for anything touching `fitz.Document` internals |
 | 2494 | PyMuPDF get_pixmap/get_text each build a private DisplayList/TextPage per call | `model/text_commit/verify.py` / `preview.py` render pipeline, any PyMuPDF perf work |
 | 2501 | Untyped ctypes windll call silently truncates GetCurrentProcess's pseudo-handle | Windows harness/instrumentation code using ctypes (`GetProcessMemoryInfo` etc.) |
+| 2508 | PDFModel.__init__ flips PyMuPDF's process-global small_glyph_heights — every later test in a single-process suite sees fontsize-tall (0.8/-0.2 em) text bboxes | `model/pdf_model.py` + the text-commit Tier 1 growth proof (`model/text_commit/verify.py`) + any pytest run that shares one interpreter across files (CI's functional suite) |

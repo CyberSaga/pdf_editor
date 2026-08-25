@@ -41,7 +41,7 @@ from model.text_commit.verify import (  # noqa: E402
 from test_scripts.type0_fixture_builder import (  # noqa: E402
     CJK_TEXT,
     REPLACEMENT_EQUAL_ADVANCE,
-    REPLACEMENT_LONGER,
+    REPLACEMENT_SHORTER,
     build_identity_h_fixture,
     install_oc_layer,
     set_text_matrix,
@@ -672,13 +672,31 @@ def test_preview_render_type0_cid_tier0_identical_and_uncompressed():
 
 
 def test_preview_render_type0_cid_tier1_identical_and_uncompressed():
-    _assert_class_case_identical_and_uncompressed(
+    """Type0/CID Tier 1 WITHOUT ink growth: CID encoding + the kern-
+    compensated Tier 1 splice + render/verify/compress parity.
+
+    Deliberately NOT a growth candidate (PR #37 CI, both platforms): the
+    suite runs in one process and ``PDFModel.__init__`` flips the process-
+    global ``fitz.TOOLS.set_small_glyph_heights(True)`` in the very first
+    collected test, after which the text-extraction bbox this pin feeds
+    (``_span``'s rawdict bbox -- the app's own path) is a fontsize-tall
+    0.8/-0.2 em box in which the dense CJK target has no strict-majority
+    background colour, and the growth proof rejects a ``+1 em`` candidate
+    in BOTH compress modes -- a fixture-portability property, never a
+    compress one.  (``target_bbox=None`` callers get plan.py's flag-immune
+    metric quad, which is why the ``test_text_commit_trm_*`` Type0 growth
+    tests stayed green in the same run.)  Positive ink-growth parity stays
+    pinned by the simple-font
+    ``test_preview_render_tier1_kern_growth_identical_and_uncompressed``.
+    """
+    shipped = _assert_class_case_identical_and_uncompressed(
         _cid_doc,
         target=CJK_TEXT,
-        replacement=REPLACEMENT_LONGER,
+        replacement=REPLACEMENT_SHORTER,
         max_tier=1,
         expect_tier=1,
     )
+    assert shipped.prepared.has_ink_growth is False
 
 
 def test_preview_render_visible_oc_wrapper_identical_and_uncompressed():

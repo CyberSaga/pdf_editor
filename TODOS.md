@@ -851,6 +851,41 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   pre-existing files incl. pre-P3-C ones; the enforced gate is `ruff
   check`, which is clean). `lint-imports` verified 4/4 KEPT locally.
 
+- 2026-08-25 (**P3-C PR #37 CI follow-up, fixed** — same branch, one
+  more commit): the single-process CI suite failed
+  `test_preview_render_type0_cid_tier1_identical_and_uncompressed`
+  (`growth_region_not_blank`) on both platforms (Windows blocking,
+  Ubuntu advisory) while every isolated and per-file run was green.
+  Proven root cause, not a compress regression: `PDFModel.__init__`
+  sets the process-global `fitz.TOOLS.set_small_glyph_heights(True)` in
+  the first collected test
+  (`test_1pdf_horizontal.py::test_horizontal_edit_and_verify`), the
+  caller-supplied text-extraction bbox (the app's own path) becomes a
+  fontsize-tall 0.8/-0.2 em box in which the dense-CJK target has no
+  strict-majority background colour, and the Tier 1 growth proof
+  rejects the `+1 em` candidate identically under `compress=False` and
+  forced `compress=True` (a gate on the PageState captured before
+  apply, so no compressed byte can influence it). Fix: the Type0/CID Tier 1 pin now uses `REPLACEMENT_SHORTER`
+  (Tier 1, `has_ink_growth is False` asserted); growth parity stays on
+  the simple-font Tier 1 pin. Production growth proof untouched;
+  PITFALLS entry added. **New follow-ups (neither P3-C nor P3-D):**
+  (a) suite hygiene — decide whether a `conftest.py` autouse guard
+  should snapshot/restore PyMuPDF `TOOLS` globals per test, or whether
+  tests should pin the flag explicitly (either changes the process
+  state hundreds of later tests currently run under — needs its own
+  red matrix first); (b) admission gap — under the app's own
+  `set_small_glyph_heights(True)`, Tier 1 growth candidates whose
+  non-background pixels (ink plus anti-aliased fringe) reach ≥ 50 % of
+  the fontsize-tall 0.8/-0.2 em extraction bbox (dense CJK) are
+  fail-closed rejected by `_target_background_rgb` on BOTH app paths
+  (preview `pdf_controller.py` and commit `pdf_text_edit.py` pass
+  `target_bbox=target.bbox`), while `target_bbox=None` callers are
+  admitted through plan.py's flag-immune 1.35 em metric quad (why the
+  `test_text_commit_trm_*` growth tests stayed green in the same run);
+  smallest candidate remedy: sample the majority colour over the
+  planner's metric-quad height (or the halo ring) instead of the
+  extraction bbox, behind a corpus-backed red matrix.
+
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 
 - `PDFModel` has no `_normalize_text_for_compare` method. Referenced by
