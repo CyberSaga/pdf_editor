@@ -111,17 +111,23 @@ executed probes, both CONFIRMED and fixed before commit:
   write forever (next lookup rebuilds once, then stable); no thrash across
   18 corpus PDFs incl. inline dicts and the damaged file; Type0-with-codec
   path unchanged in value; no caller constructs `FontCapability` directly.
-- **Out of fence, recorded in TODOS:** `inspect._update_font_dependencies`
-  (cross-document fingerprint) has the analogous indirect-name gap for
-  `/BaseFont`/`/Subtype`/`/BaseEncoding`; `compute_cid_evidence_digest`
-  folds `FontFile2` raw bytes without the stream dict (same design).
+- **Out-of-fence correction (2026-08-27):** the initially recorded
+  `inspect._update_font_dependencies` analogous gap is REFUTED by existing
+  code plus end-to-end probes. `page_fingerprint()` independently folds the
+  complete MuPDF-resolved `get_fonts(full=True)` entry before its canonical
+  object-dependency closure. Green characterization pins now protect indirect
+  `/BaseFont`, `/Subtype`, and inline `/BaseEncoding` target rewrites through
+  KEEP-round-trip stability and `prepare -> mutation -> STALE_PLAN` with zero
+  stream mutation. The genuine remaining follow-up is narrower:
+  `compute_cid_evidence_digest` folds `FontFile2`/`CIDToGIDMap`/`ToUnicode`
+  raw bytes without attesting builder-visible decoded stream evidence.
 
 ## Decisions / dead ends
 
 - Digest lives in `fonts.py`, not `inspect.py`: `inspect` imports `fonts`,
-  so reusing `_update_font_dependencies` would be a cycle; the two
-  enumerations are deliberately kept in lock-step by docstring
-  cross-reference (fingerprint = cross-document canonical form; registry
-  digest = same-document raw form).
+  so reusing `_update_font_dependencies` would be a cycle. The two contracts
+  remain distinct: the registry digest is same-document pull-validation;
+  the cross-document fingerprint already folds the complete resolved
+  `get_fonts` entry plus its serialization-stable object closure.
 - Raw program bytes are folded (not `/Length`): a same-length program
   rewrite must still invalidate — correctness slice, no shortcuts.

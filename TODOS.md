@@ -816,15 +816,17 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   suite green. Fenced OUT: P3-D DL/TP reuse, `fitz.TOOLS` flag governance,
   dense-CJK growth admission, rollout. Record:
   `plans/task13-simple-font-capability-revalidation.md`.
-  **Follow-ups surfaced (out of this fence, pre-existing):**
-  (a) `inspect._update_font_dependencies` (cross-document page
-  fingerprint) has the analogous indirect-name gap — it folds the font
-  dict's `kind:value` text and the `_FONT_DEPENDENCY_KEYS` targets but not
-  the resolved basefont/subtype/encoding, so an indirect `/BaseFont 8 0 R`
-  target rewrite between prepare and commit leaves the fingerprint fresh;
-  fold the `get_fonts` entry fields there too (see PITFALLS "An
-  object-level digest misses what get_fonts() has already resolved").
-  (b) `compute_cid_evidence_digest` folds `FontFile2`/`CIDToGIDMap`/
+  **Follow-up correction (2026-08-27, characterization guard-pins):** the
+  originally recorded `inspect._update_font_dependencies` analogous gap is
+  REFUTED. `page_fingerprint()` has folded the complete MuPDF-resolved
+  `get_fonts(full=True)` entry since its initial implementation, before its
+  separate object-dependency closure. Three Green-from-first-run pins cover
+  indirect `/BaseFont`, `/Subtype`, and inline `/BaseEncoding` target
+  rewrites: the live fingerprint is KEEP-round-trip stable before mutation,
+  then changes and forces `commit == STALE_PLAN` with zero stream mutation.
+  These are characterization guards, not a red-first production fix.
+  **The remaining real follow-up:** `compute_cid_evidence_digest` folds
+  `FontFile2`/`CIDToGIDMap`/
   `ToUnicode` raw bytes without their stream dicts (`/Filter` rewrite on
   unchanged bytes) — same minor shape as the simple-font one just closed.
 
