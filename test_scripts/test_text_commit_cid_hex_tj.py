@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import zlib
 from pathlib import Path
 
 import fitz
@@ -54,7 +55,9 @@ from model.text_commit.dto import (  # noqa: E402
     RejectReason,
     is_real_fallback_commit,
 )
+from model.text_commit.cid_fonts import compute_cid_evidence_digest  # noqa: E402
 from model.text_commit.engine import TieredCommitEngine  # noqa: E402
+from model.text_commit.fonts import DocumentFontRegistry  # noqa: E402
 from model.text_commit.inspect import page_fingerprint, read_page_streams  # noqa: E402
 from model.text_commit.patch import apply_patchset, build_reversal_patchset  # noqa: E402
 from model.text_commit.plan import PlanRejection, PreparedEdit  # noqa: E402
@@ -643,6 +646,126 @@ def test_registry_rebuilds_when_indirect_dw_target_changes() -> None:
     assert second.cid.default_width == 2000.0, (
         "stale capability served after the /DW target changed"
     )
+    fixture.doc.close()
+
+
+# ==========================================================================
+# Task 13 CID stream decoding-evidence attestation
+# ==========================================================================
+
+
+def _install_filtered_cid_stream(
+    fixture: Type0Fixture, stream_kind: str, *, indirect_filter: bool
+) -> tuple[int, int | None, bytes]:
+    """Store one builder-consumed stream as Flate data without changing it."""
+    if stream_kind == "tounicode":
+        stream_xref = fixture.tounicode_xref
+    elif stream_kind == "cidtogid":
+        set_cidtogid_stream(fixture, identity_cidtogid_bytes(20_000))
+        stream_xref = fixture.extra_streams[-1]
+    elif stream_kind == "fontfile2":
+        stream_xref = fontfile2_xref(fixture)
+    else:  # pragma: no cover - parameter table is closed below
+        raise AssertionError(stream_kind)
+
+    decoded = fixture.doc.xref_stream(stream_xref) or b""
+    stored = zlib.compress(decoded)
+    fixture.doc.update_stream(stream_xref, stored, compress=False)
+    filter_target: int | None = None
+    if indirect_filter:
+        filter_target = fixture.doc.get_new_xref()
+        fixture.doc.update_object(filter_target, "/FlateDecode")
+        fixture.doc.xref_set_key(stream_xref, "Filter", f"{filter_target} 0 R")
+    else:
+        fixture.doc.xref_set_key(stream_xref, "Filter", "/FlateDecode")
+
+    assert fixture.doc.xref_stream_raw(stream_xref) == stored
+    assert fixture.doc.xref_stream(stream_xref) == decoded
+    return stream_xref, filter_target, stored
+
+
+@pytest.mark.parametrize("stream_kind", ["tounicode", "cidtogid", "fontfile2"])
+@pytest.mark.parametrize(
+    "indirect_filter",
+    [
+        pytest.param(False, id="direct-filter"),
+        pytest.param(True, id="indirect-filter-target"),
+    ],
+)
+def test_registry_rebuilds_when_cid_stream_decoding_evidence_changes(
+    stream_kind: str, indirect_filter: bool
+) -> None:
+    """Red pin: raw bytes alone do not attest builder-visible decoding.
+
+    The stored bytes stay identical while direct or indirect decoding
+    metadata changes ``xref_stream()``. A stale CID capability must never be
+    returned; unreadable post-mutation evidence rebuilds to a stable
+    fail-closed rejection.
+    """
+    fixture = build_identity_h_fixture()
+    stream_xref, filter_target, stored = _install_filtered_cid_stream(
+        fixture, stream_kind, indirect_filter=indirect_filter
+    )
+    registry = DocumentFontRegistry(fixture.doc)
+    first = registry.capability(fixture.page, fixture.resource_name)
+    assert first is not None and first.cid is not None
+    before_digest = compute_cid_evidence_digest(fixture.doc, fixture.font_xref)
+    assert first.cid.evidence_digest == before_digest
+
+    if filter_target is None:
+        fixture.doc.xref_set_key(stream_xref, "Filter", "/ASCIIHexDecode")
+    else:
+        fixture.doc.update_object(filter_target, "/ASCIIHexDecode")
+
+    assert fixture.doc.xref_stream_raw(stream_xref) == stored
+    assert fixture.doc.xref_stream(stream_xref) != zlib.decompress(stored)
+    after_digest = compute_cid_evidence_digest(fixture.doc, fixture.font_xref)
+    assert after_digest != before_digest
+
+    second = registry.capability(fixture.page, fixture.resource_name)
+    assert second is not None and second is not first
+    assert second.cid is None
+    assert second.tier0_reject_reason is not None
+    assert registry.capability(fixture.page, fixture.resource_name) is second
+    fixture.doc.close()
+
+
+def test_unchanged_cid_evidence_reuses_cached_capability() -> None:
+    """Control: attestation must not rebuild an unchanged Type0 resource."""
+    fixture = build_identity_h_fixture()
+    registry = DocumentFontRegistry(fixture.doc)
+    first = registry.capability(fixture.page, fixture.resource_name)
+    assert first is not None and first.cid is not None
+    assert registry.capability(fixture.page, fixture.resource_name) is first
+    fixture.doc.close()
+
+
+def test_cached_cid_lookup_decodes_each_evidence_stream_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Performance guard: one hit must not amplify decoded-stream reads."""
+    fixture = build_identity_h_fixture()
+    set_cidtogid_stream(fixture, identity_cidtogid_bytes(20_000))
+    stream_xrefs = {
+        fixture.tounicode_xref,
+        fixture.extra_streams[-1],
+        fontfile2_xref(fixture),
+    }
+    registry = DocumentFontRegistry(fixture.doc)
+    first = registry.capability(fixture.page, fixture.resource_name)
+    assert first is not None and first.cid is not None
+
+    calls: list[int] = []
+    real_xref_stream = fitz.Document.xref_stream
+
+    def counting_xref_stream(doc: fitz.Document, xref: int) -> bytes | None:
+        calls.append(xref)
+        return real_xref_stream(doc, xref)
+
+    monkeypatch.setattr(fitz.Document, "xref_stream", counting_xref_stream)
+    assert registry.capability(fixture.page, fixture.resource_name) is first
+    assert set(calls) == stream_xrefs
+    assert len(calls) == len(stream_xrefs)
     fixture.doc.close()
 
 

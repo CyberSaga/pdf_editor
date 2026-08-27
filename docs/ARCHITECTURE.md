@@ -1066,8 +1066,12 @@ Identity-or-readable-stream CIDToGIDMap + embedded FontFile2 + single hex
   GID-beyond-count / outline-missing).
 - **`fonts.py`** — Type0 fonts build a CID capability instead of loading a
   face (`face is None`, `advance_source == "cid"`); registry lookups
-  re-verify a raw-bytes `evidence_digest` per hit so an external mutation
-  bypassing `bump_generation` cannot serve a stale codec.
+  re-verify a builder-visible `evidence_digest` per hit so an external
+  mutation bypassing `bump_generation` cannot serve a stale codec. Stream
+  evidence (`ToUnicode`, `CIDToGIDMap`, `FontFile2`) is the decoded bytes
+  returned by the same `_stream_bytes()` helper the builder consumes; direct
+  or indirect decoding-metadata changes cannot hide behind unchanged stored
+  bytes. A warm single-resource hit decodes each evidence stream once.
 - **`inspect.py`** — `bind_source_text(..., registry=)` adds the Type0
   leg: simple byte-matching first and unchanged; CID shows decode through
   ToUnicode evidence, match by text, and a unique candidate must survive
