@@ -168,18 +168,26 @@ coverage number — it feeds the TODOS "latency half stays open" item.
        2026-08-20 implementation DONE: red matrix green, transforms.py
        single source, directional geometry/growth/fingerprint — §7
        implementation record.)
-5. [ ] Re-run funnel; record rotated-Tm survival.
+5. [ ] Re-run funnel; record rotated-Tm survival. The missing post-P2 funnel
+       artifact remains explicit coverage-evidence debt; it does not block
+       the measured Priority 3 latency work or P3-D interpretation-reuse
+       spike, and must not be checked off without an actual run artifact.
 6. [ ] Priority 3 spike: index design + latency measurement harness (ties
        into the preview-latency follow-up from Task 12 §8); own PR(s).
-       (2026-08-21 first half DONE — P3-A read-only spike on
+       P3-A, P3-B, and P3-C are COMPLETE; P3-D is NEXT, so the parent step
+       remains open. (2026-08-21 first half DONE — P3-A read-only spike on
        `task13/p3-replay-indexing`: invalidation contract
        (pull-validation), two prototype shapes measured on the corpus,
        **Shape A materialized ShowOp table selected, Shape B checkpoint
        hybrid rejected on measured memory**; replay is ~90% of the
        dense-page keystroke cost, validated warm lookups 8–14 ms vs
        2.7–4.8 s cold.  Full record:
-       `plans/task13-p3a-replay-index-spike.md`.  The production slice
-       (P3-B) remains open.)
+       `plans/task13-p3a-replay-index-spike.md`.  P3-B production replay
+       reuse is complete (`plans/task13-p3b-replay-reuse.md`); P3-C
+       post-prepare stream-write latency is complete
+       (`plans/task13-p3c-preview-postprepare-latency.md`). P3-D must start
+       with a fresh stage census on the new correctness closure, then test
+       bounded DisplayList/TextPage interpretation reuse.)
 7. [ ] Docs per protocol; keep this plan updated with decisions/dead ends.
 
 ## 7. Decisions record
