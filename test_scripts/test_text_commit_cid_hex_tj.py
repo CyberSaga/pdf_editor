@@ -740,6 +740,35 @@ def test_unchanged_cid_evidence_reuses_cached_capability() -> None:
     fixture.doc.close()
 
 
+def test_cached_cid_lookup_decodes_each_evidence_stream_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Performance guard: one hit must not amplify decoded-stream reads."""
+    fixture = build_identity_h_fixture()
+    set_cidtogid_stream(fixture, identity_cidtogid_bytes(20_000))
+    stream_xrefs = {
+        fixture.tounicode_xref,
+        fixture.extra_streams[-1],
+        fontfile2_xref(fixture),
+    }
+    registry = DocumentFontRegistry(fixture.doc)
+    first = registry.capability(fixture.page, fixture.resource_name)
+    assert first is not None and first.cid is not None
+
+    calls: list[int] = []
+    real_xref_stream = fitz.Document.xref_stream
+
+    def counting_xref_stream(doc: fitz.Document, xref: int) -> bytes | None:
+        calls.append(xref)
+        return real_xref_stream(doc, xref)
+
+    monkeypatch.setattr(fitz.Document, "xref_stream", counting_xref_stream)
+    assert registry.capability(fixture.page, fixture.resource_name) is first
+    assert set(calls) == stream_xrefs
+    assert len(calls) == len(stream_xrefs)
+    fixture.doc.close()
+
+
 def test_corrupt_loca_never_proves_glyph_presence() -> None:
     """F4: out-of-bounds or non-monotonic loca entries prove NOTHING."""
     from model.text_commit.cid_fonts import parse_truetype_glyph_program

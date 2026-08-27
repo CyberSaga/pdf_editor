@@ -609,8 +609,8 @@ class IdentityHCidCapability:
 
     Immutable; every field is document evidence, never inference. CID ==
     2-byte big-endian code (Identity-H). ``evidence_digest`` covers the
-    raw evidence bytes for SAME-DOCUMENT cache revalidation (the page
-    fingerprint separately covers cross-serialization staleness).
+    builder-visible evidence values for SAME-DOCUMENT cache revalidation
+    (the page fingerprint separately covers cross-serialization staleness).
     """
 
     font_xref: int
@@ -770,11 +770,14 @@ def _stream_bytes(doc: fitz.Document, xref: int) -> bytes | None:
 
 
 def compute_cid_evidence_digest(doc: fitz.Document, font_xref: int) -> str:
-    """Raw-bytes digest of every evidence object the capability read.
+    """Digest every builder-visible evidence value the capability read.
 
-    SAME-DOCUMENT identity only (raw stream bytes are cheap but not stable
-    across a save/reopen recompression) — used by the registry cache to
-    refuse a stale capability, not by the page fingerprint.
+    SAME-DOCUMENT identity only — used by the registry cache to refuse a
+    stale capability, not by the page fingerprint. Stream evidence is folded
+    exactly as the builder consumes it: decoded ``xref_stream()`` bytes via
+    :func:`_stream_bytes`. Hashing stored bytes instead would miss direct or
+    indirect decoding-metadata rewrites that change the builder's input while
+    leaving ``xref_stream_raw()`` byte-identical.
     """
     digest = hashlib.sha256()
 
@@ -791,8 +794,8 @@ def compute_cid_evidence_digest(doc: fitz.Document, font_xref: int) -> str:
         if kind == "xref":
             try:
                 target = int(value.split()[0])
-                fold(b"tu", doc.xref_stream_raw(target))
-            except (RuntimeError, ValueError, IndexError, fitz.mupdf.FzErrorBase):
+                fold(b"tu", _stream_bytes(doc, target))
+            except (ValueError, IndexError):
                 fold(b"tu", None)
         descendant_xref, descendant = resolve_descendant(doc, font_xref)
         if descendant is None:
@@ -817,10 +820,7 @@ def compute_cid_evidence_digest(doc: fitz.Document, font_xref: int) -> str:
                         fold(key.encode("ascii"), None)
             cidtogid = descendant.get("CIDToGIDMap")
             if isinstance(cidtogid, PdfRef):
-                try:
-                    fold(b"c2g", doc.xref_stream_raw(cidtogid.xref))
-                except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
-                    fold(b"c2g", None)
+                fold(b"c2g", _stream_bytes(doc, cidtogid.xref))
             descriptor: object = descendant.get("FontDescriptor")
             if isinstance(descriptor, PdfRef):
                 try:
@@ -835,10 +835,7 @@ def compute_cid_evidence_digest(doc: fitz.Document, font_xref: int) -> str:
             if isinstance(descriptor, dict):
                 font_file = descriptor.get("FontFile2")
                 if isinstance(font_file, PdfRef):
-                    try:
-                        fold(b"ff2", doc.xref_stream_raw(font_file.xref))
-                    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
-                        fold(b"ff2", None)
+                    fold(b"ff2", _stream_bytes(doc, font_file.xref))
     except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
         fold(b"err", b"unreadable")
     return digest.hexdigest()
