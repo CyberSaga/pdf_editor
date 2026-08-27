@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 280 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 282 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -283,5 +283,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2480 | fitz.Document.update_stream(compress=False) never restores the original storage encoding | `model/text_commit/patch.py` (`apply_patchset`, `AppliedPatch.revert`), PyMuPDF stream storage |
 | 2487 | tracemalloc cannot see memory PyMuPDF stores in its own C heap | memory-bound tests/harnesses for anything touching `fitz.Document` internals |
 | 2494 | PyMuPDF get_pixmap/get_text each build a private DisplayList/TextPage per call | `model/text_commit/verify.py` / `preview.py` render pipeline, any PyMuPDF perf work |
-| 2501 | Untyped ctypes windll call silently truncates GetCurrentProcess's pseudo-handle | Windows harness/instrumentation code using ctypes (`GetProcessMemoryInfo` etc.) |
-| 2508 | PDFModel.__init__ flips PyMuPDF's process-global small_glyph_heights — every later test in a single-process suite sees fontsize-tall (0.8/-0.2 em) text bboxes | `model/pdf_model.py` + the text-commit Tier 1 growth proof (`model/text_commit/verify.py`) + any pytest run that shares one interpreter across files (CI's functional suite) |
+| 2501 | An object-level digest misses what get_fonts() has already resolved for the builder | `model/text_commit/fonts.py` (`compute_font_evidence_digest`), any staleness digest over font objects |
+| 2508 | Per-lookup revalidation through a whole-page map is O(K·N) per prepare | `model/text_commit/fonts.py` (`DocumentFontRegistry.capability`), engine prepare / per-keystroke preview path |
+| 2515 | Untyped ctypes windll call silently truncates GetCurrentProcess's pseudo-handle | Windows harness/instrumentation code using ctypes (`GetProcessMemoryInfo` etc.) |
+| 2522 | PDFModel.__init__ flips PyMuPDF's process-global small_glyph_heights — every later test in a single-process suite sees fontsize-tall (0.8/-0.2 em) text bboxes | `model/pdf_model.py` + the text-commit Tier 1 growth proof (`model/text_commit/verify.py`) + any pytest run that shares one interpreter across files (CI's functional suite) |

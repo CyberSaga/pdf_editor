@@ -760,7 +760,21 @@ new engine yet** (integration is plan Task 7+).
 - `fonts.py` — `DocumentFontRegistry`: capabilities keyed by (generation,
   owner xref, resource name, font xref) — never by basename; explicit face
   provenance (`extracted`/`base14`/`system`/`none`); strict-ASCII verified
-  reverse encoder; no silent Helvetica fallback anywhere.
+  reverse encoder; no silent Helvetica fallback anywhere. Every cache hit
+  is pull-revalidated (Task 13 revalidation slice): each `FontCapability`
+  carries a same-document `evidence_digest` (Type0 →
+  `compute_cid_evidence_digest`; otherwise
+  `compute_simple_font_evidence_digest`, dispatched on the `get_fonts`
+  entry's subtype), re-derived on every lookup BEFORE the cache probe and
+  rebuilt on mismatch — an in-place `/Widths`/`/Encoding`/descriptor/
+  program rewrite at the same xref can no longer be served stale within a
+  generation. The digest folds the MuPDF-resolved `get_fonts` entry
+  fields (ext/subtype/basefont/encoding) ahead of the object closure, so
+  indirect name targets are covered. `capability(page, name)` resolves
+  ONLY the matching entry (the prepare path calls it once per show
+  resource; the whole-page map would be O(K·N) digests);
+  `page_capabilities` remains the map form. `bump_generation` remains the
+  whole-registry invalidation.
   **Advance and glyph coverage are separate proofs, from separate sources.**
   `advance_source` (`widths`/`face`/`none`) is deliberately distinct from
   `face_source`: for a simple font the `/Widths` table *is* the layout

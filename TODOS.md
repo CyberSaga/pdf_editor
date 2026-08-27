@@ -785,6 +785,48 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   digest-revalidates) — extend the Type0-style evidence-digest check to
   simple-font cache hits on the engine path; see PITFALLS "Simple-font
   capabilities are served stale within a registry generation".
+  **→ CLOSED 2026-08-27** by the Task 13 revalidation slice (entry below).
+
+- [x] 2026-08-27 (Task 13 — **simple-font capability pull-revalidation,
+  COMPLETE**, branch `task13/simple-font-capability-revalidation` cut from
+  `task11/slice1-closure@0578866`; sequenced BEFORE P3-D so the known
+  correctness hole is sealed before the interpretation pipeline moves):
+  every `FontCapability` now carries a same-document `evidence_digest`
+  (`compare=False`); `compute_font_evidence_digest` dispatches on the
+  `get_fonts` entry's subtype (Type0 → `compute_cid_evidence_digest`, else
+  the new `compute_simple_font_evidence_digest`: font-dict keys, indirect
+  `/Encoding`/`/Widths`/`/FirstChar`/`/LastChar`/`/FontDescriptor`
+  targets, `FontDescriptor/Flags`, raw `FontFile*` bytes; inline xref-0
+  dict → constant); `page_capabilities` re-derives it on EVERY lookup
+  before the cache probe and rebuilds on mismatch, digest taken BEFORE the
+  build. Subtype dispatch also closes the same-class hole for a REJECTED
+  Type0 (`cid is None`). Red-light first: 19/21 Red in
+  `test_scripts/test_text_commit_font_revalidation.py`, then Green.
+  Ultracode refute-first review (3 lenses, 2 important findings both
+  CONFIRMED by independent probes and fixed pre-commit, each Red-first):
+  F1 — the digest must also fold the MuPDF-RESOLVED `get_fonts` entry
+  fields (ext/subtype/basefont/encoding), or an indirect `/BaseFont`,
+  `/Subtype` or `/BaseEncoding` target rewrite serves stale (Helvetica face
+  served for a font renamed to Wingdings); F2 — `capability(page, name)`
+  routed through the whole-page map, O(K·N) digests per prepare (98-font
+  page 1.45 s → 10.3 s); now resolves the single matching entry (98-font
+  page 340 ms, small pages within noise). Minor closed: `FontFile*` stream
+  dict folded alongside raw bytes (`/Filter` rewrite). Final: 27 tests in
+  the new file, 147 Green across fonts/widths/cid/replay suites, full
+  suite green. Fenced OUT: P3-D DL/TP reuse, `fitz.TOOLS` flag governance,
+  dense-CJK growth admission, rollout. Record:
+  `plans/task13-simple-font-capability-revalidation.md`.
+  **Follow-ups surfaced (out of this fence, pre-existing):**
+  (a) `inspect._update_font_dependencies` (cross-document page
+  fingerprint) has the analogous indirect-name gap — it folds the font
+  dict's `kind:value` text and the `_FONT_DEPENDENCY_KEYS` targets but not
+  the resolved basefont/subtype/encoding, so an indirect `/BaseFont 8 0 R`
+  target rewrite between prepare and commit leaves the fingerprint fresh;
+  fold the `get_fonts` entry fields there too (see PITFALLS "An
+  object-level digest misses what get_fonts() has already resolved").
+  (b) `compute_cid_evidence_digest` folds `FontFile2`/`CIDToGIDMap`/
+  `ToUnicode` raw bytes without their stream dicts (`/Filter` rewrite on
+  unchanged bytes) — same minor shape as the simple-font one just closed.
 
 - 2026-08-23 (Task 13 step 6 third pass — **P3-C preview post-prepare
   latency, COMPLETE**, branch `task13/p3c-preview-postprepare-latency`
