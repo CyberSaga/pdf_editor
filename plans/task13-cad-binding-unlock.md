@@ -175,7 +175,10 @@ coverage number — it feeds the TODOS "latency half stays open" item.
 6. [ ] Priority 3 spike: index design + latency measurement harness (ties
        into the preview-latency follow-up from Task 12 §8); own PR(s).
        P3-A, P3-B, and P3-C are COMPLETE; P3-D is NEXT, so the parent step
-       remains open. (2026-08-21 first half DONE — P3-A read-only spike on
+       remains open. The two pre-P3-D font-evidence seals are complete:
+       resolved-entry stale-plan characterization guards plus correction of
+       the refuted fingerprint follow-up, and builder-visible CID stream
+       evidence attestation. (2026-08-21 first half DONE — P3-A read-only spike on
        `task13/p3-replay-indexing`: invalidation contract
        (pull-validation), two prototype shapes measured on the corpus,
        **Shape A materialized ShowOp table selected, Shape B checkpoint

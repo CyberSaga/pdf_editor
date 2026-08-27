@@ -825,10 +825,17 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   rewrites: the live fingerprint is KEEP-round-trip stable before mutation,
   then changes and forces `commit == STALE_PLAN` with zero stream mutation.
   These are characterization guards, not a red-first production fix.
-  **The remaining real follow-up:** `compute_cid_evidence_digest` folds
-  `FontFile2`/`CIDToGIDMap`/
-  `ToUnicode` raw bytes without their stream dicts (`/Filter` rewrite on
-  unchanged bytes) — same minor shape as the simple-font one just closed.
+  **→ CLOSED 2026-08-27** by
+  `task13/cid-stream-evidence-attestation`: `compute_cid_evidence_digest`
+  now folds the builder-visible decoded bytes returned by the same
+  `_stream_bytes()` helper the CID builder uses for `FontFile2`,
+  `CIDToGIDMap`, and `ToUnicode`. Six red pins cover direct and indirect
+  `/Filter` target rewrites with byte-identical raw storage; unreadable
+  post-mutation evidence rebuilds to a stable fail-closed rejection. An
+  unchanged control reuses the identical capability, and a structural
+  performance guard permits exactly one decoded read per evidence stream
+  on a warm single-resource hit. Probe p50: 0.011 ms ToUnicode, 0.135 ms
+  CIDToGIDMap, 3.617 ms FontFile2; no raw+decoded double hashing.
 
 - 2026-08-23 (Task 13 step 6 third pass — **P3-C preview post-prepare
   latency, COMPLETE**, branch `task13/p3c-preview-postprepare-latency`

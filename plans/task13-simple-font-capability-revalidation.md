@@ -118,9 +118,15 @@ executed probes, both CONFIRMED and fixed before commit:
   object-dependency closure. Green characterization pins now protect indirect
   `/BaseFont`, `/Subtype`, and inline `/BaseEncoding` target rewrites through
   KEEP-round-trip stability and `prepare -> mutation -> STALE_PLAN` with zero
-  stream mutation. The genuine remaining follow-up is narrower:
-  `compute_cid_evidence_digest` folds `FontFile2`/`CIDToGIDMap`/`ToUnicode`
-  raw bytes without attesting builder-visible decoded stream evidence.
+  stream mutation. The genuine narrower follow-up was CLOSED 2026-08-27
+  by `task13/cid-stream-evidence-attestation`: the Type0 digest now folds
+  the builder-visible decoded bytes returned by `_stream_bytes()` for
+  `FontFile2`, `CIDToGIDMap`, and `ToUnicode`. Six red pins cover direct and
+  indirect `/Filter` target mutations with unchanged raw storage; an
+  unchanged control plus exact read-count guard prevents cache thrash and
+  per-hit amplification. Decoded-read+SHA probe p50 was 0.011 / 0.135 /
+  3.617 ms respectively, so the implementation replaces raw hashing rather
+  than hashing both forms.
 
 ## Decisions / dead ends
 
