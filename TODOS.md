@@ -786,6 +786,106 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   simple-font cache hits on the engine path; see PITFALLS "Simple-font
   capabilities are served stale within a registry generation".
 
+- 2026-08-23 (Task 13 step 6 third pass — **P3-C preview post-prepare
+  latency, COMPLETE**, branch `task13/p3c-preview-postprepare-latency`
+  cut from the post-PR-#36 closure merge `f57f590`): the P3-B-named
+  residual lever, one complete census->implementation->acceptance
+  slice. Census phase-attributed warm `PlanPreviewRenderer.render()`
+  on the dense synthetic page: `apply_patchset` (38.7%) +
+  `AppliedPatch.revert` (36.8%) = 75.5% of render time, each exactly
+  one `Document.update_stream()` call on the ~2.5 MiB content stream;
+  root-caused to FlateDecode compression (`compress=1` default, ~540x
+  cost vs `compress=0` on an isolated 2.6 MiB stream). Fix: both
+  gained a `compress: bool = True` keyword (default preserves every
+  existing caller); `PlanPreviewRenderer` alone passes `False` at both
+  call sites, since its scratch is never saved or `tobytes()`'d — the
+  live commit path (`TieredCommitEngine.commit`) is untouched. 16-test
+  red-first matrix, deep-reasoner adversarial review (6 findings
+  F1-F6, all independently re-verified, all fixed), and a
+  compress-count acceptance harness
+  (`scripts/benchmark_p3c_postprepare_latency.py`): every preview
+  keystroke = 0 compressed / 2 uncompressed `update_stream` calls,
+  live commit keeps its existing >=1 compressed / 0 uncompressed calls
+  unchanged (regression guard), memory bounded structurally (stored
+  representation size identical across 100 keystrokes — NOT
+  `tracemalloc`, which is blind to PyMuPDF's C-side storage, see
+  PITFALLS). Measured: warm render p50 874 ms -> 267 ms (~3.3x) on the
+  same dense corpus; cold render (replay-dominated) 5.2 s. Fences
+  held: no admission/budget/plan-semantics/rollout-default change,
+  live document write path untouched. Record:
+  `plans/task13-p3c-preview-postprepare-latency.md`. **Named next
+  lever (not solved here):** three `page.get_pixmap()` calls + six
+  `page.get_fonts(full=True)` scans per keystroke (`capture_page_state`
+  + `verify` + the final preview raster), ~92% of the post-fix total.
+
+- 2026-08-23 (**P3-C bridge round, COMPLETE** — same branch, 4 more
+  commits `4012114`..`docs`): closed the gaps between the shipped slice
+  and the fuller P3-C spec. (1) Extended matrix 16->29 tests: the
+  compress flag proven observationally invisible through the REAL
+  `render()` for Tier 1 kern+growth, Type0/CID Tier 0/1, visible /OC,
+  rotated quarter-turn Tm; plus the suite's FIRST forced V0a-V0d
+  verification failures (previously only positively pinned) and
+  preview-path injected-failure/raising-verifier revert pins — all
+  under `compress=False`, each control leg proving its monkeypatch
+  engaged. (2) Committed dual-mode stage census
+  (`scripts/benchmark_p3c_stage_census.py`): same-process old-vs-new
+  per-stage p50/p95, full primitive counter table, small-page control
+  (no reproducible regression), replay contract re-asserted
+  (cold=1/warm=0), token identity between modes, working-set snapshots;
+  dense warm p50 2,715.8->538.4 ms same-process (5.04x vs predicted
+  4.75x — ratio reproduced, absolutes drift with machine state,
+  vindicating counts-not-milliseconds). (3) Complete per-file pytest
+  sweep at `3c502b4`: 227 files, 0 FAIL. (4) Second adversarial round
+  (workflow attack -> skeptical verify, serial): 6 findings B-F1..B-F6
+  all CONFIRMED and fixed (control-leg engagement asserts + mutation-red
+  proof; plan-record overclaims corrected; nearest-rank p95; machine-
+  neutral wording). **Next-lever REFINED by the census:** six
+  independent content-stream interpretations per keystroke (3
+  DisplayList + 3 TextPage builds inside PyMuPDF's own
+  `get_pixmap`/`get_text`, ~99 ms each, none reused — `get_fonts` is
+  latency-trivial at ~1.5 ms total, correcting the earlier framing);
+  the one-post-patch-DisplayList+TextPage reuse design is the P3-D
+  candidate (plan §6c/§8). **Still OPEN from the spec:** the private
+  real-PDF corpus census leg (requires a locally provided corpus,
+  absent by default) and repo-wide `ruff format --check` (fails on 302
+  pre-existing files incl. pre-P3-C ones; the enforced gate is `ruff
+  check`, which is clean). `lint-imports` verified 4/4 KEPT locally.
+
+- 2026-08-25 (**P3-C PR #37 CI follow-up, fixed** — same branch, one
+  more commit): the single-process CI suite failed
+  `test_preview_render_type0_cid_tier1_identical_and_uncompressed`
+  (`growth_region_not_blank`) on both platforms (Windows blocking,
+  Ubuntu advisory) while every isolated and per-file run was green.
+  Proven root cause, not a compress regression: `PDFModel.__init__`
+  sets the process-global `fitz.TOOLS.set_small_glyph_heights(True)` in
+  the first collected test
+  (`test_1pdf_horizontal.py::test_horizontal_edit_and_verify`), the
+  caller-supplied text-extraction bbox (the app's own path) becomes a
+  fontsize-tall 0.8/-0.2 em box in which the dense-CJK target has no
+  strict-majority background colour, and the Tier 1 growth proof
+  rejects the `+1 em` candidate identically under `compress=False` and
+  forced `compress=True` (a gate on the PageState captured before
+  apply, so no compressed byte can influence it). Fix: the Type0/CID Tier 1 pin now uses `REPLACEMENT_SHORTER`
+  (Tier 1, `has_ink_growth is False` asserted); growth parity stays on
+  the simple-font Tier 1 pin. Production growth proof untouched;
+  PITFALLS entry added. **New follow-ups (neither P3-C nor P3-D):**
+  (a) suite hygiene — decide whether a `conftest.py` autouse guard
+  should snapshot/restore PyMuPDF `TOOLS` globals per test, or whether
+  tests should pin the flag explicitly (either changes the process
+  state hundreds of later tests currently run under — needs its own
+  red matrix first); (b) admission gap — under the app's own
+  `set_small_glyph_heights(True)`, Tier 1 growth candidates whose
+  non-background pixels (ink plus anti-aliased fringe) reach ≥ 50 % of
+  the fontsize-tall 0.8/-0.2 em extraction bbox (dense CJK) are
+  fail-closed rejected by `_target_background_rgb` on BOTH app paths
+  (preview `pdf_controller.py` and commit `pdf_text_edit.py` pass
+  `target_bbox=target.bbox`), while `target_bbox=None` callers are
+  admitted through plan.py's flag-immune 1.35 em metric quad (why the
+  `test_text_commit_trm_*` growth tests stayed green in the same run);
+  smallest candidate remedy: sample the majority colour over the
+  planner's metric-quad height (or the halo ring) instead of the
+  extraction bbox, behind a corpus-backed red matrix.
+
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 
 - `PDFModel` has no `_normalize_text_for_compare` method. Referenced by

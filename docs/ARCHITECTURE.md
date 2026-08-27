@@ -781,7 +781,14 @@ new engine yet** (integration is plan Task 7+).
   preserved); `PreparedEdit.growth_direction` carries the shared cardinal
   slug (folded into the plan token).
 - `patch.py` — `PatchSet`/`apply_patchset`: fingerprint-gated, revertible; the
-  sole mutation primitive of the high-fidelity tiers.
+  sole mutation primitive of the high-fidelity tiers. `apply_patchset`/
+  `AppliedPatch.revert` take a `compress: bool = True` keyword (Task 13
+  P3-C) forwarded to every `Document.update_stream` call — a pure
+  storage-encoding choice (FlateDecode of the on-disk stream bytes) that no
+  reader in this codebase observes (decoded content, `page_fingerprint`,
+  and replay-evidence digests are all storage-blind). Default preserves
+  every existing caller; `PlanPreviewRenderer` alone passes `False` at both
+  call sites, since its scratch is never saved.
 - `verify.py` — V0a–V0e post-conditions: stream identity outside the declared
   range (re-diffed), font/annotation identity, non-target span origins,
   extractable replacement, exact raster identity outside a 2pt halo (96 dpi;
@@ -873,6 +880,31 @@ it never claims exactness).
   `plans/task13-p3b-replay-reuse.md`; pinned by
   `test_scripts/test_text_commit_replay_reuse.py` (40 tests) and gated by
   `scripts/benchmark_p3b_preview_reuse.py` (replay-count acceptance).
+  **Task 13 P3-C** removed the next-largest per-keystroke cost the P3-B
+  record named: `render`'s `apply_patchset`/`AppliedPatch.revert` calls
+  (each one `Document.update_stream` on the page's full content stream)
+  pass `compress=False` — FlateDecode compression is proportional to
+  decoded stream size and was ~75% of warm render time on a dense page
+  (~540× cost vs uncompressed on an isolated 2.6 MiB stream); safe because
+  the scratch is never saved and every downstream reader is
+  storage-encoding-blind (see the `patch.py` bullet above). The live
+  commit path (`TieredCommitEngine.commit`) is untouched — it keeps
+  `compress=True` since its output is what actually gets saved. Governing
+  record: `plans/task13-p3c-preview-postprepare-latency.md`; pinned by
+  `test_scripts/test_text_commit_apply_compress.py` (29 tests after the
+  bridge round: tier/font-class equivalence through the real `render()`
+  for Tier 1 kern+growth / Type0-CID / visible /OC / rotated Tm, plus the
+  suite's first FORCED V0a–V0d verification failures, all under
+  `compress=False`) and gated by
+  `scripts/benchmark_p3c_postprepare_latency.py` (compress-count
+  acceptance) plus `scripts/benchmark_p3c_stage_census.py` (committed
+  dual-mode stage census: same-process old-vs-new per-stage p50/p95,
+  primitive counter table, small-page control, replay-contract re-pins).
+  Named next lever (not solved), refined by the census: six independent
+  content-stream interpretations per keystroke — three DisplayList and
+  three TextPage builds hidden inside PyMuPDF's `get_pixmap`/`get_text`
+  utils, none reused (see PITFALLS) — the one-post-patch-interpretation
+  reuse design is the registered P3-D candidate.
 - `controller/text_commit_coordinator.py` — session-scoped QThread worker
   (modeled on `page_render_coordinator.py`): one worker thread and one
   scratch renderer live for the whole inline-edit session; latest-wins

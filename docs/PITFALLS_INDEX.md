@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 275 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 280 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -280,3 +280,8 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2459 | sys.getsizeof on a slotless dataclass misses the per-instance __dict__ that dominates its memory | memory accounting (`_deep_size`-style recursive sizeof), dataclass instances |
 | 2466 | Simple-font capabilities are served stale within a registry generation | `model/text_commit/fonts.py` (`DocumentFontRegistry`), engine prepare path |
 | 2473 | Provenance fields on compared dataclasses silently break equality pins | `model/text_commit/replay.py` (`PageReplay`), frozen-dataclass contracts generally |
+| 2480 | fitz.Document.update_stream(compress=False) never restores the original storage encoding | `model/text_commit/patch.py` (`apply_patchset`, `AppliedPatch.revert`), PyMuPDF stream storage |
+| 2487 | tracemalloc cannot see memory PyMuPDF stores in its own C heap | memory-bound tests/harnesses for anything touching `fitz.Document` internals |
+| 2494 | PyMuPDF get_pixmap/get_text each build a private DisplayList/TextPage per call | `model/text_commit/verify.py` / `preview.py` render pipeline, any PyMuPDF perf work |
+| 2501 | Untyped ctypes windll call silently truncates GetCurrentProcess's pseudo-handle | Windows harness/instrumentation code using ctypes (`GetProcessMemoryInfo` etc.) |
+| 2508 | PDFModel.__init__ flips PyMuPDF's process-global small_glyph_heights — every later test in a single-process suite sees fontsize-tall (0.8/-0.2 em) text bboxes | `model/pdf_model.py` + the text-commit Tier 1 growth proof (`model/text_commit/verify.py`) + any pytest run that shares one interpreter across files (CI's functional suite) |
