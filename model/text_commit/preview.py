@@ -34,8 +34,8 @@ from model.text_commit.patch import (
 )
 from model.text_commit.plan import PlanRejection, PreparedEdit, prepare_plan
 from model.text_commit.verify import (
+    PreStateBaselineCache,
     VerificationFailure,
-    capture_page_state,
     verify_tier0_commit,
     verify_tier1_commit,
 )
@@ -249,6 +249,7 @@ class PlanPreviewRenderer:
         # pull-validation inside prepare_plan, never by this object's
         # lifetime; close() releases it with the session.
         self._evidence_cache = ReplayEvidenceCache()
+        self._pre_state_baseline = PreStateBaselineCache()
 
     def _ensure_scratch(self) -> tuple[fitz.Document, DocumentFontRegistry]:
         if self._scratch is None:
@@ -329,9 +330,7 @@ class PlanPreviewRenderer:
             replacements=(plan.replacement,),
             expected_page_fingerprint=plan.page_fingerprint,
         )
-        pre_state = capture_page_state(
-            scratch, page, plan, reuse_rawdict=True
-        )
+        pre_state = self._pre_state_baseline.capture(scratch, page, plan)
         try:
             # P3-C: this scratch is never saved or tobytes()'d -- every
             # splice is reverted before render() returns (below), and
@@ -379,7 +378,11 @@ class PlanPreviewRenderer:
                 if post is not None:
                     post.release()
             finally:
-                applied.revert(scratch, compress=False)  # P3-C: see apply above
+                try:
+                    applied.revert(scratch, compress=False)  # P3-C: see apply above
+                except BaseException:
+                    self._pre_state_baseline.clear()
+                    raise
         return PlanPreviewResult(
             session_key=request.session_key,
             generation=request.generation,
@@ -398,6 +401,7 @@ class PlanPreviewRenderer:
         )
 
     def close(self) -> None:
+        self._pre_state_baseline.clear()
         self._evidence_cache.clear()
         if self._scratch is not None:
             self._scratch.close()

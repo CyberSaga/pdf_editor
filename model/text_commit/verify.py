@@ -18,8 +18,8 @@ import fitz
 from model.text_commit.cid_fonts import PdfRef as CidPdfRef
 from model.text_commit.cid_fonts import resolve_descendant as cid_resolve_descendant
 from model.text_commit.dto import RejectReason
-from model.text_commit.inspect import read_page_streams
-from model.text_commit.interpretation import PageInterpretation
+from model.text_commit.inspect import page_fingerprint, read_page_streams
+from model.text_commit.interpretation import PageInterpretation, interpret_page
 
 if TYPE_CHECKING:
     # Deferred: plan.py imports patch.py (for the Tier 1 composite builder),
@@ -67,6 +67,123 @@ class PageState:
     # verify_tier1_strategy's test fixtures hand-build ``PageState`` and
     # never reach this comparison.
     page_count: int = 0
+
+
+@dataclass(frozen=True)
+class PreStateBaselineKey:
+    """Fresh lookup evidence for one renderer-private pre-patch state."""
+
+    page_xref: int
+    page_fingerprint: str
+    fonts: tuple[tuple, ...]
+    annots: tuple[tuple[int, tuple[float, float, float, float]], ...]
+    small_glyph_heights: bool
+    quad_corrections_disabled: bool
+    aa_level: tuple[tuple[str, int | float], ...]
+
+
+@dataclass(frozen=True)
+class PreStateBaseline:
+    """Immutable artifacts retained by the one-slot preview baseline."""
+
+    key: PreStateBaselineKey
+    pixmap_samples: bytes
+    pixmap_meta: tuple[int, int, int, int]
+    span_origins: tuple[tuple[float, float], ...]
+    chars: tuple[tuple[str, float, float, float, float], ...]
+
+
+class PreStateBaselineCache:
+    """One-owner, one-slot pre-state cache for a preview renderer."""
+
+    __slots__ = ("_entry", "hits", "misses", "stores")
+
+    def __init__(self) -> None:
+        self._entry: PreStateBaseline | None = None
+        self.hits = 0
+        self.misses = 0
+        self.stores = 0
+
+    @property
+    def entry_count(self) -> int:
+        return 0 if self._entry is None else 1
+
+    def lookup_any(self) -> PreStateBaseline | None:
+        return self._entry
+
+    def clear(self) -> None:
+        self._entry = None
+
+    def capture(
+        self,
+        doc: fitz.Document,
+        page: fitz.Page,
+        prepared: PreparedEdit,
+    ) -> PageState:
+        """Capture fresh state, reusing only immutable raster/text values."""
+        fonts = tuple(page.get_fonts(full=True))
+        annots = tuple((annot.xref, tuple(annot.rect)) for annot in page.annots())
+        aa_level = tuple(
+            sorted(
+                (str(name), cast(int | float, value))
+                for name, value in fitz.TOOLS.show_aa_level().items()
+            )
+        )
+        key = PreStateBaselineKey(
+            page_xref=page.xref,
+            page_fingerprint=page_fingerprint(doc, page),
+            fonts=fonts,
+            annots=annots,
+            small_glyph_heights=bool(fitz.TOOLS.set_small_glyph_heights()),
+            quad_corrections_disabled=bool(fitz.TOOLS.unset_quad_corrections()),
+            aa_level=aa_level,
+        )
+        streams = tuple(read_page_streams(doc, page))
+        page_count = doc.page_count
+        entry = self._entry
+        if entry is not None and entry.key == key:
+            self.hits += 1
+            return _page_state_from_baseline(
+                page,
+                prepared,
+                entry,
+                streams=streams,
+                fonts=fonts,
+                annots=annots,
+                page_count=page_count,
+            )
+
+        self.misses += 1
+        interpretation = interpret_page(page)
+        try:
+            pixmap = interpretation.pixmap(dpi=_VERIFY_DPI)
+            rawdict = interpretation.rawdict()
+            baseline = PreStateBaseline(
+                key=key,
+                pixmap_samples=bytes(pixmap.samples),
+                pixmap_meta=(
+                    pixmap.width,
+                    pixmap.height,
+                    pixmap.stride,
+                    pixmap.n,
+                ),
+                span_origins=_iter_span_origins(rawdict),
+                chars=_iter_nonspace_chars(rawdict),
+            )
+            state = _page_state_from_baseline(
+                page,
+                prepared,
+                baseline,
+                streams=streams,
+                fonts=fonts,
+                annots=annots,
+                page_count=page_count,
+            )
+            self._entry = baseline
+            self.stores += 1
+            return state
+        finally:
+            interpretation.release()
 
 
 def _visual_bbox_to_dict_space(
@@ -148,6 +265,38 @@ def _span_origins(
         rawdict = cast(dict[str, object], page.get_text("rawdict"))
     return _span_origins_from_values(
         page, exclude_bbox, _iter_span_origins(rawdict)
+    )
+
+
+def _page_state_from_baseline(
+    page: fitz.Page,
+    prepared: PreparedEdit,
+    baseline: PreStateBaseline,
+    *,
+    streams: tuple[tuple[int, bytes], ...],
+    fonts: tuple[tuple, ...],
+    annots: tuple[tuple[int, tuple[float, float, float, float]], ...],
+    page_count: int,
+) -> PageState:
+    growth_zone_glyphs = 0
+    if prepared.has_ink_growth:
+        growth_zone_glyphs = _count_growth_zone_glyphs_from_values(
+            page,
+            target_bbox=prepared.target_bbox_page,
+            verify_bbox=prepared.effective_verify_bbox,
+            chars=baseline.chars,
+        )
+    return PageState(
+        streams=streams,
+        fonts=fonts,
+        annots=annots,
+        nontarget_origins=_span_origins_from_values(
+            page, prepared.target_bbox_page, baseline.span_origins
+        ),
+        pixmap_samples=baseline.pixmap_samples,
+        pixmap_meta=baseline.pixmap_meta,
+        growth_zone_glyphs=growth_zone_glyphs,
+        page_count=page_count,
     )
 
 

@@ -373,6 +373,19 @@ def _render_counted(
     session = open_preview_session(doc, 0, "p3d-stage-a")
     assert session is not None
     renderer = PlanPreviewRenderer(session)
+
+    class StageADisabledBaseline:
+        def capture(self, scratch, page, prepared):
+            return capture_page_state(
+                scratch, page, prepared, reuse_rawdict=True
+            )
+
+        def clear(self) -> None:
+            return None
+
+    # Keep this file's explicit Stage-A contract available after the
+    # conditional Stage-B cache becomes the production default.
+    renderer._pre_state_baseline = StageADisabledBaseline()
     engaged: list[bool] = []
     if legacy:
         monkeypatch.setattr(

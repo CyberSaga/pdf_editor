@@ -110,6 +110,28 @@ Red confirmed (2026-08-28): collection failed with
 `ImportError: cannot import name 'PreStateBaseline' from model.text_commit.verify`.
 Result: 1 collection error, exit code 1. No Stage-B production cache code existed.
 
+### Commit 6 — Stage-B green
+
+Implemented the renderer-owned, one-slot `PreStateBaselineCache` with immutable
+bytes/tuple/scalar payloads; fresh stream/font/annotation/page-count/fingerprint
+reads; small-glyph, quad-correction, and AA key inputs; miss release; close clear;
+and revert-failure invalidation.
+
+Commands/results:
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q test_scripts/test_text_commit_prestate_baseline.py
+# 18 passed in 18.16s
+
+$files = Get-ChildItem test_scripts -Filter 'test_text_commit_*.py'
+.venv\Scripts\python.exe -m pytest -q $files
+# 651 passed, 3 skipped, 5 xfailed in 204.02s
+```
+
+The key-invisible negative control changed an image XObject outside the target
+halo without changing the baseline key: the stale-baseline path rejected with no
+token/PNG, while a fresh disabled-baseline control accepted.
+
 ## Dead ends and review notes
 
 - The requested `using-git-worktrees` skill was unavailable. Native `git worktree`

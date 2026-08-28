@@ -56,6 +56,14 @@ def _stream_doc(*, tier1: bool = False) -> fitz.Document:
     return doc
 
 
+def _stream_doc_with_outside_image() -> fitz.Document:
+    doc = _stream_doc()
+    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 24, 24), False)
+    pixmap.clear_with(210)
+    doc[0].insert_image(fitz.Rect(300, 600, 324, 624), pixmap=pixmap)
+    return doc
+
+
 def _prepare(
     doc: fitz.Document,
     *,
@@ -174,7 +182,7 @@ def test_annotation_geometry_change_invalidates() -> None:
     cache, plan = _fresh_cache(doc)
     annot = doc[0].add_rect_annot(fitz.Rect(300, 300, 340, 340))
     annot.update()
-    page = doc.reload_page(doc[0])
+    page = doc[0]
     assert cache.capture(doc, page, plan) == capture_page_state(doc, page, plan)
     assert cache.misses == 2
     doc.close()
@@ -347,6 +355,42 @@ def test_revert_exception_clears_baseline(monkeypatch) -> None:
     with pytest.raises(RuntimeError, match="revert failed"):
         renderer.render(_request(doc, 1))
     assert renderer._pre_state_baseline.entry_count == 0
+    renderer.close()
+    doc.close()
+
+
+def test_key_invisible_outside_image_mutation_rejects_without_stale_raster() -> None:
+    doc = _stream_doc_with_outside_image()
+    renderer = _renderer(doc)
+    first = renderer.render(_request(doc, 1))
+    assert first.plan_token is not None
+    cache = renderer._pre_state_baseline
+    entry = cache.lookup_any()
+    assert entry is not None
+    before_key = entry.key
+    assert renderer._scratch is not None
+    scratch = renderer._scratch
+    image_xref = scratch[0].get_images(full=True)[0][0]
+    decoded = scratch.xref_stream(image_xref)
+    scratch.update_stream(
+        image_xref,
+        bytes(value ^ 0xFF for value in decoded),
+        compress=True,
+    )
+
+    stale = renderer.render(_request(doc, 2))
+    assert cache.lookup_any() is not None
+    assert cache.lookup_any().key == before_key
+    assert cache.hits == 1
+    assert stale.plan_token is None
+    assert stale.png_bytes == b""
+
+    disabled = DisabledBaseline()
+    renderer._pre_state_baseline = disabled
+    fresh = renderer.render(_request(doc, 3))
+    assert disabled.engagement == 1
+    assert fresh.plan_token is not None, fresh.reject_reason
+    assert fresh.png_bytes
     renderer.close()
     doc.close()
 
