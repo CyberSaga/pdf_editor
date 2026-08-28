@@ -132,6 +132,38 @@ The key-invisible negative control changed an image XObject outside the target
 halo without changing the baseline key: the stale-baseline path rejected with no
 token/PNG, while a fresh disabled-baseline control accepted.
 
+### Commit 7 — final P3-D acceptance harness
+
+Command:
+
+```powershell
+.venv\Scripts\python.exe scripts/benchmark_p3d_interpretation_reuse.py
+```
+
+Result: PASS with no hard-gate failures. The final instrumented Stage-A
+dense-unrotated capture-share median was 0.457574, retaining the GO decision.
+
+| scenario | unrotated page interpretations | rotated page interpretations | legacy control |
+|---|---:|---:|---:|
+| Stage A warm | 3 | 4 | 6 |
+| Stage B cold | 2 | 4 | 6 |
+| Stage B warm | **1** | **2** | **6** |
+
+Every Stage-B corpus recorded 1 miss, 1 store, and 30 hits. Warm renders used
+two `DisplayList.get_pixmap` calls, one `DisplayList.get_textpage`, one low-level
+clipped stext run, zero pre-patch page interpretations, zero replay executions,
+and two uncompressed / zero compressed scratch writes.
+
+| corpus | warm p50 (ms, info) | warm p95 (ms, info) | cold (ms, info) | retained Python bytes | structural bound |
+|---|---:|---:|---:|---:|---:|
+| dense | 127.982 | 135.747 | 6207.016 | 3,240,162 | 5,046,154 |
+| small | 69.355 | 84.602 | 90.953 | 2,691,262 | 3,754,122 |
+| dense rotated | 347.174 | 421.280 | 14184.690 | 3,240,162 | 5,046,154 |
+
+Stage A, Stage B, and legacy control were identical per keystroke for PNG bytes,
+plan token, rejection/verifier result, clip, render scale, new rectangle, and
+prepared-plan identity. Private real-PDF corpus: NOT RUN (absent).
+
 ## Dead ends and review notes
 
 - The requested `using-git-worktrees` skill was unavailable. Native `git worktree`

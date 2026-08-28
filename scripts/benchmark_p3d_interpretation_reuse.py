@@ -28,6 +28,7 @@ import model.text_commit.patch as patch_module  # noqa: E402
 import model.text_commit.plan as plan_module  # noqa: E402
 import model.text_commit.preview as preview_module  # noqa: E402
 import model.text_commit.replay as replay_module  # noqa: E402
+import model.text_commit.verify as verify_module  # noqa: E402
 from model.text_commit.interpretation import PageInterpretation  # noqa: E402
 from model.text_commit.preview import (  # noqa: E402
     PlanPreviewRenderer,
@@ -78,6 +79,22 @@ class LegacyPostInterpretation:
         self.engagement["release"] += 1
 
 
+class DisabledBaseline:
+    """Test-only Stage-A/control adapter for preview pre-state capture."""
+
+    def __init__(self) -> None:
+        self.engagement = 0
+
+    def capture(self, doc, page, prepared):
+        self.engagement += 1
+        return verify_module.capture_page_state(
+            doc, page, prepared, reuse_rawdict=True
+        )
+
+    def clear(self) -> None:
+        return None
+
+
 class HarnessProbe:
     """Per-render stage, primitive, replay, and verification recorder."""
 
@@ -105,7 +122,8 @@ class HarnessProbe:
         if self.full:
             for obj, name, stage in (
                 (preview_module, "prepare_plan", "prepare"),
-                (preview_module, "capture_page_state", "capture"),
+                (DisabledBaseline, "capture", "capture"),
+                (verify_module.PreStateBaselineCache, "capture", "capture"),
                 (preview_module, "apply_patchset", "apply"),
                 (patch_module.AppliedPatch, "revert", "revert"),
             ):
@@ -177,24 +195,29 @@ class HarnessProbe:
         self._saved.append((obj, name, original))
 
     def _wrap_interpret(self) -> None:
-        original = preview_module.interpret_page
+        for namespace in (preview_module, verify_module):
+            original = namespace.interpret_page
 
-        def wrapped(*args: Any, **kwargs: Any) -> Any:
-            prior = self.stage
-            self.stage = "interpret"
-            started = time.perf_counter()
-            try:
-                return original(*args, **kwargs)
-            finally:
-                elapsed = (time.perf_counter() - started) * 1000
-                self.stage = prior
-                if self.current is not None:
-                    self.current["calls"]["interpret_page"] += 1
-                    if self.full:
-                        self.current["stage_ms"]["interpret"] += elapsed
+            def wrapped(
+                *args: Any,
+                _original: Callable[..., Any] = original,
+                **kwargs: Any,
+            ) -> Any:
+                prior = self.stage
+                self.stage = "interpret"
+                started = time.perf_counter()
+                try:
+                    return _original(*args, **kwargs)
+                finally:
+                    elapsed = (time.perf_counter() - started) * 1000
+                    self.stage = prior
+                    if self.current is not None:
+                        self.current["calls"]["interpret_page"] += 1
+                        if self.full:
+                            self.current["stage_ms"]["interpret"] += elapsed
 
-        preview_module.interpret_page = wrapped
-        self._saved.append((preview_module, "interpret_page", original))
+            namespace.interpret_page = wrapped
+            self._saved.append((namespace, "interpret_page", original))
 
     def _wrap_call(
         self,
@@ -273,26 +296,67 @@ def _summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _deep_size(value: Any, seen: set[int] | None = None) -> int:
+    if seen is None:
+        seen = set()
+    object_id = id(value)
+    if object_id in seen:
+        return 0
+    seen.add(object_id)
+    size = sys.getsizeof(value)
+    if isinstance(value, dict):
+        size += sum(
+            _deep_size(key, seen) + _deep_size(item, seen)
+            for key, item in value.items()
+        )
+    elif isinstance(value, (tuple, list, set, frozenset)):
+        size += sum(_deep_size(item, seen) for item in value)
+    elif hasattr(value, "__dict__"):
+        size += _deep_size(vars(value), seen)
+    return size
+
+
 def _assert_counts(
     *, mode: str, rotated: bool, records: list[dict[str, Any]], failures: list[str]
 ) -> None:
-    expected = {
-        "page_get_pixmap": 1 if mode == "stage-a-shipped" else 3,
-        "page_get_text": 2 if mode == "stage-a-shipped" else 3,
-        "page_get_textpage": 1 if mode == "stage-a-shipped" else 3,
-        "page_get_displaylist": (
-            (3 if rotated else 2) if mode == "stage-a-shipped" else 3
-        ),
-        "displaylist_get_pixmap": 3,
-        "displaylist_get_textpage": 1 if mode == "stage-a-shipped" else 0,
-        "lowlevel_clipped_stext": 1 if mode == "stage-a-shipped" else 0,
-        "interpret_page": 1,
-        "update_stream_compressed": 0,
-        "update_stream_uncompressed": 2,
-    }
     for index, record in enumerate(records):
         label = "cold" if index == 0 else f"warm-{index}"
         calls = record["calls"]
+        if mode == "stage-b-shipped":
+            cold = index == 0
+            expected = {
+                "page_get_pixmap": 0,
+                "page_get_text": 2 if cold else 1,
+                "page_get_textpage": 0,
+                "page_get_displaylist": (
+                    (4 if rotated else 2) if cold else (2 if rotated else 1)
+                ),
+                "displaylist_get_pixmap": 3 if cold else 2,
+                "displaylist_get_textpage": 2 if cold else 1,
+                "lowlevel_clipped_stext": 1,
+                "interpret_page": 2 if cold else 1,
+                "update_stream_compressed": 0,
+                "update_stream_uncompressed": 2,
+            }
+        else:
+            expected = {
+                "page_get_pixmap": 1 if mode == "stage-a-shipped" else 3,
+                "page_get_text": 2 if mode == "stage-a-shipped" else 3,
+                "page_get_textpage": 1 if mode == "stage-a-shipped" else 3,
+                "page_get_displaylist": (
+                    (3 if rotated else 2) if mode == "stage-a-shipped" else 3
+                ),
+                "displaylist_get_pixmap": 3,
+                "displaylist_get_textpage": (
+                    1 if mode == "stage-a-shipped" else 0
+                ),
+                "lowlevel_clipped_stext": (
+                    1 if mode == "stage-a-shipped" else 0
+                ),
+                "interpret_page": 1,
+                "update_stream_compressed": 0,
+                "update_stream_uncompressed": 2,
+            }
         for key, value in expected.items():
             if calls[key] != value:
                 failures.append(
@@ -300,9 +364,16 @@ def _assert_counts(
                     f"{key}={calls[key]} != {value}"
                 )
         interpretations = calls["page_get_displaylist"] + calls["page_get_textpage"]
-        expected_interpretations = (
-            (4 if rotated else 3) if mode == "stage-a-shipped" else 6
-        )
+        if mode == "stage-b-shipped":
+            expected_interpretations = (
+                (4 if rotated else 2)
+                if index == 0
+                else (2 if rotated else 1)
+            )
+        else:
+            expected_interpretations = (
+                (4 if rotated else 3) if mode == "stage-a-shipped" else 6
+            )
         if interpretations != expected_interpretations:
             failures.append(
                 f"{mode}/{label}: interpretations={interpretations} "
@@ -329,6 +400,10 @@ def run_scenario(
     assert session is not None
     renderer = PlanPreviewRenderer(session)
     engagement: Counter[str] = Counter()
+    disabled_baseline: DisabledBaseline | None = None
+    if mode in ("stage-a-shipped", "legacy-control"):
+        disabled_baseline = DisabledBaseline()
+        renderer._pre_state_baseline = disabled_baseline
     original_interpret = preview_module.interpret_page
     if mode == "legacy-control":
         preview_module.interpret_page = lambda page: LegacyPostInterpretation(
@@ -338,6 +413,7 @@ def run_scenario(
     probe.install()
     observations: list[tuple[Any, ...]] = []
     timings: list[float] = []
+    cache_metrics: dict[str, Any] | None = None
     try:
         for index in range(WARM_KEYSTROKES + 1):
             probe.begin_render()
@@ -354,6 +430,40 @@ def run_scenario(
                 failures.append(
                     f"{mode}/{corpus}: render {index} rejected: {result.reject_reason}"
                 )
+        if mode == "stage-b-shipped":
+            cache = renderer._pre_state_baseline
+            entry = cache.lookup_any()
+            if entry is None:
+                failures.append(f"{mode}/{corpus}: baseline entry missing")
+            else:
+                retained_bytes = _deep_size(entry)
+                retained_bound = (
+                    len(entry.pixmap_samples)
+                    + 160 * len(entry.span_origins)
+                    + 448 * len(entry.chars)
+                    + 1024 * 1024
+                )
+                if retained_bytes > retained_bound:
+                    failures.append(
+                        f"{mode}/{corpus}: retained {retained_bytes} > {retained_bound}"
+                    )
+                cache_metrics = {
+                    "misses": cache.misses,
+                    "stores": cache.stores,
+                    "hits": cache.hits,
+                    "entry_count": cache.entry_count,
+                    "retained_python_bytes": retained_bytes,
+                    "retained_bound_bytes": retained_bound,
+                }
+                if (cache.misses, cache.stores, cache.hits) != (1, 1, 30):
+                    failures.append(
+                        f"{mode}/{corpus}: cache counters "
+                        f"{(cache.misses, cache.stores, cache.hits)} != (1, 1, 30)"
+                    )
+                if cache.entry_count != 1:
+                    failures.append(
+                        f"{mode}/{corpus}: entry_count={cache.entry_count} != 1"
+                    )
     finally:
         probe.uninstall()
         preview_module.interpret_page = original_interpret
@@ -363,6 +473,12 @@ def run_scenario(
         for key in ("factory", "pixmap", "rawdict", "clipped_text", "release"):
             if engagement[key] == 0:
                 failures.append(f"legacy-control/{corpus}: adapter {key} not engaged")
+    if disabled_baseline is not None:
+        if disabled_baseline.engagement != WARM_KEYSTROKES + 1:
+            failures.append(
+                f"{mode}/{corpus}: disabled baseline engagement "
+                f"{disabled_baseline.engagement} != {WARM_KEYSTROKES + 1}"
+            )
     if probed:
         _assert_counts(
             mode=mode, rotated=rotated, records=probe.records, failures=failures
@@ -381,6 +497,7 @@ def run_scenario(
             if probed and capture_shares
             else None
         ),
+        "cache": cache_metrics,
         "_observations": observations,
     }
 
@@ -396,7 +513,11 @@ def main(argv: list[str] | None = None) -> int:
     failures: list[str] = []
     results: dict[str, Any] = {}
     for corpus in ("dense", "small", "dense-rotated"):
-        for mode in ("stage-a-shipped", "legacy-control"):
+        for mode in (
+            "stage-a-shipped",
+            "stage-b-shipped",
+            "legacy-control",
+        ):
             for probed in (False, True):
                 cell = run_scenario(
                     mode=mode, corpus=corpus, probed=probed, failures=failures
@@ -408,9 +529,12 @@ def main(argv: list[str] | None = None) -> int:
     for corpus, modes in results.items():
         for pass_name in ("clean", "probed"):
             shipped = modes["stage-a-shipped"][pass_name].pop("_observations")
+            stage_b = modes["stage-b-shipped"][pass_name].pop("_observations")
             control = modes["legacy-control"][pass_name].pop("_observations")
             if shipped != control:
                 failures.append(f"{corpus}/{pass_name}: shipped/control identity mismatch")
+            if stage_b != control:
+                failures.append(f"{corpus}/{pass_name}: Stage-B/control identity mismatch")
 
     capture_share = results["dense"]["stage-a-shipped"]["probed"][
         "capture_share_median"
@@ -437,6 +561,8 @@ def main(argv: list[str] | None = None) -> int:
         "page_level_interpretations": {
             "stage_a_unrotated": 3,
             "stage_a_rotated": 4,
+            "stage_b_warm_unrotated": 1,
+            "stage_b_warm_rotated": 2,
             "legacy_control": 6,
         },
     }
