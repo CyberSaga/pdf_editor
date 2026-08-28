@@ -79,7 +79,24 @@ $files = Get-ChildItem test_scripts -Filter 'test_text_commit_*.py'
 
 ### Commit 4 — Stage-A census and decision
 
-Pending.
+Command:
+
+```powershell
+.venv\Scripts\python.exe scripts/benchmark_p3d_interpretation_reuse.py
+```
+
+Result: PASS; all shipped/control identity, engagement, replay, write-count,
+and Stage-A interpretation-count gates were green.
+
+| corpus | Stage-A capture-share median | shipped warm p50 (ms) | legacy warm p50 (ms) |
+|---|---:|---:|---:|
+| dense unrotated | 0.486094 | 227.930 | 770.650 |
+| small unrotated | 0.066304 | 79.540 | 76.680 |
+| dense rotated | 0.406783 | 602.560 | 880.200 |
+
+Decision: **GO**. The primary dense-unrotated same-render median capture share
+was 48.6094%, above the 20% threshold, and all Stage-A hard gates passed.
+Continue with the conditional Stage-B red/green cycle.
 
 ## Dead ends and review notes
 
