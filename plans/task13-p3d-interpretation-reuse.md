@@ -50,7 +50,15 @@ opened copies. Timings are not an acceptance gate and were not claimed by this p
 
 ### Commit 2 — Stage-A red
 
-Pending.
+Command:
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q test_scripts/test_text_commit_interpretation_reuse.py
+```
+
+Red confirmed (2026-08-28): collection failed with
+`ModuleNotFoundError: No module named 'model.text_commit.interpretation'`.
+Result: 1 collection error, exit code 1. Production code had not been changed.
 
 ### Commit 3 — Stage-A green
 
