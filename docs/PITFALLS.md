@@ -2532,3 +2532,73 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** `PDFModel.__init__` calls `fitz.TOOLS.set_small_glyph_heights(True)`, a process-global MuPDF flag that nothing in the repo ever resets; the first collected CI test (`test_1pdf_horizontal.py::test_horizontal_edit_and_verify`) constructs a `PDFModel`, so every later test that hands the planner a text-extraction bbox sees PyMuPDF's substituted 0.8/-0.2 em ascender/descender — a fontsize-tall box. (`target_bbox=None` callers get plan.py's flag-immune 1.35 em metric quad instead, which is why the Type0 growth tests in `test_text_commit_trm_*` stayed green in the same run; the app supplies an index-derived bbox on both its preview and commit paths, so it IS exposed.) For the 12 pt dense-CJK Type0 fixture the rawdict span bbox shrinks from 15.68 pt (font-metric box) to exactly 12.0 pt, non-background pixels (ink plus anti-aliased fringe) then reach ≥ 50 % of it, and `_target_background_rgb`'s strict-majority rule correctly finds no background colour — the growth proof fails closed on the `PageState` captured before apply, so no compress-dependent byte can influence it. Isolated runs never set the flag, so they exercise a configuration the app itself never runs in.
 **Fix:** The Type0/CID Tier 1 parity pin uses `REPLACEMENT_SHORTER` (Tier 1 without ink growth, `has_ink_growth is False` asserted), so it proves CID encoding + the compensated splice + compress parity regardless of the flag; positive growth parity stays on the simple-font Tier 1 pin, whose target keeps a majority background in both bbox modes. Diagnose this class with a two-file run (`pytest test_scripts/test_1pdf_horizontal.py <suspect>`) or by pre-setting the flag before `pytest.main` — a per-file sweep cannot see it. Follow-ups are in TODOS (suite-level `TOOLS` flag hygiene; the production admission gap for dense-CJK growth candidates under the app's own flag).
 **File:** `test_scripts/test_text_commit_apply_compress.py` (Group F Type0 Tier 1 pin); `model/pdf_model.py` (`__init__`, flag site)
+
+## Supplying a TextPage to get_text silently disables the caller's clip and flags
+**Area:** PyMuPDF text extraction, `model/text_commit/verify.py`
+**Symptom:** Replacing `page.get_text("rawdict", clip=halo, flags=flags)` with `page.get_text("rawdict", clip=halo, flags=flags, textpage=shared)` returns text outside the halo or retains a shape that differs from the legacy verifier.
+**Cause:** In PyMuPDF 1.27.1, a supplied TextPage is already interpreted; the convenience API ignores the new `clip` and extraction `flags` instead of rebuilding it.
+**Fix:** Use the shared TextPage only for full-page rawdict extraction. For clipped extraction, run a fresh low-level stext device over the already-built DisplayList with the exact legacy clip and flags.
+**File:** `model/text_commit/interpretation.py`; pinned by `scripts/probe_p3d_interpretation_equivalence.py` and `test_scripts/test_text_commit_interpretation_reuse.py`
+
+## PyMuPDF's DisplayList and TextPage convenience builders use different rotation conventions
+**Area:** PyMuPDF page interpretation, rotated pages
+**Symptom:** One shared interpretation appears correct on unrotated pages but shifts text or changes raster bytes at 90/270 degrees.
+**Cause:** `Page.get_textpage()` temporarily derotates the page, while `Page.get_displaylist()` bakes page rotation into the display-list transform. They are not interchangeable views of one coordinate system.
+**Fix:** Keep two explicit products in `PageInterpretation`: a rotation-faithful DisplayList for raster output and a derotated TextPage for full rawdict identity. Treat their coordinate contracts as part of the type's invariant.
+**File:** `model/text_commit/interpretation.py` (`PageInterpretation`)
+
+## Composing derotation onto a DisplayList is not raster-byte stable
+**Area:** PyMuPDF raster reuse, `/Rotate`, `/UserUnit`, and CropBox handling
+**Symptom:** A DisplayList built under a derotated page and then rasterized with a composed rotation matrix produces a visually plausible image whose dimensions or PNG bytes differ from `Page.get_pixmap()`.
+**Cause:** The legacy raster path's page rotation, crop translation, and user-unit transforms are baked in a specific order. Reconstructing that order outside the utility is not byte-stable, especially for rotated CropBoxes and non-default `/UserUnit`.
+**Fix:** Build and retain a separate rotation-faithful DisplayList for all raster calls. The premise probe includes negative fixtures proving the composed-derotation alternative diverges.
+**File:** `scripts/probe_p3d_interpretation_equivalence.py`; `model/text_commit/interpretation.py`
+
+## DisplayList.run is unusable through the PyMuPDF 1.27.1 Python wrapper for clipped stext reuse
+**Area:** PyMuPDF low-level devices
+**Symptom:** Calling the public-looking `DisplayList.run()` with a clipped stext device raises or cannot express the exact legacy clipping operation.
+**Cause:** The 1.27.1 wrapper does not expose the needed device/matrix/scissor combination compatibly, although MuPDF's underlying display-list runner does.
+**Fix:** Keep the compatibility shim isolated in `PageInterpretation`: invoke the low-level run with the exact matrix and scissor, and pin it against independent legacy `get_text` results.
+**File:** `model/text_commit/interpretation.py` (`clipped_rawdict` path)
+
+## MEDIABOX_CLIP is not invariant under a quarter-turn CTM
+**Area:** clipped stext extraction on rotated pages
+**Symptom:** A reused clipped TextPage matches at rotation 0 but drops or admits boundary glyphs at 90/270 degrees when `TEXT_MEDIABOX_CLIP` is enabled.
+**Cause:** The media-box clipping flag is applied in the stext device's coordinate space; feeding a non-identity quarter-turn CTM changes which boundary is clipped.
+**Fix:** Run clipped stext in the derotated text convention with the legacy clip expressed in that convention. Preserve dedicated 0.1-point boundary and negative-control fixtures.
+**File:** `scripts/probe_p3d_interpretation_equivalence.py`; `model/text_commit/interpretation.py`
+
+## Rawdict Python object construction can dominate after interpretation reuse
+**Area:** dense-page text verification performance
+**Symptom:** Removing redundant DisplayList/TextPage builds does not make warm dense-page verification proportional to the remaining MuPDF interpretation count.
+**Cause:** `extractRAWDICT()` still materializes a large nested Python dict/list tree. That allocation and conversion cost survives even when the underlying TextPage is reused.
+**Fix:** Treat extraction shape reduction as a separate measured follow-up; do not attribute all residual time to content-stream interpretation or add an unproven private-structure shortcut.
+**File:** `model/text_commit/verify.py`; follow-up registered in `TODOS.md`
+
+## A PageInterpretation must not outlive the content-stream mutation window that created it
+**Area:** `PlanPreviewRenderer`, scratch apply/revert lifecycle
+**Symptom:** Reusing an interpretation after scratch streams have been reverted yields stale pixels/text, retains MuPDF objects, or makes later cleanup order-dependent.
+**Cause:** A DisplayList/TextPage is a snapshot of the page at construction time; reverting the document does not mutate that snapshot into the old page.
+**Fix:** Construct the post-patch interpretation after apply, use it for verification and final raster, release it idempotently in a nested `finally`, and only then revert streams. Never place it in the engine or session cache.
+**File:** `model/text_commit/preview.py`; `model/text_commit/interpretation.py`
+
+## A pre-state baseline cache key is a renderer-lifecycle guard, not a complete render-dependency proof
+**Area:** `PreStateBaselineCache`
+**Symptom:** A cache hit is mistaken for proof that every indirect image/resource/OCG dependency is unchanged.
+**Cause:** The bounded key intentionally uses fresh page identity, fingerprint, font, annotation, and renderer-global evidence; enumerating the entire transitive renderer dependency graph would duplicate MuPDF and is not claimed.
+**Fix:** Keep the cache private to one scratch renderer, one slot, and clear it on close/revert failure. Post-patch verification remains authoritative and must fail closed for a key-invisible mutation; the negative control mutates an image XObject outside the halo and proves exactly that.
+**File:** `model/text_commit/verify.py` (`PreStateBaselineKey`, `PreStateBaselineCache`); `test_scripts/test_text_commit_prestate_baseline.py`
+
+## Process-global PyMuPDF rendering switches belong in every reusable baseline key
+**Area:** renderer caches, `fitz.TOOLS`
+**Symptom:** A baseline built under one small-glyph, quad-correction, or anti-alias configuration is reused after another subsystem changes that global, producing inconsistent text geometry or pixels.
+**Cause:** These settings live outside the document and page object, so page xref and content fingerprints cannot detect them.
+**Fix:** Snapshot all three settings into `PreStateBaselineKey` on every lookup. Any future global that influences extraction or raster output must be added to the key and to the separate governance/reset follow-up.
+**File:** `model/text_commit/verify.py` (`PreStateBaselineKey`)
+
+## Building a TextPage can make inherited rotation explicit
+**Area:** PyMuPDF inherited page attributes, document serialization
+**Symptom:** A read-only-looking text interpretation changes whether `/Rotate` is inherited or explicitly present on the page object.
+**Cause:** PyMuPDF's existing get-textpage derotation dance may write an explicit rotation value while restoring effective rotation. This is pre-existing library behavior, not introduced by interpretation reuse.
+**Fix:** Compare effective page behavior and the established fingerprint contract, not raw inheritance spelling, unless a task explicitly requires object-graph preservation. Do not widen P3-D into a PyMuPDF serialization rewrite.
+**File:** `model/text_commit/interpretation.py`; characterized by `scripts/probe_p3d_interpretation_equivalence.py`

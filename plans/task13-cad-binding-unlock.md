@@ -172,10 +172,10 @@ coverage number — it feeds the TODOS "latency half stays open" item.
        artifact remains explicit coverage-evidence debt; it does not block
        the measured Priority 3 latency work or P3-D interpretation-reuse
        spike, and must not be checked off without an actual run artifact.
-6. [ ] Priority 3 spike: index design + latency measurement harness (ties
+6. [x] Priority 3 spike: index design + latency measurement harness (ties
        into the preview-latency follow-up from Task 12 §8); own PR(s).
-       P3-A, P3-B, and P3-C are COMPLETE; P3-D is NEXT, so the parent step
-       remains open. The two pre-P3-D font-evidence seals are complete:
+       P3-A, P3-B, P3-C, and P3-D are COMPLETE. The two pre-P3-D
+       font-evidence seals are complete:
        resolved-entry stale-plan characterization guards plus correction of
        the refuted fingerprint follow-up, and builder-visible CID stream
        evidence attestation. (2026-08-21 first half DONE — P3-A read-only spike on
@@ -188,10 +188,13 @@ coverage number — it feeds the TODOS "latency half stays open" item.
        `plans/task13-p3a-replay-index-spike.md`.  P3-B production replay
        reuse is complete (`plans/task13-p3b-replay-reuse.md`); P3-C
        post-prepare stream-write latency is complete
-       (`plans/task13-p3c-preview-postprepare-latency.md`). P3-D must start
-       with a fresh stage census on the new correctness closure, then test
-       bounded DisplayList/TextPage interpretation reuse.)
-7. [ ] Docs per protocol; keep this plan updated with decisions/dead ends.
+       (`plans/task13-p3c-preview-postprepare-latency.md`). P3-D completed
+       bounded DisplayList/TextPage interpretation reuse: legacy six page
+       interpretations became Stage-A 3/4, Stage-B cold 2/4, and Stage-B
+       warm 1/2 (unrotated/rotated), with byte/plan/verifier/geometry
+       identity and bounded retained Python memory. Record:
+       `plans/archive/task13-p3d-interpretation-reuse.md`.)
+7. [x] Docs per protocol; keep this plan updated with decisions/dead ends.
 
 ## 7. Decisions record
 

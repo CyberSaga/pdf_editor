@@ -937,6 +937,27 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   planner's metric-quad height (or the halo ring) instead of the
   extraction bbox, behind a corpus-backed red matrix.
 
+- 2026-08-28 (Task 13 step 6 fourth pass — **P3-D interpretation reuse,
+  COMPLETE**, branch `task13/p3d-interpretation-reuse`): introduced a
+  mutation-window-scoped `PageInterpretation` and a renderer-owned one-slot
+  `PreStateBaselineCache`. Final hard counts reduced the legacy six page
+  interpretations to Stage-A 3/4, Stage-B cold 2/4, and Stage-B warm 1/2
+  (unrotated/rotated); each corpus recorded one miss, one store, and 30 hits.
+  PNG bytes, plan token, rejection/verifier result, clip, scale, new rect, and
+  prepared-plan identity matched the legacy control. The final gate rerun's
+  dense-unrotated Stage-A capture share was 0.503762 (GO threshold 0.20);
+  retained Python memory stayed
+  within the structural bounds. Live commit behavior and rollout defaults are
+  unchanged. Record: `plans/archive/task13-p3d-interpretation-reuse.md`.
+  **Registered follow-ups — not implemented in P3-D:** (a) prove whether
+  `_span_origins` can derive its tuple from the already materialized rawdict;
+  (b) prove node rect/quad coverage before replacing full-page interpretation
+  with a halo scissor; (c) investigate reuse around `get_drawings()` tracing;
+  (d) reduce rawdict extraction-shape/Python-dict construction cost; (e)
+  investigate once-per-accept interpretation reuse in the live engine; (f)
+  define complete snapshot/reset governance for the process-global
+  `fitz.TOOLS` small-glyph, quad-correction, and anti-alias settings.
+
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 
 - `PDFModel` has no `_normalize_text_for_compare` method. Referenced by

@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 283 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 293 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -288,3 +288,13 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2515 | Stored stream bytes are not the evidence a decoding builder consumed | `model/text_commit/cid_fonts.py` (`compute_cid_evidence_digest`), any cache digest over decoded streams |
 | 2522 | Untyped ctypes windll call silently truncates GetCurrentProcess's pseudo-handle | Windows harness/instrumentation code using ctypes (`GetProcessMemoryInfo` etc.) |
 | 2529 | PDFModel.__init__ flips PyMuPDF's process-global small_glyph_heights — every later test in a single-process suite sees fontsize-tall (0.8/-0.2 em) text bboxes | `model/pdf_model.py` + the text-commit Tier 1 growth proof (`model/text_commit/verify.py`) + any pytest run that shares one interpreter across files (CI's functional suite) |
+| 2536 | Supplying a TextPage to get_text silently disables the caller's clip and flags | PyMuPDF text extraction, `model/text_commit/verify.py` |
+| 2543 | PyMuPDF's DisplayList and TextPage convenience builders use different rotation conventions | PyMuPDF page interpretation, rotated pages |
+| 2550 | Composing derotation onto a DisplayList is not raster-byte stable | PyMuPDF raster reuse, `/Rotate`, `/UserUnit`, and CropBox handling |
+| 2557 | DisplayList.run is unusable through the PyMuPDF 1.27.1 Python wrapper for clipped stext reuse | PyMuPDF low-level devices |
+| 2564 | MEDIABOX_CLIP is not invariant under a quarter-turn CTM | clipped stext extraction on rotated pages |
+| 2571 | Rawdict Python object construction can dominate after interpretation reuse | dense-page text verification performance |
+| 2578 | A PageInterpretation must not outlive the content-stream mutation window that created it | `PlanPreviewRenderer`, scratch apply/revert lifecycle |
+| 2585 | A pre-state baseline cache key is a renderer-lifecycle guard, not a complete render-dependency proof | `PreStateBaselineCache` |
+| 2592 | Process-global PyMuPDF rendering switches belong in every reusable baseline key | renderer caches, `fitz.TOOLS` |
+| 2599 | Building a TextPage can make inherited rotation explicit | PyMuPDF inherited page attributes, document serialization |

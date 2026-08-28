@@ -168,3 +168,47 @@ prepared-plan identity. Private real-PDF corpus: NOT RUN (absent).
 
 - The requested `using-git-worktrees` skill was unavailable. Native `git worktree`
   was used to satisfy the same isolation invariant without touching the invoking checkout.
+- Two independent adversarial self-review passes were completed after Commit 7.
+  They re-checked rotation conventions, release-before-revert ordering, cache-key
+  freshness and global settings, key-invisible mutation fail-closed behavior,
+  live-engine isolation, and memory/count assertions. No confirmed production
+  defect remained and no fix commit was required.
+- Manual GUI smoke: NOT PERFORMED. The blocking rotated path is covered by the
+  automated renderer/coordinator-shaped smoke in the final gate record.
+- Private real-PDF corpus: NOT RUN because no local corpus was present.
+
+## Final verification
+
+Final gate sweep (2026-08-29):
+
+- `ruff check .`: PASS.
+- `mypy model/ utils/`: PASS, 52 source files.
+- `lint-imports`: PASS, 4 kept / 0 broken.
+- pitfalls index: regenerated, 293 entries.
+- codegraph: regenerated, 377 Python files / 6,471 nodes / 41,748 edges.
+- device guard against the exact base: PASS.
+- diff check against the exact base: PASS.
+- targeted P3-D and prerequisite files: 26 + 18 + 29 + 40 + 27 passed.
+- automated rotated renderer/coordinator-shaped smoke: 2 passed.
+- all `test_text_commit_*`: 652 passed, 3 skipped, 5 xfailed.
+- premise probe: PASS, 20/20 raster and rawdict fixtures, 440 clipped-text
+  comparisons, 400 seeded random clips, 110 boundary clips, and all negative
+  controls mutation-sensitive.
+- final acceptance harness: PASS; Stage B GO; final dense-unrotated Stage-A
+  capture-share median 0.503762; required 3/4, 2/4, 1/2, and legacy-6 count
+  cells unchanged. Informational clean Stage-B warm p50: dense 261.486 ms,
+  small 72.364 ms, dense-rotated 138.180 ms.
+- CI-shaped single-process offscreen selection: 2,742 passed, 35 skipped,
+  15 deselected, 5 xfailed in 744.02 s.
+- isolated per-file sweep: 230 files, 0 timeouts, all 16 documented script-only
+  rc=5 results accepted. Two files initially failed only because the isolated
+  worktree lacked gitignored real-PDF fixtures; after copying the six fixtures
+  unchanged from the invoking checkout, they passed 5/5 and 377 passed /
+  6 skipped. The temporary copies were removed afterward. No source fix was
+  made because the root cause was the worktree fixture environment.
+- manual GUI smoke: NOT PERFORMED.
+- private real-PDF corpus: NOT RUN (absent as a P3-D benchmark corpus).
+
+Final SHA is reported after the documentation commit is created; a commit cannot
+embed its own SHA. Remote push confirmation is likewise recorded in the completion
+report rather than claimed before publication.

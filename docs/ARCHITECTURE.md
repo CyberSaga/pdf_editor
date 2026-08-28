@@ -914,11 +914,36 @@ it never claims exactness).
   acceptance) plus `scripts/benchmark_p3c_stage_census.py` (committed
   dual-mode stage census: same-process old-vs-new per-stage p50/p95,
   primitive counter table, small-page control, replay-contract re-pins).
-  Named next lever (not solved), refined by the census: six independent
-  content-stream interpretations per keystroke — three DisplayList and
-  three TextPage builds hidden inside PyMuPDF's `get_pixmap`/`get_text`
-  utils, none reused (see PITFALLS) — the one-post-patch-interpretation
-  reuse design is the registered P3-D candidate.
+  **Task 13 P3-D** removes that interpretation duplication without changing
+  admission, plan semantics, or the live commit path. The leaf
+  `model/text_commit/interpretation.py` owns one mutation-window-scoped
+  `PageInterpretation`: a rotation-faithful DisplayList for raster identity,
+  a derotated TextPage for rawdict identity, and a low-level clipped stext
+  path. `PlanPreviewRenderer.render()` creates the post-patch interpretation,
+  shares it across verification and the final preview raster, releases it
+  before reverting the scratch streams, and never exposes it to
+  `TieredCommitEngine`.
+
+  The renderer also owns a one-slot `PreStateBaselineCache`. Its immutable
+  baseline payload is reused only after a fresh key has re-read the page
+  xref, page fingerprint, resolved fonts, annotations/widgets, and the
+  process-global small-glyph, quad-correction, and anti-alias settings. A
+  miss releases the old baseline; `close()` and any revert failure clear it.
+  This is deliberately a renderer-lifecycle cache, not a claim that the key
+  fingerprints every possible render dependency: a key-invisible mutation
+  must still fail closed during post-patch verification.
+
+  The final P3-D count gates reduce the legacy six interpretations to 3
+  unrotated / 4 rotated in Stage A, 2 / 4 on a Stage-B cold render, and 1 / 2
+  on a Stage-B warm render. Warm renders use two DisplayList pixmaps, one
+  DisplayList TextPage, one low-level clipped stext run, zero replay
+  executions, and zero compressed / two uncompressed scratch writes. PNG,
+  token, verifier result, geometry, and prepared-plan identity match the
+  legacy control. Governing record:
+  `plans/archive/task13-p3d-interpretation-reuse.md`; pins:
+  `test_text_commit_interpretation_reuse.py` and
+  `test_text_commit_prestate_baseline.py`; acceptance harness:
+  `scripts/benchmark_p3d_interpretation_reuse.py`.
 - `controller/text_commit_coordinator.py` — session-scoped QThread worker
   (modeled on `page_render_coordinator.py`): one worker thread and one
   scratch renderer live for the whole inline-edit session; latest-wins
