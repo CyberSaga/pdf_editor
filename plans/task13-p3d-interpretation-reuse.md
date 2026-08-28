@@ -98,6 +98,18 @@ Decision: **GO**. The primary dense-unrotated same-render median capture share
 was 48.6094%, above the 20% threshold, and all Stage-A hard gates passed.
 Continue with the conditional Stage-B red/green cycle.
 
+### Commit 5 — Stage-B red
+
+Command:
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q test_scripts/test_text_commit_prestate_baseline.py
+```
+
+Red confirmed (2026-08-28): collection failed with
+`ImportError: cannot import name 'PreStateBaseline' from model.text_commit.verify`.
+Result: 1 collection error, exit code 1. No Stage-B production cache code existed.
+
 ## Dead ends and review notes
 
 - The requested `using-git-worktrees` skill was unavailable. Native `git worktree`
