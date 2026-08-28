@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping, cast
 
 import fitz
 
@@ -19,6 +19,7 @@ from model.text_commit.cid_fonts import PdfRef as CidPdfRef
 from model.text_commit.cid_fonts import resolve_descendant as cid_resolve_descendant
 from model.text_commit.dto import RejectReason
 from model.text_commit.inspect import read_page_streams
+from model.text_commit.interpretation import PageInterpretation
 
 if TYPE_CHECKING:
     # Deferred: plan.py imports patch.py (for the Tier 1 composite builder),
@@ -86,32 +87,107 @@ def _visual_bbox_to_dict_space(
     return (rect.x0, rect.y0, rect.x1, rect.y1)
 
 
-def _span_origins(
-    page: fitz.Page, exclude_bbox: tuple[float, float, float, float]
+def _iter_span_origins(
+    rawdict: Mapping[str, object],
 ) -> tuple[tuple[float, float], ...]:
     origins: list[tuple[float, float]] = []
+    blocks = cast(list[dict[str, object]], rawdict["blocks"])
+    for block in blocks:
+        lines = cast(list[dict[str, object]], block.get("lines", []))
+        for line in lines:
+            spans = cast(list[dict[str, object]], line["spans"])
+            for span in spans:
+                ox, oy = cast(tuple[float, float], span["origin"])
+                origins.append((ox, oy))
+    return tuple(origins)
+
+
+def _iter_nonspace_chars(
+    rawdict: Mapping[str, object],
+) -> tuple[tuple[str, float, float, float, float], ...]:
+    chars: list[tuple[str, float, float, float, float]] = []
+    blocks = cast(list[dict[str, object]], rawdict["blocks"])
+    for block in blocks:
+        lines = cast(list[dict[str, object]], block.get("lines", []))
+        for line in lines:
+            spans = cast(list[dict[str, object]], line["spans"])
+            for span in spans:
+                span_chars = cast(list[dict[str, object]], span["chars"])
+                for char in span_chars:
+                    value = cast(str, char["c"])
+                    if value.isspace():
+                        continue
+                    x0, y0, x1, y1 = cast(
+                        tuple[float, float, float, float], char["bbox"]
+                    )
+                    chars.append((value, x0, y0, x1, y1))
+    return tuple(chars)
+
+
+def _span_origins_from_values(
+    page: fitz.Page,
+    exclude_bbox: tuple[float, float, float, float],
+    origins: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...]:
+    retained: list[tuple[float, float]] = []
     x0, y0, x1, y1 = _visual_bbox_to_dict_space(page, exclude_bbox)
-    for block in page.get_text("rawdict")["blocks"]:
-        for line in block.get("lines", []):
-            for span in line["spans"]:
-                ox, oy = span["origin"]
-                if x0 - 1.0 <= ox <= x1 + 1.0 and y0 - 1.0 <= oy <= y1 + 1.0:
-                    continue  # target's own span (its glyph metrics may change)
-                origins.append((round(ox, 1), round(oy, 1)))
-    return tuple(sorted(origins))
+    for ox, oy in origins:
+        if x0 - 1.0 <= ox <= x1 + 1.0 and y0 - 1.0 <= oy <= y1 + 1.0:
+            continue  # target's own span (its glyph metrics may change)
+        retained.append((round(ox, 1), round(oy, 1)))
+    return tuple(sorted(retained))
+
+
+def _span_origins(
+    page: fitz.Page,
+    exclude_bbox: tuple[float, float, float, float],
+    *,
+    rawdict: Mapping[str, object] | None = None,
+) -> tuple[tuple[float, float], ...]:
+    if rawdict is None:
+        rawdict = cast(dict[str, object], page.get_text("rawdict"))
+    return _span_origins_from_values(
+        page, exclude_bbox, _iter_span_origins(rawdict)
+    )
 
 
 def capture_page_state(
-    doc: fitz.Document, page: fitz.Page, prepared: PreparedEdit
+    doc: fitz.Document,
+    page: fitz.Page,
+    prepared: PreparedEdit,
+    *,
+    interpretation: PageInterpretation | None = None,
+    reuse_rawdict: bool = False,
 ) -> PageState:
-    pixmap = page.get_pixmap(dpi=_VERIFY_DPI)
+    pixmap = (
+        interpretation.pixmap(dpi=_VERIFY_DPI)
+        if interpretation is not None
+        else page.get_pixmap(dpi=_VERIFY_DPI)
+    )
+    rawdict: Mapping[str, object] | None = None
     growth_zone_glyphs = 0
     if prepared.has_ink_growth:
-        growth_zone_glyphs = count_growth_zone_glyphs(
-            page,
-            target_bbox=prepared.target_bbox_page,
-            verify_bbox=prepared.effective_verify_bbox,
-        )
+        if interpretation is not None:
+            rawdict = interpretation.rawdict()
+        elif reuse_rawdict:
+            rawdict = cast(dict[str, object], page.get_text("rawdict"))
+        if rawdict is None:
+            growth_zone_glyphs = count_growth_zone_glyphs(
+                page,
+                target_bbox=prepared.target_bbox_page,
+                verify_bbox=prepared.effective_verify_bbox,
+            )
+        else:
+            growth_zone_glyphs = count_growth_zone_glyphs(
+                page,
+                target_bbox=prepared.target_bbox_page,
+                verify_bbox=prepared.effective_verify_bbox,
+                rawdict=rawdict,
+            )
+    if interpretation is not None and rawdict is None:
+        rawdict = interpretation.rawdict()
+    elif reuse_rawdict and rawdict is None:
+        rawdict = cast(dict[str, object], page.get_text("rawdict"))
     return PageState(
         streams=tuple(read_page_streams(doc, page)),
         fonts=tuple(page.get_fonts(full=True)),
@@ -119,7 +195,9 @@ def capture_page_state(
         # Always the TARGET box, never the widened one: excluding more
         # origins here would weaken V0c's non-target-geometry proof (a real
         # neighbour span could then move undetected inside the growth band).
-        nontarget_origins=_span_origins(page, prepared.target_bbox_page),
+        nontarget_origins=_span_origins(
+            page, prepared.target_bbox_page, rawdict=rawdict
+        ),
         pixmap_samples=bytes(pixmap.samples),
         pixmap_meta=(pixmap.width, pixmap.height, pixmap.stride, pixmap.n),
         growth_zone_glyphs=growth_zone_glyphs,
@@ -174,6 +252,7 @@ def _verify_patch_postconditions(
     pre_state: PageState,
     *,
     verify_bbox: tuple[float, float, float, float],
+    interpretation: PageInterpretation | None = None,
     reopen_probe: bool = True,
     cached_reopen_probe_ok: bool | None = None,
 ) -> tuple[str, ...] | VerificationFailure:
@@ -247,7 +326,11 @@ def _verify_patch_postconditions(
         _HALO_MARGIN_PT,
     )
     dict_space_halo_rect = fitz.Rect(*_visual_bbox_to_dict_space(page, tuple(halo_rect)))
-    clip_text = page.get_text("text", clip=dict_space_halo_rect)
+    clip_text = (
+        interpretation.clipped_text(dict_space_halo_rect)
+        if interpretation is not None
+        else page.get_text("text", clip=dict_space_halo_rect)
+    )
     if prepared.replacement_text not in clip_text.replace("\n", " "):
         return VerificationFailure(
             RejectReason.VERIFICATION_FAILED,
@@ -260,13 +343,23 @@ def _verify_patch_postconditions(
         return VerificationFailure(
             RejectReason.VERIFICATION_FAILED, "source text still present"
         )
-    if _span_origins(page, prepared.target_bbox_page) != pre_state.nontarget_origins:
+    post_rawdict = interpretation.rawdict() if interpretation is not None else None
+    if (
+        _span_origins(
+            page, prepared.target_bbox_page, rawdict=post_rawdict
+        )
+        != pre_state.nontarget_origins
+    ):
         return VerificationFailure(
             RejectReason.VERIFICATION_FAILED, "non-target span geometry changed"
         )
 
     # V0d — raster identity outside the halo (exact; calibrated ε = 0).
-    post_pixmap = page.get_pixmap(dpi=_VERIFY_DPI)
+    post_pixmap = (
+        interpretation.pixmap(dpi=_VERIFY_DPI)
+        if interpretation is not None
+        else page.get_pixmap(dpi=_VERIFY_DPI)
+    )
     diff = _first_diff_outside_halo(pre_state, post_pixmap, verify_bbox)
     if diff is not None:
         return VerificationFailure(
@@ -342,6 +435,7 @@ def verify_tier0_commit(
     prepared: PreparedEdit,
     pre_state: PageState,
     *,
+    interpretation: PageInterpretation | None = None,
     reopen_probe: bool = True,
     cached_reopen_probe_ok: bool | None = None,
 ) -> tuple[str, ...] | VerificationFailure:
@@ -356,6 +450,7 @@ def verify_tier0_commit(
         prepared,
         pre_state,
         verify_bbox=prepared.target_bbox_page,
+        interpretation=interpretation,
         reopen_probe=reopen_probe,
         cached_reopen_probe_ok=cached_reopen_probe_ok,
     )
@@ -882,6 +977,7 @@ def count_growth_zone_glyphs(
     *,
     target_bbox: tuple[float, float, float, float],
     verify_bbox: tuple[float, float, float, float],
+    rawdict: Mapping[str, object] | None = None,
 ) -> int:
     """Count of non-whitespace rawdict characters already occupying the
     growth zone -- the forward strip between the target's growth-side edge
@@ -902,6 +998,23 @@ def count_growth_zone_glyphs(
     target's own last char ends exactly at ``tx1`` (which is the max of its
     chars' right edges), so it is still excluded.
     """
+    if rawdict is None:
+        rawdict = cast(dict[str, object], page.get_text("rawdict"))
+    return _count_growth_zone_glyphs_from_values(
+        page,
+        target_bbox=target_bbox,
+        verify_bbox=verify_bbox,
+        chars=_iter_nonspace_chars(rawdict),
+    )
+
+
+def _count_growth_zone_glyphs_from_values(
+    page: fitz.Page,
+    *,
+    target_bbox: tuple[float, float, float, float],
+    verify_bbox: tuple[float, float, float, float],
+    chars: tuple[tuple[str, float, float, float, float], ...],
+) -> int:
     zone_visual = _growth_zone_rect(target_bbox, verify_bbox)
     if zone_visual is None:
         return 0
@@ -938,20 +1051,15 @@ def count_growth_zone_glyphs(
         return bbox[3] > target.y0 + 0.5 and bbox[1] >= target.y0 - 0.5
 
     count = 0
-    for block in page.get_text("rawdict")["blocks"]:
-        for line in block.get("lines", []):
-            for span in line["spans"]:
-                for ch in span["chars"]:
-                    if ch["c"].isspace():
-                        continue
-                    bbox = ch["bbox"]
-                    if _is_targets_own(bbox):
-                        continue
-                    if bbox[2] <= zone.x0 or bbox[0] >= zone.x1:
-                        continue  # outside the growth strip's x-range
-                    if bbox[3] <= zone.y0 or bbox[1] >= zone.y1:
-                        continue  # outside the growth strip's y-range
-                    count += 1
+    for _value, x0, y0, x1, y1 in chars:
+        bbox = (x0, y0, x1, y1)
+        if _is_targets_own(bbox):
+            continue
+        if bbox[2] <= zone.x0 or bbox[0] >= zone.x1:
+            continue
+        if bbox[3] <= zone.y0 or bbox[1] >= zone.y1:
+            continue
+        count += 1
     return count
 
 
@@ -961,6 +1069,7 @@ def verify_tier1_commit(
     prepared: PreparedEdit,
     pre_state: PageState,
     *,
+    interpretation: PageInterpretation | None = None,
     reopen_probe: bool = True,
     cached_reopen_probe_ok: bool | None = None,
 ) -> tuple[str, ...] | VerificationFailure:
@@ -997,6 +1106,7 @@ def verify_tier1_commit(
         prepared,
         pre_state,
         verify_bbox=prepared.effective_verify_bbox,
+        interpretation=interpretation,
         reopen_probe=reopen_probe,
         cached_reopen_probe_ok=cached_reopen_probe_ok,
     )

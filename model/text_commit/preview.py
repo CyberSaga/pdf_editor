@@ -24,6 +24,7 @@ from model.text_commit.dto import FontResourceAction, RejectReason
 from model.text_commit.evidence import ReplayEvidenceCache
 from model.text_commit.fonts import DocumentFontRegistry
 from model.text_commit.inspect import page_fingerprint
+from model.text_commit.interpretation import PageInterpretation, interpret_page
 from model.text_commit.patch import (
     PatchSet,
     SpliceError,
@@ -328,7 +329,9 @@ class PlanPreviewRenderer:
             replacements=(plan.replacement,),
             expected_page_fingerprint=plan.page_fingerprint,
         )
-        pre_state = capture_page_state(scratch, page, plan)
+        pre_state = capture_page_state(
+            scratch, page, plan, reuse_rawdict=True
+        )
         try:
             # P3-C: this scratch is never saved or tobytes()'d -- every
             # splice is reverted before render() returns (below), and
@@ -342,13 +345,16 @@ class PlanPreviewRenderer:
         except (StalePlanError, SpliceError) as exc:
             logger.warning("plan preview splice failed: %s", type(exc).__name__)
             return _rejection("preview_splice_failed")
+        post: PageInterpretation | None = None
         try:
+            post = interpret_page(page)
             verify_fn = verify_tier1_commit if is_tier1 else verify_tier0_commit
             verification = verify_fn(
                 scratch,
                 page,
                 plan,
                 pre_state,
+                interpretation=post,
                 reopen_probe=False,
                 cached_reopen_probe_ok=self._session.reopen_probe_ok,
             )
@@ -364,12 +370,16 @@ class PlanPreviewRenderer:
                 fitz.Rect(request.clip_rect)
                 | fitz.Rect(plan.effective_verify_bbox)
             ) & page.rect
-            pixmap = page.get_pixmap(
-                matrix=fitz.Matrix(scale, scale), clip=clip, annots=True
+            pixmap = post.pixmap(
+                matrix=fitz.Matrix(scale, scale), clip=clip
             )
             png_bytes = pixmap.tobytes("png")
         finally:
-            applied.revert(scratch, compress=False)  # P3-C: see apply above
+            try:
+                if post is not None:
+                    post.release()
+            finally:
+                applied.revert(scratch, compress=False)  # P3-C: see apply above
         return PlanPreviewResult(
             session_key=request.session_key,
             generation=request.generation,

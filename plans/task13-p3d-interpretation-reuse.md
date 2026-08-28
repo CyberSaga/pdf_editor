@@ -62,7 +62,20 @@ Result: 1 collection error, exit code 1. Production code had not been changed.
 
 ### Commit 3 — Stage-A green
 
-Pending.
+Implemented the leaf `PageInterpretation`, shared rawdict value derivation,
+preview-only single pre-rawdict extraction, opt-in post verification reuse, and
+release-before-revert nesting. The live engine call sites remain unchanged.
+
+Commands/results:
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q test_scripts/test_text_commit_interpretation_reuse.py
+# 26 passed in 16.03s
+
+$files = Get-ChildItem test_scripts -Filter 'test_text_commit_*.py'
+.venv\Scripts\python.exe -m pytest -q $files
+# 634 passed, 3 skipped, 5 xfailed in 193.32s
+```
 
 ### Commit 4 — Stage-A census and decision
 
