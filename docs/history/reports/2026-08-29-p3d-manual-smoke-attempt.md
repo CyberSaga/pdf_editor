@@ -103,3 +103,25 @@ Fix and retest the visual-to-page mapping used by the text-edit hit region and
 editor placement on `/Rotate 90` and `/Rotate 270`. Then repeat the same
 multi-keystroke test and require an actual plan-backed commit (not the legacy
 fallback) before marking P3-D's GUI smoke PASS.
+
+## Retest after `32a7630`
+
+The `/Rotate 270` placement change in `32a7630` was smoke-tested using the
+same fixture and environment. The running App was confirmed to descend from the
+worktree `.venv` launch, and the checked-out source contained the intended
+`normalized_rotation == 270` `pos_y = y0 + scaled_rect.y0` code.
+
+The interactive result remained **FAIL**:
+
+1. Text-edit mode still drew horizontal editable-region outlines near the top
+   of the page while the visible rotated text remained lower on the page.
+2. Directly clicking the visible `Price 2024` still did not open an editor.
+3. Clicking the misplaced outline opened the editor and rendered `Price 2025`
+   at that same incorrect top-of-page location; the original rotated text
+   remained below.
+4. The temporary edit was cancelled and the App closed normally.
+
+Therefore `32a7630` is insufficient to clear the manual smoke gate. The
+remaining defect is upstream of, or independent from, the one `y0`/`y1` editor
+placement branch: the text-edit selectable region and direct visual hit mapping
+are still in a different coordinate space from the page raster.
