@@ -26,3 +26,6 @@ pypdf>=4.0
 
 # Test runner (only needed when running test_scripts/*pytest*).
 pytest>=7.0
+
+# Dev-only Type0 same-face census and synthetic mutation-premise probes.
+fonttools>=4.40
