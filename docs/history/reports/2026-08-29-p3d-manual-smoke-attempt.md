@@ -182,3 +182,29 @@ launch configuration and require: outlines/hover on the vertical text, a
 click on the vertical text opening a vertical editor over it, 5–10 plan
 preview keystrokes (cold miss then warm hits), and a plan-backed Apply with
 no legacy-fallback dialog.
+
+## Manual retest after `f79c9d2` (2026-08-29)
+
+The worktree at `f79c9d2` was launched with the required tiered/plan/Tier-1
+environment and the same `/Rotate 270` fixture.  This was a real desktop
+interaction.  The coordinate-space fix clears the original visual defect:
+
+1. Text-edit mode drew the `Price 2024` selectable outline directly over the
+   rendered vertical ink.
+2. Clicking that visible text opened a vertical inline editor in the same
+   location, with the expected 24pt Helvetica style.
+3. Five successive replacement updates reached a correctly positioned,
+   vertically oriented `Price 2025` preview; no rotation jump, clipping, or
+   stale-frame overwrite was observed.
+
+The plan-only commit gate did **not** pass in this manual run.  Applying the
+clipboard-driven multi-update edit prompted `tier0:not_single_literal_i ->
+legacy`; legacy fallback was explicitly declined.  A subsequent direct
+single-character retry could not be evaluated because the active Chinese IME
+inserted a composition character rather than literal ASCII.  The disposable
+edit was cancelled and the App closed normally without a visible exception.
+
+Result: **partial PASS for rotated hit-testing/editor placement/preview;
+FAIL for the required plan-backed commit parity.**  This must not be promoted
+to a complete P3-D manual-smoke PASS until a clean ASCII inline edit reaches
+Tier 0 or Tier 1 and Apply completes without the legacy-fallback dialog.
