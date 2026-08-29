@@ -1522,7 +1522,7 @@ class TextEditManager:
             editor_width_px = max(int(round(scaled_rect.height)), 1)
             editor_height_px = max(int(round(scaled_rect.width)), 1)
             pos_x = float(x0 + scaled_rect.x0)
-            pos_y = float(y0 + scaled_rect.y0)
+            pos_y = float(y0 + scaled_rect.y1)
 
         initial_frame = self._capture_frozen_first_frame(
             scaled_rect=scaled_rect,
