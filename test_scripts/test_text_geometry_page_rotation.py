@@ -33,14 +33,14 @@ WORD = "2024"
 REPLACEMENT = "2025"  # Helvetica digits share one advance: Tier 0 eligible
 
 
-def _write_rotated_pdf(path: Path, rotation: int, text: str = WORD) -> Path:
+def _write_rotated_pdf(path: Path, rotation: int, text: str = WORD, *, td_y: int = 672) -> Path:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
     content_xref = doc.get_new_xref()
     doc.update_object(content_xref, "<<>>")
     # PDF user space is y-up: 672 from the bottom == 120 pt from the top in
     # the (unrotated) dict space PyMuPDF reports.
-    doc.update_stream(content_xref, f"BT /F1 12 Tf 72 672 Td ({text}) Tj ET".encode("latin-1"))
+    doc.update_stream(content_xref, f"BT /F1 12 Tf 72 {td_y} Td ({text}) Tj ET".encode("latin-1"))
     doc.xref_set_key(page.xref, "Contents", f"{content_xref} 0 R")
     font_xref = doc.get_new_xref()
     doc.update_object(
@@ -268,6 +268,50 @@ def test_edit_text_resolves_a_visual_rect_without_span_id(rotated_model) -> None
 
     assert result is EditTextResult.SUCCESS, result
     assert REPLACEMENT in model.doc[0].get_text("text")
+
+
+@pytest.mark.parametrize("rotation", QUARTER)
+def test_legacy_edit_keeps_place_when_source_sits_near_the_unrotated_bottom(
+    tmp_path, rotation
+) -> None:
+    """The legacy engine's page-bounds clamps must use the UNROTATED page
+    bounds: on a quarter-turn page ``page.rect`` has swapped dimensions, so a
+    run whose unrotated y exceeds the displayed height was clamped into a
+    degenerate insert rect and re-inserted at the page origin.
+
+    ``new_rect`` (the unchanged displayed bbox) forces the htmlbox path,
+    which is the one that clamps; the fast ``insert_text`` path does not."""
+    path = _write_rotated_pdf(tmp_path / f"legacy{rotation}.pdf", rotation, td_y=100)
+    model = PDFModel()  # default settings: legacy engine
+    model.open_pdf(str(path))
+    model.ensure_page_index_built(1)
+    try:
+        ink_before = _ink_bbox(model.doc[0])
+        hit = model.get_text_info_at_point(1, _centre(ink_before), allow_fallback=False)
+        assert hit is not None
+
+        result = model.edit_text(
+            1,
+            fitz.Rect(hit.target_bbox),
+            REPLACEMENT,
+            font=hit.font,
+            size=float(hit.size),
+            color=tuple(hit.color),
+            original_text=hit.target_text,
+            target_span_id=hit.target_span_id,
+            target_mode="run",
+            new_rect=fitz.Rect(hit.target_bbox),
+        )
+
+        assert result is EditTextResult.SUCCESS, result
+        assert REPLACEMENT in model.doc[0].get_text("text")
+        ink_after = _ink_bbox(model.doc[0])
+        assert abs(ink_after.x0 - ink_before.x0) <= 6 and abs(ink_after.y0 - ink_before.y0) <= 6, (
+            ink_before,
+            ink_after,
+        )
+    finally:
+        model.close()
 
 
 @pytest.mark.parametrize("rotated_model", QUARTER, indirect=True)

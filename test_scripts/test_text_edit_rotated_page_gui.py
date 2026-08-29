@@ -135,6 +135,16 @@ def _click_ink(view: PDFView, page: fitz.Page):
     return centre
 
 
+def _dark_pixel_count(image: QImage) -> int:
+    count = 0
+    for y in range(image.height()):
+        for x in range(image.width()):
+            c = image.pixelColor(x, y)
+            if c.alpha() > 0 and (c.red() + c.green() + c.blue()) < 300:
+                count += 1
+    return count
+
+
 def _assert_scene_rects_overlap(a, b, min_ratio: float = 0.5) -> None:
     ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
     ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
@@ -147,7 +157,7 @@ def _assert_scene_rects_overlap(a, b, min_ratio: float = 0.5) -> None:
 # ------------------------------------------------------------------ tests
 
 
-@pytest.mark.parametrize("gui", [90, 270], indirect=True)
+@pytest.mark.parametrize("gui", [90, 180, 270], indirect=True)
 def test_hover_highlight_and_outlines_land_on_visible_glyphs(gui) -> None:
     model, view, _controller, _rotation, _decline = gui
     sx0, sy0, sx1, sy1 = _ink_scene_rect(view, model.doc[0])
@@ -165,7 +175,7 @@ def test_hover_highlight_and_outlines_land_on_visible_glyphs(gui) -> None:
     assert any(r.contains(centre) for r in outlines), (outlines, centre)
 
 
-@pytest.mark.parametrize("gui", [90, 270], indirect=True)
+@pytest.mark.parametrize("gui", [90, 180, 270], indirect=True)
 def test_click_on_visible_glyphs_opens_editor_over_them_with_screen_rotation(gui) -> None:
     model, view, _controller, rotation, _decline = gui
     ink_scene = _ink_scene_rect(view, model.doc[0])
@@ -177,6 +187,12 @@ def test_click_on_visible_glyphs_opens_editor_over_them_with_screen_rotation(gui
     proxy = view.text_editor
     r = proxy.mapRectToScene(proxy.boundingRect())
     _assert_scene_rects_overlap((r.left(), r.top(), r.right(), r.bottom()), ink_scene)
+    # The frozen first frame is grabbed from the displayed bbox and
+    # counter-rotated into the proxy frame: it must show the clicked glyphs,
+    # not the page margin beside them.
+    frame = proxy.widget()._frozen_first_frame_image
+    assert frame is not None and not frame.isNull()
+    assert _dark_pixel_count(frame) >= 10, "frozen first frame must contain the glyph ink"
 
 
 @pytest.mark.parametrize("gui", [0], indirect=True)
@@ -203,7 +219,43 @@ def test_untouched_session_sends_no_style_override(gui) -> None:
     assert outcome is not None and outcome.status is CommitStatus.COMMITTED, outcome
 
 
-@pytest.mark.parametrize("gui", [90, 270], indirect=True)
+@pytest.mark.parametrize("gui", [0], indirect=True)
+def test_font_pick_and_revert_sends_no_style_override(gui) -> None:
+    """Picking another font and picking the original back is not a restyle:
+    both sides of the comparison must go through the same alias mapping."""
+    model, view, _controller, _rotation, decline = gui
+    _click_ink(view, model.doc[0])
+    assert view.text_editor is not None
+    combo = view.text_font
+    original_index = combo.currentIndex()
+    other_index = combo.findData("cour")
+    assert other_index >= 0 and other_index != original_index
+
+    combo.setCurrentIndex(other_index)
+    _pump_events(150)
+    assert view.text_editor is not None
+    assert getattr(view, "editing_font_name", "") == "cour"  # positive control: a pick registers
+    combo.setCurrentIndex(original_index)
+    _pump_events(150)
+    assert view.text_editor is not None
+
+    captured: list = []
+    view.sig_edit_text.connect(captured.append)
+    view.text_editor.widget().setPlainText(REPLACEMENT)
+    QTest.mouseClick(
+        view.text_apply_btn, Qt.LeftButton, Qt.NoModifier, view.text_apply_btn.rect().center()
+    )
+    _pump_events(300)
+
+    assert captured, "Apply must emit the edit request"
+    overrides = captured[-1].style_overrides
+    assert overrides is None or not overrides.changed, overrides
+    assert decline.calls == [], decline.calls
+    outcome = model.last_commit_outcome
+    assert outcome is not None and outcome.status is CommitStatus.COMMITTED, outcome
+
+
+@pytest.mark.parametrize("gui", [90, 180, 270], indirect=True)
 def test_plan_preview_stays_available_on_rotated_editor(gui) -> None:
     model, view, _controller, rotation, _decline = gui
     _click_ink(view, model.doc[0])
@@ -220,8 +272,12 @@ def test_plan_preview_stays_available_on_rotated_editor(gui) -> None:
     assert editor.apply_plan_preview(editor._plan_generation, raster, "tok") is True
     local = editor._preview_image
     assert local is not None
-    assert (local.width(), local.height()) == (30, 10), (local.width(), local.height())
-    marker = (29, 0) if rotation == 270 else (0, 9)
+    expected_size = {90: (30, 10), 180: (10, 30), 270: (30, 10)}[rotation]
+    assert (local.width(), local.height()) == expected_size, (local.width(), local.height())
+    # Where the raster's top-left corner lands after the counter-rotation:
+    # 90 -> rotate(-90) puts it bottom-left, 180 -> bottom-right, 270 ->
+    # rotate(+90) puts it top-right -- the frozen-first-frame convention.
+    marker = {90: (0, 9), 180: (9, 29), 270: (29, 0)}[rotation]
     assert local.pixelColor(*marker) == QColor(255, 0, 0, 255), marker
 
 
