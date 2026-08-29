@@ -2,8 +2,9 @@
 
 **Date:** 2026-08-29 14:32 Asia/Taipei  
 **Branch:** `task13/p3d-interpretation-reuse`  
-**Result:** FAILED -- the resumed interactive smoke reached the App pipeline
-and found a rotated-page UI/plan-preview integration failure.
+**Initial result:** FAILED -- the resumed interactive smoke reached the App
+pipeline and found a rotated-page UI/plan-preview integration failure.  The
+final IME-safe retest at the end of this report is a **PASS**.
 
 ## Required configuration
 
@@ -208,3 +209,74 @@ Result: **partial PASS for rotated hit-testing/editor placement/preview;
 FAIL for the required plan-backed commit parity.**  This must not be promoted
 to a complete P3-D manual-smoke PASS until a clean ASCII inline edit reaches
 Tier 0 or Tier 1 and Apply completes without the legacy-fallback dialog.
+
+## Final IME-safe manual retest (2026-08-29)
+
+Result: **PASS**.
+
+The previous commit failure was not caused by the Chinese IME or by clipboard
+input.  Inspection of the first disposable fixture showed that its content
+stream was actually a hex-string `TJ` array:
+
+```text
+/helv 24 Tf [<50726963652032303234>]TJ
+```
+
+The tiered engine intentionally rejects `TJ` arrays with
+`tier0:not_single_literal_tj`; the report's earlier description of that file as
+a single `Tj` was therefore incorrect.  The final retest used the same
+`_write_rotated_pdf` helper as the green rotated-page GUI test and independently
+verified this stream before launch:
+
+```text
+rotation=270 text='2024\n'
+BT /F1 12 Tf 72 672 Td (2024) Tj ET
+```
+
+The App was launched with the required environment:
+
+```powershell
+$env:TEXT_COMMIT_ENGINE = "tiered"
+$env:TEXT_COMMIT_PREVIEW = "plan"
+$env:TEXT_COMMIT_MAX_TIER = "1"
+```
+
+To make automation independent of both installed Windows input methods
+(`zh-Hant-TW` and `ja`), printable characters were sent one at a time through
+Win32 `SendInput` with `KEYEVENTF_UNICODE`; Ctrl+A and Backspace remained normal
+virtual-key events.  On 64-bit Windows the harness used the required 40-byte
+`INPUT` union.  This sends a Unicode packet to Qt without asking the active IME
+to compose the ASCII letters or digits, while still producing a separate text
+event for every character.  Clipboard replacement is not suitable evidence for
+the Stage-B cross-keystroke cache.
+
+The first session performed eight text-changing events ending at `2025`
+(`2025`, Backspace, `6`, Backspace, `5`).  The rotated preview updated after
+each event, stayed vertical and co-located with the source, and showed no clip
+jump or stale-generation overwrite.  Apply completed without a fallback dialog;
+the committed `2025` stayed in the same place as the last preview frame.
+
+![Chinese-IME-safe final preview](assets/p3d-smoke-ime-cn-preview.png)
+
+![First plan-backed commit](assets/p3d-smoke-ime-cn-commit.png)
+
+Without closing the document, a second edit was opened and Windows was switched
+to the installed Japanese IME (`A` mode was visible in the taskbar).  Another
+eight Unicode-packet text events ended at `2026` (`2026`, Backspace, `5`,
+Backspace, `6`).  Preview and Apply again completed without fallback, rotation
+or position changes.
+
+![Japanese-IME-safe second preview](assets/p3d-smoke-ime-ja-preview.png)
+
+![Second plan-backed commit](assets/p3d-smoke-ime-ja-commit.png)
+
+Closing the App then produced the normal unsaved-changes dialog.  Selecting
+**Discard all** closed the process cleanly; no orphaned-object, invalid-page or
+MuPDF exception was visible.  Reopening the disposable fixture confirmed that
+discard left the original `(2024) Tj` file unchanged.
+
+For future Windows GUI smoke automation, prefer `KEYEVENTF_UNICODE` for
+printable text and virtual-key events for editing/navigation keys.  Switching a
+Chinese or Japanese IME to alphanumeric/direct-input mode is acceptable for a
+human smoke, but is less deterministic for automation and is unnecessary with
+Unicode packets.
