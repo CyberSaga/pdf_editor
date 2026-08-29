@@ -1761,7 +1761,7 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 
 **Area:** `model/tools/annotation_tool.py` — every `page.add_*_annot` / `annot.set_rect` / `annot.rect` site
 **Symptom:** Rectangle/highlight/underline/strikeout/note annotations land down-right of the click on `/Rotate` pages (the complex HVAC fixture's pages are rotation=270). Tests asserting on `annot.rect` readback pass anyway, because readback echoes the requested values in unrotated space — only pixel-level verification of a rendered pixmap exposes the misplacement.
-**Cause:** PyMuPDF 1.27 interprets annot-creation geometry (and stores `/Rect`) in **unrotated** page space, while the app deals exclusively in displayed (`page.rect`) coordinates. Every self-canceling view path (text selection, object handles, inline editor) looked correct because scene→doc→scene round-trips through the same helpers cancel any absolute bias; annotations bake absolute coordinates. Two extra traps: (1) markup annots follow quad corner roles, so a derotated *rect* still draws underline ink on a vertical edge at 90/270 — a corner-mapped `fitz.Quad` is required; (2) Text/Note icons are fixed-size glyphs anchored at the rect corner, so `set_rect` needs anchor-point derotation, not corner-remap+normalize. Exception: `add_redact_annot` accepts displayed coords (rotation-safe), so the text-commit engine is unaffected.
+**Cause:** PyMuPDF 1.27 interprets annot-creation geometry (and stores `/Rect`) in **unrotated** page space, while the app deals exclusively in displayed (`page.rect`) coordinates. Every self-canceling view path (text selection, object handles, inline editor) *looked* correct because scene→doc→scene round-trips through the same helpers cancel any absolute bias; annotations bake absolute coordinates. (Correction, 2026-08-29: the text paths only cancelled *relative to their own misplaced outline* — against the raster they were wrong on every `/Rotate 90/270` page; see "The model's text-geometry surface was unrotated dict space…".) Two extra traps: (1) markup annots follow quad corner roles, so a derotated *rect* still draws underline ink on a vertical edge at 90/270 — a corner-mapped `fitz.Quad` is required; (2) Text/Note icons are fixed-size glyphs anchored at the rect corner, so `set_rect` needs anchor-point derotation, not corner-remap+normalize. Exception: `add_redact_annot` accepts displayed coords (rotation-safe), so the text-commit engine is unaffected.
 **Fix:** Convert at the model boundary in BOTH directions via chokepoint helpers in `AnnotationTool`: `_derotate_rect`/`_derotate_point`/`_displayed_rect_to_quad`/`_derotate_text_annot_rect` on write, `_rotate_rect_to_displayed` on read (`get_all_annotations`). Regression tests must use baseline-relative pixel detection (render at rotation 0 as the expected ink bbox, compare rotations 90/180/270 against it) — never `annot.rect`.
 **File:** `model/tools/annotation_tool.py`, `test_scripts/test_annotation_rotation.py`
 
@@ -1967,11 +1967,11 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **File:** test_scripts/test_text_commit_textwriter_zorder.py (font-honesty fixture); relevant to any future model/text_commit/fonts.py Tier-1 rebuild code.
 
 ## OCG visibility only takes effect after a tobytes()+reopen round trip — and only on a *second* round trip after set_layer
-**Area:** model/text_commit/verify.py (`_ocg_membership_lost`)
-**Symptom:** Calling `doc.set_layer(-1, off=[...])` on a live document and then immediately calling `get_text()`/rendering the same live page shows no change at all — the OCG toggle appears to be a no-op.
-**Cause:** OCG on/off state is only consulted by MuPDF's content interpreter when a document is (re)opened from bytes; a live, already-parsed page/pixmap does not re-evaluate it.
-**Fix:** To probe OCG membership, snapshot the doc via `tobytes()`+reopen, call `set_layer` on THAT reopened copy, `tobytes()` again, and reopen a second time before calling `get_text()` — two full round trips total, never mutating the original live document.
-**File:** model/text_commit/verify.py (`_ocg_membership_lost`)
+**Area:** model/text_commit/verify.py (`_ocg_membership_status`)
+**Symptom:** Calling `doc.set_layer(-1, off=[...])` on a live document and then immediately calling `get_text()`/rendering the same live page shows no change at all — the OCG toggle appears to be a no-op. Separately: a locked/encrypted KEEP probe (or any exception) used to return bool `False`, which `verify_tier1_strategy` recorded as `ocg_membership_preserved`.
+**Cause:** OCG on/off state is only consulted by MuPDF's content interpreter when a document is (re)opened from bytes; a live, already-parsed page/pixmap does not re-evaluate it. Bool "not lost" conflated "preserved" with "could not evaluate".
+**Fix:** Probe via KEEP `tobytes()`+reopen → `set_layer` → second `tobytes()`+reopen before `get_text()`, never mutating the live doc. Return tri-state `preserved`/`lost`/`unknown`; unknown must never be recorded as preserved.
+**File:** model/text_commit/verify.py (`_ocg_membership_status`)
 
 ## Concatenating a block's spans is right; concatenating its lines deletes a word boundary
 **Area:** model/text_block_parsing.py (`_parse_block`)
@@ -2043,12 +2043,12 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Fix:** Report it rather than inventing a fixture that "proves" a redundant branch. A guard that no mutation can kill is either dead or subsumed, and the honest outcome is to say which — writing a test that passes for a different reason is worse than having no test. Kept as cheap defence-in-depth; the test's docstring now says it pins the *behaviour*, not that line.
 **File:** `test_scripts/test_tier0_target_resolution.py` (`test_shape_multi_line_members_are_refused`)
 
-## `TARGET_IN_FORM_XOBJECT` is page-scoped, not target-scoped — it mislabels almost every miss on real corpora
+## `TARGET_IN_FORM_XOBJECT` must be target-scoped — page-scoped labeling mislabels almost every miss on real corpora
 **Area:** model/text_commit/inspect.py (`bind_source_text`)
 **Symptom:** In the 2026-08-01 funnel measurement, 34,552 bind failures carried `TARGET_IN_FORM_XOBJECT`, but a byte-scan of every invoked Form XObject confirmed only 1,827 (5.3%) of those targets actually live in one. 409/415 corpus pages (98.6%) invoke *some* Form XObject (a logo, a bullet glyph), so the label was eligible to fire on virtually any miss.
-**Cause:** The reclassification asks a *page* question — "does this page invoke any XObject?" — where a *target* question was needed — "is this target's text inside an invoked XObject?". Any unmatched target on such a page inherits the label regardless of where its text actually is.
-**Fix:** Deconflict per target: replay each invoked Form XObject once (cached per document) and byte-check the target against it; only a confirmed hit keeps the label, everything else falls through to the true code (`no_source_match` / `target_reconstruction_unverified`). Prototyped in `scripts/measure_tier_funnel.py`; production `bind_source_text` still behaves page-scoped — do not trust this reason code in telemetry or audits until that is fixed (tracked in TODOS.md).
-**File:** `scripts/measure_tier_funnel.py` (deconfliction pass)
+**Cause:** The reclassification asked a *page* question — "does this page invoke any XObject?" — where a *target* question was needed — "is this target's text inside an invoked XObject?".
+**Fix (WS-D 2026-08-03):** `_target_in_invoked_form_xobjects` replays each Form XObject from `page.get_xobjects()` (one level) and byte-checks the target; only a confirmed hit keeps the label, otherwise `NO_MATCH`.
+**File:** model/text_commit/inspect.py (`bind_source_text`)
 
 ## Calling `bind_source_text` per target re-replays the whole page — prohibitively slow for multi-target sampling
 **Area:** model/text_commit (measurement/tooling)
@@ -2066,10 +2066,10 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 
 ## Text-space and page-space quantities must not mix in bbox/halo math — under scale the error is a silent false ACCEPT
 **Area:** model/text_commit/plan.py (fallback `target_bbox`)
-**Symptom:** With `target_bbox=None` and a uniformly scaled Tm (`a==d==0.5`), the fallback bbox came out exactly 2× too wide — and the dangerous direction is `s<1`, where the halo *inflates*: `verify` proves raster identity only *outside* the halo, so an inflated halo silently absorbs out-of-halo corruption, invisible to V0a–V0e. A second, independent instance of the same mistake surfaced in Codex review (2026-08-01): even with the Tm term fixed, a page with `/UserUnit != 1` still built a wrong halo — MuPDF folds `/UserUnit` into `page.rect`/`page.transformation_matrix` (mediabox/cropbox stay unscaled), so `binding.origin_page` is *already* page-scaled by it while `old_advance`/`font_size` are not. At `/UserUnit 2` (net page scale 1) the fallback built a half-size halo and a valid edit was refused (`verification_failed`); at `/UserUnit 0.5` it built a double-size halo — the dangerous false-ACCEPT direction again.
-**Cause:** `binding.origin_page` is page space, but `old_advance` and `show.font_size` are text space; adding them without applying *every* scale between text space and page space mixes coordinate systems. Harmless at scale 1, which is why nothing caught either instance before D1 admitted scaled matrices and before a `/UserUnit`-bearing page was tested.
-**Fix:** Multiply the advance and font-size extents by the *product* of the TRM scale and the page transform's uniform scale: `scale = trm_uniform_scale * math.hypot(page_matrix.a, page_matrix.b)`. `hypot` of the transform's first row, not `abs(a)` — at `/Rotate 90`/`270` the transform is `Matrix(0, k, k, 0, ...)` and `abs(a)` reads 0, collapsing the halo to zero width. Both terms confirmed Red-first with the exact predicted halo size (D1: 2×; Codex-P2: 1/2× and 2× at `/UserUnit 2` and `0.5`). Still wrong and out of scope for both fixes: the same expression assumes text runs left-to-right in page space, so the *shape* (not just the scale) is wrong on `/Rotate 90`/`270` pages — `origin_page` is correct (it goes through the full transform), only the axis-aligned box built from it is not; reachable from the preview path (`request.target_bbox` is `tuple | None`); tracked in TODOS.md.
-**File:** `model/text_commit/plan.py`; tests in `test_scripts/test_text_commit_tier0.py`, `test_scripts/test_text_commit_structural_gates.py`
+**Symptom:** With `target_bbox=None` and a uniformly scaled Tm (`a==d==0.5`), the fallback bbox came out exactly 2× too wide — and the dangerous direction is `s<1`, where the halo *inflates*: `verify` proves raster identity only *outside* the halo, so an inflated halo silently absorbs out-of-halo corruption, invisible to V0a–V0e. A second instance: `/UserUnit != 1` left the halo off by the page scale. A third: `/Rotate 90/270` left a horizontal halo while pixmap ink ran vertically — because `page.transformation_matrix` omits `/Rotate` in PyMuPDF 1.27 (only `page.rotation_matrix` supplies it); rawdict stays in unrotated space while `get_pixmap` is visual.
+**Cause:** Mixing text-space advance/size with page/visual coordinates without applying every matrix between them. Assuming `transformation_matrix` alone is the "full page transform" is wrong under `/Rotate`.
+**Fix:** Build the rect in user space, map through `_page_visual_matrix` = `transformation_matrix * rotation_matrix`. Same matrix used by `_grown_verify_bbox`. Scale/`/UserUnit`/`/Rotate` fixtures in `test_text_commit_structural_gates.py`.
+**File:** `model/text_commit/plan.py`; tests in `test_scripts/test_text_commit_structural_gates.py`
 
 ## PyMuPDF `insert_text` emits `[<...>] TJ` — an array, never a hex `Tj`
 **Area:** test fixtures for text-commit gates
@@ -2098,3 +2098,535 @@ Two testing gotchas found here: pytest's assertion rewriting keeps its own tempo
 **Cause:** In a conjunction of guards, a fixture only pins the guard that is the *sole* reason it is rejected. Off-nominal in the mutated dimension is not enough — it must be nominal in every other dimension the earlier guards check.
 **Fix:** Pin `b==c==0` with `a==d>0` plus off-diagonals set; pin `a>0` with a point reflection (`a==d<0`). Both confirmed by actually running the mutants — reasoning about which fixture kills which mutant was wrong twice here. Complements the "redundant guard cannot be made SENSITIVE" entry above.
 **File:** `test_scripts/test_text_commit_structural_gates.py`
+
+---
+
+## Same-line successor merges into the target's own rawdict span without an intervening Tf/Tm/T*
+
+**Area:** `model/text_commit` (rawdict-derived bboxes) / test fixtures
+**Symptom:** Two Slice 1 red tests (neighbour-word and single-narrow-glyph growth-refusal fixtures) failed with engine.prepare() returning an accepted PreparedEdit instead of the expected GROWTH_REGION_NOT_BLANK PlanRejection.
+**Cause:** `page.get_text('rawdict')` groups consecutive Tj shows sharing font state into ONE span when nothing (Td/Tm/T*/Tf) separates them, so `_span(page, TARGET)['bbox']` returned the union of the target AND its same-line successor's bbox, not the target's own — feeding an already-too-wide box into target_bbox made the 'occupied growth zone' look like it belonged to the target itself.
+**Fix:** Added a char-level `_target_bbox(page, probe)` helper that unions only the rawdict characters belonging to the probe's own first occurrence (mirroring how `_first_char_origin` already had to work char-level for the same reason), and used it in place of the merged span bbox for the two affected fixtures.
+**File:** `test_scripts/test_text_commit_tier1_slice1.py`
+
+---
+
+## plan -> patch -> verify -> plan runtime import cycle
+
+**Area:** `model/text_commit`
+**Symptom:** Importing `model.text_commit.plan` would raise ImportError as soon as plan.py needs patch.py's Tier 1 composite builder.
+**Cause:** `patch.py` imports `verify.py` (for `prove_source_resource_reuse`); `verify.py` previously imported `PreparedEdit` from `plan.py` at runtime; `plan.py` now imports `patch.py` — closing the cycle.
+**Fix:** `verify.py`'s `from model.text_commit.plan import PreparedEdit` moved under `if TYPE_CHECKING:` (safe because verify.py already has `from __future__ import annotations` and only uses `PreparedEdit` in annotations).
+**File:** `model/text_commit/verify.py`
+
+---
+
+## mypy loses None-narrowing for a dataclass field re-accessed in a different function
+
+**Area:** `model/text_commit/plan.py`
+**Symptom:** mypy arg-type error passing `show.font_resource` (str | None) to `PreparedEdit(font_resource=...)` (str) inside the newly extracted _build_tier0/_build_tier1, even though the None case was already refused earlier.
+**Cause:** The `if show.font_resource is None: return ...` guard runs inside `_classify_common`; `_build_tier0`/`_build_tier1` receive the same ShowOp via a stored `_ClassifiedTarget.show` field in a different function scope, and mypy does not carry narrowing across that boundary.
+**Fix:** Added `assert show.font_resource is not None` at the top of both `_build_tier0` and `_build_tier1` — a type-narrowing restatement of an already-enforced invariant, not a new runtime check.
+**File:** `model/text_commit/plan.py`
+
+---
+
+## Widening V0c's non-target-span-origin comparison to verify_bbox would false-reject every honest growth commit
+
+**Area:** `model/text_commit/verify.py`
+**Symptom:** The design's literal wording ('every use of prepared.target_bbox_page replaced by the verify_bbox parameter') would, if applied to the `_span_origins(...) != pre_state.nontarget_origins` comparison, spuriously report 'non-target span geometry changed' on every accepted Tier 1 growth commit.
+**Cause:** `capture_page_state` always computes `pre_state.nontarget_origins` by excluding `target_bbox_page` (the narrow box), never `verify_bbox_page`; comparing that pre-set against a post-set excluded by the wider `verify_bbox` would silently drop any real neighbour span sitting between the two boxes from the post-set while it is still present in the pre-set.
+**Fix:** `_verify_patch_postconditions` widens only the V0c extraction clip (halo_rect) and the V0d raster-diff halo to `verify_bbox`; the V0c span-origin comparison stays pinned to `prepared.target_bbox_page` on both sides, matching what `capture_page_state` actually computed.
+**File:** `model/text_commit/verify.py`
+
+---
+
+## Preview verification must capture pre-patch state and reuse the session scratch
+
+**Area:** `model/text_commit/preview.py`, `model/text_commit/verify.py`
+
+**Symptom:** A preview either falsely rejects a valid growth candidate as
+occupied or adds one full-document serialization/open per keystroke.
+
+**Cause:** Growth occupancy is a PRE-EDIT proof, so calling
+`capture_page_state(...)` after `apply_patchset(...)` counts the replacement
+glyphs as pre-existing. Conversely, invoking live V0e's KEEP-encrypted
+serialization probe for every preview generation defeats the one
+session-scratch performance contract.
+
+**Fix:** Capture `PageState` before applying the patch, run the same V0a–V0d
+checks on the already-open session scratch, and use that scratch's
+reopenability certificate for preview V0e. Live commit continues to perform
+the real KEEP-encrypted serialize/reopen probe.
+
+**File:** `model/text_commit/preview.py`, `model/text_commit/verify.py`
+
+---
+
+## High-fidelity stale undo must refuse, not snapshot-restore
+
+**Area:** `model/edit_commands.py` (`EditTextCommand.undo`)
+**Symptom:** After a Tier 0/1 commit, an out-of-band stream drift made the inverse PatchSet stale; undo silently fell through to `page-snapshot` restore, rewriting annotation xrefs and discarding the drifted page state while still popping the command off the undo stack.
+**Cause:** Undo treated `StalePlanError` as "use the snapshot fallback", while redo already refused with `STALE_PLAN` and zero mutation. Asymmetric policy.
+**Fix:** When a high-fidelity inverse is stale → `EditTextResult.STALE_UNDO`, set `CommitStatus.STALE_PLAN`, mutate nothing, return `False` so `CommandManager.undo` retains the command. Snapshot restore remains only for non-high-fidelity commands.
+**File:** `model/edit_commands.py`; test `test_undo_after_external_change_fails_stale_without_mutation`
+
+---
+
+## PDFModel property setters must getattr-guard legacy slots — tests build models via `__new__`
+
+**Area:** `model/pdf_model.py` (session-fallback properties), `test_scripts/`
+**Symptom:** Six previously-green tests (`test_resolve_target_mode`, `test_snapshot_restore`, `test_tier0_target_resolution`) failed mid-workstream with `AttributeError: 'PDFModel' object has no attribute '_legacy_doc'` / `'_StubModel' object has no attribute 'get_tiered_commit_engine'` — caught only by the *full* suite, not the targeted text-commit runs.
+**Cause:** Several unit tests construct model shells with `PDFModel.__new__(PDFModel)` (skipping `__init__`) or hand-rolled `_StubModel` doubles. Turning `doc` into a property whose setter touches `self._legacy_doc`, and routing `_attempt_tiered_commit` through `model.get_tiered_commit_engine()`, broke every such double even though production code was correct.
+**Fix:** Setters/readers on session-fallback properties use `getattr(self, "_legacy_*", None)` (same pattern as `_active_session`), and test doubles that feed `_attempt_tiered_commit` must expose `get_tiered_commit_engine()`. When changing `PDFModel`'s attribute surface, grep tests for `PDFModel.__new__` first — the targeted suite will not warn you.
+**File:** `model/pdf_model.py` (`doc` setter, `_active_session`); `test_scripts/test_tier0_target_resolution.py` (`_StubModel`)
+
+---
+
+## A reference sample taken inside the region it is proving is self-referential — the load-bearing rule is ink visibility
+
+**Area:** `model/text_commit/verify.py` (`prove_growth_region_blank`)
+**Symptom:** A growth zone filled solid black was accepted as blank, so a Tier 1 commit grew the target into ink the verifier had just certified as empty. The "background reference" gate added to stop exactly this was **inert**: monkeypatching every occupancy gate to a no-op left all five growth tests green.
+**Cause:** Two compounding errors. (i) The reference colour was sampled from the target's own tail — inside the band being widened — so on a black background the reference *was* the ink, and "growth matches reference" was a tautology. (ii) The gate was fail-open on ambiguity (no reference resolvable ⇒ accept). Correcting (i) alone is not enough: a large black fill also covers every candidate reference point outside the target, so reference-comparison still accepts.
+**Fix:** Rebuild as a background-*surface* proof with three independent parts. `background_reference_points` samples left/above/below the target, provably disjoint from the widened halo. `_target_background_rgb` takes the strict-majority colour inside the target's own bbox and returns whether the target's ink is *visible* against it — a 100% majority means the glyphs are indistinguishable from their background, i.e. ink-on-same-ink, which is refused outright. That ink-visibility rule, not the reference comparison, is what kills black-on-black. Ambiguity refuses everywhere; a pass requires an affirmative match. Occupancy gates (`get_drawings`/`get_images`/`sh` scan) are kept only as cheap early-outs and the raster proof is pinned standing alone with them neutered.
+**File:** `model/text_commit/verify.py`; tests `test_growth_into_a_black_shading_xobject_region_is_rejected`, `test_growth_into_a_uniform_band_that_mismatches_the_page_background_is_rejected`
+
+---
+
+## `sh` inside a Form XObject is invisible to every page-level ink reader — a mechanism blocklist only refuses the mechanisms it enumerates
+
+**Area:** `model/text_commit/verify.py` (growth occupancy gates)
+**Symptom:** A shading operator painting the growth zone solid black was reported as "no drawings, no images, no shading" by all three occupancy probes.
+**Cause:** `page.get_drawings()`, `page.get_images()`, and the `sh` scan over `read_page_streams` all see only the page's *own* content stream. Ink painted inside an invoked Form XObject is reachable by none of them. Enumerating ink mechanisms is a blocklist, and a blocklist cannot be complete over a format that lets any operator nest one level down.
+**Fix:** Do not prove absence-of-known-ink-sources; prove the rendered surface. The raster background proof reads what MuPDF actually painted, so nesting is irrelevant. Occupancy checks remain as cheap early-outs and must never be the sole gate.
+**File:** `model/text_commit/verify.py`
+
+---
+
+## `get_text("dict"/"rawdict")` geometry is UNROTATED page space — comparing it against a visual-space bbox passes on every unrotated page and is wrong on every `/Rotate` page
+
+**Area:** `model/text_commit/verify.py` (V0c/V0d), `model/pdf_text_edit.py` (target derivation)
+**Symptom:** No tiered commit had **ever** succeeded on a `/Rotate 90/270` page — a pre-existing defect (Defect C) found only when a rotation-parity pass went looking. Every such commit failed verification, and the same mismatch in the other direction is a false-accept risk.
+**Cause:** Dict/rawdict extraction reports coordinates in unrotated page space, while `page.get_pixmap()` and `page.rect` are visual space (the same PyMuPDF quirk already documented for annotation geometry). V0c/V0d compared rawdict span origins and bboxes against a visual-space `target_bbox_page`; the caller-supplied `target_bbox` from `pdf_text_edit.py` was itself unconverted. On an unrotated page the two spaces coincide, so every test and every real edit agreed — the bug is invisible until `/Rotate` is non-zero.
+**Fix:** Convert at the boundary, once: `_dict_space_to_visual` (`pdf_text_edit.py`) maps dict-space origin/bbox through `page.rotation_matrix` alone (dict coordinates already carry the CropBox/UserUnit part of `transformation_matrix`; only `/Rotate` is missing — see its docstring) before anything visual-space consumes it, and `verify.py` does the same on the read side. `inspect._origin_in_page_space` composes `rotation_matrix` too. Treat rawdict origin as *not* a visual-space oracle. When adding a geometry comparison, name the space of both operands in the assertion.
+**File:** `model/pdf_text_edit.py` (`_dict_space_to_visual`), `model/text_commit/verify.py`, `model/text_commit/inspect.py`; tests `test_full_tiered_commit_succeeds_on_rotated_page[90/270]`, `test_bind_origin_page_follows_page_rotate`
+
+---
+
+## A verified-candidate cache keyed on a content token still needs the policy gates re-run at commit time
+
+**Area:** `model/pdf_text_edit.py` (`_attempt_tiered_commit` cached-candidate branch), `controller/pdf_controller.py`
+**Symptom:** With a preview candidate cached by `plan_token`, a commit that also carried a style change or a dragged `new_rect` reused the cached candidate and **silently discarded the drag** — UI-reachable, no refusal, no warning. Separately, the cache was populated before the preview PNG was validated.
+**Cause:** The token's preimage covers the *candidate's* semantics, not the *request's*. Style/geometry overrides arrive with the commit request and never entered the token, so an unequal request hashed equal. And document-level facts checked during a fresh prepare (here: shared content streams) were skipped entirely on the cache-hit path — a cache that bypasses gates is a gate.
+**Fix:** The cached branch refuses on `style_overrides.changed` or a supplied `new_rect` and falls through to a fresh prepare (which then produces an honest refusal reason), and re-runs `find_pages_sharing_content_stream` before applying. The controller caches only after the PNG decodes. Rule: a cache hit may skip *work*, never *checks*.
+**File:** `model/pdf_text_edit.py`, `controller/pdf_controller.py`; `test_scripts/test_text_commit_candidate_identity.py` (`TestCachedCandidateBypassesPolicyGates`)
+
+---
+
+## A certificate that reads its evidence from the post-patch document proves nothing
+
+**Area:** `model/text_commit/verify.py` (V0e), `model/text_commit/preview.py`
+**Symptom:** Preview's V0e "reopen probe" passed unconditionally — it compared a page count read on the patched document against a page count read on that *same* patched document.
+**Cause:** The pre-patch value was never captured, so the comparison was `x == x`. A tautological assertion is worse than a missing one: it reports a green certificate.
+**Fix:** `PageState` captures `page_count` **pre**-patch. Preview gets a real per-session KEEP round-trip (`_live_keep_round_trip`) whose single `tobytes(KEEP)` + reopen feeds both the probe verdict and the session snapshot, preserving the one-scratch-per-session keystroke budget; `PreviewSessionInput.reopen_probe_ok` defaults to `False` (fail-closed). When writing a verification step, state which side of the mutation each operand is read from.
+**File:** `model/text_commit/verify.py`, `model/text_commit/preview.py`
+
+---
+
+## `TJ` kern advances are materialized as synthesized spaces in dict extraction — verbatim dict text is not the source string
+
+**Area:** `model/pdf_text_edit.py` (`_dict_line_for_runs`)
+**Symptom:** Recovering whitespace-collapsed edits from the dict parse (which preserves `"Price is  100"` where joined word runs cannot) *raised* the `TARGET_RECONSTRUCTION_UNVERIFIED` rate on the dominant corpus document rather than converting it.
+**Cause:** MuPDF materializes a wide `TJ` kern as a space character in the extracted text. That space exists in the extraction and not in the content stream, so the dict line is a reconstruction too — a different one, failing byte-binding for a different reason.
+**Fix:** The dict line is used only when a runtime content-**and**-geometry alignment proof holds; otherwise the target stays run-joined. The rate rise is an honesty effect, not a regression: previously these were mislabeled `NO_MATCH`, and preview now relabels bare `NO_MATCH` to `TARGET_RECONSTRUCTION_UNVERIFIED` symmetrically with commit. Do not read either extraction as the source string without proving it against the stream.
+**File:** `model/pdf_text_edit.py` (`_dict_line_for_runs`, `_Tier0Target.source_kind`), `model/text_commit/preview.py`
+
+---
+
+## `pytest test_scripts/` in one invocation hangs at PySide6 interpreter teardown — run the suite chunked
+
+**Area:** test harness (`.venv`, PySide6)
+**Symptom:** A whole-suite single invocation stops producing output after the last test and never exits; killing it loses the summary line, so the run reads as "no result" rather than "pass".
+**Cause:** Pre-existing, environment-level: interpreter shutdown with the accumulated Qt state of 200+ test modules in one process. Not caused by, and not fixed by, any change in the text-commit engine.
+**Fix:** Split `test_scripts/test_*.py` into ~4 alphabetical chunks and run one `pytest` invocation per chunk, summing the reported counts. Never quote a full-suite number from a run whose summary line you did not see (cf. the `| tail` pitfall above — a hard abort can read as a passing run).
+**File:** — (harness); chunked runner pattern used for every Task 11 closure gate
+
+## `lex_content_stream` materialized the full token list — a dense page stream is an in-app OOM
+
+**Area:** `model/text_commit` (pdf_lexer, replay)
+**Symptom:** prepare/preview on a vector-heavy page allocated GBs and stalled for minutes: a measured 8 MiB synthetic stream peaked at 1.16 GB RSS; a real ~72 MB decoded stream became ~54.7M `StreamToken`s ≈ 10 GB and ~115 s before the first show op was even bound. The GUI render pipeline was innocent (same document opens at ~470 MB).
+**Cause:** the lexer returned `list[StreamToken]` (~0.77 tokens/byte at ~174–202 B/token incl. list+GC overhead), fully materialized before replay read token one; about half are WHITESPACE trivia that replay discards on sight.
+**Fix:** Task 12 P0-B converted the lexer to a generator (callers needing random access wrap in `list()`), and P0-A added a summed-size budget `max_decoded_bytes` (default 4 MiB, `None` disables) at the single production chokepoint `replay_page_streams`, refusing BEFORE tokenization with the stable reason `content_stream_too_large_for_safe_replay`. Post-fix the same 8 MiB walk peaks at ~26 MB, but latency still scales ~1 s/MiB — the guard survives as a latency ceiling, not just OOM defense.
+**File:** `model/text_commit/pdf_lexer.py`, `model/text_commit/replay.py`
+
+## A resource refusal routed through `malformed` gets re-labelled — refusals need their own channel
+
+**Area:** `model/text_commit` reason propagation (replay → inspect → plan)
+**Symptom:** if the replay guard had signalled via `malformed=True`, the user-facing reason would have read `malformed_stream`; via an empty `shows` it would have read `no_source_match` — which `_reconstruction_aware_reason` can further rewrite into `target_reconstruction_unverified` on run-joined targets. Two hops, two lies.
+**Cause:** `bind_source_text` legitimately collapses `replay.malformed` into `MALFORMED_STREAM`, and empty candidate lists into `NO_MATCH`; any new refusal class that reuses those channels inherits their labels.
+**Fix:** a distinct `PageReplay.refusal_reason` field, surfaced verbatim by `bind_source_text` BEFORE the malformed check; `test_text_commit_replay_guard.py` pins verbatim survival all the way to `PlanRejection`. The field only works if EVERY consumer checks it: the Form-XObject deconfliction scan was missed on day one and collapsed refusals into `NO_MATCH` until the same-day adversarial review caught it. Any new consumer of `PageReplay` must handle `refusal_reason` before reading `shows` — the tri-state `_target_in_invoked_form_xobjects` (`True`/`False`/`None`=unprovable) is the pattern. `replay_page` (`inspect.py`) has no production caller today but carries the same trap for whoever calls it next.
+**File:** `model/text_commit/replay.py`, `model/text_commit/inspect.py`
+
+## ctypes `GetProcessMemoryInfo` silently zeroes without HANDLE restype (64-bit truncation)
+
+**Area:** test harness (subprocess memory measurement)
+**Symptom:** the call returns 0 with an all-zero struct; `GetLastError()` = 6 (ERROR_INVALID_HANDLE) — peak-RSS readings of 0 that can slip through as "under threshold" if unasserted.
+**Cause:** ctypes defaults every restype to `c_int`, so `GetCurrentProcess()`'s 64-bit pseudo-handle (-1) truncates to 32 bits before being passed to `K32GetProcessMemoryInfo`.
+**Fix:** set `GetCurrentProcess.restype = wintypes.HANDLE` and full argtypes/restype on `K32GetProcessMemoryInfo`; assert walk-coverage side-channels (`token_count`, `last_end == stream_bytes`) so a zeroed reading cannot masquerade as a pass.
+**File:** `test_scripts/_streaming_memory_child.py`
+
+## A GUI notice keyed only on outcome status fires under the shipped default too — gate on the fallback chain shape, not just the status enum
+
+**Area:** `controller/pdf_controller.py` (Task 12 P0-C degrade visibility)
+**Symptom:** a naive `if outcome.status is DEGRADED_COMMITTED: notify()` hookup would warn on literally every successful edit under the SHIPPED DEFAULT (`TextCommitSettings(engine="legacy")`), because the legacy engine's own success path (`legacy_commit_outcome()`, `dto.py`) honestly records `DEGRADED_COMMITTED` with chain `("legacy",)` — that status means "this is a legacy commit" for the default engine, not "a higher tier was attempted and failed." All 8 first-draft GUI tests constructed `TextCommitSettings(engine="tiered")` only, so this gap was invisible until an adversarial review asked "what does the default configuration do."
+**Cause:** `CommitStatus.DEGRADED_COMMITTED` is overloaded — it means both "the baseline legacy engine, as configured" and "a real fidelity loss from an attempted fallback," and only `fallback_chain`'s *shape* distinguishes them.
+**Fix:** gate the notice on `fallback_chain != ("legacy",)` (i.e. a chain with more than one element, meaning something higher was tried first), not on `status` alone. Any new DEGRADED_COMMITTED consumer must make the same distinction — write a test against `TextCommitSettings()` (bare defaults), not only `engine="tiered"`.
+**File:** `controller/pdf_controller.py` (`_is_notifiable_degrade`)
+
+## A per-command flag reset at only one entry point leaks into sibling commit paths
+
+**Area:** `controller/pdf_controller.py` (Task 12 P0-C degrade visibility)
+**Symptom:** `_last_edit_degraded` was reset only at `edit_text()` entry. A degraded edit finalized via a path that never consumes the flag (e.g. `FOCUS_OUTSIDE`/`APPLY` finalize reasons) left it `True`; a LATER, unrelated commit through a sibling method (`add_textbox`, `move_text_across_pages`) that never touches the flag would still trigger the View's mode-switch consumer, silently eating that later commit's success toast.
+**Cause:** treating "reset the flag where I added the notify hookup" as sufficient, instead of auditing every method that can produce a `COMMITTED` result the View's shared finalize path (`text_editing.py` `_finalize_text_edit`) will consume.
+**Fix:** every commit-producing controller entry point resets the flag at ITS OWN entry (`edit_text`, `add_textbox`, `move_text_across_pages`), even the ones that can never themselves degrade — the reset is about not inheriting stale state from a DIFFERENT interaction, not about that method's own outcome.
+**File:** `controller/pdf_controller.py`
+
+## Redo re-running the full commit pipeline must NOT re-fire a one-shot GUI notice
+
+**Area:** `controller/pdf_controller.py` / `model/edit_commands.py` (Task 12 P0-C degrade visibility)
+**Symptom:** an adversarial reviewer flagged that `EditTextCommand.redo()` for a legacy-tier command falls through to a full `model.edit_text()` re-run (no retained forward patchset for Tier 2), re-recording a fresh `DEGRADED_COMMITTED` outcome — and asked whether that should re-notify.
+**Cause / resolution:** it correctly should NOT. "Exactly one notice per degraded edit" was already satisfied when the edit first committed; redo reproduces the SAME already-disclosed degrade against the undo-restored snapshot, so firing a second notice would violate the invariant it looks like it's protecting, not satisfy it. `controller.redo()` never calls the notify hookup (it lives only in `edit_text()`), which is correct by construction, not by accident.
+**File:** `controller/pdf_controller.py` (documents intended behavior; no code change)
+
+## An acceptance gate's style-override flag must be scoped to what the app can actually request
+
+**Area:** `test_scripts/semantic_fidelity_gate.py` (Task 12 P0-C semantic fidelity gate)
+**Symptom:** `style_override_requested=True` silenced ALL four style checks (font identity, size, color, baseline) as one bundle, so a size-only style override commit that also happened to recolor the replacement or drop its baseline by several points would pass — even though the app's one and only override producer (`build_style_overrides`, `view/text_editing.py`) hardcodes `color=None` and has no baseline control at all.
+**Cause:** modeling "was a style override requested" as a single bool guarding every style-adjacent check, instead of scoping the silence to the specific fields an override can actually touch.
+**Fix:** split the guard — `style_override_requested` now silences only `FONT_IDENTITY_CHANGED`/`FONT_SIZE_CHANGED`; `COLOR_CHANGED`/`BASELINE_SHIFTED` stay live unconditionally, since neither is ever a requestable outcome in this app.
+**File:** `test_scripts/semantic_fidelity_gate.py`
+
+## A two-pass preflight-then-commit consent design can't see a commit-stage-only failure in time
+
+**Area:** `model/pdf_text_edit.py` (Task 12 P0-C phase 2 consent flow — design-time finding, not a shipped bug)
+**Symptom:** the first design considered for pre-commit fallback consent was a Controller-side preflight — classify the fallback need read-only, show the confirm dialog, THEN call the existing unchanged `model.edit_text()`. It cannot detect the case where `engine.prepare()` succeeds on the scratch copy but live verification then fails inside `engine.commit()` — the exact case the user's own suggested test name (`test_commit_stage_fallback_confirmation_uses_coded_chain_only`) targets.
+**Cause:** that information does not exist until `engine.commit()` actually runs, and running `commit()` during a "just checking" preflight is unsafe on the SUCCESS branch — a tier0/1 win there is a real, irreversible mutation, so the "real" `edit_text()` call afterward would re-resolve text the preflight had already replaced (double-edit corruption).
+**Fix:** pivot to a Qt-free callback (`confirm_fallback: Callable[[tuple[str, ...]], bool] | None`) injected into `model.edit_text()` itself, invoked synchronously at the exact point the existing code already falls through to the legacy engine — reachable regardless of which stage (prepare or commit) produced the fallback reason, because both are proven zero-mutation-on-failure by construction (`engine.commit()` reverts internally before returning). No staleness/consent-token binding needed either: the callback fires with zero time gap between "ask" and "act".
+**File:** `model/pdf_text_edit.py`, `model/edit_commands.py`, `controller/pdf_controller.py`
+
+## A "was this command ever confirmed" flag must check what actually happened, not just that execute() succeeded
+
+**Area:** `model/edit_commands.py` (Task 12 P0-C phase 2 — adversarial verification finding, high severity)
+**Symptom:** `EditTextCommand._fallback_ever_confirmed` was set `True` after ANY successful `execute()`, including a clean Tier 0/1 win where `confirm_fallback` was never invoked at all (nothing needed consent). A legacy-tier command with no retained forward patchset re-runs the FULL `model.edit_text()` pipeline on every `execute()` call (including redo) — if a LATER `execute()` of that same command genuinely needed a fallback (e.g. the page's Tier 0 eligibility changed since the first call, via an out-of-band mutation like OCR that bypasses `command_manager` entirely and so never clears a stale redo entry), the flag would already be `True` and the confirm callback would be silently skipped — a legacy-fidelity mutation committed with zero prompt, on a command the user only ever consented to as a high-fidelity edit.
+**Cause:** the flag conflated "this command has run to completion once" with "the user was actually asked about a fallback and agreed" — those coincide for the common case (fallback needed and confirmed) but not for a genuine Tier 0/1 success, which never calls the callback at all.
+**Fix:** extracted the existing chain-shape check (`PDFController._is_notifiable_degrade`) into a shared, Qt-free Model-layer helper (`model.text_commit.dto.is_real_fallback_commit`) and gated `_fallback_ever_confirmed = True` on it instead of on bare `EditTextResult.SUCCESS`; the Controller's own check now delegates to the same helper so the two decisions about the same outcome shape can never drift apart again.
+**File:** `model/edit_commands.py`, `model/text_commit/dto.py`, `controller/pdf_controller.py`
+
+## A "did the signal emit" outcome is not "did the edit commit" — the View's success toast must pull the real result
+
+**Area:** `view/pdf_view.py` / `controller/pdf_controller.py` (Task 12 P0-C phase 2 — post-review finding, promoted to a merge blocker)
+**Symptom:** `set_mode()`'s mode-switch success toast gated only on `TextEditFinalizeResult.outcome == TextEditOutcome.COMMITTED`. That value is set by the View's finalize path whenever `sig_edit_text.emit(...)`/`sig_move_text_across_pages.emit(...)` itself doesn't raise — it never inspected what the Controller's slot actually did with the request. Once `EditTextResult.FALLBACK_DECLINED` existed (P0-C phase 2), a user who explicitly declined a legacy-fidelity fallback — zero mutation, no undo entry — could still see "文字已儲存" on the very next mode switch, directly contradicting the consent flow's own promise. The same gap pre-dated Phase 2 for `REJECTED_STRICT` and `TARGET_BLOCK_NOT_FOUND`, just with lower stakes (no explicit "I said no" UI action to contradict).
+**Cause:** treating "the signal was emitted and the slot didn't throw" as a proxy for "the operation succeeded", when the Controller's slot has several legitimate early-return non-SUCCESS paths that never raise.
+**Fix:** added `PDFController.consume_last_edit_result()` — a pull-and-clear API mirroring `consume_last_edit_degraded()` — returning the actual `EditTextResult` of the last commit-producing operation (`edit_text`, `move_text_across_pages`, `add_textbox`; the last one has no `EditTextResult` of its own, so it reports `SUCCESS` unconditionally on reaching its post-command code with no exception). `set_mode()` now pulls this FIRST and only evaluates the degrade-suppression flag when it is exactly `EditTextResult.SUCCESS`; `None` (no commit-producing operation happened, or a controller/mock without the new API) is treated the same as "not SUCCESS" — never as "assume success". (The reset-placement half of this fix had its own bug — see the next entry.)
+**File:** `view/pdf_view.py`, `controller/pdf_controller.py`, `view/text_editing.py` (re-exports `EditTextResult` through the existing `view.text_editing -> model.edit_commands` allowlist entry, `pyproject.toml`)
+
+## A "reset at entry" claim is only true if the reset actually runs before every early-return guard
+
+**Area:** `controller/pdf_controller.py` (Task 12 P0-C phase 2 toast fix — adversarial verification finding, high + medium)
+**Symptom:** the toast-correctness fix above added `self._last_edit_result = None` to `move_text_across_pages()` and `add_textbox()`, but placed it at the SAME point Phase 1's `self._last_edit_degraded = False` already lived — which, on inspection, sat AFTER both methods' own early-return validation guards (empty text, doc not open, page out of range), not before. A stale `EditTextResult.SUCCESS` left over from an earlier, unconsumed commit-producing interaction (any finalize reason other than `MODE_SWITCH` — e.g. `APPLY`/`FOCUS_OUTSIDE` — never calls `consume_last_edit_result()`, only `set_mode()`'s `MODE_SWITCH` branch does) survived straight through a guard return and was read as THIS interaction's outcome: an empty-text cross-page move could show a `跨頁移動失敗` error toast and a `文字已儲存` success toast simultaneously, for an interaction that mutated nothing.
+**Cause:** copying an existing reset's location on the assumption it was already correct, instead of re-deriving "true entry" from scratch for the new field. `edit_text()`'s own reset genuinely does sit before its guard (checked and confirmed during the fix), which made the same placement in the other two methods look consistent — but consistency with a wrong precedent is still wrong. The author flagged this exact risk during design ("this reset placement was a case I explicitly considered and decided not to fix, reasoning it was lower-risk") and the adversarial round proved the reasoning wrong on reachability.
+**Fix:** moved both `self._last_edit_degraded = False` and `self._last_edit_result = None` to the literal first lines of `move_text_across_pages()` (before even its request-object normalization) and `add_textbox()` (before either guard) — genuinely before any code path that can return. Two regression tests pin it (`test_stale_last_edit_result_does_not_survive_move_validation_guard`, `test_stale_last_edit_result_does_not_survive_add_textbox_validation_guard`): commit a real edit, leave it unconsumed, then trigger a DIFFERENT interaction's validation-guard failure, and assert the stale value never survives.
+**File:** `controller/pdf_controller.py`
+
+## AutoCAD-produced Type0 fonts inline their descendant CIDFont in /DescendantFonts
+
+**Area:** `model/text_commit` (Type0/CID evidence readers), `scripts/audit_type0_census.py` (Task 12 P0-D census)
+**Symptom:** the dominant real-corpus Type0 form carries the descendant CIDFont as an INLINE dictionary — `/DescendantFonts [<</Type/Font/Subtype/CIDFontType2 ... /W 724 0 R>>]` — not as an indirect reference (`[N 0 R]`). Readers that assume the indirect-array form classify every such font as unreadable: `verify.collect_cid_encoding_evidence` rejects them with "unreadable /DescendantFonts entry", and the census script's first run misbucketed 256 of 262 corpus Type0 fonts as `missing_or_unreadable` (every downstream facet then reads malformed too, because each classifier dereferences the descendant first). On the private reference corpus the inline form is 97.7% of Type0 fonts — a P0-D implementation without inline-descendant support would cover 6/262 fonts.
+**Cause:** PDF 32000-1 permits any dictionary value to be inline or indirect; MuPDF/PyMuPDF authoring and most test PDFs use the indirect form, so readers get written and tested against `[N 0 R]` only. `doc.xref_get_key(font_xref, "DescendantFonts")` returns kind `"array"` with the full serialized inline dict as the value — there is no xref to chase, so key reads must fall back to parsing the serialized body.
+**Fix:** resolve the descendant BOTH ways: kind `"xref"`/array-of-ref → dereference; array starting with `<<` → extract the balanced inline dict and read keys textually (with one-level deref for indirect values like `/W 724 0 R` inside it). `scripts/audit_type0_census.py` (`_resolve_descendant`/`_desc_key`) is the working reference; `collect_cid_encoding_evidence` must gain the same handling when P0-D's implementation lands (red-pinned by `test_inline_descendant_corpus_shape_commits`). Related corpus fact: those inline descendants also omit `/DW` (spec default 1000) and `/CIDToGIDMap` (spec-implicit Identity) — both defaults are the DOMINANT form, not edge cases, and their `/CIDSystemInfo` carries nonstandard registry/ordering strings, so gate on the Type0 `/Encoding` name, never on CIDSystemInfo contents.
+**File:** `scripts/audit_type0_census.py`, `test_scripts/type0_fixture_builder.py` (`inline_descendant`), plan §8 2026-08-13 census entry
+
+## Path-based xref_set_key cannot null a nested key — it plants a placeholder string
+
+**Area:** PyMuPDF xref surgery (`test_scripts/type0_fixture_builder.py`, Task 12 P0-D fixtures)
+**Symptom:** `doc.xref_set_key(descendant_xref, "FontDescriptor/FontFile2", "null")` does not remove the nested key: reading it back afterwards returns `('string', 'fitz: replace me!')` — PyMuPDF's internal placeholder — so the "unembedded font" fixture still looked embedded-ish (present-but-garbage) instead of cleanly stripped.
+**Cause:** PyMuPDF's path-form `xref_set_key` builds intermediate placeholders when writing through a path; nulling through a path is not supported the way direct key nulling is.
+**Fix:** resolve the nested dictionary's own xref first (`xref_get_key(descendant, "FontDescriptor")` → `('xref', 'N 0 R')` → N), then null the key directly on it: `xref_set_key(N, "FontFile2", "null")`. Verified: the key then reads back `('null', 'null')`.
+**File:** `test_scripts/type0_fixture_builder.py` (`unembed_font`)
+
+## subset_fonts strips the cmap — Unicode lookups cannot prove glyph presence in a subset
+
+**Area:** PyMuPDF font subsetting (`test_scripts/type0_fixture_builder.py`, Task 12 P0-D fixtures; future P0-D glyph-presence gate)
+**Symptom:** after `doc.subset_fonts()` (native in PyMuPDF 1.27 — no fontTools needed, despite older docs), `fitz.Font(fontbuffer=<subset>).has_glyph(ord(ch))` returns 0 for EVERY character — including the ones whose glyphs the subset genuinely retained — because the subsetter strips the font program's cmap (rendering goes CID→GID directly and never needs it). Any "is this glyph in the embedded subset" gate built on Unicode lookup would fail-closed on everything (or worse, get inverted into fail-open by a confused fix). `glyph_count` is equally useless: retain-gids subsetting keeps the glyph COUNT constant (50,483 before and after) and only empties the dropped outlines.
+**Cause:** MuPDF subsets with retain-gids semantics for CIDFontType2 (so content-stream CIDs stay valid — shows are byte-identical across subsetting) and drops tables only the Unicode→GID path needs.
+**Fix:** prove subset glyph presence by GID-level evidence, never Unicode: the fixture builder renders the CID alone and counts ink (`render_cid_ink` — a retained glyph renders >0 non-white pixels, a dropped one renders exactly 0); the production gate must read glyph table emptiness by GID (or equivalent) when it lands. Bonus fact: CID == GID for MuPDF's own Identity-H embedding, and `fitz.Font.has_glyph` on the FULL (pre-subset) face returns the GID itself, which is how the builder computes CIDs without parsing the ToUnicode CMap.
+**File:** `test_scripts/type0_fixture_builder.py` (`render_cid_ink`, module docstring)
+
+## _parse_tounicode silently fabricates mappings from array-destination bfranges
+
+**Area:** `model/text_commit/verify.py` (`_parse_tounicode`, used by `collect_cid_encoding_evidence` — live Task 10 code), `scripts/audit_type0_census.py` (Task 12 P0-D adversarial finding)
+**Symptom:** the array-destination `bfrange` form of PDF 32000-1 §9.10.3 — `<lo> <hi> [<d1> <d2> ...]` — is spec-legal, but `_parse_tounicode` flattens ALL hex tokens in a bfrange block and strides by 3, so instead of refusing the form it fabricates garbage mappings: for `<00> <02> [<0041> <0042> <0043>] <05> <06> <0044>` it emits `(0x00, 0x02, 'A')` and then `(0x0042, 0x0043, '\x05')` — CIDs 66–67 mapped to a control character — and silently loses the valid trailing single-destination record. Its own docstring claims the form is "deliberately left unsupported rather than guessed at", which the stride walk does not honor. The form is REAL in the reference corpus: 2 of 262 private-corpus Type0 fonts use it (one is a document's only Type0 font), and the census script's original substring-grep parseability check (`b"beginbfchar" in data`) could not see it either — the first recorded scope-lock numbers were wrong until a structural re-run corrected them.
+**Cause:** token-stream parsing that assumes the single-destination record shape and never inspects block delimiters; a `[` inside a bfrange block changes the record arity and must be either supported or refused, never strided over.
+**Fix:** the P0-D contract pins fail-closed behavior (`type0_tounicode_unparseable`, red test `test_array_destination_bfrange_tounicode_fails_closed`); the implementation must make `_parse_tounicode` (or its P0-D successor) refuse any bfrange block containing `[`. The census now does structural validation with a dedicated `present_with_array_destinations` bucket (`scripts/audit_type0_census.py::_classify_tounicode`). Broader lesson: a "parseable" verdict from a substring grep is not evidence — the very tool that produces scope-lock numbers needs the same fail-closed discipline as the engine.
+**File:** `model/text_commit/verify.py` (fix pending with P0-D implementation), `scripts/audit_type0_census.py`, `test_scripts/test_text_commit_cid_hex_tj.py`
+
+## PyMuPDF TextWriter embeds EVERYTHING as Type0 — Helvetica lands with a CIDFontType0 descendant
+
+**Area:** test fixtures (`test_scripts/test_text_commit_fonts.py`, `test_text_commit_font_widths.py`), `model/text_commit/fonts.py` (Task 12 P0-D)
+**Symptom:** a TextWriter page written with `fitz.Font("helv")` — plain ASCII Helvetica — does not produce a simple Type1 font: MuPDF embeds it as `Type0/Identity-H` with a **CIDFontType0** (CFF) descendant. Pre-P0-D tests pinned that shape as "embedded Type0 extracts a face" + blanket `font_unsupported_encoding`; under P0-D it correctly fail-closes as `type0_descendant_unsupported` (CIDFontType0 is out of the v1 slice), and Type0 capabilities no longer load a fitz face at all, so `face is None`/`face_source == "none"` became the pinned contract. Only `fitz.Font("cjk")` (Droid Sans Fallback, TrueType) produces the in-scope CIDFontType2 descendant.
+**Cause:** MuPDF's TextWriter always writes composite fonts; the descendant subtype follows the source font's outline format (CFF → CIDFontType0, TrueType glyf → CIDFontType2).
+**Fix:** fixture builders that need in-scope Identity-H/CIDFontType2 must use a TrueType-backed face (`fitz.Font("cjk")` — `test_scripts/type0_fixture_builder.py`); tests asserting Type0 capability behavior assert per-gate `type0_*` codes, never the old blanket code, and never a loaded face.
+**File:** `test_scripts/test_text_commit_fonts.py`, `test_scripts/test_text_commit_font_widths.py`, `model/text_commit/fonts.py`
+
+## A "default text state" percentage is only as good as its condition list
+
+**Area:** Task 12 coverage evidence (`scripts/measure_type0_funnel.py` vs the 2026-08-12 campaign numbers)
+**Symptom:** the campaign's "default-text-state subset: 82.7% ops" (plan §2) and the post-P0-D funnel's honest result — **0 source-bindable shows** on the same document — are both true. The single-hex-`Tj` layer matches exactly (97.2% in both), but the campaign's "default state" did not deduct the conditions the implemented gates actually check: on the reference document every budget-eligible show sits inside an AutoCAD BDC/EMC layer wrapper (`mc_depth != 0` → 100% fail) and 95% use a rotated text matrix compensating `/Rotate 270` in content space (`trm_uniform_scaled` → fail). Publishing the 82.7% as expected product coverage would have overstated reality by the whole number.
+**Cause:** "default text state" is not a standard term — any coverage claim quoting it must enumerate the exact conditions (render_mode/rise/hscale/mc_depth/in_bt/trm/origin_reliable) or the number silently measures a different gate set than the code enforces.
+**Fix:** the funnel script measures THROUGH the real gate implementations (capability build, decode, reproduction, glyph/width gates) and reports per-condition loss tallies; plan §8 records the two-layer coverage rule (structural family vs actually-processable) and the three follow-ups (budget relaxation, mc_depth tolerance, rotated-Tm) that own the corpus unlock.
+**File:** `scripts/measure_type0_funnel.py`, plan §8 2026-08-13 funnel entry
+
+## Canonical-fold gaps hide in HYBRID object forms, not the named ones
+**Area:** model/text_commit (Type0 fingerprint staleness closure)
+**Symptom:** prepare → mutate evidence → commit returned COMMITTED (stale plan committed against dead width evidence) for a font whose `/DescendantFonts` was an indirect ARRAY object holding the descendant dict INLINE — while both named sibling forms (direct inline array; indirect ref element) were staleness-gated and red-pinned. Two independent review agents reproduced it end-to-end (wf_1757a5fb-8e9); the five existing staleness pins all stayed green.
+**Cause:** the canonical descendant fold keyed on the ARRIVAL PATH (PdfRef element ⇒ deref ⇒ fold) instead of the RESOLVED VALUE (dict ⇒ fold). The hybrid form arrives as a dict without passing the PdfRef branch, and the font-dict key loop had folded only the scalar `xref:N 0 R` — so every direct value inside the inline dict (inline `/W`, `/DW`, `/CIDToGIDMap` name, `/Subtype`) was invisible to `page_fingerprint` while `resolve_descendant` happily ACCEPTED the form for capability building.
+**Fix:** fold `canonical_pdf_text(descendant)` whenever the RESOLVED value is a dict, regardless of how it was reached (the direct-inline path folding twice is harmless — both sides of a staleness comparison fold identically). The general rule: enumerate closure coverage by RESOLVED SHAPE, and for every shape the capability builder accepts, write a prepare→mutate→commit red pin — "both named forms are covered" says nothing about their hybrid.
+**File:** `model/text_commit/inspect.py` (`_update_type0_dependencies`); pin `test_scripts/test_text_commit_cid_hex_tj.py::test_commit_is_stale_after_hybrid_indirect_array_descendant_mutation`
+
+## A dead optional hook that catches its own ImportError becomes a per-edit user-visible defect
+**Area:** `controller/pdf_controller.py` (`edit_text` displacement-reflow callback, removed Task 12 Step 7)
+**Symptom:** every successful reflow-allowed text edit logged `edit_text reflow_fn 失敗（不影響主編輯）: No module named 'reflow'` AND pushed a `⚠ Reflow 例外（主編輯不受影響）` status-bar override at the user for 5 seconds — for a feature that could never run. The hook lazily imported `reflow.track_A_core`/`track_B_core`, a spike-era package that never existed on the shipping lineage (it lived only on abandoned Track A/B/C branches), was never a declared dependency, and was never installed.
+**Cause:** the callback wrapped its body in `except Exception` and routed the exception into BOTH the log and the user-facing status channel, so a permanently-failing import degraded into "harmless-looking" per-edit noise instead of failing loudly once at wiring time. Nothing pinned the absence of the warning, so it survived multiple refactors; the evidence grade stayed "agent-reported" until a red pin captured the logger line from the production wiring.
+**Fix:** capture reproducible evidence FIRST (the red pin's failing run logs the exact warning from `sig_edit_text` → `PDFController.edit_text`), then delete the whole hook: closure, `reflow_fn=` wiring, and the status-bar display block. `EditTextCommand.reflow_fn` stays as the model-layer extension point (still pinned by `test_text_commit_intent.py`); the regression pin asserts no reflow-related output on any channel after a successful edit. General rule: an optional integration whose import can fail must fail ONCE, at composition time, visibly — never per-action inside a catch-all that repaints the failure as a warning.
+**File:** `controller/pdf_controller.py`; pin `test_scripts/test_text_commit_degrade_visibility.py::test_dead_reflow_hook_never_surfaces_after_successful_edit`
+
+## Bare object keywords in content streams lex as OPERATOR tokens and silently clear accumulated operands
+**Area:** `model/text_commit/pdf_lexer.py` consumers (`replay.py` operand accumulation)
+**Symptom:** an inline BDC property dict with a keyword value — `/Span <</ActualText null>> BDC` — lost its whole operand list before BDC executed: the census bucketed it `props_unparsed` instead of `actual_text` (caught by the Codex review round, red-pinned before the fix).
+**Cause:** `true`/`false`/`null` match the lexer's alphabetic-keyword OPERATOR pattern, so the replay dispatch treated them as unknown graphics operators, whose contract is `operands.clear()` — destroying the flat-lexed `<< ... >>` marker sequence accumulated so far. Any operand-accumulating consumer of `lex_content_stream` has this trap: PDF object keywords are legal VALUES inside inline dicts (and arrays), never operators.
+**Fix:** intercept `true`/`false`/`null` in the operator branch BEFORE dispatch and append them as `_Operand("keyword", ...)` instead of clearing (`replay.py`). Blast radius is nil for real operators: prior behavior for e.g. `/F1 true 12 Tf` (malformed either way) is preserved because arity checks are tail-anchored. Pin: `test_scripts/test_wrapper_taxonomy_census.py::test_inline_dict_keyword_values_keep_keys`.
+**File:** `model/text_commit/replay.py`
+
+## PyMuPDF's OC state (get_ocgs, rendering) is a load-time snapshot — /OCProperties writes don't refresh it
+**Area:** `model/text_commit/marked_content.py` — OCG default-config visibility resolution (Task 13 P1 admission)
+**Symptom:** After `doc.set_layer(-1, off=[ocg_xref])` — or raw `xref_set_key` surgery on `/OCProperties /D` — the serialized document says the layer is OFF, but `doc.get_ocgs()[xref]["on"]` still reports `True` and `page.get_pixmap()` still renders the layer's ink. A staleness test asserting the flip "took" via `get_ocgs` fails even though the flip is fully serialized; conversely, code trusting `get_ocgs` would admit a wrapped edit against a layer every future opener of the saved file will hide.
+**Cause:** MuPDF builds its in-memory OC descriptor when the document is opened (and `add_ocg` updates it as a side effect), and both `get_ocgs`'s `on` bit and rendering read that descriptor — neither re-reads the serialized `/OCProperties` after `set_layer` or direct xref writes. Only a save→reopen round trip re-resolves. Verified empirically on 1.27.1: after surgery, live `get_ocgs` says on/renders ink; the reopened bytes say off/render hidden.
+**Fix:** Resolve default-config visibility from the SERIALIZED catalog: parse `/OCProperties` (`/OCGs` registration, `/D` `/BaseState`+`/ON`+`/OFF`, OFF wins on dual listing, fail-closed on anything unreadable) — `resolve_default_visibility()` — and fold the same resolved bits into the page fingerprint so a post-prepare flip goes `STALE_PLAN`. Never gate admission or staleness on `get_ocgs`. Test-side: assert flips on `xref_get_key(catalog, "OCProperties/D/OFF")`, not on `get_ocgs`.
+**File:** `model/text_commit/marked_content.py` (`resolve_default_visibility`, `update_marked_content_dependencies`); pinned by `test_scripts/test_text_commit_mc_admission.py::test_visibility_flip_between_prepare_and_commit_is_stale`
+
+## PDF numbers have no exponent notation — %g-formatted matrix coefficients silently void the whole operator
+**Area:** `test_scripts/type0_fixture_builder.py` (`set_text_matrix`), any code writing numbers into content streams
+**Symptom:** A fixture rewritten with a "rotated" `Tm` still behaved axis-aligned: the census bucketed nothing, `trm_uniform_scaled` stayed `True`, and the rotated-Tm funnel test failed with `uniform_trm == 1`. The rotation had never applied.
+**Cause:** `math.cos(math.radians(90))` is `6.12e-17`, and Python's `%g`/`:g` formats it as `6.12323e-17` — but the PDF grammar (ISO 32000-1 §7.3.3) has NO exponent notation for numbers. A real content-stream lexer refuses the token, so the whole `6.12323e-17 1 -1 6.12323e-17 72 700 Tm` operand list is dropped and the previous text matrix silently stays in force. Nothing errors; the fixture just tests nothing.
+**Fix:** Format content-stream numbers fixed-point (`f"{v:.8f}".rstrip("0").rstrip(".")`, mapping `-0`/empty to `0`), and author quarter-turn fixtures with exact `0`/`±1` coefficients instead of trig reconstructions. `set_text_matrix` does this via its `_pdf_num` helper.
+**File:** `test_scripts/type0_fixture_builder.py` (`set_text_matrix`); pinned by `test_scripts/test_trm_census.py::test_funnel_reports_trm_census_for_rotated_show`
+
+## Single-process full-suite pytest runs hang or abort nondeterministically inside Qt GUI tests
+**Area:** test harness (whole-suite runs of `test_scripts/`), PySide6 offscreen platform
+**Symptom:** `pytest` over the full suite freezes forever (process alive, zero CPU growth, output file stops updating) or dies with `Fatal Python error: Aborted` (native abort, no Python traceback) inside a Qt widget test — observed at different tests on different runs (an OCR-dialog-area test once, `test_page_reorder.py::test_internal_drop_moves_row_and_emits_final_positions` in `_make_thumbnail_list` another time). Every individual test passes; watchers that only detect "summary printed" or "process died" wait forever on the hung-but-alive case.
+**Cause:** *Observed (proven):* a single-process offscreen Qt suite nondeterministically hangs or aborts after many test files, while every file passes in an isolated interpreter — so no single file necessarily fails in isolation, and the failure is environment-sensitive (more likely in non-interactive/detached shells). *Likely cause (not yet isolated):* cross-file / long-lived `QApplication` native-state or lifetime pollution — after hundreds of tests share one offscreen `QApplication`, widget construction/drag-drop simulation can deadlock or abort in the C++ layer. The precise contaminating predecessor sequence (or Qt object class) has NOT been identified; per-file green does not rule out one earlier file leaving native Qt state that detonates in another.
+**Fix:** Verify the suite per-file: run each `test_scripts/test_*.py` in its own interpreter with a hard timeout (`timeout -k 10 240 .venv/Scripts/python.exe -m pytest -q <file>`), log one summary line per file, and aggregate. Hangs become named single-file timeouts instead of killing the run. Treat `rc=5` ("no tests ran") as success ONLY for the explicit allowlist of 16 legacy script-style files with no collectable tests (`test_1pdf_audit.py`, `test_50_rounds.py`, `test_all_pdfs.py`, `test_deep.py`, `test_drag_move.py`, `test_edit_flow.py`, `test_feature_conflict.py`, `test_large_scale.py`, `test_open_large_pdf.py`, `test_overlap_corpus_recursive.py`, `test_performance.py`, `test_printing_pipeline.py`, `test_sample_pdfs.py`, `test_track_ab_5scenarios.py`, `test_track_ab_model_regressions.py`, `test_unified_undo.py`); any OTHER file returning rc=5 is a failure — a real test module silently collecting zero tests. Any monitor watching a long pytest run must treat "output file stale >5 min while process alive" as a terminal state alongside "summary printed" and "process gone".
+**File:** no code change — harness procedure (sweep loop documented here; 2026-08-19 baseline: 220 files, 2473 passed / 21 skipped / 0 failed / 0 timeouts, 16 allowlisted rc=5)
+
+## get_drawings/get_image_rects report UNROTATED page space — occupancy gates silently miss obstacles on /Rotate pages
+**Area:** model/text_commit/verify.py (Tier 1 growth occupancy gates), PyMuPDF geometry conventions
+**Symptom:** On a /Rotate 270 page, a vector fill or image placed squarely inside the (visual-space) growth strip was NOT detected by `_drawings_intersect_growth`/`_images_intersect_growth` — the blank-growth proof fell through to the raster gates with the wrong attribution, and the four-direction red matrix caught it only in the CAD-idiom `right` cases.
+**Cause:** `page.get_drawings()` and `page.get_image_rects()` return rectangles in UNROTATED page space — the same quirk long documented for `page.get_text` and annotation geometry — while `target_bbox`/`verify_bbox`/the growth rect are VISUAL space (`transformation_matrix × rotation_matrix`, matching `get_pixmap`). At /Rotate 0 the two coincide, so axis-aligned tests never see it.
+**Fix:** Convert the growth rect to dict space once (`page.derotation_matrix`, the read-side half of the documented conversion) before intersecting — `verify._growth_rect_in_dict_space`, used by both occupancy intersects; `count_growth_zone_glyphs` converts its zone and target the same way before touching rawdict char bboxes. Any future gate comparing engine visual-space geometry against a PyMuPDF page-inspection API must ask which convention that API speaks first.
+**File:** model/text_commit/verify.py (`_growth_rect_in_dict_space`, `count_growth_zone_glyphs`); pinned by test_scripts/test_text_commit_trm_growth_directions.py (vector/image × right)
+
+## MuPDF re-serializes integer-valued reals as ints — raw kind:value folds break across a tobytes round trip
+**Area:** model/text_commit/inspect.py (page fingerprint), PyMuPDF object serialization
+**Symptom:** A document carrying `/UserUnit 2.0` (a real-typed spelling of an integer value) fingerprinted differently live vs after `tobytes()`→reopen: `xref_get_key` reports `('float', '2')` live but `('int', '2')` on the reopened copy. Since live-vs-scratch fingerprint equality gates every prepare's scratch-apply, EVERY prepare on such a document would fail persistently with VERIFICATION_FAILED — fail-closed, but a confusing whole-feature loss (review finding F4, confirmed empirically on 1.27.1).
+**Cause:** MuPDF prints numbers minimally on save: an integer-valued real loses its `.0` and comes back typed as an int, flipping the reported KIND while the VALUE stays equal. The earlier scalar-fold precedent ("not observed to reformat") was measured on font keys, which are virtually never integer-valued reals; `/UserUnit` is exactly the key where that spelling occurs.
+**Fix:** Fold numeric keys as a canonical NUMBER, never as the raw `kind:value` pair: parse the resolved value with `float()` and fold `num:{float(value)!r}` (`int:2` and `float:2` both fold `num:2.0`); keep `kind:value` only for non-numeric kinds. Applies to any future fingerprint surface that reads typed scalars off an xref.
+**File:** model/text_commit/inspect.py (`_update_page_geometry`); pinned by test_scripts/test_text_commit_trm_page_geometry.py::test_fingerprint_is_stable_when_userunit_is_spelled_as_a_real
+
+## tracemalloc-wrapped timing windows and iterated-build peaks corrupt benchmark numbers two different ways
+**Area:** measurement harnesses (`scripts/benchmark_*`), tracemalloc + timing interaction
+**Symptom:** A benchmark comparing an index build against plain replay reported a build premium that was instrumentation, not work; separately, the reported "single build peak" was roughly one whole retained index too high (P3-A review findings F1/F2, both confirmed).
+**Cause:** Two distinct mechanisms. (1) Timing samples taken while `tracemalloc` is tracing carry per-allocation overhead (2-4x on allocation-heavy code) that competing stages timed without tracing do not — a systematic cross-stage bias, not noise. (2) A timing loop that keeps `result = fn()` bound across iterations holds iteration N-1's fully-built object alive while iteration N allocates inside the same tracing window, so the peak read once after N builds ≈ true single-build peak + one retained result.
+**Fix:** Never report timings from inside a tracemalloc window; time clean first, then trace exactly ONE extra throwaway build in its own `gc.collect()` → `start()` → build → `get_traced_memory()` → `stop()` window for the peak.
+**File:** `scripts/benchmark_replay_index_spike.py` (`_single_build_peak`; stage timings taken outside tracing)
+
+## json.dumps backslash escaping makes Windows path-leak assertions silently inert
+**Area:** data-policy tests asserting "no paths in the serialized report"
+**Symptom:** `assert str(tmp_path) not in json.dumps(report)` passes even when the harness embeds the path verbatim in the report — the fence tests nothing on Windows (P3-A review finding F8).
+**Cause:** `json.dumps` escapes every backslash to two characters, so the single-backslash needle (`C:\Users\...`) can never match the doubled-backslash haystack (`C:\Users\...`); the assertion fails at the first backslash from every alignment.
+**Fix:** Assert the JSON-ENCODED spelling — `json.dumps(str(path))[1:-1] not in serialized` — plus the forward-slash form (`path.as_posix()`), so both verbatim and normalized embeddings are caught.
+**File:** `test_scripts/test_replay_index_spike.py::test_harness_report_carries_no_text_or_paths`
+
+## sys.getsizeof on a slotless dataclass misses the per-instance __dict__ that dominates its memory
+**Area:** memory accounting (`_deep_size`-style recursive sizeof), dataclass instances
+**Symptom:** A "deep" recursive `sys.getsizeof` walker that recursed into dataclass FIELDS reported bytes/ShowOp far below reality — the walker skipped the ~1 KB per-instance `__dict__` container that IS the dominant cost of a 24-field slotless dataclass.
+**Cause:** `sys.getsizeof(instance)` returns only the object header; the instance `__dict__` is a separate object, and iterating `dataclasses.fields` sizes the VALUES while never sizing the dict container holding them.
+**Fix:** For slotless dataclasses, recurse into `vars(obj)` (the `__dict__` itself) so the container, its keys, and its values are all counted; fall back to per-field walking only for `__slots__` classes (no `__dict__` to size).
+**File:** `scripts/replay_index_spike.py` (`_deep_size`)
+
+## Simple-font capabilities are served stale within a registry generation
+**Area:** `model/text_commit/fonts.py` (`DocumentFontRegistry`), engine prepare path
+**Symptom:** After an in-place font-object mutation (e.g. `/Widths` rewritten at the same xref) between two prepares sharing one registry, the second prepare's Tier 0 advance gate consumes the OLD widths while the page fingerprint (which hashes the defining font objects) is computed fresh — so the plan token and the apply-time staleness compare are fresh-vs-fresh and cannot catch the stale capability.
+**Cause:** The capability cache key is `(generation, owner, name, xref)` and the per-lookup evidence-digest revalidation runs ONLY for Type0 (`cached.cid is not None`); simple fonts are returned without any pull-validation until `bump_generation`, which the engine calls only after a successful tiered commit. Pre-existing behavior surfaced by the P3-B adversarial review (R1); unreachable in preview (private scratch, splice+revert only).
+**Fix:** CLOSED (Task 13 revalidation slice, 2026-08-27): every `FontCapability` carries `evidence_digest` (`compare=False`); `compute_font_evidence_digest` dispatches on the `get_fonts` entry's SUBTYPE (Type0 → `compute_cid_evidence_digest`, else the new `compute_simple_font_evidence_digest` — font dict keys, indirect `/Encoding`/`/Widths`/`/FirstChar`/`/LastChar`/`/FontDescriptor` targets, `FontDescriptor/Flags`, raw `FontFile*` bytes); `page_capabilities` re-derives it on EVERY lookup before probing the cache and rebuilds on mismatch. Keying on subtype rather than `cached.cid is not None` also closes the same-class hole for a REJECTED Type0 (`cid is None`). Two rules kept: the digest is taken BEFORE the build (a write racing the build is caught next lookup, not attested as current), and the enumeration in the digest must be extended in the same change whenever `_build_capability` starts reading another key. Deliberately NOT changed inside the P3-B slice — its fences excluded font-capability rework.
+**File:** `model/text_commit/fonts.py` (`compute_simple_font_evidence_digest`, `DocumentFontRegistry.page_capabilities`), `test_scripts/test_text_commit_font_revalidation.py`
+
+## Provenance fields on compared dataclasses silently break equality pins
+**Area:** `model/text_commit/replay.py` (`PageReplay`), frozen-dataclass contracts generally
+**Symptom:** Adding the P3-B budget-attestation field `max_decoded_bytes` to `PageReplay` broke `test_streams_within_budget_replay_identically`, which asserts a smaller-budget replay of in-budget streams equals the default-budget replay — dataclass `__eq__` folds every field, so recording HOW a result was produced changed WHAT it compares as.
+**Cause:** Dataclass equality is field-wise by default; provenance/attestation metadata is not part of a result's semantic identity, but a plain field makes it so.
+**Fix:** Declare provenance metadata with `field(compare=False)` (repr keeps it visible, consumers still read the value, equality stays semantic). `ReplayEvidence.__post_init__` still refuses `max_decoded_bytes is None` — the attestation's purpose — without perturbing any equality pin.
+**File:** `model/text_commit/replay.py` (`PageReplay.max_decoded_bytes`)
+
+## fitz.Document.update_stream(compress=False) never restores the original storage encoding
+**Area:** `model/text_commit/patch.py` (`apply_patchset`, `AppliedPatch.revert`), PyMuPDF stream storage
+**Symptom:** After a `compress=False` apply followed by a `compress=False` revert, the DECODED bytes (`xref_stream()`) are exactly the original content — but the stream object's own dict is not: `/Filter /FlateDecode` is gone and `/Length` reflects the uncompressed size, permanently, for the rest of the object's life. "Revert" restores decoded content, never the storage encoding a write happened to use (P3-C adversarial review F1 — the plan's first-pass claim that revert restored the object "exactly" was itself wrong, caught only because a test checked the wrong objects).
+**Cause:** `compress` is a per-call encoding instruction to `update_stream`, not a property PyMuPDF tracks or restores; a write with `compress=False` always produces an uncompressed object, whatever the stream previously was.
+**Fix:** Safe only where nothing reads a content stream's storage encoding (this codebase never does — every reader goes through `xref_stream()`/decoded bytes). Never assume "reverted" means "byte-identical stream object" — only "byte-identical decoded content." A test asserting object-graph stability across such a round trip must explicitly check the mutated stream's own object dict, not just its neighbors.
+**File:** `model/text_commit/patch.py`; pinned by `test_scripts/test_text_commit_apply_compress.py::test_revert_compress_false_does_not_restore_original_storage_encoding`
+
+## tracemalloc cannot see memory PyMuPDF stores in its own C heap
+**Area:** memory-bound tests/harnesses for anything touching `fitz.Document` internals
+**Symptom:** A memory-bound test using `tracemalloc.get_traced_memory()` around repeated `Document.update_stream` calls would pass even if the written bytes accumulated without bound on the C side (P3-C adversarial review F2) — `tracemalloc` traces only the Python allocator.
+**Cause:** PyMuPDF stores stream bytes in MuPDF's own C-side `fz_buffer` structures, reached through the Python binding but never allocated via Python's `malloc` hooks — invisible to any `tracemalloc` window regardless of placement or scope.
+**Fix:** For a bound on PyMuPDF-internal storage, assert directly on what PyMuPDF itself reports (e.g. `len(doc.xref_stream_raw(xref))` held constant across repeated writes), not on a Python-heap-only instrument. `tracemalloc` stays correct for genuinely Python-side allocations (e.g. P3-B's retained `ReplayEvidence` objects).
+**File:** `test_scripts/test_text_commit_apply_compress.py::test_repeated_preview_keystrokes_stream_storage_stays_single_representation`
+
+## PyMuPDF get_pixmap/get_text each build a private DisplayList/TextPage per call
+**Area:** `model/text_commit/verify.py` / `preview.py` render pipeline, any PyMuPDF perf work
+**Symptom:** Source-level grep shows zero `get_displaylist`/`get_textpage` calls in `model/text_commit`, yet the P3-C bridge census's class-level probes count THREE DisplayList builds and THREE TextPage builds per warm preview keystroke (~99 ms each on the dense synthetic page) — six independent full content-stream interpretations, none reused, ≈93% of post-P3-C warm render time.
+**Cause:** `Page.get_pixmap` internally constructs its own DisplayList before rasterizing, and `Page.get_text` constructs its own TextPage — every call re-parses the page's content stream from scratch. The interpretation cost hides inside convenience utils, so call-site inspection undercounts it structurally; also note the nesting when timing (a wrapped `get_pixmap`'s elapsed INCLUDES its nested `get_displaylist`'s — never sum nested primitive timings).
+**Fix:** Attribute interpretation cost by wrapping the `fitz.Page` class methods, not by grepping call sites (`scripts/benchmark_p3c_stage_census.py`'s `StageProbe`). The reuse lever (one post-patch DisplayList + one TextPage shared across verify extraction/raster and the final preview raster) is the registered P3-D candidate — see the plan's §6c/§8.
+**File:** `scripts/benchmark_p3c_stage_census.py`; `plans/task13-p3c-preview-postprepare-latency.md` §6c
+
+## An object-level digest misses what get_fonts() has already resolved for the builder
+**Area:** `model/text_commit/fonts.py` (`compute_font_evidence_digest`), any staleness digest over font objects
+**Symptom:** The first draft of the simple-font revalidation digest folded the font dict's own keys as raw `kind:value` text plus the indirect targets of /Encoding, /Widths, /FirstChar, /LastChar and /FontDescriptor — and still served a stale capability: with `/BaseFont 8 0 R`, rewriting object 8 from `/Helvetica` to `/Wingdings-Regular` left the digest byte-identical (`xref:8 0 R` is unchanged) while `page.get_fonts(full=True)` reported the new basefont and a fresh build refused with `font_face_unavailable`. Same shape for `/Subtype 9 0 R` (Type1→Type3 served as simple) and an inline `/Encoding << /BaseEncoding 10 0 R >>` (WinAnsi→MacExpert served as simple). Task 13 revalidation review F1, three executed probes.
+**Cause:** `_build_capability` never reads /BaseFont, /Subtype or the encoding name itself — it consumes the MuPDF-RESOLVED entry fields (ext, subtype, basefont, encoding) that `get_fonts` hands it, and MuPDF follows indirect name objects the object-level digest only sees as references. A digest that enumerates "objects the builder reads" is incomplete unless it also folds every pre-resolved VALUE the builder consumes.
+**Fix:** `compute_font_evidence_digest` folds the four resolved entry fields ahead of the per-subtype object closure. General rule for any evidence digest: fold the builder's INPUTS as the builder sees them (resolved values), not only the dictionaries you can name. **Correction (2026-08-27):** this did not imply an analogous cross-document fingerprint gap: `page_fingerprint()` has always folded the complete MuPDF-resolved `get_fonts(full=True)` entry before `_update_font_dependencies`. Three Green characterization pins prove KEEP-round-trip stability, then `prepare ->` indirect `/BaseFont`/`/Subtype`/inline `/BaseEncoding` target mutation `-> STALE_PLAN` with zero stream mutation.
+**File:** `model/text_commit/fonts.py` (`compute_font_evidence_digest`); `model/text_commit/inspect.py` (`page_fingerprint`); `test_scripts/test_text_commit_font_revalidation.py::test_indirect_basefont_target_rewrite_rebuilds_the_capability` (+ `_subtype_`, `_base_encoding_`); `test_scripts/test_text_commit_tier0.py::test_resolved_font_entry_mutation_stales_prepared_plan`
+
+## Per-lookup revalidation through a whole-page map is O(K·N) per prepare
+**Area:** `model/text_commit/fonts.py` (`DocumentFontRegistry.capability`), engine prepare / per-keystroke preview path
+**Symptom:** Adding a per-hit evidence digest made `prepare_plan` on `test_files/test-complexed-layout.pdf` p0 (98 fonts: 90 Type3 + 8 Type0) go from 1.45 s to 10.3 s (7.1×); a 3-font page 3.6 → 10.6 ms. Counting probe: 98 `page_capabilities` calls and 9,604 digests per prepare. Task 13 revalidation review F2.
+**Cause:** `capability(page, name)` was a thin wrapper over `page_capabilities(page).get(name)`, so every single-resource lookup revalidated (and previously built/looked up) EVERY font on the page; `inspect._cid_show_candidates` and `plan.py` call it once per distinct show resource, so K lookups × N fonts. The old path hid the same O(K·N) shape behind cheap dict hits; a per-hit cost of a few hundred µs exposed it.
+**Fix:** `capability()` locates the single matching `get_fonts` entry (last wins — the dict's answer) and resolves only it through the shared `_resolve`; `page_capabilities` stays for callers needing the map. Type3 digests only what its build reads (`FontDescriptor/Flags`). After: the 98-font page prepares in 340 ms — below the pre-slice baseline. Rule: when adding work to a cache hit, check the CALLER's shape first — a wrapper that resolves the whole collection turns per-hit cost into per-collection cost.
+**File:** `model/text_commit/fonts.py` (`capability`, `_resolve`); `test_scripts/test_text_commit_font_revalidation.py::test_single_resource_lookup_digests_only_that_resource`
+
+## Stored stream bytes are not the evidence a decoding builder consumed
+**Area:** `model/text_commit/cid_fonts.py` (`compute_cid_evidence_digest`), any cache digest over decoded streams
+**Symptom:** A Type0 capability stayed cached after direct `/Filter` rewrites and after an indirect `/Filter N 0 R` target changed: `xref_stream_raw()` remained byte-identical while `xref_stream()` changed or became unreadable. The same stale-hit shape reproduced independently for `ToUnicode`, `CIDToGIDMap`, and `FontFile2` (six red pins).
+**Cause:** The CID builder consumes decoded bytes through `_stream_bytes()` (`doc.xref_stream`), but its revalidation digest hashed stored bytes through `xref_stream_raw()`. Hashing the stream dictionary too would still require following every indirect decoding target; attesting a different representation from the builder's input recreates an open-ended closure problem.
+**Fix:** Fold exactly the builder-visible decoded bytes via the same `_stream_bytes()` helper. This automatically covers direct and indirect decoding metadata without a second object walker; unreadable evidence hashes as the same `None` sentinel the builder sees and rebuilds to a stable fail-closed rejection. Cost probe (decoded read + SHA p50): ToUnicode 0.011 ms, CIDToGIDMap 0.135 ms, FontFile2 3.617 ms. The implementation replaces raw hashing rather than hashing both; a structural guard pins one decoded read per evidence stream on a warm single-resource hit.
+**File:** `model/text_commit/cid_fonts.py`; `test_scripts/test_text_commit_cid_hex_tj.py::test_registry_rebuilds_when_cid_stream_decoding_evidence_changes` (+ unchanged-cache and exact-read-count controls)
+
+## Untyped ctypes windll call silently truncates GetCurrentProcess's pseudo-handle
+**Area:** Windows harness/instrumentation code using ctypes (`GetProcessMemoryInfo` etc.)
+**Symptom:** `ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.windll.kernel32.GetCurrentProcess(), ...)` fails with return 0 — and `GetLastError()` reads 0, so there is no diagnostic at all; a broad `except`/fallback then hides the failure as a silent `None` (the P3-C bridge census's memory snapshots came back null until probed directly).
+**Cause:** Without an explicit `restype`, `GetCurrentProcess()`'s HANDLE comes back through the default c_int conversion, and without `argtypes` the 64-bit pseudo-handle is truncated on the way into the next call; `use_last_error=True` is also required for `ctypes.get_last_error()` to capture anything.
+**Fix:** Use `ctypes.WinDLL(..., use_last_error=True)`, set `GetCurrentProcess.restype = wintypes.HANDLE`, and give the consuming function full `argtypes`/`restype` (`[wintypes.HANDLE, POINTER(struct), wintypes.DWORD]` → `BOOL`). Typed, the same call succeeds.
+**File:** `scripts/benchmark_p3c_stage_census.py` (`_working_set_snapshot`)
+
+## PDFModel.__init__ flips PyMuPDF's process-global small_glyph_heights — every later test in a single-process suite sees fontsize-tall (0.8/-0.2 em) text bboxes
+**Area:** `model/pdf_model.py` + the text-commit Tier 1 growth proof (`model/text_commit/verify.py`) + any pytest run that shares one interpreter across files (CI's functional suite)
+**Symptom:** `test_preview_render_type0_cid_tier1_identical_and_uncompressed` passed in isolation and in the per-file sweep everywhere, then failed in PR #37's single-process CI suite on BOTH platforms (Windows blocking, Ubuntu advisory) with `growth_region_not_blank` — detail `background: the target's own bbox has no majority background colour` — identically under shipped `compress=False` and forced `compress=True`.
+**Cause:** `PDFModel.__init__` calls `fitz.TOOLS.set_small_glyph_heights(True)`, a process-global MuPDF flag that nothing in the repo ever resets; the first collected CI test (`test_1pdf_horizontal.py::test_horizontal_edit_and_verify`) constructs a `PDFModel`, so every later test that hands the planner a text-extraction bbox sees PyMuPDF's substituted 0.8/-0.2 em ascender/descender — a fontsize-tall box. (`target_bbox=None` callers get plan.py's flag-immune 1.35 em metric quad instead, which is why the Type0 growth tests in `test_text_commit_trm_*` stayed green in the same run; the app supplies an index-derived bbox on both its preview and commit paths, so it IS exposed.) For the 12 pt dense-CJK Type0 fixture the rawdict span bbox shrinks from 15.68 pt (font-metric box) to exactly 12.0 pt, non-background pixels (ink plus anti-aliased fringe) then reach ≥ 50 % of it, and `_target_background_rgb`'s strict-majority rule correctly finds no background colour — the growth proof fails closed on the `PageState` captured before apply, so no compress-dependent byte can influence it. Isolated runs never set the flag, so they exercise a configuration the app itself never runs in.
+**Fix:** The Type0/CID Tier 1 parity pin uses `REPLACEMENT_SHORTER` (Tier 1 without ink growth, `has_ink_growth is False` asserted), so it proves CID encoding + the compensated splice + compress parity regardless of the flag; positive growth parity stays on the simple-font Tier 1 pin, whose target keeps a majority background in both bbox modes. Diagnose this class with a two-file run (`pytest test_scripts/test_1pdf_horizontal.py <suspect>`) or by pre-setting the flag before `pytest.main` — a per-file sweep cannot see it. Follow-ups are in TODOS (suite-level `TOOLS` flag hygiene; the production admission gap for dense-CJK growth candidates under the app's own flag).
+**File:** `test_scripts/test_text_commit_apply_compress.py` (Group F Type0 Tier 1 pin); `model/pdf_model.py` (`__init__`, flag site)
+
+## Supplying a TextPage to get_text silently disables the caller's clip and flags
+**Area:** PyMuPDF text extraction, `model/text_commit/verify.py`
+**Symptom:** Replacing `page.get_text("rawdict", clip=halo, flags=flags)` with `page.get_text("rawdict", clip=halo, flags=flags, textpage=shared)` returns text outside the halo or retains a shape that differs from the legacy verifier.
+**Cause:** In PyMuPDF 1.27.1, a supplied TextPage is already interpreted; the convenience API ignores the new `clip` and extraction `flags` instead of rebuilding it.
+**Fix:** Use the shared TextPage only for full-page rawdict extraction. For clipped extraction, run a fresh low-level stext device over the already-built DisplayList with the exact legacy clip and flags.
+**File:** `model/text_commit/interpretation.py`; pinned by `scripts/probe_p3d_interpretation_equivalence.py` and `test_scripts/test_text_commit_interpretation_reuse.py`
+
+## PyMuPDF's DisplayList and TextPage convenience builders use different rotation conventions
+**Area:** PyMuPDF page interpretation, rotated pages
+**Symptom:** One shared interpretation appears correct on unrotated pages but shifts text or changes raster bytes at 90/270 degrees.
+**Cause:** `Page.get_textpage()` temporarily derotates the page, while `Page.get_displaylist()` bakes page rotation into the display-list transform. They are not interchangeable views of one coordinate system.
+**Fix:** Keep two explicit products in `PageInterpretation`: a rotation-faithful DisplayList for raster output and a derotated TextPage for full rawdict identity. Treat their coordinate contracts as part of the type's invariant.
+**File:** `model/text_commit/interpretation.py` (`PageInterpretation`)
+
+## Composing derotation onto a DisplayList is not raster-byte stable
+**Area:** PyMuPDF raster reuse, `/Rotate`, `/UserUnit`, and CropBox handling
+**Symptom:** A DisplayList built under a derotated page and then rasterized with a composed rotation matrix produces a visually plausible image whose dimensions or PNG bytes differ from `Page.get_pixmap()`.
+**Cause:** The legacy raster path's page rotation, crop translation, and user-unit transforms are baked in a specific order. Reconstructing that order outside the utility is not byte-stable, especially for rotated CropBoxes and non-default `/UserUnit`.
+**Fix:** Build and retain a separate rotation-faithful DisplayList for all raster calls. The premise probe includes negative fixtures proving the composed-derotation alternative diverges.
+**File:** `scripts/probe_p3d_interpretation_equivalence.py`; `model/text_commit/interpretation.py`
+
+## DisplayList.run is unusable through the PyMuPDF 1.27.1 Python wrapper for clipped stext reuse
+**Area:** PyMuPDF low-level devices
+**Symptom:** Calling the public-looking `DisplayList.run()` with a clipped stext device raises or cannot express the exact legacy clipping operation.
+**Cause:** The 1.27.1 wrapper does not expose the needed device/matrix/scissor combination compatibly, although MuPDF's underlying display-list runner does.
+**Fix:** Keep the compatibility shim isolated in `PageInterpretation`: invoke the low-level run with the exact matrix and scissor, and pin it against independent legacy `get_text` results.
+**File:** `model/text_commit/interpretation.py` (`clipped_rawdict` path)
+
+## MEDIABOX_CLIP is not invariant under a quarter-turn CTM
+**Area:** clipped stext extraction on rotated pages
+**Symptom:** A reused clipped TextPage matches at rotation 0 but drops or admits boundary glyphs at 90/270 degrees when `TEXT_MEDIABOX_CLIP` is enabled.
+**Cause:** The media-box clipping flag is applied in the stext device's coordinate space; feeding a non-identity quarter-turn CTM changes which boundary is clipped.
+**Fix:** Run clipped stext in the derotated text convention with the legacy clip expressed in that convention. Preserve dedicated 0.1-point boundary and negative-control fixtures.
+**File:** `scripts/probe_p3d_interpretation_equivalence.py`; `model/text_commit/interpretation.py`
+
+## Rawdict Python object construction can dominate after interpretation reuse
+**Area:** dense-page text verification performance
+**Symptom:** Removing redundant DisplayList/TextPage builds does not make warm dense-page verification proportional to the remaining MuPDF interpretation count.
+**Cause:** `extractRAWDICT()` still materializes a large nested Python dict/list tree. That allocation and conversion cost survives even when the underlying TextPage is reused.
+**Fix:** Treat extraction shape reduction as a separate measured follow-up; do not attribute all residual time to content-stream interpretation or add an unproven private-structure shortcut.
+**File:** `model/text_commit/verify.py`; follow-up registered in `TODOS.md`
+
+## A PageInterpretation must not outlive the content-stream mutation window that created it
+**Area:** `PlanPreviewRenderer`, scratch apply/revert lifecycle
+**Symptom:** Reusing an interpretation after scratch streams have been reverted yields stale pixels/text, retains MuPDF objects, or makes later cleanup order-dependent.
+**Cause:** A DisplayList/TextPage is a snapshot of the page at construction time; reverting the document does not mutate that snapshot into the old page.
+**Fix:** Construct the post-patch interpretation after apply, use it for verification and final raster, release it idempotently in a nested `finally`, and only then revert streams. Never place it in the engine or session cache.
+**File:** `model/text_commit/preview.py`; `model/text_commit/interpretation.py`
+
+## A pre-state baseline cache key is a renderer-lifecycle guard, not a complete render-dependency proof
+**Area:** `PreStateBaselineCache`
+**Symptom:** A cache hit is mistaken for proof that every indirect image/resource/OCG dependency is unchanged.
+**Cause:** The bounded key intentionally uses fresh page identity, fingerprint, font, annotation, and renderer-global evidence; enumerating the entire transitive renderer dependency graph would duplicate MuPDF and is not claimed.
+**Fix:** Keep the cache private to one scratch renderer, one slot, and clear it on close/revert failure. Post-patch verification remains authoritative and must fail closed for a key-invisible mutation; the negative control mutates an image XObject outside the halo and proves exactly that.
+**File:** `model/text_commit/verify.py` (`PreStateBaselineKey`, `PreStateBaselineCache`); `test_scripts/test_text_commit_prestate_baseline.py`
+
+## Process-global PyMuPDF rendering switches belong in every reusable baseline key
+**Area:** renderer caches, `fitz.TOOLS`
+**Symptom:** A baseline built under one small-glyph, quad-correction, or anti-alias configuration is reused after another subsystem changes that global, producing inconsistent text geometry or pixels.
+**Cause:** These settings live outside the document and page object, so page xref and content fingerprints cannot detect them.
+**Fix:** Snapshot all three settings into `PreStateBaselineKey` on every lookup. Any future global that influences extraction or raster output must be added to the key and to the separate governance/reset follow-up.
+**File:** `model/text_commit/verify.py` (`PreStateBaselineKey`)
+
+## Building a TextPage can make inherited rotation explicit
+**Area:** PyMuPDF inherited page attributes, document serialization
+**Symptom:** A read-only-looking text interpretation changes whether `/Rotate` is inherited or explicitly present on the page object.
+**Cause:** PyMuPDF's existing get-textpage derotation dance may write an explicit rotation value while restoring effective rotation. This is pre-existing library behavior, not introduced by interpretation reuse.
+**Fix:** Compare effective page behavior and the established fingerprint contract, not raw inheritance spelling, unless a task explicitly requires object-graph preservation. Do not widen P3-D into a PyMuPDF serialization rewrite.
+**File:** `model/text_commit/interpretation.py`; characterized by `scripts/probe_p3d_interpretation_equivalence.py`
+
+## The model's text-geometry surface was unrotated dict space while the View is displayed space — GUI text editing never worked on `/Rotate 90/270` pages
+**Area:** `model/pdf_model.py` (hit-test, selection, outline targets), `model/pdf_text_edit.py` (`edit_text`, `derive_tier0_preview_target`), `controller/pdf_controller.py` facade, `model/geometry.py`
+**Symptom:** On a `/Rotate 270` page the raster showed the text vertically near the bottom, but text-edit mode drew the editable-region outlines horizontally near the top, clicking the visible glyphs opened nothing, and clicking the misplaced outline opened an upright editor (and its preview) at the top (P3-D manual smoke, 2026-08-29). A one-line "fix" to the 270° editor-corner branch (`32a7630`) changed nothing because that branch never ran: the hit's `rotation` was the dict-space text direction (0), not the on-screen rotation.
+**Cause:** `EditableSpan`/`EditableParagraph`/`TextBlock` geometry comes from `page.get_text("dict"/"rawdict")` = unrotated page space, and `TextHit.target_bbox`/glyph rects/selection bounds were handed to the View unconverted, while `_doc_rect_to_scene_rect`/`_scene_pos_to_page_and_doc_point` are pure scale+offset over the displayed (`page.rect`/`get_pixmap`) raster. The controller forwarded verbatim. At `/Rotate 0` the two spaces coincide, so no unrotated fixture, GUI test or smoke could see it; the rotated GUI tests that existed all used *text-direction* rotation on unrotated pages. The same quirk was already documented for annotations and for the text-commit engine — the read/GUI path was simply never covered.
+**Fix:** The model's PUBLIC text-geometry surface speaks displayed space; the index, reopen anchors, resolve pipeline, legacy insert and text-commit engine stay unrotated. Chokepoint helpers in `model/geometry.py` (`visual_to_unrotated_point/rect`, `unrotated_to_visual_point/rect`, `visual_text_rotation`) convert once at the boundary: `get_text_info_at_point` / `get_char_context_at_point` / `get_chars_in_run` / `get_text_selection_snapshot(+_bounds, get_text_in_rect)` / `get_text_selection_snapshot_from_run` / `get_text_selection_lines` convert points in and rects out (index-internal callers use the `_unrotated` bodies); `get_text_targets` / `get_text_blocks` return displayed-space COPIES for the outline drawer; `TextHit.rotation` is `(text_rotation + page.rotation) % 360`; `edit_text` / `derive_tier0_preview_target` derotate incoming `rect`/`new_rect` at entry. Never add rotation math to the View converters. When a new model query takes or returns page geometry, name its space in the docstring and test it on a `/Rotate 90/270` fixture against pixmap ink — never against the conversion matrix.
+**File:** `model/geometry.py`, `model/pdf_model.py`, `model/pdf_text_edit.py`, `controller/pdf_controller.py` (`iter_text_targets`, `get_text_blocks`, cross-page-move fallback); pinned by `test_scripts/test_text_geometry_page_rotation.py` and `test_scripts/test_text_edit_rotated_page_gui.py`
+
+## Untouched inline-edit sessions reported a font "override" and lost the Tier 0 plan
+**Area:** `view/text_editing.py` (`_sync_font_combo_state`, `build_style_overrides`), `model/text_commit/plan.py` (`STYLE_OVERRIDE_PRESENT`)
+**Symptom:** Apply on a Helvetica span the user never restyled reported `tier0:style_override_present -> legacy` and asked for legacy-fallback consent (P3-D manual smoke). Independent of page rotation; masked in GUI tests that preset both font attributes to `"helv"`.
+**Cause:** On click the View stores the raw PyMuPDF span font (`"Helvetica"`) in `editing_font_name`, while `_sync_font_combo_state` stored the UI alias `_qt_font_to_pdf(...)` (`"helv"`) in `_editing_initial_font_name` and never overwrote `editing_font_name` (hasattr guard). `build_style_overrides` compares the two case-insensitively → `font_family="Helvetica"` on an untouched session → the plan path refuses (an explicit restyle cannot reuse the source show op).
+**Fix:** Seed the baseline from the raw name the session opened with (`_editing_initial_font_name = editing_font_name`) and run BOTH sides of every changed-font comparison through one normaliser (`_font_alias` → `view._qt_font_to_pdf`, via `build_style_overrides(font_key=)` and `finalize_text_edit_impl`). Seeding alone is not enough: the combo writes aliases, so a raw baseline compared by plain string equality turned "pick Courier, pick the original back" into a `font_family="helv"` override (caught by adversarial review). The request's `font` stays the raw current name; only the comparison key is normalised.
+**File:** `view/text_editing.py` (`_sync_font_combo_state`, `_font_alias`, `build_style_overrides`); pinned by `test_text_edit_rotated_page_gui.py::test_untouched_session_sends_no_style_override` and `::test_font_pick_and_revert_sends_no_style_override`
+
+## Plan-preview rasters are displayed-space clips; a rotated editor proxy must counter-rotate them
+**Area:** `view/text_editing.py` (`_install_plan_preview_hook`, `PreviewBackedInlineTextEditor.apply_plan_preview`, `_capture_frozen_first_frame`)
+**Symptom:** The exact (plan-backed) preview was silently unavailable for any editor with a non-zero rotation (`_install_plan_preview_hook` returned early), which after the geometry fix would have meant every `/Rotate 90/270` page fell back to the CSS preview and could not warm the P3-D baseline cache.
+**Cause:** The preview coordinator renders `clip_rect` from the rotation-faithful DisplayList, i.e. a displayed-space raster (tall for vertical glyphs), but the editor paints its image at local (0, 0) inside a proxy the scene rotates with `setRotation(rotation)`; unrotated, the raster would be double-rotated on screen.
+**Fix:** Install the hook for every rotation and counter-rotate in `apply_plan_preview` and `_capture_frozen_first_frame` through ONE shared table, `PROXY_COUNTER_ROTATION = {90: -90, 180: 180, 270: 90}` (the proxy is rotated about its origin corner: top-right / bottom-right / bottom-left). Before this the frozen-frame grab had only a 90/270 branch — at 180 it grabbed a `w×h` region starting at the proxy origin (the bbox's bottom-right, i.e. the margin below-right of the glyphs) with no rotation, so every editor on a `/Rotate 180` page opened blank until the first keystroke; the grab also ignored the page scene x offset on centred pages. Rotation on the editor means the ON-SCREEN glyph rotation (page `/Rotate` folded in by the model), so rotated text on unrotated pages and unrotated text on rotated pages take the same path. Two paint paths that must agree share one table, not two literals.
+**File:** `view/text_editing.py`; pinned by `test_text_edit_rotated_page_gui.py::test_plan_preview_stays_available_on_rotated_editor` (marker pixel per rotation) and `::test_click_on_visible_glyphs_opens_editor_over_them_with_screen_rotation` (frozen frame contains glyph ink, 90/180/270)
+
+## Legacy text insert clamped unrotated rects against the displayed `page.rect`
+**Area:** `model/pdf_text_edit.py` (`edit_text` → `_apply_redact_insert` / `_verify_rebuild_edit` / re-insert fallbacks)
+**Symptom:** With the legacy engine (or after a Tier 0 reject), editing a run that sits in the lower band of the UNROTATED page of a `/Rotate 90/270` fixture through the htmlbox path (any `new_rect`, multi-line, CJK, or a too-wide replacement) failed with `RuntimeError: 文字框內容在字級 12.0pt 下無法完整塞入 (spare_height=-1)，策略 A/B/C 均失敗，已回滾`; the fast `insert_text` path (short single-line Latin replacements) never clamps, so the first model test written for this passed pre-fix and had to be reworked.
+**Cause:** `edit_text` took `page_rect = page.rect` — the DISPLAYED box, 792×612 on a rotated Letter page — and every page-bounds clamp downstream (`clamped_new`, `insert_rect = Rect(x0, y0, x1, page_rect.y1)`, `clamp_rect_to_page`, the probe page dims, `get_text(clip=)`) compared unrotated-space rects (y up to 792) against it: `y0 > page_rect.y1` → degenerate insert rect → htmlbox cannot fit. Identity at `/Rotate 0`, so no unrotated fixture could see it.
+**Fix:** `model/geometry.py::unrotated_page_rect(page)` (= `page.rect * page.derotation_matrix`, normalised) is the bounds the legacy pipeline receives; the re-insert fallbacks (`_reinsert...`, span re-insertion `clamp_rect_to_page(bbox, ...)`) use it too. Rule: a clamp's bounds must live in the same space as the rects it clamps — on `/Rotate` pages `page.rect` is only ever right for displayed-space values.
+**File:** `model/geometry.py`, `model/pdf_text_edit.py`; pinned by `test_text_geometry_page_rotation.py::test_legacy_edit_keeps_place_when_source_sits_near_the_unrotated_bottom`

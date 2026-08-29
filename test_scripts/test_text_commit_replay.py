@@ -263,17 +263,81 @@ def test_bind_missing_text_reports_no_match():
 
 
 def test_bind_form_xobject_target_refused():
+    """Confirmed target-in-XObject keeps ``TARGET_IN_FORM_XOBJECT``."""
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
     page.insert_text((72, 100), "Page-level text", fontsize=12.0, fontname="helv")
+
+    # Embed the missing target inside a Form XObject the page invokes.
+    form_xref = doc.get_new_xref()
+    doc.update_object(
+        form_xref,
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 200 50] "
+        "/Resources << /Font << /F1 1 0 R >> >> >>",
+    )
+    # Helvetica resource for the form: reuse a page font if present, else
+    # install one under the form's own Resources below.
+    font_xref = doc.get_new_xref()
+    doc.update_object(
+        font_xref,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+        "/Encoding /WinAnsiEncoding >>",
+    )
+    doc.update_object(
+        form_xref,
+        f"<< /Type /XObject /Subtype /Form /BBox [0 0 200 50] "
+        f"/Resources << /Font << /F1 {font_xref} 0 R >> >> >>",
+    )
+    doc.update_stream(
+        form_xref,
+        b"BT /F1 12 Tf 0 10 Td (XObject text inside) Tj ET",
+    )
+    doc.xref_set_key(
+        page.xref,
+        "Resources",
+        f"<< /XObject << /FX1 {form_xref} 0 R >> "
+        f"/Font << /F1 {font_xref} 0 R >> >>",
+    )
     page_xref = page.get_contents()[0]
     invoke = b"\nq 1 0 0 1 72 650 cm /FX1 Do Q\n"
     doc.update_stream(page_xref, doc.xref_stream(page_xref) + invoke)
+
     binding = bind_source_text(
         doc, page, target_text="XObject text inside", expected_origin=(80.0, 160.0)
     )
     assert isinstance(binding, BindingFailure)
     assert binding.reason == RejectReason.TARGET_IN_FORM_XOBJECT
+    doc.close()
+
+
+def test_bind_miss_on_xobject_page_reports_no_match_not_form_xobject():
+    """A page that merely invokes an XObject must not rebrand every miss.
+
+    Production used to fire ``TARGET_IN_FORM_XOBJECT`` whenever
+    ``has_xobject_invocation`` was true — 98.6% of corpus pages — even when
+    the target bytes were nowhere in any invoked Form XObject.
+    """
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), "Page-level text", fontsize=12.0, fontname="helv")
+    form_xref = doc.get_new_xref()
+    doc.update_object(
+        form_xref,
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 100 20] >>",
+    )
+    doc.update_stream(form_xref, b"BT /F1 12 Tf 0 0 Td (logo) Tj ET")
+    doc.xref_set_key(
+        page.xref, "Resources", f"<< /XObject << /FX1 {form_xref} 0 R >> >>"
+    )
+    page_xref = page.get_contents()[0]
+    invoke = b"\nq 1 0 0 1 72 650 cm /FX1 Do Q\n"
+    doc.update_stream(page_xref, doc.xref_stream(page_xref) + invoke)
+
+    binding = bind_source_text(
+        doc, page, target_text="Nonexistent target", expected_origin=(50.0, 50.0)
+    )
+    assert isinstance(binding, BindingFailure)
+    assert binding.reason == RejectReason.NO_MATCH
     doc.close()
 
 
@@ -287,7 +351,11 @@ def test_bind_geometry_disagreement_is_evidence_mismatch():
     doc.close()
 
 
-def test_bind_rotated_text_refused_as_unsupported_state():
+def test_bind_rotated_text_now_binds_as_a_quarter_turn_candidate():
+    """Task 13 P2: a 90°-rotated show BINDS (was a blanket
+    UNSUPPORTED_TEXT_STATE refusal) — the quarter-turn family is admitted
+    at the TRM gate; every non-quarter-turn shape keeps its own fail-closed
+    ``trm_*`` code (pinned in test_text_commit_trm_admission.py)."""
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
     page.insert_text(
@@ -297,8 +365,115 @@ def test_bind_rotated_text_refused_as_unsupported_state():
     binding = bind_source_text(
         doc, page, target_text="Rotated 90", expected_origin=origin
     )
-    assert isinstance(binding, BindingFailure)
-    assert binding.reason == RejectReason.UNSUPPORTED_TEXT_STATE
+    assert not isinstance(binding, BindingFailure), (
+        binding.reason,
+        binding.detail,
+    )
+    doc.close()
+
+
+def _rotated_stream_doc(rotation: int, stream: bytes) -> fitz.Document:
+    """One page whose only content is ``stream``, ``/Rotate rotation``, /F1 = Helvetica.
+
+    Built by xref surgery (like ``test_text_commit_structural_gates._stream_doc``)
+    rather than ``insert_text``, so the exact ``Tm``/text-space origin is
+    known precisely -- ``insert_text`` takes its point in PyMuPDF's own
+    top-left display convention and silently re-derives the content-stream
+    operands, which would make the analytic oracle below a guess rather than
+    a control.
+    """
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    content_xref = doc.get_new_xref()
+    doc.update_object(content_xref, "<<>>")
+    doc.update_stream(content_xref, stream)
+    doc.xref_set_key(page.xref, "Contents", f"{content_xref} 0 R")
+    font_xref = doc.get_new_xref()
+    doc.update_object(
+        font_xref,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+        "/Encoding /WinAnsiEncoding >>",
+    )
+    doc.xref_set_key(page.xref, "Resources", f"<< /Font << /F1 {font_xref} 0 R >> >>")
+    page.set_rotation(rotation)
+    data = doc.tobytes()
+    doc.close()
+    return fitz.open("pdf", data)
+
+
+@pytest.mark.parametrize("rotation", [90, 270])
+def test_bind_origin_page_follows_page_rotate(rotation):
+    """``origin_page`` must land in VISUAL (pixmap) page space on ``/Rotate`` pages.
+
+    ``page.transformation_matrix`` alone omits ``/Rotate`` in PyMuPDF; without
+    also composing ``page.rotation_matrix`` (mirrors ``plan.py``'s
+    ``_page_visual_matrix``), ``origin_page`` stays in *unrotated* page space
+    while glyph ink renders rotated.
+
+    ``page.get_text('rawdict')`` is NOT a visual-space oracle here -- PyMuPDF
+    keeps rawdict/dict text-extraction geometry in unrotated page space on
+    both axes (same quirk documented for annot geometry in
+    ``docs/PITFALLS.md``: "PyMuPDF annot geometry is unrotated-space on BOTH
+    write and read"), so comparing ``origin_page`` against a raw rawdict
+    origin would only prove self-consistency with the bug, not correctness.
+    The oracle here is the same analytic construction
+    ``transformation_matrix * rotation_matrix`` that ``plan.py``'s fallback
+    halo uses, corroborated by an independent pixmap-ink check.
+    """
+    stream = b"BT /F1 12 Tf 1 0 0 1 72 700 Tm (Rotate Origin) Tj ET"
+    doc = _rotated_stream_doc(rotation, stream)
+    page = doc[0]
+    assert page.rotation == rotation
+
+    expected = fitz.Point(72.0, 700.0) * page.transformation_matrix * page.rotation_matrix
+
+    binding = bind_source_text(
+        doc, page, target_text="Rotate Origin", expected_origin=None
+    )
+    assert isinstance(binding, SourceSpanBinding), binding
+    assert binding.origin_page == pytest.approx((expected.x, expected.y), abs=0.5)
+
+    # Independent: the claimed visual origin must fall inside (a small margin
+    # around) the actual rendered ink's bounding box -- not off in
+    # unrotated-space territory. A margin, not a first-scanned-pixel check,
+    # because the baseline origin can sit near either end of the ink extent
+    # depending on rotation direction (glyph ascent/descent run opposite
+    # ways at 90 vs 270).
+    pix = page.get_pixmap(dpi=72)
+    samples = bytes(pix.samples)
+    n = pix.n
+    minx = miny = 1e9
+    maxx = maxy = -1
+    for y in range(pix.height):
+        for x in range(pix.width):
+            if samples[(y * pix.width + x) * n] < 200:
+                minx, maxx = min(minx, x), max(maxx, x)
+                miny, maxy = min(miny, y), max(maxy, y)
+    assert maxx >= 0, "fixture: no dark pixmap pixels found"
+    margin = 20.0
+    assert minx - margin <= expected.x <= maxx + margin, (minx, maxx, expected.x)
+    assert miny - margin <= expected.y <= maxy + margin, (miny, maxy, expected.y)
+    doc.close()
+
+
+@pytest.mark.parametrize("rotation", [90, 270])
+def test_bind_expected_origin_in_visual_space_is_not_a_mismatch(rotation):
+    """The binder's own evidence gate must accept a visual-space ``expected_origin``.
+
+    Pins the *consumer* contract: whatever the caller passes as
+    ``expected_origin`` must be directly comparable to ``origin_page`` (both
+    visual-space) or a correctly-computed edit would spuriously
+    EVIDENCE_MISMATCH on every rotated page.
+    """
+    stream = b"BT /F1 12 Tf 1 0 0 1 72 700 Tm (Rotate Origin) Tj ET"
+    doc = _rotated_stream_doc(rotation, stream)
+    page = doc[0]
+    expected = fitz.Point(72.0, 700.0) * page.transformation_matrix * page.rotation_matrix
+
+    binding = bind_source_text(
+        doc, page, target_text="Rotate Origin", expected_origin=(expected.x, expected.y)
+    )
+    assert isinstance(binding, SourceSpanBinding), binding
     doc.close()
 
 

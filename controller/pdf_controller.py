@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from model.color_profile import ColorProfile, safe_to_fitz_colorspace
 from model.edit_commands import AddTextboxCommand, EditTextCommand, EditTextResult, SnapshotCommand
+from model.edit_requests import StyleOverrides
 from model.object_requests import (
     BatchDeleteObjectsRequest,
     BatchMoveObjectsRequest,
@@ -34,13 +35,14 @@ from model.object_requests import (
 )
 from model import pdf_optimizer
 from model.pdf_model import PDFModel
-from model.pdf_text_edit import derive_tier0_preview_target
+from model.pdf_text_edit import _Tier0Target, derive_tier0_preview_target
+from model.text_commit.dto import CommitOutcome, is_real_fallback_commit
 from model.text_commit.preview import PlanPreviewResult, open_preview_session
 from model.tools.ocr_tool import is_device_available
 from utils.file_reveal import reveal_in_file_manager
 from utils.helpers import pixmap_to_qimage, pixmap_to_qpixmap
 from utils.preferences import UserPreferences
-from view.message_boxes import show_error
+from view.message_boxes import confirm_degraded_fallback, show_error
 from view.pdf_view import EditTextRequest, MoveTextRequest, PDFView, ViewportAnchor
 from src.printing.messages import (
     PRINT_CLOSING_MESSAGE as CLEAN_PRINT_CLOSING_MESSAGE,
@@ -239,7 +241,21 @@ class PDFController:
         # V2 plan-backed preview (lazy: only built when TEXT_COMMIT_PREVIEW=plan)
         self._text_commit_preview_coordinator: TextCommitPreviewCoordinator | None = None
         self._plan_preview_session_key: str | None = None
-        self._plan_preview_target: tuple | None = None
+        self._plan_preview_target: _Tier0Target | None = None
+        # Task 12 P0-C phase 1: whether the most recent edit_text call ended
+        # in a DEGRADED_COMMITTED outcome. The View pulls-and-clears this via
+        # consume_last_edit_degraded() so its mode-switch finalize path never
+        # toasts plain success ("文字已儲存") over a degrade notice.
+        self._last_edit_degraded = False
+        # Task 12 P0-C phase 2 verification: the actual EditTextResult of
+        # the most recent commit-producing operation (edit_text,
+        # move_text_across_pages, add_textbox). The View pulls-and-clears
+        # this via consume_last_edit_result() so its mode-switch finalize
+        # path can tell a real commit apart from a signal that merely
+        # emitted without raising (TextEditOutcome.COMMITTED is set on the
+        # latter alone) -- otherwise REJECTED_STRICT, TARGET_BLOCK_NOT_FOUND
+        # and FALLBACK_DECLINED can all be misreported as success.
+        self._last_edit_result: EditTextResult | None = None
         self._thumbnail_resume_pending_by_session: set[str] = set()
         self._load_gen_by_session: dict[str, int] = {}
         self._thumb_gen_by_session: dict[str, int] = {}
@@ -2287,6 +2303,10 @@ class PDFController:
             return "找不到要編輯的文字內容"
         if result is EditTextResult.REJECTED_STRICT:
             return "嚴格模式：此編輯不符合高保真條件，已拒絕（文件未變更）"
+        if result is EditTextResult.FALLBACK_DECLINED:
+            # P0-C phase 2: the user declining the consent prompt is not an
+            # error (zero mutation happened as requested) -- no error toast.
+            return None
         return None
 
     def _show_edit_result_feedback(self, result: EditTextResult) -> None:
@@ -2297,6 +2317,100 @@ class PDFController:
             self.view._show_toast(message, duration_ms=2500, tone="error")
             return
         show_error(self.view, message)
+
+    @staticmethod
+    def _is_notifiable_degrade(outcome: CommitOutcome | None) -> bool:
+        """A degrade notice fires only when a HIGHER-fidelity attempt fell
+        back — chain like ``("tier0:<reason>", "legacy")``.
+
+        Under the shipped default (``engine="legacy"``) every successful edit
+        is honestly recorded as DEGRADED_COMMITTED with chain ``("legacy",)``;
+        that is today's baseline behavior, not a failed fidelity promise, and
+        warning on every default-config edit would ship an unratified UX
+        change ahead of rollout (verification finding F1). When rollout flips
+        the default to the tiered engine, degrades surface automatically.
+        Delegates to the Model-layer ``is_real_fallback_commit`` shared with
+        ``EditTextCommand``'s redo-reprompt gate (Task 12 P0-C phase 2
+        verification) so the two "is this outcome a real fallback" checks
+        can never drift apart."""
+        return is_real_fallback_commit(outcome)
+
+    def _degraded_commit_message(self, outcome: CommitOutcome) -> str:
+        """User-facing degrade notice. Reason codes ONLY — the payload must
+        never carry document text, replacement text, filenames, or paths
+        (Task 12 P0-C privacy contract)."""
+        chain = " → ".join(outcome.fallback_chain) or "legacy"
+        return f"已以降級模式完成編輯（可能未保留原字型或相鄰版面）：{chain}"
+
+    def _notify_degraded_commit(self, outcome: CommitOutcome) -> None:
+        """Surface a DEGRADED_COMMITTED outcome on exactly ONE view channel.
+
+        Preference order: the dedicated View API, then a warning toast, then
+        the status bar — never more than one of them per edit."""
+        message = self._degraded_commit_message(outcome)
+        logger.info(
+            "text_commit_degraded_notice chain=%s",
+            "→".join(outcome.fallback_chain),
+        )
+        view = getattr(self, "view", None)
+        if view is None:
+            return
+        if hasattr(view, "notify_degraded_commit"):
+            view.notify_degraded_commit(message)
+            return
+        if hasattr(view, "_show_toast"):
+            view._show_toast(message, duration_ms=5000, tone="warning")
+            return
+        if hasattr(view, "set_status_bar_override_message"):
+            view.set_status_bar_override_message(message)
+
+    def consume_last_edit_degraded(self) -> bool:
+        """Pull-and-clear whether the last edit committed degraded.
+
+        Called by the View's finalize path to decide if the plain success
+        toast may be shown; consuming clears the flag so one degraded edit
+        can suppress at most one success toast."""
+        was_degraded = self._last_edit_degraded
+        self._last_edit_degraded = False
+        return was_degraded
+
+    def consume_last_edit_result(self) -> EditTextResult | None:
+        """Pull-and-clear the actual EditTextResult of the last
+        commit-producing operation (Task 12 P0-C phase 2 verification).
+
+        Called by the View's finalize path so the mode-switch success toast
+        can never fire for a non-SUCCESS outcome. ``TextEditFinalizeResult.
+        outcome == COMMITTED`` only means the finalize signal emitted
+        without raising -- it does not reflect what the Controller actually
+        did. ``None`` means no commit-producing operation has happened
+        since the last consume (or the value was already consumed):
+        callers must treat that the same as "not SUCCESS", never as
+        "assume success"."""
+        result = self._last_edit_result
+        self._last_edit_result = None
+        return result
+
+    def _fallback_confirmation_message(self, chain: tuple[str, ...]) -> str:
+        """Pre-commit consent prompt. Reason codes ONLY -- same privacy
+        contract as _degraded_commit_message (Task 12 P0-C)."""
+        chain_text = " → ".join(chain) or "legacy"
+        return (
+            "此編輯無法以高保真引擎完成，需以降級模式提交"
+            f"（可能未保留原字型或相鄰版面）。\n原因：{chain_text}\n\n是否繼續？"
+        )
+
+    def _confirm_legacy_fallback(self, chain: tuple[str, ...]) -> bool:
+        """P0-C phase 2 consent gate, passed to model.edit_text() as
+        ``confirm_fallback``. The Model only ever sees an opaque callable —
+        this is where the Qt modal actually lives, keeping the Model
+        Qt-free. Invoked at most once per edit, synchronously, before any
+        legacy mutation; see plan §8 for why this pauses inside
+        model.edit_text() rather than via a Controller-side preflight."""
+        view = getattr(self, "view", None)
+        if view is None:
+            return True
+        message = self._fallback_confirmation_message(chain)
+        return confirm_degraded_fallback(view, message)
 
     def edit_text(
         self,
@@ -2342,6 +2456,13 @@ class PDFController:
         # Empty string is a valid "delete textbox content" intent from inline edit.
         if new_text is None:
             new_text = ""
+        # Each edit attempt owns the degrade flag; a stale True from an
+        # earlier edit must never suppress a later edit's success toast.
+        self._last_edit_degraded = False
+        # Task 12 P0-C phase 2 verification: same reasoning -- a stale
+        # result from an earlier edit must never be read as this edit's
+        # outcome by the View's finalize path.
+        self._last_edit_result = None
         if not self.model.doc or page < 1 or page > len(self.model.doc):
             return
         # The commit invalidates any plan-backed preview session's scratch
@@ -2361,61 +2482,6 @@ class PDFController:
             # Phase 4: 透過 CommandManager 執行，支援頁面快照 undo/redo
             snapshot = self.model._capture_page_snapshot(page_idx)
 
-            # Displacement reflow callback（Track B → Track A fallback）
-            # 在 model.edit_text() 完成後，只移動後續受影響塊，不重新處理 edited block。
-            #
-            # Bug fixes:
-            # 1. 用 _model 而非 _doc 閉包，redo 時透過 _model.doc 取到目前有效的 doc 物件，
-            #    避免 full-GC / save-reopen 後對已關閉的舊 doc 執行 reflow。
-            # 2. drag-move 場景：以 new_rect 作為定位 edited block 的 rect（block 已在新位置），
-            #    否則用原始 rect 在 move 後找不到 block，displacement 靜默失敗。
-            # 3. Track B fallback 條件：plan is None（span not found）也要 fallback，
-            #    不能只看 success flag（Track B 找不到 span 時仍回傳 success=True）。
-            _model = self.model
-            _edit_rect = fitz.Rect(new_rect if new_rect is not None else rect)
-            _orig_rect = fitz.Rect(rect)
-            _new_text = new_text
-            _original_text = original_text or ""
-            _font = font
-            _size = float(size)
-            _color = color
-            _page_idx = page_idx
-            # mutable container：_reflow_fn 在 cmd.execute() 期間寫入，
-            # show_page() 完成後再讀取，確保警告不被 _update_status_bar() 覆蓋
-            _reflow_warning: list = [None]
-
-            def _reflow_fn():
-                try:
-                    _doc = _model.doc   # 每次執行時取當前有效 doc（非閉包時的舊 doc）
-                    if _doc is None:
-                        return
-                    from reflow.track_A_core import TrackAEngine
-                    from reflow.track_B_core import TrackBEngine
-                    result_b = TrackBEngine().apply_displacement_only(
-                        doc=_doc, page_idx=_page_idx,
-                        edited_rect=_edit_rect, new_text=_new_text,
-                        original_text=_original_text,
-                        font=_font, size=_size, color=_color,
-                    )
-                    # fallback 條件：明確失敗 OR Track B 未找到 span（plan is None）
-                    b_ok = result_b.get("success", False) and result_b.get("plan") is not None
-                    if not b_ok:
-                        result_a = TrackAEngine().apply_displacement_only(
-                            doc=_doc, page_idx=_page_idx,
-                            edited_rect=_edit_rect, new_text=_new_text,
-                            original_text=_original_text,
-                            font=_font, size=_size, color=_color,
-                        )
-                        a_ok = result_a.get("success", False) and result_a.get("plan") is not None
-                        if not a_ok:
-                            logger.warning(
-                                "edit_text reflow: Track A/B 均無法定位段落（displacement 跳過）"
-                            )
-                            _reflow_warning[0] = "⚠ 段落位移未執行（版面結構未識別），請手動調整"
-                except Exception as _e:
-                    logger.warning(f"edit_text reflow_fn 失敗（不影響主編輯）: {_e}")
-                    _reflow_warning[0] = f"⚠ Reflow 例外（主編輯不受影響）: {_e}"
-
             cmd = EditTextCommand(
                 model=self.model,
                 page_num=page,
@@ -2432,11 +2498,15 @@ class PDFController:
                 new_rect=new_rect,
                 target_span_id=target_span_id,
                 target_mode=target_mode,
-                reflow_fn=_reflow_fn,
                 style_overrides=request.style_overrides,
                 plan_token=request.plan_token,
+                confirm_fallback=self._confirm_legacy_fallback,
             )
             self.model.command_manager.execute(cmd)
+            # Recorded BEFORE the SUCCESS branch so every outcome --
+            # REJECTED_STRICT, TARGET_BLOCK_NOT_FOUND, FALLBACK_DECLINED,
+            # SUCCESS -- reaches consume_last_edit_result() uniformly.
+            self._last_edit_result = cmd.result
             if cmd.result is not EditTextResult.SUCCESS:
                 self._show_edit_result_feedback(cmd.result)
                 self._update_undo_redo_tooltips()
@@ -2445,24 +2515,16 @@ class PDFController:
                 self._invalidate_active_render_state()
             self.show_page(page_idx)
             self._update_undo_redo_tooltips()
+            # Task 12 P0-C phase 1: a DEGRADED_COMMITTED outcome must be
+            # visibly different from ordinary success — exactly one notice.
+            outcome = getattr(cmd, "outcome", None)
+            if self._is_notifiable_degrade(outcome):
+                self._last_edit_degraded = True
+                self._notify_degraded_commit(outcome)
             # 還原 viewport anchor（避免頁面重繪後捲軸跳位）
             if anchor is not None and view is not None and hasattr(view, "restore_viewport_anchor"):
                 QTimer.singleShot(0, lambda a=anchor, v=view: v.restore_viewport_anchor(a))
                 QTimer.singleShot(180, lambda a=anchor, v=view: v.restore_viewport_anchor(a))
-            # 顯示 reflow 警告：使用 override 機制確保不被 _update_status_bar 覆蓋
-            if _reflow_warning[0]:
-                _msg = _reflow_warning[0]
-                _view_ref = view
-                if hasattr(_view_ref, "set_status_bar_override_message"):
-                    _view_ref.set_status_bar_override_message(_msg)
-                    # 5 秒後自動清除 override
-                    QTimer.singleShot(5000, lambda v=_view_ref:
-                        v.set_status_bar_override_message(None))
-                else:
-                    _sb = getattr(_view_ref, "status_bar", None)
-                    if _sb is not None:
-                        QTimer.singleShot(200, lambda m=_msg, sb=_sb:
-                            sb.showMessage(m, 5000))
         except Exception as e:
             logger.error(f"編輯文字失敗: {e}")
             show_error(self.view, f"編輯失敗: {e}")
@@ -2482,6 +2544,17 @@ class PDFController:
         target_mode: str | None = None,
         **legacy_kwargs,
     ) -> None:
+        # Task 12 P0-C phase 1/2: reset at the TRUE entry, before any
+        # early-return validation guard below -- a stale flag/result from
+        # an earlier, unconsumed commit-producing interaction (e.g.
+        # finalized via APPLY/FOCUS_OUTSIDE, neither of which ever calls
+        # consume_last_edit_degraded()/consume_last_edit_result(); only
+        # set_mode()'s MODE_SWITCH path does) must never survive a guard
+        # return and be misread as THIS interaction's outcome
+        # (verification finding, 2026-08-12: the reset previously sat
+        # after the empty-new_text/doc-not-open guards).
+        self._last_edit_degraded = False
+        self._last_edit_result = None
         if isinstance(request, MoveTextRequest):
             move_request = request
         else:
@@ -2561,7 +2634,11 @@ class PDFController:
             #     -> fail: no mutation + clear error
             #     -> pass:
             #          capture before
-            #          delete source
+            #          delete source (may itself pause for P0-C phase 2
+            #          consent; a decline stops here, before the destination
+            #          insert is ever reached -- atomicity by sequencing,
+            #          not a separate compound-preflight mechanism, since
+            #          add_textbox never itself needs consent)
             #          add destination
             #            -> fail: restore before + refresh UI + error
             #            -> pass: capture after + record one undo entry
@@ -2577,9 +2654,26 @@ class PDFController:
                 new_rect=None,
                 target_span_id=resolved_target_span_id,
                 target_mode=target_mode,
+                confirm_fallback=self._confirm_legacy_fallback,
             )
+            if source_edit_result is EditTextResult.FALLBACK_DECLINED:
+                # Zero mutation happened (the consent gate fires before any
+                # redaction) -- stop silently, not an error. Recorded so the
+                # View's finalize path never misreports this as a commit.
+                self._last_edit_result = EditTextResult.FALLBACK_DECLINED
+                return
             if source_edit_result is not EditTextResult.SUCCESS:
                 raise RuntimeError(self._edit_result_to_message(source_edit_result) or "跨頁移動前無法移除來源文字")
+
+            # Task 12 P0-C phase 1: the source deletion is a real tiered
+            # commit attempt (deleting via empty replacement can fall back
+            # to legacy same as any edit) — it must get the same one-notice
+            # treatment as the same-page path, which routes through
+            # controller.edit_text and already notifies.
+            source_outcome = self.model.last_commit_outcome
+            if self._is_notifiable_degrade(source_outcome):
+                self._last_edit_degraded = True
+                self._notify_degraded_commit(source_outcome)
 
             self.model.ensure_page_index_built(source_page)
             if self.model.block_manager.find_run_by_id(source_page - 1, resolved_target_span_id) is not None:
@@ -2604,6 +2698,7 @@ class PDFController:
                 description="跨頁移動文字",
             )
             self.model.command_manager.record(cmd)
+            self._last_edit_result = EditTextResult.SUCCESS
             self._invalidate_active_render_state()
             self._invalidate_thumbnails(sorted({source_page, destination_page}))
             self.show_page(destination_page - 1)
@@ -2638,9 +2733,15 @@ class PDFController:
             if source_run is not None:
                 return target_span_id
 
+        # ``source_rect`` arrives in displayed space (View); ``find_by_rect``
+        # queries the unrotated index.
+        to_index_space = getattr(self.model, "visual_rect_to_unrotated", None)
+        index_rect = (
+            to_index_space(source_page, source_rect) if callable(to_index_space) else source_rect
+        )
         target = self.model.block_manager.find_by_rect(
             page_idx,
-            source_rect,
+            index_rect,
             original_text=original_text,
             doc=self.model.doc,
         )
@@ -2680,6 +2781,16 @@ class PDFController:
         size: float,
         color: tuple,
     ) -> None:
+        # Task 12 P0-C phase 1/2: reset at the TRUE entry, before either
+        # early-return validation guard below — add-textbox never produces
+        # a degraded commit or a non-SUCCESS EditTextResult itself, but it
+        # IS a fresh commit-producing interaction for toast-suppression
+        # purposes, and a stale flag/result from an earlier, unconsumed
+        # interaction must not survive a guard return and be misread as
+        # this one's outcome (verification finding, 2026-08-12: the reset
+        # previously sat after both guards).
+        self._last_edit_degraded = False
+        self._last_edit_result = None
         if not text.strip():
             return
         if not self.model.doc or page < 1 or page > len(self.model.doc):
@@ -2698,6 +2809,9 @@ class PDFController:
                 before_page_snapshot_bytes=before_page_snapshot,
             )
             self.model.command_manager.execute(cmd)
+            # AddTextboxCommand has no EditTextResult-shaped failure mode of
+            # its own -- reaching here without raising means it committed.
+            self._last_edit_result = EditTextResult.SUCCESS
             self._invalidate_active_render_state()
             self.show_page(page_idx)
             self._update_undo_redo_tooltips()
@@ -3425,21 +3539,16 @@ class PDFController:
     def iter_text_targets(self, page_idx: int, mode: str, *, blocks_fallback: bool = False) -> list:
         """Read-only text-target candidates (paragraphs or runs[/blocks]) for a
         page so the view never reaches model.block_manager directly. Mirrors the
-        two view call sites exactly: ``'paragraph'`` -> get_paragraphs; otherwise
-        -> get_runs, and (only when ``blocks_fallback``) get_blocks if runs is
-        empty."""
-        bm = self.model.block_manager
-        if mode == "paragraph":
-            return list(getattr(bm, "get_paragraphs", lambda _i: [])(page_idx) or [])
-        candidates = list(getattr(bm, "get_runs", lambda _i: [])(page_idx) or [])
-        if blocks_fallback and not candidates:
-            candidates = list(getattr(bm, "get_blocks", lambda _i: [])(page_idx) or [])
-        return candidates
+        two view call sites exactly: ``'paragraph'`` -> paragraphs; otherwise
+        -> runs, and (only when ``blocks_fallback``) blocks if runs is empty.
+        Geometry is DISPLAYED space (the model projects its unrotated index at
+        this boundary -- ``PDFModel.get_text_targets``)."""
+        return self.model.get_text_targets(page_idx, mode, blocks_fallback=blocks_fallback)
 
     def get_text_blocks(self, page_idx: int) -> list:
-        """Read-only text blocks for a page (the outline blocks-fallback path);
-        keeps the view off model.block_manager."""
-        return list(getattr(self.model.block_manager, "get_blocks", lambda _i: [])(page_idx) or [])
+        """Read-only text blocks for a page (the outline blocks-fallback path)
+        in DISPLAYED space; keeps the view off model.block_manager."""
+        return self.model.get_text_blocks(page_idx)
 
     def build_insert_preview_html(
         self,
@@ -3506,11 +3615,27 @@ class PDFController:
             replacement_text = str(payload.get("replacement_text", ""))
             clip_rect = tuple(float(v) for v in payload["clip_rect"])
             render_scale = float(payload.get("render_scale", 1.0))
+            raw_new_rect = payload.get("new_rect")
+            new_rect = (
+                tuple(float(v) for v in raw_new_rect)
+                if raw_new_rect is not None
+                else None
+            )
+            style_overrides = payload.get("style_overrides")
+            if isinstance(style_overrides, dict):
+                style_overrides = StyleOverrides(**style_overrides)
+            elif style_overrides is not None and not isinstance(
+                style_overrides, StyleOverrides
+            ):
+                style_overrides = None
         except (KeyError, TypeError, ValueError):
             logger.warning("plan preview payload malformed; ignored")
             return
         coordinator = self._ensure_text_commit_preview_coordinator()
         if self._plan_preview_session_key != session_key:
+            clear_cache = getattr(self.model, "clear_verified_candidates", None)
+            if callable(clear_cache):
+                clear_cache()
             try:
                 target = derive_tier0_preview_target(
                     self.model,
@@ -3542,6 +3667,11 @@ class PDFController:
                     session_key,
                     password=getattr(self.model, "password", None),
                     page_has_pending_maintenance=pending,
+                    max_tier=getattr(
+                        getattr(self.model, "text_commit_settings", None),
+                        "max_tier",
+                        0,
+                    ),
                 )
                 if session is None:
                     # Encrypted document whose password is unavailable: no
@@ -3559,15 +3689,18 @@ class PDFController:
                 session_key, generation, "target_unresolved"
             )
             return
-        target_text, expected_origin, target_bbox = self._plan_preview_target
+        target = self._plan_preview_target
         coordinator.request(
             generation=generation,
-            target_text=target_text,
-            replacement_text=replacement_text,
-            expected_origin=expected_origin,
-            target_bbox=target_bbox,
+            target_text=target.text,
+            replacement_text=target.replacement_for(replacement_text),
+            expected_origin=target.origin,
+            target_bbox=target.bbox,
             clip_rect=clip_rect,
             render_scale=render_scale,
+            style_overrides=style_overrides,
+            new_rect=new_rect,
+            whitespace_reconstructed=target.whitespace_reconstructed,
         )
 
     def _notify_plan_preview_rejected(
@@ -3591,6 +3724,26 @@ class PDFController:
             candidate = QImage.fromData(result.png_bytes, "PNG")
             if not candidate.isNull():
                 image = candidate
+        # Cache only a candidate whose raster the user can actually see and
+        # confirm: caching before the PNG decode is validated lets an
+        # undecodable-raster candidate evict a live FIFO slot for a token
+        # the view will never present (it reports plan_token=None below
+        # whenever the image failed to decode).
+        if (
+            image is not None
+            and result.plan_token is not None
+            and result.prepared is not None
+        ):
+            cache = getattr(self.model, "cache_verified_candidate", None)
+            if callable(cache):
+                try:
+                    cache(result.plan_token, result.prepared)
+                except Exception as exc:
+                    logger.warning(
+                        "plan preview candidate cache failed: %s",
+                        type(exc).__name__,
+                    )
+                    return
         self.view.apply_text_edit_plan_preview(
             session_key=identity.session_key,
             generation=identity.generation,

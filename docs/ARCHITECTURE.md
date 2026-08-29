@@ -43,6 +43,17 @@ blocking `threading.Thread` grep over `view/`+`controller/`.
 Model owns document correctness and persistence behavior. It manages sessions (`DocumentSession`), document handles (`fitz.Document`), text hit-testing, text edit transactions, add-text insertion, save/save-as pipeline, and snapshot helpers used by history commands.
 
 Important text APIs include `get_text_info_at_point(...)`, `edit_text(...)`, `add_textbox(...)`, and `set_text_target_mode(...)`.
+Tiered text editing is session-owned: `get_tiered_commit_engine()` returns one
+`TieredCommitEngine` for the active `DocumentSession` (or the legacy document
+slot), and `cache_verified_candidate(...)` transfers a scratch-verified
+`PreparedEdit` from the preview result into that engine. The engine and its
+candidate cache are discarded when the document handle/session closes or is
+replaced; a new preview session clears candidates from the prior edit session.
+`edit_text(..., plan_token=...)` consumes the cache at commit: a token that
+matches a cached candidate commits exactly that `PreparedEdit` (no re-prepare);
+a miss or `None` falls back to a fresh `engine.prepare()`. Stale cached
+candidates can never mutate the document — `apply_patchset` revalidates the
+page fingerprint and refuses with `STALE_PLAN`.
 The text rendering path now resolves style tokens and supports custom CJK-family embedding for insert-html flows (for example `microsoft jhenghei`, `pmingliu`, `dfkai-sb`) when local font files are available.
 Browse-mode selection is also model-owned: legacy rectangle helpers still exist, but the primary browse drag path now uses a run-anchored resolver. Mouse-down locks the start run, mouse-up resolves the end run, boundary lines stay partial, and only the fully covered lines between them expand to whole-line units. `get_text_info_at_point(...)` now has a strict-hit option (`allow_fallback=False`) so browse selection can reject coarse block fallback hits while other flows keep backward-compatible text-block behavior.
 Object manipulation correctness is also model-owned. App-owned textboxes/rectangles/images still use hidden annotation markers for identity, while native PDF images are discovered from parsed page content stream operators. Their primary bbox/rotation data comes from the parsed `cm` transform, with per-xref placement APIs only used as a fallback when a safe `cm` is unavailable. Native-image move/resize/rotate/delete rewrites the target image invocation operators instead of redacting the painted bbox, so overlapping text/graphics are preserved.
@@ -62,6 +73,26 @@ Snapshot APIs include `_capture_doc_snapshot()`, `_restore_doc_from_snapshot(...
 - Paragraph-mode edits that span ≥2 distinct span colors use `_build_multi_style_html(...)` (difflib char-level mapping) to rebuild per-run color fidelity. This path is gated on `preserve_multi_style` and takes priority over the single-line fast path.
 
 This structure is enforced by per-phase unit tests using real PyMuPDF documents (no mocks) in `test_scripts/test_edit_text_helpers.py`.
+
+#### Tiered Preview Verification
+
+`PlanPreviewRenderer` prepares and applies a candidate on its one
+session-scratch document, captures `PageState` before the patch, and invokes
+the same Tier 0/Tier 1 verifier used by live commit before rasterizing. The
+preview clip is the union of the requested clip and
+`PreparedEdit.effective_verify_bbox`, so verified ink growth is visible.
+V0e is a real per-session KEEP round trip, not a reused assertion: a single
+`_live_keep_round_trip` performs one `tobytes(PDF_ENCRYPT_KEEP)` + reopen at
+session open and feeds *both* the probe verdict and the session snapshot, so
+the one-serialization-per-session keystroke budget is preserved while the
+certificate stays evidence-backed. `PreviewSessionInput.reopen_probe_ok`
+defaults to `False` (fail-closed). Preview also runs
+`patch.build_tier1_font_outcome` and refuses `FONT_RESOURCE_NOT_PROVEN`
+exactly as commit does. `PlanPreviewResult.prepared` is an immutable DTO,
+not a live document handle, and is cached by the controller on the GUI
+thread — but only after the preview PNG decodes, and the commit-side cache
+hit re-runs the policy and shared-stream gates rather than trusting the token
+(see PITFALLS, "a cache hit may skip work, never checks").
 
 #### Structural Page Operations and Text Indexing
 
@@ -105,6 +136,12 @@ Document-tab refresh also synchronizes the active session's Save As suggestion i
 
 Mode registry includes `browse`, `edit_text`, `add_text`, `rect`, `highlight`, and `add_annotation`.
 
+Plan-backed text preview requests remain View-emitted DTOs. The controller
+forwards style overrides and geometry intent through
+`TextCommitPreviewCoordinator`, caches only the verified candidate returned by
+the worker, and then delivers the raster/token to the View. The View never
+opens or mutates a PDF.
+
 Controller activation is now explicit. `PDFController.__init__()` keeps startup cheap, while `PDFController.activate()` performs view-signal wiring, print subsystem setup, and startup sync such as text-target granularity alignment. This keeps the no-document startup shell decoupled from full controller behavior until the UI is ready.
 
 For performance on large PDFs, controller schedules heavy work in bounded background stages (thumbnail rasterization, visible-page rendering, and text indexing). Continuous mode uses a placeholder-first pipeline: the view allocates full-document scene geometry immediately from lightweight placeholders, then the controller renders the explicitly requested page once at low resolution on the GUI thread and delegates high-quality plus non-immediate low/prefetch rasterization to `PageRenderCoordinator` (`controller/page_render_coordinator.py`). The coordinator owns one `QThread` worker and one latest pending request, opens an independent document from immutable snapshot bytes, emits `QImage` only, and accepts results only when token/session/generation/revision/page/scale/profile/DPR still match. Runtime-watermarked sessions remain on the synchronous ToolManager overlay path because watermarks are not embedded in `doc.tobytes()`. Foreground visible rendering pauses full-document thumbnail work and resumes it only after visible/prefetch candidates drain. After structural operations or snapshot restore, controller also drains stale page indices in the background (`_schedule_stale_index_drain`), while the active/visible pages remain immediately usable via the model's `ensure_page_index_built(...)` contract.
@@ -136,7 +173,7 @@ Responsive shell and document-tab contracts (M3.4):
 
 Continuous mode rendering contracts:
 - `initialize_continuous_placeholders(...)` establishes the full scene rect plus parallel per-page x/y origins and heights without rasterizing every page. The scene column width is the widest scaled page; every narrower page is independently centered inside that stable column.
-- `_page_scene_x/_page_scene_y` and `_doc_rect_to_scene_rect` are the coordinate chokepoints. Text selection/editing, object overlays, annotation drawing, hover outlines, and scene→document hit-testing add/subtract the same page origin; page pixmap replacement never changes item position.
+- `_page_scene_x/_page_scene_y` and `_doc_rect_to_scene_rect` are the coordinate chokepoints. Text selection/editing, object overlays, annotation drawing, hover outlines, and scene→document hit-testing add/subtract the same page origin; page pixmap replacement never changes item position. They are pure scale+offset over the *displayed* page (`page.rect` / `get_pixmap` space) and carry no rotation term — every point/rect the view exchanges with the controller is displayed space by contract, and the **model** converts to/from its unrotated text index at its public surface (`model/geometry.py` chokepoints; see §4). Never add `/Rotate` arithmetic to the view.
 - The view emits `sig_viewport_changed` when the user scrolls/resizes; the controller uses this as the steady-state trigger to schedule visible-page rendering.
 - Programmatic jumps may suppress `sig_viewport_changed` to avoid double-scheduling. Repeated viewport notifications coalesce while one worker request is active; profile/zoom/revision/session changes invalidate identity and cancel the matching request.
 - Thumbnail layout metrics are view-owned; when the left sidebar becomes unusually wide, the thumbnail column caps its content width and uses symmetric viewport margins so thumbnails stay centered instead of stretching indefinitely.
@@ -234,6 +271,87 @@ View hit-tests text and opens editor with target metadata. On commit, view emits
 Edit command failure handling is explicit:
 - If model edit execution returns `TARGET_BLOCK_NOT_FOUND` or `TARGET_SPAN_NOT_FOUND`, controller surfaces targeted user feedback and does not record a history entry.
 - No-op / failed edit executions must not create undoable commands.
+
+Degrade visibility (Task 12 P0-C phase 1): after a successful command, the
+controller reads the per-command `EditTextCommand.outcome`; a
+`DEGRADED_COMMITTED` status with a `fallback_chain` other than the bare
+default-engine `("legacy",)` — i.e. a real fallback FROM an attempted
+higher tier, not the shipped baseline — surfaces exactly one user-visible
+notice (`_notify_degraded_commit` → `view.notify_degraded_commit`, warning
+toast) whose body is the `fallback_chain` reason codes only — never
+document text, filenames, or paths. `_is_notifiable_degrade` is the single
+gate for this distinction; any new consumer of `DEGRADED_COMMITTED` must
+make the same check rather than keying on status alone. The view's
+mode-switch success toast is suppressed for that edit via the
+controller-owned pull-and-clear flag `consume_last_edit_degraded()`, reset
+at the entry of every commit-producing controller method — `edit_text`,
+`add_textbox`, `move_text_across_pages` — so a stale flag from one
+interaction can never mute a later, unrelated commit's success toast; the
+cross-page move's source-text deletion (a real tiered-commit attempt that
+can itself degrade) gets the same one-notice treatment by reading
+`model.last_commit_outcome` after the deletion. Redo intentionally does
+NOT re-fire the notice (the edit was already disclosed once at first
+commit). Strict-mode rejections and lossless tier commits emit no degrade
+notice. The semantic fidelity gate (`test_scripts/semantic_fidelity_gate.py`)
+is an acceptance-only harness — production layers must not import it; its
+`style_override_requested` flag silences only font-identity/size checks,
+never color or baseline (the app's sole override producer never requests
+either).
+
+Pre-commit consent (Task 12 P0-C phase 2): before the notice above can ever
+fire, the user gets a chance to decline the mutation that would produce it.
+`model.edit_text()` accepts a Qt-free `confirm_fallback:
+Callable[[tuple[str, ...]], bool] | None` parameter; when a tiered,
+non-strict attempt genuinely falls back (the same chain-shape check as the
+degrade notice, `is_real_fallback_commit` in `model.text_commit.dto`,
+shared by both so the two decisions can never drift apart), it is invoked
+synchronously with the pending `fallback_chain`, at the exact point the
+code already falls through to the legacy engine — before any mutation, since
+both a prepare-stage rejection and a commit-stage failure are zero-mutation
+on the live document by construction. A decline returns
+`EditTextResult.FALLBACK_DECLINED` with zero mutation and no undo entry; a
+confirm proceeds exactly as Phase 1 already did. `confirm_fallback=None`
+means "proceed without asking" — every existing caller of `model.edit_text()`
+is unaffected unless the Controller explicitly opts in.
+`PDFController._confirm_legacy_fallback` supplies the real callback
+(`view.message_boxes.confirm_degraded_fallback`, a blocking
+`QMessageBox.question`, default No), wired into both `controller.edit_text()`
+(via `EditTextCommand`) and `move_text_across_pages()`'s direct source-deletion
+call — the destination `add_textbox` never itself needs consent, so a
+decline during the source deletion naturally happens before the destination
+insert is ever reached; this is the entire cross-page-move atomicity
+mechanism, not a separate compound preflight. `EditTextCommand` tracks
+`_fallback_ever_confirmed`, set only when the just-completed `execute()`'s
+outcome was a REAL fallback (via the same shared `is_real_fallback_commit`
+check, not bare `EditTextResult.SUCCESS` — a clean Tier 0/1 win must not
+silently arm a bypass for some later re-execution of the same command that
+genuinely needs one); every `execute()` call after that passes
+`confirm_fallback=None`, so redo never re-prompts. A Controller-side
+preflight-then-commit design was considered and rejected before any code was
+written (see `plans/2026-08-12-task12-engine-hardening.md` §8): it cannot
+detect a commit-stage-only failure in time to pause before it, since that
+information does not exist until `engine.commit()` actually runs, and
+running it during a preflight is unsafe on the success branch.
+
+Toast correctness (Task 12 P0-C phase 2, post-review): the View's
+mode-switch success toast ("文字已儲存") previously gated only on
+`TextEditFinalizeResult.outcome == TextEditOutcome.COMMITTED`, which the
+finalize path sets whenever the commit signal emits without raising —
+never a read of what the Controller's slot actually did. A
+`FALLBACK_DECLINED` decline is zero-mutation by design, so showing success
+for it would directly contradict the consent flow (the same gap
+pre-existed, lower-stakes, for `REJECTED_STRICT`/`TARGET_BLOCK_NOT_FOUND`).
+`PDFController.consume_last_edit_result()` — a pull-and-clear API mirroring
+`consume_last_edit_degraded()` — reports the actual `EditTextResult` of the
+last commit-producing operation (`edit_text`, `move_text_across_pages`,
+`add_textbox`, each resetting it at their own true entry); `set_mode()`
+pulls this first and only evaluates the degrade-suppression flag when it is
+exactly `EditTextResult.SUCCESS` — `None` (nothing happened, or an
+API-less mock/controller) is treated as "not SUCCESS", never as "assume
+success". `EditTextResult` is re-exported View-side through
+`view.text_editing` (a pure-Enum DTO import from `model.edit_commands`,
+allowlisted in `pyproject.toml`'s `view-no-model` contract alongside the
+existing `EditTextRequest`/`MoveTextRequest` DTOs).
 
 Cross-page moves use a separate typed flow. When an inline edit changes page, the view emits `sig_move_text_across_pages(MoveTextRequest)`. Controller resolves the source span, captures a document snapshot, deletes the source text, inserts the destination textbox, and records a single `SnapshotCommand` only if the full move succeeds. Failure restores the document from the pre-move snapshot and refreshes both affected pages.
 
@@ -337,6 +455,8 @@ Audit report semantics:
 
 Add-text insertion uses visual coordinates from the current view. Model converts visual rectangle corners through derotation mapping into unrotated page space, clamps against unrotated page bounds (`cropbox`/`mediabox` fallback), and inserts with rotation-aware parameters. This keeps placement stable at the visual click location for page rotation `0/90/180/270`.
 
+**Two spaces, one boundary (2026-08-29).** PyMuPDF reports `page.rect` / `get_pixmap()` in *displayed* space but `get_text("dict"/"rawdict")`, `get_drawings`, annotation `/Rect` and the `insert_*` APIs in *unrotated* page space; they coincide only at `/Rotate 0`. The rule: the View and the controller facade speak displayed space exclusively; the model's text index (`TextBlockManager`, `EditableSpan`/`TextBlock`/`EditableParagraph`), reopen anchors, resolve pipeline, legacy insert and text-commit engine stay unrotated; conversion happens once, at the model's public surface, through `model/geometry.py` (`visual_to_unrotated_point/rect`, `unrotated_to_visual_point/rect`, `visual_text_rotation`). Concretely: `PDFModel.get_text_info_at_point`, `get_char_context_at_point`, `get_chars_in_run`, `get_text_selection_snapshot` (+`_bounds`, `get_text_in_rect`), `get_text_selection_snapshot_from_run`, `get_text_selection_lines` convert points in and rects out (index-internal callers use the `_..._unrotated` bodies); `get_text_targets` / `get_text_blocks` return displayed-space *copies* for the outline drawer; `TextHit.rotation` is the on-screen glyph rotation `(text_direction + page.rotation) % 360`; `pdf_text_edit.edit_text` and `derive_tier0_preview_target` derotate incoming `rect`/`new_rect` at entry, and the legacy insert/verify/re-insert helpers take `unrotated_page_rect(page)` as their bounds (a clamp's bounds must live in the space of the rects it clamps — `page.rect` is displayed space). The inline editor's `rotation` therefore always means on-screen rotation, so rotated text on an unrotated page and unrotated text on a rotated page share one proxy/preview path (plan-preview rasters and the frozen first frame are displayed-space grabs counter-rotated into the proxy frame through the single `PROXY_COUNTER_ROTATION` table in `view/text_editing.py`). Session style comparisons (`build_style_overrides(font_key=)`) normalise both the raw source font and the combo's UI alias through `_font_alias` before comparing. Pinned by `test_text_geometry_page_rotation.py` (model, pixmap-ink oracle) and `test_text_edit_rotated_page_gui.py` (offscreen MVC).
+
 ## 5. Tool Extension Architecture
 
 Built-in tools are statically registered in `ToolManager` and accessed via `model.tools.<tool>.*`.
@@ -434,7 +554,7 @@ View must not directly mutate model. Controller owns mutation orchestration. Mod
 
 - **Layer-boundary AST guard — `test_scripts/test_layer_boundaries.py` (R2.1).** CI contract: every `.py` under `model/` imports no Qt (PySide6/PyQt) and no `view`/`controller`; every `.py` under `view/` has **zero** `fitz.open(...)` outside an exact-count allowlist (only `view/text_editing.py`'s no-jump scratch doc). Geometry value-types (`fitz.Rect/Point/Quad/Matrix`) and the typed request channels (`model/edit_requests.py`, `model/object_requests.py`) are data, not document handles, and remain allowed. This guard is the structural net that keeps the R3 decomposition from regressing the boundary silently.
 - **Generalized encryption guard (R2.2).** `test_xref_repair.py::test_live_doc_roundtrips_preserve_encryption` now walks **all of `model/`** (not just `pdf_model.py`) across the live-doc receivers `self.doc`/`model.doc`/`self._model.doc`, attributes each `save`/`tobytes` to its enclosing function, checks a function-scoped decrypt-sink allowlist, and rejects an explicit `encryption=PDF_ENCRYPT_NONE` outside that allowlist.
-- **Controller read-only query API (R2.3–R2.6).** The view no longer reaches through `controller.model.<…>`; it calls thin read-only forwards on `PDFController` (which own no state): `get_page_rect`/`get_page_rotation` (page geometry), `has_unsaved_changes`, `get_watermarks`, `get_render_width_for_edit`, `ensure_page_index_built`, `iter_text_targets`/`get_text_blocks` (text-target candidates), `resolve_insert_source_file` (the merge-dialog page-count probe, replacing a view `fitz.open`), and `build_insert_preview_html` (the inline-editor preview's css/html — `PreviewRenderer` depends on this callable, not the model's private `_build_insert_css`/`_convert_text_to_html`; the no-jump gate enforces the pixel-identity contract).
+- **Controller read-only query API (R2.3–R2.6).** The view no longer reaches through `controller.model.<…>`; it calls thin read-only forwards on `PDFController` (which own no state): `get_page_rect`/`get_page_rotation` (page geometry), `has_unsaved_changes`, `get_watermarks`, `get_render_width_for_edit`, `ensure_page_index_built`, `iter_text_targets`/`get_text_blocks` (text-target candidates — displayed-space copies from `PDFModel.get_text_targets`/`get_text_blocks`, §4), `resolve_insert_source_file` (the merge-dialog page-count probe, replacing a view `fitz.open`), and `build_insert_preview_html` (the inline-editor preview's css/html — `PreviewRenderer` depends on this callable, not the model's private `_build_insert_css`/`_convert_text_to_html`; the no-jump gate enforces the pixel-identity contract).
 - **Print renderer clamp (R2.7).** `src/printing/pdf_renderer.py` clamps the render zoom per page via `safe_render_scale` — the last raster path that had bypassed the decompression-bomb guard.
 - **Utils layer purity (PR-8, 2026-07-04).** Two `utils/` violations from the `utils-no-controller-view-model` contract were fixed: (1) the OCR DTOs/enums (`OcrSpan`, `OcrLanguage`, `OcrDevice`, `OcrAvailability`, `OcrRequest`, `parse_page_range`) moved from `model/tools/ocr_types.py` to `utils/ocr_types.py` (a legal model→utils direction), with `model/tools/ocr_types.py` left as a one-line re-export shim so existing importers (`model/tools/ocr_tool.py`, `view/dialogs/ocr.py`) are unaffected; (2) `show_error` moved out of `utils/helpers.py` (it pulled in `PySide6.QtWidgets.QMessageBox`, a View-layer concern) into a new `view/message_boxes.py`. `utils/helpers.py` keeps `parse_pages`/`pixmap_to_qimage`/`pixmap_to_qpixmap`. Controllers import `show_error` from `view.message_boxes` (Controller→View is a legal coordination direction). `utils-no-controller-view-model` is now a **blocking** `lint-imports` contract.
 - **View-no-model behavior routing (PR-9, 2026-07-04).** The two real boundary crossings under `view-no-model` were routed through controller injection instead of a direct model import: `view/dialogs/ocr.py::OcrDialog` now takes a required `device_available: Callable[[str], bool]` constructor kwarg (view wiring: `PDFView._ocr_device_available` forwards to `self.controller.is_device_available`, a thin facade added on `PDFController` that calls `model.tools.ocr_tool.is_device_available`); `view/dialogs/optimize.py::OptimizePdfDialog` now takes a required `preset_options: Callable[[str], PdfOptimizeOptions]` constructor kwarg, and `PDFController.start_optimize_pdf_copy()` passes `PDFModel.preset_optimize_options` directly (it already constructs the dialog). The remaining `view→model` imports are pure DTO/type imports (request payloads, options/report dataclasses) with no mutation surface, and are permitted via `ignore_imports` on the `view-no-model` contract in `pyproject.toml` rather than routed. `view-no-model` is now **blocking**; `lint-imports` (all four contracts) is fully blocking in CI.
@@ -564,24 +684,99 @@ new engine yet** (integration is plan Task 7+).
 
 - `dto.py` — `RejectReason` (stable refusal codes), `CommitStatus`/`CommitTier`,
   `FontResourceAction`/`FontOutcome`, `CommitOutcome` (stored on
-  `EditTextCommand.outcome`; `allows_external_reflow=False` blocks Track A/B),
-  `TextCommitSettings`, `StreamReplacement`.
+  `EditTextCommand.outcome`; `allows_external_reflow=False` blocks external
+  displacement reflow; `decision_chain` — Task 12 Step 7 — records the tier
+  decision trail on successful tiered commits, `("tier0:committed",)` or
+  `("tier0:rejected:advance_mismatch", "tier1:committed")`, while
+  `fallback_chain` stays `()` on success and remains reserved for true
+  degrades + failure attribution), `TextCommitSettings`, `StreamReplacement`.
+  The vestigial controller-side Track A/B displacement-reflow callback was
+  removed in Task 12 Step 7 (its `reflow` import had been dead on this
+  lineage since the spike branches, logging a warning and pushing a spurious
+  status-bar override on every reflow-allowed edit);
+  `EditTextCommand.reflow_fn` stays as the model-layer extension point, with
+  no production wiring.
 - `pdf_lexer.py` — lossless lexer (tokens tile the source exactly; whitespace/
   comments/inline-image payloads are tokens; malformed constructs flagged, never
   raised) + `splice_stream`, the only writer: expected-bytes + SHA-256 stream
   digest + range/overlap validation, all-or-nothing. **No token serializer by
   design** — Tier 0 byte identity depends on its absence (`pdf_content_ops`'s
-  normalized serializer must never be used here).
+  normalized serializer must never be used here). `lex_content_stream` is a
+  **generator** (Task 12 P0-B): the list form materialized ~0.77 tokens/byte
+  before replay read token one (~10 GB on a measured dense page); callers
+  needing random access wrap it in `list()`.
 - `replay.py` — text/graphics-state interpreter (q/Q, cm, BT/ET, Tf, Tm, Td,
   TD, T*, TL, Tc, Tw, Tz, Ts, Tr, Tj, TJ, ', ") across the page's ordered
   stream list; per-stream byte ranges; reliability flags instead of guesses.
+  `replay_page_streams` is the **single production entry into the lexer** and
+  carries the Task 12 P0-A resource guard: `max_decoded_bytes` (default
+  `DEFAULT_MAX_REPLAY_BYTES` = 4 MiB, summed across the page's streams,
+  `None` disables) refuses before tokenization via the dedicated
+  `PageReplay.refusal_reason` channel (`content_stream_too_large_for_safe_
+  replay`), which `bind_source_text` surfaces verbatim — never collapsed
+  into `malformed_stream`/`no_source_match`. `read_page_streams` and the
+  commit verifier are deliberately unguarded (verification must still hash
+  oversized streams). Over-budget pages fall to the legacy engine, which
+  never lexes. Task 13 P1 census adds marked-content wrapper EVIDENCE
+  (pure capture, no admission logic): `PageReplay.mc_wrappers` (per-wrapper
+  `McWrapper`: operator, tag, props kind/name/top-level dict KEYS — never
+  values — open gs-depth, closed, crossed-q, plus BDC/EMC byte spans for
+  the splice boundary guard) + `mc_emc_underflows`, and `ShowOp.mc_stack`
+  (open wrapper ids, outermost-first). `mc_depth`'s clamp semantics are
+  unchanged.
+- `marked_content.py` — Task 13 P1 admission slice (promoted from the
+  census `scripts/wrapper_taxonomy.py`, which now delegates here):
+  wrapper classification (census slugs verbatim), `admit_show_wrappers`
+  (fail-closed: only a stack of default-visible pure `/OC` layers is
+  admitted, splice range strictly inside every wrapper's BDC..EMC span,
+  four stable `MC_*` reject codes with class-slug-only details),
+  `resolve_properties_mapping` (parse-based page `/Resources /Properties`
+  resolution), `resolve_default_visibility` (parses the SERIALIZED catalog
+  `/OCProperties` — never `get_ocgs`, whose load-time snapshot mutations
+  don't refresh; see PITFALLS), and `update_marked_content_dependencies`
+  (the fingerprint fold mirroring exactly what admission reads).
+- `transforms.py` — Task 13 P2 production TRM classifier (promoted from the
+  census `scripts/trm_taxonomy.py`, which now delegates here): the single
+  source for rotated-text geometry shared by inspect/plan/verify.
+  `shape_reject_reason` proves the combined `Tm × CTM` linear map through a
+  FIXED gate precedence (finite → singular → absolute scale floor →
+  orientation → orthogonality → equal axis norms; relative 1e-6 tolerance,
+  absolute 1e-6 baseline floor), `visual_baseline_direction` classifies the
+  on-screen baseline through `transformation_matrix × rotation_matrix`
+  (visual y down), `admission_verdict` admits exactly the census-locked
+  quarter-turn family (positive-orientation uniform rotation+scale with a
+  cardinal visual baseline; seven stable `trm_*` codes otherwise), and
+  `map_text_quad_to_visual` is the ONE text-space→visual mapping every
+  fallback target box and growth strip rides — no caller may reintroduce a
+  user-space `+x` assumption.
 - `inspect.py` — `bind_source_text` (text match corroborated by rawdict
-  geometry; ambiguity/XObject/rotation/malformed refuse with `RejectReason`),
-  `page_fingerprint` (streams + fonts + annots + widgets digest).
+  geometry; ambiguity/XObject/malformed refuse with `RejectReason`; the
+  Task 13 P2 TRM gate consults `transforms.admission_verdict` — the
+  quarter-turn family binds, everything else keeps its own fail-closed
+  `trm_*` code with a coefficient-free detail; `SourceSpanBinding` carries
+  the show's resolved `mc_wrappers` + `mc_emc_underflows` for the
+  admission gate), `page_fingerprint` (streams + fonts + marked-content
+  wrapper closure + RESOLVED page geometry — inheritance-resolved
+  /Rotate//MediaBox//CropBox, page-local /UserUnit, live visual matrices
+  (Task 13 P2) — + annots + widgets digest).
 - `fonts.py` — `DocumentFontRegistry`: capabilities keyed by (generation,
   owner xref, resource name, font xref) — never by basename; explicit face
   provenance (`extracted`/`base14`/`system`/`none`); strict-ASCII verified
-  reverse encoder; no silent Helvetica fallback anywhere.
+  reverse encoder; no silent Helvetica fallback anywhere. Every cache hit
+  is pull-revalidated (Task 13 revalidation slice): each `FontCapability`
+  carries a same-document `evidence_digest` (Type0 →
+  `compute_cid_evidence_digest`; otherwise
+  `compute_simple_font_evidence_digest`, dispatched on the `get_fonts`
+  entry's subtype), re-derived on every lookup BEFORE the cache probe and
+  rebuilt on mismatch — an in-place `/Widths`/`/Encoding`/descriptor/
+  program rewrite at the same xref can no longer be served stale within a
+  generation. The digest folds the MuPDF-resolved `get_fonts` entry
+  fields (ext/subtype/basefont/encoding) ahead of the object closure, so
+  indirect name targets are covered. `capability(page, name)` resolves
+  ONLY the matching entry (the prepare path calls it once per show
+  resource; the whole-page map would be O(K·N) digests);
+  `page_capabilities` remains the map form. `bump_generation` remains the
+  whole-registry invalidation.
   **Advance and glyph coverage are separate proofs, from separate sources.**
   `advance_source` (`widths`/`face`/`none`) is deliberately distinct from
   `face_source`: for a simple font the `/Widths` table *is* the layout
@@ -596,12 +791,30 @@ new engine yet** (integration is plan Task 7+).
   `Tj`, simple encoding, equal consumed advance (Tc/Tw folded), no style/
   geometry override, no widgets/signatures, no pending maintenance. Encoder is
   verified against the *source* bytes before it may encode the replacement.
+  Task 13 P2: the fallback target box is the text-space metric quad through
+  `transforms.map_text_quad_to_visual`; `_grown_verify_bbox` widens along
+  the transformed baseline's forward direction (caller-bbox cross extent
+  preserved); `PreparedEdit.growth_direction` carries the shared cardinal
+  slug (folded into the plan token).
 - `patch.py` — `PatchSet`/`apply_patchset`: fingerprint-gated, revertible; the
-  sole mutation primitive of the high-fidelity tiers.
+  sole mutation primitive of the high-fidelity tiers. `apply_patchset`/
+  `AppliedPatch.revert` take a `compress: bool = True` keyword (Task 13
+  P3-C) forwarded to every `Document.update_stream` call — a pure
+  storage-encoding choice (FlateDecode of the on-disk stream bytes) that no
+  reader in this codebase observes (decoded content, `page_fingerprint`,
+  and replay-evidence digests are all storage-blind). Default preserves
+  every existing caller; `PlanPreviewRenderer` alone passes `False` at both
+  call sites, since its scratch is never saved.
 - `verify.py` — V0a–V0e post-conditions: stream identity outside the declared
   range (re-diffed), font/annotation identity, non-target span origins,
   extractable replacement, exact raster identity outside a 2pt halo (96 dpi;
-  calibrated ε=0 on the maintainer machine), reopenability.
+  calibrated ε=0 on the maintainer machine), reopenability. Task 13 P2: the
+  Tier 1 growth gates are direction-aware — `_growth_zone_rect` infers the
+  forward strip from the dominant extended edge (right/left/down/up),
+  `count_growth_zone_glyphs` and the occupancy intersects convert to
+  UNROTATED dict space first (`get_text`/`get_drawings`/`get_image_rects`
+  all ignore /Rotate), and the background reference sampler stays provably
+  off the forward side.
 - `engine.py` — `TieredCommitEngine.prepare()` classifies then *refutes the
   candidate on a scratch copy* (`fitz.open("pdf", doc.tobytes())` preserves
   xrefs and decoded stream bytes; the live doc is untouched);
@@ -660,6 +873,79 @@ it never claims exactness).
   or a sanitized `RejectReason`). Because the token hashes the page
   fingerprint + splice bytes, preview token == commit token iff the
   document is unchanged in between — the exactness guarantee.
+- `model/text_commit/evidence.py` (Task 13 P3-B, pure — no fitz import) —
+  the replay-reuse contract: `ReplayEvidenceKey` (page xref + ordered
+  content-stream xrefs + per-stream sha256 of decoded bytes),
+  immutable `ReplayEvidence` (retains the production `PageReplay`
+  verbatim — Shape A; construction refuses refused/malformed/
+  diagnostic-unbounded replays and key/replay stream-identity
+  mis-pairings), `PageStreamSnapshot` + `inspect.capture_page_streams`
+  (the ONE decoded stream read per prepare), `resolve_replay`
+  (lookup-time pull-validation: fresh bytes are read and digest-compared
+  before any reuse; the resolver re-checks the key itself and never
+  trusts the caller's cache), and the single-slot session-scoped
+  `ReplayEvidenceCache`. `_classify_common` feeds the same snapshot to
+  `bind_source_text(resolved=...)`, the plan's stream selection, and
+  `page_fingerprint(streams=...)` — collapsing the accepted path's three
+  stream reads to one — and `PlanPreviewRenderer` owns one cache per
+  session (passed via `prepare_plan(evidence_cache=...)`, cleared in
+  `close()`), so warm preview keystrokes replay zero times.
+  `TieredCommitEngine.prepare` stays deliberately ephemeral. Push hooks
+  remain eviction-only concepts; freshness is proven exclusively by the
+  pull-validation read. Governing record:
+  `plans/task13-p3b-replay-reuse.md`; pinned by
+  `test_scripts/test_text_commit_replay_reuse.py` (40 tests) and gated by
+  `scripts/benchmark_p3b_preview_reuse.py` (replay-count acceptance).
+  **Task 13 P3-C** removed the next-largest per-keystroke cost the P3-B
+  record named: `render`'s `apply_patchset`/`AppliedPatch.revert` calls
+  (each one `Document.update_stream` on the page's full content stream)
+  pass `compress=False` — FlateDecode compression is proportional to
+  decoded stream size and was ~75% of warm render time on a dense page
+  (~540× cost vs uncompressed on an isolated 2.6 MiB stream); safe because
+  the scratch is never saved and every downstream reader is
+  storage-encoding-blind (see the `patch.py` bullet above). The live
+  commit path (`TieredCommitEngine.commit`) is untouched — it keeps
+  `compress=True` since its output is what actually gets saved. Governing
+  record: `plans/task13-p3c-preview-postprepare-latency.md`; pinned by
+  `test_scripts/test_text_commit_apply_compress.py` (29 tests after the
+  bridge round: tier/font-class equivalence through the real `render()`
+  for Tier 1 kern+growth / Type0-CID / visible /OC / rotated Tm, plus the
+  suite's first FORCED V0a–V0d verification failures, all under
+  `compress=False`) and gated by
+  `scripts/benchmark_p3c_postprepare_latency.py` (compress-count
+  acceptance) plus `scripts/benchmark_p3c_stage_census.py` (committed
+  dual-mode stage census: same-process old-vs-new per-stage p50/p95,
+  primitive counter table, small-page control, replay-contract re-pins).
+  **Task 13 P3-D** removes that interpretation duplication without changing
+  admission, plan semantics, or the live commit path. The leaf
+  `model/text_commit/interpretation.py` owns one mutation-window-scoped
+  `PageInterpretation`: a rotation-faithful DisplayList for raster identity,
+  a derotated TextPage for rawdict identity, and a low-level clipped stext
+  path. `PlanPreviewRenderer.render()` creates the post-patch interpretation,
+  shares it across verification and the final preview raster, releases it
+  before reverting the scratch streams, and never exposes it to
+  `TieredCommitEngine`.
+
+  The renderer also owns a one-slot `PreStateBaselineCache`. Its immutable
+  baseline payload is reused only after a fresh key has re-read the page
+  xref, page fingerprint, resolved fonts, annotations/widgets, and the
+  process-global small-glyph, quad-correction, and anti-alias settings. A
+  miss releases the old baseline; `close()` and any revert failure clear it.
+  This is deliberately a renderer-lifecycle cache, not a claim that the key
+  fingerprints every possible render dependency: a key-invisible mutation
+  must still fail closed during post-patch verification.
+
+  The final P3-D count gates reduce the legacy six interpretations to 3
+  unrotated / 4 rotated in Stage A, 2 / 4 on a Stage-B cold render, and 1 / 2
+  on a Stage-B warm render. Warm renders use two DisplayList pixmaps, one
+  DisplayList TextPage, one low-level clipped stext run, zero replay
+  executions, and zero compressed / two uncompressed scratch writes. PNG,
+  token, verifier result, geometry, and prepared-plan identity match the
+  legacy control. Governing record:
+  `plans/archive/task13-p3d-interpretation-reuse.md`; pins:
+  `test_text_commit_interpretation_reuse.py` and
+  `test_text_commit_prestate_baseline.py`; acceptance harness:
+  `scripts/benchmark_p3d_interpretation_reuse.py`.
 - `controller/text_commit_coordinator.py` — session-scoped QThread worker
   (modeled on `page_render_coordinator.py`): one worker thread and one
   scratch renderer live for the whole inline-edit session; latest-wins
@@ -731,6 +1017,120 @@ Pinned by `test_scripts/test_text_commit_persistence.py` (save/save-as/
 incremental/full/reopen/encrypted/legacy-then-tier0) and
 `test_scripts/test_text_commit_boundaries.py` (annotation identity,
 widget/signed rejection, undo/redo replay + stale refusal).
+
+#### 10.1.1 Tier 1 Slice 1 — transplant + kern compensation (2026-08-04)
+
+Tier 1 Slice 1 replaces a bound show operator in place with
+`[(newtext) K] TJ` at the source op's byte range, inheriting z-order, clip,
+ExtGState and OCG membership by construction; `K` absorbs the advance delta so
+every following show is provably unmoved. **Flag-off** — defaults remain
+`engine=legacy`, `max_tier=0`, `preview=legacy`, `telemetry=off`. Structural
+facts a future reader needs:
+
+- **Growth is proven against the rendered surface, not against a list of ink
+  mechanisms.** When the replacement is wider than its source, the verified
+  region widens to `effective_verify_bbox` and `verify.prove_growth_region_blank`
+  must certify the new band blank on the **pre-edit** render. The proof is a
+  background-surface argument: `background_reference_points` (disjoint from the
+  widened halo by construction) plus `_target_background_rgb`, whose
+  ink-visibility rule refuses a target whose glyphs are indistinguishable from
+  their own background. `get_drawings`/`get_images`/`sh` occupancy checks remain
+  only as cheap early-outs — they cannot see ink inside a Form XObject, and the
+  raster proof is pinned standing alone with them neutered (PITFALLS).
+  `_build_tier1` additionally refuses `GROWTH_OUTSIDE_PAGE` when the widened
+  bbox leaves `page.rect`; clamping is never substituted for proof.
+- **Space discipline.** Everything raster or page-geometry is *visual* space;
+  everything from `get_text("dict"/"rawdict")` is *unrotated page* space.
+  `pdf_text_edit._dict_space_to_visual` converts once at the engine boundary
+  (`rotation_matrix` alone — dict coordinates already carry the CropBox/UserUnit
+  part), and `inspect._origin_in_page_space` composes the rotation term. Before
+  this pass no tiered commit had ever succeeded on a `/Rotate 90/270` page
+  (PITFALLS). The same discipline now governs the View-facing surface (§4).
+- **Target text is a reconstruction, and its provenance is typed.**
+  `_Tier0Target.source_kind` is `"run_join"` or `"dict_line"`. The dict line
+  preserves verbatim inner whitespace that joined word runs destroy, so it
+  recovers whitespace-collapsed edits — but only behind a runtime content-and-
+  geometry alignment proof (`_dict_line_for_runs`), because MuPDF materializes
+  wide `TJ` kerns as synthesized spaces. A target that fails binding *only*
+  because it was reconstructed reports `TARGET_RECONSTRUCTION_UNVERIFIED`
+  rather than `NO_MATCH`, now symmetrically in preview and commit
+  (`PlanPreviewRequest.whitespace_reconstructed`, threaded
+  controller → coordinator → preview).
+- **Live commit is atomic across a raising verifier.** `engine.py` wraps the
+  live `verify_fn` in `except BaseException` (KeyboardInterrupt included),
+  reverts, and re-raises; a revert that itself fails chains both errors and
+  says the document may be inconsistent.
+
+Pinned by `test_scripts/test_text_commit_tier1_slice1.py`,
+`test_text_commit_preview_parity.py`, `test_text_commit_candidate_identity.py`
+and `test_tier0_target_resolution.py`.
+
+#### 10.1.2 P0-D — CID/Type0 single-hex-`Tj` slice (2026-08-13)
+
+Task 12 P0-D teaches the SAME two tiers a second font codec — it adds no
+new tier, writer, or layout strategy. Scope (locked by census, plan §8):
+Identity-H + CIDFontType2 + reversible single-scalar ToUnicode +
+Identity-or-readable-stream CIDToGIDMap + embedded FontFile2 + single hex
+`Tj` on the direct page stream. Everything else fails closed under one of
+15 per-gate `type0_*` `RejectReason` codes whose details are code-only
+(never text/font names/paths — §10 privacy of the Task 12 plan).
+
+- **`cid_fonts.py` (new, leaf)** — imports only `dto`; `plan`/`inspect`/
+  `fonts`/`verify` all consume it, so one set of parsed evidence serves
+  binding, planning, fingerprinting, and the legacy evidence reader
+  without an import cycle. Contents: a bounded token-aware PDF object
+  parser (`parse_pdf_value`/`canonical_pdf_text` — the inline
+  `/DescendantFonts [<<...>>]` descendant is the census-DOMINANT corpus
+  form and regex key search is forbidden), `parse_tounicode_strict`
+  (bfchar + scalar-destination bfrange only; array-destination refuses as
+  `type0_tounicode_unparseable`; multi-char cluster mappings refuse
+  lazily, only when a touched CID uses one), `parse_truetype_glyph_program`
+  (GID-level presence from maxp/head/loca/glyf — subset cmaps are
+  stripped, so Unicode lookups prove nothing), `parse_w_records` (/W both
+  record forms, one-level indirect elements, DW default 1000 first-class),
+  and `IdentityHCidCapability` (deterministic `encode_first_wins` for the
+  source-reproduction proof vs strict ambiguity-refusing `encode_strict`
+  for replacements; `glyph_gate` with three DISTINCT codes for GID-0 /
+  GID-beyond-count / outline-missing).
+- **`fonts.py`** — Type0 fonts build a CID capability instead of loading a
+  face (`face is None`, `advance_source == "cid"`); registry lookups
+  re-verify a builder-visible `evidence_digest` per hit so an external
+  mutation bypassing `bump_generation` cannot serve a stale codec. Stream
+  evidence (`ToUnicode`, `CIDToGIDMap`, `FontFile2`) is the decoded bytes
+  returned by the same `_stream_bytes()` helper the builder consumes; direct
+  or indirect decoding-metadata changes cannot hide behind unchanged stored
+  bytes. A warm single-resource hit decodes each evidence stream once.
+- **`inspect.py`** — `bind_source_text(..., registry=)` adds the Type0
+  leg: simple byte-matching first and unchanged; CID shows decode through
+  ToUnicode evidence, match by text, and a unique candidate must survive
+  the byte-exact source-reproduction proof. Failures are target-scoped: a
+  broken unrelated Type0 font never blocks a target another show
+  satisfies. `page_fingerprint` folds the full Type0 evidence closure
+  (font dict canonical-per-key, ToUnicode stream, the descendant dict
+  folded canonically on EVERY arrival form — direct inline, indirect ref,
+  and the hybrid indirect-array-holding-an-inline-dict (post-review pin,
+  wf_1757a5fb-8e9) — indirect /W//FontDescriptor targets, CIDToGIDMap
+  stream, FontFile2 bytes — decoded digests and parsed canonical forms so
+  a `tobytes()` scratch that reorders inline dict keys or recompresses
+  streams stays fingerprint-identical, while any real evidence change
+  goes stale).
+- **`plan.py`** — the classifier branches per capability: the CID path
+  admits HEX operands only (a literal-string Type0 `Tj` is spec-legal but
+  refused — the locked scope is single hex `Tj`, never silently widened),
+  re-proves source reproduction, strict-encodes the replacement, runs the
+  GID/glyph gates over source AND replacement CIDs, measures advances
+  from /W//DW (exact tolerance), and serializes operands as hex
+  (`operand_kind`) — Tier 0 splices `<...> Tj`, Tier 1 splices
+  `[<...> kern] TJ` via `build_kern_compensated_transplant(string_kind=)`.
+  Simple-font classification is byte-identical to before.
+- **Rollout defaults unchanged**: `legacy/off`, `max_tier=0` — nothing
+  reaches a user until the Task 12 rollout gates pass.
+
+Pinned by `test_scripts/test_text_commit_cid_hex_tj.py` (52 tests: the
+full gate chain, `/Rotate 270` both tiers, the inline-descendant corpus
+shape, six staleness pins (incl. the hybrid indirect-array descendant),
+the hex-only operand scope, preview↔commit identity, byte-exact undo,
+atomic rollback, and code-only privacy).
 
 ## 11. Character-Level Text Selection (Browse Mode)
 

@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 231 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 297 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -217,7 +217,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 1948 | Pixel-uniformity occlusion checks need edge erosion | model/text_commit/verify.py (Tier-1 spike: verify_tier1_strategy / _region_is_uniform) |
 | 1955 | A "graphics-state bleed" ink-tint check must not sample a covering shape's own fill color | model/text_commit/verify.py (Tier-1 spike: verify_tier1_strategy) |
 | 1962 | PyMuPDF insert_font(fontbuffer=..., set_simple=True) dedupes byte-identical programs onto the same xref | model/text_commit fonts (font-honesty Tier-1 spike) |
-| 1969 | OCG visibility only takes effect after a tobytes()+reopen round trip — and only on a *second* round trip after set_layer | model/text_commit/verify.py (`_ocg_membership_lost`) |
+| 1969 | OCG visibility only takes effect after a tobytes()+reopen round trip — and only on a *second* round trip after set_layer | model/text_commit/verify.py (`_ocg_membership_status`) |
 | 1976 | Concatenating a block's spans is right; concatenating its lines deletes a word boundary | model/text_block_parsing.py (`_parse_block`) |
 | 1983 | A wrong extracted string can hide as a *similarity* problem rather than a visible failure | model/pdf_text_edit.py (`SequenceMatcher` block/page reconciliation) |
 | 1990 | Asserting that the replay *recorded* a text state does not test the gate that *rejects* it | model/text_commit planner gates (`plan.py`, `inspect.py`) + their tests |
@@ -228,7 +228,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2025 | A tolerance that equals the quantum of its own measurement source stops being a tolerance | model/text_commit/plan.py (`_ADVANCE_TOL_PER_PT`) |
 | 2032 | Word runs are stripped, so `" ".join` cannot reconstruct source whitespace | model/pdf_text_edit.py (`_tier0_target_from_resolve`) → model/text_commit/inspect.py (`bind_source_text`) |
 | 2039 | A redundant guard cannot be made mutation-SENSITIVE — check for subsumption before claiming a test pins it | model/pdf_text_edit.py (`_tier0_target_from_resolve`), test design |
-| 2046 | `TARGET_IN_FORM_XOBJECT` is page-scoped, not target-scoped — it mislabels almost every miss on real corpora | model/text_commit/inspect.py (`bind_source_text`) |
+| 2046 | `TARGET_IN_FORM_XOBJECT` must be target-scoped — page-scoped labeling mislabels almost every miss on real corpora | model/text_commit/inspect.py (`bind_source_text`) |
 | 2053 | Calling `bind_source_text` per target re-replays the whole page — prohibitively slow for multi-target sampling | model/text_commit (measurement/tooling) |
 | 2060 | `tobytes(encryption=KEEP)` reorders dictionary keys the first time it serializes a disk-loaded object — breaking the scratch-first fingerprint self-check | model/text_commit/engine.py (`prepare` → `_build_scratch_copy`) / inspect.py (`page_fingerprint`, `_update_font_dependencies`) |
 | 2067 | Text-space and page-space quantities must not mix in bbox/halo math — under scale the error is a silent false ACCEPT | model/text_commit/plan.py (fallback `target_bbox`) |
@@ -236,3 +236,69 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2081 | `pytest … | tail` reports tail's exit code — a hard interpreter abort can read as a passing run | test harness / CI hygiene |
 | 2088 | `doc.xref_get_keys(xref)` returns `[]` for a non-dictionary object — indistinguishable from an empty dictionary | model/text_commit/inspect.py (`_canonical_object_digest`) |
 | 2095 | A mutation fixture can be subsumed by a sibling guard — rotation does not pin `b==c==0`, a mirror does not pin `a>0` | test_scripts/test_text_commit_structural_gates.py (`_uniform_scale` gates) |
+| 2104 | Same-line successor merges into the target's own rawdict span without an intervening Tf/Tm/T* | `model/text_commit` (rawdict-derived bboxes) / test fixtures |
+| 2114 | plan -> patch -> verify -> plan runtime import cycle | `model/text_commit` |
+| 2124 | mypy loses None-narrowing for a dataclass field re-accessed in a different function | `model/text_commit/plan.py` |
+| 2134 | Widening V0c's non-target-span-origin comparison to verify_bbox would false-reject every honest growth commit | `model/text_commit/verify.py` |
+| 2144 | Preview verification must capture pre-patch state and reuse the session scratch | `model/text_commit/preview.py`, `model/text_commit/verify.py` |
+| 2166 | High-fidelity stale undo must refuse, not snapshot-restore | `model/edit_commands.py` (`EditTextCommand.undo`) |
+| 2176 | PDFModel property setters must getattr-guard legacy slots — tests build models via `__new__` | `model/pdf_model.py` (session-fallback properties), `test_scripts/` |
+| 2186 | A reference sample taken inside the region it is proving is self-referential — the load-bearing rule is ink visibility | `model/text_commit/verify.py` (`prove_growth_region_blank`) |
+| 2196 | `sh` inside a Form XObject is invisible to every page-level ink reader — a mechanism blocklist only refuses the mechanisms it enumerates | `model/text_commit/verify.py` (growth occupancy gates) |
+| 2206 | `get_text("dict"/"rawdict")` geometry is UNROTATED page space — comparing it against a visual-space bbox passes on every unrotated page and is wrong on every `/Rotate` page | `model/text_commit/verify.py` (V0c/V0d), `model/pdf_text_edit.py` (target derivation) |
+| 2216 | A verified-candidate cache keyed on a content token still needs the policy gates re-run at commit time | `model/pdf_text_edit.py` (`_attempt_tiered_commit` cached-candidate branch), `controller/pdf_controller.py` |
+| 2226 | A certificate that reads its evidence from the post-patch document proves nothing | `model/text_commit/verify.py` (V0e), `model/text_commit/preview.py` |
+| 2236 | `TJ` kern advances are materialized as synthesized spaces in dict extraction — verbatim dict text is not the source string | `model/pdf_text_edit.py` (`_dict_line_for_runs`) |
+| 2246 | `pytest test_scripts/` in one invocation hangs at PySide6 interpreter teardown — run the suite chunked | test harness (`.venv`, PySide6) |
+| 2254 | `lex_content_stream` materialized the full token list — a dense page stream is an in-app OOM | `model/text_commit` (pdf_lexer, replay) |
+| 2262 | A resource refusal routed through `malformed` gets re-labelled — refusals need their own channel | `model/text_commit` reason propagation (replay → inspect → plan) |
+| 2270 | ctypes `GetProcessMemoryInfo` silently zeroes without HANDLE restype (64-bit truncation) | test harness (subprocess memory measurement) |
+| 2278 | A GUI notice keyed only on outcome status fires under the shipped default too — gate on the fallback chain shape, not just the status enum | `controller/pdf_controller.py` (Task 12 P0-C degrade visibility) |
+| 2286 | A per-command flag reset at only one entry point leaks into sibling commit paths | `controller/pdf_controller.py` (Task 12 P0-C degrade visibility) |
+| 2294 | Redo re-running the full commit pipeline must NOT re-fire a one-shot GUI notice | `controller/pdf_controller.py` / `model/edit_commands.py` (Task 12 P0-C degrade visibility) |
+| 2301 | An acceptance gate's style-override flag must be scoped to what the app can actually request | `test_scripts/semantic_fidelity_gate.py` (Task 12 P0-C semantic fidelity gate) |
+| 2309 | A two-pass preflight-then-commit consent design can't see a commit-stage-only failure in time | `model/pdf_text_edit.py` (Task 12 P0-C phase 2 consent flow — design-time finding, not a shipped bug) |
+| 2317 | A "was this command ever confirmed" flag must check what actually happened, not just that execute() succeeded | `model/edit_commands.py` (Task 12 P0-C phase 2 — adversarial verification finding, high severity) |
+| 2325 | A "did the signal emit" outcome is not "did the edit commit" — the View's success toast must pull the real result | `view/pdf_view.py` / `controller/pdf_controller.py` (Task 12 P0-C phase 2 — post-review finding, promoted to a merge blocker) |
+| 2333 | A "reset at entry" claim is only true if the reset actually runs before every early-return guard | `controller/pdf_controller.py` (Task 12 P0-C phase 2 toast fix — adversarial verification finding, high + medium) |
+| 2341 | AutoCAD-produced Type0 fonts inline their descendant CIDFont in /DescendantFonts | `model/text_commit` (Type0/CID evidence readers), `scripts/audit_type0_census.py` (Task 12 P0-D census) |
+| 2349 | Path-based xref_set_key cannot null a nested key — it plants a placeholder string | PyMuPDF xref surgery (`test_scripts/type0_fixture_builder.py`, Task 12 P0-D fixtures) |
+| 2357 | subset_fonts strips the cmap — Unicode lookups cannot prove glyph presence in a subset | PyMuPDF font subsetting (`test_scripts/type0_fixture_builder.py`, Task 12 P0-D fixtures; future P0-D glyph-presence gate) |
+| 2365 | _parse_tounicode silently fabricates mappings from array-destination bfranges | `model/text_commit/verify.py` (`_parse_tounicode`, used by `collect_cid_encoding_evidence` — live Task 10 code), `scripts/audit_type0_census.py` (Task 12 P0-D adversarial finding) |
+| 2373 | PyMuPDF TextWriter embeds EVERYTHING as Type0 — Helvetica lands with a CIDFontType0 descendant | test fixtures (`test_scripts/test_text_commit_fonts.py`, `test_text_commit_font_widths.py`), `model/text_commit/fonts.py` (Task 12 P0-D) |
+| 2381 | A "default text state" percentage is only as good as its condition list | Task 12 coverage evidence (`scripts/measure_type0_funnel.py` vs the 2026-08-12 campaign numbers) |
+| 2389 | Canonical-fold gaps hide in HYBRID object forms, not the named ones | model/text_commit (Type0 fingerprint staleness closure) |
+| 2396 | A dead optional hook that catches its own ImportError becomes a per-edit user-visible defect | `controller/pdf_controller.py` (`edit_text` displacement-reflow callback, removed Task 12 Step 7) |
+| 2403 | Bare object keywords in content streams lex as OPERATOR tokens and silently clear accumulated operands | `model/text_commit/pdf_lexer.py` consumers (`replay.py` operand accumulation) |
+| 2410 | PyMuPDF's OC state (get_ocgs, rendering) is a load-time snapshot — /OCProperties writes don't refresh it | `model/text_commit/marked_content.py` — OCG default-config visibility resolution (Task 13 P1 admission) |
+| 2417 | PDF numbers have no exponent notation — %g-formatted matrix coefficients silently void the whole operator | `test_scripts/type0_fixture_builder.py` (`set_text_matrix`), any code writing numbers into content streams |
+| 2424 | Single-process full-suite pytest runs hang or abort nondeterministically inside Qt GUI tests | test harness (whole-suite runs of `test_scripts/`), PySide6 offscreen platform |
+| 2431 | get_drawings/get_image_rects report UNROTATED page space — occupancy gates silently miss obstacles on /Rotate pages | model/text_commit/verify.py (Tier 1 growth occupancy gates), PyMuPDF geometry conventions |
+| 2438 | MuPDF re-serializes integer-valued reals as ints — raw kind:value folds break across a tobytes round trip | model/text_commit/inspect.py (page fingerprint), PyMuPDF object serialization |
+| 2445 | tracemalloc-wrapped timing windows and iterated-build peaks corrupt benchmark numbers two different ways | measurement harnesses (`scripts/benchmark_*`), tracemalloc + timing interaction |
+| 2452 | json.dumps backslash escaping makes Windows path-leak assertions silently inert | data-policy tests asserting "no paths in the serialized report" |
+| 2459 | sys.getsizeof on a slotless dataclass misses the per-instance __dict__ that dominates its memory | memory accounting (`_deep_size`-style recursive sizeof), dataclass instances |
+| 2466 | Simple-font capabilities are served stale within a registry generation | `model/text_commit/fonts.py` (`DocumentFontRegistry`), engine prepare path |
+| 2473 | Provenance fields on compared dataclasses silently break equality pins | `model/text_commit/replay.py` (`PageReplay`), frozen-dataclass contracts generally |
+| 2480 | fitz.Document.update_stream(compress=False) never restores the original storage encoding | `model/text_commit/patch.py` (`apply_patchset`, `AppliedPatch.revert`), PyMuPDF stream storage |
+| 2487 | tracemalloc cannot see memory PyMuPDF stores in its own C heap | memory-bound tests/harnesses for anything touching `fitz.Document` internals |
+| 2494 | PyMuPDF get_pixmap/get_text each build a private DisplayList/TextPage per call | `model/text_commit/verify.py` / `preview.py` render pipeline, any PyMuPDF perf work |
+| 2501 | An object-level digest misses what get_fonts() has already resolved for the builder | `model/text_commit/fonts.py` (`compute_font_evidence_digest`), any staleness digest over font objects |
+| 2508 | Per-lookup revalidation through a whole-page map is O(K·N) per prepare | `model/text_commit/fonts.py` (`DocumentFontRegistry.capability`), engine prepare / per-keystroke preview path |
+| 2515 | Stored stream bytes are not the evidence a decoding builder consumed | `model/text_commit/cid_fonts.py` (`compute_cid_evidence_digest`), any cache digest over decoded streams |
+| 2522 | Untyped ctypes windll call silently truncates GetCurrentProcess's pseudo-handle | Windows harness/instrumentation code using ctypes (`GetProcessMemoryInfo` etc.) |
+| 2529 | PDFModel.__init__ flips PyMuPDF's process-global small_glyph_heights — every later test in a single-process suite sees fontsize-tall (0.8/-0.2 em) text bboxes | `model/pdf_model.py` + the text-commit Tier 1 growth proof (`model/text_commit/verify.py`) + any pytest run that shares one interpreter across files (CI's functional suite) |
+| 2536 | Supplying a TextPage to get_text silently disables the caller's clip and flags | PyMuPDF text extraction, `model/text_commit/verify.py` |
+| 2543 | PyMuPDF's DisplayList and TextPage convenience builders use different rotation conventions | PyMuPDF page interpretation, rotated pages |
+| 2550 | Composing derotation onto a DisplayList is not raster-byte stable | PyMuPDF raster reuse, `/Rotate`, `/UserUnit`, and CropBox handling |
+| 2557 | DisplayList.run is unusable through the PyMuPDF 1.27.1 Python wrapper for clipped stext reuse | PyMuPDF low-level devices |
+| 2564 | MEDIABOX_CLIP is not invariant under a quarter-turn CTM | clipped stext extraction on rotated pages |
+| 2571 | Rawdict Python object construction can dominate after interpretation reuse | dense-page text verification performance |
+| 2578 | A PageInterpretation must not outlive the content-stream mutation window that created it | `PlanPreviewRenderer`, scratch apply/revert lifecycle |
+| 2585 | A pre-state baseline cache key is a renderer-lifecycle guard, not a complete render-dependency proof | `PreStateBaselineCache` |
+| 2592 | Process-global PyMuPDF rendering switches belong in every reusable baseline key | renderer caches, `fitz.TOOLS` |
+| 2599 | Building a TextPage can make inherited rotation explicit | PyMuPDF inherited page attributes, document serialization |
+| 2606 | The model's text-geometry surface was unrotated dict space while the View is displayed space — GUI text editing never worked on `/Rotate 90/270` pages | `model/pdf_model.py` (hit-test, selection, outline targets), `model/pdf_text_edit.py` (`edit_text`, `derive_tier0_preview_target`), `controller/pdf_controller.py` facade, `model/geometry.py` |
+| 2613 | Untouched inline-edit sessions reported a font "override" and lost the Tier 0 plan | `view/text_editing.py` (`_sync_font_combo_state`, `build_style_overrides`), `model/text_commit/plan.py` (`STYLE_OVERRIDE_PRESENT`) |
+| 2620 | Plan-preview rasters are displayed-space clips; a rotated editor proxy must counter-rotate them | `view/text_editing.py` (`_install_plan_preview_hook`, `PreviewBackedInlineTextEditor.apply_plan_preview`, `_capture_frozen_first_frame`) |
+| 2627 | Legacy text insert clamped unrotated rects against the displayed `page.rect` | `model/pdf_text_edit.py` (`edit_text` → `_apply_redact_insert` / `_verify_rebuild_edit` / re-insert fallbacks) |

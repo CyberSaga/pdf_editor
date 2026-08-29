@@ -20,13 +20,23 @@ from PySide6.QtGui import (
     QTextCursor,
     QTextDocument,
     QTextOption,
+    QTransform,
 )
 from PySide6.QtWidgets import QTextEdit
 
+from model.edit_commands import EditTextResult  # noqa: F401 — re-exported for view/controller (pure DTO enum, no mutation surface)
 from model.edit_requests import EditTextRequest, MoveTextRequest, StyleOverrides  # re-exported for view/controller
 from utils.render_limits import safe_render_scale as _safe_render_scale
 
 logger = logging.getLogger(__name__)
+
+# Counter-rotation (degrees, Qt clockwise-positive) that maps a displayed-space
+# raster of the editor's bbox into the proxy-local paint frame of an editor
+# proxy rotated by ``setRotation(rotation)`` about its origin corner
+# (``_compute_editor_proxy_layout``: 90 -> top-right, 180 -> bottom-right,
+# 270 -> bottom-left). Shared by the frozen first frame and the plan preview
+# so the two paint paths can never disagree.
+PROXY_COUNTER_ROTATION: dict[int, float] = {90: -90.0, 180: 180.0, 270: 90.0}
 
 
 def _parse_font_size_str(text: str) -> float | None:
@@ -1030,13 +1040,28 @@ class PreviewBackedInlineTextEditor(InlineTextEditor):
             return False  # stale keystroke: the CSS interim frame stays
         if image is None or image.isNull():
             return False
-        self._preview_image = image
+        self._preview_image = self._counter_rotate_for_proxy(image)
         self._mutated_preview_is_valid = True
         self._plan_preview_active = True
         self._applied_plan_generation = generation
         self._applied_plan_token = plan_token
         self.viewport().update()
         return True
+
+    def _counter_rotate_for_proxy(self, image: QImage) -> QImage:
+        """Displayed-space raster -> this editor's local paint frame.
+
+        The scene rotates the proxy by the configured ``rotation`` at display
+        time, so a raster of the displayed-space clip must be counter-rotated
+        before it is painted at local (0, 0) -- exactly what
+        ``TextEditManager._capture_frozen_first_frame`` does for the frozen
+        first frame. Identity for unrotated editors.
+        """
+        rotation = int(self._render_args.get("rotation", 0) or 0) % 360
+        counter = PROXY_COUNTER_ROTATION.get(rotation)
+        if counter is None:
+            return image
+        return image.transformed(QTransform().rotate(counter))
 
     def current_plan_token(self) -> str | None:
         """The applied plan's token, only while it matches the live text."""
@@ -1296,6 +1321,7 @@ class TextEditManager:
         editor_width_px: int,
         editor_height_px: int,
         normalized_rotation: int,
+        x0: float = 0.0,
     ) -> QImage | None:
         graphics_view = getattr(self._view, "graphics_view", None)
         if graphics_view is None or not hasattr(graphics_view, "viewport"):
@@ -1304,17 +1330,20 @@ class TextEditManager:
             # rotation 0/180: the editor's pre-rotation rect IS the PDF
             # bbox; grab it directly.
             #
-            # rotation 90/270: the editor's local paint space is SWAPPED
-            # and the scene rotates the proxy at display time. Grab the
-            # axis-aligned PDF bbox and COUNTER-rotate the bytes so that,
-            # after the proxy's setRotation, the widget's local paint
+            # rotation 90/180/270: the proxy is rotated about its origin
+            # corner at display time (90/270 additionally swap the local
+            # paint extents), so ``pos`` is NOT the bbox's top-left. Grab
+            # the axis-aligned PDF bbox and COUNTER-rotate the bytes so
+            # that, after the proxy's setRotation, the widget's local paint
             # lands back on the correct PDF pixels. Without this the grab
             # samples the empty page margin and the editor opens blank.
-            # Gate: test_click_to_edit_qtest_integration[
-            #         test-vertical-texts.pdf-vertical].
-            if normalized_rotation in (90, 270):
+            # Gates: test_click_to_edit_qtest_integration[
+            #          test-vertical-texts.pdf-vertical],
+            #        test_text_edit_rotated_page_gui (90/180/270 pages).
+            counter = PROXY_COUNTER_ROTATION.get(normalized_rotation)
+            if counter is not None:
                 bbox_tl = graphics_view.mapFromScene(QPointF(
-                    float(scaled_rect.x0),
+                    float(x0 + scaled_rect.x0),
                     float(y0 + scaled_rect.y0),
                 ))
                 bbox_grab = QRect(
@@ -1328,9 +1357,6 @@ class TextEditManager:
                     .toImage()
                     .convertToFormat(QImage.Format_RGBA8888)
                 )
-                from PySide6.QtGui import QTransform
-
-                counter = -90.0 if normalized_rotation == 90 else 90.0
                 return raw_img.transformed(QTransform().rotate(counter))
             else:
                 vp_top_left = graphics_view.mapFromScene(QPointF(float(pos_x), float(pos_y)))
@@ -1400,11 +1426,19 @@ class TextEditManager:
         view._text_size_input_dirty = False
         normalized_font = view._qt_font_to_pdf(font_name)
         view._set_text_font_by_pdf(normalized_font)
-        view._editing_initial_font_name = normalized_font
         view._editing_initial_size = float(font_size)
         view._editing_current_pdf_size = float(font_size)
         if not hasattr(view, "editing_font_name"):
             view.editing_font_name = normalized_font
+        # Style-override baseline: the raw font name the session opened with
+        # (``editing_font_name`` holds the PyMuPDF name, "Helvetica", on an
+        # existing span; the combo later writes UI aliases such as "helv").
+        # Every comparison against this baseline goes through
+        # ``_font_alias`` so that an untouched session and a
+        # pick-another-font-then-pick-it-back session both read as "no
+        # override" -- a spurious override refuses the Tier 0 plan and falls
+        # back to the legacy engine.
+        view._editing_initial_font_name = str(view.editing_font_name)
         if not getattr(view, "_edit_font_size_connected", False):
             view.text_size.currentTextChanged.connect(view._on_edit_font_size_changed)
             view._edit_font_size_connected = True
@@ -1526,6 +1560,7 @@ class TextEditManager:
         initial_frame = self._capture_frozen_first_frame(
             scaled_rect=scaled_rect,
             y0=y0,
+            x0=x0,
             pos_x=pos_x,
             pos_y=pos_y,
             editor_width_px=editor_width_px,
@@ -1589,6 +1624,8 @@ class TextEditManager:
             target_mode=view.editing_target_mode,
             rotation=normalized_rotation,
             render_scale=float(rs),
+            initial_font=font_name,
+            initial_size=float(font_size),
         )
 
         self._sync_font_combo_state(font_name, font_size)
@@ -1606,17 +1643,22 @@ class TextEditManager:
         target_mode: str | None,
         rotation: int,
         render_scale: float,
+        initial_font: str,
+        initial_size: float,
     ) -> None:
         """Emit-only wiring for the exact plan-backed preview (V2 Task 8).
 
         The hook packages primitives and emits ``sig_text_edit_plan_preview``
-        — the View never opens a PDF and never calls the Model.  Rotated
-        pages keep the CSS preview: the Tier 0 raster clip assumes an
-        unrotated editor frame.
+        — the View never opens a PDF and never calls the Model.  ``rect`` /
+        ``clip_rect`` are displayed-space; the raster that comes back is a
+        displayed-space clip, and rotated editors (``rotation`` 90/180/270,
+        the on-screen glyph rotation) counter-rotate it into their proxy-local
+        frame in ``apply_plan_preview`` -- the same transform the frozen first
+        frame uses -- so the exact preview stays available on ``/Rotate``
+        pages and for rotated text alike.
         """
         view = self._view
-        if rotation != 0:
-            return
+        del rotation  # orientation is handled by the editor at paint time
         if not hasattr(view, "sig_text_edit_plan_preview"):
             return
         session_key = str(uuid.uuid4())
@@ -1626,6 +1668,34 @@ class TextEditManager:
         )
 
         def _emit(text: str, generation: int) -> None:
+            current_font = getattr(view, "editing_font_name", initial_font)
+            session_initial_font = getattr(
+                view, "_editing_initial_font_name", initial_font
+            )
+            current_size = float(
+                getattr(view, "_editing_current_pdf_size", initial_size)
+            )
+            session_initial_size = float(
+                getattr(view, "_editing_initial_size", initial_size)
+            )
+            style_overrides = build_style_overrides(
+                current_font=current_font,
+                initial_font=session_initial_font,
+                font_key=lambda name: _font_alias(view, name),
+                current_size=current_size,
+                initial_size=session_initial_size,
+            )
+            current_rect = getattr(view, "editing_rect", None)
+            original_rect = getattr(view, "_editing_original_rect", rect)
+            new_rect = None
+            if current_rect is not None and original_rect is not None:
+                if (
+                    abs(float(current_rect.x0) - float(original_rect.x0)) > 0.01
+                    or abs(float(current_rect.y0) - float(original_rect.y0)) > 0.01
+                    or abs(float(current_rect.x1) - float(original_rect.x1)) > 0.01
+                    or abs(float(current_rect.y1) - float(original_rect.y1)) > 0.01
+                ):
+                    new_rect = tuple(float(value) for value in current_rect)
             view.sig_text_edit_plan_preview.emit(
                 {
                     "session_key": session_key,
@@ -1638,6 +1708,8 @@ class TextEditManager:
                     "generation": int(generation),
                     "clip_rect": rect_tuple,
                     "render_scale": float(render_scale),
+                    "style_overrides": style_overrides,
+                    "new_rect": new_rect,
                 }
             )
 
@@ -1770,7 +1842,9 @@ class TextEditManager:
             target_mode=getattr(view, "editing_target_mode", "run"),
             original_text=getattr(view, "editing_original_text", None),
         )
-        font_changed = str(session.current_font).lower() != str(session.initial_font).lower()
+        font_changed = _font_alias(view, session.current_font) != _font_alias(
+            view, session.initial_font
+        )
         size_changed = abs(float(session.current_size) - float(session.initial_size)) > 1e-3
         delta = TextEditDelta(
             text_changed=text_changed,
@@ -1931,12 +2005,9 @@ class TextEditManager:
                 )
                 view.sig_move_text_across_pages.emit(move_request)
             else:
-                editor_widget = (
-                    view.text_editor.widget() if view.text_editor else None
-                )
                 plan_token = (
-                    editor_widget.current_plan_token()
-                    if hasattr(editor_widget, "current_plan_token")
+                    editor.current_plan_token()
+                    if hasattr(editor, "current_plan_token")
                     else None
                 )
                 request = EditTextRequest(
@@ -1954,6 +2025,7 @@ class TextEditManager:
                     style_overrides=build_style_overrides(
                         current_font=session.current_font,
                         initial_font=session.initial_font,
+                        font_key=lambda name: _font_alias(view, name),
                         current_size=session.current_size,
                         initial_size=session.initial_size,
                     ),
@@ -1980,22 +2052,43 @@ class TextEditManager:
         )
 
 
+def _font_alias(view, font_name: object) -> str:
+    """Comparison key for a session font name.
+
+    The session baseline is the raw PyMuPDF name ("Helvetica") while the
+    font combo writes UI aliases ("helv"); both sides of every
+    changed-font comparison go through the view's alias mapping so the two
+    alphabets never compare unequal for the same face.
+    """
+    name = str(font_name or "")
+    mapper = getattr(view, "_qt_font_to_pdf", None)
+    if callable(mapper):
+        try:
+            return str(mapper(name)).lower()
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return name.lower()
+
+
 def build_style_overrides(
     *,
     current_font: str,
     initial_font: str,
     current_size: float,
     initial_size: float,
+    font_key=None,
 ) -> StyleOverrides:
     """Overrides for the fields the user actually changed this session.
 
     Uses the same change detection as TextEditDelta: a case-insensitive
-    font-name comparison and a 1e-3 size tolerance.  Merely opening the
-    editor (which maps the source font to a UI alias) never counts as a
-    user override — with no change, style truth stays with the source
-    spans (V2 plan Task 5).
+    font-name comparison (through ``font_key`` when given, so a raw source
+    name and its UI alias compare equal) and a 1e-3 size tolerance.  Merely
+    opening the editor (which maps the source font to a UI alias) never
+    counts as a user override — with no change, style truth stays with the
+    source spans (V2 plan Task 5).
     """
-    font_changed = str(current_font).lower() != str(initial_font).lower()
+    key = font_key if callable(font_key) else (lambda name: str(name).lower())
+    font_changed = key(current_font) != key(initial_font)
     size_changed = abs(float(current_size) - float(initial_size)) > 1e-3
     return StyleOverrides(
         font_family=str(current_font) if font_changed else None,

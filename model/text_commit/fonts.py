@@ -21,12 +21,20 @@ with the document's declared widths, and the document is authoritative.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import fitz
 
+from model.text_commit.cid_fonts import (
+    CidCapabilityFailure,
+    IdentityHCidCapability,
+    build_identity_h_cid_capability,
+    compute_cid_evidence_digest,
+)
 from model.text_commit.dto import RejectReason
 
 # Unembedded families whose printable-ASCII repertoire may be assumed: every
@@ -188,13 +196,30 @@ class FontCapability:
     # ``face_source``, which stays a statement about the *face* alone: an
     # embedded font can carry both a real extracted face and a /Widths
     # table that overrides it, and conflating the two would misreport one.
-    advance_source: str = "none"  # "widths" | "face" | "none"
+    advance_source: str = "none"  # "widths" | "face" | "cid" | "none"
     first_char: int = 0
     widths: tuple[float, ...] | None = None
     # Whether printable-ASCII glyph coverage may be assumed with no face.
     # Separate from the advance question: /Widths proves an advance, never an
     # outline.  See :meth:`missing_glyphs`.
     ascii_repertoire_attested: bool = False
+    # Task 12 P0-D: the Identity-H/CIDFontType2 codec, present exactly when
+    # this Type0 font passed the full evidence chain (tier0_reject_reason is
+    # then None). Simple-font callers never consult it; the planner and
+    # binding branch on it explicitly.
+    cid: IdentityHCidCapability | None = None
+    # Sanitized (code-only) detail for a type0_* rejection — the planner
+    # surfaces THIS for Type0 fonts, never the basefont name (§10 privacy).
+    tier0_reject_detail: str | None = None
+    # Same-document digest of every evidence object the build read (Type0:
+    # :func:`compute_cid_evidence_digest`; otherwise
+    # :func:`compute_simple_font_evidence_digest`).  The registry re-derives
+    # it on EVERY cache hit and rebuilds on mismatch, so an in-place rewrite
+    # of /Widths, /Encoding, the descriptor or the program at the same xref
+    # can no longer be served stale within one generation.  Provenance, not
+    # identity: ``compare=False`` (docs/PITFALLS.md, "Provenance fields on
+    # compared dataclasses silently break equality pins").
+    evidence_digest: str = field(default="", compare=False, repr=False)
 
     def width_of_code(self, code: int) -> float | None:
         """Declared advance of one character code, in 1/1000 text-space units.
@@ -405,10 +430,157 @@ def _load_extracted_face(
         return None
 
 
+def _fold_font_object(
+    fold: "Callable[[bytes, bytes | None], None]",
+    doc: fitz.Document,
+    marker: bytes,
+    xref: int,
+) -> None:
+    try:
+        fold(marker, doc.xref_object(xref).encode("latin-1", "replace"))
+    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+        fold(marker, None)
+
+
+def compute_simple_font_evidence_digest(doc: fitz.Document, font_xref: int) -> str:
+    """Raw digest of every evidence object a non-Type0 capability build reads.
+
+    SAME-DOCUMENT identity only (raw object text / raw stream bytes are cheap
+    but not stable across a save/reopen re-serialization) — consumed by the
+    registry cache to refuse a stale capability, never by the page
+    fingerprint (``inspect._update_font_dependencies`` is the cross-document
+    form).  Enumerated rather than followed generically so the set is
+    auditable against :func:`_build_capability`: the font dictionary itself
+    (every key), the indirect targets of /Encoding (its /Differences),
+    /Widths, /FirstChar, /LastChar and /FontDescriptor, the descriptor's
+    /Flags when indirect, and the raw bytes of whichever /FontFile* program
+    ``extract_font`` would load.  If the builder starts reading another
+    key, it belongs here in the same change.
+    """
+    digest = hashlib.sha256()
+
+    def fold(marker: bytes, payload: bytes | None) -> None:
+        digest.update(marker)
+        digest.update(b"\x00" if payload is None else payload)
+        digest.update(b"\x1e")
+
+    if font_xref <= 0:
+        # Inline resource dict: nothing is readable through an xref, so the
+        # build is deterministic and the digest is a constant.
+        fold(b"inline", None)
+        return digest.hexdigest()
+    try:
+        for key in sorted(doc.xref_get_keys(font_xref)):
+            kind, value = doc.xref_get_key(font_xref, key)
+            fold(
+                key.encode("utf-8", "replace"),
+                f"{kind}:{value}".encode("latin-1", "replace"),
+            )
+        for key in ("Encoding", "Widths", "FirstChar", "LastChar", "FontDescriptor"):
+            kind, value = doc.xref_get_key(font_xref, key)
+            if kind != "xref":
+                continue
+            try:
+                target = int(value.split()[0])
+            except (ValueError, IndexError):
+                fold(key.encode("ascii"), None)
+                continue
+            _fold_font_object(fold, doc, key.encode("ascii"), target)
+        _fold_descriptor_flags(fold, doc, font_xref)
+        for program_key in ("FontFile", "FontFile2", "FontFile3"):
+            kind, value = doc.xref_get_key(font_xref, f"FontDescriptor/{program_key}")
+            if kind != "xref":
+                continue
+            marker = program_key.encode("ascii")
+            try:
+                program_xref = int(value.split()[0])
+            except (ValueError, IndexError):
+                fold(marker, None)
+                continue
+            # Stream dict AND raw bytes: a /Filter or /DecodeParms rewrite
+            # changes what extract_font decodes from unchanged stored bytes.
+            _fold_font_object(fold, doc, marker + b"-dict", program_xref)
+            try:
+                fold(marker, doc.xref_stream_raw(program_xref))
+            except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+                fold(marker, None)
+    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+        fold(b"unreadable-font", None)
+    return digest.hexdigest()
+
+
+def _fold_descriptor_flags(
+    fold: "Callable[[bytes, bytes | None], None]",
+    doc: fitz.Document,
+    font_xref: int,
+) -> None:
+    """Fold exactly what :func:`_is_symbolic` reads: the path-resolved
+    ``FontDescriptor/Flags`` value and, when indirect, its target object."""
+    kind, value = doc.xref_get_key(font_xref, "FontDescriptor/Flags")
+    fold(b"flags", f"{kind}:{value}".encode("latin-1", "replace"))
+    if kind == "xref":
+        try:
+            _fold_font_object(fold, doc, b"flags-obj", int(value.split()[0]))
+        except (ValueError, IndexError):
+            fold(b"flags-obj", None)
+
+
+def _type3_evidence_digest(doc: fitz.Document, font_xref: int) -> str:
+    """A Type3 build reads nothing past the entry fields except
+    ``_is_symbolic`` (for ``ascii_repertoire_attested``) — no /Widths, no
+    face, no program — so its digest is just that fold."""
+    digest = hashlib.sha256()
+
+    def fold(marker: bytes, payload: bytes | None) -> None:
+        digest.update(marker)
+        digest.update(b"\x00" if payload is None else payload)
+        digest.update(b"\x1e")
+
+    if font_xref <= 0:
+        fold(b"inline", None)
+        return digest.hexdigest()
+    try:
+        _fold_descriptor_flags(fold, doc, font_xref)
+    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+        fold(b"unreadable-font", None)
+    return digest.hexdigest()
+
+
+def compute_font_evidence_digest(doc: fitz.Document, entry: tuple) -> str:
+    """The revalidation digest for one ``page.get_fonts(full=True)`` entry.
+
+    Two layers.  The RESOLVED entry fields MuPDF hands the builder (ext,
+    subtype, basefont, encoding) fold first: ``_build_capability`` consumes
+    those, not the raw dictionary text, and each may sit behind an indirect
+    name object (``/BaseFont 8 0 R``, ``/Subtype 9 0 R``, an inline
+    ``/Encoding`` dict whose ``/BaseEncoding`` is a reference) that the
+    object-level digest sees only as an unchanged ``"xref:8 0 R"`` (review
+    F1: a rewrite of the target served a Helvetica-faced capability for a
+    font renamed to Wingdings).  Then the per-subtype object closure — keyed
+    on the SUBTYPE, not on whether a cached capability carries a CID codec:
+    a Type0 that failed its evidence chain has ``cid is None`` and was
+    previously served stale exactly like a simple font.
+    """
+    font_xref, ext, subtype, basefont, _resource_name, encoding = entry[:6]
+    font_xref = int(font_xref)
+    if subtype == "Type0":
+        inner = compute_cid_evidence_digest(doc, font_xref)
+    elif subtype == "Type3":
+        inner = _type3_evidence_digest(doc, font_xref)
+    else:
+        inner = compute_simple_font_evidence_digest(doc, font_xref)
+    digest = hashlib.sha256()
+    for part in (ext, subtype, basefont, encoding, inner):
+        digest.update(str(part).encode("utf-8", "replace"))
+        digest.update(b"\x1e")
+    return digest.hexdigest()
+
+
 def _build_capability(
     doc: fitz.Document,
     owner_xref: int,
     entry: tuple,
+    evidence_digest: str = "",
 ) -> FontCapability:
     font_xref, ext, subtype, basefont, resource_name, encoding = entry[:6]
     embedded = ext not in ("n/a", "")
@@ -416,15 +588,30 @@ def _build_capability(
     face: fitz.Font | None = None
     face_source = "none"
     reject: str | None = None
+    reject_detail: str | None = None
     simple = False
     advance_source = "none"
     first_char = 0
     widths: tuple[float, ...] | None = None
+    cid: IdentityHCidCapability | None = None
 
     if subtype == "Type3":
         # A Type3 /Widths is in glyph space, scaled by /FontMatrix rather
         # than by 1/1000, so it is not read here at all.
         reject = RejectReason.FONT_TYPE3
+    elif subtype == "Type0":
+        # Task 12 P0-D: the Identity-H/CIDFontType2 evidence chain. No
+        # fitz face is loaded — glyph presence is proven GID-level from
+        # the embedded program (subset fonts strip the cmap, so Unicode
+        # lookups are useless there; docs/PITFALLS.md), and advances come
+        # from the descendant's /W and /DW, never from a face.
+        cid_result = build_identity_h_cid_capability(doc, font_xref)
+        if isinstance(cid_result, CidCapabilityFailure):
+            reject = cid_result.reason
+            reject_detail = cid_result.detail
+        else:
+            cid = cid_result
+            advance_source = "cid"
     else:
         if embedded:
             face = _load_extracted_face(doc, font_xref)
@@ -484,6 +671,9 @@ def _build_capability(
             and _family_stem(basefont) in _FULL_ASCII_FAMILIES
             and not _is_symbolic(doc, font_xref)
         ),
+        cid=cid,
+        tier0_reject_detail=reject_detail,
+        evidence_digest=evidence_digest,
     )
 
 
@@ -510,17 +700,45 @@ class DocumentFontRegistry:
         """
         capabilities: dict[str, FontCapability] = {}
         for entry in page.get_fonts(full=True):
-            owner_xref = int(entry[6]) if len(entry) > 6 and entry[6] else page.xref
-            resource_name = entry[4]
-            key = (self.generation, owner_xref, resource_name, int(entry[0]))
-            cached = self._cache.get(key)
-            if cached is None:
-                cached = _build_capability(self.doc, owner_xref, entry)
-                self._cache[key] = cached
-            capabilities[resource_name] = cached
+            capabilities[entry[4]] = self._resolve(page, entry)
         return capabilities
 
     def capability(
         self, page: fitz.Page, resource_name: str
     ) -> FontCapability | None:
-        return self.page_capabilities(page).get(resource_name)
+        """One resource's capability — digesting/building ONLY that entry.
+
+        ``prepare`` resolves capabilities one show-resource at a time; going
+        through :meth:`page_capabilities` would revalidate every font on the
+        page per lookup, O(K*N) digests per prepare (review F2: 7x on a
+        98-font page).  Same answer as ``page_capabilities(page).get(name)``:
+        the last entry carrying ``resource_name`` wins, as in the dict.
+        """
+        match: tuple | None = None
+        for entry in page.get_fonts(full=True):
+            if entry[4] == resource_name:
+                match = entry
+        if match is None:
+            return None
+        return self._resolve(page, match)
+
+    def _resolve(self, page: fitz.Page, entry: tuple) -> FontCapability:
+        owner_xref = int(entry[6]) if len(entry) > 6 and entry[6] else page.xref
+        key = (self.generation, owner_xref, entry[4], int(entry[0]))
+        # Evidence can change while (generation, xref) stays equal — an
+        # in-place /Widths or /Encoding rewrite, an external write bypassing
+        # the model's mutation hooks.  Pull-revalidate EVERY hit against the
+        # raw evidence digest and rebuild on mismatch: Type0 since Task 12
+        # P0-D, simple fonts and rejected Type0 since the Task 13
+        # revalidation slice (docs/PITFALLS.md, "Simple-font capabilities
+        # are served stale ...").  The digest is taken BEFORE the build so a
+        # write racing the build is caught by the next lookup rather than
+        # attested as current.
+        current = compute_font_evidence_digest(self.doc, entry)
+        cached = self._cache.get(key)
+        if cached is not None and cached.evidence_digest != current:
+            cached = None
+        if cached is None:
+            cached = _build_capability(self.doc, owner_xref, entry, current)
+            self._cache[key] = cached
+        return cached

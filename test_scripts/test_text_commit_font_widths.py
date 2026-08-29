@@ -388,7 +388,14 @@ def test_unembedded_font_without_widths_or_face_still_refuses():
     doc.close()
 
 
-def test_embedded_font_still_uses_its_extracted_face():
+def test_embedded_type0_measures_from_cid_evidence_not_a_face():
+    """Task 12 P0-D contract update (was: Type0 loads an extracted face).
+
+    A Type0 capability never loads a face and never measures from one —
+    advances come from the descendant's /W//DW when the evidence chain
+    passes, and nothing at all when it fails (this helv embedding fails on
+    its CIDFontType0 descendant, so no advance source is claimed).
+    """
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
     writer = fitz.TextWriter(page.rect)
@@ -397,9 +404,11 @@ def test_embedded_font_still_uses_its_extracted_face():
 
     capability = _sole_capability(doc)
     assert capability.embedded is True
-    assert capability.face is not None
-    assert capability.face_source == "extracted"  # unchanged provenance
-    assert capability.advance_source == "face"  # a Type0 dict has /W, not /Widths
+    assert capability.subtype == "Type0"
+    assert capability.face is None
+    assert capability.face_source == "none"
+    assert capability.advance_source == "none"
+    assert capability.tier0_reject_reason == "type0_descendant_unsupported"
     doc.close()
 
 

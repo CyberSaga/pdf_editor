@@ -58,7 +58,7 @@ def test_tokens_tile_source_exactly():
         b"BT /F1 12.5 Tf (Hello \\(World\\)) Tj ET\n"
         b"[(A) -120 (V)] TJ <48 65 6C> Tj Q"
     )
-    tokens = lex_content_stream(source)
+    tokens = list(lex_content_stream(source))
     assert _reassemble(source, tokens) == source
     # offsets are contiguous and gap-free
     pos = 0
@@ -71,7 +71,7 @@ def test_tokens_tile_source_exactly():
 
 def test_whitespace_and_comments_are_trivia_tokens():
     source = b"BT\n% a comment ( with parens\n(Txt) Tj\r\nET"
-    tokens = lex_content_stream(source)
+    tokens = list(lex_content_stream(source))
     assert TokenKind.COMMENT in _kinds(tokens)
     assert TokenKind.WHITESPACE in _kinds(tokens)
     comment = next(t for t in tokens if t.kind == TokenKind.COMMENT)
@@ -154,7 +154,7 @@ def test_operator_variants_and_numbers():
 def test_inline_image_payload_is_one_token():
     payload = b"\x00\xff(\x29\\ei EI-not-end "
     source = b"BI /W 2 /H 2 /BPC 8 /CS /G ID " + payload + b"EI Q"
-    tokens = lex_content_stream(source)
+    tokens = list(lex_content_stream(source))
     assert _reassemble(source, tokens) == source
     data = [t for t in tokens if t.kind == TokenKind.INLINE_IMAGE_DATA]
     assert len(data) == 1
@@ -168,7 +168,7 @@ def test_inline_image_payload_is_one_token():
 
 def test_malformed_unterminated_string_flagged_not_raised():
     source = b"BT (never closed"
-    tokens = lex_content_stream(source)
+    tokens = list(lex_content_stream(source))
     assert _reassemble(source, tokens) == source
     assert tokens[-1].kind == TokenKind.MALFORMED
 

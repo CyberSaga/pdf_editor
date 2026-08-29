@@ -33,6 +33,7 @@ from controller.text_commit_coordinator import (  # noqa: E402
 from model.text_commit.dto import RejectReason, TextCommitSettings  # noqa: E402
 from model.text_commit.engine import TieredCommitEngine  # noqa: E402
 from model.text_commit.inspect import page_fingerprint  # noqa: E402
+from model.pdf_text_edit import _Tier0Target  # noqa: E402
 from model.text_commit.plan import PreparedEdit  # noqa: E402
 from model.text_commit.preview import (  # noqa: E402
     PlanPreviewRenderer,
@@ -502,7 +503,7 @@ def test_controller_caches_session_and_derives_target_once(monkeypatch):
 
     def fake_derive(model, **kwargs):
         derive_calls.append(kwargs)
-        return TARGET, origin, bbox
+        return _Tier0Target(TARGET, origin, bbox, 1)
 
     monkeypatch.setattr(
         pdf_controller_module, "derive_tier0_preview_target", fake_derive

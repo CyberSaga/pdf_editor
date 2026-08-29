@@ -17,14 +17,23 @@ def test_audit_document_counts_bound_and_rejected():
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
     page.insert_text((72, 100), "Bindable text", fontsize=12.0, fontname="helv")
+    # Task 13 P2: a 90°-rotated show now BINDS (quarter-turn admission);
+    # keep a genuinely inadmissible shape in the mix — a sheared Tm — to
+    # pin that the audit still attributes refusals by their stable code.
     page.insert_text(
         (200, 400), "Rotated 90", fontsize=12.0, fontname="helv", rotate=90
     )
+    content_xref = page.get_contents()[0]
+    stream = doc.xref_stream(content_xref)
+    sheared = stream + (
+        b"\nBT /helv 12 Tf 1 0 0.5 1 300 700 Tm (Sheared text) Tj ET"
+    )
+    doc.update_stream(content_xref, sheared)
     counts = audit_document(doc)
     doc.close()
-    assert counts["bound"] == 1
-    assert counts["unsupported_text_state"] == 1
-    assert sum(counts.values()) == 2
+    assert counts["bound"] == 2
+    assert counts["trm_sheared"] == 1
+    assert sum(counts.values()) == 3
 
 
 def test_audit_main_reports_without_leaking_text(tmp_path, capsys):

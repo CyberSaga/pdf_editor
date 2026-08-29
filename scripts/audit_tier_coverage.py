@@ -61,13 +61,20 @@ def _classify_show(
         "hex",
     )
 
+    # Task 12 P0-D: a valid Identity-H CID capability carries NO face (glyph
+    # evidence is GID-level) — `capability.cid` is its eligibility witness.
+    has_glyph_evidence = capability is not None and (
+        capability.face is not None
+        or capability.ascii_repertoire_attested
+        or capability.cid is not None
+    )
     tier0_eligible = (
         single_string_tj
         and not unsupported_state
         and show.origin_reliable
         and capability is not None
         and capability.tier0_reject_reason is None
-        and (capability.face is not None or capability.ascii_repertoire_attested)
+        and has_glyph_evidence
     )
     if tier0_eligible:
         return TIER0_ELIGIBLE, None
@@ -78,7 +85,7 @@ def _classify_show(
         and show.origin_reliable
         and capability is not None
         and capability.tier0_reject_reason is None
-        and (capability.face is not None or capability.ascii_repertoire_attested)
+        and has_glyph_evidence
     )
 
     if unsupported_state:
@@ -112,7 +119,9 @@ def audit_page(
     stream_owners: dict[int, set[int]],
 ) -> dict[str, object]:
     streams = read_page_streams(doc, page)
-    replay = replay_page_streams(streams)
+    # Diagnostics take a full census: the production resource guard would
+    # silently report an over-budget page as zero shows (Task 12 P0-A).
+    replay = replay_page_streams(streams, max_decoded_bytes=None)
 
     counts: Counter[str] = Counter()
     reject_reasons: Counter[str] = Counter()

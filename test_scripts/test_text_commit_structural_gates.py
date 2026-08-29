@@ -52,7 +52,7 @@ LEAD_IN = "Lead-in"  # distinct bytes: never collides with TARGET when matching
 _NOMINAL: dict[str, object] = {
     "origin_reliable": True,  # inspect.py G6 -> UNTRACKED_ADVANCE
     "in_bt": True,  # inspect.py G5 -> UNSUPPORTED_TEXT_STATE
-    "trm_uniform_scaled": True,  # inspect.py G7 -> UNSUPPORTED_TEXT_STATE
+    "trm_uniform_scaled": True,  # inspect.py G7 -> trm_* admission (Task 13 P2)
     "operator": "Tj",  # plan.py    -> NOT_SINGLE_LITERAL_TJ
     # "hex" is equally admissible since 2026-08-01; every fixture here is
     # literal, so one nominal value still suffices.
@@ -60,7 +60,7 @@ _NOMINAL: dict[str, object] = {
     "render_mode": 0,  # plan.py G2 -> UNSUPPORTED_TEXT_STATE
     "rise": 0.0,  # plan.py G3 -> UNSUPPORTED_TEXT_STATE
     "hscale": 100.0,  # plan.py G4 -> UNSUPPORTED_TEXT_STATE
-    "mc_depth": 0,  # plan.py G1 -> UNSUPPORTED_TEXT_STATE
+    "mc_depth": 0,  # plan.py G1 -> MC_* taxonomy admission (Task 13 P1)
 }
 
 
@@ -159,7 +159,14 @@ def _assert_control_plans_cleanly(stream: bytes) -> None:
 
 
 def test_planner_rejects_marked_content_target():
-    """G1: a Tj inside BDC/EMC (tagged PDF) is not patchable in place."""
+    """G1: a Tj inside a NON-admissible wrapper is not patchable in place.
+
+    Task 13 P1 replaced the blanket UNSUPPORTED_TEXT_STATE refusal with
+    the taxonomy admission: this /P <</MCID 0>> wrapper is structure
+    content, so the gate still refuses — now with its own stable code
+    (the admissible pure-/OC-layer path is pinned in
+    test_text_commit_mc_admission.py).
+    """
     doc = _stream_doc(
         b"/P <</MCID 0>> BDC BT /F1 12 Tf 72 700 Td ("
         + TARGET.encode()
@@ -171,8 +178,8 @@ def test_planner_rejects_marked_content_target():
 
     rejection = _plan(doc)
     assert isinstance(rejection, PlanRejection), rejection
-    assert rejection.reason == RejectReason.UNSUPPORTED_TEXT_STATE
-    assert "marked-content" in rejection.detail
+    assert rejection.reason == RejectReason.MC_WRAPPER_NOT_PURE_LAYER
+    assert "struct_content" in rejection.detail
     doc.close()
 
     _assert_control_plans_cleanly(
@@ -373,20 +380,25 @@ def test_planner_accepts_uniformly_scaled_text_matrix():
     doc.close()
 
 
-# Deleting the ``abs(b) > _EPS or abs(c) > _EPS`` half of
-# ``replay._uniform_scale`` makes every matrix below return its ``a``, so
-# each of these three MUST fail on that mutation.  A 90-degree rotation
-# would not: its ``a`` is 0 and the ``a > 0`` guard catches it anyway.
+# Task 13 P2: the blanket G7 refusal became the fail-closed quarter-turn
+# admission — every off-axis shape keeps its own stable ``trm_*`` code
+# from the transforms gate chain (oblique rotations die at the DIRECTION
+# gate, shears at the orthogonality gate).
 @pytest.mark.parametrize(
-    ("label", "text_matrix"),
+    ("label", "text_matrix", "expected_reason"),
     [
-        ("rotation_45", b"0.7071 0.7071 -0.7071 0.7071"),  # b and c both set
-        ("shear_b", b"1 0.5 0 1"),  # only b set
-        ("shear_c", b"1 0 0.5 1"),  # only c set
+        (
+            "rotation_45",
+            b"0.7071 0.7071 -0.7071 0.7071",  # b and c both set
+            RejectReason.TRM_ROTATION_NOT_QUARTER_TURN,
+        ),
+        ("shear_b", b"1 0.5 0 1", RejectReason.TRM_SHEARED),  # only b set
+        ("shear_c", b"1 0 0.5 1", RejectReason.TRM_SHEARED),  # only c set
     ],
 )
-def test_planner_rejects_off_axis_text_matrix(label, text_matrix):
-    """G7: rotation and shear keep ``a == d > 0`` but are not Tier 0."""
+def test_planner_rejects_off_axis_text_matrix(label, text_matrix, expected_reason):
+    """G7: oblique rotation and shear keep ``a == d > 0`` but are not
+    admissible — each with its own code, never a blanket refusal."""
     doc = _stream_doc(
         b"BT /F1 12 Tf " + text_matrix + b" 72 700 Tm ("
         + TARGET.encode()
@@ -400,8 +412,7 @@ def test_planner_rejects_off_axis_text_matrix(label, text_matrix):
 
     rejection = _plan(doc)
     assert isinstance(rejection, PlanRejection), rejection
-    assert rejection.reason == RejectReason.UNSUPPORTED_TEXT_STATE
-    assert "rotated, sheared, reflected" in rejection.detail
+    assert rejection.reason == expected_reason
     doc.close()
 
     _assert_control_plans_cleanly(
@@ -409,23 +420,16 @@ def test_planner_rejects_off_axis_text_matrix(label, text_matrix):
     )
 
 
-# ``point_reflection`` is the only fixture here that pins the ``a > 0``
-# guard: delete it and ``_uniform_scale`` returns -10.0, so upside-down
-# text would plan (and the fallback bbox would come out inverted).  The
-# other two are guarded by ``a == d`` / ``b == c == 0`` and pin nothing on
-# their own — they are kept as documentation of the refused shapes.
-@pytest.mark.parametrize(
-    ("label", "text_matrix"),
-    [
-        ("point_reflection", b"-10 0 0 -10"),  # a == d < 0
-        ("mirror_x", b"-10 0 0 10"),  # a == -d
-        ("rotation_90", b"0 10 -10 0"),  # a == d == 0
-    ],
-)
-def test_planner_rejects_reflected_or_rotated_text_matrix(label, text_matrix):
-    """G7: a negative or degenerate scale is never a Tier 0 candidate."""
+# Task 13 P2: a TRUE reflection (negative determinant) stays fail-closed
+# with its own code, while the point reflection (= a 180° rotation, det >
+# 0) and the 90° rotation are now ADMITTED as quarter-turn candidates —
+# the fallback bbox rides the transformed baseline, so "upside-down"
+# text plans correctly instead of being refused wholesale
+# (test_text_commit_trm_admission.py pins the full admission story).
+def test_planner_rejects_mirror_text_matrix():
+    """G7: negative orientation is never a candidate — its own code."""
     doc = _stream_doc(
-        b"BT /F1 1 Tf " + text_matrix + b" 300 400 Tm ("
+        b"BT /F1 1 Tf -10 0 0 10 300 400 Tm ("  # a == -d: det < 0
         + TARGET.encode()
         + b") Tj ET"
     )
@@ -436,13 +440,58 @@ def test_planner_rejects_reflected_or_rotated_text_matrix(label, text_matrix):
 
     rejection = _plan(doc)
     assert isinstance(rejection, PlanRejection), rejection
-    assert rejection.reason == RejectReason.UNSUPPORTED_TEXT_STATE
-    assert "rotated, sheared, reflected" in rejection.detail
+    assert rejection.reason == RejectReason.TRM_REFLECTED
     doc.close()
 
     _assert_control_plans_cleanly(
         b"BT /F1 1 Tf 10 0 0 10 300 400 Tm (" + TARGET.encode() + b") Tj ET"
     )
+
+
+@pytest.mark.parametrize(
+    ("label", "text_matrix"),
+    [
+        ("point_reflection", b"-10 0 0 -10"),  # 180° turn × 10: det > 0
+        ("rotation_90", b"0 10 -10 0"),  # quarter turn × 10
+    ],
+)
+def test_planner_admits_quarter_turn_text_matrix(label, text_matrix):
+    """Task 13 P2: the quarter-turn family PLANS (was a G7 refusal)."""
+    doc = _stream_doc(
+        b"BT /F1 1 Tf " + text_matrix + b" 300 400 Tm ("
+        + TARGET.encode()
+        + b") Tj ET"
+    )
+    show = _target_show(doc)
+    assert show.trm_uniform_scale is None  # replay's Tier 0 idiom flag only
+    result = _plan(doc)
+    assert isinstance(result, PreparedEdit), result
+    assert result.growth_direction in ("right", "left", "up", "down")
+    doc.close()
+
+
+def test_planner_still_admits_replay_uniform_boundary_residuals():
+    """Review F2 (red-first): the pre-P2 admitted set stays admitted.
+
+    ``0.000001`` residuals sit exactly ON replay's absolute tolerance
+    (``abs(b) > 1e-6`` is False), so the show is ``trm_uniform_scaled``
+    and was bound and planned before P2.  The quarter-turn admission's
+    RELATIVE shear check would refuse it (|a·c + b·d| = 2e-6 > rel·scale²
+    ≈ 1e-6), so the new gate must never run for replay-uniform shows —
+    axis-aligned Tier 0/1 behavior stays byte-identical.
+    """
+    doc = _stream_doc(
+        b"BT /F1 1 Tf 1 0.000001 0.000001 1 300 400 Tm ("
+        + TARGET.encode()
+        + b") Tj ET"
+    )
+    show = _target_show(doc)
+    assert show.trm_uniform_scale is not None  # replay says uniform
+    result = _plan(doc)
+    assert isinstance(result, PreparedEdit), result
+    # The sliver rides the axis path: no cardinal slug is claimed for it.
+    assert result.growth_direction is None
+    doc.close()
 
 
 # ------------------------------------------------- fallback target geometry
@@ -597,3 +646,69 @@ def test_fallback_target_bbox_is_unchanged_at_unit_scale():
     assert x1 - x0 == pytest.approx(advance, abs=0.01)
     assert y1 - y0 == pytest.approx(12.0 * 1.35, abs=0.01)
     doc.close()
+
+
+@pytest.mark.parametrize("rotation", [90, 270])
+def test_fallback_target_bbox_follows_page_rotate(rotation):
+    """No caller bbox + ``/Rotate 90/270``: shape must follow the visual matrix.
+
+    ``page.transformation_matrix`` alone omits /Rotate in PyMuPDF; the
+    fallback must also apply ``page.rotation_matrix`` so the halo matches
+    pixmap ink (vertical under 90/270). Building from unrotated
+    ``origin_page`` along page-x leaves a horizontal halo while glyphs run
+    vertically in visual space.
+    """
+    doc = _stream_doc(
+        b"BT /F1 12 Tf 1 0 0 1 72 700 Tm (" + TARGET.encode() + b") Tj ET"
+    )
+    doc[0].set_rotation(rotation)
+    data = doc.tobytes()
+    doc.close()
+    doc = fitz.open("pdf", data)
+    page = doc[0]
+    assert page.rotation == rotation
+
+    capability = DocumentFontRegistry(doc).capability(page, "F1")
+    assert capability is not None
+    advance = capability.string_width(TARGET, 12.0)
+    assert advance is not None
+    # Analytic oracle: same user-space construction the planner must use,
+    # mapped through the full visual matrix (not rawdict — glyph ink ≠ the
+    # 1.0/0.35 ascent/descent heuristic).
+    user = fitz.Rect(72.0, 700.0 - 0.35 * 12.0, 72.0 + advance, 700.0 + 12.0)
+    expected = user * page.transformation_matrix * page.rotation_matrix
+
+    prepared = _plan(doc)
+    assert isinstance(prepared, PreparedEdit), prepared
+    x0, y0, x1, y1 = prepared.target_bbox_page
+    assert x0 == pytest.approx(expected.x0, abs=0.05)
+    assert y0 == pytest.approx(expected.y0, abs=0.05)
+    assert x1 == pytest.approx(expected.x1, abs=0.05)
+    assert y1 == pytest.approx(expected.y1, abs=0.05)
+    # Orientation: under 90/270 the advance runs along a visual axis where
+    # height dominates width (the broken formula keeps width >> height).
+    assert (y1 - y0) > (x1 - x0)
+
+    # Independent: first dark pixmap pixels must sit inside the halo.
+    pix = page.get_pixmap(dpi=72)
+    samples = bytes(pix.samples)
+    n = pix.n
+    found = False
+    for y in range(pix.height):
+        for x in range(pix.width):
+            i = (y * pix.width + x) * n
+            if samples[i] < 200:
+                assert x0 - 2.0 <= x <= x1 + 2.0
+                assert y0 - 2.0 <= y <= y1 + 2.0
+                found = True
+                break
+        if found:
+            break
+    assert found, "fixture: no dark pixmap pixels found"
+    doc.close()
+
+
+def test_reject_reason_growth_outside_page_constant_exists():
+    """GROWTH_OUTSIDE_PAGE is a defined RejectReason constant."""
+    assert hasattr(RejectReason, "GROWTH_OUTSIDE_PAGE")
+    assert RejectReason.GROWTH_OUTSIDE_PAGE == "growth_outside_page"

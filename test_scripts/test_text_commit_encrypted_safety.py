@@ -31,7 +31,10 @@ if str(ROOT) not in sys.path:
 from model.text_commit.fonts import DocumentFontRegistry  # noqa: E402
 from model.text_commit.plan import PreparedEdit, prepare_tier0_plan  # noqa: E402
 from model.text_commit.preview import open_preview_session  # noqa: E402
-from model.text_commit.verify import _ocg_membership_lost  # noqa: E402
+from model.text_commit.verify import (  # noqa: E402
+    _ocg_membership_lost,
+    _ocg_membership_status,
+)
 
 TARGET = "Price 2024"
 REPLACEMENT = "Price 2025"  # helv digits share widths: advance-neutral
@@ -205,5 +208,99 @@ def test_ocg_membership_probe_does_not_poison_live_encrypted_document(tmp_path):
     try:
         _ocg_membership_lost(doc, TARGET)
         _assert_live_handle_still_saves_intact(doc, tmp_path / "after-ocg.pdf")
+    finally:
+        doc.close()
+
+
+def test_ocg_membership_locked_probe_is_unknown_not_preserved():
+    """A locked KEEP probe must return ``unknown``, never ``preserved``.
+
+    Returning False/"not lost" here made ``verify_tier1_strategy`` record
+    ``ocg_membership_preserved`` for evidence it did not actually have.
+    """
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), TARGET, fontsize=12.0, fontname="helv")
+    encrypted = fitz.open()
+    encrypted.insert_pdf(doc)
+    doc.close()
+    tmp = encrypted.tobytes(
+        encryption=fitz.PDF_ENCRYPT_AES_256,
+        user_pw=USER_PW,
+        owner_pw=OWNER_PW,
+    )
+    encrypted.close()
+    locked = fitz.open("pdf", tmp)
+    try:
+        assert locked.needs_pass
+        assert _ocg_membership_status(locked, TARGET) == "unknown"
+    finally:
+        locked.close()
+
+
+def test_ocg_membership_probe_exception_is_unknown(monkeypatch):
+    """Every exception path must report ``unknown``, not ``preserved``."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), TARGET, fontsize=12.0, fontname="helv")
+    try:
+        def _boom(*_a, **_k):
+            raise RuntimeError("injected probe failure")
+
+        monkeypatch.setattr(doc, "tobytes", _boom)
+        assert _ocg_membership_status(doc, TARGET) == "unknown"
+    finally:
+        doc.close()
+
+
+def test_ocg_unknown_never_recorded_as_preserved(monkeypatch):
+    """``verify_tier1_strategy`` must not claim preservation on unknown."""
+    from model.text_commit import verify as verify_module
+    from model.text_commit.verify import PageState, verify_tier1_strategy
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 100), TARGET, fontsize=12.0, fontname="helv")
+    try:
+        pixmap = page.get_pixmap(dpi=96)
+        pre = PageState(
+            streams=tuple(),
+            fonts=tuple(),
+            annots=tuple(),
+            nontarget_origins=tuple(),
+            pixmap_samples=bytes(pixmap.samples),
+            pixmap_meta=(pixmap.width, pixmap.height, pixmap.stride, pixmap.n),
+        )
+        monkeypatch.setattr(
+            verify_module, "_ocg_membership_status", lambda *_a, **_k: "unknown"
+        )
+        monkeypatch.setattr(
+            verify_module, "read_page_streams", lambda *_a, **_k: ()
+        )
+        monkeypatch.setattr(page, "get_fonts", lambda full=True: [])
+        monkeypatch.setattr(
+            verify_module, "_first_diff_outside_halo", lambda *_a, **_k: None
+        )
+        monkeypatch.setattr(
+            verify_module, "_region_is_uniform", lambda *_a, **_k: False
+        )
+        monkeypatch.setattr(
+            verify_module, "_darkest_pixel", lambda *_a, **_k: None
+        )
+        monkeypatch.setattr(
+            verify_module, "_span_origins", lambda *_a, **_k: ()
+        )
+
+        verdict = verify_tier1_strategy(
+            doc,
+            page,
+            pre,
+            target_bbox=(70.0, 85.0, 200.0, 110.0),
+            expected_text=TARGET,
+            strategy="transplant",
+        )
+        assert "ocg_membership_preserved" not in verdict.evidence
+        assert "ocg_membership_unknown" in verdict.evidence
+        assert "ocg_membership_lost" not in verdict.failures
     finally:
         doc.close()

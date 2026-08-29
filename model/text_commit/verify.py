@@ -11,12 +11,23 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Mapping, cast
 
 import fitz
 
+from model.text_commit.cid_fonts import PdfRef as CidPdfRef
+from model.text_commit.cid_fonts import resolve_descendant as cid_resolve_descendant
 from model.text_commit.dto import RejectReason
-from model.text_commit.inspect import read_page_streams
-from model.text_commit.plan import PreparedEdit
+from model.text_commit.inspect import page_fingerprint, read_page_streams
+from model.text_commit.interpretation import PageInterpretation, interpret_page
+
+if TYPE_CHECKING:
+    # Deferred: plan.py imports patch.py (for the Tier 1 composite builder),
+    # and patch.py imports this module (for prove_source_resource_reuse), so
+    # a runtime import here would close the cycle plan -> patch -> verify ->
+    # plan. PreparedEdit is used only in annotations below, and
+    # ``from __future__ import annotations`` (this file) makes that safe.
+    from model.text_commit.plan import PreparedEdit
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +35,7 @@ _VERIFY_DPI = 96
 _HALO_MARGIN_PT = 2.0
 _ORIGIN_TOL_PT = 0.1
 _COLOR_TINT_TOLERANCE = 24  # max(rgb) - min(rgb) above this is a color tint, not gray
+_SHADING_OPERATOR_RE = re.compile(rb"(?<![A-Za-z])sh(?![A-Za-z])")
 
 
 @dataclass(frozen=True)
@@ -42,34 +54,303 @@ class PageState:
     nontarget_origins: tuple[tuple[float, float], ...]
     pixmap_samples: bytes
     pixmap_meta: tuple[int, int, int, int]  # width, height, stride, n
+    # Tier 1 ink-growth pre-proof: rawdict character count already occupying
+    # the growth zone, captured PRE-EDIT (0 when the prepared edit has no ink
+    # growth). Defaulted so every hand-built ``PageState`` in existing tests
+    # keeps constructing unchanged.
+    growth_zone_glyphs: int = 0
+    # V0e's page-count baseline, captured PRE-PATCH. Comparing a post-patch
+    # reading against a page_count read on the SAME post-patch document (the
+    # pre-fix bug) is a tautology that can never fire; this is the only
+    # value V0e may honestly compare against. Defaulted for the same reason
+    # as ``growth_zone_glyphs`` above -- the spike helpers in
+    # verify_tier1_strategy's test fixtures hand-build ``PageState`` and
+    # never reach this comparison.
+    page_count: int = 0
+
+
+@dataclass(frozen=True)
+class PreStateBaselineKey:
+    """Fresh lookup evidence for one renderer-private pre-patch state."""
+
+    page_xref: int
+    page_fingerprint: str
+    fonts: tuple[tuple, ...]
+    annots: tuple[tuple[int, tuple[float, float, float, float]], ...]
+    small_glyph_heights: bool
+    quad_corrections_disabled: bool
+    aa_level: tuple[tuple[str, int | float], ...]
+
+
+@dataclass(frozen=True)
+class PreStateBaseline:
+    """Immutable artifacts retained by the one-slot preview baseline."""
+
+    key: PreStateBaselineKey
+    pixmap_samples: bytes
+    pixmap_meta: tuple[int, int, int, int]
+    span_origins: tuple[tuple[float, float], ...]
+    chars: tuple[tuple[str, float, float, float, float], ...]
+
+
+class PreStateBaselineCache:
+    """One-owner, one-slot pre-state cache for a preview renderer."""
+
+    __slots__ = ("_entry", "hits", "misses", "stores")
+
+    def __init__(self) -> None:
+        self._entry: PreStateBaseline | None = None
+        self.hits = 0
+        self.misses = 0
+        self.stores = 0
+
+    @property
+    def entry_count(self) -> int:
+        return 0 if self._entry is None else 1
+
+    def lookup_any(self) -> PreStateBaseline | None:
+        return self._entry
+
+    def clear(self) -> None:
+        self._entry = None
+
+    def capture(
+        self,
+        doc: fitz.Document,
+        page: fitz.Page,
+        prepared: PreparedEdit,
+    ) -> PageState:
+        """Capture fresh state, reusing only immutable raster/text values."""
+        fonts = tuple(page.get_fonts(full=True))
+        annots = tuple((annot.xref, tuple(annot.rect)) for annot in page.annots())
+        aa_level = tuple(
+            sorted(
+                (str(name), cast(int | float, value))
+                for name, value in fitz.TOOLS.show_aa_level().items()
+            )
+        )
+        key = PreStateBaselineKey(
+            page_xref=page.xref,
+            page_fingerprint=page_fingerprint(doc, page),
+            fonts=fonts,
+            annots=annots,
+            small_glyph_heights=bool(fitz.TOOLS.set_small_glyph_heights()),
+            quad_corrections_disabled=bool(fitz.TOOLS.unset_quad_corrections()),
+            aa_level=aa_level,
+        )
+        streams = tuple(read_page_streams(doc, page))
+        page_count = doc.page_count
+        entry = self._entry
+        if entry is not None and entry.key == key:
+            self.hits += 1
+            return _page_state_from_baseline(
+                page,
+                prepared,
+                entry,
+                streams=streams,
+                fonts=fonts,
+                annots=annots,
+                page_count=page_count,
+            )
+
+        self.misses += 1
+        interpretation = interpret_page(page)
+        try:
+            pixmap = interpretation.pixmap(dpi=_VERIFY_DPI)
+            rawdict = interpretation.rawdict()
+            baseline = PreStateBaseline(
+                key=key,
+                pixmap_samples=bytes(pixmap.samples),
+                pixmap_meta=(
+                    pixmap.width,
+                    pixmap.height,
+                    pixmap.stride,
+                    pixmap.n,
+                ),
+                span_origins=_iter_span_origins(rawdict),
+                chars=_iter_nonspace_chars(rawdict),
+            )
+            state = _page_state_from_baseline(
+                page,
+                prepared,
+                baseline,
+                streams=streams,
+                fonts=fonts,
+                annots=annots,
+                page_count=page_count,
+            )
+            self._entry = baseline
+            self.stores += 1
+            return state
+        finally:
+            interpretation.release()
+
+
+def _visual_bbox_to_dict_space(
+    page: fitz.Page, bbox: tuple[float, float, float, float]
+) -> tuple[float, float, float, float]:
+    """Convert a VISUAL (pixmap-space) bbox to the space ``get_text`` uses.
+
+    ``target_bbox_page``/``verify_bbox`` are visual space (they must match
+    ``page.get_pixmap`` for V0d's raster halo). But ``page.get_text``
+    (``dict``/``rawdict``/``clip=``) stays in *unrotated* page space on
+    ``/Rotate`` pages regardless (same quirk documented for annot geometry
+    in docs/PITFALLS.md). ``page.derotation_matrix`` is the documented
+    inverse of ``page.rotation_matrix`` (identity at rotation 0, so this is
+    a no-op there) -- this is the read-side half of the same conversion
+    ``model.pdf_text_edit._dict_space_to_visual`` does on the write side.
+    """
+    rect = (fitz.Rect(*bbox) * page.derotation_matrix).normalize()
+    return (rect.x0, rect.y0, rect.x1, rect.y1)
+
+
+def _iter_span_origins(
+    rawdict: Mapping[str, object],
+) -> tuple[tuple[float, float], ...]:
+    origins: list[tuple[float, float]] = []
+    blocks = cast(list[dict[str, object]], rawdict["blocks"])
+    for block in blocks:
+        lines = cast(list[dict[str, object]], block.get("lines", []))
+        for line in lines:
+            spans = cast(list[dict[str, object]], line["spans"])
+            for span in spans:
+                ox, oy = cast(tuple[float, float], span["origin"])
+                origins.append((ox, oy))
+    return tuple(origins)
+
+
+def _iter_nonspace_chars(
+    rawdict: Mapping[str, object],
+) -> tuple[tuple[str, float, float, float, float], ...]:
+    chars: list[tuple[str, float, float, float, float]] = []
+    blocks = cast(list[dict[str, object]], rawdict["blocks"])
+    for block in blocks:
+        lines = cast(list[dict[str, object]], block.get("lines", []))
+        for line in lines:
+            spans = cast(list[dict[str, object]], line["spans"])
+            for span in spans:
+                span_chars = cast(list[dict[str, object]], span["chars"])
+                for char in span_chars:
+                    value = cast(str, char["c"])
+                    if value.isspace():
+                        continue
+                    x0, y0, x1, y1 = cast(
+                        tuple[float, float, float, float], char["bbox"]
+                    )
+                    chars.append((value, x0, y0, x1, y1))
+    return tuple(chars)
+
+
+def _span_origins_from_values(
+    page: fitz.Page,
+    exclude_bbox: tuple[float, float, float, float],
+    origins: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...]:
+    retained: list[tuple[float, float]] = []
+    x0, y0, x1, y1 = _visual_bbox_to_dict_space(page, exclude_bbox)
+    for ox, oy in origins:
+        if x0 - 1.0 <= ox <= x1 + 1.0 and y0 - 1.0 <= oy <= y1 + 1.0:
+            continue  # target's own span (its glyph metrics may change)
+        retained.append((round(ox, 1), round(oy, 1)))
+    return tuple(sorted(retained))
 
 
 def _span_origins(
-    page: fitz.Page, exclude_bbox: tuple[float, float, float, float]
+    page: fitz.Page,
+    exclude_bbox: tuple[float, float, float, float],
+    *,
+    rawdict: Mapping[str, object] | None = None,
 ) -> tuple[tuple[float, float], ...]:
-    origins: list[tuple[float, float]] = []
-    x0, y0, x1, y1 = exclude_bbox
-    for block in page.get_text("rawdict")["blocks"]:
-        for line in block.get("lines", []):
-            for span in line["spans"]:
-                ox, oy = span["origin"]
-                if x0 - 1.0 <= ox <= x1 + 1.0 and y0 - 1.0 <= oy <= y1 + 1.0:
-                    continue  # target's own span (its glyph metrics may change)
-                origins.append((round(ox, 1), round(oy, 1)))
-    return tuple(sorted(origins))
+    if rawdict is None:
+        rawdict = cast(dict[str, object], page.get_text("rawdict"))
+    return _span_origins_from_values(
+        page, exclude_bbox, _iter_span_origins(rawdict)
+    )
+
+
+def _page_state_from_baseline(
+    page: fitz.Page,
+    prepared: PreparedEdit,
+    baseline: PreStateBaseline,
+    *,
+    streams: tuple[tuple[int, bytes], ...],
+    fonts: tuple[tuple, ...],
+    annots: tuple[tuple[int, tuple[float, float, float, float]], ...],
+    page_count: int,
+) -> PageState:
+    growth_zone_glyphs = 0
+    if prepared.has_ink_growth:
+        growth_zone_glyphs = _count_growth_zone_glyphs_from_values(
+            page,
+            target_bbox=prepared.target_bbox_page,
+            verify_bbox=prepared.effective_verify_bbox,
+            chars=baseline.chars,
+        )
+    return PageState(
+        streams=streams,
+        fonts=fonts,
+        annots=annots,
+        nontarget_origins=_span_origins_from_values(
+            page, prepared.target_bbox_page, baseline.span_origins
+        ),
+        pixmap_samples=baseline.pixmap_samples,
+        pixmap_meta=baseline.pixmap_meta,
+        growth_zone_glyphs=growth_zone_glyphs,
+        page_count=page_count,
+    )
 
 
 def capture_page_state(
-    doc: fitz.Document, page: fitz.Page, prepared: PreparedEdit
+    doc: fitz.Document,
+    page: fitz.Page,
+    prepared: PreparedEdit,
+    *,
+    interpretation: PageInterpretation | None = None,
+    reuse_rawdict: bool = False,
 ) -> PageState:
-    pixmap = page.get_pixmap(dpi=_VERIFY_DPI)
+    pixmap = (
+        interpretation.pixmap(dpi=_VERIFY_DPI)
+        if interpretation is not None
+        else page.get_pixmap(dpi=_VERIFY_DPI)
+    )
+    rawdict: Mapping[str, object] | None = None
+    growth_zone_glyphs = 0
+    if prepared.has_ink_growth:
+        if interpretation is not None:
+            rawdict = interpretation.rawdict()
+        elif reuse_rawdict:
+            rawdict = cast(dict[str, object], page.get_text("rawdict"))
+        if rawdict is None:
+            growth_zone_glyphs = count_growth_zone_glyphs(
+                page,
+                target_bbox=prepared.target_bbox_page,
+                verify_bbox=prepared.effective_verify_bbox,
+            )
+        else:
+            growth_zone_glyphs = count_growth_zone_glyphs(
+                page,
+                target_bbox=prepared.target_bbox_page,
+                verify_bbox=prepared.effective_verify_bbox,
+                rawdict=rawdict,
+            )
+    if interpretation is not None and rawdict is None:
+        rawdict = interpretation.rawdict()
+    elif reuse_rawdict and rawdict is None:
+        rawdict = cast(dict[str, object], page.get_text("rawdict"))
     return PageState(
         streams=tuple(read_page_streams(doc, page)),
         fonts=tuple(page.get_fonts(full=True)),
         annots=tuple((a.xref, tuple(a.rect)) for a in page.annots()),
-        nontarget_origins=_span_origins(page, prepared.target_bbox_page),
+        # Always the TARGET box, never the widened one: excluding more
+        # origins here would weaken V0c's non-target-geometry proof (a real
+        # neighbour span could then move undetected inside the growth band).
+        nontarget_origins=_span_origins(
+            page, prepared.target_bbox_page, rawdict=rawdict
+        ),
         pixmap_samples=bytes(pixmap.samples),
         pixmap_meta=(pixmap.width, pixmap.height, pixmap.stride, pixmap.n),
+        growth_zone_glyphs=growth_zone_glyphs,
+        page_count=doc.page_count,
     )
 
 
@@ -113,13 +394,39 @@ def _first_diff_outside_halo(
     return None
 
 
-def verify_tier0_commit(
+def _verify_patch_postconditions(
     doc: fitz.Document,
     page: fitz.Page,
     prepared: PreparedEdit,
     pre_state: PageState,
+    *,
+    verify_bbox: tuple[float, float, float, float],
+    interpretation: PageInterpretation | None = None,
+    reopen_probe: bool = True,
+    cached_reopen_probe_ok: bool | None = None,
 ) -> tuple[str, ...] | VerificationFailure:
-    """Prove the V0 post-conditions; return the verified-property list."""
+    """Prove the V0 post-conditions; return the verified-property list.
+
+    ``verify_bbox`` is the region V0c's extraction clip and V0d's raster
+    halo are built around -- ``prepared.target_bbox_page`` for Tier 0
+    (:func:`verify_tier0_commit`), or the ink-growth-widened box for Tier 1
+    (:func:`verify_tier1_commit`).  V0c's ``_span_origins`` comparison stays
+    on ``prepared.target_bbox_page`` regardless: it is compared against
+    ``pre_state.nontarget_origins``, which :func:`capture_page_state` always
+    computes with the (narrower) target box, and widening only one side of
+    that comparison would either weaken the proof or spuriously reject an
+    honest growth commit.
+
+    ``cached_reopen_probe_ok`` matters only when ``reopen_probe`` is
+    ``False`` (the preview scratch path): it is the verdict of a REAL
+    ``encryption=KEEP`` round-trip probe run once on the *live* document at
+    preview-session open (see ``preview._reopen_probe_verdict``), cached for
+    the whole session.  The scratch itself is the DECRYPTED session
+    snapshot, so it cannot see a KEEP round-trip failure on an encrypted
+    live document at all -- consulting the cached live verdict here is what
+    makes this branch an honest certificate instead of a structural-only
+    check.  Fail-closed: anything but an explicit ``True`` refuses.
+    """
     replacement = prepared.replacement
 
     # V0a — stream bytes outside the declared range are re-diffed, not assumed.
@@ -161,13 +468,18 @@ def verify_tier0_commit(
         )
 
     # V0c — replacement extractable in the halo, source gone, neighbors fixed.
-    halo_rect = fitz.Rect(*prepared.target_bbox_page) + (
+    halo_rect = fitz.Rect(*verify_bbox) + (
         -_HALO_MARGIN_PT,
         -_HALO_MARGIN_PT,
         _HALO_MARGIN_PT,
         _HALO_MARGIN_PT,
     )
-    clip_text = page.get_text("text", clip=halo_rect)
+    dict_space_halo_rect = fitz.Rect(*_visual_bbox_to_dict_space(page, tuple(halo_rect)))
+    clip_text = (
+        interpretation.clipped_text(dict_space_halo_rect)
+        if interpretation is not None
+        else page.get_text("text", clip=dict_space_halo_rect)
+    )
     if prepared.replacement_text not in clip_text.replace("\n", " "):
         return VerificationFailure(
             RejectReason.VERIFICATION_FAILED,
@@ -180,14 +492,24 @@ def verify_tier0_commit(
         return VerificationFailure(
             RejectReason.VERIFICATION_FAILED, "source text still present"
         )
-    if _span_origins(page, prepared.target_bbox_page) != pre_state.nontarget_origins:
+    post_rawdict = interpretation.rawdict() if interpretation is not None else None
+    if (
+        _span_origins(
+            page, prepared.target_bbox_page, rawdict=post_rawdict
+        )
+        != pre_state.nontarget_origins
+    ):
         return VerificationFailure(
             RejectReason.VERIFICATION_FAILED, "non-target span geometry changed"
         )
 
     # V0d — raster identity outside the halo (exact; calibrated ε = 0).
-    post_pixmap = page.get_pixmap(dpi=_VERIFY_DPI)
-    diff = _first_diff_outside_halo(pre_state, post_pixmap, prepared.target_bbox_page)
+    post_pixmap = (
+        interpretation.pixmap(dpi=_VERIFY_DPI)
+        if interpretation is not None
+        else page.get_pixmap(dpi=_VERIFY_DPI)
+    )
+    diff = _first_diff_outside_halo(pre_state, post_pixmap, verify_bbox)
     if diff is not None:
         return VerificationFailure(
             RejectReason.VERIFICATION_FAILED,
@@ -207,15 +529,40 @@ def verify_tier0_commit(
     # decrypted content, so a locked reopen is just as good a proof and
     # never touches the live crypt state either way. KEEP is a no-op for
     # unencrypted documents.
-    try:
-        reopened = fitz.open("pdf", doc.tobytes(encryption=fitz.PDF_ENCRYPT_KEEP))
-        page_count = reopened.page_count
-        reopened.close()
-    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase) as exc:
-        return VerificationFailure(
-            RejectReason.VERIFICATION_FAILED, f"document no longer opens: {exc}"
-        )
-    if page_count != doc.page_count:
+    if reopen_probe:
+        try:
+            reopened = fitz.open(
+                "pdf", doc.tobytes(encryption=fitz.PDF_ENCRYPT_KEEP)
+            )
+            page_count = reopened.page_count
+            reopened.close()
+        except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase) as exc:
+            return VerificationFailure(
+                RejectReason.VERIFICATION_FAILED, f"document no longer opens: {exc}"
+            )
+    else:
+        # A PlanPreviewRenderer's scratch document was itself opened from the
+        # session snapshot.  The only mutation here is a validated in-place
+        # content-stream splice, and V0a/V0c/V0d already exercise that stream
+        # through extraction and rasterization.  Reusing this open-document
+        # certificate avoids a full-document serialization per keystroke;
+        # live commit always uses the real round-trip above.  It is NOT a
+        # substitute for the KEEP-encryption round trip: that is proven
+        # separately, once per session on the live document, and consulted
+        # via ``cached_reopen_probe_ok`` immediately below.
+        if not getattr(doc, "is_pdf", False):
+            return VerificationFailure(
+                RejectReason.VERIFICATION_FAILED,
+                "session scratch document is not a PDF",
+            )
+        if cached_reopen_probe_ok is not True:
+            return VerificationFailure(
+                RejectReason.VERIFICATION_FAILED,
+                "document no longer opens: session KEEP-encryption "
+                "round-trip probe failed",
+            )
+        page_count = doc.page_count
+    if page_count != pre_state.page_count:
         return VerificationFailure(
             RejectReason.VERIFICATION_FAILED, "page count changed on reopen"
         )
@@ -229,6 +576,694 @@ def verify_tier0_commit(
         "raster_identity_outside_halo",
         "document_reopens",
     )
+
+
+def verify_tier0_commit(
+    doc: fitz.Document,
+    page: fitz.Page,
+    prepared: PreparedEdit,
+    pre_state: PageState,
+    *,
+    interpretation: PageInterpretation | None = None,
+    reopen_probe: bool = True,
+    cached_reopen_probe_ok: bool | None = None,
+) -> tuple[str, ...] | VerificationFailure:
+    """Prove the V0 post-conditions; return the verified-property list.
+
+    Behaviour-identical wrapper: Tier 0 never grows the target box, so the
+    postconditions are always proven around ``target_bbox_page`` itself.
+    """
+    return _verify_patch_postconditions(
+        doc,
+        page,
+        prepared,
+        pre_state,
+        verify_bbox=prepared.target_bbox_page,
+        interpretation=interpretation,
+        reopen_probe=reopen_probe,
+        cached_reopen_probe_ok=cached_reopen_probe_ok,
+    )
+
+
+# ================================================== Tier 1 growth machinery
+#
+# Slice 1's ink growth is admitted only when the growth zone is proven blank
+# on the PRE-EDIT rendering by two complementary gates: a rawdict
+# character-intersection gate (exact, text-only) and a raster uniformity
+# gate (covers non-text ink). See plans/2026-07-18-acrobat-stable-text-
+# commit-engine-v2.md and docs/PITFALLS.md for the halo/geometry rationale.
+
+_GROWTH_EDGE_GUARD_PX = 1  # +1px: int() truncation makes the source bbox's
+# own edge pixel column straddle the boundary; combined with the 1px AA
+# guard already folded into _region_is_uniform's erosion story elsewhere,
+# this keeps the growth probe from clipping into the source glyph's own
+# anti-aliased edge.
+
+
+def _clamp_pixels(
+    meta: tuple[int, int, int, int], region: tuple[int, int, int, int]
+) -> tuple[int, int, int, int]:
+    """Clamp an already pixel-space ``(x0, y0, x1, y1)`` rectangle to the
+    pixmap's bounds, collapsing (never inverting) a rectangle that falls
+    entirely outside."""
+    width, height, _, _ = meta
+    x0, y0, x1, y1 = region
+    x0 = max(0, min(x0, width - 1))
+    x1 = max(0, min(x1, width - 1))
+    y0 = max(0, min(y0, height - 1))
+    y1 = max(0, min(y1, height - 1))
+    return (x0, y0, max(x0, x1), max(y0, y1))
+
+
+def _expand_pixels(
+    region: tuple[int, int, int, int], px: int
+) -> tuple[int, int, int, int]:
+    x0, y0, x1, y1 = region
+    return (x0 - px, y0 - px, x1 + px, y1 + px)
+
+
+def _frame_strips(
+    outer: tuple[int, int, int, int], inner: tuple[int, int, int, int]
+) -> tuple[tuple[int, int, int, int], ...]:
+    """The <=4 non-degenerate inclusive-pixel rectangles of ``outer`` minus
+    ``inner`` (a donut decomposition): left, right, top, bottom strips, in
+    that order, omitting any that collapse to nothing."""
+    ox0, oy0, ox1, oy1 = outer
+    ix0, iy0, ix1, iy1 = inner
+    cix0 = max(ix0, ox0)
+    ciy0 = max(iy0, oy0)
+    cix1 = min(ix1, ox1)
+    ciy1 = min(iy1, oy1)
+    strips: list[tuple[int, int, int, int]] = []
+    if cix0 - 1 >= ox0 and oy1 >= oy0:
+        strips.append((ox0, oy0, cix0 - 1, oy1))
+    if ox1 >= cix1 + 1 and oy1 >= oy0:
+        strips.append((cix1 + 1, oy0, ox1, oy1))
+    if cix1 >= cix0 and ciy0 - 1 >= oy0:
+        strips.append((cix0, oy0, cix1, ciy0 - 1))
+    if cix1 >= cix0 and oy1 >= ciy1 + 1:
+        strips.append((cix0, ciy1 + 1, cix1, oy1))
+    return tuple(strips)
+
+
+def growth_probe_regions(
+    target_bbox: tuple[float, float, float, float],
+    verify_bbox: tuple[float, float, float, float],
+    meta: tuple[int, int, int, int],
+) -> tuple[tuple[int, int, int, int], ...]:
+    """Pixel-space probe regions a Tier 1 ink-growth commit must prove blank
+    pre-edit: ``(V \\ guard(T))`` (new ink can land inside the old halo)
+    UNION ``(halo(V) \\ halo(T))`` (pixels V0d's raster gate newly stops
+    checking).  Empty when ``target_bbox == verify_bbox`` (no growth).
+
+    ``guard(T)`` is ``T`` expanded by ``1 + _GROWTH_EDGE_GUARD_PX`` pixels
+    (never ``halo(T)``): the ~1.5pt band just outside the source bbox is
+    where growth ink is actually painted, so a probe boundary borrowed from
+    the *occlusion* halo convention would silently admit ink there.
+    """
+    if tuple(target_bbox) == tuple(verify_bbox):
+        return ()
+    family_bbox = _frame_strips(
+        _bbox_pixels(verify_bbox),
+        _expand_pixels(_bbox_pixels(target_bbox), 1 + _GROWTH_EDGE_GUARD_PX),
+    )
+    family_halo = _frame_strips(_halo_pixels(verify_bbox), _halo_pixels(target_bbox))
+    return tuple(_clamp_pixels(meta, region) for region in family_bbox + family_halo)
+
+
+def _region_is_uniform_pixels(
+    samples: bytes,
+    meta: tuple[int, int, int, int],
+    region: tuple[int, int, int, int],
+    erode_px: int = 0,
+) -> bool:
+    """Pixel-space core of :func:`_region_is_uniform`: true when every pixel
+    in the inclusive pixel rectangle ``region`` is the same color, after
+    eroding inward by ``erode_px`` on each side."""
+    _, _, stride, n = meta
+    x0, y0, x1, y1 = region
+    ex0, ey0 = x0 + erode_px, y0 + erode_px
+    ex1, ey1 = x1 - erode_px, y1 - erode_px
+    if ex0 <= ex1 and ey0 <= ey1:
+        x0, y0, x1, y1 = ex0, ey0, ex1, ey1
+    first: bytes | None = None
+    for y in range(y0, y1 + 1):
+        row = samples[y * stride : (y + 1) * stride]
+        for x in range(x0, x1 + 1):
+            pixel = row[x * n : (x + 1) * n]
+            if first is None:
+                first = pixel
+            elif pixel != first:
+                return False
+    return True
+
+
+@dataclass(frozen=True)
+class _GrowthProbeFailure:
+    region: tuple[int, int, int, int]
+    detail: str
+
+
+def _pixel_rgb_at(
+    samples: bytes, meta: tuple[int, int, int, int], x: int, y: int
+) -> tuple[int, ...]:
+    _, _, stride, n = meta
+    row = samples[y * stride : (y + 1) * stride]
+    pixel = row[x * n : (x + 1) * n]
+    channels = min(3, n)
+    return tuple(int(component) for component in pixel[:channels])
+
+
+def _region_matches_reference_color(
+    samples: bytes,
+    meta: tuple[int, int, int, int],
+    region: tuple[int, int, int, int],
+    reference_rgb: tuple[int, ...],
+) -> bool:
+    x0, y0, x1, y1 = region
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            if _pixel_rgb_at(samples, meta, x, y) != reference_rgb:
+                return False
+    return True
+
+
+_REFERENCE_PROBE_OFFSETS_PT = (2.25, 3.0, 4.0, 5.0, 6.0)
+
+
+def background_reference_points(
+    target_bbox: tuple[float, float, float, float],
+    verify_bbox: tuple[float, float, float, float],
+    meta: tuple[int, int, int, int],
+) -> tuple[tuple[int, int], ...]:
+    """Candidate background sampling points (pixel space, in probe order).
+
+    Each point is offered together with the implicit 3x3 neighbourhood
+    :func:`_uniform_neighborhood_rgb` reads, and that neighbourhood is
+    PROVABLY disjoint from ``halo(verify_bbox)`` -- the growth band plus its
+    halo, i.e. exactly the region under proof.  Points sit immediately LEFT
+    of the target's start, or ABOVE/BELOW the text line within one line's
+    leading.  Never at the tail: sampling the "background reference" at
+    ``target_bbox[2] + 2.25..5.0pt`` (pre-F1) put it INSIDE the growth band
+    for every realistic Tier 1 growth, so a solid-colour band supplied its
+    own reference and the colour gate degenerated into a cross-region
+    consistency check that a black rectangle passed.
+
+    Returns an empty tuple when the target is flush against the page edges
+    on every side -- callers must treat that as REJECT, never as "no
+    constraint".
+    """
+    width, height, _, _ = meta
+    scale = _VERIFY_DPI / 72.0
+    hx0, hy0, hx1, hy1 = _halo_pixels(verify_bbox)
+    x_mid = int(((target_bbox[0] + target_bbox[2]) / 2.0) * scale)
+    y_mid = int(((target_bbox[1] + target_bbox[3]) / 2.0) * scale)
+
+    candidates: list[tuple[int, int]] = []
+    for offset_pt in _REFERENCE_PROBE_OFFSETS_PT:
+        candidates.append(
+            (int((target_bbox[0] - _HALO_MARGIN_PT - offset_pt) * scale), y_mid)
+        )
+    for offset_pt in _REFERENCE_PROBE_OFFSETS_PT:
+        candidates.append(
+            (x_mid, int((target_bbox[1] - _HALO_MARGIN_PT - offset_pt) * scale))
+        )
+    for offset_pt in _REFERENCE_PROBE_OFFSETS_PT:
+        candidates.append(
+            (x_mid, int((target_bbox[3] + _HALO_MARGIN_PT + offset_pt) * scale))
+        )
+
+    points: list[tuple[int, int]] = []
+    for x, y in candidates:
+        if not (1 <= x < width - 1 and 1 <= y < height - 1):
+            continue  # the 3x3 neighbourhood would fall off the pixmap
+        disjoint = (x + 1 < hx0) or (x - 1 > hx1) or (y + 1 < hy0) or (y - 1 > hy1)
+        if not disjoint:
+            continue
+        if (x, y) not in points:
+            points.append((x, y))
+    return tuple(points)
+
+
+def _uniform_neighborhood_rgb(
+    samples: bytes, meta: tuple[int, int, int, int], x: int, y: int
+) -> tuple[int, ...] | None:
+    """The colour of the 3x3 neighbourhood around ``(x, y)``, or ``None``
+    when it is not uniform.
+
+    Fail-closed by construction: the pre-F1 version returned the median
+    pixel of an ambiguous neighbourhood as an authoritative reference.
+    """
+    colors = {
+        _pixel_rgb_at(samples, meta, x + dx, y + dy)
+        for dy in (-1, 0, 1)
+        for dx in (-1, 0, 1)
+    }
+    if len(colors) != 1:
+        return None
+    return next(iter(colors))
+
+
+def _target_background_rgb(
+    pre_state: PageState, target_bbox: tuple[float, float, float, float]
+) -> tuple[tuple[int, ...] | None, bool]:
+    """``(background_rgb, ink_is_visible)`` read off the target's OWN bbox.
+
+    The background is the strict-majority colour of the target's rendered
+    bbox; text never covers half its own font-metric box, so a bbox with no
+    majority colour (or one whose majority is 100% -- nothing but that
+    colour) is not a surface this proof can reason about.  ``background_rgb``
+    is ``None`` in the no-majority case and ``ink_is_visible`` is ``False``
+    when the target's own ink cannot be seen against it (the black-on-black
+    case: the target is occluded, so the "surface it sits on" is unknowable).
+    """
+    x0, y0, x1, y1 = _clamped_region(pre_state.pixmap_meta, target_bbox)
+    counts: dict[tuple[int, ...], int] = {}
+    total = 0
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            rgb = _pixel_rgb_at(pre_state.pixmap_samples, pre_state.pixmap_meta, x, y)
+            counts[rgb] = counts.get(rgb, 0) + 1
+            total += 1
+    if not total:
+        return None, False
+    background, hits = max(counts.items(), key=lambda item: item[1])
+    if hits * 2 <= total:
+        return None, False
+    return background, hits < total
+
+
+def _reference_confirms_background(
+    pre_state: PageState,
+    target_bbox: tuple[float, float, float, float],
+    verify_bbox: tuple[float, float, float, float],
+    background_rgb: tuple[int, ...],
+) -> bool:
+    """True when at least one sampling point OUTSIDE the growth band and its
+    halo carries the target's own background colour -- the proof that the
+    surface the target sits on actually extends past the target."""
+    for x, y in background_reference_points(
+        target_bbox, verify_bbox, pre_state.pixmap_meta
+    ):
+        rgb = _uniform_neighborhood_rgb(
+            pre_state.pixmap_samples, pre_state.pixmap_meta, x, y
+        )
+        if rgb is not None and rgb == background_rgb:
+            return True
+    return False
+
+
+def _growth_zone_rect(
+    target_bbox: tuple[float, float, float, float],
+    verify_bbox: tuple[float, float, float, float],
+) -> fitz.Rect | None:
+    """The forward growth strip in visual space, for ANY cardinal growth
+    direction (Task 13 P2) — never a ``+x`` assumption.
+
+    The direction is the DOMINANT edge by which ``verify_bbox`` extends
+    beyond ``target_bbox``.  It is re-derived here from the two boxes
+    alone (review F5: ``PreparedEdit.growth_direction`` is token-bound
+    but not threaded into verify); the read agrees with the stored slug
+    by construction because plan's ``_grown_verify_bbox`` extends exactly
+    the one edge that slug names, and the dominant-edge read is immune to
+    sub-point float slivers on the cross edges:
+
+        right → target.x1 … verify.x1      left → verify.x0 … target.x0
+        down  → target.y1 … verify.y1      up   → verify.y0 … target.y0
+    """
+    extents = (
+        ("right", verify_bbox[2] - target_bbox[2]),
+        ("left", target_bbox[0] - verify_bbox[0]),
+        ("down", verify_bbox[3] - target_bbox[3]),
+        ("up", target_bbox[1] - verify_bbox[1]),
+    )
+    direction, amount = max(extents, key=lambda pair: pair[1])
+    if amount <= 0.0:
+        return None
+    cross_y = (
+        min(target_bbox[1], verify_bbox[1]),
+        max(target_bbox[3], verify_bbox[3]),
+    )
+    cross_x = (
+        min(target_bbox[0], verify_bbox[0]),
+        max(target_bbox[2], verify_bbox[2]),
+    )
+    if direction == "right":
+        rect = fitz.Rect(target_bbox[2], cross_y[0], verify_bbox[2], cross_y[1])
+    elif direction == "left":
+        rect = fitz.Rect(verify_bbox[0], cross_y[0], target_bbox[0], cross_y[1])
+    elif direction == "down":
+        rect = fitz.Rect(cross_x[0], target_bbox[3], cross_x[1], verify_bbox[3])
+    else:
+        rect = fitz.Rect(cross_x[0], verify_bbox[1], cross_x[1], target_bbox[1])
+    rect.normalize()
+    if rect.is_empty:
+        return None
+    return rect
+
+
+def _rects_overlap(a: fitz.Rect, b: fitz.Rect, *, tol: float = 1e-3) -> bool:
+    a_norm = fitz.Rect(a)
+    b_norm = fitz.Rect(b)
+    a_norm.normalize()
+    b_norm.normalize()
+    ix0 = max(float(a_norm.x0), float(b_norm.x0))
+    iy0 = max(float(a_norm.y0), float(b_norm.y0))
+    ix1 = min(float(a_norm.x1), float(b_norm.x1))
+    iy1 = min(float(a_norm.y1), float(b_norm.y1))
+    return (ix1 - ix0) > tol and (iy1 - iy0) > tol
+
+
+def _growth_rect_in_dict_space(page: fitz.Page, growth_rect: fitz.Rect) -> fitz.Rect:
+    """``get_drawings``/``get_image_rects`` report UNROTATED page space on
+    /Rotate pages (the same quirk as ``get_text``) — intersect there, not
+    in the visual space the growth rect lives in (identity at /Rotate 0)."""
+    return fitz.Rect(
+        _visual_bbox_to_dict_space(
+            page,
+            (growth_rect.x0, growth_rect.y0, growth_rect.x1, growth_rect.y1),
+        )
+    )
+
+
+def _drawings_intersect_growth(page: fitz.Page, growth_rect: fitz.Rect) -> bool | None:
+    try:
+        drawings = page.get_drawings()
+    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+        return None
+    growth_dict = _growth_rect_in_dict_space(page, growth_rect)
+    for drawing in drawings:
+        rect = drawing.get("rect")
+        if rect is None:
+            if drawing.get("items"):
+                return None
+            continue
+        if _rects_overlap(fitz.Rect(rect), growth_dict):
+            return True
+    return False
+
+
+def _images_intersect_growth(page: fitz.Page, growth_rect: fitz.Rect) -> bool | None:
+    try:
+        images = page.get_images(full=True)
+    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+        return None
+    growth_dict = _growth_rect_in_dict_space(page, growth_rect)
+    for image in images:
+        xref = int(image[0])
+        if xref <= 0:
+            continue
+        try:
+            placements = page.get_image_rects(xref)
+        except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+            return None
+        for placement in placements:
+            if _rects_overlap(fitz.Rect(placement), growth_dict):
+                return True
+    return False
+
+
+def _shading_presence(page: fitz.Page, doc: fitz.Document) -> bool | None:
+    try:
+        streams = read_page_streams(doc, page)
+    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+        return None
+    return any(_SHADING_OPERATOR_RE.search(data) for _, data in streams)
+
+
+def _occupancy_failure(
+    page: fitz.Page,
+    doc: fitz.Document,
+    growth_rect: fitz.Rect,
+    region: tuple[int, int, int, int],
+) -> _GrowthProbeFailure | None:
+    """The cheap, structural half of the growth proof.
+
+    Blind to anything painted through a Form XObject, a tiling pattern or a
+    soft mask -- which is exactly why it is an ADDITIONAL gate and never the
+    proof itself; :func:`_growth_probe_failure` always runs the raster
+    background proof afterwards.
+    """
+    drawings_overlap = _drawings_intersect_growth(page, growth_rect)
+    if drawings_overlap is None:
+        return _GrowthProbeFailure(region, "occupancy: could not inspect vector drawings")
+    if drawings_overlap:
+        return _GrowthProbeFailure(region, "occupancy: vector drawing intersects growth zone")
+
+    images_overlap = _images_intersect_growth(page, growth_rect)
+    if images_overlap is None:
+        return _GrowthProbeFailure(region, "occupancy: could not inspect image placement")
+    if images_overlap:
+        return _GrowthProbeFailure(region, "occupancy: image intersects growth zone")
+
+    shading_present = _shading_presence(page, doc)
+    if shading_present is None:
+        return _GrowthProbeFailure(region, "occupancy: could not inspect shading operators")
+    if shading_present:
+        return _GrowthProbeFailure(
+            region, "occupancy: shading operator present; bounds are uncertain"
+        )
+    return None
+
+
+def _growth_probe_failure(
+    pre_state: PageState,
+    *,
+    target_bbox: tuple[float, float, float, float],
+    verify_bbox: tuple[float, float, float, float],
+    page: fitz.Page | None,
+    doc: fitz.Document | None,
+) -> _GrowthProbeFailure | None:
+    regions = growth_probe_regions(target_bbox, verify_bbox, pre_state.pixmap_meta)
+    if not regions:
+        return None
+
+    # -- cheap occupancy gates first: they need the live page/doc, and running
+    # them ahead of the raster proof keeps their (more specific) detail as the
+    # reported cause. When the caller has no page/doc the raster proof below
+    # still runs, alone -- it is never gated on them.
+    growth_rect = _growth_zone_rect(target_bbox, verify_bbox)
+    if growth_rect is not None and page is not None and doc is not None:
+        occupancy = _occupancy_failure(page, doc, growth_rect, regions[0])
+        if occupancy is not None:
+            return occupancy
+
+    # -- the background proof, which STANDS ALONE. Establish what surface the
+    # target itself sits on, prove that surface exists outside the growth band
+    # too, then require the growth band to be that same surface.
+    background_rgb, ink_visible = _target_background_rgb(pre_state, target_bbox)
+    if background_rgb is None:
+        return _GrowthProbeFailure(
+            regions[0],
+            "background: the target's own bbox has no majority background colour",
+        )
+    if not ink_visible:
+        return _GrowthProbeFailure(
+            regions[0],
+            "background: the target's own ink is not visible against its "
+            "background, so the surface it sits on cannot be proven",
+        )
+    if not _reference_confirms_background(
+        pre_state, target_bbox, verify_bbox, background_rgb
+    ):
+        return _GrowthProbeFailure(
+            regions[0],
+            "background: no sampling point outside the growth band and its "
+            "halo carries the target's background colour",
+        )
+
+    for region in regions:
+        if not _region_is_uniform_pixels(
+            pre_state.pixmap_samples, pre_state.pixmap_meta, region, erode_px=0
+        ):
+            return _GrowthProbeFailure(
+                region, f"raster: growth probe region {region} is not uniform pre-edit"
+            )
+        if not _region_matches_reference_color(
+            pre_state.pixmap_samples, pre_state.pixmap_meta, region, background_rgb
+        ):
+            return _GrowthProbeFailure(
+                region,
+                f"background: growth probe region {region} is uniform but is "
+                "not the target's own background colour",
+            )
+
+    return None
+
+
+def prove_growth_region_blank(
+    pre_state: PageState,
+    *,
+    target_bbox: tuple[float, float, float, float],
+    verify_bbox: tuple[float, float, float, float],
+    page: fitz.Page | None = None,
+    doc: fitz.Document | None = None,
+) -> tuple[int, int, int, int] | None:
+    """The first growth probe region that fails the blankness proof, or
+    ``None`` when all probe regions are proven blank.
+
+    The proof is stricter than uniformity: each region must carry the same
+    colour as the writable background surface the TARGET sits on, sampled
+    only at points provably outside the growth band and its halo.  When
+    ``page``/``doc`` are provided the region must additionally be free of
+    non-text occupancy (drawings/images) and shading uncertainty -- cheap
+    extra gates, not the proof.
+    """
+    failure = _growth_probe_failure(
+        pre_state,
+        target_bbox=target_bbox,
+        verify_bbox=verify_bbox,
+        page=page,
+        doc=doc,
+    )
+    if failure is None:
+        return None
+    return failure.region
+
+
+def count_growth_zone_glyphs(
+    page: fitz.Page,
+    *,
+    target_bbox: tuple[float, float, float, float],
+    verify_bbox: tuple[float, float, float, float],
+    rawdict: Mapping[str, object] | None = None,
+) -> int:
+    """Count of non-whitespace rawdict characters already occupying the
+    growth zone -- the forward strip between the target's growth-side edge
+    and the verify bbox's, for ANY cardinal growth direction
+    (:func:`_growth_zone_rect`).
+
+    A COUNT only, never text: this is the character half of the growth-
+    blank proof, exact and size-independent, complementary to the raster
+    gate (:func:`prove_growth_region_blank`), which also covers non-text ink.
+    Excluding the target's own glyphs char-level (not span-level) matters
+    because MuPDF usually merges the target and a same-line successor into
+    ONE rawdict span.
+
+    A char counts as the target's own only when it BOTH starts left of the
+    target's right edge AND ends at or before it: a foreign wide glyph that
+    starts left of ``tx1`` and runs on across the growth band satisfies only
+    the first half, and was previously written off as the target's own.  The
+    target's own last char ends exactly at ``tx1`` (which is the max of its
+    chars' right edges), so it is still excluded.
+    """
+    if rawdict is None:
+        rawdict = cast(dict[str, object], page.get_text("rawdict"))
+    return _count_growth_zone_glyphs_from_values(
+        page,
+        target_bbox=target_bbox,
+        verify_bbox=verify_bbox,
+        chars=_iter_nonspace_chars(rawdict),
+    )
+
+
+def _count_growth_zone_glyphs_from_values(
+    page: fitz.Page,
+    *,
+    target_bbox: tuple[float, float, float, float],
+    verify_bbox: tuple[float, float, float, float],
+    chars: tuple[tuple[str, float, float, float, float], ...],
+) -> int:
+    zone_visual = _growth_zone_rect(target_bbox, verify_bbox)
+    if zone_visual is None:
+        return 0
+    # ``get_text`` bboxes stay in UNROTATED page space on /Rotate pages —
+    # convert the zone and target (visual space) instead of every char.
+    zone = fitz.Rect(
+        _visual_bbox_to_dict_space(
+            page, (zone_visual.x0, zone_visual.y0, zone_visual.x1, zone_visual.y1)
+        )
+    )
+    target = fitz.Rect(_visual_bbox_to_dict_space(page, target_bbox))
+    # The forward boundary in dict space: the zone edge adjacent to the
+    # target (direction-agnostic — whichever cardinal side the shared
+    # growth_direction put the strip on ends up adjacent by construction).
+    adjacency = (
+        ("x+", abs(zone.x0 - target.x1)),
+        ("x-", abs(zone.x1 - target.x0)),
+        ("y+", abs(zone.y0 - target.y1)),
+        ("y-", abs(zone.y1 - target.y0)),
+    )
+    axis = min(adjacency, key=lambda pair: pair[1])[0]
+
+    def _is_targets_own(bbox: tuple[float, float, float, float]) -> bool:
+        # The target's own glyph sits behind the forward boundary (its
+        # last char ENDS there); a foreign wide glyph that starts behind
+        # the boundary but runs on across the growth band fails the
+        # containment half and is counted.
+        if axis == "x+":
+            return bbox[0] < target.x1 - 0.5 and bbox[2] <= target.x1 + 0.5
+        if axis == "x-":
+            return bbox[2] > target.x0 + 0.5 and bbox[0] >= target.x0 - 0.5
+        if axis == "y+":
+            return bbox[1] < target.y1 - 0.5 and bbox[3] <= target.y1 + 0.5
+        return bbox[3] > target.y0 + 0.5 and bbox[1] >= target.y0 - 0.5
+
+    count = 0
+    for _value, x0, y0, x1, y1 in chars:
+        bbox = (x0, y0, x1, y1)
+        if _is_targets_own(bbox):
+            continue
+        if bbox[2] <= zone.x0 or bbox[0] >= zone.x1:
+            continue
+        if bbox[3] <= zone.y0 or bbox[1] >= zone.y1:
+            continue
+        count += 1
+    return count
+
+
+def verify_tier1_commit(
+    doc: fitz.Document,
+    page: fitz.Page,
+    prepared: PreparedEdit,
+    pre_state: PageState,
+    *,
+    interpretation: PageInterpretation | None = None,
+    reopen_probe: bool = True,
+    cached_reopen_probe_ok: bool | None = None,
+) -> tuple[str, ...] | VerificationFailure:
+    """Tier 1 postconditions: the two growth gates, then V0's, widened.
+
+    Two distinct detail prefixes (``"glyphs: "`` / ``"raster: "``) for the
+    same :data:`~model.text_commit.dto.RejectReason.GROWTH_REGION_NOT_BLANK`
+    so a test can pin WHICH gate fired -- a shared reason with only one
+    emission site can survive deletion of the other gate (Task 10a).
+    """
+    if prepared.has_ink_growth:
+        if pre_state.growth_zone_glyphs > 0:
+            return VerificationFailure(
+                RejectReason.GROWTH_REGION_NOT_BLANK,
+                f"glyphs: {pre_state.growth_zone_glyphs} character(s) "
+                "already occupy the growth zone",
+            )
+        probe_failure = _growth_probe_failure(
+            pre_state,
+            target_bbox=prepared.target_bbox_page,
+            verify_bbox=prepared.effective_verify_bbox,
+            page=page,
+            doc=doc,
+        )
+        if probe_failure is not None:
+            return VerificationFailure(
+                RejectReason.GROWTH_REGION_NOT_BLANK,
+                probe_failure.detail,
+            )
+
+    result = _verify_patch_postconditions(
+        doc,
+        page,
+        prepared,
+        pre_state,
+        verify_bbox=prepared.effective_verify_bbox,
+        interpretation=interpretation,
+        reopen_probe=reopen_probe,
+        cached_reopen_probe_ok=cached_reopen_probe_ok,
+    )
+    if isinstance(result, VerificationFailure):
+        return result
+    if prepared.has_ink_growth:
+        return (*result, "growth_region_blank_pre_edit")
+    return result
 
 
 # ======================================================= Tier 1 spike support
@@ -274,32 +1309,24 @@ def _region_is_uniform(
     samples: bytes,
     meta: tuple[int, int, int, int],
     bbox: tuple[float, float, float, float],
+    *,
+    erode_px: int = _UNIFORM_ERODE_PX,
 ) -> bool:
     """True when every pixel in ``bbox`` (tight, no halo) is the same color.
 
     Used to characterize occlusion: a target fully covered by later opaque
     painting renders as one flat color; a target that becomes visible does
-    not. Eroded inward by :data:`_UNIFORM_ERODE_PX` first: a filled rect's
-    own edge is anti-aliased against the page background, which would
-    otherwise register as spurious non-uniformity having nothing to do
-    with whether the *target* underneath is occluded.
+    not. Eroded inward by ``erode_px`` first (default :data:`_UNIFORM_
+    ERODE_PX`): a filled rect's own edge is anti-aliased against the page
+    background, which would otherwise register as spurious non-uniformity
+    having nothing to do with whether the *target* underneath is occluded.
+    The Tier 1 growth probe passes ``erode_px=0``: skipping a border of a
+    *blankness* probe (as opposed to an occlusion probe) is a false-accept
+    hole, not a false-positive-avoidance measure.
     """
-    _, _, stride, n = meta
-    x0, y0, x1, y1 = _clamped_region(meta, bbox)
-    ex0, ey0 = x0 + _UNIFORM_ERODE_PX, y0 + _UNIFORM_ERODE_PX
-    ex1, ey1 = x1 - _UNIFORM_ERODE_PX, y1 - _UNIFORM_ERODE_PX
-    if ex0 <= ex1 and ey0 <= ey1:
-        x0, y0, x1, y1 = ex0, ey0, ex1, ey1
-    first: bytes | None = None
-    for y in range(y0, y1 + 1):
-        row = samples[y * stride : (y + 1) * stride]
-        for x in range(x0, x1 + 1):
-            pixel = row[x * n : (x + 1) * n]
-            if first is None:
-                first = pixel
-            elif pixel != first:
-                return False
-    return True
+    return _region_is_uniform_pixels(
+        samples, meta, _clamped_region(meta, bbox), erode_px
+    )
 
 
 def _darkest_pixel(
@@ -338,9 +1365,16 @@ def _resource_font_bindings(entries: object) -> dict[str, int]:
     return bindings
 
 
-def _ocg_membership_lost(doc: fitz.Document, expected_text: str) -> bool:
-    """True when ``expected_text`` survives turning off every OCG in a
-    snapshot of ``doc``, i.e. it was never actually scoped to any of them.
+def _ocg_membership_status(
+    doc: fitz.Document, expected_text: str
+) -> str:
+    """Tri-state OCG membership check for ``expected_text``.
+
+    Returns:
+        ``"lost"`` — text survives turning every OCG off (was never scoped).
+        ``"preserved"`` — text disappears when OCGs are off (membership holds).
+        ``"unknown"`` — probe could not be evaluated (locked/encrypted, or any
+        exception). Callers must never record unknown as preserved.
 
     OCG visibility does not affect a live, already-open page/pixmap or its
     text extraction -- it only takes effect after a ``tobytes()`` + reopen
@@ -350,24 +1384,20 @@ def _ocg_membership_lost(doc: fitz.Document, expected_text: str) -> bool:
     try:
         probe = fitz.open("pdf", doc.tobytes(encryption=fitz.PDF_ENCRYPT_KEEP))
     except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
-        return False
+        return "unknown"
     try:
         if probe.needs_pass:
             # Encrypted and no password reaches this probe. Decrypting the
             # live handle to get a readable one would poison its crypt state
-            # (see the KEEP note above), so report no evidence of loss. Today
-            # this never fires -- callers pass an already-decrypted scratch --
-            # but promoting V0d onto a live-handle document (Task 11) needs a
-            # tri-state here, not a bool: "not lost" and "could not evaluate"
-            # must stop sharing an answer.
-            return False
+            # (see Task 10b KEEP note), so report unknown — not "preserved".
+            return "unknown"
         ocgs = probe.get_ocgs()
         if not ocgs:
-            return False
+            return "preserved"
         probe.set_layer(-1, off=list(ocgs.keys()))
         data = probe.tobytes()
     except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
-        return False
+        return "unknown"
     finally:
         probe.close()
     try:
@@ -375,8 +1405,17 @@ def _ocg_membership_lost(doc: fitz.Document, expected_text: str) -> bool:
         text = reopened.load_page(0).get_text()
         reopened.close()
     except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
-        return False
-    return expected_text in text
+        return "unknown"
+    return "lost" if expected_text in text else "preserved"
+
+
+def _ocg_membership_lost(doc: fitz.Document, expected_text: str) -> bool:
+    """Deprecated bool wrapper — prefer :func:`_ocg_membership_status`.
+
+    ``True`` only for confirmed loss. ``False`` means preserved *or*
+    unknown; do not treat False as proof of preservation.
+    """
+    return _ocg_membership_status(doc, expected_text) == "lost"
 
 
 def verify_tier1_strategy(
@@ -454,11 +1493,14 @@ def verify_tier1_strategy(
         elif pre_uniform and post_uniform:
             evidence.append("z_order_preserved")
 
-    # -- OCG (marked-content layer) membership.
-    if _ocg_membership_lost(doc, expected_text):
+    # -- OCG (marked-content layer) membership (tri-state).
+    ocg_status = _ocg_membership_status(doc, expected_text)
+    if ocg_status == "lost":
         failures.append("ocg_membership_lost")
-    else:
+    elif ocg_status == "preserved":
         evidence.append("ocg_membership_preserved")
+    else:
+        evidence.append("ocg_membership_unknown")
 
     # -- graphics-state bleed: the replacement's own glyph ink should never
     # pick up an untracked fill color left dangling by a prior stream. Only
@@ -538,10 +1580,13 @@ def _parse_tounicode(
     """Parse ``beginbfchar``/``beginbfrange`` entries of a /ToUnicode CMap.
 
     Only the single-destination forms (``<src> <dst>`` and
-    ``<lo> <hi> <dst>``) are handled -- the array-destination bfrange form
-    (``<lo> <hi> [<d1> <d2> ...]``) does not appear in the CMaps this spike
-    characterizes and is deliberately left unsupported rather than guessed
-    at.
+    ``<lo> <hi> <dst>``) are handled.  A bfrange block containing an
+    array destination (``<lo> <hi> [<d1> <d2> ...]``) contributes NO
+    mappings at all: striding a flat hex-token walk across one fabricates
+    garbage ranges out of the array elements (Task 12 P0-D adversarial
+    finding, docs/PITFALLS.md) — skipping the block keeps this legacy
+    reader honest, and the strict P0-D grammar lives in
+    ``cid_fonts.parse_tounicode_strict``.
     """
     bfchars: list[tuple[int, str]] = []
     for block in re.findall(rb"beginbfchar(.*?)endbfchar", data, re.DOTALL):
@@ -551,6 +1596,8 @@ def _parse_tounicode(
 
     bfranges: list[tuple[int, int, str]] = []
     for block in re.findall(rb"beginbfrange(.*?)endbfrange", data, re.DOTALL):
+        if b"[" in block:
+            continue  # array-destination form: refuse, never fabricate
         tokens = _HEX_TOKEN_RE.findall(block)
         for i in range(0, len(tokens) - 2, 3):
             lo = int(tokens[i], 16)
@@ -618,29 +1665,27 @@ def collect_cid_encoding_evidence(
             RejectReason.FONT_UNSUPPORTED_ENCODING, "font has no readable /Encoding"
         )
 
-    desc_kind, desc_value = doc.xref_get_key(font_xref, "DescendantFonts")
-    if desc_kind != "array":
-        return VerificationFailure(
-            RejectReason.FONT_UNSUPPORTED_ENCODING,
-            "font has no /DescendantFonts array",
-        )
-    descendant_xref = _first_indirect_ref(desc_value)
-    if descendant_xref is None:
+    # Task 12 P0-D: the descendant may be an indirect ref OR an inline
+    # dictionary in the /DescendantFonts array — the inline form is the
+    # census-DOMINANT corpus shape (256/262 fonts, AutoCAD; plan §8), so
+    # rejecting it as unreadable would blind this reader to almost every
+    # real Type0 font. Delegated to cid_fonts' bounded object parser.
+    descendant_xref, descendant = cid_resolve_descendant(doc, font_xref)
+    if descendant is None:
         return VerificationFailure(
             RejectReason.FONT_UNSUPPORTED_ENCODING,
             "unreadable /DescendantFonts entry",
         )
 
-    cid_to_gid_kind, cid_to_gid_value = doc.xref_get_key(descendant_xref, "CIDToGIDMap")
-    if cid_to_gid_kind == "name":
+    cid_to_gid_value = descendant.get("CIDToGIDMap")
+    if isinstance(cid_to_gid_value, str) and cid_to_gid_value.startswith("/"):
         cid_to_gid = cid_to_gid_value.lstrip("/")
-    elif cid_to_gid_kind == "xref":
-        cid_to_gid = cid_to_gid_value.split()[0]
+    elif isinstance(cid_to_gid_value, CidPdfRef):
+        cid_to_gid = str(cid_to_gid_value.xref)
     else:
         cid_to_gid = "Identity"  # PDF spec 9.7.4.3 implicit default; absent != missing
 
-    w_kind, _ = doc.xref_get_key(descendant_xref, "W")
-    has_widths = w_kind != "null"
+    has_widths = descendant.get("W") is not None
 
     tounicode_kind, tounicode_value = doc.xref_get_key(font_xref, "ToUnicode")
     if tounicode_kind != "xref":

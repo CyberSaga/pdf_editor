@@ -118,6 +118,25 @@ def _prepare(doc: fitz.Document, engine: TieredCommitEngine, **overrides):
     return engine.prepare(page, **kwargs)
 
 
+def _make_resolved_font_field_indirect(
+    doc: fitz.Document, field: str, initial_name: str
+) -> int:
+    """Spell one get_fonts-resolved name through an indirect name object."""
+    page = doc[0]
+    font_xref = int(page.get_fonts(full=True)[0][0])
+    target_xref = doc.get_new_xref()
+    doc.update_object(target_xref, f"/{initial_name}")
+    if field == "BaseEncoding":
+        doc.xref_set_key(
+            font_xref,
+            "Encoding",
+            f"<< /Type /Encoding /BaseEncoding {target_xref} 0 R >>",
+        )
+    else:
+        doc.xref_set_key(font_xref, field, f"{target_xref} 0 R")
+    return target_xref
+
+
 # ---------------------------------------------------------------- planning
 
 
@@ -432,6 +451,65 @@ def test_stale_plan_returns_stale_without_mutation():
     assert outcome.status is CommitStatus.STALE_PLAN
     assert page_fingerprint(doc, doc[0]) == fingerprint_before
     assert doc.xref_length() == xrefs_before
+    doc.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "initial_name", "mutated_name"),
+    [
+        pytest.param("BaseFont", "Helvetica", "Courier", id="basefont"),
+        pytest.param("Subtype", "Type1", "Type3", id="subtype"),
+        pytest.param(
+            "BaseEncoding",
+            "WinAnsiEncoding",
+            "MacExpertEncoding",
+            id="inline-baseencoding",
+        ),
+    ],
+)
+def test_resolved_font_entry_mutation_stales_prepared_plan(
+    field: str, initial_name: str, mutated_name: str
+) -> None:
+    """Characterization guard: resolved get_fonts fields are fingerprinted.
+
+    ``page_fingerprint`` has folded the complete ``get_fonts(full=True)``
+    entry since its first implementation.  These Green-from-first-run pins
+    protect that existing contract for legal indirect name spellings; they
+    do not represent a red-first production fix.
+    """
+    doc = _tier0_doc()
+    page = doc[0]
+    target_xref = _make_resolved_font_field_indirect(doc, field, initial_name)
+    fingerprint_before = page_fingerprint(doc, page)
+    fonts_before = page.get_fonts(full=True)
+
+    reopened = fitz.open(
+        stream=doc.tobytes(encryption=fitz.PDF_ENCRYPT_KEEP), filetype="pdf"
+    )
+    try:
+        assert reopened[0].get_fonts(full=True) == fonts_before
+        assert page_fingerprint(reopened, reopened[0]) == fingerprint_before
+    finally:
+        reopened.close()
+
+    engine = TieredCommitEngine(doc)
+    prepared = _prepare(doc, engine)
+    assert isinstance(prepared, PreparedEdit), prepared
+    assert prepared.page_fingerprint == fingerprint_before
+
+    doc.update_object(target_xref, f"/{mutated_name}")
+    fingerprint_after_mutation = page_fingerprint(doc, page)
+    assert fingerprint_after_mutation != prepared.page_fingerprint
+
+    stream_xref = page.get_contents()[0]
+    stream_before_commit = doc.xref_stream(stream_xref)
+    xrefs_before_commit = doc.xref_length()
+    outcome = engine.commit(prepared)
+
+    assert outcome.status is CommitStatus.STALE_PLAN, outcome
+    assert doc.xref_stream(stream_xref) == stream_before_commit
+    assert doc.xref_length() == xrefs_before_commit
+    assert page_fingerprint(doc, page) == fingerprint_after_mutation
     doc.close()
 
 

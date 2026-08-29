@@ -17,10 +17,20 @@ from dataclasses import dataclass
 
 import fitz
 
-from model.text_commit.dto import FontOutcome, FontResourceAction, StreamReplacement
+from model.text_commit.dto import (
+    FontOutcome,
+    FontResourceAction,
+    RejectReason,
+    StreamReplacement,
+)
 from model.text_commit.fonts import DocumentFontRegistry
 from model.text_commit.inspect import page_fingerprint, read_page_streams
-from model.text_commit.pdf_lexer import SpliceError, splice_stream
+from model.text_commit.pdf_lexer import (
+    SpliceError,
+    encode_hex_string,
+    encode_literal_string,
+    splice_stream,
+)
 from model.text_commit.replay import ShowOp
 from model.text_commit.verify import prove_source_resource_reuse
 
@@ -29,6 +39,31 @@ logger = logging.getLogger(__name__)
 
 class StalePlanError(ValueError):
     """The document changed since the plan was prepared; nothing mutated."""
+
+
+# Show operators whose byte range a builder may splice a replacement into.
+# ``'``/``\"`` carry persistent text-state side effects (an implicit T*, and
+# for ``\"`` the aw/ac operands that assign Tw/Tc) inside their recorded op
+# range -- a whole-op rewrite would silently delete those. Kept narrow on
+# purpose: this is the mechanism-level chokepoint, mirrored by the policy-
+# level gate in plan.py's shared classifier.
+_SPLICEABLE_SHOW_OPERATORS = frozenset({"Tj", "TJ"})
+
+
+class UnsupportedShowOperatorError(ValueError):
+    """Raised when a builder is asked to splice a non-``Tj``/``TJ`` show op."""
+
+    def __init__(self, operator: str) -> None:
+        self.operator = operator
+        self.reason = RejectReason.UNSUPPORTED_SHOW_OPERATOR
+        super().__init__(
+            f"cannot splice a {operator!r} show operator; only Tj/TJ are supported"
+        )
+
+
+def _require_spliceable_show(show: ShowOp) -> None:
+    if show.operator not in _SPLICEABLE_SHOW_OPERATORS:
+        raise UnsupportedShowOperatorError(show.operator)
 
 
 @dataclass(frozen=True)
@@ -45,13 +80,26 @@ class AppliedPatch:
     page_xref: int
     prior_streams: tuple[tuple[int, bytes], ...]
 
-    def revert(self, doc: fitz.Document) -> None:
+    def revert(self, doc: fitz.Document, *, compress: bool = True) -> None:
+        """Restore the prior decoded bytes.
+
+        ``compress`` (Task 13 P3-C) is a pure storage-encoding choice --
+        ``xref_stream()`` decodes identically either way. Default ``True``
+        preserves prior behavior for every caller; pass ``False`` only for
+        a document whose stream storage encoding is never serialized to a
+        persisted artifact (``PlanPreviewRenderer``'s session scratch).
+        Reverting the LIVE document with ``compress=False`` would leave its
+        content stream permanently uncompressed (revert does not restore
+        the ORIGINAL storage encoding, only the original decoded bytes --
+        every existing live-document caller keeps the default and must not
+        change it).
+        """
         for xref, data in self.prior_streams:
-            doc.update_stream(xref, data)
+            doc.update_stream(xref, data, compress=compress)
 
 
 def apply_patchset(
-    doc: fitz.Document, page: fitz.Page, patchset: PatchSet
+    doc: fitz.Document, page: fitz.Page, patchset: PatchSet, *, compress: bool = True
 ) -> AppliedPatch:
     """Validate and apply ``patchset`` to the live document.
 
@@ -60,6 +108,16 @@ def apply_patchset(
     digest or expected bytes drifted.  All new stream contents are computed
     before the first ``update_stream`` call, so validation failures leave
     the document byte-identical.
+
+    ``compress`` (Task 13 P3-C): forwarded verbatim to every
+    ``doc.update_stream`` call.  FlateDecode compression costs are
+    proportional to decoded stream size and dominate warm preview-keystroke
+    latency on dense pages (~540x on a 2.6 MiB stream); ``compress=False``
+    is safe exactly where the written bytes are never read back as a
+    serialized artifact -- decoded content, ``page_fingerprint``, and every
+    replay-evidence digest are unaffected by storage encoding. Default
+    ``True`` preserves existing behavior for every caller other than the
+    preview scratch.
     """
     if page.xref != patchset.page_xref:
         raise StalePlanError(
@@ -82,7 +140,7 @@ def apply_patchset(
         updated.append((stream_xref, new_bytes))
 
     for stream_xref, new_bytes in updated:
-        doc.update_stream(stream_xref, new_bytes)
+        doc.update_stream(stream_xref, new_bytes, compress=compress)
     logger.debug(
         "apply_patchset: page=%s streams=%s replacements=%s",
         patchset.page_xref,
@@ -173,11 +231,12 @@ def build_advance_preserving_erase(
     :class:`StreamReplacement`, so :func:`~model.text_commit.pdf_lexer.
     splice_stream`'s stale-plan gate still applies.
     """
+    _require_spliceable_show(show)
     if show.font_size == 0.0 or show.hscale == 0.0:
         raise ValueError(
             "cannot compensate advance under zero font size or horizontal scale"
         )
-    kern = -100_000.0 * consumed_advance / (show.font_size * show.hscale)
+    kern = kern_for_displacement(show, consumed_advance)
     replacement_bytes = f"[{kern:.6f}] TJ".encode("ascii")
     expected = stream_bytes[show.op_start : show.op_end]
     return StreamReplacement(
@@ -188,6 +247,30 @@ def build_advance_preserving_erase(
         replacement_bytes=replacement_bytes,
         expected_stream_digest=hashlib.sha256(stream_bytes).hexdigest(),
     )
+
+
+def kern_for_displacement(show: ShowOp, displacement: float) -> float:
+    """The ``TJ`` adjustment number that moves the current position by
+    ``displacement`` text-space points, for ``show``'s font size/hscale.
+
+    Extracted verbatim from :func:`build_advance_preserving_erase` so exactly
+    one implementation of the arithmetic exists: a ``[N] TJ`` adjustment
+    advances the position by ``-N/1000 * Tfs * Th``, so ``N = -100000 *
+    displacement / (Tfs * Th)``.  ``hscale`` (``Th``) is expressed as a
+    percentage (100.0 == no scaling), matching :class:`~model.text_commit.
+    replay.ShowOp.hscale`.
+
+    ``displacement`` here is a *text-space* delta -- Tier 0's advance
+    equality gate never admits any other ``hscale`` than 100.0 (``plan.py``),
+    so the coupling between this division and the advance formula used to
+    derive ``displacement`` is currently silent; a future relaxation of that
+    gate must keep both in text space or this compensation goes wrong.
+    """
+    if show.font_size == 0.0 or show.hscale == 0.0:
+        raise ValueError(
+            "cannot compensate advance under zero font size or horizontal scale"
+        )
+    return -100_000.0 * displacement / (show.font_size * show.hscale)
 
 
 def build_transplant_replacement(
@@ -202,6 +285,7 @@ def build_transplant_replacement(
     "append", which draws into a brand-new stream tacked onto the end of
     ``/Contents`` and inherits none of it.
     """
+    _require_spliceable_show(show)
     expected = stream_bytes[show.op_start : show.op_end]
     return StreamReplacement(
         stream_xref=show.stream_xref,
@@ -211,6 +295,37 @@ def build_transplant_replacement(
         replacement_bytes=new_op_bytes,
         expected_stream_digest=hashlib.sha256(stream_bytes).hexdigest(),
     )
+
+
+def build_kern_compensated_transplant(
+    stream_bytes: bytes,
+    show: ShowOp,
+    *,
+    replacement_encoded: bytes,
+    source_advance: float,
+    replacement_advance: float,
+    string_kind: str = "literal",
+) -> StreamReplacement:
+    """Tier 1 Slice 1: ``"[(new) K] TJ"`` spliced at the SOURCE op's range.
+
+    Composes :func:`build_transplant_replacement` (so the op byte range,
+    ``expected_bytes``, and ``expected_stream_digest`` come from that single
+    primitive, unchanged) with a kern adjustment that compensates
+    ``source_advance - replacement_advance``.  The kern number follows the
+    string, so the glyphs start at the source origin and any growth extends
+    forward; a wider replacement yields a positive (leftward-pulling) kern.
+    """
+    _require_spliceable_show(show)
+    kern = kern_for_displacement(show, source_advance - replacement_advance)
+    # Task 12 P0-D: Identity-H CID operands serialize as hex strings, the
+    # same operand kind the source show used; simple fonts keep literals.
+    payload = (
+        encode_hex_string(replacement_encoded)
+        if string_kind == "hex"
+        else encode_literal_string(replacement_encoded)
+    )
+    new_op = b"[" + payload + f" {kern:.6f}".encode("ascii") + b"] TJ"
+    return build_transplant_replacement(stream_bytes, show, new_op)
 
 
 def build_tier1_font_outcome(
@@ -266,9 +381,12 @@ __all__ = [
     "PatchSet",
     "SpliceError",
     "StalePlanError",
+    "UnsupportedShowOperatorError",
     "apply_patchset",
     "build_advance_preserving_erase",
+    "build_kern_compensated_transplant",
     "build_reversal_patchset",
     "build_tier1_font_outcome",
     "build_transplant_replacement",
+    "kern_for_displacement",
 ]

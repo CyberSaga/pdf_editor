@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 import fitz
 
 from model.text_commit.dto import (
+    HIGH_FIDELITY_TIERS,
     CommitOutcome,
     CommitStatus,
-    CommitTier,
     RejectReason,
+    is_real_fallback_commit,
 )
 from model.text_commit.inspect import page_fingerprint, read_page_streams
 from model.text_commit.patch import (
@@ -45,6 +47,15 @@ class EditTextResult(str, Enum):
     # matches the current page fingerprint (the document changed since the
     # commit it is replaying). Redo refused; zero mutation happened.
     STALE_PLAN = "stale_plan"
+    # V2 undo safety: a high-fidelity tier commit's retained inverse patch
+    # is fingerprint-stale. Undo refused; zero mutation; command retained.
+    # Never falls back to page-snapshot restore for these commands.
+    STALE_UNDO = "stale_undo"
+    # P0-C phase 2: a tiered attempt genuinely fell back to the legacy
+    # engine and the user declined the pre-mutation consent prompt. Zero
+    # mutation happened -- this is not an error and must not produce an
+    # error toast (see PDFController._edit_result_to_message).
+    FALLBACK_DECLINED = "fallback_declined"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -160,6 +171,7 @@ class EditTextCommand(EditCommand):
         reflow_fn: Any | None = None,    # callable()，在 model.edit_text() 後呼叫做 displacement reflow
         style_overrides: Any | None = None,  # StyleOverrides；使用者實際碰過的樣式欄位
         plan_token: str | None = None,   # V2 prepared-plan token（stale 檢查用）
+        confirm_fallback: Callable[[tuple[str, ...]], bool] | None = None,
     ):
         self._model = model
         self._page_num = page_num
@@ -180,17 +192,28 @@ class EditTextCommand(EditCommand):
         self._reflow_fn = reflow_fn         # displacement reflow callback（Track A/B）
         self.style_overrides = style_overrides  # redo 需保留原始 intent
         self.plan_token = plan_token
+        self._confirm_fallback = confirm_fallback
+        # P0-C phase 2: the user's consent covers THIS command's low-fidelity
+        # execution, not the document forever -- but redo re-runs the whole
+        # model.edit_text() pipeline from scratch for a legacy-tier command
+        # (no retained forward patchset), which would hit the fallback gate
+        # again and re-prompt. This flag makes every execute() after the
+        # first successful one pass confirm_fallback=None (proceed without
+        # asking), which is safe: it is replaying a decision already made.
+        self._fallback_ever_confirmed = False
         self.outcome: Any | None = None     # CommitOutcome，execute() 後由 model 提供
         self._executed = False              # 防止在未 execute 前呼叫 undo
 
-        # V2 tier-aware reversal (Task 9): when the first execute() commits
-        # via Tier 0, these hold a validated forward/inverse PatchSet pair
-        # built from the observed before/after stream diff (see
-        # model.text_commit.patch.build_reversal_patchset). Populated once,
-        # replayed by every later undo()/redo() instead of re-running the
-        # full model.edit_text() pipeline (which would re-prepare from
-        # scratch on a different page state and cannot reproduce the exact
-        # same committed bytes). Stay ``None`` for every non-Tier-0 command,
+        # V2 tier-aware reversal (Task 9; Task 11 Slice 1 widened this to
+        # every high-fidelity tier): when the first execute() commits via a
+        # high-fidelity tier (dto.HIGH_FIDELITY_TIERS -- Tier 0 or Tier 1),
+        # these hold a validated forward/inverse PatchSet pair built from the
+        # observed before/after stream diff (see model.text_commit.patch.
+        # build_reversal_patchset). Populated once, replayed by every later
+        # undo()/redo() instead of re-running the full model.edit_text()
+        # pipeline (which would re-prepare from scratch on a different page
+        # state and cannot reproduce the exact same committed bytes). Stay
+        # ``None`` for every non-high-fidelity-tier command (Tier 2/legacy),
         # which keeps the original page-snapshot undo/full-redo behavior.
         self._tier0_forward_patchset: PatchSet | None = None
         self._tier0_inverse_patchset: PatchSet | None = None
@@ -279,6 +302,10 @@ class EditTextCommand(EditCommand):
             target_span_id=self._target_span_id,
             target_mode=self._target_mode,
             style_overrides=self.style_overrides,
+            plan_token=self.plan_token,
+            confirm_fallback=(
+                None if self._fallback_ever_confirmed else self._confirm_fallback
+            ),
         )
         if self.result is not EditTextResult.SUCCESS:
             self._executed = False
@@ -289,10 +316,18 @@ class EditTextCommand(EditCommand):
             return False
         # V2 plumbing: history keeps the full CommitOutcome of this commit.
         self.outcome = getattr(self._model, "last_commit_outcome", None)
+        # Only a REAL fallback (an attempted higher tier that genuinely
+        # fell back) arms the no-reprompt flag -- a clean Tier 0/1 win
+        # (confirm_fallback never called) must not silently disable asking
+        # on some LATER execute() of this same command that turns out to
+        # need one (verification finding: the flag previously conflated
+        # "this command has run once" with "the user was actually asked").
+        if is_real_fallback_commit(self.outcome):
+            self._fallback_ever_confirmed = True
         self._pre_protected = pre_protected
         if (
             self.outcome is not None
-            and self.outcome.tier is CommitTier.TIER0_LOSSLESS_STREAM_PATCH
+            and self.outcome.tier in HIGH_FIDELITY_TIERS
             and pre_fingerprint is not None
             and pre_page is not None
         ):
@@ -317,12 +352,12 @@ class EditTextCommand(EditCommand):
         pre_streams: tuple[tuple[int, bytes], ...],
         pre_fingerprint: str,
     ) -> None:
-        """After a successful Tier 0 commit, retain a forward/inverse
-        PatchSet pair so future undo()/redo() replay the exact validated
-        intent instead of re-running model.edit_text(). Best-effort: if the
-        observed diff doesn't look like exactly one Tier 0 stream patch,
-        this command silently keeps using the page-snapshot fallback for
-        undo/redo instead (never guesses).
+        """After a successful high-fidelity tier commit (Tier 0 or Tier 1),
+        retain a forward/inverse PatchSet pair so future undo()/redo() replay
+        the exact validated intent instead of re-running model.edit_text().
+        Best-effort: if the observed diff doesn't look like exactly one
+        high-fidelity stream patch, this command silently keeps using the
+        page-snapshot fallback for undo/redo instead (never guesses).
         """
         try:
             page = self._model.doc[page_idx]
@@ -341,7 +376,8 @@ class EditTextCommand(EditCommand):
 
     def _redo_tier0(self) -> bool:
         """Replay the retained forward PatchSet — the same validated intent
-        as the original Tier 0 commit — or fail STALE with zero mutation.
+        as the original high-fidelity tier commit — or fail STALE with zero
+        mutation.
 
         Never falls through to the legacy engine: a stale forward patch
         means the document changed since the commit it is replaying, so the
@@ -396,24 +432,25 @@ class EditTextCommand(EditCommand):
         else:
             self._model.fidelity_protected_pages.discard(page_idx)
 
-    def undo(self) -> None:
+    def undo(self) -> bool:  # type: ignore[override]
         """
         還原頁面至 execute() 前的狀態。
 
-        V2 tier-aware path: if this command committed via Tier 0 and the
-        retained inverse PatchSet is still fingerprint-valid, replay it
-        directly -- byte-identical source stream, annotation xrefs
-        untouched (patch.py only ever calls ``doc.update_stream``, never
-        redaction/annotation recreate). Falls back to the original
-        page-snapshot restore when there is no tier0 reversal to replay, or
-        when it has gone stale (the document changed since the commit it
-        would be reversing) -- StalePlanError there is expected, not a bug.
-        Either path restores fidelity_protected_pages membership to its
-        pre-edit value.
+        V2 tier-aware path: if this command committed via a high-fidelity
+        tier and the retained inverse PatchSet is still fingerprint-valid,
+        replay it directly -- byte-identical source stream, annotation
+        xrefs untouched. If the inverse is stale, refuse with STALE_UNDO
+        and zero mutation (command retained on the undo stack) — never
+        fall through to page-snapshot restore for high-fidelity commands.
+        Non-high-fidelity commands still use the page-snapshot path.
+
+        Intentional LSP widening (same pattern as execute): returns bool so
+        CommandManager.undo() can detect STALE_UNDO (False) and keep the
+        command on the undo stack.
         """
         if not self._executed:
             logger.warning("EditTextCommand.undo(): 尚未執行過，跳過還原")
-            return
+            return True  # allow CommandManager to pop a no-op entry
 
         page_num_0based = self._page_num - 1
 
@@ -424,33 +461,44 @@ class EditTextCommand(EditCommand):
             except (StalePlanError, SpliceError, IndexError, ValueError) as exc:
                 logger.warning(
                     "EditTextCommand.undo(): tier0 inverse patch stale (%s); "
-                    "falling back to page-snapshot restore",
+                    "undo refused, zero mutation",
                     type(exc).__name__,
                 )
-            else:
-                self._restore_protection_membership(page_num_0based)
-                self._tier0_active = False
-                self._model.block_manager.rebuild_page(page_num_0based, self._model.doc)
-                logger.debug(
-                    f"EditTextCommand.undo(): tier0 inverse patch restored 頁面 {self._page_num}，"
-                    f"原文字='{self._old_block_text}'"
+                self._model.last_commit_outcome = CommitOutcome(
+                    status=CommitStatus.STALE_PLAN,
+                    tier=None,
+                    fallback_chain=(f"tier0:{RejectReason.STALE_PLAN}",),
+                    warnings=(),
+                    font_outcomes=(),
+                    verified_properties=(),
+                    degraded_reason=str(exc),
+                    allows_external_reflow=False,
                 )
-                return
+                self.result = EditTextResult.STALE_UNDO
+                return False
+            self._restore_protection_membership(page_num_0based)
+            self._tier0_active = False
+            self._model.block_manager.rebuild_page(page_num_0based, self._model.doc)
+            logger.debug(
+                f"EditTextCommand.undo(): tier0 inverse patch restored 頁面 {self._page_num}，"
+                f"原文字='{self._old_block_text}'"
+            )
+            return True
 
-        # Phase 3: _restore_page_from_snapshot() 將在 pdf_model.py 中實作
+        # Legacy / non-high-fidelity: page-snapshot restore.
         self._model._restore_page_from_snapshot(
             page_num_0based, self._page_snapshot_bytes
         )
         self._restore_protection_membership(page_num_0based)
         self._tier0_active = False
 
-        # Phase 3: 重建該頁索引，確保後續 find_by_rect 等查詢正確
         self._model.block_manager.rebuild_page(page_num_0based, self._model.doc)
 
         logger.debug(
             f"EditTextCommand.undo(): 已還原頁面 {self._page_num}，"
             f"原文字='{self._old_block_text}'"
         )
+        return True
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -735,14 +783,21 @@ class CommandManager:
         撤銷最近一次操作。
 
         Returns:
-            True 若成功撤銷，False 若 undo 堆疊為空。
+            True 若成功撤銷，False 若 undo 堆疊為空，或 the command refused
+            (e.g. high-fidelity STALE_UNDO — command retained on the stack).
         """
         if not self._undo_stack:
             logger.debug("CommandManager.undo(): undo 堆疊為空，無可撤銷")
             return False
 
         cmd = self._undo_stack[-1]
-        cmd.undo()
+        undone = cmd.undo()
+        if undone is False:
+            logger.debug(
+                "CommandManager.undo(): command undo skipped: %s",
+                cmd.description,
+            )
+            return False
         self._undo_stack.pop()
         self._redo_stack.append(cmd)
 

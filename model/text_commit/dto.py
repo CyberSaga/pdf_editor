@@ -52,6 +52,70 @@ class RejectReason:
     PENDING_MAINTENANCE = "pending_page_maintenance"
     VERIFICATION_FAILED = "verification_failed"
     STALE_PLAN = "stale_plan"
+    # Task 11 Slice 1 (Tier 1 kern-compensated transplant): each is a NEW
+    # name on purpose (Task 10a, TODOS.md:418) -- reusing an existing reason
+    # with existing emission sites lets a test survive deletion of its own
+    # gate.
+    UNSUPPORTED_SHOW_OPERATOR = "unsupported_show_operator"
+    SHARED_CONTENT_STREAM = "shared_content_stream"
+    GROWTH_REGION_NOT_BLANK = "growth_region_not_blank"
+    GROWTH_OUTSIDE_PAGE = "growth_outside_page"
+    FONT_RESOURCE_NOT_PROVEN = "font_resource_not_proven"
+    # Task 12 P0-A: replay refused to tokenize a page whose decoded content
+    # streams exceed the safe-replay budget (the lexer materializes ~0.77
+    # tokens per byte).  A resource refusal, not a stream-shape verdict --
+    # it must never be collapsed into MALFORMED_STREAM or NO_MATCH.
+    CONTENT_STREAM_TOO_LARGE = "content_stream_too_large_for_safe_replay"
+    # Task 12 P0-D (CID/Type0 single-hex-Tj slice): one stable code per
+    # independent evidence gate, adopted VERBATIM from the red contract in
+    # test_scripts/test_text_commit_cid_hex_tj.py (which keeps its own
+    # literal constants on purpose — a rename here must fail those tests,
+    # never silently follow). The funnel attributes losses by layer:
+    # encoding form / descendant / embedding / ToUnicode / reverse map /
+    # CIDToGID / GID / glyph repertoire / width.
+    TYPE0_ENCODING_UNSUPPORTED = "type0_encoding_unsupported"
+    TYPE0_DESCENDANT_UNSUPPORTED = "type0_descendant_unsupported"
+    TYPE0_FONT_NOT_EMBEDDED = "type0_font_not_embedded"
+    TYPE0_TOUNICODE_MISSING = "type0_tounicode_missing"
+    TYPE0_TOUNICODE_UNPARSEABLE = "type0_tounicode_unparseable"
+    TYPE0_TOUNICODE_MULTICHAR = "type0_tounicode_multichar"
+    TYPE0_TOUNICODE_AMBIGUOUS = "type0_tounicode_ambiguous"
+    TYPE0_UNICODE_UNMAPPED = "type0_unicode_unmapped"
+    TYPE0_SOURCE_BYTES_NOT_REPRODUCED = "type0_source_bytes_not_reproduced"
+    TYPE0_CIDTOGID_UNREADABLE = "type0_cidtogid_unreadable"
+    TYPE0_CID_OUT_OF_MAP_RANGE = "type0_cid_out_of_map_range"
+    TYPE0_GID_ZERO = "type0_gid_zero"
+    TYPE0_GID_BEYOND_GLYPH_COUNT = "type0_gid_beyond_glyph_count"
+    TYPE0_GLYPH_MISSING = "type0_glyph_missing"
+    TYPE0_WIDTH_UNPROVABLE = "type0_width_unprovable"
+    # Task 13 Priority 1 (marked-content admission): one code per
+    # independent gate, adopted VERBATIM from the red contract in
+    # test_scripts/test_text_commit_mc_admission.py (which keeps its own
+    # literal constants on purpose).  The blanket "inside a marked-content
+    # sequence" UNSUPPORTED_TEXT_STATE rejection is replaced by these:
+    # only a default-visible pure /OC layer stack is admitted.
+    MC_WRAPPER_NOT_PURE_LAYER = "mc_wrapper_not_pure_layer"
+    MC_LAYER_NOT_DEFAULT_VISIBLE = "mc_layer_not_default_visible"
+    MC_MALFORMED_PAIRING = "mc_malformed_pairing"
+    MC_SPLICE_CROSSES_WRAPPER_BOUNDARY = "mc_splice_crosses_wrapper_boundary"
+    # Task 13 Priority 2 (rotated-TRM admission): one code per independent
+    # shape/direction gate, adopted VERBATIM from the red contract in
+    # test_scripts/test_text_commit_trm_admission.py (which keeps its own
+    # literal constants on purpose).  The blanket "matrix is rotated,
+    # sheared, reflected, or non-uniformly scaled" UNSUPPORTED_TEXT_STATE
+    # rejection is replaced by these: only the census-locked quarter-turn
+    # family (positive-orientation uniform rotation+scale with a cardinal
+    # visual baseline) is admitted.  Attribution follows the FIXED gate
+    # precedence in model/text_commit/transforms.py — finite → singular →
+    # absolute scale floor → orientation → orthogonality → equal norms →
+    # cardinal direction — so telemetry can never drift.
+    TRM_NON_FINITE = "trm_non_finite"
+    TRM_SINGULAR = "trm_singular"
+    TRM_SCALE_BELOW_FLOOR = "trm_scale_below_floor"
+    TRM_REFLECTED = "trm_reflected"
+    TRM_SHEARED = "trm_sheared"
+    TRM_NON_UNIFORM_SCALE = "trm_non_uniform_scale"
+    TRM_ROTATION_NOT_QUARTER_TURN = "trm_rotation_not_quarter_turn"
 
 
 class CommitStatus(str, Enum):
@@ -66,6 +130,17 @@ class CommitTier(IntEnum):
     TIER0_LOSSLESS_STREAM_PATCH = 0
     TIER1_REBUILD_WITH_VALIDATED_FACE = 1
     TIER2_LEGACY = 2
+
+
+# The tiers whose commit is byte-provable and undo-reversible via a single
+# validated PatchSet -- as opposed to Tier 2 (legacy redact+reinsert), whose
+# undo/redo can only replay a lossier page-level snapshot. Consulted by
+# edit_commands.py's reversal-capture gate so a Tier 1 commit gets the same
+# high-fidelity undo/redo path as Tier 0.
+HIGH_FIDELITY_TIERS: tuple[CommitTier, ...] = (
+    CommitTier.TIER0_LOSSLESS_STREAM_PATCH,
+    CommitTier.TIER1_REBUILD_WITH_VALIDATED_FACE,
+)
 
 
 class FontResourceAction:
@@ -102,6 +177,13 @@ class CommitOutcome:
     verified_properties: tuple[str, ...]
     degraded_reason: str | None
     allows_external_reflow: bool
+    # Tier decision trail for SUCCESSFUL tiered commits, reason codes only
+    # (never document data): ("tier0:committed",) for a direct Tier 0
+    # commit, ("tier0:rejected:advance_mismatch", "tier1:committed") for an
+    # escalated one. Empty on legacy and failure outcomes — failure
+    # attribution stays in fallback_chain, which remains reserved for true
+    # fidelity degrades (Task 12 Step 7 cleanup).
+    decision_chain: tuple[str, ...] = ()
 
 
 _ENGINE_VALUES = ("legacy", "shadow", "tiered")
@@ -157,6 +239,22 @@ class TextCommitSettings:
                 "TEXT_COMMIT_TELEMETRY", _TELEMETRY_VALUES, "off"
             ),
         )
+
+
+def is_real_fallback_commit(outcome: CommitOutcome | None) -> bool:
+    """True when ``outcome`` is a commit that genuinely fell back from an
+    attempted higher-fidelity tier to the legacy engine -- as opposed to
+    the shipped-default baseline (chain == ``("legacy",)``, which every
+    successful edit gets under ``engine="legacy"`` and is not a failed
+    fidelity promise). Shared by the Controller's degrade-notice gate
+    (``PDFController._is_notifiable_degrade``) and ``EditTextCommand``'s
+    redo-reprompt gate (Task 12 P0-C) so the two decisions about the same
+    outcome shape can never drift apart."""
+    return (
+        outcome is not None
+        and outcome.status is CommitStatus.DEGRADED_COMMITTED
+        and outcome.fallback_chain != ("legacy",)
+    )
 
 
 def legacy_commit_outcome() -> CommitOutcome:
