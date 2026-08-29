@@ -1,7 +1,7 @@
 # Task 14 P4-A — Type0 augmentation census and mutation premises
 
-**Base:** `task13/p3d-interpretation-reuse@c276018`  
-**Working branch:** `task14/type0-augmentation-census`  
+**Base:** `task13/p3d-interpretation-reuse@c276018`
+**Working branch:** `task14/type0-augmentation-census`
 **Status:** in progress
 
 ## 1. Goal
