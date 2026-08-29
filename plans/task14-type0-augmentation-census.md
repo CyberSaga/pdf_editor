@@ -60,8 +60,8 @@ integer/boolean leaves. Raw reports are written only beneath the gitignored
 
 ## 6. Step list
 
-- [ ] Add this execution record and the dev-only fontTools dependency.
-- [ ] Rerun the post-P2 funnel and add the independent glyph-overlap census.
+- [x] Add this execution record and the dev-only fontTools dependency.
+- [x] Rerun the post-P2 funnel and add the independent glyph-overlap census.
 - [ ] Add replacement-vocabulary counterfactual aggregates.
 - [ ] Add the fontTools same-face proof census.
 - [ ] Add `serialize_pdf_value` and the nine synthetic mutation premises.
@@ -74,6 +74,60 @@ Corpus and premise records will be appended here after their artifacts exist.
 Each corpus entry includes the date and mode, a population paragraph, a
 positional aggregate table, readings, arithmetic reconciliation, and an
 explicit note for any run that was not performed.
+
+### Post-P2 funnel and glyph-overlap record (2026-08-30, `--no-e2e`)
+
+Population: the sealed two-document private corpus at `c276018`, reported only
+as positional aggregates. `doc_0` has 50 pages; `doc_1` has 23 pages. The raw
+aggregate-only JSON is gitignored at
+`benchmarks/p4a-funnel-2026-08-30.json`.
+
+| aggregate | doc_0 | doc_1 |
+| --- | ---: | ---: |
+| shows total | 28,043 | 2,237 |
+| Type0 shows | 27,820 | 543 |
+| single-hex `Tj` | 27,250 | 0 |
+| source bindable | 5,934 | 0 |
+| replacement-encodable self proxy | 5,934 | 0 |
+| `TJ` array × glyph OK | 480 | 0 |
+| `TJ` array × capability unavailable | 90 | 543 |
+| non-default hscale × glyph OK | 4,328 | 0 |
+| non-default hscale × GID beyond glyph count | 2 | 0 |
+| mapped CID with glyph | 15,607 | 0 |
+| mapped CID without glyph | 225 | 0 |
+| glyph-present CID without ToUnicode | 7,722 | 0 |
+
+Readings:
+
+- The sealed post-P2 funnel is unchanged from the 2026-08-20 record:
+  `doc_0` has 28,043 total shows, 27,820 Type0 shows, 27,250 single-hex
+  `Tj`, 10,701 within budget, 6,872 outside marked content, 6,413 rotated
+  admitted, and 5,934 replacement-encodable proxies. `doc_1` again has
+  543 Type0 shows and zero survival past the single-hex gate.
+- The independent operator fold exposes 480 glyph-usable `TJ` shows in
+  `doc_0`; the other 90 `TJ` shows lack a CID capability. All 543 `doc_1`
+  `TJ` shows lack a CID capability, so they are not counted as glyph-usable.
+- The independent hscale fold exposes 4,328 glyph-usable non-default-hscale
+  shows plus two whose GID exceeds the embedded glyph count. This is larger
+  than the main fold's 892 `state:hscale` losses because the independent fold
+  runs before operator, replay-budget, marked-content, and TRM early exits.
+- The array census measures glyph availability after replay drops kern
+  numbers; it does not claim byte-bindability for whole-`TJ` mutation.
+
+Arithmetic reconciliation:
+
+- `doc_0` operator fold: 27,233 glyph-OK single-hex + 15 undecodable
+  single-hex + 2 GID-beyond single-hex + 480 glyph-OK `TJ` + 90
+  capability-unavailable `TJ` = 27,820 Type0 shows.
+- `doc_1` operator fold: 543 capability-unavailable `TJ` = 543 Type0 shows.
+- Both hscale folds independently sum to the same Type0-show populations.
+  The unchanged funnel stages exactly match the sealed Task 13 record, so no
+  drift attribution is required.
+
+The e2e-enabled second pass was attempted because the baseline completed
+within 30 minutes, but it did not complete within its 30-minute ceiling and
+was stopped without producing a valid artifact. E2E results therefore did not
+run to completion in this record.
 
 ## 8. Open questions
 

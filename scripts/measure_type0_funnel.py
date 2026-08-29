@@ -47,7 +47,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from model.text_commit.cid_fonts import CidCapabilityFailure  # noqa: E402
+from model.text_commit.cid_fonts import (  # noqa: E402
+    _MAX_TOUNICODE_RECORDS,
+    CidCapabilityFailure,
+    IdentityHCidCapability,
+)
 from model.text_commit.dto import CommitStatus  # noqa: E402
 from model.text_commit.engine import TieredCommitEngine  # noqa: E402
 from model.text_commit.fonts import DocumentFontRegistry  # noqa: E402
@@ -92,6 +96,126 @@ _STAGES = (
     "source_bindable",
     "replacement_encodable_proxy",
 )
+
+GLYPH_OVERLAP_OPERATOR_CLASSES = (
+    "single_hex_tj",
+    "literal_tj",
+    "tj_array",
+    "quote_ops",
+)
+GLYPH_OVERLAP_HSCALE_CLASSES = (
+    "hscale_default",
+    "hscale_non_default",
+)
+GLYPH_OVERLAP_VERDICTS = (
+    "cid_unavailable",
+    "odd_byte_length",
+    "source_undecodable",
+    "glyph_ok",
+    "type0_cid_out_of_map_range",
+    "type0_gid_zero",
+    "type0_gid_beyond_glyph_count",
+    "type0_glyph_missing",
+)
+GLYPH_OVERLAP_REACH_CLASSES = (
+    "glyph_present_no_tounicode_cid",
+    "tounicode_cid_without_glyph",
+    "tounicode_cid_with_glyph",
+)
+
+
+def _glyph_overlap_operator_class(show: object) -> str:
+    """Closed operator taxonomy for the independent glyph census.
+
+    ``tj_array`` measures glyph availability after replay has discarded kern
+    numbers; it does not claim that the production byte binder accepts arrays.
+    """
+    operator = getattr(show, "operator", "")
+    string_kind = getattr(show, "string_kind", "")
+    if operator == "TJ":
+        return "tj_array"
+    if operator in ("'", '"'):
+        return "quote_ops"
+    if operator == "Tj" and string_kind == "hex":
+        return "single_hex_tj"
+    return "literal_tj"
+
+
+def _glyph_overlap_verdict(
+    show: object, cid: IdentityHCidCapability | None
+) -> str:
+    if cid is None:
+        return "cid_unavailable"
+    data = getattr(show, "decoded_bytes", b"")
+    if len(data) % 2:
+        return "odd_byte_length"
+    decoded = cid.decode_show_bytes(data)
+    if isinstance(decoded, CidCapabilityFailure):
+        return "source_undecodable"
+    source_cids = tuple(
+        int.from_bytes(data[index : index + 2], "big")
+        for index in range(0, len(data), 2)
+    )
+    failure = cid.glyph_gate(source_cids, decoded)
+    return "glyph_ok" if failure is None else failure.reason
+
+
+def _cid_has_outline(cid: IdentityHCidCapability, code: int) -> bool:
+    gid = cid.gid_for(code)
+    if isinstance(gid, CidCapabilityFailure) or gid == 0:
+        return False
+    if gid >= cid.glyphs.num_glyphs:
+        return False
+    length = cid.glyphs.glyph_data_length(gid)
+    return length is not None and length > 0
+
+
+def _record_font_glyph_reach(
+    cid: IdentityHCidCapability, reach: Counter[str]
+) -> None:
+    """Fold one font's CID/ToUnicode reach into aggregate count slugs."""
+    mapped: set[int] = set()
+    for kind, lo, hi, _text in cid.tounicode.records:
+        for code in range(lo, hi + 1):
+            if len(mapped) >= _MAX_TOUNICODE_RECORDS:
+                break
+            mapped.add(code)
+        if len(mapped) >= _MAX_TOUNICODE_RECORDS:
+            break
+
+    for code in mapped:
+        reach[
+            "tounicode_cid_with_glyph"
+            if _cid_has_outline(cid, code)
+            else "tounicode_cid_without_glyph"
+        ] += 1
+
+    cid_limit = (
+        len(cid.cidtogid_table) // 2
+        if cid.cidtogid_table is not None
+        else cid.glyphs.num_glyphs
+    )
+    for code in range(min(cid_limit, _MAX_TOUNICODE_RECORDS)):
+        if code not in mapped and _cid_has_outline(cid, code):
+            reach["glyph_present_no_tounicode_cid"] += 1
+
+
+def _glyph_overlap_census(
+    show: object,
+    capability: object,
+    operator_x_glyph: Counter[str],
+    hscale_x_glyph: Counter[str],
+) -> None:
+    cid = getattr(capability, "cid", None)
+    verdict = _glyph_overlap_verdict(show, cid)
+    operator = _glyph_overlap_operator_class(show)
+    hscale = (
+        "hscale_default"
+        if getattr(show, "hscale", 0.0) == 100.0
+        else "hscale_non_default"
+    )
+    operator_x_glyph[f"{operator}|{verdict}"] += 1
+    hscale_x_glyph[f"{hscale}|{verdict}"] += 1
 
 
 def _residual_state_loss(show: object) -> str | None:
@@ -231,6 +355,10 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
     trm_overlap: Counter[str] = Counter()
     trm_predicted: Counter[str] = Counter()
     trm_near_miss: Counter[str] = Counter()
+    glyph_operator: Counter[str] = Counter()
+    glyph_hscale: Counter[str] = Counter()
+    font_glyph_reach: Counter[str] = Counter()
+    glyph_reach_fonts_seen: set[int] = set()
     # Task 13 P2 acceptance: predicted vs production admission compared as
     # SETS (identity keys stay in memory; the report emits counts and the
     # symmetric difference only — never a key).
@@ -270,6 +398,17 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
             if capability is None or capability.subtype != "Type0":
                 continue
             shows_counter["on_type0_font"] += 1
+            _glyph_overlap_census(
+                show, capability, glyph_operator, glyph_hscale
+            )
+            if (
+                capability.cid is not None
+                and capability.font_xref not in glyph_reach_fonts_seen
+            ):
+                glyph_reach_fonts_seen.add(capability.font_xref)
+                _record_font_glyph_reach(
+                    capability.cid, font_glyph_reach
+                )
             # Hex-only, mirroring the production plan gate (the locked v1
             # scope refuses literal-string Type0 operands).
             if show.operator != "Tj" or show.string_kind != "hex":
@@ -450,6 +589,11 @@ def funnel_document(doc: fitz.Document, *, run_e2e: bool) -> dict[str, object]:
                     trm_predicted_downstream == trm_production_downstream
                 ),
             },
+        },
+        "glyph_overlap_census": {
+            "operator_x_glyph": dict(sorted(glyph_operator.items())),
+            "hscale_x_glyph": dict(sorted(glyph_hscale.items())),
+            "font_glyph_reach": dict(sorted(font_glyph_reach.items())),
         },
         "e2e_sample": e2e,
         "e2e_reject_reasons": dict(sorted(e2e_reject_reasons.items())),
