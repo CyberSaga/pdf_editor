@@ -61,19 +61,22 @@ converters.
   copies with visual `bbox`/`rect`/`layout_rect`/`rotation` for the outline drawer.
   Internal callers use the `_unrotated` bodies.
 - Write side: `pdf_text_edit.edit_text` and `derive_tier0_preview_target` derotate `rect` /
-  `new_rect` at entry (`_visual_rect_to_unrotated_rect`); the cross-page move path derotates
-  `source_rect`/`destination_rect` the same way. Legacy page-bounds clamps against visual
-  `page.rect` are pre-existing and out of fence (registered).
+  `new_rect` at entry (`visual_to_unrotated_rect`); the cross-page move path derotates
+  `source_rect` the same way. The legacy insert / verify / re-insert helpers receive
+  `unrotated_page_rect(page)` as their page bounds — the same space as their inputs
+  (`page.rect` is the displayed box, with swapped extents on quarter-turn pages).
 - Controller: `iter_text_targets` / `get_text_blocks` forward to the new model methods.
-- View: `_sync_font_combo_state` seeds `_editing_initial_font_name` from the value
-  `editing_font_name` already holds (same normalization on both sides of the comparison);
-  `_install_plan_preview_hook` installs for every rotation; `apply_plan_preview` counter-rotates
-  the raster by the editor's configured rotation (`-90` for 90, `+90` for 270, `180` for 180).
+- View: `_sync_font_combo_state` seeds `_editing_initial_font_name` from the raw name the
+  session opened with, and every changed-font comparison (`build_style_overrides(font_key=)`,
+  `finalize_text_edit_impl`) goes through `_font_alias` (`_qt_font_to_pdf`) so raw name vs UI
+  alias never counts as a restyle; `_install_plan_preview_hook` installs for every rotation;
+  `apply_plan_preview` and `_capture_frozen_first_frame` counter-rotate through one shared
+  table `PROXY_COUNTER_ROTATION = {90: -90, 180: 180, 270: 90}`.
 
 ## Fences
 
 No change to `EditableSpan`/block index space; no rotation math in the view converters; no
-change to admission/rollout defaults; legacy insert clamps untouched (registered follow-up).
+change to admission/rollout defaults.
 
 ## Steps
 
@@ -90,3 +93,28 @@ change to admission/rollout defaults; legacy insert clamps untouched (registered
 
 - 2026-08-29: `32a7630` (270° corner `y1→y0`) reverted in `8eb91b5` — the branch it changed
   never executes for horizontal text on a rotated page (`rotation` was the dict text direction).
+- 2026-08-29: red commit `0188ef0` — 22/24 model cases + 8/8 GUI cases failing on HEAD~1
+  (only the `/Rotate 0` controls passed; the GUI run showed the manufactured
+  `StyleOverrides(font_family='Helvetica')`).
+- 2026-08-29: implementation green (24/24, 8/8, ruff clean). Targeted regression sweep of 21
+  text/selection/editing/commit suites: 706 passed, 10 skipped; the only failures were
+  `test_no_jump_editor_geometry.py` reference PDFs missing from the worktree (`test_files/` is
+  gitignored) — rerun after copying the fixtures from the main checkout.
+- Design alternative rejected: converting in the controller facade (would put document
+  geometry semantics outside the model and duplicate `_dict_space_to_visual`); converting in
+  the index (would double-rotate inside `_tier0_target_from_resolve`, which already converts).
+- 2026-08-29 adversarial review round (correctness / completeness / regression lenses on the
+  diff): three findings confirmed and fixed red-first — (1) `_capture_frozen_first_frame` had
+  no `/Rotate 180` branch (grabbed the margin below-right of the bbox; GUI test asserts the
+  frozen frame contains glyph ink for 90/180/270); (2) the raw-name baseline made a font
+  pick-and-revert report a `font_family` override (GUI test: pick `cour`, pick the original
+  back, Apply → no override, Tier 0 commit); (3) `edit_text` clamped the derotated
+  `new_rect`/layout against displayed `page.rect` — a run in the unrotated lower band of a
+  `/Rotate 90/270` page went through the htmlbox path with a degenerate insert rect
+  (`RuntimeError: 策略 A/B/C 均失敗`); the fast `insert_text` path never clamps, which is why
+  the first version of the model test passed pre-fix and had to be reworked to pass `new_rect`.
+  Rejected finding: converting in the controller (same reasoning as above).
+- Fenced out, registered in TODOS: rotated-proxy drag-end `new_rect` derivation and
+  `_clamp_editor_pos_to_page` dims for rotated proxies; add-text editor orientation on rotated
+  pages; plan-preview raster origin vs `result.clip_rect` offset; routing the three older
+  rotation helpers through `model/geometry`.

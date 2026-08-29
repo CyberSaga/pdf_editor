@@ -125,3 +125,60 @@ Therefore `32a7630` is insufficient to clear the manual smoke gate. The
 remaining defect is upstream of, or independent from, the one `y0`/`y1` editor
 placement branch: the text-edit selectable region and direct visual hit mapping
 are still in a different coordinate space from the page raster.
+
+## Diagnosis and fix (2026-08-29, after the revert `8eb91b5`)
+
+Three independent, pre-existing defects (none introduced by P3-D; the GUI read
+path had never converted page rotation):
+
+1. **Coordinate-space class bug.** Every text-geometry value the model exposed
+   to the View (`EditableSpan`/`TextBlock`/`EditableParagraph` bboxes,
+   `TextHit.target_bbox`, glyph rects, selection bounds) was unrotated
+   `get_text("dict")` space; the View is displayed (`page.rect`/`get_pixmap`)
+   space; the controller forwarded verbatim. `TextHit.rotation` was the
+   dict-space *text direction* (0 for this fixture), so the 270° editor branch
+   that `32a7630` edited never executed. Probe on this fixture: index bbox of
+   `Price` = (72, 101, 127, 125) (top-left, unrotated) vs raster ink
+   (102, 426, 180, 539) (bottom-left, displayed); the hit-test accepted the
+   dict centre and rejected the displayed centre.
+2. **False style override.** `editing_font_name` held the raw span font
+   (`"Helvetica"`) while `_editing_initial_font_name` held the UI alias
+   (`"helv"`), so an untouched session sent `font_family="Helvetica"` and the
+   plan path refused with `style_override_present`. Rotation-independent.
+3. **Plan preview refused rotated editors** (`_install_plan_preview_hook`
+   returned for `rotation != 0`), which would have silently disabled the exact
+   preview on every `/Rotate 90/270` page once the hit rotation became the
+   on-screen one.
+
+Fix: the model's public text-geometry surface now speaks displayed space
+(chokepoints in `model/geometry.py`; `PDFModel` wrappers convert in/out; the
+index, resolve pipeline and engine stay unrotated; `edit_text` /
+`derive_tier0_preview_target` derotate incoming rects; the legacy insert's
+page-bounds clamps receive `unrotated_page_rect(page)`); the View compares the
+session font against its baseline through one alias mapping (`_font_alias`),
+the plan preview hook installs for every rotation, and `apply_plan_preview` /
+`_capture_frozen_first_frame` counter-rotate the displayed-space raster into
+the proxy frame through one shared table (90/180/270). An adversarial review
+round on the diff surfaced three more defects (180° frozen frame grabbed the
+margin; font pick-and-revert reported an override; legacy clamps against the
+displayed `page.rect` broke htmlbox-path edits in the unrotated lower band of
+quarter-turn pages), each fixed red-first.
+Details: `plans/archive/task13-rotated-page-text-edit-geometry.md`.
+
+Offscreen reproduction of this report, red before the fix and green after:
+`test_scripts/test_text_edit_rotated_page_gui.py` (hover/outline on the ink,
+click on the ink opens the editor with `_editing_rotation == rotation` and a
+frozen first frame showing the glyphs on 90/180/270, no style override on an
+untouched session or after a font pick-and-revert, plan-preview hook +
+counter-rotation marker pixel per rotation, Apply commits at Tier 0 with no
+fallback ask) and `test_scripts/test_text_geometry_page_rotation.py` (model
+surface against a pixmap-ink oracle on `/Rotate 0/90/180/270`, plus the
+legacy htmlbox path keeping its place near the unrotated bottom).
+
+## Required retest (manual, unchanged)
+
+Repeat the interactive procedure above on the same fixture with the same
+launch configuration and require: outlines/hover on the vertical text, a
+click on the vertical text opening a vertical editor over it, 5–10 plan
+preview keystrokes (cold miss then warm hits), and a plan-backed Apply with
+no legacy-fallback dialog.

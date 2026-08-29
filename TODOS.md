@@ -957,6 +957,47 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   investigate once-per-accept interpretation reuse in the live engine; (f)
   define complete snapshot/reset governance for the process-global
   `fitz.TOOLS` small-glyph, quad-correction, and anti-alias settings.
+- 2026-08-29 (Task 13 — **P3-D manual smoke FAIL → rotated-page text-edit
+  geometry fix**, same branch): the rotated GUI smoke
+  (`docs/history/reports/2026-08-29-p3d-manual-smoke-attempt.md`) exposed
+  three pre-existing defects, none introduced by P3-D: the model's public
+  text-geometry surface was unrotated dict space while the View is displayed
+  space (outlines/hover/click/editor all landed at the unrotated location on
+  every `/Rotate 90/270` page — GUI text editing there had never worked);
+  an untouched session reported a font override (`"Helvetica"` vs the UI alias
+  `"helv"`) and lost the Tier 0 plan; and the plan-preview hook refused rotated
+  editors. Fixed at the model boundary (`model/geometry.py` chokepoints,
+  `PDFModel` displayed-space wrappers, `edit_text`/`derive_tier0_preview_target`
+  entry derotation, legacy insert bounds = `unrotated_page_rect`) plus view
+  changes (style-override comparison through `_font_alias`, rotated
+  plan-raster + frozen-first-frame counter-rotation through one shared
+  `PROXY_COUNTER_ROTATION` table incl. 180°). An adversarial review round
+  found and fixed three more red-first (180° frozen frame, font
+  pick-and-revert override, legacy clamps vs displayed `page.rect`). Record:
+  `plans/archive/task13-rotated-page-text-edit-geometry.md`. **Manual retest
+  still owed** (interactive only): the smoke procedure in the report.
+  **Registered follow-ups (pre-existing, rotated-*text* proxies too):** (a)
+  drag-end rect derivation (`pdf_view.py` mouseRelease ~4979-4991) uses the
+  proxy's top-left for 90/180/270 proxies whose anchor is
+  `(x1,y0)`/`(x1,y1)`/`(x0,y1)`, so a dragged rotated editor reports an offset
+  `new_rect` (derive it from `proxy.sceneBoundingRect()` instead; plain
+  click-then-Apply is unaffected, `new_rect` stays None); (b)
+  `_clamp_editor_pos_to_page` clamps with unrotated widget dims for rotated
+  proxies; (c) the add-text editor on a `/Rotate` page is drawn at
+  `page_rotation` while `add_textbox` inserts with `rotate=page.rotation` in
+  unrotated space, so the committed glyphs' on-screen orientation differs from
+  the editor's — determine the real orientation with the pixmap-ink oracle and
+  pass that rotation from `_create_add_text_editor_at_scene`; (d) the plan
+  preview coordinator rasterises `clip | effective_verify_bbox` but the view
+  paints the decoded PNG at local (0, 0) and discards `result.clip_rect`, so
+  baseline-direction growth shifts the preview (rotation-independent; crop /
+  offset by `result.clip_rect` in the controller); (e) the three older
+  rotation helpers (`_dict_space_to_visual`, annotation derotate/rotate,
+  `add_textbox`) should route through `model/geometry` thin wrappers; (f) the
+  model geometry surface now round-trips through MuPDF float32 rects/points at
+  `/Rotate 0` too (no exact-equality test exists; short-circuit at rotation 0
+  if one ever needs byte identity); (g) `PDFModel._normalize_text_for_compare`
+  is still missing (below).
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

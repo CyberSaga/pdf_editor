@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 293 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 297 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -298,3 +298,7 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2585 | A pre-state baseline cache key is a renderer-lifecycle guard, not a complete render-dependency proof | `PreStateBaselineCache` |
 | 2592 | Process-global PyMuPDF rendering switches belong in every reusable baseline key | renderer caches, `fitz.TOOLS` |
 | 2599 | Building a TextPage can make inherited rotation explicit | PyMuPDF inherited page attributes, document serialization |
+| 2606 | The model's text-geometry surface was unrotated dict space while the View is displayed space — GUI text editing never worked on `/Rotate 90/270` pages | `model/pdf_model.py` (hit-test, selection, outline targets), `model/pdf_text_edit.py` (`edit_text`, `derive_tier0_preview_target`), `controller/pdf_controller.py` facade, `model/geometry.py` |
+| 2613 | Untouched inline-edit sessions reported a font "override" and lost the Tier 0 plan | `view/text_editing.py` (`_sync_font_combo_state`, `build_style_overrides`), `model/text_commit/plan.py` (`STYLE_OVERRIDE_PRESENT`) |
+| 2620 | Plan-preview rasters are displayed-space clips; a rotated editor proxy must counter-rotate them | `view/text_editing.py` (`_install_plan_preview_hook`, `PreviewBackedInlineTextEditor.apply_plan_preview`, `_capture_frozen_first_frame`) |
+| 2627 | Legacy text insert clamped unrotated rects against the displayed `page.rect` | `model/pdf_text_edit.py` (`edit_text` → `_apply_redact_insert` / `_verify_rebuild_edit` / re-insert fallbacks) |
