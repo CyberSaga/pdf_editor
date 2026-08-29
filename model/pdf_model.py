@@ -13,7 +13,7 @@ import tempfile
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -31,7 +31,16 @@ from model.text_block import (
     TextBlockManager,
     rotation_degrees_from_dir,
 )
-from model.geometry import clamp_rect_to_page, rect_from_points, rect_overlap_ratio
+from model.geometry import (
+    clamp_rect_to_page,
+    rect_from_points,
+    rect_overlap_ratio,
+    unrotated_to_visual_point,
+    unrotated_to_visual_rect,
+    visual_text_rotation,
+    visual_to_unrotated_point,
+    visual_to_unrotated_rect,
+)
 from model.text_commit.dto import CommitOutcome, CommitStatus, RejectReason, TextCommitSettings
 from model.text_commit.engine import TieredCommitEngine
 from model.text_commit.inspect import (
@@ -1944,7 +1953,45 @@ class PDFModel:
         point: fitz.Point,
         allow_fallback: bool = True,
     ) -> TextHit | None:
-        """Return topmost editable run info at point using stable run/span identity."""
+        """Return topmost editable run info at a DISPLAYED-space point.
+
+        ``point`` and the returned ``TextHit.target_bbox`` are visual
+        (``page.rect`` / ``get_pixmap``) space and ``TextHit.rotation`` is the
+        on-screen glyph rotation -- the space every View coordinate lives in.
+        The text index underneath is unrotated dict space; the conversion
+        happens here, once, through the ``model.geometry`` chokepoints.
+        """
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return None
+        page = self.doc[page_num - 1]
+        hit = self._get_text_info_at_point_unrotated(
+            page_num,
+            visual_to_unrotated_point(page, point),
+            allow_fallback=allow_fallback,
+        )
+        return self._text_hit_to_visual(page, hit)
+
+    @staticmethod
+    def _text_hit_to_visual(page: fitz.Page, hit: TextHit | None) -> TextHit | None:
+        if hit is None:
+            return None
+        return replace(
+            hit,
+            target_bbox=unrotated_to_visual_rect(page, hit.target_bbox),
+            rotation=visual_text_rotation(page.rotation, hit.rotation),
+        )
+
+    def _get_text_info_at_point_unrotated(
+        self,
+        page_num: int,
+        point: fitz.Point,
+        allow_fallback: bool = True,
+    ) -> TextHit | None:
+        """Index-space hit-test (unrotated dict coordinates in AND out).
+
+        Internal callers that already work in index space use this; the public
+        ``get_text_info_at_point`` wraps it for displayed-space callers.
+        """
         if not self.doc or page_num < 1 or page_num > len(self.doc):
             return None
 
@@ -2112,11 +2159,14 @@ class PDFModel:
         page_idx = page_num - 1
         page = self.doc[page_idx]
         clipped = clamp_rect_to_page(fitz.Rect(rect), page.rect)
+        # ``rect``/``clipped`` are displayed space (the View's selection
+        # rectangle); the index and ``get_text(clip=)`` are unrotated space.
+        clipped_unrotated = visual_to_unrotated_rect(page, clipped)
         self.ensure_page_index_built(page_num)
 
         spans = self.block_manager.get_runs(page_idx)
         if not spans:
-            text = (page.get_text("text", clip=clipped, sort=True) or "").strip()
+            text = (page.get_text("text", clip=clipped_unrotated, sort=True) or "").strip()
             return text, (fitz.Rect(clipped) if text else None)
 
         selected_keys: set[tuple[int, int]] = set()
@@ -2124,7 +2174,7 @@ class PDFModel:
         for span in spans:
             key = (int(span.block_idx), int(span.line_idx))
             grouped_spans.setdefault(key, []).append(span)
-            if fitz.Rect(span.bbox).intersects(clipped):
+            if fitz.Rect(span.bbox).intersects(clipped_unrotated):
                 selected_keys.add(key)
 
         if not selected_keys:
@@ -2167,7 +2217,8 @@ class PDFModel:
         bounds = fitz.Rect(line_rects[0])
         for line_rect in line_rects[1:]:
             bounds.include_rect(line_rect)
-        return "\n".join(line_texts).strip(), bounds
+        # Index-space bounds -> displayed space for the View's highlight.
+        return "\n".join(line_texts).strip(), unrotated_to_visual_rect(self.doc[page_idx], bounds)
 
     def get_text_selection_snapshot_from_run(
         self,
@@ -2188,6 +2239,8 @@ class PDFModel:
         start_run = self.block_manager.find_run_by_id(page_idx, start_span_id)
         if start_run is None:
             return "", None
+        # Displayed-space focus point -> index space for everything below.
+        end_point = visual_to_unrotated_point(self.doc[page_idx], end_point)
 
         def _distance_sq_to_rect(point: fitz.Point, rect: fitz.Rect) -> float:
             dx = 0.0
@@ -2202,7 +2255,7 @@ class PDFModel:
                 dy = point.y - rect.y1
             return dx * dx + dy * dy
 
-        end_run = self.get_text_info_at_point(page_num, end_point, allow_fallback=False)
+        end_run = self._get_text_info_at_point_unrotated(page_num, end_point, allow_fallback=False)
         resolved_end_run = None
         if end_run is not None and getattr(end_run, "target_span_id", None):
             resolved_end_run = self.block_manager.find_run_by_id(page_idx, end_run.target_span_id)
@@ -2285,7 +2338,8 @@ class PDFModel:
         bounds = fitz.Rect(line_rects[0])
         for line_rect in line_rects[1:]:
             bounds.include_rect(line_rect)
-        return "\n".join(line_texts).strip(), bounds
+        # Index-space bounds -> displayed space for the View's highlight.
+        return "\n".join(line_texts).strip(), unrotated_to_visual_rect(self.doc[page_idx], bounds)
 
     def get_chars_in_run(
         self,
@@ -2293,7 +2347,22 @@ class PDFModel:
         span_id: str,
         rawdict: dict | None = None,
     ) -> list[tuple[str, fitz.Rect]]:
-        """Per-character (glyph, bbox) pairs for a run, in reading order.
+        """Per-character (glyph, bbox) pairs for a run, in reading order, with
+        the glyph boxes in DISPLAYED space (see ``get_text_info_at_point``)."""
+        chars = self._get_chars_in_run_unrotated(page_num, span_id, rawdict=rawdict)
+        doc = self.doc
+        if not chars or doc is None:
+            return chars
+        page = doc[page_num - 1]
+        return [(glyph, unrotated_to_visual_rect(page, rect)) for glyph, rect in chars]
+
+    def _get_chars_in_run_unrotated(
+        self,
+        page_num: int,
+        span_id: str,
+        rawdict: dict | None = None,
+    ) -> list[tuple[str, fitz.Rect]]:
+        """Index-space glyph boxes for a run, in reading order.
 
         Glyph boxes come from PyMuPDF ``rawdict``; a char belongs to the run when
         its centre lies inside the run's bbox. Used for character-level selection.
@@ -2355,12 +2424,17 @@ class PDFModel:
         page_num: int,
         point: fitz.Point,
     ) -> tuple[str, int, list[fitz.Rect]] | None:
-        """Return run text, strict hit index, and glyph rectangles at a point."""
-        hit = self.get_text_info_at_point(page_num, point, allow_fallback=False)
+        """Return run text, strict hit index, and glyph rectangles at a
+        DISPLAYED-space point; the rectangles come back in displayed space."""
+        if not self.doc or page_num < 1 or page_num > len(self.doc):
+            return None
+        page = self.doc[page_num - 1]
+        point = visual_to_unrotated_point(page, point)
+        hit = self._get_text_info_at_point_unrotated(page_num, point, allow_fallback=False)
         span_id = getattr(hit, "target_span_id", None) if hit is not None else None
         if not span_id:
             return None
-        chars = self.get_chars_in_run(page_num, span_id)
+        chars = self._get_chars_in_run_unrotated(page_num, span_id)
         if not chars:
             return None
         hit_index = next(
@@ -2376,7 +2450,7 @@ class PDFModel:
         return (
             "".join(glyph for glyph, _rect in chars),
             hit_index,
-            [fitz.Rect(rect) for _glyph, rect in chars],
+            [unrotated_to_visual_rect(page, rect) for _glyph, rect in chars],
         )
 
     def get_text_selection_lines(
@@ -2399,6 +2473,12 @@ class PDFModel:
         runs = self.block_manager.get_runs(page_idx)
         if not runs:
             return "", []
+        # Displayed-space anchor/focus points -> index space for the clipping
+        # below; the per-line rects are mapped back on the way out.
+        page = self.doc[page_idx]
+        end_point = visual_to_unrotated_point(page, end_point)
+        if start_point is not None:
+            start_point = visual_to_unrotated_point(page, start_point)
         start_run = self.block_manager.find_run_by_id(page_idx, start_span_id)
         if start_run is None:
             return "", []
@@ -2408,7 +2488,7 @@ class PDFModel:
             dy = max(rect.y0 - point.y, 0.0, point.y - rect.y1)
             return dx * dx + dy * dy
 
-        end_run_info = self.get_text_info_at_point(page_num, end_point, allow_fallback=False)
+        end_run_info = self._get_text_info_at_point_unrotated(page_num, end_point, allow_fallback=False)
         resolved_end_run = None
         if end_run_info is not None and getattr(end_run_info, "target_span_id", None):
             resolved_end_run = self.block_manager.find_run_by_id(page_idx, end_run_info.target_span_id)
@@ -2485,7 +2565,7 @@ class PDFModel:
             rects: list[fitz.Rect] = []
             for run in _slice_for_group(group_idx):
                 vertical = int(getattr(run, "rotation", 0)) % 360 in (90, 270)
-                chars = self.get_chars_in_run(page_num, run.span_id, rawdict=rawdict)
+                chars = self._get_chars_in_run_unrotated(page_num, run.span_id, rawdict=rawdict)
                 for glyph, cb in chars:
                     coord = (cb.y0 + cb.y1) / 2.0 if vertical else (cb.x0 + cb.x1) / 2.0
                     keep = True
@@ -2509,7 +2589,58 @@ class PDFModel:
             line_texts.append("".join(glyphs))
             line_rects.append(line_rect)
 
-        return "\n".join(line_texts), line_rects
+        return "\n".join(line_texts), [unrotated_to_visual_rect(page, r) for r in line_rects]
+
+    # --- displayed-space projections of the text index (View-facing) ---------
+
+    def get_text_targets(self, page_idx: int, mode: str, *, blocks_fallback: bool = False) -> list:
+        """Outline candidates for a page -- paragraphs, or runs (and, only when
+        ``blocks_fallback`` and the page has no runs, blocks) -- as COPIES whose
+        ``bbox``/``rect``/``layout_rect``/``origin`` are DISPLAYED space and whose
+        ``rotation`` is the on-screen glyph rotation.  The index itself stays
+        unrotated; never hand its objects to the View directly."""
+        if not self.doc or page_idx < 0 or page_idx >= len(self.doc):
+            return []
+        bm = self.block_manager
+        if mode == "paragraph":
+            items = list(getattr(bm, "get_paragraphs", lambda _i: [])(page_idx) or [])
+        else:
+            items = list(getattr(bm, "get_runs", lambda _i: [])(page_idx) or [])
+            if blocks_fallback and not items:
+                items = list(getattr(bm, "get_blocks", lambda _i: [])(page_idx) or [])
+        page = self.doc[page_idx]
+        return [self._text_geometry_to_visual(page, item) for item in items]
+
+    def get_text_blocks(self, page_idx: int) -> list:
+        """Text blocks of a page as DISPLAYED-space copies (see ``get_text_targets``)."""
+        if not self.doc or page_idx < 0 or page_idx >= len(self.doc):
+            return []
+        blocks = list(getattr(self.block_manager, "get_blocks", lambda _i: [])(page_idx) or [])
+        page = self.doc[page_idx]
+        return [self._text_geometry_to_visual(page, block) for block in blocks]
+
+    @staticmethod
+    def _text_geometry_to_visual(page: fitz.Page, item):
+        """Copy an index dataclass (run / paragraph / block) into displayed space."""
+        changes: dict[str, object] = {}
+        for field_name in ("bbox", "rect", "layout_rect"):
+            value = getattr(item, field_name, None)
+            if value is not None:
+                changes[field_name] = unrotated_to_visual_rect(page, value)
+        origin = getattr(item, "origin", None)
+        if origin is not None:
+            changes["origin"] = unrotated_to_visual_point(page, origin)
+        if hasattr(item, "rotation"):
+            changes["rotation"] = visual_text_rotation(page.rotation, item.rotation)
+        return replace(item, **changes)
+
+    def visual_rect_to_unrotated(self, page_num: int, rect: fitz.Rect) -> fitz.Rect:
+        """Displayed-space rect -> the index's unrotated space (for the few
+        controller paths that must query ``block_manager`` by rectangle)."""
+        doc = self.doc
+        if doc is None or page_num < 1 or page_num > len(doc):
+            return fitz.Rect(rect)
+        return visual_to_unrotated_rect(doc[page_num - 1], rect)
 
     def get_render_width_for_edit(self, page_num: int, rect: fitz.Rect) -> float:
         """編輯換行寬度 == 原文字框寬度（point），不再加任何 Qt margin。

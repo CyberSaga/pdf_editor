@@ -2733,9 +2733,15 @@ class PDFController:
             if source_run is not None:
                 return target_span_id
 
+        # ``source_rect`` arrives in displayed space (View); ``find_by_rect``
+        # queries the unrotated index.
+        to_index_space = getattr(self.model, "visual_rect_to_unrotated", None)
+        index_rect = (
+            to_index_space(source_page, source_rect) if callable(to_index_space) else source_rect
+        )
         target = self.model.block_manager.find_by_rect(
             page_idx,
-            source_rect,
+            index_rect,
             original_text=original_text,
             doc=self.model.doc,
         )
@@ -3533,21 +3539,16 @@ class PDFController:
     def iter_text_targets(self, page_idx: int, mode: str, *, blocks_fallback: bool = False) -> list:
         """Read-only text-target candidates (paragraphs or runs[/blocks]) for a
         page so the view never reaches model.block_manager directly. Mirrors the
-        two view call sites exactly: ``'paragraph'`` -> get_paragraphs; otherwise
-        -> get_runs, and (only when ``blocks_fallback``) get_blocks if runs is
-        empty."""
-        bm = self.model.block_manager
-        if mode == "paragraph":
-            return list(getattr(bm, "get_paragraphs", lambda _i: [])(page_idx) or [])
-        candidates = list(getattr(bm, "get_runs", lambda _i: [])(page_idx) or [])
-        if blocks_fallback and not candidates:
-            candidates = list(getattr(bm, "get_blocks", lambda _i: [])(page_idx) or [])
-        return candidates
+        two view call sites exactly: ``'paragraph'`` -> paragraphs; otherwise
+        -> runs, and (only when ``blocks_fallback``) blocks if runs is empty.
+        Geometry is DISPLAYED space (the model projects its unrotated index at
+        this boundary -- ``PDFModel.get_text_targets``)."""
+        return self.model.get_text_targets(page_idx, mode, blocks_fallback=blocks_fallback)
 
     def get_text_blocks(self, page_idx: int) -> list:
-        """Read-only text blocks for a page (the outline blocks-fallback path);
-        keeps the view off model.block_manager."""
-        return list(getattr(self.model.block_manager, "get_blocks", lambda _i: [])(page_idx) or [])
+        """Read-only text blocks for a page (the outline blocks-fallback path)
+        in DISPLAYED space; keeps the view off model.block_manager."""
+        return self.model.get_text_blocks(page_idx)
 
     def build_insert_preview_html(
         self,

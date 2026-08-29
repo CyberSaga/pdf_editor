@@ -31,7 +31,12 @@ import fitz
 
 from model.edit_commands import EditTextResult
 from model.edit_requests import StyleOverrides
-from model.geometry import clamp_rect_to_page, rect_union
+from model.geometry import (
+    clamp_rect_to_page,
+    rect_union,
+    unrotated_page_rect,
+    visual_to_unrotated_rect,
+)
 from model.text_commit.dto import (
     CommitOutcome,
     CommitStatus,
@@ -269,7 +274,7 @@ def _push_down_overlapping_text(
         r, g, b = task["color"]
         # 估算文字寬度（保守估計）
         est_w  = max(sz * len(task["text"]) * 0.75, sz * 2)
-        _pr    = page.rect
+        _pr    = unrotated_page_rect(page)  # origins are unrotated-space
         x0     = max(x, _pr.x0)
         x1     = min(x + est_w, _pr.x1)
         y0     = max(y - sz * 1.15, _pr.y0)  # 基線上方（ascender）
@@ -349,7 +354,7 @@ def _replay_protected_spans(model: PDFModel, page: fitz.Page, spans: list[Editab
                 )
                 css = model._build_insert_css(fontsize, color, fontname)
                 page.insert_htmlbox(
-                    clamp_rect_to_page(bbox, page.rect),
+                    clamp_rect_to_page(bbox, unrotated_page_rect(page)),
                     html_content,
                     css=css,
                     rotate=rotate,
@@ -408,7 +413,7 @@ def _replay_protected_spans(model: PDFModel, page: fitz.Page, spans: list[Editab
         )
         css = model._build_insert_css(fontsize, color, fontname)
         page.insert_htmlbox(
-            clamp_rect_to_page(bbox, page.rect),
+            clamp_rect_to_page(bbox, unrotated_page_rect(page)),
             html_content,
             css=css,
             rotate=rotate,
@@ -1561,6 +1566,9 @@ def derive_tier0_preview_target(
         return None
     model.ensure_page_index_built(page_num)
     page = doc[page_idx]
+    # Same boundary rule as ``edit_text``: displayed-space rect in, index space
+    # for the resolve pipeline.
+    rect = visual_to_unrotated_rect(page, fitz.Rect(rect))
     effective_target_mode = model._resolve_effective_target_mode(
         target_mode=target_mode,
         target_span_id=target_span_id,
@@ -1814,7 +1822,16 @@ def edit_text(model: PDFModel, page_num: int, rect: fitz.Rect, new_text: str,
     # typed bind; callers guarantee an open doc here (edit path) - runtime behavior identical if None
     doc: fitz.Document = model.doc
     page = doc[page_idx]
-    page_rect = page.rect
+    # Boundary conversion: the View hands geometry in DISPLAYED space; the
+    # resolve pipeline (``find_by_rect``) and the legacy insert work in the
+    # index's unrotated space (identity at /Rotate 0). The legacy insert's
+    # page-bounds clamps therefore need the UNROTATED page box too --
+    # ``page.rect`` has swapped extents on quarter-turn pages.
+    page_rect = unrotated_page_rect(page)
+    if rect is not None:
+        rect = visual_to_unrotated_rect(page, fitz.Rect(rect))
+    if new_rect is not None:
+        new_rect = visual_to_unrotated_rect(page, fitz.Rect(new_rect))
     rollback_flag = False
     resolved_target_span_id = target_span_id
     effective_target_mode = model._resolve_effective_target_mode(
