@@ -62,7 +62,7 @@ integer/boolean leaves. Raw reports are written only beneath the gitignored
 
 - [x] Add this execution record and the dev-only fontTools dependency.
 - [x] Rerun the post-P2 funnel and add the independent glyph-overlap census.
-- [ ] Add replacement-vocabulary counterfactual aggregates.
+- [x] Add replacement-vocabulary counterfactual aggregates.
 - [ ] Add the fontTools same-face proof census.
 - [ ] Add `serialize_pdf_value` and the nine synthetic mutation premises.
 - [ ] Record Safety and Priority verdicts, documentation, and verification.
@@ -128,6 +128,59 @@ The e2e-enabled second pass was attempted because the baseline completed
 within 30 minutes, but it did not complete within its 30-minute ceiling and
 was stopped without producing a valid artifact. E2E results therefore did not
 run to completion in this record.
+
+### Replacement-vocabulary counterfactual (2026-08-30, `--no-e2e`)
+
+Population: the same positional two-document corpus. `doc_0` evaluates 261
+Type0 fonts across 263 page references and 5,934 bindable shows; `doc_1`
+evaluates one Type0 font across 18 page references and has zero bindable shows.
+The raw aggregate-only JSON is gitignored at
+`benchmarks/p4a-vocabulary-2026-08-30.json`. Candidate coverage uses the three
+configured system font files through PyMuPDF face 0 only; it is a heuristic
+upper bound, not the same-face proof performed by Commit 3.
+
+Each cell is `encodable now % → after augmentation %`. Show weighting stores
+integer show-character opportunities; dividing by vocabulary size gives
+`Σ bindable_shows(font) × rate` without placing floats in the raw report.
+
+| vocabulary / weighting | doc_0 | doc_1 |
+| --- | ---: | ---: |
+| fullwidth/punctuation — font | 2.61 → 100.00 | 0.00 → 100.00 |
+| fullwidth/punctuation — page | 2.59 → 100.00 | 0.00 → 100.00 |
+| fullwidth/punctuation — show | 4.07 → 100.00 | n/a (0 shows) |
+| CAD seed — font | 7.53 → 100.00 | 0.00 → 100.00 |
+| CAD seed — page | 7.48 → 100.00 | 0.00 → 100.00 |
+| CAD seed — show | 10.33 → 100.00 | n/a (0 shows) |
+| Japanese common — font | 2.62 → 100.00 | 0.00 → 100.00 |
+| Japanese common — page | 2.60 → 100.00 | 0.00 → 100.00 |
+| Japanese common — show | 3.55 → 100.00 | n/a (0 shows) |
+| SIP sample — font | 0.00 → 0.00 | 0.00 → 0.00 |
+| SIP sample — page | 0.00 → 0.00 | 0.00 → 0.00 |
+| SIP sample — show | 0.00 → 0.00 | n/a (0 shows) |
+| corpus union — font | 10.04 → 99.84 | n/a (empty union) |
+| corpus union — page | 9.97 → 99.84 | n/a (empty union) |
+| corpus union — show | 15.47 → 99.83 | n/a (0 shows) |
+
+Readings and arithmetic reconciliation:
+
+- Vocabulary sizes are 25 fullwidth/punctuation, 220 CAD seed, 440 Japanese
+  common, 12 SIP, and a runtime-only 604-character `doc_0` corpus union.
+- For every vocabulary and font, the mutually exclusive base buckets sum to
+  `vocabulary_size × fonts_evaluated`; page and show counters reconcile to the
+  corresponding integer opportunity denominators. Derived
+  `candidate_could_supply` overlaps rejection buckets by design.
+- `doc_0` corpus-union show weighting has 554,528 encodable-now opportunities,
+  3,023,674 candidate-supplied opportunities, and 3,578,202 after-augmentation
+  opportunities out of 3,584,136. The provisional augmentation headroom is
+  `3,023,674 / 604 = 5,006.08` show-equivalents before the same-face A-family
+  restriction.
+- The three BMP-oriented candidates do not cover the SIP sample. The CAD list
+  remains a seed pending domain-owner sign-off; `corpus_union` is the
+  decision-grade vocabulary for Priority GO.
+- `doc_1`'s Type0 capability is unavailable, so its explicit vocabularies are
+  0% encodable now but face-0 candidate coverage reaches 100% for the BMP
+  vocabularies. Its runtime corpus union is empty and its show-weighted rates
+  are undefined, not zero.
 
 ## 8. Open questions
 
