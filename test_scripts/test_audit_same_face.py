@@ -35,6 +35,16 @@ def _save_font(font) -> bytes:
     return output.getvalue()
 
 
+def _collection_faces(fonts):
+    from fontTools.ttLib import TTCollection
+
+    output = io.BytesIO()
+    collection = TTCollection()
+    collection.fonts = fonts
+    collection.save(output)
+    return TTCollection(io.BytesIO(output.getvalue()), lazy=False).fonts
+
+
 def _font_with_fstype(program: bytes, fs_type: int) -> bytes:
     from fontTools.ttLib import TTFont
 
@@ -125,15 +135,166 @@ def test_instruction_bytes_may_differ_when_decompiled_outline_is_equal() -> None
     ) == "A_outline_same_bytes_differ"
 
 
-def test_two_matching_candidates_are_ambiguous() -> None:
+def test_ttc_faces_sharing_one_program_are_a_shared_program_match() -> None:
     pytest.importorskip("fontTools")
-    from scripts.audit_same_face import classify_program
+    from fontTools.ttLib import TTFont
+    from scripts.audit_same_face import (
+        a_family_faces,
+        candidate_supplier_for_faces,
+        classify_program,
+    )
+    from scripts.measure_type0_funnel import funnel_document
+    from test_scripts.type0_fixture_builder import cid_for
 
     full, subset = _full_and_subset()
-    assert classify_program(subset, [full, full]) == "face_ambiguous"
+    face = TTFont(io.BytesIO(full), lazy=False)
+    candidates = _collection_faces([face, face])
+    assert classify_program(
+        subset, [_save_font(candidate) for candidate in candidates]
+    ) == "A_same_gid_exact_shared_program"
+
+    fixture = build_identity_h_fixture(text="你", subset=True)
+    write_minimal_tounicode(
+        fixture,
+        [(cid_for("你"), "你"), (cid_for("圖"), "圖")],
+    )
+    faces = a_family_faces(fixture.doc, candidates)
+    assert len(faces[fixture.font_xref]) == 2
+    assert candidate_supplier_for_faces(faces)(fixture.font_xref, "圖")
+    report = funnel_document(
+        fixture.doc,
+        run_e2e=False,
+        candidate_has_glyph_for_font=candidate_supplier_for_faces(faces),
+        augmentation_font_xrefs=set(faces),
+    )["vocabulary_counterfactual"]
+    assert report["augmentation_eligible_bindable_shows"] == 1
+    assert report["priority_go_units"]["unit_b_corpus_union"][
+        "augmentation_numerator"
+    ] == 1
 
 
-def test_priority_join_counts_only_unique_a_family_fonts() -> None:
+def test_shared_program_supplier_requires_per_character_cmap_agreement() -> None:
+    pytest.importorskip("fontTools")
+    from fontTools.ttLib import TTFont
+    from scripts.audit_same_face import (
+        _classify_font_details,
+        candidate_supplier_for_faces,
+    )
+
+    full, subset = _full_and_subset()
+    first = TTFont(io.BytesIO(full), lazy=False)
+    second = TTFont(io.BytesIO(full), lazy=False)
+    for table in second["cmap"].tables:
+        if ord("圖") in table.cmap and ord("好") in table.cmap:
+            table.cmap[ord("圖")] = table.cmap[ord("好")]
+    candidates = _collection_faces([first, second])
+    embedded = TTFont(io.BytesIO(subset), lazy=False)
+    proof, matches = _classify_font_details(embedded, candidates)
+    assert proof == "A_same_gid_exact_shared_program"
+    supplier = candidate_supplier_for_faces({7: matches})
+    assert supplier(7, "你")
+    assert not supplier(7, "圖")
+
+
+def test_two_exact_matches_with_different_program_tables_stay_ambiguous() -> None:
+    pytest.importorskip("fontTools")
+    from fontTools.ttLib import TTFont
+    from scripts.audit_same_face import (
+        _classify_font_details,
+        a_family_faces,
+        candidate_supplier_for_faces,
+    )
+    from scripts.measure_type0_funnel import funnel_document
+    from test_scripts.type0_fixture_builder import cid_for
+
+    full, subset = _full_and_subset()
+    first = TTFont(io.BytesIO(full), lazy=False)
+    second = TTFont(io.BytesIO(full), lazy=False)
+    embedded = TTFont(io.BytesIO(subset), lazy=False)
+    inactive = next(
+        gid
+        for gid in range(first["maxp"].numGlyphs)
+        if not first["glyf"][first.getGlyphName(gid)].isComposite()
+        and not embedded["glyf"][embedded.getGlyphName(gid)].compile(
+            embedded["glyf"]
+        )
+        and first["glyf"][first.getGlyphName(gid)].compile(first["glyf"])
+    )
+    glyph = second["glyf"][second.getGlyphName(inactive)]
+    glyph.coordinates[0] = (glyph.coordinates[0][0] + 1, glyph.coordinates[0][1])
+    candidates = _collection_faces([first, second])
+    proof, matches = _classify_font_details(embedded, candidates)
+    assert proof == "face_ambiguous"
+    assert matches is None
+
+    fixture = build_identity_h_fixture(text="你", subset=True)
+    write_minimal_tounicode(
+        fixture,
+        [(cid_for("你"), "你"), (cid_for("圖"), "圖")],
+    )
+    faces = a_family_faces(fixture.doc, candidates)
+    report = funnel_document(
+        fixture.doc,
+        run_e2e=False,
+        candidate_has_glyph_for_font=candidate_supplier_for_faces(faces),
+        augmentation_font_xrefs=set(faces),
+    )["vocabulary_counterfactual"]
+    assert report["augmentation_eligible_bindable_shows"] == 0
+    assert report["priority_go_units"]["unit_b_corpus_union"][
+        "augmentation_numerator"
+    ] == 0
+
+
+def test_composite_closure_compares_empty_embedded_components() -> None:
+    pytest.importorskip("fontTools")
+    from fontTools.ttLib import TTFont
+    from fontTools.ttLib.tables._g_l_y_f import Glyph
+    from scripts.audit_same_face import _classify_font_details
+
+    _, subset = _full_and_subset()
+    embedded = TTFont(io.BytesIO(subset), lazy=False)
+    candidate = TTFont(io.BytesIO(subset), lazy=False)
+    for gid in range(embedded["maxp"].numGlyphs):
+        glyph = embedded["glyf"][embedded.getGlyphName(gid)]
+        if not glyph.isComposite():
+            continue
+        component_gid = embedded.getGlyphID(glyph.components[0].glyphName)
+        if candidate["glyf"][candidate.getGlyphName(component_gid)].compile(
+            candidate["glyf"]
+        ):
+            embedded["glyf"][embedded.getGlyphName(component_gid)] = Glyph()
+            break
+    else:  # pragma: no cover - the fixture contains composite CJK glyphs
+        raise AssertionError("fixture has no non-empty composite component")
+    assert _classify_font_details(embedded, [candidate])[0] == "face_unproven"
+
+
+def test_embedded_glyph_decompile_failure_is_program_unreadable(monkeypatch) -> None:
+    pytest.importorskip("fontTools")
+    import scripts.audit_same_face as audit
+
+    full, subset = _full_and_subset()
+    monkeypatch.setattr(
+        audit,
+        "_active_gids",
+        lambda _font: (_ for _ in ()).throw(ValueError("corrupt glyf")),
+    )
+    assert audit.classify_program(subset, [full]) == "program_unreadable"
+
+
+def test_same_face_mode_refuses_zero_candidate_faces(monkeypatch, capsys) -> None:
+    pytest.importorskip("fontTools")
+    import scripts.audit_same_face as audit
+    import scripts.measure_type0_funnel as funnel
+
+    monkeypatch.setattr(audit, "load_candidate_faces", lambda: [])
+    assert funnel.main(["unused.pdf", "--same-face", "--json"]) == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "no_candidate_faces"
+    }
+
+
+def test_priority_join_counts_a_family_fonts() -> None:
     pytest.importorskip("fontTools")
     from scripts.audit_same_face import (
         a_family_faces,
@@ -163,21 +324,6 @@ def test_priority_join_counts_only_unique_a_family_fonts() -> None:
         "tj_array_numerator": 0,
         "hscale_numerator": 0,
     }
-
-    ambiguous_faces = a_family_faces(fixture.doc, [full, full])
-    ambiguous = funnel_document(
-        fixture.doc,
-        run_e2e=False,
-        candidate_has_glyph_for_font=candidate_supplier_for_faces(
-            ambiguous_faces
-        ),
-        augmentation_font_xrefs=set(ambiguous_faces),
-    )["vocabulary_counterfactual"]
-    assert ambiguous["augmentation_eligible_bindable_shows"] == 0
-    assert ambiguous["priority_go_units"]["unit_b_corpus_union"][
-        "augmentation_numerator"
-    ] == 0
-
 
 @pytest.mark.parametrize("fs_type", [0x0002, 0x0004, 0x0100, 0x0200])
 def test_restricted_candidate_is_rejected(fs_type: int) -> None:

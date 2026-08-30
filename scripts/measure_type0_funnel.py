@@ -1303,6 +1303,12 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"status": "fonttools_absent"}))
             return 2
         candidate_faces = same_face_audit.load_candidate_faces()
+        if not candidate_faces:
+            print(json.dumps({"status": "no_candidate_faces"}))
+            return 2
+        report["same_face"] = {
+            "candidate_faces_loaded": len(candidate_faces),
+        }
     for index, path in enumerate(args.paths):
         doc = fitz.open(path)
         try:

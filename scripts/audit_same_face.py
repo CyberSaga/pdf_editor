@@ -41,6 +41,7 @@ except ImportError:  # pragma: no cover - exercised by monkeypatch in CI
 
 _PROOF_CLASSES = (
     "A_same_gid_exact",
+    "A_same_gid_exact_shared_program",
     "A_outline_same_bytes_differ",
     "B_renumbered_matchable",
     "face_unproven",
@@ -113,6 +114,25 @@ def _active_gids(font: Any) -> list[int]:
     ]
 
 
+def _component_closed_gids(font: Any, active: list[int]) -> list[int]:
+    """Include every component reachable from an active composite glyph."""
+    closed = set(active)
+    pending = list(active)
+    glyf = font["glyf"]
+    while pending:
+        gid = pending.pop()
+        glyph = glyf[font.getGlyphName(gid)]
+        glyph.expand(glyf)
+        if not glyph.isComposite():
+            continue
+        for component in glyph.components:
+            component_gid = font.getGlyphID(component.glyphName)
+            if component_gid not in closed:
+                closed.add(component_gid)
+                pending.append(component_gid)
+    return sorted(closed)
+
+
 def _metrics(font: Any, gid: int) -> tuple[int, int]:
     return tuple(font["hmtx"][font.getGlyphName(gid)])  # type: ignore[return-value]
 
@@ -140,21 +160,28 @@ def _renumbered_inventory(font: Any) -> Counter[tuple[object, ...]]:
     return inventory
 
 
-def _proof_against(embedded: Any, candidate: Any) -> str | None:
+def _proof_against(
+    embedded: Any,
+    candidate: Any,
+    *,
+    active: list[int] | None = None,
+) -> str | None:
     for table in ("head", "maxp", "glyf", "hmtx"):
         if table not in embedded or table not in candidate:
             return None
     if embedded["head"].unitsPerEm != candidate["head"].unitsPerEm:
         return None
 
-    active = _active_gids(embedded)
+    if active is None:
+        active = _active_gids(embedded)
     if not active:
         return None
-    same_gid = candidate["maxp"].numGlyphs > max(active)
+    compared = _component_closed_gids(embedded, active)
+    same_gid = candidate["maxp"].numGlyphs > max(compared)
     exact = same_gid
     outlines_equal = same_gid
     if same_gid:
-        for gid in active:
+        for gid in compared:
             if _metrics(embedded, gid) != _metrics(candidate, gid):
                 exact = outlines_equal = False
                 break
@@ -198,14 +225,52 @@ def _normalize_candidates(candidates: list[bytes | Any]) -> list[Any]:
     return normalized
 
 
+def _raw_table(font: Any, tag: str) -> bytes:
+    reader = getattr(font, "reader", None)
+    if reader is not None:
+        return bytes(reader[tag])
+    return bytes(font.getTableData(tag))
+
+
+def _share_exact_program(matches: list[tuple[str, Any]]) -> bool:
+    if not matches or any(match != "A_same_gid_exact" for match, _ in matches):
+        return False
+    first = matches[0][1]
+    try:
+        signature = (
+            int(first["head"].unitsPerEm),
+            int(first["maxp"].numGlyphs),
+            *(_raw_table(first, tag) for tag in ("glyf", "loca", "hmtx")),
+        )
+        return all(
+            (
+                int(candidate["head"].unitsPerEm),
+                int(candidate["maxp"].numGlyphs),
+                *(
+                    _raw_table(candidate, tag)
+                    for tag in ("glyf", "loca", "hmtx")
+                ),
+            )
+            == signature
+            for _, candidate in matches[1:]
+        )
+    except Exception:  # noqa: BLE001 - hostile candidate table data
+        return False
+
+
 def _classify_font_details(
-    embedded: Any, candidates: list[Any]
-) -> tuple[str, Any | None]:
+    embedded: Any,
+    candidates: list[Any],
+    *,
+    active: list[int] | None = None,
+) -> tuple[str, tuple[Any, ...] | None]:
+    if active is None:
+        active = _active_gids(embedded)
     allowed_matches: list[tuple[str, Any]] = []
     restricted_matches = 0
     for candidate in candidates:
         try:
-            match = _proof_against(embedded, candidate)
+            match = _proof_against(embedded, candidate, active=active)
         except Exception:  # noqa: BLE001 - corrupt candidate face
             continue
         if match is None:
@@ -215,10 +280,15 @@ def _classify_font_details(
         else:
             restricted_matches += 1
     if len(allowed_matches) >= 2:
+        if _share_exact_program(allowed_matches):
+            return (
+                "A_same_gid_exact_shared_program",
+                tuple(candidate for _, candidate in allowed_matches),
+            )
         return "face_ambiguous", None
     if len(allowed_matches) == 1:
         match, candidate = allowed_matches[0]
-        return match, candidate if match.startswith("A_") else None
+        return match, (candidate,) if match == "A_same_gid_exact" else None
     if restricted_matches:
         return "embedding_restricted", None
     return "face_unproven", None
@@ -232,11 +302,16 @@ def classify_program(embedded_program: bytes, candidate_programs: list[bytes]) -
     """Classify one embedded TrueType program against candidate programs."""
     try:
         embedded = _font_from_bytes(embedded_program)
+        if "glyf" not in embedded or embedded_program[:4] == b"OTTO":
+            return "cff_out_of_scope"
+        active = _active_gids(embedded)
+        return _classify_font_details(
+            embedded,
+            _normalize_candidates(candidate_programs),
+            active=active,
+        )[0]
     except Exception:  # noqa: BLE001 - explicit unreadable bucket
         return "program_unreadable"
-    if "glyf" not in embedded or embedded_program[:4] == b"OTTO":
-        return "cff_out_of_scope"
-    return _classify_font(embedded, _normalize_candidates(candidate_programs))
 
 
 def _type0_fonts(doc: fitz.Document) -> list[int]:
@@ -384,10 +459,10 @@ def _subset_tag(
 
 def _analyze_document(
     doc: fitz.Document, candidate_programs: list[bytes | Any]
-) -> tuple[dict[str, object], dict[int, Any]]:
+) -> tuple[dict[str, object], dict[int, tuple[Any, ...]]]:
     candidates = _normalize_candidates(candidate_programs)
     proof_classes: Counter[str] = Counter()
-    a_family_faces: dict[int, Any] = {}
+    a_family_faces: dict[int, tuple[Any, ...]] = {}
     heuristics: dict[str, Counter[str]] = {
         name: Counter() for name in _HEURISTICS
     }
@@ -412,8 +487,9 @@ def _analyze_document(
                 if "glyf" not in embedded:
                     proof = "cff_out_of_scope"
                 else:
+                    active = _active_gids(embedded)
                     proof, matching_face = _classify_font_details(
-                        embedded, candidates
+                        embedded, candidates, active=active
                     )
                     if matching_face is not None:
                         a_family_faces[font_xref] = matching_face
@@ -455,15 +531,15 @@ def census_document(
 
 def a_family_faces(
     doc: fitz.Document, candidate_programs: list[bytes | Any]
-) -> dict[int, Any]:
-    """Unique allowed A-family face by font xref; identities stay in memory."""
+) -> dict[int, tuple[Any, ...]]:
+    """Allowed exact-program face tuples by xref; identities stay in memory."""
     return _analyze_document(doc, candidate_programs)[1]
 
 
 def candidate_supplier_for_faces(
-    faces_by_xref: dict[int, Any],
+    faces_by_xref: dict[int, tuple[Any, ...] | None],
 ) -> Callable[[int, str], bool]:
-    """Per-font Unicode glyph predicate for proven A faces."""
+    """Require every proven face to map a character to one non-empty GID."""
     cmap_cache: dict[int, dict[int, str]] = {}
     supply_cache: dict[tuple[int, str], bool] = {}
 
@@ -472,17 +548,27 @@ def candidate_supplier_for_faces(
         cached = supply_cache.get(key)
         if cached is not None:
             return cached
-        face = faces_by_xref.get(font_xref)
-        if face is None:
+        faces = faces_by_xref.get(font_xref)
+        if not faces:
             return False
-        cmap = cmap_cache.setdefault(id(face), face.getBestCmap() or {})
-        name = cmap.get(ord(char))
-        supplied = False
-        if name is not None:
+        gids: list[int] = []
+        supplied = True
+        for face in faces:
+            cmap = cmap_cache.setdefault(id(face), face.getBestCmap() or {})
+            name = cmap.get(ord(char))
+            if name is None:
+                supplied = False
+                break
             try:
-                supplied = bool(_compiled_glyph(face, face.getGlyphID(name)))
+                gid = face.getGlyphID(name)
+                if not _compiled_glyph(face, gid):
+                    supplied = False
+                    break
+                gids.append(gid)
             except Exception:  # noqa: BLE001 - corrupt candidate cmap
                 supplied = False
+                break
+        supplied = supplied and len(set(gids)) == 1
         supply_cache[key] = supplied
         return supplied
 
