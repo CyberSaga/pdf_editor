@@ -445,16 +445,16 @@ def _corpus_union(
         font_chars: dict[str, None] = {}
         records = cid.tounicode.records
         truncated = False
-        for record_index, (kind, lo, hi, text) in enumerate(records):
+        for kind, lo, hi, text in records:
             if kind == "char":
                 if len(text) == 1:
+                    if (
+                        text not in font_chars
+                        and len(font_chars) >= _CORPUS_UNION_PER_FONT_CAP
+                    ):
+                        truncated = True
+                        break
                     font_chars.setdefault(text, None)
-                if (
-                    len(font_chars) >= _CORPUS_UNION_PER_FONT_CAP
-                    and record_index + 1 < len(records)
-                ):
-                    truncated = True
-                    break
                 continue
             for offset in range(hi - lo + 1):
                 try:

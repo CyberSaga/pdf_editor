@@ -140,9 +140,10 @@ Arithmetic reconciliation:
   `doc_1`). The 88-show intersection is separate, so it cannot inflate either
   cheap candidate. The unchanged funnel stages exactly match the sealed Task
   13 record, so no drift attribution is required.
-- The 16,549 shows lost to the 4 MiB replay budget are 59.5% of all `doc_0`
-  Type0 shows. That is the larger, separately tracked lever; the three P4
-  candidates below compare only within the budget-eligible population.
+- In Unit A, relaxing the 4 MiB replay budget has an upper bound of 16,549
+  newly bindable single-hex-`Tj` shows (27,250 − 10,701), versus hscale 877
+  and whole-`TJ` 42. This raw stage-loss count is not comparable to Unit B and
+  remains tracked separately; the latency half of budget relaxation is open.
 
 The e2e-enabled second pass was attempted because the baseline completed
 within 30 minutes, but it did not complete within its 30-minute ceiling and
@@ -155,8 +156,11 @@ Population: the same positional two-document corpus. `doc_0` evaluates 261
 Type0 fonts across 263 page references and 5,934 bindable shows; all 261 fonts
 also occur in replayed page shows. `doc_1` evaluates one Type0 font across 18
 page references, that font occurs in replay, and it has zero bindable shows.
-Both documents report zero name-resolution mismatches and zero truncated
-corpus-union fonts.
+Both documents report zero name-resolution mismatches, zero replayed fonts
+outside the population, zero population fonts without replayed shows, zero
+truncated corpus-union fonts, and zero `page_replay_malformed` diagnostics.
+The latter is recorded on both sides because any nonzero value would make the
+corresponding counts upper bounds.
 The raw aggregate-only JSON is gitignored at
 `benchmarks/p4a-vocabulary-2026-08-30.json`. Candidate coverage uses the three
 configured system font files through PyMuPDF face 0 only; it is a heuristic
@@ -196,6 +200,8 @@ Readings and arithmetic reconciliation:
   `type0_unicode_unmapped` and `type0_glyph_missing` are augmentable in v1.
   Candidate coverage of unavailable / ambiguous / GID-range buckets remains
   visible under `candidate_supply|<verdict>` but is not credited.
+  `candidate_supply|encodable_now` is structurally zero because already
+  encodable characters are never candidate-supply opportunities.
 - `doc_0` corpus-union show weighting has 554,528 encodable-now opportunities,
   3,023,672 augmentable candidate-supplied opportunities, and 3,578,200
   after-augmentation opportunities out of 3,584,136. The provisional
@@ -204,10 +210,16 @@ Readings and arithmetic reconciliation:
 - The three BMP-oriented candidates do not cover the SIP sample. The CAD list
   remains a seed pending domain-owner sign-off; `corpus_union` is the
   decision-grade vocabulary for Priority GO.
-- `doc_1`'s only Type0 font is not augmentable because its ToUnicode is
-  unparseable. Candidate face coverage is diagnostic only and no longer turns
-  any row into false 100% headroom. Its runtime corpus union is empty and its
-  show-weighted rates are undefined, not zero.
+- Both documents' sole `type0_tounicode_unparseable` font records
+  `array-destination bfrange is outside the v1 grammar`; these values come
+  from the closed, code-authored reject-detail key space.
+- All 543 `doc_1` Type0 shows are `TJ` on one font whose ToUnicode verdict is
+  `type0_tounicode_unparseable`. Whole-`TJ` admission therefore has zero
+  `doc_1` headroom unless the v1 ToUnicode grammar is extended. P4-B (b) is a
+  TJ-and-grammar item and must be re-costed with this blocker named.
+  Candidate face coverage is diagnostic only and no longer turns any row into
+  false 100% headroom. Its runtime corpus union is empty and its show-weighted
+  rates are undefined, not zero.
 
 Priority is recorded in two like-for-like units (show-equivalents):
 
@@ -233,6 +245,12 @@ in a bindable `doc_0` show's font today (CAD seed 10.3%; fullwidth digits and
 punctuation 4.1%). A character copied from elsewhere in the drawing therefore
 fails encoding about 85% of the time even after source binding succeeds; that
 is the gap augmentation addresses.
+
+The Commit 2c `--no-e2e` rerun left every recorded funnel and counterfactual
+number unchanged. In particular, sole-loss rows still sum to 27,820 / 543,
+`all_gates_pass == source_bindable == 5,934`, and Unit B remains
+554,528 / 3,023,672 / 7,424 / 76,711 over vocabulary size 604, or
+918.09 / 5,006.08 / 12.29 / 127.00 show-equivalents.
 
 ## 8. Open questions
 

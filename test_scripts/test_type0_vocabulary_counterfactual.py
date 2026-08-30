@@ -57,6 +57,30 @@ def _register_page_resource(
         doc.xref_set_key(owner, category, f"<< /{name} {xref} 0 R >>")
 
 
+def _copy_font_with_tounicode(fixture, name: str, inner: str) -> int:
+    copied_font = fixture.doc.get_new_xref()
+    fixture.doc.update_object(
+        copied_font, fixture.doc.xref_object(fixture.font_xref)
+    )
+    copied_tounicode = fixture.doc.get_new_xref()
+    fixture.doc.update_object(
+        copied_tounicode, fixture.doc.xref_object(fixture.tounicode_xref)
+    )
+    fixture.doc.update_stream(
+        copied_tounicode,
+        fixture.doc.xref_stream(fixture.tounicode_xref),
+    )
+    fixture.doc.xref_set_key(
+        copied_font, "ToUnicode", f"{copied_tounicode} 0 R"
+    )
+    write_tounicode_cmap(
+        SimpleNamespace(doc=fixture.doc, tounicode_xref=copied_tounicode),
+        inner,
+    )
+    _register_font_resource(fixture, name, copied_font)
+    return copied_font
+
+
 def test_vocabularies_are_closed_nonempty_and_distinct() -> None:
     from scripts.type0_vocabulary import VOCABULARIES, VOCABULARY_NAMES
 
@@ -181,30 +205,15 @@ def test_reverse_index_matches_default_fixture_records() -> None:
         )
 
 
-def test_corpus_union_is_not_shared_capped_across_fonts(monkeypatch) -> None:
+def test_corpus_union_is_the_union_of_font_maps(monkeypatch) -> None:
     fixture = build_identity_h_fixture(text="你好", subset=True)
     write_minimal_tounicode(fixture, [(cid_for("你"), "你")])
 
-    copied_font = fixture.doc.get_new_xref()
-    fixture.doc.update_object(
-        copied_font, fixture.doc.xref_object(fixture.font_xref)
-    )
-    copied_tounicode = fixture.doc.get_new_xref()
-    fixture.doc.update_object(
-        copied_tounicode, fixture.doc.xref_object(fixture.tounicode_xref)
-    )
-    fixture.doc.update_stream(
-        copied_tounicode,
-        fixture.doc.xref_stream(fixture.tounicode_xref),
-    )
-    fixture.doc.xref_set_key(
-        copied_font, "ToUnicode", f"{copied_tounicode} 0 R"
-    )
-    write_tounicode_cmap(
-        SimpleNamespace(doc=fixture.doc, tounicode_xref=copied_tounicode),
+    _copy_font_with_tounicode(
+        fixture,
+        "FUnion",
         f"1 beginbfchar\n<{cid_for('好'):04X}> <597D>\nendbfchar",
     )
-    _register_font_resource(fixture, "FUnion", copied_font)
     append_page_content(
         fixture,
         (
@@ -218,6 +227,49 @@ def test_corpus_union_is_not_shared_capped_across_fonts(monkeypatch) -> None:
     assert report["fonts_evaluated"] == 2
     assert sum(union[key] for key in ("encodable_now", "type0_unicode_unmapped")) == 4
     assert report["corpus_union_truncated_fonts"] == 0
+
+
+def test_corpus_union_cap_is_per_font(monkeypatch) -> None:
+    full_range = "1 beginbfrange\n<0000> <FFFF> <0000>\nendbfrange"
+    fixture = build_identity_h_fixture()
+    write_tounicode_cmap(fixture, full_range)
+    _copy_font_with_tounicode(fixture, "FFull", full_range)
+
+    report = _report(monkeypatch, fixture, "Z")
+    assert report["fonts_evaluated"] == 2
+    assert report["corpus_union_truncated_fonts"] == 0
+    assert report["priority_go_units"]["unit_b_corpus_union"][
+        "vocabulary_size"
+    ] == 65_536
+
+
+def test_corpus_union_bfchar_cap_distinguishes_duplicates_from_new_chars() -> None:
+    from scripts.measure_type0_funnel import _corpus_union
+
+    records = tuple(
+        ("char", code, code, chr(code)) for code in range(65_536)
+    )
+    duplicate = SimpleNamespace(
+        cid=SimpleNamespace(
+            tounicode=SimpleNamespace(
+                records=(*records, ("char", 0, 0, "\x00"))
+            )
+        )
+    )
+    chars, truncated = _corpus_union({1: duplicate})
+    assert len(chars) == 65_536
+    assert truncated == 0
+
+    new_range = SimpleNamespace(
+        cid=SimpleNamespace(
+            tounicode=SimpleNamespace(
+                records=(*records, ("range", 0, 0, "\U00010000"))
+            )
+        )
+    )
+    chars, truncated = _corpus_union({1: new_range})
+    assert len(chars) == 65_536
+    assert truncated == 1
 
 
 def test_corpus_union_reports_per_font_truncation(monkeypatch) -> None:
@@ -238,38 +290,48 @@ def test_corpus_union_reports_per_font_truncation(monkeypatch) -> None:
 
 
 def test_priority_units_use_per_font_corpus_union_rates(monkeypatch) -> None:
-    fixture = build_identity_h_fixture(text="你", subset=True)
+    fixture = build_identity_h_fixture(text="你好", subset=True)
     write_minimal_tounicode(
         fixture,
-        [(cid_for("你"), "你"), (cid_for("圖"), "圖")],
+        [
+            (cid_for("你"), "你"),
+            (cid_for("好"), "好"),
+            (cid_for("圖"), "圖"),
+        ],
     )
     append_page_content(
         fixture,
         (
             f"BT /{fixture.resource_name} 12 Tf 1 0 0 1 72 650 Tm "
+            f"<{cid_for('好'):04X}> Tj ET "
+            f"BT /{fixture.resource_name} 12 Tf 1 0 0 1 72 625 Tm "
+            f"[<{cid_for('你'):04X}>] TJ ET "
+            f"BT /{fixture.resource_name} 12 Tf 1 0 0 1 72 600 Tm "
+            f"[<{cid_for('好'):04X}>] TJ ET "
+            f"BT /{fixture.resource_name} 12 Tf 1 0 0 1 72 575 Tm "
             f"[<{cid_for('你'):04X}>] TJ ET "
             f"BT /{fixture.resource_name} 12 Tf 80 Tz "
-            f"1 0 0 1 72 625 Tm <{cid_for('你'):04X}> Tj ET"
+            f"1 0 0 1 72 550 Tm <{cid_for('你'):04X}> Tj ET"
         ),
     )
     report = _report(
         monkeypatch,
         fixture,
-        "你圖",
+        "你好圖",
         candidate_has_glyph=lambda char: char == "圖",
     )
     units = report["priority_go_units"]
     assert units["unit_a_self_proxy"] == {
         "augmentation_show_equivalents": 0,
-        "tj_array_show_equivalents": 1,
+        "tj_array_show_equivalents": 3,
         "hscale_show_equivalents": 1,
     }
     assert units["unit_b_corpus_union"] == {
-        "vocabulary_size": 2,
-        "baseline_numerator": 1,
-        "augmentation_numerator": 1,
-        "tj_array_numerator": 1,
-        "hscale_numerator": 1,
+        "vocabulary_size": 3,
+        "baseline_numerator": 4,
+        "augmentation_numerator": 2,
+        "tj_array_numerator": 6,
+        "hscale_numerator": 2,
     }
 
 
