@@ -100,6 +100,7 @@ python test_scripts/test_1pdf_horizontal.py --gui --save out.pdf
 | `test_overlap_corpus_recursive.py` | script | Recursive overlap-safe edit validation for full corpus; writes CSV/MD reports | `python test_scripts/test_overlap_corpus_recursive.py` |
 | `test_overlap_textbox_edit.py` | pytest | Targeted overlap textbox edit regressions | `pytest -q test_scripts/test_overlap_textbox_edit.py` |
 | `test_pdf_merge_workflow.py` | pytest | Merge-PDF workflow regressions (merge dialog list behavior, validation, merge outputs, and ordering preservation) | `pytest -q test_scripts/test_pdf_merge_workflow.py` |
+| `test_pdf_value_serializer.py` | pytest | Task 14 legal PDF-value serializer round trips, leaf-type preservation, invalid names/numbers, MuPDF normalization limit, and digest-writer negative control | `pytest -q test_scripts/test_pdf_value_serializer.py` |
 | `test_performance.py` | script | Repeated-edit performance benchmark | `python test_scripts/test_performance.py --rounds 20` |
 | `test_interaction_modes.py` | pytest | Interaction-mode gating regressions for browse, objects, and text-edit modes | `pytest -q test_scripts/test_interaction_modes.py` |
 | `test_printing_pipeline.py` | script | Printing pipeline validation (accuracy + memory/perf) | `python test_scripts/test_printing_pipeline.py` |
@@ -112,6 +113,7 @@ python test_scripts/test_1pdf_horizontal.py --gui --save out.pdf
 | `test_print_dialog_logic.py` | script | Print dialog logic checks for layout/range/options normalization | `python test_scripts/test_print_dialog_logic.py` |
 | `test_sample_pdfs.py` | script | Quick smoke test on `1.pdf`, `2.pdf`, `when I was young I.pdf` | `python test_scripts/test_sample_pdfs.py` |
 | `test_type0_vocabulary_counterfactual.py` | pytest | Task 14 replacement-vocabulary, corpus-union, candidate-supply, and discriminating Priority-unit arithmetic regressions | `pytest -q test_scripts/test_type0_vocabulary_counterfactual.py` |
+| `test_type0_mutation_premises.py` | pytest | Task 14 synthetic cache, descendant rewrite, KEEP reopen, raster, revert, shared-font stale, AES-256, and stale-undo premise matrix | `pytest -q test_scripts/test_type0_mutation_premises.py` |
 | `test_unified_undo.py` | script | Unified undo stack scenario validation (delete/edit/undo/redo) | `python test_scripts/test_unified_undo.py` |
 | `validate_optimized_pdf.py` | script | Multi-parser integrity validation for an optimized PDF (fitz + pikepdf + pypdf) | `python test_scripts/validate_optimized_pdf.py test_files/2024_ASHRAE_content.pdf` |
 

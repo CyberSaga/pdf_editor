@@ -1149,9 +1149,15 @@ decision boundary before Tier 1b can be designed:
   `glyf`/`loca`/`hmtx` tables form one shared-program proof witness, while
   per-character cmap-to-GID agreement remains mandatory.
 
-The only planned production-package addition in this phase is a legal
-PDF-value serializer beside `parse_pdf_value`; all font mutation probes remain
-synthetic scratch-document work. Safety and Priority verdicts stay separate.
+The only production-package addition in this phase is
+`cid_fonts.serialize_pdf_value`, a type-sensitive writer for the bounded
+parser's dict/list/ref/name/bytes/bool/null/int/float subset. All font mutation
+work remains in `scripts/probe_type0_mutation_premises.py` against synthetic
+scratch documents. The probe covers cache visibility, descendant rewrite,
+KEEP reopen, raster identity, multi-object revert, cross-page staleness,
+AES-256, and stale undo without adding a planner/engine mutation path. Safety
+is NO-GO because only the process-global MuPDF cache flush refreshed a live
+handle; hscale is therefore the current Priority pick.
 
 ## 11. Character-Level Text Selection (Browse Mode)
 

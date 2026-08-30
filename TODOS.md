@@ -1012,12 +1012,18 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   `glyf`/`loca`/`hmtx` programs only when every face agrees on the requested
   character's GID. Those 143 eligible fonts contain 4,292 bindable shows.
   Unit B is 3,326.47 augmentation vs 127.00 hscale vs 12.29 whole-`TJ`
-  show-equivalents, so augmentation leads hscale by 26× pending Safety GO.
+  show-equivalents, so augmentation leads hscale by 26× on value.
   The strict unique-face row remains 0 and the unrestricted upper bound
-  remains 5,006.08. Priority is deferred until the mutation-premise matrix:
-  augmentation wins if Safety is GO; hscale is the fallback if Safety is
-  NO-GO. The 1,642 bindable shows on unproven fonts are a candidate-list item
-  for P4-B.
+  remains 5,006.08. The mutation-premise matrix passed serializer, descendant
+  rewrite, KEEP reopen, raster identity, multi-object revert, cross-page
+  staleness, and AES-256 gates. Cache visibility is the blocker: in-place and
+  descriptor-repoint/new-xref rewrites stay invisible; reopen works; only the
+  process-global `fitz.TOOLS.store_shrink(100)` refreshes the same handle, and
+  the single-threaded probe cannot prove worker exclusion during that flush.
+  **Safety is NO-GO, so Priority GO is hscale.** If coordinator-level
+  exclusion or a non-global same-handle refresh later flips Safety, the same
+  corpus numbers make augmentation the pick. The 1,642 bindable shows on
+  unproven fonts remain a candidate-list item for P4-B.
   Separately, hscale leads Unit A at 877 newly bindable shows versus whole-`TJ`
   42. Relaxing the unchanged 4 MiB replay budget exposes a **16,549**-show
   stage-loss upper bound, but those shows can still fail downstream gates, so
@@ -1029,6 +1035,10 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   documents. The census rejects all three conditions structurally, uses a
   one-pass fail-closed stream-owner index, and closes ToUnicode reject details
   over the 15 code-authored literals plus `missing_detail`.
+  P2 confirms `xref_set_key(..., "DescendantFonts/0/DW", ...)` destroys the
+  array, so descendant mutation must use parse → modify → serialize. P9
+  confirms an earlier Tier 0 command's undo refuses stale after font mutation
+  and leaves the document unchanged.
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

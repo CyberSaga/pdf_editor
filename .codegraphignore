@@ -7,5 +7,7 @@ build/
 dist/
 *.egg-info/
 .codegraph/
+.claude/
+.worktrees/
 node_modules/
 .git/

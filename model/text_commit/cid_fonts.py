@@ -26,8 +26,10 @@ or paths.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 
 import fitz
 
@@ -194,6 +196,73 @@ def parse_pdf_value(data: bytes | str) -> object:
     if end != len(tokens):
         raise PdfParseError("trailing tokens after object")
     return value
+
+
+_PDF_NAME_DELIMITERS = frozenset("()<>[]{}/%")
+
+
+def _validated_pdf_name(value: str, *, leading_slash: bool) -> str:
+    body = value[1:] if leading_slash else value
+    if not body or any(
+        char.isspace() or char in _PDF_NAME_DELIMITERS for char in body
+    ):
+        raise ValueError("PDF name contains whitespace or delimiters")
+    try:
+        body.encode("latin-1")
+    except UnicodeEncodeError as exc:
+        raise ValueError("PDF name is outside the supported byte range") from exc
+    return f"/{body}"
+
+
+def _serialize_pdf_float(value: float) -> str:
+    if not math.isfinite(value):
+        raise ValueError("PDF numbers must be finite")
+    text = repr(value)
+    if "e" in text.lower():
+        text = format(Decimal(text), "f")
+    if "." not in text:
+        text += ".0"
+    return text
+
+
+def serialize_pdf_value(value: object) -> str:
+    """Serialize the bounded parser's supported PDF object-value subset.
+
+    Byte strings always use hexadecimal syntax. The parser deliberately does
+    not unescape PDF literal strings, so emitting parenthesized strings would
+    not provide a type- and byte-preserving round trip.
+    """
+    if isinstance(value, dict):
+        items: list[str] = []
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError("PDF dictionary keys must be strings")
+            items.append(
+                f"{_validated_pdf_name(key, leading_slash=False)} "
+                f"{serialize_pdf_value(item)}"
+            )
+        return "<< " + " ".join(items) + " >>"
+    if isinstance(value, list):
+        return "[ " + " ".join(serialize_pdf_value(item) for item in value) + " ]"
+    if isinstance(value, PdfRef):
+        if value.xref <= 0:
+            raise ValueError("PDF indirect reference xref must be positive")
+        return f"{value.xref} 0 R"
+    if isinstance(value, str):
+        if not value.startswith("/"):
+            raise ValueError("only PDF name strings are serializable")
+        return _validated_pdf_name(value, leading_slash=True)
+    if isinstance(value, bytes):
+        return f"<{value.hex().upper()}>"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return _serialize_pdf_float(value)
+    raise ValueError(f"unsupported PDF value type: {type(value).__name__}")
 
 
 def canonical_pdf_text(value: object) -> str:

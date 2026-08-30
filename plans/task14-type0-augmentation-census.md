@@ -2,7 +2,7 @@
 
 **Base:** `task13/p3d-interpretation-reuse@c276018`
 **Working branch:** `task14/type0-augmentation-census`
-**Status:** in progress
+**Status:** P4-A complete; independent Fix A / Fix B branches remain
 
 ## 1. Goal
 
@@ -64,8 +64,8 @@ integer/boolean leaves. Raw reports are written only beneath the gitignored
 - [x] Rerun the post-P2 funnel and add the independent glyph-overlap census.
 - [x] Add replacement-vocabulary counterfactual aggregates.
 - [x] Add the fontTools same-face proof census.
-- [ ] Add `serialize_pdf_value` and the nine synthetic mutation premises.
-- [ ] Record Safety and Priority verdicts, documentation, and verification.
+- [x] Add `serialize_pdf_value` and the nine synthetic mutation premises.
+- [x] Record Safety and Priority verdicts, documentation, and verification.
 - [ ] Implement Fix A and Fix B on their independent branches.
 
 ## 7. Decisions record
@@ -311,10 +311,11 @@ is separate: hscale leads at 877 newly bindable shows versus whole-`TJ` 42,
 while augmentation is zero because it changes character encodability rather
 than source-show bindability.
 
-Priority pick is deferred to the §7 verdict step after Commit 4. If the
-mutation premises produce Safety GO, shared-program augmentation leads Unit B
-by 26×; if Safety is NO-GO, hscale is the fallback. Whole-`TJ` remains a
-TJ-and-ToUnicode-grammar item on `doc_1`, not hidden headroom in this comparison.
+At the Commit 2d checkpoint, Priority pick was deferred to the final §7 verdict
+after Commit 4: shared-program augmentation would lead Unit B by 26× only with
+Safety GO, while hscale was the Safety-NO-GO fallback. The final premise record
+below resolves that condition. Whole-`TJ` remains a TJ-and-ToUnicode-grammar
+item on `doc_1`, not hidden headroom in this comparison.
 
 Commit 2d overwrote all four aggregate artifacts. Both unrestricted and
 `--same-face --no-e2e` reports persist zero malformed-replay pages/shows, zero
@@ -325,6 +326,64 @@ matches production's fail-closed membership while avoiding a per-stream
 whole-document rescan. The allowed-match set excludes restricted faces: one
 allowed exact face plus a restricted match remains a unique usable face, while
 two restricted matches remain `embedding_restricted`.
+
+### Mutation-premise record (2026-08-30, synthetic fixtures only)
+
+Population: scratch `fitz.open()` documents built entirely by
+`test_scripts/type0_fixture_builder.py`. The augmented program is the builder's
+full embedded face installed into its retained-GID subset fixture. No private
+document or system-font bytes participate. The raw closed-key report is
+gitignored at `benchmarks/p4a-premises-2026-08-30.json`.
+
+The legal `serialize_pdf_value` writer round-trips both descendant storage
+forms plus nested refs, names, bytes, booleans, nulls, ints, and floats through
+`parse_pdf_value` with leaf types preserved. Bytes are always hex because the
+parser does not unescape literal strings. MuPDF readback preserves the proven
+name/ref/int/array/dict leaves but may rewrite hex bytes as escaped literals
+and integral floats as ints; that normalization is outside the writer/parser
+round-trip contract. `canonical_pdf_text` remains digest-only and is not a
+writer.
+
+| premise | measured result | gate |
+| --- | --- | --- |
+| P1 cache visibility | in-place false; `store_shrink(100)` true; new xref false; reopen true | **NO-GO**: the only same-handle mechanism is a process-global flush with no worker-exclusion proof |
+| P2 array-path write | `array_destroyed` | informative: never use an array path for descendant mutation |
+| P3 descendant rewrite | indirect true; inline true; fingerprint changed; one xref differed | pass |
+| P4 KEEP reopen | MuPDF readable; missing glyph renders; fontTools loads; `/Length1` correct | pass |
+| P5 existing raster | identical; zero differing sample bytes | pass |
+| P6 multi-object revert | decoded, raw, object, and fingerprint identity all true | pass |
+| P7 shared font | other-page plan stale; commit attempt changed nothing; capability digest changed | pass |
+| P8 AES-256 KEEP | password still required; reauthenticated render and second KEEP round trip succeed | pass |
+| P9 prior Tier 0 undo | stale undo refused; refusal changed nothing | informative, safe refusal confirmed |
+
+P1 distinguishes cache visibility from thread safety. The process-global flush
+made the rewritten program visible on the same handle, but this single-threaded
+probe cannot prove that no render/preview worker holds a MuPDF handle during
+the flush. Reopening also works but is not a same-live-handle mechanism. The
+preferred descriptor-repoint/new-xref mechanism did not refresh the cache.
+An adversarial three-run repeat reproduced the same result every time:
+in-place 0/3, `store_shrink(100)` 3/3, new xref 0/3, and reopen 3/3. The page
+renderer opens snapshot-backed MuPDF documents on QThreads, so process-global
+flush safety requires an explicit coordinator-level exclusion proof.
+
+Verification: 85 focused tests passed; the CI-equivalent selection finished
+with 2,882 passed, 21 skipped, 15 deselected, and 5 expected failures. Ruff,
+mypy, `git diff --check`, and the whole-report privacy scan passed. The premise
+artifact contains no absolute paths or CJK text and remains ignored.
+
+**Safety verdict: NO-GO for live Tier 1b augmentation.** P3–P8 and the
+serializer pass, and the corpus has exact/shared-program candidates with
+allowed embedding rights, but P1 lacks a safe same-handle refresh. Production
+augmentation remains blocked until coordinator-level exclusion can make the
+global flush safe or a non-global same-handle refresh is proven.
+
+**Priority verdict: hscale.** Shared-program augmentation has 3,326.47 Unit-B
+show-equivalents versus hscale 127.00 and whole-`TJ` 12.29, and clears the 2×
+value rule, but it is ineligible while Safety is NO-GO. Among eligible
+non-mutating candidates, hscale leads Unit B and also leads Unit A at 877
+newly bindable shows versus whole-`TJ` 42. Whole-`TJ` remains coupled to the
+`doc_1` ToUnicode-grammar extension. If a later cache-safety proof flips Safety
+GO without changing the corpus, augmentation becomes the Priority pick.
 
 ## 8. Open questions
 

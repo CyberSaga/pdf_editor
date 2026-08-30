@@ -2671,3 +2671,31 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** The diagnostic reused the production single-stream query inside a page/stream loop and read each page before isolating malformed content references.
 **Fix:** Build `stream_xref -> owner pages` once, retain an `unknown_pages` set that makes every other page fail closed, and count unreadable pages instead of aborting the document.
 **File:** `scripts/measure_type0_funnel.py`
+
+## FontFile2 rewrites can remain invisible to the live MuPDF font cache
+**Area:** `scripts/probe_type0_mutation_premises.py`, future Type0 augmentation
+**Symptom:** Replacing FontFile2 in place or repointing the descriptor to a fresh stream does not make a previously missing glyph render on the same document handle; save/reopen does.
+**Cause:** MuPDF retains font state beyond the rewritten PDF objects. `fitz.TOOLS.store_shrink(100)` refreshes the same handle, but it is process-global and the single-threaded probe cannot prove concurrent worker safety.
+**Fix:** Keep live Tier 1b augmentation disabled until coordinator-level exclusion makes the global flush safe or a non-global same-handle refresh is proven. Reopen is evidence, not authorization to swap a live session handle.
+**File:** `scripts/probe_type0_mutation_premises.py`
+
+## `xref_set_key` array paths are not descendant-dictionary mutation
+**Area:** `model/text_commit/cid_fonts.py`, future Type0 augmentation
+**Symptom:** Writing `DescendantFonts/0/DW` through `xref_set_key` destroys the descendant array instead of updating its first dictionary.
+**Cause:** PyMuPDF key paths traverse dictionaries, not PDF array indices; `0` is planted as dictionary syntax rather than interpreted as an array element.
+**Fix:** Parse the descendant value, modify the dictionary object, serialize it with `serialize_pdf_value`, and rewrite the actual descendant xref or complete inline array.
+**File:** `scripts/probe_type0_mutation_premises.py`
+
+## MuPDF readback normalization is wider than the PDF-value serializer contract
+**Area:** `model/text_commit/cid_fonts.py`
+**Symptom:** A value serialized with hex bytes and an integral float can read back from `xref_object()` as an escaped literal string and an int.
+**Cause:** MuPDF is free to reserialize equivalent PDF object syntax, while the bounded parser deliberately does not unescape literal strings and distinguishes ints from floats.
+**Fix:** Define the writer contract as type-sensitive `parse_pdf_value(serialize_pdf_value(v))`; use MuPDF readback only for the proven name/ref/int/array/dict leaves and keep byte serialization hex-only.
+**File:** `model/text_commit/cid_fonts.py`
+
+## Restore stream bytes before restoring the stream dictionary
+**Area:** `scripts/probe_type0_mutation_premises.py`, future multi-object revert
+**Symptom:** Restoring a FontFile2 dictionary and then calling `update_stream` changes `/Length` and can add `/Filter`, so object identity is lost even when decoded bytes match.
+**Cause:** `update_stream` owns stream compression metadata and rewrites the dictionary after the caller restored it.
+**Fix:** Restore decoded bytes with the intended compression first, then restore the saved stream dictionary body; verify decoded bytes, object body, and page fingerprint independently.
+**File:** `scripts/probe_type0_mutation_premises.py`
