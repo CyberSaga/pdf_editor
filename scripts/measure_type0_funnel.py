@@ -36,7 +36,11 @@ characters. The per-document sections ARE the document weighting.
 Usage::
 
     python scripts/measure_type0_funnel.py <pdf> [more...] [--json]
-    [--no-e2e]
+    [--no-e2e] [--same-face]
+
+``--same-face`` uses the model-free fontTools audit to restrict augmentation
+headroom to unique, embedding-allowed A-family candidate faces. Font xrefs and
+face identities remain in memory; the report adds aggregate eligibility counts.
 """
 from __future__ import annotations
 
@@ -539,6 +543,8 @@ def _vocabulary_counterfactual(
     hscale_only_by_font: Counter[int],
     font_resolution_mismatch: int,
     candidate_has_glyph: Callable[[str], bool] | None,
+    candidate_has_glyph_for_font: Callable[[int, str], bool] | None,
+    augmentation_font_xrefs: set[int] | None,
 ) -> dict[str, object]:
     vocabularies = dict(VOCABULARIES)
     corpus_union, corpus_union_truncated_fonts = _corpus_union(capabilities)
@@ -549,7 +555,7 @@ def _vocabulary_counterfactual(
         }
         for weighting in VOCABULARY_WEIGHTINGS
     }
-    candidate_cache: dict[str, bool] = {}
+    candidate_cache: dict[str | tuple[int, str], bool] = {}
     priority_b = Counter(
         {
             "baseline_numerator": 0,
@@ -571,24 +577,41 @@ def _vocabulary_counterfactual(
         }
         corpus_now = 0
         corpus_augmentation = 0
+        augmentation_eligible = (
+            augmentation_font_xrefs is None
+            or font_xref in augmentation_font_xrefs
+        )
         for name, chars in vocabularies.items():
             for char in chars:
                 verdict = _vocabulary_verdict(
                     capability, char, reverse_index
                 )
                 candidate = False
-                if verdict != "encodable_now" and candidate_has_glyph:
-                    cached_candidate = candidate_cache.get(char)
+                if (
+                    verdict != "encodable_now"
+                    and augmentation_eligible
+                    and (candidate_has_glyph_for_font or candidate_has_glyph)
+                ):
+                    cache_key: str | tuple[int, str] = char
+                    if candidate_has_glyph_for_font is not None:
+                        cache_key = (font_xref, char)
+                    cached_candidate = candidate_cache.get(cache_key)
                     if cached_candidate is None:
                         try:
-                            cached_candidate = bool(candidate_has_glyph(char))
+                            if candidate_has_glyph_for_font is not None:
+                                cached_candidate = bool(
+                                    candidate_has_glyph_for_font(font_xref, char)
+                                )
+                            else:
+                                assert candidate_has_glyph is not None
+                                cached_candidate = bool(candidate_has_glyph(char))
                         except (
                             RuntimeError,
                             ValueError,
                             fitz.mupdf.FzErrorBase,
                         ):
                             cached_candidate = False
-                        candidate_cache[char] = cached_candidate
+                        candidate_cache[cache_key] = cached_candidate
                     candidate = cached_candidate
                 augmentable = verdict in AUGMENTABLE_VERDICTS and candidate
                 if name == "corpus_union":
@@ -619,7 +642,7 @@ def _vocabulary_counterfactual(
             hscale_only_by_font[font_xref] * corpus_now
         )
 
-    return {
+    report = {
         "fonts_evaluated": len(capabilities),
         "fonts_with_replayed_shows": len(replayed_font_xrefs),
         "replayed_fonts_not_in_population": len(
@@ -649,6 +672,13 @@ def _vocabulary_counterfactual(
         },
         **weighted,
     }
+    if augmentation_font_xrefs is not None:
+        eligible = set(capabilities) & augmentation_font_xrefs
+        report["augmentation_eligible_fonts"] = len(eligible)
+        report["augmentation_eligible_bindable_shows"] = sum(
+            bindable_shows[font_xref] for font_xref in eligible
+        )
+    return report
 
 
 def _residual_state_loss(show: object) -> str | None:
@@ -764,6 +794,8 @@ def funnel_document(
     *,
     run_e2e: bool,
     candidate_has_glyph: Callable[[str], bool] | None = None,
+    candidate_has_glyph_for_font: Callable[[int, str], bool] | None = None,
+    augmentation_font_xrefs: set[int] | None = None,
 ) -> dict[str, object]:
     registry = DocumentFontRegistry(doc)
     (
@@ -1084,6 +1116,8 @@ def funnel_document(
             hscale_only_by_font,
             font_resolution_mismatch,
             candidate_has_glyph,
+            candidate_has_glyph_for_font,
+            augmentation_font_xrefs,
         ),
         "e2e_sample": e2e,
         "e2e_reject_reasons": dict(sorted(e2e_reject_reasons.items())),
@@ -1158,18 +1192,49 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-e2e", action="store_true", help="skip the per-page commit sample"
     )
+    parser.add_argument(
+        "--same-face",
+        action="store_true",
+        help="restrict augmentation headroom to unique allowed A-family faces",
+    )
     args = parser.parse_args(argv)
 
     fitz.TOOLS.mupdf_display_errors(False)
     report: dict[str, object] = {}
-    candidate_has_glyph = system_candidate_supplier()
+    candidate_has_glyph = (
+        None if args.same_face else system_candidate_supplier()
+    )
+    same_face_audit = None
+    candidate_faces: list[object] = []
+    if args.same_face:
+        from scripts import audit_same_face as same_face_audit
+
+        if same_face_audit.TTFont is None or same_face_audit.TTCollection is None:
+            print(json.dumps({"status": "fonttools_absent"}))
+            return 2
+        candidate_faces = same_face_audit.load_candidate_faces()
     for index, path in enumerate(args.paths):
         doc = fitz.open(path)
         try:
+            faces_by_xref: dict[int, object] | None = None
+            candidate_has_glyph_for_font = None
+            if same_face_audit is not None:
+                faces_by_xref = same_face_audit.a_family_faces(
+                    doc, candidate_faces
+                )
+                candidate_has_glyph_for_font = (
+                    same_face_audit.candidate_supplier_for_faces(
+                        faces_by_xref
+                    )
+                )
             report[f"doc_{index}"] = funnel_document(
                 doc,
                 run_e2e=not args.no_e2e,
                 candidate_has_glyph=candidate_has_glyph,
+                candidate_has_glyph_for_font=candidate_has_glyph_for_font,
+                augmentation_font_xrefs=(
+                    set(faces_by_xref) if faces_by_xref is not None else None
+                ),
             )
         finally:
             doc.close()

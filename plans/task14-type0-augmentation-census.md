@@ -63,7 +63,7 @@ integer/boolean leaves. Raw reports are written only beneath the gitignored
 - [x] Add this execution record and the dev-only fontTools dependency.
 - [x] Rerun the post-P2 funnel and add the independent glyph-overlap census.
 - [x] Add replacement-vocabulary counterfactual aggregates.
-- [ ] Add the fontTools same-face proof census.
+- [x] Add the fontTools same-face proof census.
 - [ ] Add `serialize_pdf_value` and the nine synthetic mutation premises.
 - [ ] Record Safety and Priority verdicts, documentation, and verification.
 - [ ] Implement Fix A and Fix B on their independent branches.
@@ -233,11 +233,11 @@ Priority is recorded in two like-for-like units (show-equivalents):
 | doc_0 | 918.09 | 5,006.08 | 12.29 | 127.00 |
 | doc_1 | n/a (empty union) | 0 | 0 | 0 |
 
-The Unit-B arithmetic exceeds twice the best non-mutating candidate
-(`5,006.08 > 2 × 127.00`) before the A-family restriction. This is not yet a
-Priority GO: augmentation remains ineligible until Commit 3 supplies Safety
-GO and restricts the numerator to proven A-family fonts. Unit A keeps the
-cheap candidates' standalone value visible without mixing units.
+The provisional Unit-B arithmetic exceeds twice the best non-mutating
+candidate (`5,006.08 > 2 × 127.00`) before the A-family restriction. It is
+therefore a pre-Commit-3 upper bound, not a Priority verdict; the same-face
+record below supersedes it. Unit A keeps the cheap candidates' standalone
+value visible without mixing units.
 
 Headline: the 100% replacement-encodable funnel value is a self-proxy
 artefact. Show-weighted, only 15.5% of corpus-union characters are encodable
@@ -251,6 +251,52 @@ number unchanged. In particular, sole-loss rows still sum to 27,820 / 543,
 `all_gates_pass == source_bindable == 5,934`, and Unit B remains
 554,528 / 3,023,672 / 7,424 / 76,711 over vocabulary size 604, or
 918.09 / 5,006.08 / 12.29 / 127.00 show-equivalents.
+
+### Same-face proof census (2026-08-30, fontTools)
+
+Population: the same positional two-document corpus, with all faces of all
+three configured candidate files enumerated. Seven candidate faces loaded.
+The audit evaluated 261 `doc_0` Type0 fonts and one `doc_1` Type0 font, skipped
+zero documents, and emitted integer counts and closed slugs only. Its raw
+aggregate report is gitignored at
+`benchmarks/p4a-same-face-2026-08-30.json`.
+
+| proof class | doc_0 | doc_1 | combined |
+| --- | ---: | ---: | ---: |
+| `A_same_gid_exact` | 48 | 1 | 49 |
+| `face_ambiguous` | 95 | 0 | 95 |
+| `face_unproven` | 118 | 0 | 118 |
+
+All 49 A-family matches have an allowed candidate `fsType`; no corpus font
+landed in the outline-equal/byte-different, B-renumbered, restricted, CFF, or
+unreadable buckets. The 49 allowed exact matches satisfy Commit 3's same-face
+Safety precondition. They do not establish full Safety GO: serializer, cache,
+revert, raster, shared-font staleness, and encrypted-round-trip premises remain
+for Commit 4.
+
+The labelled heuristics are not proof inputs. `/W` supplied max CID for all
+262 fonts. `numGlyphs` was greater than `maxCID + 1` for 261 fonts and less
+than or equal to `maxCID` for one; subset tags were present for 6 and absent
+for 256. These columns only describe corpus shapes.
+
+The model-free audit exposes unique allowed A faces only in memory. The
+production-equivalent funnel's `--same-face --no-e2e` mode consumes that map
+and applies the per-font gate vector; its aggregate report is gitignored at
+`benchmarks/p4a-same-face-priority-2026-08-30.json`. Although `doc_0` has 48
+A-family fonts, none has a bindable show; `doc_1`'s one A-family font likewise
+has zero bindable shows. The A-restricted comparison is therefore:
+
+| Unit B — corpus union | baseline | augmentation | whole `TJ` | hscale |
+| --- | ---: | ---: | ---: | ---: |
+| doc_0 | 918.09 | 0 | 12.29 | 127.00 |
+| doc_1 | n/a (empty union) | 0 | 0 | 0 |
+
+For `doc_0`, the exact numerators remain 554,528 / 7,424 / 76,711 over 604;
+only augmentation changes, from the unrestricted 3,023,672 upper bound to 0.
+This is a **Priority GO for hscale**, which also leads Unit A at 877 newly
+bindable shows versus whole-`TJ` 42. Augmentation fails the 2× rule after the
+required A-family restriction. Whole-`TJ` remains a TJ-and-ToUnicode-grammar
+item on `doc_1`, not hidden headroom in this comparison.
 
 ## 8. Open questions
 

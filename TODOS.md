@@ -1007,9 +1007,13 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   corpus-union characters are encodable in that show's font today (CAD seed
   10.3%; fullwidth digits/punctuation 4.1%), so a character copied from
   elsewhere in the drawing fails the encoding gate about 85% of the time.
-  Like-for-like Unit-B headroom is provisionally augmentation 5,006.08 vs
-  hscale 127.00 vs whole-`TJ` 12.29 show-equivalents; augmentation stays
-  ineligible pending the same-face Safety proof and A-family restriction.
+  Commit 3's all-face proof found 48 exact A-family `doc_0` fonts, but none
+  has a bindable show. The A-restricted Unit-B comparison is therefore
+  augmentation 0 vs hscale 127.00 vs whole-`TJ` 12.29 show-equivalents:
+  **Priority GO is hscale**. The 49 corpus-wide exact A matches satisfy the
+  same-face Safety precondition, while full Safety still awaits the mutation
+  premise matrix. The earlier 5,006.08 augmentation value remains only the
+  unrestricted self-proxy upper bound.
   Separately, in Unit A (newly bindable shows), relaxing the unchanged 4 MiB
   replay budget has an upper bound of **16,549** rejected single-hex-`Tj`
   shows, versus hscale 877 and whole-`TJ` 42. That raw stage-loss count is not
