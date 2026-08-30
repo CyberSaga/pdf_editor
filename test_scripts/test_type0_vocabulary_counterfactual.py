@@ -349,6 +349,23 @@ def test_population_skips_name_resolution_mismatch(monkeypatch) -> None:
     assert report["fonts_with_replayed_shows"] == 1
 
 
+def test_population_reports_font_resource_without_replayed_show(
+    monkeypatch,
+) -> None:
+    fixture = build_identity_h_fixture()
+    copied_font = fixture.doc.get_new_xref()
+    fixture.doc.update_object(
+        copied_font, fixture.doc.xref_object(fixture.font_xref)
+    )
+    _register_font_resource(fixture, "FUnused", copied_font)
+
+    report = _report(monkeypatch, fixture, "你")
+    assert report["fonts_evaluated"] == 2
+    assert report["fonts_with_replayed_shows"] == 1
+    assert report["replayed_fonts_not_in_population"] == 0
+    assert report["population_fonts_without_shows"] == 1
+
+
 def test_counterfactual_report_has_closed_integer_keys_and_no_text(
     monkeypatch,
 ) -> None:
@@ -363,6 +380,8 @@ def test_counterfactual_report_has_closed_integer_keys_and_no_text(
     assert set(report) == {
         "fonts_evaluated",
         "fonts_with_replayed_shows",
+        "replayed_fonts_not_in_population",
+        "population_fonts_without_shows",
         "font_resolution_mismatch",
         "font_page_references",
         "bindable_shows",

@@ -147,6 +147,36 @@ def test_all_gates_pass_reconciles_to_source_bindable() -> None:
     )
 
 
+def test_unwrapped_shows_ignore_bare_emc_underflows_like_production() -> None:
+    fixture = build_identity_h_fixture()
+    append_page_content(
+        fixture,
+        (
+            f"EMC BT /{fixture.resource_name} 12 Tf "
+            f"1 0 0 1 72 650 Tm <{cid_for('你'):04X}> Tj ET EMC"
+        ),
+    )
+    report = funnel_document(fixture.doc, run_e2e=False)
+    assert report["funnel_shows"]["source_bindable"] == 2
+    assert report["glyph_overlap_census"]["sole_loss"]["all_gates_pass"] == 2
+
+
+def test_wrapped_show_refuses_bare_emc_underflow_like_production() -> None:
+    from model.text_commit.dto import RejectReason
+    from test_scripts.type0_fixture_builder import (
+        install_oc_layer,
+        wrap_content_in_marked_content,
+    )
+
+    fixture = build_identity_h_fixture()
+    install_oc_layer(fixture, name="Layer7Q", label="SecretLayer7Q", on=True)
+    wrap_content_in_marked_content(fixture, "/OC /Layer7Q BDC")
+    append_page_content(fixture, "EMC")
+    report = funnel_document(fixture.doc, run_e2e=False)
+    assert report["glyph_overlap_census"]["sole_loss"]["other"] == 1
+    assert report["loss_reasons"][RejectReason.MC_MALFORMED_PAIRING] == 1
+
+
 def test_sole_loss_reuses_preclassified_wrapper_evidence(monkeypatch) -> None:
     import scripts.measure_type0_funnel as funnel
     from test_scripts.type0_fixture_builder import (
@@ -180,6 +210,34 @@ def test_cid_unavailable_reason_is_counted_once_per_font() -> None:
         "type0_tounicode_unparseable": 1
     }
     assert census["operator_x_glyph"]["single_hex_tj|cid_unavailable"] == 1
+
+
+def test_tounicode_unparseable_details_are_closed_and_counted() -> None:
+    from scripts.measure_type0_funnel import TOUNICODE_UNPARSEABLE_DETAILS
+
+    fixture = build_identity_h_fixture()
+    write_tounicode_cmap(
+        fixture,
+        "1 beginbfrange <0000> <0001> [<0041> <0042>] endbfrange",
+    )
+    census = funnel_document(fixture.doc, run_e2e=False)[
+        "glyph_overlap_census"
+    ]
+    assert set(census["tounicode_unparseable_details"]) <= set(
+        TOUNICODE_UNPARSEABLE_DETAILS
+    )
+    assert census["tounicode_unparseable_details"] == {
+        "array-destination bfrange is outside the v1 grammar": 1
+    }
+
+    fixture = build_identity_h_fixture()
+    write_tounicode_cmap(fixture, "not a cmap")
+    census = funnel_document(fixture.doc, run_e2e=False)[
+        "glyph_overlap_census"
+    ]
+    assert census["tounicode_unparseable_details"] == {
+        "no bfchar or bfrange records": 1
+    }
 
 
 def test_tj_array_missing_glyph_survives_main_fold_operator_loss() -> None:
@@ -253,7 +311,7 @@ def test_report_never_contains_document_text_or_resource_names() -> None:
     report = funnel_document(fixture.doc, run_e2e=False)
     census = report["glyph_overlap_census"]
     assert census["operator_x_glyph"]
-    dumped = json.dumps(census)
+    dumped = json.dumps(report)
     assert fixture.text not in dumped
     assert fixture.resource_name not in dumped
     assert "SECRET7Q" not in dumped

@@ -143,6 +143,23 @@ GLYPH_OVERLAP_SOLE_LOSS_CLASSES = (
     "tj_array_and_hscale_only",
     "other",
 )
+TOUNICODE_UNPARSEABLE_DETAILS = (
+    "ToUnicode stream over the parse budget",
+    "no bfchar or bfrange records",
+    "malformed bfchar block",
+    "bfchar record count disagrees with declaration",
+    "bfchar source code is not 2 bytes",
+    "bfchar destination is not valid UTF-16BE",
+    "array-destination bfrange is outside the v1 grammar",
+    "malformed bfrange block",
+    "bfrange record count disagrees with declaration",
+    "bfrange source codes are not 2 bytes",
+    "bfrange low code exceeds high code",
+    "bfrange destination is not a single Unicode scalar",
+    "bfrange increments past the Unicode range",
+    "ToUnicode record count over the parse budget",
+    "ToUnicode is present but its stream is unreadable or empty",
+)
 
 VOCABULARY_BASE_BUCKETS = (
     "encodable_now",
@@ -304,24 +321,28 @@ def _sole_loss_class(
         for index in getattr(show, "mc_stack", ())
         if 0 <= index < len(replay.mc_wrappers)
     )
-    mc_ok = (
-        len(wrappers) == getattr(show, "mc_depth", 1)
-        and replay.mc_emc_underflows == 0
-        and all(
-            wrapper_classes.get(wrapper.wrapper_id)
-            == CLASS_OC_LAYER_VISIBLE
-            for wrapper in wrappers
-        )
-        and all(
-            splice_range_within_wrapper(
-                wrapper,
-                stream_xref=show.stream_xref,
-                start=show.op_start,
-                end=show.op_end,
+    mc_depth = getattr(show, "mc_depth", 1)
+    if not wrappers and mc_depth == 0:
+        mc_ok = True
+    else:
+        mc_ok = (
+            len(wrappers) == mc_depth
+            and replay.mc_emc_underflows == 0
+            and all(
+                wrapper_classes.get(wrapper.wrapper_id)
+                == CLASS_OC_LAYER_VISIBLE
+                for wrapper in wrappers
             )
-            for wrapper in wrappers
+            and all(
+                splice_range_within_wrapper(
+                    wrapper,
+                    stream_xref=show.stream_xref,
+                    start=show.op_start,
+                    end=show.op_end,
+                )
+                for wrapper in wrappers
+            )
         )
-    )
 
     trm_ok = bool(getattr(show, "trm_uniform_scaled", False))
     if not trm_ok:
@@ -601,6 +622,12 @@ def _vocabulary_counterfactual(
     return {
         "fonts_evaluated": len(capabilities),
         "fonts_with_replayed_shows": len(replayed_font_xrefs),
+        "replayed_fonts_not_in_population": len(
+            replayed_font_xrefs - set(capabilities)
+        ),
+        "population_fonts_without_shows": len(
+            set(capabilities) - replayed_font_xrefs
+        ),
         "font_resolution_mismatch": font_resolution_mismatch,
         "font_page_references": sum(pages_per_font.values()),
         "bindable_shows": sum(bindable_shows.values()),
@@ -1032,6 +1059,18 @@ def funnel_document(
                         or "capability_unavailable"
                         for capability in type0_capabilities.values()
                         if capability.cid is None
+                    ).items()
+                )
+            ),
+            "tounicode_unparseable_details": dict(
+                sorted(
+                    Counter(
+                        capability.tier0_reject_detail
+                        for capability in type0_capabilities.values()
+                        if capability.cid is None
+                        and capability.tier0_reject_reason
+                        == "type0_tounicode_unparseable"
+                        and capability.tier0_reject_detail is not None
                     ).items()
                 )
             ),
