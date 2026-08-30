@@ -2630,3 +2630,23 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** `edit_text` took `page_rect = page.rect` — the DISPLAYED box, 792×612 on a rotated Letter page — and every page-bounds clamp downstream (`clamped_new`, `insert_rect = Rect(x0, y0, x1, page_rect.y1)`, `clamp_rect_to_page`, the probe page dims, `get_text(clip=)`) compared unrotated-space rects (y up to 792) against it: `y0 > page_rect.y1` → degenerate insert rect → htmlbox cannot fit. Identity at `/Rotate 0`, so no unrotated fixture could see it.
 **Fix:** `model/geometry.py::unrotated_page_rect(page)` (= `page.rect * page.derotation_matrix`, normalised) is the bounds the legacy pipeline receives; the re-insert fallbacks (`_reinsert...`, span re-insertion `clamp_rect_to_page(bbox, ...)`) use it too. Rule: a clamp's bounds must live in the same space as the rects it clamps — on `/Rotate` pages `page.rect` is only ever right for displayed-space values.
 **File:** `model/geometry.py`, `model/pdf_text_edit.py`; pinned by `test_text_geometry_page_rotation.py::test_legacy_edit_keeps_place_when_source_sits_near_the_unrotated_bottom`
+## Diagnostic funnels must include page-level production refusals in eligibility
+**Area:** `scripts/measure_type0_funnel.py`, `model/text_commit/inspect.py`
+**Symptom:** A partial show from a malformed replay, or a show whose content stream is shared by another page, can be counted as source-bindable even though production rejects it.
+**Cause:** Recording a page diagnostic does not make it a gate, and show-local gate vectors can omit production checks performed before or after binding.
+**Fix:** Compute malformed-replay and shared-content-stream eligibility once per page/stream, include both in the main fold and independent sole-loss vector, and emit affected page/show incidence.
+**File:** `scripts/measure_type0_funnel.py`
+
+## Same-face proofs must not succeed over an empty glyph witness set
+**Area:** `scripts/audit_same_face.py`
+**Symptom:** An all-empty embedded `glyf` table can classify an unrelated candidate as `A_same_gid_exact` without comparing any glyph or metric.
+**Cause:** `max(active, default=-1)` passes the bounds check and an empty comparison loop leaves the exact flag true.
+**Fix:** Return unproven immediately when `_active_gids` is empty, before computing any same-GID, outline, or renumbered proof.
+**File:** `scripts/audit_same_face.py`
+
+## CMap result caps do not bound repeated range-expansion work
+**Area:** `scripts/measure_type0_funnel.py`
+**Symptom:** Many overlapping full-span `bfrange` records repeatedly enumerate the same characters even after the corpus union stops growing.
+**Cause:** The per-font cap bounds stored distinct output, not the work spent revisiting duplicate destination ranges.
+**Fix:** Track covered scalar intervals, materialize only uncovered portions, and retain the distinct-character cap and exact truncation semantics.
+**File:** `scripts/measure_type0_funnel.py`

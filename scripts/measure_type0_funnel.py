@@ -29,6 +29,8 @@ Two read-only Task 14 sections sit beside that funnel.  The glyph-overlap
 census records operator / horizontal-scale intersections plus an independent
 all-gates vector, while the vocabulary counterfactual measures closed
 replacement vocabularies without emitting document text or font identities.
+The page-eligibility section separately counts malformed replay and shared
+content-stream refusals in both affected pages and Type0 shows.
 
 Show weighting counts operators; char weighting counts decoded source
 characters. The per-document sections ARE the document weighting.
@@ -65,7 +67,10 @@ from model.text_commit.cid_fonts import (  # noqa: E402
 from model.text_commit.dto import CommitStatus  # noqa: E402
 from model.text_commit.engine import TieredCommitEngine  # noqa: E402
 from model.text_commit.fonts import DocumentFontRegistry  # noqa: E402
-from model.text_commit.inspect import read_page_streams  # noqa: E402
+from model.text_commit.inspect import (  # noqa: E402
+    find_pages_sharing_content_stream,
+    read_page_streams,
+)
 from model.text_commit.marked_content import (  # noqa: E402
     CLASS_OC_LAYER_VISIBLE,
     admit_show_wrappers,
@@ -314,6 +319,8 @@ def _sole_loss_class(
     source_evidence: dict[tuple[int, bytes], tuple[object, object, object]],
     *,
     within_budget: bool,
+    replay_ok: bool,
+    stream_unshared: bool,
 ) -> str:
     """Classify one Type0 show by an independent full production gate vector."""
     operator = getattr(show, "operator", "")
@@ -387,6 +394,8 @@ def _sole_loss_class(
 
     downstream_ok = all(
         (
+            replay_ok,
+            stream_unshared,
             within_budget,
             mc_ok,
             trm_ok,
@@ -437,6 +446,45 @@ def _type0_font_population(
 _CORPUS_UNION_PER_FONT_CAP = 65_536
 
 
+def _uncovered_intervals(
+    start: int, end: int, covered: list[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """Parts of inclusive ``start..end`` absent from sorted coverage."""
+    uncovered: list[tuple[int, int]] = []
+    cursor = start
+    for covered_start, covered_end in covered:
+        if covered_end < cursor:
+            continue
+        if covered_start > end:
+            break
+        if covered_start > cursor:
+            uncovered.append((cursor, min(end, covered_start - 1)))
+        cursor = max(cursor, covered_end + 1)
+        if cursor > end:
+            break
+    if cursor <= end:
+        uncovered.append((cursor, end))
+    return uncovered
+
+
+def _add_covered_interval(
+    covered: list[tuple[int, int]], start: int, end: int
+) -> None:
+    """Merge one inclusive interval into sorted, disjoint coverage."""
+    merged: list[tuple[int, int]] = []
+    for covered_start, covered_end in covered:
+        if covered_end + 1 < start:
+            merged.append((covered_start, covered_end))
+        elif end + 1 < covered_start:
+            merged.append((start, end))
+            start, end = covered_start, covered_end
+        else:
+            start = min(start, covered_start)
+            end = max(end, covered_end)
+    merged.append((start, end))
+    covered[:] = merged
+
+
 def _corpus_union(
     capabilities: dict[int, object],
 ) -> tuple[tuple[str, ...], int]:
@@ -447,6 +495,7 @@ def _corpus_union(
         if cid is None:
             continue
         font_chars: dict[str, None] = {}
+        covered_ranges: list[tuple[int, int]] = []
         records = cid.tounicode.records
         truncated = False
         for kind, lo, hi, text in records:
@@ -460,18 +509,24 @@ def _corpus_union(
                         break
                     font_chars.setdefault(text, None)
                 continue
-            for offset in range(hi - lo + 1):
-                try:
-                    char = chr(ord(text) + offset)
-                except ValueError:
+            start = ord(text)
+            end = min(0x10FFFF, start + hi - lo)
+            for unseen_start, unseen_end in _uncovered_intervals(
+                start, end, covered_ranges
+            ):
+                for codepoint in range(unseen_start, unseen_end + 1):
+                    char = chr(codepoint)
+                    if (
+                        char not in font_chars
+                        and len(font_chars) >= _CORPUS_UNION_PER_FONT_CAP
+                    ):
+                        truncated = True
+                        break
+                    font_chars.setdefault(char, None)
+                if truncated:
                     break
-                if (
-                    char not in font_chars
-                    and len(font_chars) >= _CORPUS_UNION_PER_FONT_CAP
-                ):
-                    truncated = True
-                    break
-                font_chars.setdefault(char, None)
+            if not truncated:
+                _add_covered_interval(covered_ranges, start, end)
             if truncated:
                 break
         if truncated:
@@ -829,6 +884,7 @@ def funnel_document(
     font_glyph_reach: Counter[str] = Counter()
     glyph_reach_fonts_seen: set[int] = set()
     replayed_type0_font_xrefs: set[int] = set()
+    page_eligibility: Counter[str] = Counter()
     bindable_shows_by_font: Counter[int] = Counter()
     source_evidence: dict[
         tuple[int, bytes], tuple[object, object, object]
@@ -859,10 +915,21 @@ def funnel_document(
             # A partially-replayed page contributes truncated counts —
             # make that visible instead of silently folding it in.
             loss_reasons["page_replay_malformed"] += 1
+        shared_stream_xrefs = {
+            stream_xref
+            for stream_xref, _ in streams
+            if find_pages_sharing_content_stream(
+                doc,
+                stream_xref=stream_xref,
+                page_number=page_index,
+            )
+        }
         within_budget = total_bytes <= DEFAULT_MAX_REPLAY_BYTES
         page_bindable: list[tuple[object, str]] = []
         wrapper_classes = classify_wrappers(doc, page, replay)
         page_counted_wrappers: set[int] = set()
+        malformed_page_counted = False
+        shared_page_counted = False
 
         for show in replay.shows:
             shows_counter["shows_total"] += 1
@@ -884,6 +951,8 @@ def funnel_document(
                 wrapper_classes,
                 source_evidence,
                 within_budget=within_budget,
+                replay_ok=not replay.malformed,
+                stream_unshared=show.stream_xref not in shared_stream_xrefs,
             )
             glyph_sole_loss[sole_loss] += 1
             if sole_loss == "tj_array_only":
@@ -898,6 +967,18 @@ def funnel_document(
                 _record_font_glyph_reach(
                     capability.cid, font_glyph_reach
                 )
+            if replay.malformed:
+                page_eligibility["replay_malformed_type0_shows"] += 1
+                if not malformed_page_counted:
+                    page_eligibility["replay_malformed_pages"] += 1
+                    malformed_page_counted = True
+                continue
+            if show.stream_xref in shared_stream_xrefs:
+                page_eligibility["shared_content_stream_type0_shows"] += 1
+                if not shared_page_counted:
+                    page_eligibility["shared_content_stream_pages"] += 1
+                    shared_page_counted = True
+                continue
             # Hex-only, mirroring the production plan gate (the locked v1
             # scope refuses literal-string Type0 operands).
             if show.operator != "Tj" or show.string_kind != "hex":
@@ -1041,6 +1122,15 @@ def funnel_document(
         "funnel_shows": {stage: shows_counter[stage] for stage in _STAGES},
         "funnel_chars": dict(sorted(chars_counter.items())),
         "loss_reasons": dict(sorted(loss_reasons.items())),
+        "page_eligibility": {
+            key: page_eligibility[key]
+            for key in (
+                "replay_malformed_pages",
+                "replay_malformed_type0_shows",
+                "shared_content_stream_pages",
+                "shared_content_stream_type0_shows",
+            )
+        },
         "mc_census": {
             "wrapper_classes": dict(sorted(census_wrapper_classes.items())),
             "show_verdicts": dict(sorted(census_show_verdicts.items())),

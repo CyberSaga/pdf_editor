@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 297 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 300 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -302,3 +302,6 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2613 | Untouched inline-edit sessions reported a font "override" and lost the Tier 0 plan | `view/text_editing.py` (`_sync_font_combo_state`, `build_style_overrides`), `model/text_commit/plan.py` (`STYLE_OVERRIDE_PRESENT`) |
 | 2620 | Plan-preview rasters are displayed-space clips; a rotated editor proxy must counter-rotate them | `view/text_editing.py` (`_install_plan_preview_hook`, `PreviewBackedInlineTextEditor.apply_plan_preview`, `_capture_frozen_first_frame`) |
 | 2627 | Legacy text insert clamped unrotated rects against the displayed `page.rect` | `model/pdf_text_edit.py` (`edit_text` → `_apply_redact_insert` / `_verify_rebuild_edit` / re-insert fallbacks) |
+| 2633 | Diagnostic funnels must include page-level production refusals in eligibility | `scripts/measure_type0_funnel.py`, `model/text_commit/inspect.py` |
+| 2640 | Same-face proofs must not succeed over an empty glyph witness set | `scripts/audit_same_face.py` |
+| 2647 | CMap result caps do not bound repeated range-expansion work | `scripts/measure_type0_funnel.py` |

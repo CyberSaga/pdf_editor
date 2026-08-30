@@ -1020,6 +1020,11 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   comparable to Unit B and remains tracked separately. Budget relaxation
   stays the §9 item (`TODOS.md:473`): its latency half remains open. Record:
   `plans/task14-type0-augmentation-census.md` §7.
+  Post-review equivalence reruns found zero malformed-replay and zero shared-
+  content-stream affected pages/shows in both corpus documents; corrected
+  unrestricted and A-restricted numerators are unchanged. The census now
+  rejects both page conditions structurally, and the same-face audit refuses
+  empty active-glyph sets instead of accepting a vacuous exact proof.
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

@@ -75,6 +75,31 @@ def test_one_coordinate_perturbation_is_unproven() -> None:
     assert classify_program(subset, [_save_font(candidate)]) == "face_unproven"
 
 
+def test_empty_active_glyph_set_cannot_prove_an_unrelated_face() -> None:
+    pytest.importorskip("fontTools")
+    from fontTools.ttLib import TTFont
+    from fontTools.ttLib.tables._g_l_y_f import Glyph
+    from scripts.audit_same_face import census_document, classify_program
+    from test_scripts.type0_fixture_builder import fontfile2_xref
+
+    full, subset = _full_and_subset()
+    embedded = TTFont(io.BytesIO(subset), lazy=False)
+    for name in embedded.getGlyphOrder():
+        embedded["glyf"][name] = Glyph()
+    empty_program = _save_font(embedded)
+
+    candidate = TTFont(io.BytesIO(full), lazy=False)
+    candidate["hmtx"][candidate.getGlyphName(0)] = (777, 33)
+    unrelated_program = _save_font(candidate)
+
+    assert classify_program(empty_program, [unrelated_program]) == "face_unproven"
+
+    fixture = build_identity_h_fixture(subset=True)
+    fixture.doc.update_stream(fontfile2_xref(fixture), empty_program)
+    report = census_document(fixture.doc, [unrelated_program])
+    assert report["proof_classes"] == {"face_unproven": 1}
+
+
 def test_instruction_bytes_may_differ_when_decompiled_outline_is_equal() -> None:
     pytest.importorskip("fontTools")
     from fontTools.ttLib import TTFont

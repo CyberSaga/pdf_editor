@@ -148,7 +148,9 @@ def _proof_against(embedded: Any, candidate: Any) -> str | None:
         return None
 
     active = _active_gids(embedded)
-    same_gid = candidate["maxp"].numGlyphs > max(active, default=-1)
+    if not active:
+        return None
+    same_gid = candidate["maxp"].numGlyphs > max(active)
     exact = same_gid
     outlines_equal = same_gid
     if same_gid:

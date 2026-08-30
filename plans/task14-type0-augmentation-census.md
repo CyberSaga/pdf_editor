@@ -298,6 +298,24 @@ bindable shows versus whole-`TJ` 42. Augmentation fails the 2× rule after the
 required A-family restriction. Whole-`TJ` remains a TJ-and-ToUnicode-grammar
 item on `doc_1`, not hidden headroom in this comparison.
 
+Post-review equivalence correction: the funnel now makes `replay.malformed`
+and `find_pages_sharing_content_stream` refusals part of the same gate vector
+used by `source_bindable`, `all_gates_pass`, and sole-loss classification. It
+emits page/show incidence for both reasons. Fresh unrestricted and
+`--same-face --no-e2e` corpus runs found 0 / 0 malformed pages/shows and 0 / 0
+shared-stream pages/shows in both documents, so every recorded funnel count
+and numerator above remains unchanged; in particular
+`all_gates_pass == source_bindable == 5,934`, and the A-restricted Unit-B
+numerators remain 554,528 / 0 / 7,424 / 76,711 over 604.
+
+The same-face proof now refuses an empty active-glyph set before evaluating
+same-GID, exact-byte, outline, or renumbered proofs. The corrected A-family
+rerun still found 48 eligible `doc_0` fonts and one eligible `doc_1` font, with
+zero eligible bindable shows, so the Safety precondition count and hscale
+Priority GO are unchanged. The corpus-union fold also tracks covered scalar
+intervals, preventing repeated/overlapping `bfrange` records from expanding
+already-seen ranges while retaining the per-font distinct-character cap.
+
 ## 8. Open questions
 
 - TTC candidates currently need all-face enumeration; `fitz.Font(fontfile=...)`

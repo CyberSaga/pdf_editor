@@ -272,6 +272,35 @@ def test_corpus_union_bfchar_cap_distinguishes_duplicates_from_new_chars() -> No
     assert truncated == 1
 
 
+def test_corpus_union_skips_work_for_duplicate_full_ranges(monkeypatch) -> None:
+    import scripts.measure_type0_funnel as funnel
+
+    capability = SimpleNamespace(
+        cid=SimpleNamespace(
+            tounicode=SimpleNamespace(
+                records=tuple(
+                    ("range", 0, 65_535, "\x00") for _ in range(100)
+                )
+            )
+        )
+    )
+    calls = 0
+    builtin_chr = chr
+
+    def counted_chr(value: int) -> str:
+        nonlocal calls
+        calls += 1
+        if calls > 70_000:
+            raise AssertionError("duplicate ranges were expanded repeatedly")
+        return builtin_chr(value)
+
+    monkeypatch.setattr(funnel, "chr", counted_chr, raising=False)
+    chars, truncated = funnel._corpus_union({1: capability})
+    assert len(chars) == 65_536
+    assert truncated == 0
+    assert calls <= 65_536
+
+
 def test_corpus_union_reports_per_font_truncation(monkeypatch) -> None:
     fixture = build_identity_h_fixture()
     write_tounicode_cmap(
@@ -409,6 +438,8 @@ def test_population_skips_name_resolution_mismatch(monkeypatch) -> None:
     assert report["font_resolution_mismatch"] == 1
     assert report["fonts_evaluated"] == 1
     assert report["fonts_with_replayed_shows"] == 1
+    assert report["replayed_fonts_not_in_population"] == 0
+    assert report["population_fonts_without_shows"] == 0
 
 
 def test_population_reports_font_resource_without_replayed_show(

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 
+from model.text_commit.inspect import read_page_streams
+from model.text_commit.replay import replay_page_streams
 from scripts.measure_type0_funnel import funnel_document
 from test_scripts.type0_fixture_builder import (
     append_page_content,
@@ -145,6 +147,44 @@ def test_all_gates_pass_reconciles_to_source_bindable() -> None:
         == report["funnel_shows"]["source_bindable"]
         >= 1
     )
+
+
+def test_malformed_partial_replay_is_ineligible_like_production() -> None:
+    fixture = build_identity_h_fixture(text="你")
+    append_page_content(fixture, "(unterminated")
+    replay = replay_page_streams(
+        read_page_streams(fixture.doc, fixture.page),
+        max_decoded_bytes=None,
+    )
+    assert replay.shows and replay.malformed
+
+    report = funnel_document(fixture.doc, run_e2e=False)
+    assert report["funnel_shows"]["source_bindable"] == 0
+    assert report["glyph_overlap_census"]["sole_loss"]["all_gates_pass"] == 0
+    assert report["page_eligibility"] == {
+        "replay_malformed_pages": 1,
+        "replay_malformed_type0_shows": 1,
+        "shared_content_stream_pages": 0,
+        "shared_content_stream_type0_shows": 0,
+    }
+
+
+def test_shared_content_stream_show_is_ineligible_like_production() -> None:
+    fixture = build_identity_h_fixture(text="你")
+    other_page = fixture.doc.new_page()
+    fixture.doc.xref_set_key(
+        other_page.xref, "Contents", f"{fixture.content_xref} 0 R"
+    )
+
+    report = funnel_document(fixture.doc, run_e2e=False)
+    assert report["funnel_shows"]["source_bindable"] == 0
+    assert report["glyph_overlap_census"]["sole_loss"]["all_gates_pass"] == 0
+    assert report["page_eligibility"] == {
+        "replay_malformed_pages": 0,
+        "replay_malformed_type0_shows": 0,
+        "shared_content_stream_pages": 1,
+        "shared_content_stream_type0_shows": 1,
+    }
 
 
 def test_unwrapped_shows_ignore_bare_emc_underflows_like_production() -> None:
