@@ -13,6 +13,7 @@ from test_scripts.type0_fixture_builder import (
     build_identity_h_fixture,
     cid_for,
     write_minimal_tounicode,
+    write_tounicode_cmap,
 )
 
 
@@ -29,6 +30,26 @@ def _missing_show(operator_source: str):
     return fixture
 
 
+def _existing_show(operator_source: str):
+    fixture = build_identity_h_fixture(subset=True)
+    append_page_content(
+        fixture,
+        (
+            f"BT /{fixture.resource_name} 12 Tf 1 0 0 1 72 650 Tm "
+            f"{operator_source.format(cid=cid_for('你'))} ET"
+        ),
+    )
+    return fixture
+
+
+def _descriptor_xref(fixture) -> int:
+    kind, value = fixture.doc.xref_get_key(
+        fixture.descendant_xref, "FontDescriptor"
+    )
+    assert kind == "xref"
+    return int(value.split()[0])
+
+
 def test_report_has_closed_slug_keyed_integer_axes() -> None:
     from scripts.measure_type0_funnel import (
         GLYPH_OVERLAP_HSCALE_CLASSES,
@@ -41,6 +62,7 @@ def test_report_has_closed_slug_keyed_integer_axes() -> None:
     census = funnel_document(fixture.doc, run_e2e=False)[
         "glyph_overlap_census"
     ]
+    assert census["operator_x_glyph"]
     axes = (
         (
             census["operator_x_glyph"],
@@ -66,6 +88,74 @@ def test_report_has_closed_slug_keyed_integer_axes() -> None:
         type(value) is int
         for value in census["font_glyph_reach"].values()
     )
+    assert set(census["sole_loss"]) == {
+        "all_gates_pass",
+        "tj_array_only",
+        "hscale_only",
+        "tj_array_and_hscale_only",
+        "other",
+    }
+
+
+def test_sole_loss_classifies_tj_array_only() -> None:
+    fixture = _existing_show("[<{cid:04X}> -100] TJ")
+    sole = funnel_document(fixture.doc, run_e2e=False)[
+        "glyph_overlap_census"
+    ]["sole_loss"]
+    assert sole["tj_array_only"] == 1
+
+
+def test_sole_loss_classifies_hscale_only() -> None:
+    fixture = _existing_show("80 Tz <{cid:04X}> Tj")
+    sole = funnel_document(fixture.doc, run_e2e=False)[
+        "glyph_overlap_census"
+    ]["sole_loss"]
+    assert sole["hscale_only"] == 1
+
+
+def test_sole_loss_keeps_tj_and_hscale_overlap_separate() -> None:
+    fixture = _existing_show("80 Tz [<{cid:04X}> -100] TJ")
+    sole = funnel_document(fixture.doc, run_e2e=False)[
+        "glyph_overlap_census"
+    ]["sole_loss"]
+    assert sole["tj_array_and_hscale_only"] == 1
+    assert sole["tj_array_only"] == 0
+    assert sole["hscale_only"] == 0
+
+
+def test_sole_loss_attributes_budget_plus_operator_to_other(
+    monkeypatch,
+) -> None:
+    import scripts.measure_type0_funnel as funnel
+
+    monkeypatch.setattr(funnel, "DEFAULT_MAX_REPLAY_BYTES", 1)
+    fixture = _existing_show("[<{cid:04X}> -100] TJ")
+    sole = funnel.funnel_document(fixture.doc, run_e2e=False)[
+        "glyph_overlap_census"
+    ]["sole_loss"]
+    assert sole["tj_array_only"] == 0
+    assert sole["other"] >= 1
+
+
+def test_all_gates_pass_reconciles_to_source_bindable() -> None:
+    fixture = build_identity_h_fixture()
+    report = funnel_document(fixture.doc, run_e2e=False)
+    assert (
+        report["glyph_overlap_census"]["sole_loss"]["all_gates_pass"]
+        == report["funnel_shows"]["source_bindable"]
+        >= 1
+    )
+
+
+def test_cid_unavailable_reason_is_counted_once_per_font() -> None:
+    fixture = build_identity_h_fixture()
+    write_tounicode_cmap(fixture, "not a cmap")
+    report = funnel_document(fixture.doc, run_e2e=False)
+    census = report["glyph_overlap_census"]
+    assert census["cid_unavailable_reasons"] == {
+        "type0_tounicode_unparseable": 1
+    }
+    assert census["operator_x_glyph"]["single_hex_tj|cid_unavailable"] == 1
 
 
 def test_tj_array_missing_glyph_survives_main_fold_operator_loss() -> None:
@@ -130,6 +220,13 @@ def test_operator_axis_reconciles_to_all_type0_shows() -> None:
 
 def test_report_never_contains_document_text_or_resource_names() -> None:
     fixture = build_identity_h_fixture(text="秘密資料", subset=True)
-    dumped = json.dumps(funnel_document(fixture.doc, run_e2e=False))
+    fixture.doc.xref_set_key(
+        _descriptor_xref(fixture), "FontName", "/SECRET7Q+Face"
+    )
+    report = funnel_document(fixture.doc, run_e2e=False)
+    census = report["glyph_overlap_census"]
+    assert census["operator_x_glyph"]
+    dumped = json.dumps(census)
     assert fixture.text not in dumped
     assert fixture.resource_name not in dumped
+    assert "SECRET7Q" not in dumped

@@ -25,6 +25,11 @@ The original file is never written, and nothing textual is ever printed:
 documents are positional (``doc_0``…), and every output value is a count
 keyed by a stable stage or reason-code slug (plan §10 data policy).
 
+Two read-only Task 14 sections sit beside that funnel.  The glyph-overlap
+census records operator / horizontal-scale intersections plus an independent
+all-gates vector, while the vocabulary counterfactual measures closed
+replacement vocabularies without emitting document text or font identities.
+
 Show weighting counts operators; char weighting counts decoded source
 characters. The per-document sections ARE the document weighting.
 
@@ -126,6 +131,13 @@ GLYPH_OVERLAP_REACH_CLASSES = (
     "glyph_present_no_tounicode_cid",
     "tounicode_cid_without_glyph",
     "tounicode_cid_with_glyph",
+)
+GLYPH_OVERLAP_SOLE_LOSS_CLASSES = (
+    "all_gates_pass",
+    "tj_array_only",
+    "hscale_only",
+    "tj_array_and_hscale_only",
+    "other",
 )
 
 VOCABULARY_BASE_BUCKETS = (
@@ -245,6 +257,115 @@ def _glyph_overlap_census(
     )
     operator_x_glyph[f"{operator}|{verdict}"] += 1
     hscale_x_glyph[f"{hscale}|{verdict}"] += 1
+
+
+def _residual_state_losses(show: object) -> tuple[str, ...]:
+    """All residual state failures in production's stable priority order."""
+    losses: list[str] = []
+    if getattr(show, "render_mode", 1) != 0:
+        losses.append("state:render_mode")
+    if getattr(show, "rise", 1.0) != 0.0:
+        losses.append("state:rise")
+    if getattr(show, "hscale", 0.0) != 100.0:
+        losses.append("state:hscale")
+    if not getattr(show, "in_bt", False):
+        losses.append("state:not_in_bt")
+    if not getattr(show, "origin_reliable", False):
+        losses.append("state:origin_unreliable")
+    return tuple(losses)
+
+
+def _sole_loss_class(
+    show: object,
+    page: fitz.Page,
+    capability: object,
+    replay: object,
+    wrapper_classes: dict[int, str],
+    source_evidence: dict[tuple[int, bytes], tuple[object, object, object]],
+    *,
+    within_budget: bool,
+) -> str:
+    """Classify one Type0 show by an independent full production gate vector."""
+    operator = getattr(show, "operator", "")
+    op_single_hex = operator == "Tj" and getattr(show, "string_kind", "") == "hex"
+    op_tj_array = operator == "TJ"
+
+    mc_ok = True
+    if getattr(show, "mc_depth", 1) != 0 or getattr(show, "mc_stack", ()):
+        wrappers = tuple(
+            replay.mc_wrappers[index]
+            for index in show.mc_stack
+            if 0 <= index < len(replay.mc_wrappers)
+        )
+        mc_ok = (
+            admit_show_wrappers(
+                page.parent,
+                page,
+                show,
+                wrappers=wrappers,
+                emc_underflows=replay.mc_emc_underflows,
+            )
+            is None
+        )
+
+    trm_ok = bool(getattr(show, "trm_uniform_scaled", False))
+    if not trm_ok:
+        trm_ok = admission_verdict(page, show.tm, show.ctm).reject_reason is None
+
+    hscale_ok = getattr(show, "hscale", 0.0) == 100.0
+    other_state_ok = not (
+        set(_residual_state_losses(show)) - {"state:hscale"}
+    )
+    cid = getattr(capability, "cid", None)
+    cid_ok = cid is not None
+    decode_ok = reproduce_ok = glyph_ok = False
+    if cid is not None:
+        data = getattr(show, "decoded_bytes", b"")
+        evidence_key = (capability.font_xref, data)
+        cached = source_evidence.get(evidence_key)
+        if cached is None:
+            decoded = cid.decode_show_bytes(data)
+            reproduced: object = None
+            glyph_failure: object = None
+            if not isinstance(decoded, CidCapabilityFailure):
+                reproduced = cid.encode_first_wins(decoded)
+                source_cids = tuple(
+                    int.from_bytes(data[index : index + 2], "big")
+                    for index in range(0, len(data), 2)
+                )
+                glyph_failure = cid.glyph_gate(source_cids, decoded)
+            cached = (decoded, reproduced, glyph_failure)
+            source_evidence[evidence_key] = cached
+        decoded, reproduced, glyph_failure = cached
+        if not isinstance(decoded, CidCapabilityFailure):
+            decode_ok = True
+            reproduce_ok = (
+                not isinstance(reproduced, CidCapabilityFailure)
+                and reproduced == data
+            )
+            glyph_ok = glyph_failure is None
+
+    downstream_ok = all(
+        (
+            within_budget,
+            mc_ok,
+            trm_ok,
+            other_state_ok,
+            cid_ok,
+            decode_ok,
+            reproduce_ok,
+            glyph_ok,
+        )
+    )
+    if downstream_ok and op_single_hex and hscale_ok:
+        return "all_gates_pass"
+    if downstream_ok and op_tj_array and hscale_ok:
+        return "tj_array_only"
+    if downstream_ok and op_single_hex and not hscale_ok:
+        return "hscale_only"
+    if downstream_ok and op_tj_array and not hscale_ok:
+        return "tj_array_and_hscale_only"
+    return "other"
 
 
 def _type0_font_population(
@@ -401,17 +522,8 @@ def _residual_state_loss(show: object) -> str | None:
     """First failing residual default-state condition, as a stable
     ``state:*`` loss slug — or None when clear.  Marked-content and Tm
     uniformity are NOT here: they are their own funnel stages."""
-    if getattr(show, "render_mode", 1) != 0:
-        return "state:render_mode"
-    if getattr(show, "rise", 1.0) != 0.0:
-        return "state:rise"
-    if getattr(show, "hscale", 0.0) != 100.0:
-        return "state:hscale"
-    if not getattr(show, "in_bt", False):
-        return "state:not_in_bt"
-    if not getattr(show, "origin_reliable", False):
-        return "state:origin_unreliable"
-    return None
+    losses = _residual_state_losses(show)
+    return losses[0] if losses else None
 
 
 def _trm_census(
@@ -544,9 +656,15 @@ def funnel_document(
     trm_near_miss: Counter[str] = Counter()
     glyph_operator: Counter[str] = Counter()
     glyph_hscale: Counter[str] = Counter()
+    glyph_sole_loss: Counter[str] = Counter()
+    tj_array_only_by_font: Counter[int] = Counter()
+    hscale_only_by_font: Counter[int] = Counter()
     font_glyph_reach: Counter[str] = Counter()
     glyph_reach_fonts_seen: set[int] = set()
     bindable_shows_by_font: Counter[int] = Counter()
+    source_evidence: dict[
+        tuple[int, bytes], tuple[object, object, object]
+    ] = {}
     # Task 13 P2 acceptance: predicted vs production admission compared as
     # SETS (identity keys stay in memory; the report emits counts and the
     # symmetric difference only — never a key).
@@ -589,6 +707,20 @@ def funnel_document(
             _glyph_overlap_census(
                 show, capability, glyph_operator, glyph_hscale
             )
+            sole_loss = _sole_loss_class(
+                show,
+                page,
+                capability,
+                replay,
+                wrapper_classes,
+                source_evidence,
+                within_budget=within_budget,
+            )
+            glyph_sole_loss[sole_loss] += 1
+            if sole_loss == "tj_array_only":
+                tj_array_only_by_font[capability.font_xref] += 1
+            elif sole_loss == "hscale_only":
+                hscale_only_by_font[capability.font_xref] += 1
             if (
                 capability.cid is not None
                 and capability.font_xref not in glyph_reach_fonts_seen
@@ -691,13 +823,14 @@ def funnel_document(
                 continue
             shows_counter["scope_accepted"] += 1
             cid = capability.cid
-            decoded = cid.decode_show_bytes(show.decoded_bytes)
+            decoded, reproduced, glyph_failure = source_evidence[
+                (capability.font_xref, show.decoded_bytes)
+            ]
             if isinstance(decoded, CidCapabilityFailure):
                 loss_reasons[decoded.reason] += 1
                 continue
             shows_counter["source_decoded"] += 1
             chars_counter["source_decoded"] += len(decoded)
-            reproduced = cid.encode_first_wins(decoded)
             if (
                 isinstance(reproduced, CidCapabilityFailure)
                 or reproduced != show.decoded_bytes
@@ -705,11 +838,6 @@ def funnel_document(
                 loss_reasons["type0_source_bytes_not_reproduced"] += 1
                 continue
             shows_counter["source_bytes_reproduced"] += 1
-            source_cids = tuple(
-                int.from_bytes(show.decoded_bytes[i : i + 2], "big")
-                for i in range(0, len(show.decoded_bytes), 2)
-            )
-            glyph_failure = cid.glyph_gate(source_cids, decoded)
             if glyph_failure is not None:
                 loss_reasons[glyph_failure.reason] += 1
                 continue
@@ -783,6 +911,20 @@ def funnel_document(
             "operator_x_glyph": dict(sorted(glyph_operator.items())),
             "hscale_x_glyph": dict(sorted(glyph_hscale.items())),
             "font_glyph_reach": dict(sorted(font_glyph_reach.items())),
+            "sole_loss": {
+                slug: glyph_sole_loss[slug]
+                for slug in GLYPH_OVERLAP_SOLE_LOSS_CLASSES
+            },
+            "cid_unavailable_reasons": dict(
+                sorted(
+                    Counter(
+                        capability.tier0_reject_reason
+                        or "capability_unavailable"
+                        for capability in type0_capabilities.values()
+                        if capability.cid is None
+                    ).items()
+                )
+            ),
         },
         "vocabulary_counterfactual": _vocabulary_counterfactual(
             type0_capabilities,
