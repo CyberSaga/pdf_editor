@@ -147,6 +147,30 @@ def test_all_gates_pass_reconciles_to_source_bindable() -> None:
     )
 
 
+def test_sole_loss_reuses_preclassified_wrapper_evidence(monkeypatch) -> None:
+    import scripts.measure_type0_funnel as funnel
+    from test_scripts.type0_fixture_builder import (
+        install_oc_layer,
+        wrap_content_in_marked_content,
+    )
+
+    fixture = build_identity_h_fixture()
+    install_oc_layer(fixture, name="Layer7Q", label="SecretLayer7Q", on=True)
+    wrap_content_in_marked_content(fixture, "/OC /Layer7Q BDC")
+    calls = 0
+    original = funnel.admit_show_wrappers
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(funnel, "admit_show_wrappers", counted)
+    report = funnel.funnel_document(fixture.doc, run_e2e=False)
+    assert report["glyph_overlap_census"]["sole_loss"]["all_gates_pass"] == 1
+    assert calls == 1
+
+
 def test_cid_unavailable_reason_is_counted_once_per_font() -> None:
     fixture = build_identity_h_fixture()
     write_tounicode_cmap(fixture, "not a cmap")
@@ -222,6 +246,9 @@ def test_report_never_contains_document_text_or_resource_names() -> None:
     fixture = build_identity_h_fixture(text="秘密資料", subset=True)
     fixture.doc.xref_set_key(
         _descriptor_xref(fixture), "FontName", "/SECRET7Q+Face"
+    )
+    fixture.doc.xref_set_key(
+        fixture.font_xref, "BaseFont", "/SECRET7Q+Face"
     )
     report = funnel_document(fixture.doc, run_e2e=False)
     census = report["glyph_overlap_census"]

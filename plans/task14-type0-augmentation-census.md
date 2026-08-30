@@ -91,6 +91,9 @@ aggregate-only JSON is gitignored at
 | replacement-encodable self proxy | 5,934 | 0 |
 | `TJ` array × glyph OK | 480 | 0 |
 | `TJ` array × capability unavailable | 90 | 543 |
+| default hscale × glyph OK | 23,385 | 0 |
+| default hscale × source undecodable | 15 | 0 |
+| default hscale × capability unavailable | 90 | 543 |
 | non-default hscale × glyph OK | 4,328 | 0 |
 | non-default hscale × GID beyond glyph count | 2 | 0 |
 | mapped CID with glyph | 15,607 | 0 |
@@ -113,6 +116,18 @@ Readings:
   runs before operator, replay-budget, marked-content, and TRM early exits.
 - The array census measures glyph availability after replay drops kern
   numbers; it does not claim byte-bindability for whole-`TJ` mutation.
+- Capability rejection is now decidable: the one unavailable Type0 font in
+  each document is `type0_tounicode_unparseable` (one font, not one show).
+
+The independent full-gate vector removes pre-gate double counting:
+
+| sole-loss class | doc_0 | doc_1 |
+| --- | ---: | ---: |
+| all gates pass | 5,934 | 0 |
+| `TJ` array only | 42 | 0 |
+| non-default hscale only | 877 | 0 |
+| `TJ` + non-default hscale only | 88 | 0 |
+| other / multiple losses | 20,879 | 543 |
 
 Arithmetic reconciliation:
 
@@ -120,9 +135,14 @@ Arithmetic reconciliation:
   single-hex + 2 GID-beyond single-hex + 480 glyph-OK `TJ` + 90
   capability-unavailable `TJ` = 27,820 Type0 shows.
 - `doc_1` operator fold: 543 capability-unavailable `TJ` = 543 Type0 shows.
-- Both hscale folds independently sum to the same Type0-show populations.
-  The unchanged funnel stages exactly match the sealed Task 13 record, so no
-  drift attribution is required.
+- The sole-loss rows sum to 27,820 and 543 Type0 shows respectively, and
+  `all_gates_pass == source_bindable == 5,934` for `doc_0` (both zero for
+  `doc_1`). The 88-show intersection is separate, so it cannot inflate either
+  cheap candidate. The unchanged funnel stages exactly match the sealed Task
+  13 record, so no drift attribution is required.
+- The 16,549 shows lost to the 4 MiB replay budget are 59.5% of all `doc_0`
+  Type0 shows. That is the larger, separately tracked lever; the three P4
+  candidates below compare only within the budget-eligible population.
 
 The e2e-enabled second pass was attempted because the baseline completed
 within 30 minutes, but it did not complete within its 30-minute ceiling and
@@ -132,8 +152,11 @@ run to completion in this record.
 ### Replacement-vocabulary counterfactual (2026-08-30, `--no-e2e`)
 
 Population: the same positional two-document corpus. `doc_0` evaluates 261
-Type0 fonts across 263 page references and 5,934 bindable shows; `doc_1`
-evaluates one Type0 font across 18 page references and has zero bindable shows.
+Type0 fonts across 263 page references and 5,934 bindable shows; all 261 fonts
+also occur in replayed page shows. `doc_1` evaluates one Type0 font across 18
+page references, that font occurs in replay, and it has zero bindable shows.
+Both documents report zero name-resolution mismatches and zero truncated
+corpus-union fonts.
 The raw aggregate-only JSON is gitignored at
 `benchmarks/p4a-vocabulary-2026-08-30.json`. Candidate coverage uses the three
 configured system font files through PyMuPDF face 0 only; it is a heuristic
@@ -145,42 +168,71 @@ integer show-character opportunities; dividing by vocabulary size gives
 
 | vocabulary / weighting | doc_0 | doc_1 |
 | --- | ---: | ---: |
-| fullwidth/punctuation — font | 2.61 → 100.00 | 0.00 → 100.00 |
-| fullwidth/punctuation — page | 2.59 → 100.00 | 0.00 → 100.00 |
-| fullwidth/punctuation — show | 4.07 → 100.00 | n/a (0 shows) |
-| CAD seed — font | 7.53 → 100.00 | 0.00 → 100.00 |
-| CAD seed — page | 7.48 → 100.00 | 0.00 → 100.00 |
-| CAD seed — show | 10.33 → 100.00 | n/a (0 shows) |
-| Japanese common — font | 2.62 → 100.00 | 0.00 → 100.00 |
-| Japanese common — page | 2.60 → 100.00 | 0.00 → 100.00 |
-| Japanese common — show | 3.55 → 100.00 | n/a (0 shows) |
-| SIP sample — font | 0.00 → 0.00 | 0.00 → 0.00 |
-| SIP sample — page | 0.00 → 0.00 | 0.00 → 0.00 |
-| SIP sample — show | 0.00 → 0.00 | n/a (0 shows) |
-| corpus union — font | 10.04 → 99.84 | n/a (empty union) |
-| corpus union — page | 9.97 → 99.84 | n/a (empty union) |
-| corpus union — show | 15.47 → 99.83 | n/a (0 shows) |
+| fullwidth/punctuation — font | 2.61 → 99.62 | not augmentable: `type0_tounicode_unparseable` |
+| fullwidth/punctuation — page | 2.59 → 98.86 | not augmentable: `type0_tounicode_unparseable` |
+| fullwidth/punctuation — show | 4.07 → 100.00 | n/a (0 bindable shows) |
+| CAD seed — font | 7.53 → 99.62 | not augmentable: `type0_tounicode_unparseable` |
+| CAD seed — page | 7.48 → 98.86 | not augmentable: `type0_tounicode_unparseable` |
+| CAD seed — show | 10.33 → 100.00 | n/a (0 bindable shows) |
+| Japanese common — font | 2.62 → 99.62 | not augmentable: `type0_tounicode_unparseable` |
+| Japanese common — page | 2.60 → 98.86 | not augmentable: `type0_tounicode_unparseable` |
+| Japanese common — show | 3.55 → 100.00 | n/a (0 bindable shows) |
+| SIP sample — font | 0.00 → 0.00 | not augmentable: `type0_tounicode_unparseable` |
+| SIP sample — page | 0.00 → 0.00 | not augmentable: `type0_tounicode_unparseable` |
+| SIP sample — show | 0.00 → 0.00 | n/a (0 bindable shows) |
+| corpus union — font | 10.04 → 99.45 | n/a (empty union) |
+| corpus union — page | 9.97 → 98.70 | n/a (empty union) |
+| corpus union — show | 15.47 → 99.83 | n/a (0 bindable shows) |
 
 Readings and arithmetic reconciliation:
 
 - Vocabulary sizes are 25 fullwidth/punctuation, 220 CAD seed, 440 Japanese
   common, 12 SIP, and a runtime-only 604-character `doc_0` corpus union.
-- For every vocabulary and font, the mutually exclusive base buckets sum to
-  `vocabulary_size × fonts_evaluated`; page and show counters reconcile to the
-  corresponding integer opportunity denominators. Derived
-  `candidate_could_supply` overlaps rejection buckets by design.
+- For `doc_0`, corpus-union base buckets are: font-weighted 15,831
+  encodable-now + 141,208 Unicode-unmapped + 1 GID-beyond + 604
+  CID-unavailable = 157,644; page-weighted the same first three + 1,812
+  CID-unavailable = 158,852; show-weighted 554,528 encodable-now + 3,029,606
+  Unicode-unmapped + 2 GID-beyond = 3,584,136. Only
+  `type0_unicode_unmapped` and `type0_glyph_missing` are augmentable in v1.
+  Candidate coverage of unavailable / ambiguous / GID-range buckets remains
+  visible under `candidate_supply|<verdict>` but is not credited.
 - `doc_0` corpus-union show weighting has 554,528 encodable-now opportunities,
-  3,023,674 candidate-supplied opportunities, and 3,578,202 after-augmentation
-  opportunities out of 3,584,136. The provisional augmentation headroom is
-  `3,023,674 / 604 = 5,006.08` show-equivalents before the same-face A-family
-  restriction.
+  3,023,672 augmentable candidate-supplied opportunities, and 3,578,200
+  after-augmentation opportunities out of 3,584,136. The provisional
+  augmentation headroom is `3,023,672 / 604 = 5,006.08` show-equivalents
+  before the same-face A-family restriction.
 - The three BMP-oriented candidates do not cover the SIP sample. The CAD list
   remains a seed pending domain-owner sign-off; `corpus_union` is the
   decision-grade vocabulary for Priority GO.
-- `doc_1`'s Type0 capability is unavailable, so its explicit vocabularies are
-  0% encodable now but face-0 candidate coverage reaches 100% for the BMP
-  vocabularies. Its runtime corpus union is empty and its show-weighted rates
-  are undefined, not zero.
+- `doc_1`'s only Type0 font is not augmentable because its ToUnicode is
+  unparseable. Candidate face coverage is diagnostic only and no longer turns
+  any row into false 100% headroom. Its runtime corpus union is empty and its
+  show-weighted rates are undefined, not zero.
+
+Priority is recorded in two like-for-like units (show-equivalents):
+
+| Unit A — self-proxy / rearrange existing text | augmentation | whole `TJ` | hscale |
+| --- | ---: | ---: | ---: |
+| doc_0 | 0 | 42 | 877 |
+| doc_1 | 0 | 0 | 0 |
+
+| Unit B — corpus union / type a document character | baseline | augmentation | whole `TJ` | hscale |
+| --- | ---: | ---: | ---: | ---: |
+| doc_0 | 918.09 | 5,006.08 | 12.29 | 127.00 |
+| doc_1 | n/a (empty union) | 0 | 0 | 0 |
+
+The Unit-B arithmetic exceeds twice the best non-mutating candidate
+(`5,006.08 > 2 × 127.00`) before the A-family restriction. This is not yet a
+Priority GO: augmentation remains ineligible until Commit 3 supplies Safety
+GO and restricts the numerator to proven A-family fonts. Unit A keeps the
+cheap candidates' standalone value visible without mixing units.
+
+Headline: the 100% replacement-encodable funnel value is a self-proxy
+artefact. Show-weighted, only 15.5% of corpus-union characters are encodable
+in a bindable `doc_0` show's font today (CAD seed 10.3%; fullwidth digits and
+punctuation 4.1%). A character copied from elsewhere in the drawing therefore
+fails encoding about 85% of the time even after source binding succeeds; that
+is the gap augmentation addresses.
 
 ## 8. Open questions
 

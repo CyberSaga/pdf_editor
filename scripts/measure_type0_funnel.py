@@ -62,7 +62,11 @@ from model.text_commit.dto import CommitStatus  # noqa: E402
 from model.text_commit.engine import TieredCommitEngine  # noqa: E402
 from model.text_commit.fonts import DocumentFontRegistry  # noqa: E402
 from model.text_commit.inspect import read_page_streams  # noqa: E402
-from model.text_commit.marked_content import admit_show_wrappers  # noqa: E402
+from model.text_commit.marked_content import (  # noqa: E402
+    CLASS_OC_LAYER_VISIBLE,
+    admit_show_wrappers,
+    splice_range_within_wrapper,
+)
 from model.text_commit.plan import PlanRejection  # noqa: E402
 from model.text_commit.transforms import admission_verdict  # noqa: E402
 from model.text_commit.replay import (  # noqa: E402
@@ -150,7 +154,12 @@ VOCABULARY_BASE_BUCKETS = (
     "type0_cid_out_of_map_range",
     "cid_unavailable",
 )
+AUGMENTABLE_VERDICTS = (
+    "type0_unicode_unmapped",
+    "type0_glyph_missing",
+)
 VOCABULARY_DERIVED_BUCKETS = (
+    *(f"candidate_supply|{verdict}" for verdict in VOCABULARY_BASE_BUCKETS),
     "candidate_could_supply",
     "after_augmentation",
 )
@@ -290,23 +299,29 @@ def _sole_loss_class(
     op_single_hex = operator == "Tj" and getattr(show, "string_kind", "") == "hex"
     op_tj_array = operator == "TJ"
 
-    mc_ok = True
-    if getattr(show, "mc_depth", 1) != 0 or getattr(show, "mc_stack", ()):
-        wrappers = tuple(
-            replay.mc_wrappers[index]
-            for index in show.mc_stack
-            if 0 <= index < len(replay.mc_wrappers)
+    wrappers = tuple(
+        replay.mc_wrappers[index]
+        for index in getattr(show, "mc_stack", ())
+        if 0 <= index < len(replay.mc_wrappers)
+    )
+    mc_ok = (
+        len(wrappers) == getattr(show, "mc_depth", 1)
+        and replay.mc_emc_underflows == 0
+        and all(
+            wrapper_classes.get(wrapper.wrapper_id)
+            == CLASS_OC_LAYER_VISIBLE
+            for wrapper in wrappers
         )
-        mc_ok = (
-            admit_show_wrappers(
-                page.parent,
-                page,
-                show,
-                wrappers=wrappers,
-                emc_underflows=replay.mc_emc_underflows,
+        and all(
+            splice_range_within_wrapper(
+                wrapper,
+                stream_xref=show.stream_xref,
+                start=show.op_start,
+                end=show.op_end,
             )
-            is None
+            for wrapper in wrappers
         )
+    )
 
     trm_ok = bool(getattr(show, "trm_uniform_scaled", False))
     if not trm_ok:
@@ -370,9 +385,10 @@ def _sole_loss_class(
 
 def _type0_font_population(
     doc: fitz.Document, registry: DocumentFontRegistry
-) -> tuple[dict[int, object], Counter[int]]:
+) -> tuple[dict[int, object], Counter[int], int]:
     capabilities: dict[int, object] = {}
     pages_per_font: Counter[int] = Counter()
+    resolution_mismatches = 0
     for page_index in range(doc.page_count):
         page = doc[page_index]
         seen: set[int] = set()
@@ -383,82 +399,109 @@ def _type0_font_population(
             capability = registry.capability(page, entry[4])
             if capability is None or capability.subtype != "Type0":
                 continue
+            if capability.font_xref != font_xref:
+                resolution_mismatches += 1
+                continue
             capabilities.setdefault(font_xref, capability)
             if font_xref not in seen:
                 seen.add(font_xref)
                 pages_per_font[font_xref] += 1
-    return capabilities, pages_per_font
+    return capabilities, pages_per_font, resolution_mismatches
 
 
-def _corpus_union(capabilities: dict[int, object]) -> tuple[str, ...]:
+_CORPUS_UNION_PER_FONT_CAP = 65_536
+
+
+def _corpus_union(
+    capabilities: dict[int, object],
+) -> tuple[tuple[str, ...], int]:
     chars: dict[str, None] = {}
-    remaining = _MAX_TOUNICODE_RECORDS
+    truncated_fonts = 0
     for capability in capabilities.values():
         cid = getattr(capability, "cid", None)
         if cid is None:
             continue
-        for kind, lo, hi, text in cid.tounicode.records:
-            if remaining <= 0:
-                return tuple(chars)
+        font_chars: dict[str, None] = {}
+        records = cid.tounicode.records
+        truncated = False
+        for record_index, (kind, lo, hi, text) in enumerate(records):
             if kind == "char":
                 if len(text) == 1:
-                    chars.setdefault(text, None)
-                remaining -= 1
+                    font_chars.setdefault(text, None)
+                if (
+                    len(font_chars) >= _CORPUS_UNION_PER_FONT_CAP
+                    and record_index + 1 < len(records)
+                ):
+                    truncated = True
+                    break
                 continue
-            count = min(hi - lo + 1, remaining)
-            for offset in range(count):
+            for offset in range(hi - lo + 1):
                 try:
-                    chars.setdefault(chr(ord(text) + offset), None)
+                    char = chr(ord(text) + offset)
                 except ValueError:
                     break
-            remaining -= count
-    return tuple(chars)
+                if (
+                    char not in font_chars
+                    and len(font_chars) >= _CORPUS_UNION_PER_FONT_CAP
+                ):
+                    truncated = True
+                    break
+                font_chars.setdefault(char, None)
+            if truncated:
+                break
+        if truncated:
+            truncated_fonts += 1
+        for char in font_chars:
+            chars.setdefault(char, None)
+    return tuple(chars), truncated_fonts
+
+
+ReverseCidIndex = tuple[
+    dict[str, set[int]], tuple[tuple[int, int, int], ...]
+]
 
 
 def _reverse_cid_index(
     cid: IdentityHCidCapability,
-) -> dict[str, tuple[int, ...]]:
-    """Build the exact one-character reverse map once for a capability."""
-    mutable: dict[str, list[int]] = {}
-    remaining = _MAX_TOUNICODE_RECORDS
+) -> ReverseCidIndex:
+    """Index bfchar records and bfrange intervals without span expansion."""
+    char_records: dict[str, set[int]] = {}
+    ranges: list[tuple[int, int, int]] = []
     for kind, lo, hi, text in cid.tounicode.records:
-        if remaining <= 0:
-            break
         if kind == "char":
             if len(text) == 1:
-                values = mutable.setdefault(text, [])
-                if lo not in values:
-                    values.append(lo)
-            remaining -= 1
+                char_records.setdefault(text, set()).add(lo)
             continue
-        count = min(hi - lo + 1, remaining)
-        for offset in range(count):
-            try:
-                char = chr(ord(text) + offset)
-            except ValueError:
-                break
-            code = lo + offset
-            values = mutable.setdefault(char, [])
-            if code not in values:
-                values.append(code)
-        remaining -= count
-    return {char: tuple(cids) for char, cids in mutable.items()}
+        ranges.append((lo, hi, ord(text)))
+    return char_records, tuple(ranges)
+
+
+def _lookup_reverse_cids(index: ReverseCidIndex, char: str) -> set[int]:
+    """Return the exact CID set represented by one reverse index."""
+    char_records, ranges = index
+    matches = set(char_records.get(char, ()))
+    codepoint = ord(char)
+    for lo, hi, base_ord in ranges:
+        offset = codepoint - base_ord
+        if 0 <= offset <= hi - lo:
+            matches.add(lo + offset)
+    return matches
 
 
 def _vocabulary_verdict(
     capability: object,
     char: str,
-    reverse_index: dict[str, tuple[int, ...]] | None,
+    reverse_index: ReverseCidIndex | None,
 ) -> str:
     cid = getattr(capability, "cid", None)
     if cid is None or reverse_index is None:
         return "cid_unavailable"
-    encoded = reverse_index.get(char, ())
+    encoded = _lookup_reverse_cids(reverse_index, char)
     if not encoded:
         return "type0_unicode_unmapped"
     if len(encoded) > 1:
         return "type0_tounicode_ambiguous"
-    failure = cid.glyph_gate(encoded, char)
+    failure = cid.glyph_gate(tuple(encoded), char)
     return "encodable_now" if failure is None else failure.reason
 
 
@@ -470,16 +513,30 @@ def _vocabulary_counterfactual(
     capabilities: dict[int, object],
     pages_per_font: Counter[int],
     bindable_shows: Counter[int],
+    replayed_font_xrefs: set[int],
+    tj_array_only_by_font: Counter[int],
+    hscale_only_by_font: Counter[int],
+    font_resolution_mismatch: int,
     candidate_has_glyph: Callable[[str], bool] | None,
 ) -> dict[str, object]:
     vocabularies = dict(VOCABULARIES)
-    vocabularies["corpus_union"] = _corpus_union(capabilities)
+    corpus_union, corpus_union_truncated_fonts = _corpus_union(capabilities)
+    vocabularies["corpus_union"] = corpus_union
     weighted: dict[str, dict[str, dict[str, int]]] = {
         weighting: {
             name: _blank_vocabulary_counts() for name in vocabularies
         }
         for weighting in VOCABULARY_WEIGHTINGS
     }
+    candidate_cache: dict[str, bool] = {}
+    priority_b = Counter(
+        {
+            "baseline_numerator": 0,
+            "augmentation_numerator": 0,
+            "tj_array_numerator": 0,
+            "hscale_numerator": 0,
+        }
+    )
 
     for font_xref, capability in capabilities.items():
         cid = getattr(capability, "cid", None)
@@ -491,6 +548,8 @@ def _vocabulary_counterfactual(
             # vocabulary length yields Σ bindable_shows(font) × rate.
             "show_weighted": bindable_shows[font_xref],
         }
+        corpus_now = 0
+        corpus_augmentation = 0
         for name, chars in vocabularies.items():
             for char in chars:
                 verdict = _vocabulary_verdict(
@@ -498,22 +557,69 @@ def _vocabulary_counterfactual(
                 )
                 candidate = False
                 if verdict != "encodable_now" and candidate_has_glyph:
-                    try:
-                        candidate = bool(candidate_has_glyph(char))
-                    except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
-                        candidate = False
+                    cached_candidate = candidate_cache.get(char)
+                    if cached_candidate is None:
+                        try:
+                            cached_candidate = bool(candidate_has_glyph(char))
+                        except (
+                            RuntimeError,
+                            ValueError,
+                            fitz.mupdf.FzErrorBase,
+                        ):
+                            cached_candidate = False
+                        candidate_cache[char] = cached_candidate
+                    candidate = cached_candidate
+                augmentable = verdict in AUGMENTABLE_VERDICTS and candidate
+                if name == "corpus_union":
+                    if verdict == "encodable_now":
+                        corpus_now += 1
+                    elif augmentable:
+                        corpus_augmentation += 1
                 for weighting, weight in weights.items():
                     values = weighted[weighting][name]
                     values[verdict] += weight
                     if candidate:
+                        values[f"candidate_supply|{verdict}"] += weight
+                    if augmentable:
                         values["candidate_could_supply"] += weight
-                    if verdict == "encodable_now" or candidate:
+                    if verdict == "encodable_now" or augmentable:
                         values["after_augmentation"] += weight
+
+        priority_b["baseline_numerator"] += (
+            bindable_shows[font_xref] * corpus_now
+        )
+        priority_b["augmentation_numerator"] += (
+            bindable_shows[font_xref] * corpus_augmentation
+        )
+        priority_b["tj_array_numerator"] += (
+            tj_array_only_by_font[font_xref] * corpus_now
+        )
+        priority_b["hscale_numerator"] += (
+            hscale_only_by_font[font_xref] * corpus_now
+        )
 
     return {
         "fonts_evaluated": len(capabilities),
+        "fonts_with_replayed_shows": len(replayed_font_xrefs),
+        "font_resolution_mismatch": font_resolution_mismatch,
         "font_page_references": sum(pages_per_font.values()),
         "bindable_shows": sum(bindable_shows.values()),
+        "corpus_union_truncated_fonts": corpus_union_truncated_fonts,
+        "priority_go_units": {
+            "unit_a_self_proxy": {
+                "augmentation_show_equivalents": 0,
+                "tj_array_show_equivalents": sum(
+                    tj_array_only_by_font.values()
+                ),
+                "hscale_show_equivalents": sum(
+                    hscale_only_by_font.values()
+                ),
+            },
+            "unit_b_corpus_union": {
+                "vocabulary_size": len(corpus_union),
+                **dict(priority_b),
+            },
+        },
         **weighted,
     }
 
@@ -633,9 +739,11 @@ def funnel_document(
     candidate_has_glyph: Callable[[str], bool] | None = None,
 ) -> dict[str, object]:
     registry = DocumentFontRegistry(doc)
-    type0_capabilities, pages_per_type0_font = _type0_font_population(
-        doc, registry
-    )
+    (
+        type0_capabilities,
+        pages_per_type0_font,
+        font_resolution_mismatch,
+    ) = _type0_font_population(doc, registry)
     shows_counter: Counter[str] = Counter()
     chars_counter: Counter[str] = Counter()
     loss_reasons: Counter[str] = Counter()
@@ -661,6 +769,7 @@ def funnel_document(
     hscale_only_by_font: Counter[int] = Counter()
     font_glyph_reach: Counter[str] = Counter()
     glyph_reach_fonts_seen: set[int] = set()
+    replayed_type0_font_xrefs: set[int] = set()
     bindable_shows_by_font: Counter[int] = Counter()
     source_evidence: dict[
         tuple[int, bytes], tuple[object, object, object]
@@ -704,6 +813,7 @@ def funnel_document(
             if capability is None or capability.subtype != "Type0":
                 continue
             shows_counter["on_type0_font"] += 1
+            replayed_type0_font_xrefs.add(capability.font_xref)
             _glyph_overlap_census(
                 show, capability, glyph_operator, glyph_hscale
             )
@@ -930,6 +1040,10 @@ def funnel_document(
             type0_capabilities,
             pages_per_type0_font,
             bindable_shows_by_font,
+            replayed_type0_font_xrefs,
+            tj_array_only_by_font,
+            hscale_only_by_font,
+            font_resolution_mismatch,
             candidate_has_glyph,
         ),
         "e2e_sample": e2e,

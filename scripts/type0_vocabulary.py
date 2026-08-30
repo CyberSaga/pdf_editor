@@ -5,8 +5,8 @@ aggregate counts, never the characters or candidate font paths.  The CAD list
 is a seed pending domain-owner sign-off; it is not a normative dictionary.
 
 ``fitz.Font(fontfile=...)`` observes face 0 of a TTC.  The dependency-free
-supplier here is therefore a heuristic upper bound; ``audit_same_face.py``
-performs the later all-face proof with fontTools.
+supplier here is therefore a heuristic upper bound; the later same-face audit
+must inspect every collection face with fontTools before any mutation is safe.
 """
 from __future__ import annotations
 

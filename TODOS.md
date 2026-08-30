@@ -999,6 +999,22 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   if one ever needs byte identity); (g) `PDFModel._normalize_text_for_compare`
   is still missing (below).
 
+- 2026-08-30 (Task 14 P4 candidate census, review-corrected): the
+  replacement-encodable funnel's 100% value is only a self-proxy. Among
+  already-bindable `doc_0` shows, just **15.5%** of the document's
+  corpus-union characters are encodable in that show's font today (CAD seed
+  10.3%; fullwidth digits/punctuation 4.1%), so a character copied from
+  elsewhere in the drawing fails the encoding gate about 85% of the time.
+  Like-for-like Unit-B headroom is provisionally augmentation 5,006.08 vs
+  hscale 127.00 vs whole-`TJ` 12.29 show-equivalents; augmentation stays
+  ineligible pending the same-face Safety proof and A-family restriction.
+  Separately, the unchanged 4 MiB replay budget rejects **16,549 Type0 shows
+  (59.5%)**, a larger lever than any P4 candidate within the eligible
+  population. Keep the existing replay/index caching + duplicate-read
+  latency work ahead of any budget relaxation; do not raise the cap without
+  a bounded-memory and per-keystroke latency proof. Record:
+  `plans/task14-type0-augmentation-census.md` §7.
+
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 
 - `PDFModel` has no `_normalize_text_for_compare` method. Referenced by
