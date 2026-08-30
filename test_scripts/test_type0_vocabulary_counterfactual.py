@@ -320,12 +320,13 @@ def test_corpus_union_reports_per_font_truncation(monkeypatch) -> None:
 
 def test_priority_units_use_per_font_corpus_union_rates(monkeypatch) -> None:
     fixture = build_identity_h_fixture(text="你好", subset=True)
+    missing = "圖測試文字"
     write_minimal_tounicode(
         fixture,
         [
             (cid_for("你"), "你"),
             (cid_for("好"), "好"),
-            (cid_for("圖"), "圖"),
+            *((cid_for(char), char) for char in missing),
         ],
     )
     append_page_content(
@@ -333,12 +334,16 @@ def test_priority_units_use_per_font_corpus_union_rates(monkeypatch) -> None:
         (
             f"BT /{fixture.resource_name} 12 Tf 1 0 0 1 72 650 Tm "
             f"<{cid_for('好'):04X}> Tj ET "
+            f"BT /{fixture.resource_name} 12 Tf 1 0 0 1 72 640 Tm "
+            f"<{cid_for('你'):04X}> Tj ET "
             f"BT /{fixture.resource_name} 12 Tf 1 0 0 1 72 625 Tm "
             f"[<{cid_for('你'):04X}>] TJ ET "
             f"BT /{fixture.resource_name} 12 Tf 1 0 0 1 72 600 Tm "
             f"[<{cid_for('好'):04X}>] TJ ET "
             f"BT /{fixture.resource_name} 12 Tf 1 0 0 1 72 575 Tm "
             f"[<{cid_for('你'):04X}>] TJ ET "
+            f"BT /{fixture.resource_name} 12 Tf 1 0 0 1 72 565 Tm "
+            f"[<{cid_for('好'):04X}>] TJ ET "
             f"BT /{fixture.resource_name} 12 Tf 80 Tz "
             f"1 0 0 1 72 550 Tm <{cid_for('你'):04X}> Tj ET"
         ),
@@ -346,20 +351,20 @@ def test_priority_units_use_per_font_corpus_union_rates(monkeypatch) -> None:
     report = _report(
         monkeypatch,
         fixture,
-        "你好圖",
-        candidate_has_glyph=lambda char: char == "圖",
+        "你好" + missing,
+        candidate_has_glyph=lambda char: char in missing,
     )
     units = report["priority_go_units"]
     assert units["unit_a_self_proxy"] == {
         "augmentation_show_equivalents": 0,
-        "tj_array_show_equivalents": 3,
+        "tj_array_show_equivalents": 4,
         "hscale_show_equivalents": 1,
     }
     assert units["unit_b_corpus_union"] == {
-        "vocabulary_size": 3,
-        "baseline_numerator": 4,
-        "augmentation_numerator": 2,
-        "tj_array_numerator": 6,
+        "vocabulary_size": 7,
+        "baseline_numerator": 6,
+        "augmentation_numerator": 15,
+        "tj_array_numerator": 8,
         "hscale_numerator": 2,
     }
 

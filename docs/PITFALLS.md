@@ -2650,3 +2650,24 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** The per-font cap bounds stored distinct output, not the work spent revisiting duplicate destination ranges.
 **Fix:** Track covered scalar intervals, materialize only uncovered portions, and retain the distinct-character cap and exact truncation semantics.
 **File:** `scripts/measure_type0_funnel.py`
+
+## TTC face multiplicity does not imply distinct glyph programs
+**Area:** `scripts/audit_same_face.py`
+**Symptom:** Every subset matching a multi-face TTC was classified `face_ambiguous`, even when all faces referenced byte-identical `glyf`, `loca`, and `hmtx` tables.
+**Cause:** The proof counted matching face names instead of distinct glyph programs. TTC faces can share one program while exposing different cmaps.
+**Fix:** Classify multiple allowed exact matches as `A_same_gid_exact_shared_program` only when their raw program tables, UPEM, and glyph count agree; require every matched face to map each supplied character to the same non-empty GID.
+**File:** `scripts/audit_same_face.py`
+
+## Composite closure includes empty embedded component glyphs
+**Area:** `scripts/audit_same_face.py`
+**Symptom:** A candidate with a real component glyph could pass an outline proof when the embedded composite referenced the same GID but its component entry was empty.
+**Cause:** The active-GID scan excludes empty glyphs, so component equality was never checked even though an active composite referenced the GID.
+**Fix:** Extend the same-GID comparison transitively through every component of every active composite and compare bytes and metrics at those GIDs too.
+**File:** `scripts/audit_same_face.py`
+
+## Shared-content diagnostics need a fail-closed inverse index
+**Area:** `scripts/measure_type0_funnel.py`, `model/text_commit/inspect.py`
+**Symptom:** Scanning every page for every content stream was quadratic, while an unreadable `/Contents` on any page could abort the entire document report.
+**Cause:** The diagnostic reused the production single-stream query inside a page/stream loop and read each page before isolating malformed content references.
+**Fix:** Build `stream_xref -> owner pages` once, retain an `unknown_pages` set that makes every other page fail closed, and count unreadable pages instead of aborting the document.
+**File:** `scripts/measure_type0_funnel.py`

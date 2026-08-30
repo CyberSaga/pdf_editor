@@ -1007,24 +1007,28 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   corpus-union characters are encodable in that show's font today (CAD seed
   10.3%; fullwidth digits/punctuation 4.1%), so a character copied from
   elsewhere in the drawing fails the encoding gate about 85% of the time.
-  Commit 3's all-face proof found 48 exact A-family `doc_0` fonts, but none
-  has a bindable show. The A-restricted Unit-B comparison is therefore
-  augmentation 0 vs hscale 127.00 vs whole-`TJ` 12.29 show-equivalents:
-  **Priority GO is hscale**. The 49 corpus-wide exact A matches satisfy the
-  same-face Safety precondition, while full Safety still awaits the mutation
-  premise matrix. The earlier 5,006.08 augmentation value remains only the
-  unrestricted self-proxy upper bound.
-  Separately, in Unit A (newly bindable shows), relaxing the unchanged 4 MiB
-  replay budget has an upper bound of **16,549** rejected single-hex-`Tj`
-  shows, versus hscale 877 and whole-`TJ` 42. That raw stage-loss count is not
-  comparable to Unit B and remains tracked separately. Budget relaxation
-  stays the §9 item (`TODOS.md:473`): its latency half remains open. Record:
+  Commit 3b's all-face proof found 48 strict exact and 95 shared-program
+  `doc_0` fonts. The shared-program rule admits byte-identical TTC
+  `glyf`/`loca`/`hmtx` programs only when every face agrees on the requested
+  character's GID. Those 143 eligible fonts contain 4,292 bindable shows.
+  Unit B is 3,326.47 augmentation vs 127.00 hscale vs 12.29 whole-`TJ`
+  show-equivalents, so augmentation leads hscale by 26× pending Safety GO.
+  The strict unique-face row remains 0 and the unrestricted upper bound
+  remains 5,006.08. Priority is deferred until the mutation-premise matrix:
+  augmentation wins if Safety is GO; hscale is the fallback if Safety is
+  NO-GO. The 1,642 bindable shows on unproven fonts are a candidate-list item
+  for P4-B.
+  Separately, hscale leads Unit A at 877 newly bindable shows versus whole-`TJ`
+  42. Relaxing the unchanged 4 MiB replay budget exposes a **16,549**-show
+  stage-loss upper bound, but those shows can still fail downstream gates, so
+  the bound belongs to neither Unit A nor Unit B. Budget relaxation stays the
+  §9 item (`TODOS.md:473`): its latency half remains open. Record:
   `plans/task14-type0-augmentation-census.md` §7.
-  Post-review equivalence reruns found zero malformed-replay and zero shared-
-  content-stream affected pages/shows in both corpus documents; corrected
-  unrestricted and A-restricted numerators are unchanged. The census now
-  rejects both page conditions structurally, and the same-face audit refuses
-  empty active-glyph sets instead of accepting a vacuous exact proof.
+  Fresh artifacts persist zero malformed-replay pages/shows, zero shared-
+  content-stream pages/shows, and zero unreadable-content pages in both corpus
+  documents. The census rejects all three conditions structurally, uses a
+  one-pass fail-closed stream-owner index, and closes ToUnicode reject details
+  over the 15 code-authored literals plus `missing_detail`.
 
 #### Pre-existing defects discovered incidentally during P0-C (register only; not in P0-C's scope)
 

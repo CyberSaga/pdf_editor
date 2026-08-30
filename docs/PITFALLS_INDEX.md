@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 300 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 303 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -305,3 +305,6 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2633 | Diagnostic funnels must include page-level production refusals in eligibility | `scripts/measure_type0_funnel.py`, `model/text_commit/inspect.py` |
 | 2640 | Same-face proofs must not succeed over an empty glyph witness set | `scripts/audit_same_face.py` |
 | 2647 | CMap result caps do not bound repeated range-expansion work | `scripts/measure_type0_funnel.py` |
+| 2654 | TTC face multiplicity does not imply distinct glyph programs | `scripts/audit_same_face.py` |
+| 2661 | Composite closure includes empty embedded component glyphs | `scripts/audit_same_face.py` |
+| 2668 | Shared-content diagnostics need a fail-closed inverse index | `scripts/measure_type0_funnel.py`, `model/text_commit/inspect.py` |

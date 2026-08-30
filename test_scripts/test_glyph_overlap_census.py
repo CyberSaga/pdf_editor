@@ -166,6 +166,7 @@ def test_malformed_partial_replay_is_ineligible_like_production() -> None:
         "replay_malformed_type0_shows": 1,
         "shared_content_stream_pages": 0,
         "shared_content_stream_type0_shows": 0,
+        "unreadable_content_pages": 0,
     }
 
 
@@ -184,7 +185,70 @@ def test_shared_content_stream_show_is_ineligible_like_production() -> None:
         "replay_malformed_type0_shows": 0,
         "shared_content_stream_pages": 1,
         "shared_content_stream_type0_shows": 1,
+        "unreadable_content_pages": 0,
     }
+
+
+def test_unreadable_contents_page_is_reported_and_fails_sharing_closed() -> None:
+    fixture = build_identity_h_fixture(text="你")
+    unreadable = fixture.doc.new_page()
+    fixture.doc.xref_set_key(unreadable.xref, "Contents", "(garbage)")
+
+    report = funnel_document(fixture.doc, run_e2e=False)
+    assert report["funnel_shows"]["source_bindable"] == 0
+    assert report["page_eligibility"] == {
+        "replay_malformed_pages": 0,
+        "replay_malformed_type0_shows": 0,
+        "shared_content_stream_pages": 1,
+        "shared_content_stream_type0_shows": 1,
+        "unreadable_content_pages": 1,
+    }
+
+
+def test_one_pass_stream_owners_match_production_fail_closed_membership() -> None:
+    from model.text_commit.inspect import (
+        _page_contents_xrefs,
+        find_pages_sharing_content_stream,
+    )
+    from scripts.measure_type0_funnel import (
+        _content_stream_owners,
+        _stream_is_shared,
+    )
+
+    fixture = build_identity_h_fixture(text="你")
+    indirect_page = fixture.doc.new_page()
+    array_xref = fixture.doc.get_new_xref()
+    fixture.doc.update_object(
+        array_xref, f"[ {fixture.content_xref} 0 R ]"
+    )
+    fixture.doc.xref_set_key(
+        indirect_page.xref, "Contents", f"{array_xref} 0 R"
+    )
+    unknown_page = fixture.doc.new_page()
+    fixture.doc.xref_set_key(unknown_page.xref, "Contents", "(garbage)")
+
+    owners, unknown_pages = _content_stream_owners(fixture.doc)
+    assert owners[fixture.content_xref] == {0, 1}
+    assert unknown_pages == {2}
+    for page_number in range(fixture.doc.page_count):
+        xrefs = _page_contents_xrefs(
+            fixture.doc, fixture.doc.page_xref(page_number)
+        )
+        if xrefs is None:
+            continue
+        for stream_xref in xrefs:
+            assert _stream_is_shared(
+                stream_xref,
+                page_number,
+                owners,
+                unknown_pages,
+            ) == bool(
+                find_pages_sharing_content_stream(
+                    fixture.doc,
+                    stream_xref=stream_xref,
+                    page_number=page_number,
+                )
+            )
 
 
 def test_unwrapped_shows_ignore_bare_emc_underflows_like_production() -> None:
@@ -263,21 +327,20 @@ def test_tounicode_unparseable_details_are_closed_and_counted() -> None:
     census = funnel_document(fixture.doc, run_e2e=False)[
         "glyph_overlap_census"
     ]
-    assert set(census["tounicode_unparseable_details"]) <= set(
-        TOUNICODE_UNPARSEABLE_DETAILS
-    )
-    assert census["tounicode_unparseable_details"] == {
-        "array-destination bfrange is outside the v1 grammar": 1
-    }
+    details = census["tounicode_unparseable_details"]
+    assert set(details) == {*TOUNICODE_UNPARSEABLE_DETAILS, "missing_detail"}
+    assert details["array-destination bfrange is outside the v1 grammar"] == 1
+    assert sum(details.values()) == 1
 
     fixture = build_identity_h_fixture()
     write_tounicode_cmap(fixture, "not a cmap")
     census = funnel_document(fixture.doc, run_e2e=False)[
         "glyph_overlap_census"
     ]
-    assert census["tounicode_unparseable_details"] == {
-        "no bfchar or bfrange records": 1
-    }
+    details = census["tounicode_unparseable_details"]
+    assert set(details) == {*TOUNICODE_UNPARSEABLE_DETAILS, "missing_detail"}
+    assert details["no bfchar or bfrange records"] == 1
+    assert sum(details.values()) == 1
 
 
 def test_tj_array_missing_glyph_survives_main_fold_operator_loss() -> None:

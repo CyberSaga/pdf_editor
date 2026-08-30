@@ -52,6 +52,7 @@ python test_scripts/test_1pdf_horizontal.py --gui --save out.pdf
 | `test_1pdf_horizontal.py` | pytest + script | Validate horizontal text edit result stays visible/in-page | `pytest -q test_scripts/test_1pdf_horizontal.py` or `python test_scripts/test_1pdf_horizontal.py --gui --save out.pdf` |
 | `test_50_rounds.py` | script | 50-round preservation stress test (horizontal + vertical) | `python test_scripts/test_50_rounds.py` |
 | `test_add_textbox_atomic.py` | pytest | Regression tests for add-text atomicity/rotation/font/immediate detectability | `pytest -q test_scripts/test_add_textbox_atomic.py` |
+| `test_audit_same_face.py` | pytest | Task 14 exact/shared-program Type0 font proof, TTC cmap agreement, embedding rights, corrupt-program, and privacy regressions | `pytest -q test_scripts/test_audit_same_face.py` |
 | `test_app_icon.py` | pytest | App icon asset loads as a non-null `QIcon` and propagates from the application to `PDFView` | `pytest -q test_scripts/test_app_icon.py` |
 | `test_dialogs_package.py` | pytest | Every dialog class in `view/dialogs` is importable through the package's lazy `__getattr__` re-export | `pytest -q test_scripts/test_dialogs_package.py` |
 | `test_startup_heavy_imports.py` | pytest | Startup import guard: subprocess probe asserts numpy/PIL/pikepdf/lxml are NOT loaded by importing `view.pdf_view` / `view.text_editing` (protects the lazy-import cold-boot win) | `pytest -q test_scripts/test_startup_heavy_imports.py` |
@@ -64,6 +65,7 @@ python test_scripts/test_1pdf_horizontal.py --gui --save out.pdf
 | `test_edit_flow.py` | script | End-to-end smoke test for basic edit flow | `python test_scripts/test_edit_flow.py` |
 | `test_feature_conflict.py` | script | Cross-feature conflict workflow validation | `python test_scripts/test_feature_conflict.py` |
 | `test_font_fix.py` | script | Font/HTML conversion behavior checks | `python test_scripts/test_font_fix.py` |
+| `test_glyph_overlap_census.py` | pytest | Task 14 Type0 glyph-overlap, sole-loss, page-eligibility, shared-stream inverse-index, and closed-diagnostic regressions | `pytest -q test_scripts/test_glyph_overlap_census.py` |
 | `test_large_scale.py` | script | Large-scale stress run (random edits/undo/perf/scan) | `python test_scripts/test_large_scale.py --rounds 50 --pages 100 --seed 2026` |
 | `test_main_startup_behavior.py` | pytest | Startup lifecycle regression for shell-first empty launch, deferred controller attachment/activation, and synchronous CLI open behavior | `pytest -q test_scripts/test_main_startup_behavior.py` |
 | `test_image_objects_gui.py` | pytest | GUI regressions for image-object insert entry points (file and clipboard) and current-page default target behavior | `pytest -q test_scripts/test_image_objects_gui.py` |
@@ -109,6 +111,7 @@ python test_scripts/test_1pdf_horizontal.py --gui --save out.pdf
 | `test_win_print_fixes.py` | pytest | Windows print fixes P1–P4 against the real driver/dialog paths: job-scoped DEVMODE (no level-9 persistence, base64 carry, scoped apply/restore), per-page size/orientation split + multi-copy ordering, 150-DPI spooler cap, PDF-output preservation, and the `setPageSize` page-size regression (incl. a live-printer check, skipped if none) | `pytest -q test_scripts/test_win_print_fixes.py` |
 | `test_print_dialog_logic.py` | script | Print dialog logic checks for layout/range/options normalization | `python test_scripts/test_print_dialog_logic.py` |
 | `test_sample_pdfs.py` | script | Quick smoke test on `1.pdf`, `2.pdf`, `when I was young I.pdf` | `python test_scripts/test_sample_pdfs.py` |
+| `test_type0_vocabulary_counterfactual.py` | pytest | Task 14 replacement-vocabulary, corpus-union, candidate-supply, and discriminating Priority-unit arithmetic regressions | `pytest -q test_scripts/test_type0_vocabulary_counterfactual.py` |
 | `test_unified_undo.py` | script | Unified undo stack scenario validation (delete/edit/undo/redo) | `python test_scripts/test_unified_undo.py` |
 | `validate_optimized_pdf.py` | script | Multi-parser integrity validation for an optimized PDF (fitz + pikepdf + pypdf) | `python test_scripts/validate_optimized_pdf.py test_files/2024_ASHRAE_content.pdf` |
 

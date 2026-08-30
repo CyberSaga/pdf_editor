@@ -140,10 +140,11 @@ Arithmetic reconciliation:
   `doc_1`). The 88-show intersection is separate, so it cannot inflate either
   cheap candidate. The unchanged funnel stages exactly match the sealed Task
   13 record, so no drift attribution is required.
-- In Unit A, relaxing the 4 MiB replay budget has an upper bound of 16,549
-  newly bindable single-hex-`Tj` shows (27,250 − 10,701), versus hscale 877
-  and whole-`TJ` 42. This raw stage-loss count is not comparable to Unit B and
-  remains tracked separately; the latency half of budget relaxation is open.
+- Relaxing the 4 MiB replay budget exposes a stage-loss upper bound of 16,549
+  rejected single-hex-`Tj` shows (27,250 − 10,701). Those shows can still fail
+  marked-content, TRM, state, decode, or glyph gates, so this bound belongs to
+  neither Unit A nor Unit B. It remains tracked separately; the latency half
+  of budget relaxation is open.
 
 The e2e-enabled second pass was attempted because the baseline completed
 within 30 minutes, but it did not complete within its 30-minute ceiling and
@@ -252,74 +253,83 @@ number unchanged. In particular, sole-loss rows still sum to 27,820 / 543,
 554,528 / 3,023,672 / 7,424 / 76,711 over vocabulary size 604, or
 918.09 / 5,006.08 / 12.29 / 127.00 show-equivalents.
 
-### Same-face proof census (2026-08-30, fontTools)
+### Same-face proof census (2026-08-30, fontTools; Commit 3b rerun)
 
 Population: the same positional two-document corpus, with all faces of all
-three configured candidate files enumerated. Seven candidate faces loaded.
-The audit evaluated 261 `doc_0` Type0 fonts and one `doc_1` Type0 font, skipped
-zero documents, and emitted integer counts and closed slugs only. Its raw
-aggregate report is gitignored at
+three configured candidate files enumerated. Seven candidate faces loaded,
+all with allowed `fsType` 0x0008. The audit evaluated 261 `doc_0` Type0 fonts
+and one `doc_1` Type0 font, skipped zero documents, and emitted integer counts
+and closed slugs only. Its raw aggregate report is gitignored at
 `benchmarks/p4a-same-face-2026-08-30.json`.
 
 | proof class | doc_0 | doc_1 | combined |
 | --- | ---: | ---: | ---: |
 | `A_same_gid_exact` | 48 | 1 | 49 |
-| `face_ambiguous` | 95 | 0 | 95 |
+| `A_same_gid_exact_shared_program` | 95 | 0 | 95 |
 | `face_unproven` | 118 | 0 | 118 |
 
-All 49 A-family matches have an allowed candidate `fsType`; no corpus font
-landed in the outline-equal/byte-different, B-renumbered, restricted, CFF, or
-unreadable buckets. The 49 allowed exact matches satisfy Commit 3's same-face
-Safety precondition. They do not establish full Safety GO: serializer, cache,
-revert, raster, shared-font staleness, and encrypted-round-trip premises remain
-for Commit 4.
+The shared-program class requires every allowed match to be exact at the
+embedded GIDs, byte-identical `glyf`/`loca`/`hmtx` tables with equal UPEM and
+glyph count, and unanimous cmap-to-GID agreement for each supplied character.
+Multiple names for one TTC glyph program are therefore no longer treated as
+proof ambiguity. Composite components are compared transitively even when an
+embedded component is empty, corrupt embedded glyph programs are reported as
+`program_unreadable`, and an empty candidate set makes `--same-face` exit 2.
 
-The labelled heuristics are not proof inputs. `/W` supplied max CID for all
-262 fonts. `numGlyphs` was greater than `maxCID + 1` for 261 fonts and less
-than or equal to `maxCID` for one; subset tags were present for 6 and absent
-for 256. These columns only describe corpus shapes.
+The labelled heuristics remain non-proof diagnostics. `/W` supplied max CID
+for all 262 fonts. `numGlyphs` was greater than `maxCID + 1` for 261 fonts and
+less than or equal to `maxCID` for one; subset tags were present for 6 and
+absent for 256.
 
-The model-free audit exposes unique allowed A faces only in memory. The
-production-equivalent funnel's `--same-face --no-e2e` mode consumes that map
-and applies the per-font gate vector; its aggregate report is gitignored at
-`benchmarks/p4a-same-face-priority-2026-08-30.json`. Although `doc_0` has 48
-A-family fonts, none has a bindable show; `doc_1`'s one A-family font likewise
-has zero bindable shows. The A-restricted comparison is therefore:
+The proof-class × sole-loss cross-tab for `doc_0` reconciles to 27,820 Type0
+shows, 5,934 bindable shows, and 877 hscale-only shows:
 
-| Unit B — corpus union | baseline | augmentation | whole `TJ` | hscale |
+| proof class | fonts | Type0 shows | bindable | `TJ` only | hscale only | `TJ`+hscale | over budget | downstream |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| exact | 48 | 137 | 0 | 0 | 36 | 0 | 11 | 90 |
+| shared program | 95 | 14,476 | 4,292 | 42 | 195 | 0 | 8,827 | 1,120 |
+| unproven | 118 | 13,207 | 1,642 | 0 | 646 | 88 | 7,947 | 2,884 |
+
+The 48 strict exact fonts have no bindable shows because their 137 shows are
+36 hscale-only losses, 11 over-budget losses, and 90 downstream losses. The
+1,642 bindable shows on unproven fonts are a candidate-list question for P4-B,
+not evidence that the shared-program proof failed.
+
+The production-equivalent `--same-face --no-e2e` run admits both exact proof
+classes and applies per-character agreement in memory. It reports 143 eligible
+`doc_0` fonts and 4,292 eligible bindable shows. The three Unit-B views are:
+
+| Unit B rule (`doc_0`, corpus union) | baseline | augmentation | whole `TJ` | hscale |
 | --- | ---: | ---: | ---: | ---: |
-| doc_0 | 918.09 | 0 | 12.29 | 127.00 |
-| doc_1 | n/a (empty union) | 0 | 0 | 0 |
+| unrestricted candidate upper bound | 918.09 | 5,006.08 | 12.29 | 127.00 |
+| strict unique-face only | 918.09 | 0 | 12.29 | 127.00 |
+| exact + shared-program agreement | 918.09 | 3,326.47 | 12.29 | 127.00 |
 
-For `doc_0`, the exact numerators remain 554,528 / 7,424 / 76,711 over 604;
-only augmentation changes, from the unrestricted 3,023,672 upper bound to 0.
-This is a **Priority GO for hscale**, which also leads Unit A at 877 newly
-bindable shows versus whole-`TJ` 42. Augmentation fails the 2× rule after the
-required A-family restriction. Whole-`TJ` remains a TJ-and-ToUnicode-grammar
-item on `doc_1`, not hidden headroom in this comparison.
+The shared-program row is `554,528 / 2,009,190 / 7,424 / 76,711` over 604.
+Its augmentation headroom is 26.2× hscale and satisfies the 2× rule. Unit A
+is separate: hscale leads at 877 newly bindable shows versus whole-`TJ` 42,
+while augmentation is zero because it changes character encodability rather
+than source-show bindability.
 
-Post-review equivalence correction: the funnel now makes `replay.malformed`
-and `find_pages_sharing_content_stream` refusals part of the same gate vector
-used by `source_bindable`, `all_gates_pass`, and sole-loss classification. It
-emits page/show incidence for both reasons. Fresh unrestricted and
-`--same-face --no-e2e` corpus runs found 0 / 0 malformed pages/shows and 0 / 0
-shared-stream pages/shows in both documents, so every recorded funnel count
-and numerator above remains unchanged; in particular
-`all_gates_pass == source_bindable == 5,934`, and the A-restricted Unit-B
-numerators remain 554,528 / 0 / 7,424 / 76,711 over 604.
+Priority pick is deferred to the §7 verdict step after Commit 4. If the
+mutation premises produce Safety GO, shared-program augmentation leads Unit B
+by 26×; if Safety is NO-GO, hscale is the fallback. Whole-`TJ` remains a
+TJ-and-ToUnicode-grammar item on `doc_1`, not hidden headroom in this comparison.
 
-The same-face proof now refuses an empty active-glyph set before evaluating
-same-GID, exact-byte, outline, or renumbered proofs. The corrected A-family
-rerun still found 48 eligible `doc_0` fonts and one eligible `doc_1` font, with
-zero eligible bindable shows, so the Safety precondition count and hscale
-Priority GO are unchanged. The corpus-union fold also tracks covered scalar
-intervals, preventing repeated/overlapping `bfrange` records from expanding
-already-seen ranges while retaining the per-font distinct-character cap.
+Commit 2d overwrote all four aggregate artifacts. Both unrestricted and
+`--same-face --no-e2e` reports persist zero malformed-replay pages/shows, zero
+shared-stream pages/shows, and zero unreadable-content pages for both corpus
+documents. `all_gates_pass == source_bindable == 5,934`; the unrestricted and
+shared-program numerators above are unchanged. The inverse stream-owner index
+matches production's fail-closed membership while avoiding a per-stream
+whole-document rescan. The allowed-match set excludes restricted faces: one
+allowed exact face plus a restricted match remains a unique usable face, while
+two restricted matches remain `embedding_restricted`.
 
 ## 8. Open questions
 
-- TTC candidates currently need all-face enumeration; `fitz.Font(fontfile=...)`
-  observes face 0 only.
+- The proof path enumerates all TTC faces; the diagnostic
+  `system_candidate_supplier` still observes face 0 only through `fitz.Font`.
 - Simple-font program bytes are not folded into the current page fingerprint.
 - Text edits do not currently invalidate file-backed thumbnails.
 - `fitz.TOOLS.store_shrink(100)` is process-global and cannot be considered a

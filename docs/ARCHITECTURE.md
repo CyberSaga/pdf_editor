@@ -1132,6 +1132,27 @@ shape, six staleness pins (incl. the hybrid indirect-array descendant),
 the hex-only operand scope, preview↔commit identity, byte-exact undo,
 atomic rollback, and code-only privacy).
 
+#### 10.1.3 Task 14 read-only Type0 augmentation decision tools (2026-08-30)
+
+Task 14 adds no live font mutation path. Three model-free scripts measure the
+decision boundary before Tier 1b can be designed:
+
+- `scripts/measure_type0_funnel.py` replays Type0 shows through a
+  production-equivalent gate vector, computes like-for-like priority units,
+  and uses a one-pass fail-closed content-stream ownership index. Reports are
+  aggregate-only and positional.
+- `scripts/type0_vocabulary.py` owns closed replacement vocabularies and the
+  diagnostic system-candidate supplier. It does not participate in planning
+  or live edits.
+- `scripts/audit_same_face.py` uses the dev-only fontTools dependency to prove
+  exact embedded/candidate glyph programs. TTC faces sharing byte-identical
+  `glyf`/`loca`/`hmtx` tables form one shared-program proof witness, while
+  per-character cmap-to-GID agreement remains mandatory.
+
+The only planned production-package addition in this phase is a legal
+PDF-value serializer beside `parse_pdf_value`; all font mutation probes remain
+synthetic scratch-document work. Safety and Priority verdicts stay separate.
+
 ## 11. Character-Level Text Selection (Browse Mode)
 
 **Module:** `model/pdf_model.py:get_chars_in_run()`, `get_text_selection_lines()`

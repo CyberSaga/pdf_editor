@@ -30,7 +30,12 @@ census records operator / horizontal-scale intersections plus an independent
 all-gates vector, while the vocabulary counterfactual measures closed
 replacement vocabularies without emitting document text or font identities.
 The page-eligibility section separately counts malformed replay and shared
-content-stream refusals in both affected pages and Type0 shows.
+content-stream refusals in both affected pages and Type0 shows. A page that is
+both over budget and malformed is attributed here to malformed replay even
+though production's refusal ordering reports the budget first. The broader
+``loss_reasons.page_replay_malformed`` diagnostic counts every malformed page;
+``page_eligibility.replay_malformed_pages`` counts only malformed pages with a
+refused Type0 show. Both counters are intentional.
 
 Show weighting counts operators; char weighting counts decoded source
 characters. The per-document sections ARE the document weighting.
@@ -41,8 +46,9 @@ Usage::
     [--no-e2e] [--same-face]
 
 ``--same-face`` uses the model-free fontTools audit to restrict augmentation
-headroom to unique, embedding-allowed A-family candidate faces. Font xrefs and
-face identities remain in memory; the report adds aggregate eligibility counts.
+headroom to embedding-allowed exact or shared-program candidate faces. Font
+xrefs and face identities remain in memory; the report adds aggregate
+eligibility counts.
 """
 from __future__ import annotations
 
@@ -68,7 +74,7 @@ from model.text_commit.dto import CommitStatus  # noqa: E402
 from model.text_commit.engine import TieredCommitEngine  # noqa: E402
 from model.text_commit.fonts import DocumentFontRegistry  # noqa: E402
 from model.text_commit.inspect import (  # noqa: E402
-    find_pages_sharing_content_stream,
+    _page_contents_xrefs,
     read_page_streams,
 )
 from model.text_commit.marked_content import (  # noqa: E402
@@ -169,6 +175,7 @@ TOUNICODE_UNPARSEABLE_DETAILS = (
     "ToUnicode record count over the parse budget",
     "ToUnicode is present but its stream is unreadable or empty",
 )
+_TOUNICODE_DETAIL_BUCKETS = (*TOUNICODE_UNPARSEABLE_DETAILS, "missing_detail")
 
 VOCABULARY_BASE_BUCKETS = (
     "encodable_now",
@@ -844,6 +851,40 @@ def _trm_census(
     return (gate_member, gate_member)
 
 
+def _content_stream_owners(
+    doc: fitz.Document,
+) -> tuple[dict[int, set[int]], set[int]]:
+    """Build a fail-closed inverse index for every page's content xrefs."""
+    owners: dict[int, set[int]] = {}
+    unknown_pages: set[int] = set()
+    for page_number in range(doc.page_count):
+        try:
+            page_xref = doc.page_xref(page_number)
+        except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+            unknown_pages.add(page_number)
+            continue
+        xrefs = _page_contents_xrefs(doc, page_xref)
+        if xrefs is None:
+            unknown_pages.add(page_number)
+            continue
+        for stream_xref in xrefs:
+            owners.setdefault(stream_xref, set()).add(page_number)
+    return owners, unknown_pages
+
+
+def _stream_is_shared(
+    stream_xref: int,
+    page_number: int,
+    owners: dict[int, set[int]],
+    unknown_pages: set[int],
+) -> bool:
+    """Match production's fail-closed shared-stream membership test."""
+    return bool(
+        owners.get(stream_xref, set()) - {page_number}
+        or unknown_pages - {page_number}
+    )
+
+
 def funnel_document(
     doc: fitz.Document,
     *,
@@ -903,10 +944,15 @@ def funnel_document(
         "reopen_extraction_ok": 0,
     }
     e2e_reject_reasons: Counter[str] = Counter()
+    content_owners, unknown_content_pages = _content_stream_owners(doc)
 
     for page_index in range(doc.page_count):
         page = doc[page_index]
-        streams = read_page_streams(doc, page)
+        try:
+            streams = read_page_streams(doc, page)
+        except (RuntimeError, ValueError, fitz.mupdf.FzErrorBase):
+            page_eligibility["unreadable_content_pages"] += 1
+            continue
         total_bytes = sum(len(data) for _, data in streams)
         # Diagnostics enumerate every show (audit_tier_coverage precedent);
         # the production budget is reported as its own funnel stage.
@@ -918,10 +964,11 @@ def funnel_document(
         shared_stream_xrefs = {
             stream_xref
             for stream_xref, _ in streams
-            if find_pages_sharing_content_stream(
-                doc,
-                stream_xref=stream_xref,
-                page_number=page_index,
+            if _stream_is_shared(
+                stream_xref,
+                page_index,
+                content_owners,
+                unknown_content_pages,
             )
         }
         within_budget = total_bytes <= DEFAULT_MAX_REPLAY_BYTES
@@ -1117,6 +1164,17 @@ def funnel_document(
                 doc, page_index, page_bindable, e2e, e2e_reject_reasons
             )
 
+    tounicode_detail_counts = Counter(
+        (
+            capability.tier0_reject_detail
+            if capability.tier0_reject_detail in TOUNICODE_UNPARSEABLE_DETAILS
+            else "missing_detail"
+        )
+        for capability in type0_capabilities.values()
+        if capability.cid is None
+        and capability.tier0_reject_reason == "type0_tounicode_unparseable"
+    )
+
     return {
         "pages": doc.page_count,
         "funnel_shows": {stage: shows_counter[stage] for stage in _STAGES},
@@ -1129,6 +1187,7 @@ def funnel_document(
                 "replay_malformed_type0_shows",
                 "shared_content_stream_pages",
                 "shared_content_stream_type0_shows",
+                "unreadable_content_pages",
             )
         },
         "mc_census": {
@@ -1185,16 +1244,8 @@ def funnel_document(
                 )
             ),
             "tounicode_unparseable_details": dict(
-                sorted(
-                    Counter(
-                        capability.tier0_reject_detail
-                        for capability in type0_capabilities.values()
-                        if capability.cid is None
-                        and capability.tier0_reject_reason
-                        == "type0_tounicode_unparseable"
-                        and capability.tier0_reject_detail is not None
-                    ).items()
-                )
+                (detail, tounicode_detail_counts[detail])
+                for detail in _TOUNICODE_DETAIL_BUCKETS
             ),
         },
         "vocabulary_counterfactual": _vocabulary_counterfactual(
@@ -1285,7 +1336,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--same-face",
         action="store_true",
-        help="restrict augmentation headroom to unique allowed A-family faces",
+        help="restrict augmentation to allowed exact/shared-program faces",
     )
     args = parser.parse_args(argv)
 
