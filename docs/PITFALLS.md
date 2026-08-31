@@ -2665,6 +2665,13 @@ the real KEEP-encrypted serialize/reopen probe.
 **Fix:** Extend the same-GID comparison transitively through every component of every active composite and compare bytes and metrics at those GIDs too.
 **File:** `scripts/audit_same_face.py`
 
+## Shared glyph tables alone do not prove identical rendering programs
+**Area:** `scripts/audit_same_face.py`
+**Symptom:** TTC faces with identical raw `glyf`/`loca`/`hmtx` bytes can be admitted as one shared program even when they interpret or render those bytes differently.
+**Cause:** Glyph interpretation depends on fields such as `head.indexToLocFormat` and `hhea.numberOfHMetrics`, while global hinting and other unrecognized tables can change rendering despite identical glyph-table bytes.
+**Fix:** Pin the interpretation fields explicitly and fail closed on table presence and byte identity for every table not proven irrelevant to the PDF consumption model.
+**File:** `scripts/audit_same_face.py`
+
 ## Shared-content diagnostics need a fail-closed inverse index
 **Area:** `scripts/measure_type0_funnel.py`, `model/text_commit/inspect.py`
 **Symptom:** Scanning every page for every content stream was quadratic, while an unreadable `/Contents` on any page could abort the entire document report.

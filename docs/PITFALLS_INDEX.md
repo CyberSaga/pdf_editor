@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 307 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 308 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -307,8 +307,9 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2647 | CMap result caps do not bound repeated range-expansion work | `scripts/measure_type0_funnel.py` |
 | 2654 | TTC face multiplicity does not imply distinct glyph programs | `scripts/audit_same_face.py` |
 | 2661 | Composite closure includes empty embedded component glyphs | `scripts/audit_same_face.py` |
-| 2668 | Shared-content diagnostics need a fail-closed inverse index | `scripts/measure_type0_funnel.py`, `model/text_commit/inspect.py` |
-| 2675 | FontFile2 rewrites can remain invisible to the live MuPDF font cache | `scripts/probe_type0_mutation_premises.py`, future Type0 augmentation |
-| 2682 | `xref_set_key` array paths are not descendant-dictionary mutation | `model/text_commit/cid_fonts.py`, future Type0 augmentation |
-| 2689 | MuPDF readback normalization is wider than the PDF-value serializer contract | `model/text_commit/cid_fonts.py` |
-| 2696 | Restore stream bytes before restoring the stream dictionary | `scripts/probe_type0_mutation_premises.py`, future multi-object revert |
+| 2668 | Shared glyph tables alone do not prove identical rendering programs | `scripts/audit_same_face.py` |
+| 2675 | Shared-content diagnostics need a fail-closed inverse index | `scripts/measure_type0_funnel.py`, `model/text_commit/inspect.py` |
+| 2682 | FontFile2 rewrites can remain invisible to the live MuPDF font cache | `scripts/probe_type0_mutation_premises.py`, future Type0 augmentation |
+| 2689 | `xref_set_key` array paths are not descendant-dictionary mutation | `model/text_commit/cid_fonts.py`, future Type0 augmentation |
+| 2696 | MuPDF readback normalization is wider than the PDF-value serializer contract | `model/text_commit/cid_fonts.py` |
+| 2703 | Restore stream bytes before restoring the stream dictionary | `scripts/probe_type0_mutation_premises.py`, future multi-object revert |

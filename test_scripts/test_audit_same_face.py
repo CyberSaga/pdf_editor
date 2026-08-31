@@ -5,6 +5,7 @@ import io
 import json
 import subprocess
 import sys
+from array import array
 from pathlib import Path
 
 import fitz
@@ -43,6 +44,16 @@ def _collection_faces(fonts):
     collection.fonts = fonts
     collection.save(output)
     return TTCollection(io.BytesIO(output.getvalue()), lazy=False).fonts
+
+
+def _separate_full_faces() -> tuple[object, object]:
+    from fontTools.ttLib import TTFont
+
+    full, _ = _full_and_subset()
+    return (
+        TTFont(io.BytesIO(full), lazy=False),
+        TTFont(io.BytesIO(full), lazy=False),
+    )
 
 
 def _font_with_fstype(program: bytes, fs_type: int) -> bytes:
@@ -194,6 +205,110 @@ def test_shared_program_supplier_requires_per_character_cmap_agreement() -> None
     supplier = candidate_supplier_for_faces({7: matches})
     assert supplier(7, "你")
     assert not supplier(7, "圖")
+
+
+@pytest.mark.parametrize("tag", ["prep", "cvt "])
+def test_shared_program_requires_global_program_table_identity(tag: str) -> None:
+    pytest.importorskip("fontTools")
+    from fontTools.ttLib import TTFont, newTable
+    from fontTools.ttLib.tables.ttProgram import Program
+    from scripts.audit_same_face import (
+        _classify_font_details,
+        a_family_faces,
+        candidate_supplier_for_faces,
+    )
+    from scripts.measure_type0_funnel import funnel_document
+    from test_scripts.type0_fixture_builder import cid_for
+
+    first, second = _separate_full_faces()
+    if tag == "prep":
+        first[tag] = newTable(tag)
+        first[tag].program = Program()
+        first[tag].program.fromBytecode(b"\x24")
+        second[tag] = newTable(tag)
+        second[tag].program = Program()
+        second[tag].program.fromBytecode(b"\x25")
+    else:
+        first[tag] = newTable(tag)
+        first[tag].values = array("h", [0])
+        second[tag] = newTable(tag)
+        second[tag].values = array("h", [1])
+    candidates = _collection_faces([first, second])
+    _, subset = _full_and_subset()
+    embedded = TTFont(io.BytesIO(subset), lazy=False)
+    assert _classify_font_details(embedded, candidates)[0] == "face_ambiguous"
+
+    fixture = build_identity_h_fixture(text="\u5716", subset=True)
+    write_minimal_tounicode(fixture, [(cid_for("\u5716"), "\u5716")])
+    faces = a_family_faces(fixture.doc, candidates)
+    report = funnel_document(
+        fixture.doc,
+        run_e2e=False,
+        candidate_has_glyph_for_font=candidate_supplier_for_faces(faces),
+        augmentation_font_xrefs=set(faces),
+    )["vocabulary_counterfactual"]
+    assert report["augmentation_eligible_bindable_shows"] == 0
+    assert report["priority_go_units"]["unit_b_corpus_union"][
+        "augmentation_numerator"
+    ] == 0
+
+
+def test_shared_program_requires_identical_table_presence() -> None:
+    pytest.importorskip("fontTools")
+    from fontTools.ttLib import TTFont
+    from scripts.audit_same_face import _classify_font_details
+
+    first, second = _separate_full_faces()
+    del first["gasp"]
+    candidates = _collection_faces([first, second])
+    _, subset = _full_and_subset()
+    embedded = TTFont(io.BytesIO(subset), lazy=False)
+    assert _classify_font_details(embedded, candidates)[0] == "face_ambiguous"
+
+
+@pytest.mark.parametrize(
+    ("table", "field"),
+    [("hhea", "numberOfHMetrics"), ("head", "indexToLocFormat")],
+)
+def test_shared_program_requires_interpretation_field_equality(
+    table: str, field: str
+) -> None:
+    pytest.importorskip("fontTools")
+    from scripts.audit_same_face import _classify_font_details, _font_from_bytes
+
+    full, subset = _full_and_subset()
+    first = _font_from_bytes(full)
+    second = _font_from_bytes(full)
+    _ = first["hmtx"], second["hmtx"]
+    setattr(second[table], field, int(getattr(first[table], field)) + 1)
+    embedded = _font_from_bytes(subset)
+    assert _classify_font_details(embedded, [first, second])[0] == "face_ambiguous"
+
+
+@pytest.mark.parametrize("difference", ["glyph", "metrics"])
+def test_shared_program_supplier_requires_target_gid_agreement(
+    difference: str,
+) -> None:
+    pytest.importorskip("fontTools")
+    from fontTools.ttLib.tables.ttProgram import Program
+    from scripts.audit_same_face import (
+        _font_from_bytes,
+        candidate_supplier_for_faces,
+    )
+
+    full, _ = _full_and_subset()
+    first = _font_from_bytes(full)
+    second = _font_from_bytes(full)
+    name = second.getBestCmap()[ord("\u5716")]
+    if difference == "glyph":
+        program = Program()
+        program.fromBytecode(b"\x25")
+        second["glyf"][name].program = program
+    else:
+        advance, lsb = second["hmtx"][name]
+        second["hmtx"][name] = (advance + 1, lsb)
+    supplier = candidate_supplier_for_faces({7: (first, second)})
+    assert not supplier(7, "\u5716")
 
 
 def test_two_exact_matches_with_different_program_tables_stay_ambiguous() -> None:

@@ -1011,6 +1011,10 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   `doc_0` fonts. The shared-program rule admits byte-identical TTC
   `glyf`/`loca`/`hmtx` programs only when every face agrees on the requested
   character's GID. Those 143 eligible fonts contain 4,292 bindable shows.
+  The Commit 3c Codex finding is closed: shared-program admission now also
+  pins `head`/`hhea` interpretation fields, fails closed over every unexcluded
+  table's presence and bytes, and requires per-GID glyph/metric agreement;
+  the 2026-08-31 census numbers were unchanged.
   Unit B is 3,326.47 augmentation vs 127.00 hscale vs 12.29 whole-`TJ`
   show-equivalents, so augmentation leads hscale by 26× on value.
   The strict unique-face row remains 0 and the unrestricted upper bound

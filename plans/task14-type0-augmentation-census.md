@@ -269,12 +269,20 @@ and closed slugs only. Its raw aggregate report is gitignored at
 | `face_unproven` | 118 | 0 | 118 |
 
 The shared-program class requires every allowed match to be exact at the
-embedded GIDs, byte-identical `glyf`/`loca`/`hmtx` tables with equal UPEM and
-glyph count, and unanimous cmap-to-GID agreement for each supplied character.
-Multiple names for one TTC glyph program are therefore no longer treated as
-proof ambiguity. Composite components are compared transitively even when an
-embedded component is empty, corrupt embedded glyph programs are reported as
-`program_unreadable`, and an empty candidate set makes `--same-face` exit 2.
+embedded GIDs; equal glyph count and `head`/`hhea` interpretation fields; and
+byte identity, including table presence, for every table not proven irrelevant
+to the PDF consumption model. The supplier additionally requires unanimous
+cmap-to-GID, compiled-glyph, and metric agreement for each supplied character.
+Real faces may differ only in `name`, `cmap`, `OS/2`, `post`, `meta`, `head`,
+`hhea`, `VDMX`, `kern`, `DSIG`, `PCLT`, `GSUB`, `GPOS`, `GDEF`, `BASE`, and
+`JSTF`: cmap and the interpretation fields are checked separately, while the
+rest are naming/classification/layout/shaping/signature data that the MuPDF PDF
+render path does not consume. Unrecognized tables fail closed. Numbers were
+unchanged under the hardened witness on 2026-08-31. Multiple names for one TTC glyph
+program are therefore no longer treated as proof ambiguity. Composite
+components are compared transitively even when an embedded component is empty,
+corrupt embedded glyph programs are reported as `program_unreadable`, and an
+empty candidate set makes `--same-face` exit 2.
 
 The labelled heuristics remain non-proof diagnostics. `/W` supplied max CID
 for all 262 fonts. `numGlyphs` was greater than `maxCID + 1` for 261 fonts and
@@ -393,3 +401,8 @@ GO without changing the corpus, augmentation becomes the Priority pick.
 - Text edits do not currently invalidate file-backed thumbnails.
 - `fitz.TOOLS.store_shrink(100)` is process-global and cannot be considered a
   safe live-session mechanism without coordinator-level exclusion.
+- Whether P4-B augmentation strips imported glyph instructions or carries the
+  candidate `cvt `/`fpgm`/`prep` state remains an augmentation-design decision.
+  The embedded-vs-candidate proof deliberately does not compare those global
+  hinting tables because embedded subsets may legitimately drop or rewrite
+  them; per-glyph instructions remain inside the compared `glyf` bytes.

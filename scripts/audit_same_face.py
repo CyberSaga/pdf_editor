@@ -58,6 +58,39 @@ _HEURISTICS = (
 _RESTRICTED_FSTYPE = 0x0002 | 0x0004 | 0x0100 | 0x0200
 _SUBSET_TAG = re.compile(r"^/[A-Z]{6}\+")
 
+# The shared-program proof is specific to the PDF mutation consumption model:
+# glyphs are GID-addressed through an Identity CIDToGIDMap, advances come from
+# /W, no OTL shaping or font kerning runs, and the candidate face itself is
+# never loaded by the renderer -- only its bytes are donated. Loading the
+# nominated face in FreeType later would reopen the OS/2 fsSelection
+# style-synthesis question rather than inherit this proof. cmap is checked by
+# the per-character supplier, and head/hhea interpretation fields are checked
+# explicitly. name/post/meta are naming or metadata, OS/2/PCLT are
+# classification, VDMX is device-metric metadata, kern is unused because no
+# kerning run occurs, GSUB/GPOS/GDEF/BASE/JSTF are layout or shaping, and DSIG
+# is a signature; MuPDF's PDF render path never consults these excluded tables.
+# vhea deliberately remains byte-identical (thereby pinning
+# numberOfVMetrics), as do AAT/Graphite shaping tables: false refusal is safer
+# than admitting an unproved program.
+_FACE_IDENTITY_TAGS = {
+    "name",
+    "cmap",
+    "OS/2",
+    "post",
+    "meta",
+    "head",
+    "hhea",
+    "VDMX",
+    "kern",
+    "DSIG",
+    "PCLT",
+    "GSUB",
+    "GPOS",
+    "GDEF",
+    "BASE",
+    "JSTF",
+}
+
 
 def _font_from_bytes(program: bytes) -> Any:
     if TTFont is None:
@@ -232,27 +265,47 @@ def _raw_table(font: Any, tag: str) -> bytes:
     return bytes(font.getTableData(tag))
 
 
+def _font_table_tags(font: Any) -> set[str]:
+    reader = getattr(font, "reader", None)
+    if reader is not None:
+        return set(reader.keys())
+    return {tag for tag in font.keys() if tag != "GlyphOrder"}
+
+
 def _share_exact_program(matches: list[tuple[str, Any]]) -> bool:
     if not matches or any(match != "A_same_gid_exact" for match, _ in matches):
         return False
     first = matches[0][1]
     try:
-        signature = (
+        fields = (
             int(first["head"].unitsPerEm),
             int(first["maxp"].numGlyphs),
-            *(_raw_table(first, tag) for tag in ("glyf", "loca", "hmtx")),
+            int(first["head"].indexToLocFormat),
+            int(first["head"].glyphDataFormat),
+            int(first["head"].flags),
+            int(first["head"].macStyle),
+            int(first["hhea"].numberOfHMetrics),
         )
-        return all(
+        candidates = [candidate for _, candidate in matches]
+        if not all(
             (
                 int(candidate["head"].unitsPerEm),
                 int(candidate["maxp"].numGlyphs),
-                *(
-                    _raw_table(candidate, tag)
-                    for tag in ("glyf", "loca", "hmtx")
-                ),
+                int(candidate["head"].indexToLocFormat),
+                int(candidate["head"].glyphDataFormat),
+                int(candidate["head"].flags),
+                int(candidate["head"].macStyle),
+                int(candidate["hhea"].numberOfHMetrics),
             )
-            == signature
-            for _, candidate in matches[1:]
+            == fields
+            for candidate in candidates[1:]
+        ):
+            return False
+        tag_sets = [_font_table_tags(candidate) - _FACE_IDENTITY_TAGS for candidate in candidates]
+        required_tags = set().union(*tag_sets)
+        return all(tags == required_tags for tags in tag_sets) and all(
+            len({_raw_table(candidate, tag) for candidate in candidates}) == 1
+            for tag in required_tags
         )
     except Exception:  # noqa: BLE001 - hostile candidate table data
         return False
@@ -539,7 +592,12 @@ def a_family_faces(
 def candidate_supplier_for_faces(
     faces_by_xref: dict[int, tuple[Any, ...] | None],
 ) -> Callable[[int, str], bool]:
-    """Require every proven face to map a character to one non-empty GID."""
+    """Require per-character GID, glyph-byte, and metric agreement.
+
+    This is sufficient only together with the shared-program witness: compiled
+    composite glyph bytes contain numeric component GIDs, not their outlines,
+    so whole-glyf identity is what makes those components resolve identically.
+    """
     cmap_cache: dict[int, dict[int, str]] = {}
     supply_cache: dict[tuple[int, str], bool] = {}
 
@@ -551,7 +609,7 @@ def candidate_supplier_for_faces(
         faces = faces_by_xref.get(font_xref)
         if not faces:
             return False
-        gids: list[int] = []
+        supplied_gids: list[tuple[int, bytes, tuple[int, int]]] = []
         supplied = True
         for face in faces:
             cmap = cmap_cache.setdefault(id(face), face.getBestCmap() or {})
@@ -564,11 +622,13 @@ def candidate_supplier_for_faces(
                 if not _compiled_glyph(face, gid):
                     supplied = False
                     break
-                gids.append(gid)
+                supplied_gids.append(
+                    (gid, _compiled_glyph(face, gid), _metrics(face, gid))
+                )
             except Exception:  # noqa: BLE001 - corrupt candidate cmap
                 supplied = False
                 break
-        supplied = supplied and len(set(gids)) == 1
+        supplied = supplied and len(set(supplied_gids)) == 1
         supply_cache[key] = supplied
         return supplied
 
