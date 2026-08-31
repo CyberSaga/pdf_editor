@@ -246,6 +246,117 @@ def test_planner_admits_positive_horizontal_scale_and_rejects_invalid_values():
         invalid.close()
 
 
+@pytest.mark.parametrize(
+    ("state", "detail"),
+    [
+        (b"2 Tr", "render_mode=2"),
+        (b"3 Ts", "rise=3.0"),
+    ],
+)
+def test_positive_hscale_does_not_mask_residual_text_state_gates(
+    state: bytes, detail: str
+) -> None:
+    doc = _stream_doc(
+        b"BT /F1 12 Tf 80 Tz "
+        + state
+        + b" 72 700 Td ("
+        + TARGET.encode()
+        + b") Tj ET"
+    )
+    show = _target_show(doc)
+    assert show.hscale == 80.0
+
+    rejection = _plan(doc)
+
+    assert isinstance(rejection, PlanRejection), rejection
+    assert rejection.reason == RejectReason.UNSUPPORTED_TEXT_STATE
+    assert detail in rejection.detail
+    doc.close()
+
+
+def test_positive_hscale_does_not_mask_shared_content_stream_gate() -> None:
+    doc = fitz.open()
+    page0_xref = doc.new_page(width=595, height=842).xref
+    page1_xref = doc.new_page(width=595, height=842).xref
+    stream = (
+        b"BT /F1 12 Tf 80 Tz 72 700 Td (" + TARGET.encode() + b") Tj ET"
+    )
+    content_xref = doc.get_new_xref()
+    doc.update_object(content_xref, "<<>>")
+    doc.update_stream(content_xref, stream)
+    doc.xref_set_key(page0_xref, "Contents", f"{content_xref} 0 R")
+    doc.xref_set_key(page1_xref, "Contents", f"{content_xref} 0 R")
+    font_xref = doc.get_new_xref()
+    doc.update_object(
+        font_xref,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+        "/Encoding /WinAnsiEncoding >>",
+    )
+    resources = f"<< /Font << /F1 {font_xref} 0 R >> >>"
+    doc.xref_set_key(page0_xref, "Resources", resources)
+    doc.xref_set_key(page1_xref, "Resources", resources)
+    show = _target_show(doc)
+    assert show.hscale == 80.0
+    assert show.stream_xref == content_xref
+
+    rejection = _plan(doc)
+
+    assert isinstance(rejection, PlanRejection), rejection
+    assert rejection.reason == RejectReason.SHARED_CONTENT_STREAM
+    assert "1 other page" in rejection.detail
+    doc.close()
+
+
+def test_positive_hscale_does_not_mask_multi_item_tj_gate() -> None:
+    doc = _stream_doc(
+        b"BT /F1 12 Tf 80 Tz 72 700 Td [(Price ) (2024)] TJ ET"
+    )
+    show = _target_show(doc)
+    assert show.hscale == 80.0
+    assert show.operator == "TJ"
+    assert show.string_kind == "array"
+    assert show.array_item_count == 2
+
+    rejection = _plan(doc)
+
+    assert isinstance(rejection, PlanRejection), rejection
+    assert rejection.reason == RejectReason.NOT_SINGLE_LITERAL_TJ
+    assert "array TJ" in rejection.detail
+    doc.close()
+
+
+@pytest.mark.parametrize(
+    ("operator", "prefix", "detail"),
+    [
+        ("'", b"14 TL ", "T*"),
+        ('"', b"14 TL 1.5 0.25 ", "Tw/Tc"),
+    ],
+)
+def test_positive_hscale_does_not_mask_quote_operator_gates(
+    operator: str, prefix: bytes, detail: str
+) -> None:
+    stream = (
+        b"BT /F1 12 Tf 80 Tz 72 700 Td "
+        + prefix
+        + b"("
+        + TARGET.encode()
+        + b") "
+        + operator.encode()
+        + b" ET"
+    )
+    doc = _stream_doc(stream)
+    show = _target_show(doc)
+    assert show.hscale == 80.0
+    assert show.operator == operator
+
+    rejection = _plan(doc)
+
+    assert isinstance(rejection, PlanRejection), rejection
+    assert rejection.reason == RejectReason.UNSUPPORTED_SHOW_OPERATOR
+    assert detail in rejection.detail
+    doc.close()
+
+
 def test_planner_rejects_show_op_with_no_font_selected():
     """G8: a Tj with no preceding Tf has no face to measure advance with."""
     doc = _stream_doc(b"BT 72 700 Td (" + TARGET.encode() + b") Tj ET")
