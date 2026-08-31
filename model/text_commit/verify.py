@@ -415,7 +415,7 @@ def _target_operator_failure(
         )
     replay = replay_page_streams(
         [(replacement.stream_xref, post_bytes)],
-        max_decoded_bytes=DEFAULT_MAX_REPLAY_BYTES,
+        max_decoded_bytes=None,
     )
     if replay.refusal_reason is not None or replay.malformed:
         return VerificationFailure(

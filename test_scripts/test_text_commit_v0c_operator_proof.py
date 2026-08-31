@@ -199,8 +199,13 @@ def test_replay_refusal_fails_closed(monkeypatch) -> None:
     )
     replay = replay_page(doc, doc[0])
     refused = dataclasses.replace(replay, shows=(), refusal_reason="forced")
+
+    def _refuse_replay(*args, **kwargs):
+        assert kwargs["max_decoded_bytes"] is None
+        return refused
+
     monkeypatch.setattr(
-        verify_module, "replay_page_streams", lambda *a, **k: refused, raising=False
+        verify_module, "replay_page_streams", _refuse_replay, raising=False
     )
     result = verify_tier0_commit(doc, doc[0], prepared, pre_state)
     assert isinstance(result, VerificationFailure), result
