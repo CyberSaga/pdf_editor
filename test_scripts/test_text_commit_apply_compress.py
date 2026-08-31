@@ -815,10 +815,8 @@ def test_annotation_mutation_still_fails_verify_under_compress_false():
 
 def test_unextractable_replacement_still_fails_verify_under_compress_false():
     """V0c (extraction): verify against a plan whose replacement_text was
-    never spliced.  (The sibling 'source text still present' branch is not
-    forcible on this fixture: the halo clip contains only the replacement,
-    and every substring of it is a substring of replacement_text, which
-    short-circuits the gate's first condition.)"""
+    never spliced.  This extraction/ToUnicode consistency gate intentionally
+    runs before the target-local operator proof."""
     doc = _stream_doc(_padded_stream())
     page, plan, pre_state, applied = _apply_uncompressed_for_failure(doc)
     tampered_plan = dataclasses.replace(plan, replacement_text="Absent Zebra")

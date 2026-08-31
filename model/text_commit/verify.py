@@ -1,10 +1,11 @@
 """Post-commit verification for the high-fidelity tiers (V0a–V0e).
 
 Every Tier 0 commit is re-proven, not assumed: stream bytes outside the
-declared range, font resources, non-target span geometry, extracted text,
-raster identity outside the target halo, and document reopenability.  Any
-failure triggers revert in the engine.  Renders at 96 dpi compare exactly
-(ε calibration 2026-07-18: zero pixel noise across repeated renders).
+declared range, font resources, the exact target show operand, non-target
+span geometry, extracted text, raster identity outside the target halo, and
+document reopenability.  Any failure triggers revert in the engine.  Renders
+at 96 dpi compare exactly (ε calibration 2026-07-18: zero pixel noise across
+repeated renders).
 """
 from __future__ import annotations
 
@@ -17,9 +18,11 @@ import fitz
 
 from model.text_commit.cid_fonts import PdfRef as CidPdfRef
 from model.text_commit.cid_fonts import resolve_descendant as cid_resolve_descendant
-from model.text_commit.dto import RejectReason
+from model.text_commit.dto import CommitTier, RejectReason
 from model.text_commit.inspect import page_fingerprint, read_page_streams
 from model.text_commit.interpretation import PageInterpretation, interpret_page
+from model.text_commit.pdf_lexer import decode_hex_string, decode_literal_string
+from model.text_commit.replay import DEFAULT_MAX_REPLAY_BYTES, replay_page_streams
 
 if TYPE_CHECKING:
     # Deferred: plan.py imports patch.py (for the Tier 1 composite builder),
@@ -394,6 +397,91 @@ def _first_diff_outside_halo(
     return None
 
 
+def _target_operator_failure(
+    prepared: PreparedEdit, post_streams: Mapping[int, bytes]
+) -> VerificationFailure | None:
+    """Re-prove the patched show at the exact declared splice identity.
+
+    Replay is deliberately stream-local: show recording resets operands at
+    each stream boundary, and this proof consults only lexical show fields.
+    Refusal, malformed syntax, or a non-unique identity fails closed.
+    """
+    replacement = prepared.replacement
+    post_bytes = post_streams.get(replacement.stream_xref)
+    if post_bytes is None:
+        return VerificationFailure(
+            RejectReason.VERIFICATION_FAILED,
+            "target operator stream disappeared",
+        )
+    replay = replay_page_streams(
+        [(replacement.stream_xref, post_bytes)],
+        max_decoded_bytes=DEFAULT_MAX_REPLAY_BYTES,
+    )
+    if replay.refusal_reason is not None or replay.malformed:
+        return VerificationFailure(
+            RejectReason.VERIFICATION_FAILED,
+            "target operator replay was malformed or refused",
+        )
+
+    splice_end = replacement.start + len(replacement.replacement_bytes)
+    if prepared.tier is CommitTier.TIER0_LOSSLESS_STREAM_PATCH:
+        matches = [
+            show
+            for show in replay.shows
+            if show.operator == "Tj"
+            and show.string_start == replacement.start
+            and show.string_end == splice_end
+        ]
+        try:
+            raw = replacement.replacement_bytes
+            if raw.startswith(b"("):
+                expected = decode_literal_string(raw)
+            elif raw.startswith(b"<"):
+                expected = decode_hex_string(raw)
+            else:
+                raise ValueError("replacement is not a string operand")
+        except ValueError:
+            return VerificationFailure(
+                RejectReason.VERIFICATION_FAILED,
+                "target operator replacement is not one valid string operand",
+            )
+    else:
+        matches = [
+            show
+            for show in replay.shows
+            if show.operator == "TJ"
+            and show.op_start == replacement.start
+            and show.op_end == splice_end
+            and show.array_item_count == 1
+        ]
+        isolated = replay_page_streams(
+            [(replacement.stream_xref, replacement.replacement_bytes)],
+            max_decoded_bytes=DEFAULT_MAX_REPLAY_BYTES,
+        )
+        if (
+            isolated.refusal_reason is not None
+            or isolated.malformed
+            or len(isolated.shows) != 1
+        ):
+            return VerificationFailure(
+                RejectReason.VERIFICATION_FAILED,
+                "target operator replacement did not replay as one show",
+            )
+        expected = isolated.shows[0].decoded_bytes
+
+    if len(matches) != 1:
+        return VerificationFailure(
+            RejectReason.VERIFICATION_FAILED,
+            f"target operator identity matched {len(matches)} shows",
+        )
+    if matches[0].decoded_bytes != expected:
+        return VerificationFailure(
+            RejectReason.VERIFICATION_FAILED,
+            "target operator decoded bytes differ from the replacement operand",
+        )
+    return None
+
+
 def _verify_patch_postconditions(
     doc: fitz.Document,
     page: fitz.Page,
@@ -467,7 +555,7 @@ def _verify_patch_postconditions(
             RejectReason.VERIFICATION_FAILED, "annotations changed"
         )
 
-    # V0c — replacement extractable in the halo, source gone, neighbors fixed.
+    # V0c — replacement extractable, exact target operand re-proven, neighbors fixed.
     halo_rect = fitz.Rect(*verify_bbox) + (
         -_HALO_MARGIN_PT,
         -_HALO_MARGIN_PT,
@@ -485,13 +573,9 @@ def _verify_patch_postconditions(
             RejectReason.VERIFICATION_FAILED,
             "replacement text not extractable at the target",
         )
-    if (
-        prepared.original_text not in prepared.replacement_text
-        and prepared.original_text in clip_text.replace("\n", " ")
-    ):
-        return VerificationFailure(
-            RejectReason.VERIFICATION_FAILED, "source text still present"
-        )
+    operator_failure = _target_operator_failure(prepared, post_streams)
+    if operator_failure is not None:
+        return operator_failure
     post_rawdict = interpretation.rawdict() if interpretation is not None else None
     if (
         _span_origins(
@@ -575,6 +659,7 @@ def _verify_patch_postconditions(
         "nontarget_geometry_unchanged",
         "raster_identity_outside_halo",
         "document_reopens",
+        "target_operator_reproven",
     )
 
 

@@ -1159,6 +1159,23 @@ AES-256, and stale undo without adding a planner/engine mutation path. Safety
 is NO-GO because only the process-global MuPDF cache flush refreshed a live
 handle; hscale is therefore the current Priority pick.
 
+#### 10.1.4 V0c target-local operator proof (2026-08-31)
+
+V0c retains its extraction/ToUnicode consistency gate, then replays only the
+patched decoded content stream from V0a and locates the target show by the
+declared splice identity. Tier 0 requires one `Tj` whose string range is the
+replacement range; Tier 1 requires one single-string `TJ` whose whole operator
+range is the replacement range. The replayed operand bytes must equal the
+bytes independently decoded from the replacement payload. Refusal, malformed
+syntax, or zero/multiple matches fails closed.
+
+This replaces the former halo-wide "source text still present" substring
+check. A halo may legitimately include the same source character in a
+neighboring show; V0a proves all other bytes unchanged and V0c's existing
+span-origin comparison still proves neighbors did not move. Stream-local
+replay is sufficient because show operands do not cross stream boundaries and
+the proof consults lexical show fields only.
+
 ## 11. Character-Level Text Selection (Browse Mode)
 
 **Module:** `model/pdf_model.py:get_chars_in_run()`, `get_text_selection_lines()`

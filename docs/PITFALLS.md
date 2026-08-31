@@ -2706,3 +2706,10 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** `update_stream` owns stream compression metadata and rewrites the dictionary after the caller restored it.
 **Fix:** Restore decoded bytes with the intended compression first, then restore the saved stream dictionary body; verify decoded bytes, object body, and page fingerprint independently.
 **File:** `scripts/probe_type0_mutation_premises.py`
+
+## Halo-wide source substrings are not target-local evidence
+**Area:** `model/text_commit/verify.py` (V0c)
+**Symptom:** A valid single-character CJK edit was rejected as "source text still present" when a neighboring show inside the verification halo legitimately contained the same character.
+**Cause:** Extraction over a spatial halo cannot attribute a substring to the patched operator; it conflates the target with unchanged neighbors.
+**Fix:** Keep the replacement extraction/ToUnicode gate, then replay only the patched stream and require one exact-splice `Tj` or single-string `TJ` whose decoded operand bytes equal the replacement payload. Fail closed on malformed/refused replay or non-unique identity; keep the independent non-target origin proof unchanged.
+**File:** `model/text_commit/verify.py`; `test_scripts/test_text_commit_v0c_operator_proof.py`

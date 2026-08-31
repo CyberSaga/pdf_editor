@@ -1001,6 +1001,14 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
 
 ### Task 14 P4 — Type0 hit-rate (census-gated)
 
+- 2026-08-31 (**P4-B Fix A complete, stacked implementation**): V0c no longer
+  treats a source substring anywhere in the spatial halo as proof that the
+  target survived. It retains replacement extraction, then replays the patched
+  stream and proves exactly one target `Tj`/single-string `TJ` at the declared
+  splice with byte-identical decoded operand. Neighbor bytes and origins remain
+  independently pinned; malformed/refused replay fails closed. Fix B and
+  positive-hscale admission remain open on subsequent stacked branches.
+
 - 2026-08-30 (Task 14 P4 candidate census, review-corrected): the
   replacement-encodable funnel's 100% value is only a self-proxy. Among
   already-bindable `doc_0` shows, just **15.5%** of the document's

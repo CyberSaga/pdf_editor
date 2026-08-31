@@ -1,8 +1,12 @@
 # Task 14 P4-A — Type0 augmentation census and mutation premises
 
 **Base:** `task13/p3d-interpretation-reuse@c276018`
+
+> Superseded for P4-B implementation: the two verifier fixes and hscale
+> admission are stacked in order (Fix A → Fix B → P4-B1), because both fixes
+> touch `verify.py` and the final census must measure the combined tree.
 **Working branch:** `task14/type0-augmentation-census`
-**Status:** P4-A complete; independent Fix A / Fix B branches remain
+**Status:** P4-A complete; stacked Fix A → Fix B → P4-B1 implementation in progress
 
 ## 1. Goal
 
@@ -27,8 +31,9 @@ names, resource names, or system-font stems.
   documents only.
 - Do not commit private PDFs, generated benchmark JSON, or system fonts.
 - Do not use `canonical_pdf_text` as a PDF writer.
-- Keep Fix A (V0c target-local proof) and Fix B (growth-background metric box)
-  on independent branches based on `c276018`.
+- Keep Fix A (V0c target-local proof), Fix B (growth-background metric box),
+  and P4-B1 on stacked branches in that order; this supersedes the earlier
+  independent-branch note because both fixes edit `verify.py`.
 
 ## 3. Affected modules
 
