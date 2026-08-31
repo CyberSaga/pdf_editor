@@ -53,3 +53,17 @@ and positive finite horizontal-scale admission.
 - 2026-08-31: Final verification passed: the focused compatibility set was
   107/107 and the repository suite was 2,933 passed, 21 skipped, 5 expected
   failures. Ruff, mypy, and whitespace checks also passed before commit.
+- 2026-08-31: Post-review accepted risk: target-local V0c intentionally leaves
+  a nearby duplicate painter unchanged because a geometric twin gate would
+  violate the legitimate +1.0 pt same-text-neighbor contract. The full patched-
+  stream verifier replay is now deliberately unbudgeted (`max_decoded_bytes=None`)
+  so a performance cap cannot become a correctness failure; refusal and
+  malformed results still fail closed, and isolated replacement replay remains
+  guarded.
+- 2026-08-31: Synthetic preview-cost measurement of `replay_page_streams`
+  used direct content streams containing repeated `Tj` operators. A 4,070-byte,
+  110-show stream took 0.004072 s median over seven passes (acceptable). A
+  2,621,413-byte (~2.5 MiB), 70,849-show stream took 3.202820 s on its first
+  pass and 5.947190 s median over three repeated in-process passes. Verdict:
+  typical small streams are acceptable, but large-stream preview replay needs
+  follow-up; no private corpus data was used.

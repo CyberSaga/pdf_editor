@@ -1009,6 +1009,18 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   independently pinned; malformed/refused replay fails closed. Fix B and
   positive-hscale admission landed on subsequent stacked branches.
 
+- [ ] **Investigate a duplicate-painter twin-detection heuristic for V0c.**
+  Fake-bold/shadow PDFs can paint identical text in operators 1.2 pt apart;
+  a target-local edit intentionally leaves the unedited painter visible. Any
+  heuristic must distinguish that idiom without rejecting the established
+  legitimate-neighbor contract for the same text at a +1.0 pt offset.
+
+- [ ] **Reduce the large-stream preview cost of V0c target-operator replay.**
+  A synthetic direct stream with repeated `Tj` operators measured 3.20 s cold
+  and 5.95 s median across repeated in-process passes at ~2.5 MiB, versus
+  4.1 ms median for a 4,070-byte stream. Preserve the correctness-unbounded
+  commit verifier while investigating preview-safe replay/index reuse.
+
 - 2026-08-31 (**P4-B Fix B complete, stacked implementation**): Tier 1 now
   samples target background from a planner-derived, flag-immune font-metric
   quad while leaving the caller bbox untouched for origins, halo, growth edge,

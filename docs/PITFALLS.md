@@ -2714,6 +2714,13 @@ the real KEEP-encrypted serialize/reopen probe.
 **Fix:** Keep the replacement extraction/ToUnicode gate, then replay only the patched stream and require one exact-splice `Tj` or single-string `TJ` whose decoded operand bytes equal the replacement payload. Fail closed on malformed/refused replay or non-unique identity; keep the independent non-target origin proof unchanged.
 **File:** `model/text_commit/verify.py`; `test_scripts/test_text_commit_v0c_operator_proof.py`
 
+## Target-local V0c proof accepts nearby duplicate painters
+**Area:** `model/text_commit/verify.py` V0c
+**Symptom:** In a fake-bold or shadow idiom with two identical shows 1.2 pt apart, committing an edit to one painter can intentionally leave the unchanged twin visible; for example, editing one of two `(Price) Tj` shows to `Cost` can extract as `Cost\nPrice\n` afterward.
+**Cause:** V0c proves the exact target operator was replaced and that non-target origins stayed fixed. It no longer treats the same source text in a neighboring operator as evidence that the target survived, so an independently painted duplicate remains.
+**Fix:** Accept this tradeoff under the target-local contract. A geometric twin gate would also reject the required legitimate-neighbor case where the same text occurs at a +1.0 pt offset. Keep behavior unchanged unless a future heuristic can distinguish duplicate-painter intent without violating that contract.
+**File:** `model/text_commit/verify.py`; `test_scripts/test_text_commit_v0c_operator_proof.py`
+
 ## Growth background-majority sampling must ignore glyph-height flags
 **Area:** `model/text_commit/plan.py`, `model/text_commit/verify.py` (Tier 1 growth proof)
 **Symptom:** Under the app's process-global `set_small_glyph_heights(True)`, dense CJK ink occupied at least half of a caller extraction bbox, so valid blank growth failed with "no majority background colour"; `target_bbox=None` callers passed.
