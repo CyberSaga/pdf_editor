@@ -94,6 +94,11 @@ class PreparedEdit:
     # widened box for Tier 1, or exactly ``target_bbox_page`` when a Tier 1
     # candidate has no growth.
     verify_bbox_page: tuple[float, float, float, float] | None = None
+    # Tier 1 background-majority sampling uses this flag-immune metric quad.
+    # It is a pure derivation of token-bound inputs (the fingerprint determines
+    # the show transform; source_advance is already in the token), so folding
+    # it into the token would add no candidate identity.
+    background_bbox_page: tuple[float, float, float, float] | None = None
     source_advance: float = 0.0
     replacement_advance: float = 0.0
     kern_adjustment: float = 0.0
@@ -750,6 +755,17 @@ def _build_tier1(
     verify_bbox_page = _grown_verify_bbox(
         page, show, classified.target_bbox_page, growth
     )
+    background_bbox_page = map_text_quad_to_visual(
+        page,
+        show.tm,
+        show.ctm,
+        (
+            0.0,
+            -0.35 * show.font_size,
+            classified.source_advance,
+            show.font_size,
+        ),
+    )
     if not _bbox_within_page(page, verify_bbox_page):
         return PlanRejection(
             _GROWTH_OUTSIDE_PAGE_REASON,
@@ -795,6 +811,7 @@ def _build_tier1(
         page_fingerprint=classified.fingerprint,
         tier=CommitTier.TIER1_REBUILD_WITH_VALIDATED_FACE,
         verify_bbox_page=verify_bbox_page,
+        background_bbox_page=background_bbox_page,
         source_advance=classified.source_advance,
         replacement_advance=classified.replacement_advance,
         kern_adjustment=kern,

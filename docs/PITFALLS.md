@@ -2713,3 +2713,10 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** Extraction over a spatial halo cannot attribute a substring to the patched operator; it conflates the target with unchanged neighbors.
 **Fix:** Keep the replacement extraction/ToUnicode gate, then replay only the patched stream and require one exact-splice `Tj` or single-string `TJ` whose decoded operand bytes equal the replacement payload. Fail closed on malformed/refused replay or non-unique identity; keep the independent non-target origin proof unchanged.
 **File:** `model/text_commit/verify.py`; `test_scripts/test_text_commit_v0c_operator_proof.py`
+
+## Growth background-majority sampling must ignore glyph-height flags
+**Area:** `model/text_commit/plan.py`, `model/text_commit/verify.py` (Tier 1 growth proof)
+**Symptom:** Under the app's process-global `set_small_glyph_heights(True)`, dense CJK ink occupied at least half of a caller extraction bbox, so valid blank growth failed with "no majority background colour"; `target_bbox=None` callers passed.
+**Cause:** The majority sampler used a caller bbox whose height changes with PyMuPDF's glyph-height flag, even though the planner already had enough text-state evidence to derive a stable font-metric quad.
+**Fix:** Derive a quad-only metric background box in `_build_tier1` and thread it only to `_target_background_rgb`. Keep reference points, growth-zone geometry, occupancy, glyph counting, and raster probes on the caller target/verify boxes. Preserve `None` as legacy target-box sampling.
+**File:** `model/text_commit/plan.py`; `model/text_commit/verify.py`; `test_scripts/test_text_commit_growth_background_box.py`

@@ -910,19 +910,19 @@ def _uniform_neighborhood_rgb(
 
 
 def _target_background_rgb(
-    pre_state: PageState, target_bbox: tuple[float, float, float, float]
+    pre_state: PageState, background_bbox: tuple[float, float, float, float]
 ) -> tuple[tuple[int, ...] | None, bool]:
-    """``(background_rgb, ink_is_visible)`` read off the target's OWN bbox.
+    """Background and ink visibility from the target's font-metric box.
 
     The background is the strict-majority colour of the target's rendered
-    bbox; text never covers half its own font-metric box, so a bbox with no
-    majority colour (or one whose majority is 100% -- nothing but that
-    colour) is not a surface this proof can reason about.  ``background_rgb``
-    is ``None`` in the no-majority case and ``ink_is_visible`` is ``False``
-    when the target's own ink cannot be seen against it (the black-on-black
-    case: the target is occluded, so the "surface it sits on" is unknowable).
+    font-metric box; a box with no majority colour (or one whose majority is
+    100% -- nothing but that colour) is not a surface this proof can reason
+    about. ``background_rgb`` is ``None`` in the no-majority case and
+    ``ink_is_visible`` is ``False`` when the target's own ink cannot be seen
+    against it (the black-on-black case: the target is occluded, so the
+    "surface it sits on" is unknowable).
     """
-    x0, y0, x1, y1 = _clamped_region(pre_state.pixmap_meta, target_bbox)
+    x0, y0, x1, y1 = _clamped_region(pre_state.pixmap_meta, background_bbox)
     counts: dict[tuple[int, ...], int] = {}
     total = 0
     for y in range(y0, y1 + 1):
@@ -1116,6 +1116,7 @@ def _growth_probe_failure(
     *,
     target_bbox: tuple[float, float, float, float],
     verify_bbox: tuple[float, float, float, float],
+    background_bbox: tuple[float, float, float, float] | None = None,
     page: fitz.Page | None,
     doc: fitz.Document | None,
 ) -> _GrowthProbeFailure | None:
@@ -1136,7 +1137,9 @@ def _growth_probe_failure(
     # -- the background proof, which STANDS ALONE. Establish what surface the
     # target itself sits on, prove that surface exists outside the growth band
     # too, then require the growth band to be that same surface.
-    background_rgb, ink_visible = _target_background_rgb(pre_state, target_bbox)
+    background_rgb, ink_visible = _target_background_rgb(
+        pre_state, background_bbox if background_bbox is not None else target_bbox
+    )
     if background_rgb is None:
         return _GrowthProbeFailure(
             regions[0],
@@ -1181,6 +1184,7 @@ def prove_growth_region_blank(
     *,
     target_bbox: tuple[float, float, float, float],
     verify_bbox: tuple[float, float, float, float],
+    background_bbox: tuple[float, float, float, float] | None = None,
     page: fitz.Page | None = None,
     doc: fitz.Document | None = None,
 ) -> tuple[int, int, int, int] | None:
@@ -1198,6 +1202,7 @@ def prove_growth_region_blank(
         pre_state,
         target_bbox=target_bbox,
         verify_bbox=verify_bbox,
+        background_bbox=background_bbox,
         page=page,
         doc=doc,
     )
@@ -1325,6 +1330,7 @@ def verify_tier1_commit(
             pre_state,
             target_bbox=prepared.target_bbox_page,
             verify_bbox=prepared.effective_verify_bbox,
+            background_bbox=prepared.background_bbox_page,
             page=page,
             doc=doc,
         )

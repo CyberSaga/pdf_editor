@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 309 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 310 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -314,3 +314,4 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2696 | MuPDF readback normalization is wider than the PDF-value serializer contract | `model/text_commit/cid_fonts.py` |
 | 2703 | Restore stream bytes before restoring the stream dictionary | `scripts/probe_type0_mutation_premises.py`, future multi-object revert |
 | 2710 | Halo-wide source substrings are not target-local evidence | `model/text_commit/verify.py` (V0c) |
+| 2717 | Growth background-majority sampling must ignore glyph-height flags | `model/text_commit/plan.py`, `model/text_commit/verify.py` (Tier 1 growth proof) |

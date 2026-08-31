@@ -16,8 +16,8 @@ and positive finite horizontal-scale admission.
 
 ## Item 2 — growth-background metric box
 
-- [ ] Add the flag-on/off, ink, rotation, and compatibility red matrix.
-- [ ] Derive the flag-immune metric sampling quad in the planner and thread it
+- [x] Add the flag-on/off, ink, rotation, and compatibility red matrix.
+- [x] Derive the flag-immune metric sampling quad in the planner and thread it
   only to the background-majority sampler.
 - [ ] Run focused and full verification, then update persistent docs.
 
@@ -40,3 +40,7 @@ and positive finite horizontal-scale admission.
   the patched stream and proves one exact-splice target show. The halo-wide
   source-substring test is removed because neighboring shows may contain the
   same text legitimately.
+- 2026-08-31: Tier 1 stores a quad-only, flag-immune font-metric sampling box.
+  It is not token input because it derives only from fingerprint- and
+  advance-bound evidence; `None` retains legacy target-box sampling for
+  hand-built candidates.

@@ -1009,6 +1009,15 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   independently pinned; malformed/refused replay fails closed. Fix B and
   positive-hscale admission remain open on subsequent stacked branches.
 
+- 2026-08-31 (**P4-B Fix B complete, stacked implementation**): Tier 1 now
+  samples target background from a planner-derived, flag-immune font-metric
+  quad while leaving the caller bbox untouched for origins, halo, growth edge,
+  occupancy, and raster probes. Dense-CJK positive growth now agrees with
+  `set_small_glyph_heights` on/off across `/Rotate 0/90/180/270`; vector,
+  image, shading, boundary ink, and invisible white-on-white targets remain
+  fail-closed. The production admission gap recorded at lines 927-938 is
+  closed; process-global `fitz.TOOLS` test hygiene remains open.
+
 - 2026-08-30 (Task 14 P4 candidate census, review-corrected): the
   replacement-encodable funnel's 100% value is only a self-proxy. Among
   already-bindable `doc_0` shows, just **15.5%** of the document's

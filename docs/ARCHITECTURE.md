@@ -1176,6 +1176,20 @@ span-origin comparison still proves neighbors did not move. Stream-local
 replay is sufficient because show operands do not cross stream boundaries and
 the proof consults lexical show fields only.
 
+#### 10.1.5 Tier 1 growth background sampling box (2026-08-31)
+
+`plan._build_tier1` derives `PreparedEdit.background_bbox_page` from the same
+text-space font-metric quad used by the fallback target box and maps it through
+the show and page transforms. Verification uses this box only to identify the
+target surface's majority colour and ink visibility. The caller target box
+continues to govern span origins, the V0d halo, reference points, growth-zone
+geometry, occupancy, and raster probe regions.
+
+The box is not folded into the plan token: it derives entirely from the show
+transform fixed by the page fingerprint plus the already token-bound raw
+source advance. A `None` value preserves target-box sampling for hand-built
+legacy candidates and direct proof callers.
+
 ## 11. Character-Level Text Selection (Browse Mode)
 
 **Module:** `model/pdf_model.py:get_chars_in_run()`, `get_text_selection_lines()`
