@@ -358,14 +358,14 @@ def test_priority_units_use_per_font_corpus_union_rates(monkeypatch) -> None:
     assert units["unit_a_self_proxy"] == {
         "augmentation_show_equivalents": 0,
         "tj_array_show_equivalents": 4,
-        "hscale_show_equivalents": 1,
+        "hscale_show_equivalents": 0,
     }
     assert units["unit_b_corpus_union"] == {
         "vocabulary_size": 7,
-        "baseline_numerator": 6,
-        "augmentation_numerator": 15,
+        "baseline_numerator": 8,
+        "augmentation_numerator": 20,
         "tj_array_numerator": 8,
-        "hscale_numerator": 2,
+        "hscale_numerator": 0,
     }
 
 

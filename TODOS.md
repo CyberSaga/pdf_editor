@@ -1007,7 +1007,7 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   stream and proves exactly one target `Tj`/single-string `TJ` at the declared
   splice with byte-identical decoded operand. Neighbor bytes and origins remain
   independently pinned; malformed/refused replay fails closed. Fix B and
-  positive-hscale admission remain open on subsequent stacked branches.
+  positive-hscale admission landed on subsequent stacked branches.
 
 - 2026-08-31 (**P4-B Fix B complete, stacked implementation**): Tier 1 now
   samples target background from a planner-derived, flag-immune font-metric
@@ -1017,6 +1017,17 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   image, shading, boundary ink, and invisible white-on-white targets remain
   fail-closed. The production admission gap recorded at lines 927-938 is
   closed; process-global `fitz.TOOLS` test hygiene remains open.
+
+- 2026-08-31 (**P4-B1 complete, stacked implementation**): positive finite
+  horizontal scale is admitted with one raw/effective displacement contract.
+  Raw advances remain token/kern inputs; fallback, Tier 1 growth, and metric
+  background extents use `raw × Th`; TJ kern compensation is hscale-free
+  because the common Th cancels. Zero/negative/non-finite values fail at the
+  planner. The sealed-corpus rerun reattributed all 877 former hscale-only
+  doc_0 shows to source-bindable (5,934 → 6,811), moved 88 TJ+hscale shows to
+  TJ-only (42 → 130), and left unrelated/page-eligibility counters unchanged.
+  Augmentation Safety remains NO-GO; no font mutation or `store_shrink(100)`
+  path was added.
 
 - 2026-08-30 (Task 14 P4 candidate census, review-corrected): the
   replacement-encodable funnel's 100% value is only a self-proxy. Among

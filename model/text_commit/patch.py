@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -223,16 +224,20 @@ def build_advance_preserving_erase(
     current position by ``-N/1000 * Tfs * Th`` with no glyph drawn and,
     critically, without applying ``Tc``/``Tw`` (those only apply to actual
     glyph shows) -- so ``consumed_advance`` (the source operator's total
-    text-space advance, with any ``Tc``/``Tw`` it consumed already folded
-    in) is compensated directly from the desired displacement, corrected
-    for the source show's own horizontal scaling (``Tz``).
+    raw text-space advance, with any ``Tc``/``Tw`` it consumed already folded
+    in) is compensated directly. The same positive finite ``Th`` multiplies
+    both the show and kern displacement, so it cancels from the equation.
 
     Carries ``expected_bytes``/``expected_stream_digest`` like every
     :class:`StreamReplacement`, so :func:`~model.text_commit.pdf_lexer.
     splice_stream`'s stale-plan gate still applies.
     """
     _require_spliceable_show(show)
-    if show.font_size == 0.0 or show.hscale == 0.0:
+    if (
+        show.font_size == 0.0
+        or show.hscale <= 0.0
+        or not math.isfinite(show.hscale)
+    ):
         raise ValueError(
             "cannot compensate advance under zero font size or horizontal scale"
         )
@@ -251,26 +256,28 @@ def build_advance_preserving_erase(
 
 def kern_for_displacement(show: ShowOp, displacement: float) -> float:
     """The ``TJ`` adjustment number that moves the current position by
-    ``displacement`` text-space points, for ``show``'s font size/hscale.
+    ``displacement`` raw text-space points for ``show``'s font size.
 
     Extracted verbatim from :func:`build_advance_preserving_erase` so exactly
     one implementation of the arithmetic exists: a ``[N] TJ`` adjustment
-    advances the position by ``-N/1000 * Tfs * Th``, so ``N = -100000 *
-    displacement / (Tfs * Th)``.  ``hscale`` (``Th``) is expressed as a
-    percentage (100.0 == no scaling), matching :class:`~model.text_commit.
-    replay.ShowOp.hscale`.
-
-    ``displacement`` here is a *text-space* delta -- Tier 0's advance
-    equality gate never admits any other ``hscale`` than 100.0 (``plan.py``),
-    so the coupling between this division and the advance formula used to
-    derive ``displacement`` is currently silent; a future relaxation of that
-    gate must keep both in text space or this compensation goes wrong.
+    advances the position by ``-N/1000 * Tfs * Th``. Successor preservation
+    compares two raw show advances executed under that same ``Th``, so it
+    cancels and ``N = -1000 * displacement / Tfs``. This is valid for every
+    finite ``Th > 0``; the planner enforces that admission rule, while the
+    guards here remain defense-in-depth for direct callers.
     """
-    if show.font_size == 0.0 or show.hscale == 0.0:
+    if (
+        show.font_size == 0.0
+        or show.hscale <= 0.0
+        or not math.isfinite(show.hscale)
+    ):
         raise ValueError(
             "cannot compensate advance under zero font size or horizontal scale"
         )
-    return -100_000.0 * displacement / (show.font_size * show.hscale)
+    # Keep the pre-admission operation shape at Th == 100 bit-for-bit: the
+    # fixed 100.0 denominator expresses the cancelled scale without changing
+    # existing float rounding or serialized kern tokens.
+    return -100_000.0 * displacement / (show.font_size * 100.0)
 
 
 def build_transplant_replacement(

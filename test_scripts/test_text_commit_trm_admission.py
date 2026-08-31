@@ -846,16 +846,14 @@ def test_rotated_rise_keeps_the_residual_text_state_gate() -> None:
     fixture.doc.close()
 
 
-def test_rotated_hscale_keeps_the_residual_text_state_gate() -> None:
+def test_rotated_positive_hscale_is_admitted() -> None:
     fixture = _rotated_fixture(ROT90)
     stream = fixture.content_bytes()
     rewritten = stream.replace(b" Tm <", b" Tm 50 Tz <", 1)
     assert rewritten != stream
     fixture.doc.update_stream(fixture.content_xref, rewritten)
-    rejection = _assert_rejected(
-        _prepare(fixture), RejectReason.UNSUPPORTED_TEXT_STATE
-    )
-    assert "hscale" in rejection.detail, rejection.detail
+    prepared = _prepare(fixture)
+    assert isinstance(prepared, PreparedEdit), prepared
     fixture.doc.close()
 
 

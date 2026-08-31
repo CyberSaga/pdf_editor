@@ -12,22 +12,22 @@ and positive finite horizontal-scale admission.
   refused target-operator replay.
 - [x] Replace the halo-wide source-substring rejection with a stream-local,
   exact-splice operator proof.
-- [ ] Run focused and full verification, then update persistent docs.
+- [x] Run focused and full verification, then update persistent docs.
 
 ## Item 2 — growth-background metric box
 
 - [x] Add the flag-on/off, ink, rotation, and compatibility red matrix.
 - [x] Derive the flag-immune metric sampling quad in the planner and thread it
   only to the background-majority sampler.
-- [ ] Run focused and full verification, then update persistent docs.
+- [x] Run focused and full verification, then update persistent docs.
 
 ## Item 3 — positive-hscale admission
 
-- [ ] Add the positive/non-positive hscale red matrix and census-mirror pins.
-- [ ] Apply the raw/effective advance contract to every documented consumer.
-- [ ] Update all live census gate mirrors and rerun the private census when the
+- [x] Add the positive/non-positive hscale red matrix and census-mirror pins.
+- [x] Apply the raw/effective advance contract to every documented consumer.
+- [x] Update all live census gate mirrors and rerun the private census when the
   corpus is available.
-- [ ] Run focused and full verification, update persistent docs, and archive
+- [x] Run focused and full verification, update persistent docs, and archive
   this plan.
 
 ## Decisions log
@@ -44,3 +44,12 @@ and positive finite horizontal-scale admission.
   It is not token input because it derives only from fingerprint- and
   advance-bound evidence; `None` retains legacy target-box sampling for
   hand-built candidates.
+- 2026-08-31: Raw advances remain token and kern inputs; fallback, growth, and
+  metric-background geometry multiply by `th = hscale / 100.0` first. The TJ
+  kern is hscale-free because the shared positive Th cancels.
+- 2026-08-31: Corpus re-attribution was exact: 877 hscale-only shows became
+  source-bindable; 88 TJ+hscale shows became TJ-only; unrelated/page-eligibility
+  counters did not drift. Aggregate-only privacy scan passed.
+- 2026-08-31: Final verification passed: the focused compatibility set was
+  107/107 and the repository suite was 2,933 passed, 21 skipped, 5 expected
+  failures. Ruff, mypy, and whitespace checks also passed before commit.

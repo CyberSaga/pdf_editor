@@ -107,21 +107,30 @@ def test_sole_loss_classifies_tj_array_only() -> None:
     assert sole["tj_array_only"] == 1
 
 
-def test_sole_loss_classifies_hscale_only() -> None:
+def test_positive_hscale_reattributes_to_all_gates_pass() -> None:
     fixture = _existing_show("80 Tz <{cid:04X}> Tj")
+    sole = funnel_document(fixture.doc, run_e2e=False)[
+        "glyph_overlap_census"
+    ]["sole_loss"]
+    assert sole["all_gates_pass"] == 2
+    assert sole["hscale_only"] == 0
+
+
+def test_nonpositive_hscale_stays_hscale_only() -> None:
+    fixture = _existing_show("0 Tz <{cid:04X}> Tj")
     sole = funnel_document(fixture.doc, run_e2e=False)[
         "glyph_overlap_census"
     ]["sole_loss"]
     assert sole["hscale_only"] == 1
 
 
-def test_sole_loss_keeps_tj_and_hscale_overlap_separate() -> None:
+def test_positive_hscale_tj_array_is_tj_array_only() -> None:
     fixture = _existing_show("80 Tz [<{cid:04X}> -100] TJ")
     sole = funnel_document(fixture.doc, run_e2e=False)[
         "glyph_overlap_census"
     ]["sole_loss"]
-    assert sole["tj_array_and_hscale_only"] == 1
-    assert sole["tj_array_only"] == 0
+    assert sole["tj_array_and_hscale_only"] == 0
+    assert sole["tj_array_only"] == 1
     assert sole["hscale_only"] == 0
 
 
@@ -355,7 +364,7 @@ def test_tj_array_missing_glyph_survives_main_fold_operator_loss() -> None:
     assert report["loss_reasons"]["not_single_hex_tj"] >= 1
 
 
-def test_non_default_hscale_missing_glyph_survives_state_loss() -> None:
+def test_positive_hscale_missing_glyph_reaches_the_glyph_loss() -> None:
     fixture = _missing_show("80 Tz <{cid:04X}> Tj")
     report = funnel_document(fixture.doc, run_e2e=False)
     assert (
@@ -364,6 +373,13 @@ def test_non_default_hscale_missing_glyph_survives_state_loss() -> None:
         ]
         == 1
     )
+    assert report["loss_reasons"].get("state:hscale", 0) == 0
+    assert report["loss_reasons"]["type0_glyph_missing"] >= 1
+
+
+def test_zero_hscale_missing_glyph_keeps_the_state_loss() -> None:
+    fixture = _missing_show("0 Tz <{cid:04X}> Tj")
+    report = funnel_document(fixture.doc, run_e2e=False)
     assert report["loss_reasons"]["state:hscale"] >= 1
 
 

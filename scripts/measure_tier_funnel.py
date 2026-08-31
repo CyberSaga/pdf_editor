@@ -101,6 +101,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -319,7 +320,12 @@ def _identity_plan_survival(
     show = binding.show
     if show.operator != "Tj" or show.string_kind not in ("literal", "hex"):
         return False, RejectReason.NOT_SINGLE_LITERAL_TJ
-    if show.render_mode != 0 or show.rise != 0.0 or show.hscale != 100.0:
+    if (
+        show.render_mode != 0
+        or show.rise != 0.0
+        or not math.isfinite(show.hscale)
+        or show.hscale <= 0.0
+    ):
         return False, RejectReason.UNSUPPORTED_TEXT_STATE
     if show.mc_depth != 0:
         return False, RejectReason.UNSUPPORTED_TEXT_STATE

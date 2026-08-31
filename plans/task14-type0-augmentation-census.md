@@ -398,6 +398,37 @@ newly bindable shows versus whole-`TJ` 42. Whole-`TJ` remains coupled to the
 `doc_1` ToUnicode-grammar extension. If a later cache-safety proof flips Safety
 GO without changing the corpus, augmentation becomes the Priority pick.
 
+### P4-B1 positive-hscale re-attribution (2026-08-31, `--no-e2e`)
+
+The same sealed positional corpus was rerun on the stacked Fix A + Fix B +
+P4-B1 tree. Positive finite `Tz` is now an admitted state, so the former
+candidate buckets were reclassified through every downstream gate rather than
+counted as automatic successes:
+
+| sole-loss class | doc_0 before | doc_0 after | doc_1 after |
+| --- | ---: | ---: | ---: |
+| all gates pass / source bindable | 5,934 | 6,811 | 0 |
+| `TJ` array only | 42 | 130 | 0 |
+| non-positive/non-finite hscale only | 877 | 0 | 0 |
+| `TJ` + invalid hscale only | 88 | 0 | 0 |
+| other / multiple losses | 20,879 | 20,879 | 543 |
+
+All 877 former positive-hscale-only shows survived the downstream capability,
+decode, source-reproduction, and GID/glyph gates. The 88 overlapping `TJ`
+shows did not become bindable; they moved honestly into `TJ`-only. Unit A is
+therefore 130 whole-`TJ` opportunities and zero remaining hscale opportunities.
+For the 604-character doc_0 corpus union, Unit-B raw numerators are now
+631,239 baseline, 3,475,762 augmentation, 10,924 whole-`TJ`, and zero hscale
+(respectively 1,045.10, 5,754.57, 18.09, and 0 show-equivalents).
+
+Unrelated invariants did not drift: 28,043 total shows, 27,820 Type0 shows,
+27,250 single-hex `Tj`, 10,701 within replay budget, 6,872 outside malformed
+marked content, and 6,841 uniform-TRM shows. Both documents retain zero
+malformed-replay pages/shows, shared-content pages/shows, and unreadable-content
+pages; doc_1 remains structurally unchanged. The whole aggregate JSON was
+privacy-scanned before quoting these values and contained no paths, document
+text, font names, resource names, or face identities.
+
 ## 8. Open questions
 
 - The proof path enumerates all TTC faces; the diagnostic

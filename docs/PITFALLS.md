@@ -2720,3 +2720,10 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** The majority sampler used a caller bbox whose height changes with PyMuPDF's glyph-height flag, even though the planner already had enough text-state evidence to derive a stable font-metric quad.
 **Fix:** Derive a quad-only metric background box in `_build_tier1` and thread it only to `_target_background_rgb`. Keep reference points, growth-zone geometry, occupancy, glyph counting, and raster probes on the caller target/verify boxes. Preserve `None` as legacy target-box sampling.
 **File:** `model/text_commit/plan.py`; `model/text_commit/verify.py`; `test_scripts/test_text_commit_growth_background_box.py`
+
+## Horizontal scale is geometry, but cancels from raw TJ compensation
+**Area:** `model/text_commit/plan.py`, `model/text_commit/patch.py`
+**Symptom:** Simply deleting the `hscale == 100` gate would produce unscaled fallback/growth/background boxes and an over-scaled TJ kern, while zero or negative Tz can pass every TRM-shape check and evade direction re-derivation in verify.
+**Cause:** PDF `Th` multiplies the whole text displacement, including spacing and TJ adjustments. Raw advances are Tz-free; page geometry is not. For successor preservation, however, the replacement and kern share the same Th, so it cancels.
+**Fix:** Admit only finite `Th > 0` in the planner; compute `th = hscale / 100.0` first and multiply each raw geometry extent once. Keep kern input raw and use `-1000 * delta / Tfs`. The th-first form preserves exact identity at 100%, while guards in patch remain defense-in-depth for direct callers.
+**File:** `model/text_commit/plan.py`; `model/text_commit/patch.py`; `test_scripts/test_text_commit_hscale_admission.py`

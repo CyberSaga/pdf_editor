@@ -3,7 +3,7 @@
 ``test_text_commit_tier0.py`` varies only the *request* (replacement text,
 style/geometry overrides), so every gate that depends on the *shape of the
 content stream* was unreachable from it: a mutation audit deleted the
-``mc_depth`` and ``render_mode``/``rise``/``hscale`` gates and the whole
+``mc_depth`` and ``render_mode``/``rise``/invalid-``hscale`` gates and the whole
 suite stayed green.  This module closes that hole by varying the document
 instead — one purpose-built raw content stream per gate.
 
@@ -59,7 +59,7 @@ _NOMINAL: dict[str, object] = {
     "string_kind": "literal",  # plan.py    -> NOT_SINGLE_LITERAL_TJ
     "render_mode": 0,  # plan.py G2 -> UNSUPPORTED_TEXT_STATE
     "rise": 0.0,  # plan.py G3 -> UNSUPPORTED_TEXT_STATE
-    "hscale": 100.0,  # plan.py G4 -> UNSUPPORTED_TEXT_STATE
+    "hscale": 100.0,  # isolation reference; positive finite values are admitted
     "mc_depth": 0,  # plan.py G1 -> MC_* taxonomy admission (Task 13 P1)
 }
 
@@ -223,22 +223,27 @@ def test_planner_rejects_nonzero_text_rise():
     )
 
 
-def test_planner_rejects_non_default_horizontal_scale():
-    """G4: condensed/expanded text invalidates the equal-advance proof."""
+def test_planner_admits_positive_horizontal_scale_and_rejects_invalid_values():
+    """G4: positive finite Tz is admitted; zero, negative, and inf refuse."""
     doc = _stream_doc(b"BT /F1 12 Tf 80 Tz 72 700 Td (" + TARGET.encode() + b") Tj ET")
     show = _target_show(doc)
     assert show.hscale == 80.0
     _assert_only_off_nominal(show, "hscale")
 
-    rejection = _plan(doc)
-    assert isinstance(rejection, PlanRejection), rejection
-    assert rejection.reason == RejectReason.UNSUPPORTED_TEXT_STATE
-    assert "hscale=80.0" in rejection.detail
+    prepared = _plan(doc)
+    assert isinstance(prepared, PreparedEdit), prepared
     doc.close()
 
-    _assert_control_plans_cleanly(
-        b"BT /F1 12 Tf 72 700 Td (" + TARGET.encode() + b") Tj ET"
-    )
+    for operand in (b"0", b"-80", b"1" + b"0" * 400):
+        invalid = _stream_doc(
+            b"BT /F1 12 Tf " + operand + b" Tz 72 700 Td ("
+            + TARGET.encode() + b") Tj ET"
+        )
+        rejection = _plan(invalid)
+        assert isinstance(rejection, PlanRejection), rejection
+        assert rejection.reason == RejectReason.UNSUPPORTED_TEXT_STATE
+        assert "not a positive finite horizontal scale" in rejection.detail
+        invalid.close()
 
 
 def test_planner_rejects_show_op_with_no_font_selected():

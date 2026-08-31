@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from collections import Counter
 from collections.abc import Callable
@@ -308,7 +309,8 @@ def _residual_state_losses(show: object) -> tuple[str, ...]:
         losses.append("state:render_mode")
     if getattr(show, "rise", 1.0) != 0.0:
         losses.append("state:rise")
-    if getattr(show, "hscale", 0.0) != 100.0:
+    hscale = getattr(show, "hscale", 0.0)
+    if not math.isfinite(hscale) or hscale <= 0.0:
         losses.append("state:hscale")
     if not getattr(show, "in_bt", False):
         losses.append("state:not_in_bt")
@@ -366,7 +368,8 @@ def _sole_loss_class(
     if not trm_ok:
         trm_ok = admission_verdict(page, show.tm, show.ctm).reject_reason is None
 
-    hscale_ok = getattr(show, "hscale", 0.0) == 100.0
+    hscale = getattr(show, "hscale", 0.0)
+    hscale_ok = math.isfinite(hscale) and hscale > 0.0
     other_state_ok = not (
         set(_residual_state_losses(show)) - {"state:hscale"}
     )

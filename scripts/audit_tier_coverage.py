@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -51,7 +52,8 @@ def _classify_show(
     unsupported_state = (
         show.render_mode != 0
         or show.rise != 0.0
-        or show.hscale != 100.0
+        or not math.isfinite(show.hscale)
+        or show.hscale <= 0.0
         or show.mc_depth != 0
         or not show.in_bt
         or not show.trm_uniform_scaled

@@ -2,8 +2,8 @@
 
 Tier 0: one unambiguous run bound to one complete single-string ``Tj``
 (literal or hex) on the direct page stream, simple Latin encoding with a
-verified reverse encoder, fill render mode, no rise/horizontal-scaling/
-marked-content dependency, a text matrix that is at most a uniform positive
+verified reverse encoder, fill render mode, no rise, a positive finite
+horizontal scale, no marked-content dependency, a text matrix that is at most a uniform positive
 scale, no style or geometry override, and a replacement whose consumed
 advance equals the source advance exactly.
 
@@ -403,11 +403,18 @@ def _classify_common(
             f"target is a {show.string_kind} {show.operator}; v1 patches only "
             "complete single-string Tj operators",
         )
-    if show.render_mode != 0 or show.rise != 0.0 or show.hscale != 100.0:
+    if show.render_mode != 0 or show.rise != 0.0:
         return PlanRejection(
             RejectReason.UNSUPPORTED_TEXT_STATE,
-            f"render_mode={show.render_mode} rise={show.rise} "
-            f"hscale={show.hscale}",
+            f"render_mode={show.render_mode} rise={show.rise}",
+        )
+    # Tz does not participate in the admitted TRM shape, and verification
+    # re-derives growth direction from bbox geometry; the planner is the only
+    # defense against a zero/negative/non-finite horizontal scale.
+    if not math.isfinite(show.hscale) or show.hscale <= 0.0:
+        return PlanRejection(
+            RejectReason.UNSUPPORTED_TEXT_STATE,
+            f"hscale={show.hscale} is not a positive finite horizontal scale",
         )
     # Task 13 P1: the blanket "inside a marked-content sequence" refusal
     # is replaced by the taxonomy admission — a stack of default-visible
@@ -572,6 +579,7 @@ def _classify_common(
         # 90/270 page keeps a horizontal halo while pixmap ink runs
         # vertically (V0d false-reject / false-accept risk).  For the
         # axis-aligned idiom this reproduces the historical halo exactly.
+        th = show.hscale / 100.0
         target_bbox = map_text_quad_to_visual(
             page,
             show.tm,
@@ -579,7 +587,7 @@ def _classify_common(
             (
                 0.0,
                 -0.35 * show.font_size,
-                old_advance,
+                old_advance * th,
                 show.font_size,
             ),
         )
@@ -617,6 +625,8 @@ def _build_tier0(
     # _classify_common already refused a None font_resource
     # (FONT_FACE_UNAVAILABLE); this is a type narrowing, not a new check.
     assert show.font_resource is not None
+    # Raw-vs-raw advance equality is scale-invariant: the same positive Th
+    # multiplies both sides, so the existing tolerance floors stay meaningful.
     if abs(classified.replacement_advance - classified.source_advance) > (
         classified.advance_tolerance
     ):
@@ -678,7 +688,7 @@ def _grown_verify_bbox(
     growth_advance: float,
 ) -> tuple[float, float, float, float]:
     """``target_bbox_page`` widened FORWARD along the show's transformed
-    baseline by ``growth_advance`` text-space points, mapped through the
+    baseline by ``growth_advance`` effective-displacement points, mapped through the
     full page→visual matrix so /Rotate and /UserUnit are handled correctly
     by construction (same matrix as the fallback ``target_bbox`` in
     :func:`_classify_common`).
@@ -749,9 +759,10 @@ def _build_tier1(
     # _classify_common already refused a None font_resource
     # (FONT_FACE_UNAVAILABLE); this is a type narrowing, not a new check.
     assert show.font_resource is not None
+    th = show.hscale / 100.0
     growth = max(
         0.0, classified.replacement_advance - classified.source_advance
-    )
+    ) * th
     verify_bbox_page = _grown_verify_bbox(
         page, show, classified.target_bbox_page, growth
     )
@@ -762,7 +773,7 @@ def _build_tier1(
         (
             0.0,
             -0.35 * show.font_size,
-            classified.source_advance,
+            classified.source_advance * th,
             show.font_size,
         ),
     )

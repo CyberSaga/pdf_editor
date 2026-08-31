@@ -1190,6 +1190,23 @@ transform fixed by the page fingerprint plus the already token-bound raw
 source advance. A `None` value preserves target-box sampling for hand-built
 legacy candidates and direct proof callers.
 
+#### 10.1.6 Positive horizontal scale and advance units (2026-08-31)
+
+The planner admits finite `Tz > 0` and rejects zero, negative, or non-finite
+values before patch construction. `source_advance` and `replacement_advance`
+remain raw, Tz-free text-space quantities and stay unchanged in plan tokens.
+Geometry consumes effective displacement: `raw_advance × Th`, with
+`th = show.hscale / 100.0` computed first. This governs fallback target boxes,
+Tier 1 growth boxes, and the metric background box; caller-supplied target
+boxes are already page geometry and are never scaled again.
+
+TJ compensation also keeps a raw delta. Both the replacement show and its
+following kern execute under the same positive `Th`, so the scale cancels from
+successor preservation and `N = -1000 × raw_delta / Tfs`. Both kern builders
+share this helper. The page fingerprint already includes every content-stream
+byte, including the `Tz` operand, so no token-preimage field was added and
+`Th == 100` candidates retain identical bytes, tokens, and bboxes.
+
 ## 11. Character-Level Text Selection (Browse Mode)
 
 **Module:** `model/pdf_model.py:get_chars_in_run()`, `get_text_selection_lines()`
