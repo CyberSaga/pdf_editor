@@ -1176,31 +1176,41 @@ span-origin comparison still proves disjoint neighbors did not move.
 Because origin extraction cannot pin a near-overlapping twin, planning scans
 the already-bounded page replay before constructing a candidate
 (`plan.duplicate_source_painter_detail`). Candidacy is semantic, not
-lexical: another show with identical decoded bytes counts as a twin when its
-resource resolves, through `DocumentFontRegistry`, to the SAME font object —
-equal xref, or an equal same-document evidence digest. Resource names are
-aliases, so a second key pointing at one font dictionary is one painter;
-equal bytes under a genuinely different font object paint different glyphs
-and are not a twin at all.
+lexical: every other show with identical decoded bytes is a possible twin.
+Resource names are aliases, and there is no cheap affirmative proof that two
+different font dictionaries paint different outlines: separate subsets of one
+face can still contain the same glyph program.
 
 Identity survives producer cloning: a font dictionary duplicated with a new
-xref and a new `/BaseFont` subset tag has an unequal digest but equal
-rendering evidence (subtype, encoding, embeddedness, advance source, widths,
-and the Identity-H `/W`/`CIDToGIDMap`/`DW` triple), and equal evidence counts
-as the same painter. Difference is only ever *concluded* when both
-capabilities were fully built; a degraded capability (`advance_source ==
-"none"`, e.g. an unreadable `/ToUnicode`) proves nothing about which glyphs
-it paints and is treated as unprovable.
+xref and a new `/BaseFont` subset tag has an unequal digest but may still have
+equal glyph identity. `_same_font_object` therefore returns only `True` or
+`None`, never `False`: identity is proven by equal xref, equal same-document
+evidence digest, or equal `_glyph_identity` (subtype, encoding, embeddedness,
+simple-encoding support, and CIDToGID table). `/Widths`, `/W`, `/DW`,
+`first_char`, and advance provenance are layout metrics; they determine the
+candidate's geometry but never establish different glyphs. A degraded
+capability (`advance_source == "none"`) proves nothing even when its xref or
+other fields match.
 
 A twin whose identity AND extent are both proven is measured from its own
 text state — its capability's width for the text at its own `Tfs`, its own
 `Tc`/`Tw` through the same codec branch the target's advance uses (Identity-H
 ignores `Tw` by §9.3.3), and its own `Tz` — never the target's advance scaled
-by a font-size ratio. `Ts` is deliberately **not** applied to either core:
-`_classify_common` refuses any target whose own rise is non-zero, so the
-target core is always pinned to the baseline, and translating only the
-candidate core by its own rise would admit a raised twin that still paints
-over the edit.
+by a font-size ratio. Exact extent is also available to an identity-unproven
+single-string `Tj` when the candidate's own CID capability measures the raw
+bytes, or when a widths-backed simple capability round-trips the target text
+to exactly those bytes. Encoding-name equality is not evidence: a malformed
+simple font can declare `/Identity-H`, and `/Differences` is not represented by
+the capability's encoding-name field.
+
+The candidate core is the monotone envelope of its baseline core and its own
+`Ts`-shifted core: `y0=min(0, Ts)`, `y1=max(0, Ts)+0.6*Tfs`.
+`_classify_common` still refuses non-zero rise on the target, so its envelope
+is byte-identical to the former baseline core. This reverses the round-3
+baseline-only argument: pinning the candidate to the baseline admitted a show
+whose baseline offset was exactly cancelled by its rise, while translating
+only the candidate would reopen the high-rise false-admit band. The envelope
+covers both cases for either sign.
 
 Anything less than proven is bounded rather than refused outright.
 `_painter_reach` computes the only text-space extent whose image can still
@@ -1209,8 +1219,13 @@ page centre, divided by the mapped length of one text-space unit); ink past
 it is off-page and cannot survive as a ghost. `TJ` candidates always take
 this route, in *both* directions, because `ShowOp` drops a `TJ` array's
 numeric items and a leading kern may have displaced the ink either way from
-the recorded origin. A twin is rejected as `duplicate_source_painter` when
-the mapped baseline-to-0.6-em core quads (exact or bounded) overlap by more
+the recorded origin. The bound is not x-only under shear: from
+`|x*u + y*v| <= span`, planning uses
+`|x| <= (span + |y|*|v|)/|u|`, padding both x ends by
+`max(|y0|,|y1|)*|v|/|u|`. Without that cross-term, a large rise under shear
+can move relevant ink beyond the nominal x reach. A twin is rejected as
+`duplicate_source_painter` when
+the mapped baseline/rise core envelopes (exact or bounded) overlap by more
 than 0.05 pt on both axes. Abutting and disjoint neighbors remain eligible,
 and so does an unprovable twin on another baseline — the reach bound is
 horizontal, so unprovable identity blocks only where it could matter.
@@ -1222,9 +1237,14 @@ damage still bounded by V0d's raster halo.
 mirroring it, and carries a `duplicate_painter_only` loss bucket; the
 per-show vectors in `audit_tier_coverage.py` and `measure_tier_funnel.py`
 deliberately do not run a page-wide gate and now say so — their counts are
-upper bounds on production admission, not parity claims. The funnel's own
-one stated omission is the Tier-1 derived-geometry bound, which needs a
-replacement text a census has no candidate for.
+upper bounds on production admission, not parity claims. Its self-proxy also
+requires `source_advance*Th` finite whenever the raw hscale gate passed;
+source and replacement are identical in that proxy, so both effective
+advances are equal and the delta product is zero. The product leg is
+conditioned on the raw hscale gate so `hscale_only` attribution matches
+production ordering. The funnel's one stated omission remains the Tier-1
+derived-geometry bound, which needs a replacement text a census has no
+candidate for.
 
 #### 10.1.5 Tier 1 growth background sampling box (2026-08-31)
 
@@ -1247,7 +1267,14 @@ advances, and their effective delta remain finite and `Th > 0`; it also rejects
 non-finite target geometry and any non-finite `Tm`/`CTM` component before patch
 construction — TRM shape admission inspects only the linear coefficients, so a
 non-finite translation would otherwise ride a finite caller bbox into derived
-Tier 1 geometry. `_build_tier1` re-proves its own derived
+Tier 1 geometry. One `_renderable_bbox` predicate converts and validates every
+four-coordinate target bbox before request-digest formatting or plan storage,
+catching `OverflowError`/`TypeError`/`ValueError`, rejecting non-finite values,
+and enforcing `_RENDERABLE_COORD_LIMIT`. This covers caller-supplied and
+fallback-mapped Tier-0 boxes; a finite `1.4e308` coordinate must not reach the
+raster sampler, and an integer such as `10**400` must not escape while being
+converted or formatted. `_build_tier1` reuses the same predicate to re-prove
+its own derived
 `verify_bbox_page`/`background_bbox_page` immediately after deriving them,
 against the RASTER SAMPLER's precondition rather than mere finiteness:
 `verify._bbox_pixels` does `int(x * 96 / 72)` and raises `OverflowError` for

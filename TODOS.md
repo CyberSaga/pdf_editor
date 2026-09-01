@@ -1022,13 +1022,21 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   candidate's core is measured from its own text state (its capability's width
   at its own size, its own Tc/Tw through the same codec branch the target
   uses, its own Tz) instead of the target's advance scaled by a font-size
-  ratio. `Ts` is NOT applied to the candidate core — a first attempt did, and
-  because the planner pins the target core to the baseline that opened a
-  false-admit band at `rise >= 0.6*Tfs` which committed with the ghost intact.
+  ratio. The candidate core now envelopes both the baseline and its `Ts` shift:
+  the earlier baseline-only correction still admitted a line offset cancelled
+  by rise, while translating only the candidate opened a false-admit band at
+  `rise >= 0.6*Tfs`. The envelope closes both holes for either sign. Font
+  identity also excludes layout metrics: differing `/Widths`, `/W`, `/DW`, or
+  `first_char` never proves different outlines, and `_same_font_object` no
+  longer returns `False`. Identity-unproven single-string `Tj` candidates get
+  exact extents only from raw-byte CID measurement or a widths-backed simple
+  round trip; encoding-name equality and face-guessed widths stay bounded.
   Unprovable candidates (unresolvable font, unproven width, any `TJ` — replay
   drops the array's numeric items, so a leading kern moves the ink off the
   recorded origin) are BOUNDED by `_painter_reach` rather than refused
-  outright, so a twin on another baseline stays editable. Cost: ~15 ms for a
+  outright, so a twin on another baseline stays editable. Under shear, the
+  reach quad pads both x ends by the rise-envelope y extent times `|v|/|u|`;
+  omitting that cross-term under-bounds large-rise candidates. Cost: ~15 ms for a
   275-way same-string bucket, with one registry resolve per distinct candidate
   resource. XObject-hosted twins remain the documented replay blind spot
   bounded by V0d.
@@ -1067,6 +1075,20 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   text, basefonts, resource names, file basenames, or non-ASCII values.
   Augmentation Safety remains NO-GO; no font mutation or `store_shrink(100)`
   path was added.
+
+- [x] **Close P4-B Pro-review round 4 direct-path findings (2026-09-01).**
+  Candidate rise uses a baseline/rise envelope plus the sheared reach y-cross
+  term; glyph identity is separated from width/layout metrics; caller and
+  derived bboxes share one arity/conversion/renderability predicate; and the
+  Type0 census mirrors the effective source-advance product without stealing
+  `hscale_only` attribution. Red tests cover all four findings and the
+  adversarial design holes. The sealed-corpus `--json --no-e2e` rerun was
+  unchanged: `source_bindable` 6,811, `all_gates_pass` 6,624,
+  `duplicate_painter_only` 187, `tj_array_only` 112, `hscale_only` 0; doc_1
+  remains zero past eligibility. The corrected edge shapes are absent from
+  this corpus, so the safety fixes caused no ordinary-corpus reattribution.
+  The aggregate JSON contained no document text, filenames, basefonts,
+  resource names, or non-ASCII values.
 
 - 2026-08-30 (Task 14 P4 candidate census, review-corrected): the
   replacement-encodable funnel's 100% value is only a self-proxy. Among
