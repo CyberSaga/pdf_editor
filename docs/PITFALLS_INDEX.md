@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 312 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 314 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -314,6 +314,8 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2696 | MuPDF readback normalization is wider than the PDF-value serializer contract | `model/text_commit/cid_fonts.py` |
 | 2703 | Restore stream bytes before restoring the stream dictionary | `scripts/probe_type0_mutation_premises.py`, future multi-object revert |
 | 2710 | Halo-wide source substrings are not target-local evidence | `model/text_commit/verify.py` (V0c) |
-| 2717 | Target-local V0c proof accepts nearby duplicate painters | `model/text_commit/verify.py` V0c |
-| 2724 | Growth background-majority sampling must ignore glyph-height flags | `model/text_commit/plan.py`, `model/text_commit/verify.py` (Tier 1 growth proof) |
-| 2731 | Horizontal scale is geometry, but cancels from raw TJ compensation | `model/text_commit/plan.py`, `model/text_commit/patch.py` |
+| 2717 | Target-local V0c proof requires plan-time duplicate-painter admission | `model/text_commit/plan.py`, `model/text_commit/verify.py` V0c |
+| 2724 | V0c operator proof must never replay the full patched stream | `model/text_commit/verify.py`, preview verification |
+| 2731 | Growth background-majority sampling must ignore glyph-height flags | `model/text_commit/plan.py`, `model/text_commit/verify.py` (Tier 1 growth proof) |
+| 2738 | Horizontal scale is geometry, but cancels from raw TJ compensation | `model/text_commit/plan.py`, `model/text_commit/patch.py` |
+| 2745 | Raw finite horizontal scale does not imply finite effective geometry | `model/text_commit/plan.py`, `model/text_commit/patch.py` |

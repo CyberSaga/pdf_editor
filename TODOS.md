@@ -1009,17 +1009,19 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   independently pinned; malformed/refused replay fails closed. Fix B and
   positive-hscale admission landed on subsequent stacked branches.
 
-- [ ] **Investigate a duplicate-painter twin-detection heuristic for V0c.**
-  Fake-bold/shadow PDFs can paint identical text in operators 1.2 pt apart;
-  a target-local edit intentionally leaves the unedited painter visible. Any
-  heuristic must distinguish that idiom without rejecting the established
-  legitimate-neighbor contract for the same text at a +1.0 pt offset.
+- [x] **Close duplicate-painter twin admission for V0c (2026-09-01).**
+  Planning now rejects identical decoded/font painters whose mapped core quads
+  overlap on both axes, while abutting shows and a genuinely disjoint 1 pt gap
+  remain admissible. The former +1.0 pt fixture was itself an ~11 pt-overlap
+  twin, not a legitimate neighbor. XObject-hosted twins remain the documented
+  replay blind spot bounded by V0d.
 
-- [ ] **Reduce the large-stream preview cost of V0c target-operator replay.**
+- [x] **Remove the large-stream preview cost of V0c target-operator replay (2026-09-01).**
   A synthetic direct stream with repeated `Tj` operators measured 3.20 s cold
   and 5.95 s median across repeated in-process passes at ~2.5 MiB, versus
-  4.1 ms median for a 4,070-byte stream. Preserve the correctness-unbounded
-  commit verifier while investigating preview-safe replay/index reuse.
+  4.1 ms median for a 4,070-byte stream. V0c now lexes the isolated Tier 0
+  token or guarded-replays the isolated Tier 1 operator only; V0a retains the
+  correctness-unbounded full-stream byte/hash proof.
 
 - 2026-08-31 (**P4-B Fix B complete, stacked implementation**): Tier 1 now
   samples target background from a planner-derived, flag-immune font-metric

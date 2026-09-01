@@ -2714,12 +2714,19 @@ the real KEEP-encrypted serialize/reopen probe.
 **Fix:** Keep the replacement extraction/ToUnicode gate, then replay only the patched stream and require one exact-splice `Tj` or single-string `TJ` whose decoded operand bytes equal the replacement payload. Fail closed on malformed/refused replay or non-unique identity; keep the independent non-target origin proof unchanged.
 **File:** `model/text_commit/verify.py`; `test_scripts/test_text_commit_v0c_operator_proof.py`
 
-## Target-local V0c proof accepts nearby duplicate painters
-**Area:** `model/text_commit/verify.py` V0c
+## Target-local V0c proof requires plan-time duplicate-painter admission
+**Area:** `model/text_commit/plan.py`, `model/text_commit/verify.py` V0c
 **Symptom:** In a fake-bold or shadow idiom with two identical shows 1.2 pt apart, committing an edit to one painter can intentionally leave the unchanged twin visible; for example, editing one of two `(Price) Tj` shows to `Cost` can extract as `Cost\nPrice\n` afterward.
-**Cause:** V0c proves the exact target operator was replaced and that non-target origins stayed fixed. It no longer treats the same source text in a neighboring operator as evidence that the target survived, so an independently painted duplicate remains.
-**Fix:** Accept this tradeoff under the target-local contract. A geometric twin gate would also reject the required legitimate-neighbor case where the same text occurs at a +1.0 pt offset. Keep behavior unchanged unless a future heuristic can distinguish duplicate-painter intent without violating that contract.
-**File:** `model/text_commit/verify.py`; `test_scripts/test_text_commit_v0c_operator_proof.py`
+**Cause:** The former accepted-risk premise was wrong: its “+1.0 pt legitimate neighbor” was a full-width 12 pt CJK glyph offset by 1 pt, so the painters overlapped by about 11 pt. V0c's origin filter also excludes every origin inside the target bbox plus 1 pt, so verification cannot pin such a twin.
+**Fix:** At plan time, scan the already-bounded page replay for another show with identical decoded bytes and font resource. Map each show's baseline-to-0.6-em core quad and reject strict overlap deeper than 0.05 pt on both axes; abutting shows and a genuinely disjoint 1 pt gap remain admissible. Unplaceable candidates fail closed. XObject-hosted twins remain a replay blind spot bounded by V0d's raster halo.
+**File:** `model/text_commit/plan.py`; `test_scripts/test_text_commit_duplicate_painter_gate.py`; `test_scripts/test_text_commit_v0c_operator_proof.py`
+
+## V0c operator proof must never replay the full patched stream
+**Area:** `model/text_commit/verify.py`, preview verification
+**Symptom:** Every preview keystroke replayed the entire patched decoded stream with no byte guard; a synthetic ~2.5 MiB stream cost 3.2–5.9 seconds per render.
+**Cause:** `_target_operator_failure` used full-stream replay merely to prove the replacement token/operator shape, even though V0a had already pinned all bytes and the splice identity.
+**Fix:** Tier 0 lexes `replacement_bytes` and requires exactly one full-span literal/hex token that decodes. Tier 1 runs the guarded replay only on the isolated replacement and requires one full-span, single-string `TJ`. V0a remains the unguarded byte/hash proof.
+**File:** `model/text_commit/verify.py`; `model/text_commit/replay.py`; `test_scripts/test_text_commit_v0c_operator_proof.py`
 
 ## Growth background-majority sampling must ignore glyph-height flags
 **Area:** `model/text_commit/plan.py`, `model/text_commit/verify.py` (Tier 1 growth proof)
@@ -2733,4 +2740,11 @@ the real KEEP-encrypted serialize/reopen probe.
 **Symptom:** Simply deleting the `hscale == 100` gate would produce unscaled fallback/growth/background boxes and an over-scaled TJ kern, while zero or negative Tz can pass every TRM-shape check and evade direction re-derivation in verify.
 **Cause:** PDF `Th` multiplies the whole text displacement, including spacing and TJ adjustments. Raw advances are Tz-free; page geometry is not. For successor preservation, however, the replacement and kern share the same Th, so it cancels.
 **Fix:** Admit only finite `Th > 0` in the planner; compute `th = hscale / 100.0` first and multiply each raw geometry extent once. Keep kern input raw and use `-1000 * delta / Tfs`. The th-first form preserves exact identity at 100%, while guards in patch remain defense-in-depth for direct callers.
+**File:** `model/text_commit/plan.py`; `model/text_commit/patch.py`; `test_scripts/test_text_commit_hscale_admission.py`
+
+## Raw finite horizontal scale does not imply finite effective geometry
+**Area:** `model/text_commit/plan.py`, `model/text_commit/patch.py`
+**Symptom:** A positive finite `Tz` can underflow `Th = Tz / 100` to zero, or a finite raw advance multiplied by finite `Th` can overflow; a non-finite kern could then serialize as `inf` in a `TJ` operator.
+**Cause:** Admission checked raw `hscale` only, while geometry and serialization consume derived floating-point values.
+**Fix:** After both raw advances are known, reject unless `Th`, both scaled advances, and the scaled delta are finite with `Th > 0`; reject any non-finite target bbox. `kern_for_displacement` independently rejects non-finite displacement, font size, and result.
 **File:** `model/text_commit/plan.py`; `model/text_commit/patch.py`; `test_scripts/test_text_commit_hscale_admission.py`

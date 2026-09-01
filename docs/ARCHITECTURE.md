@@ -1161,20 +1161,26 @@ handle; hscale is therefore the current Priority pick.
 
 #### 10.1.4 V0c target-local operator proof (2026-08-31)
 
-V0c retains its extraction/ToUnicode consistency gate, then replays only the
-patched decoded content stream from V0a and locates the target show by the
-declared splice identity. Tier 0 requires one `Tj` whose string range is the
-replacement range; Tier 1 requires one single-string `TJ` whose whole operator
-range is the replacement range. The replayed operand bytes must equal the
-bytes independently decoded from the replacement payload. Refusal, malformed
-syntax, or zero/multiple matches fails closed.
+V0c retains its extraction/ToUnicode consistency gate, but never replays the
+full patched stream. V0a already proves the declared splice and every other
+byte. Tier 0 therefore lexes only `replacement_bytes` and requires one
+full-span literal/hex string token that decodes; Tier 1 guarded-replays only
+the isolated replacement and requires exactly one full-span, single-string
+`TJ`. Malformed or refused local proof fails closed.
 
 This replaces the former halo-wide "source text still present" substring
 check. A halo may legitimately include the same source character in a
 neighboring show; V0a proves all other bytes unchanged and V0c's existing
-span-origin comparison still proves neighbors did not move. Stream-local
-replay is sufficient because show operands do not cross stream boundaries and
-the proof consults lexical show fields only.
+span-origin comparison still proves disjoint neighbors did not move.
+
+Because origin extraction cannot pin a near-overlapping twin, planning scans
+the already-bounded page replay before constructing a candidate. Another show
+with identical decoded bytes and font resource is rejected as
+`duplicate_source_painter` when their mapped baseline-to-0.6-em core quads
+overlap by more than 0.05 pt on both axes. Abutting and genuinely disjoint
+neighbors remain eligible; unplaceable candidates fail closed. Form-XObject
+twins remain a pre-existing replay blind spot, with damage still bounded by
+V0d's raster halo.
 
 #### 10.1.5 Tier 1 growth background sampling box (2026-08-31)
 
@@ -1192,8 +1198,9 @@ legacy candidates and direct proof callers.
 
 #### 10.1.6 Positive horizontal scale and advance units (2026-08-31)
 
-The planner admits finite `Tz > 0` and rejects zero, negative, or non-finite
-values before patch construction. `source_advance` and `replacement_advance`
+The planner admits finite `Tz > 0` only when derived `Th`, both effective
+advances, and their effective delta remain finite and `Th > 0`; it also rejects
+non-finite target geometry before patch construction. `source_advance` and `replacement_advance`
 remain raw, Tz-free text-space quantities and stay unchanged in plan tokens.
 Geometry consumes effective displacement: `raw_advance × Th`, with
 `th = show.hscale / 100.0` computed first. This governs fallback target boxes,
@@ -1206,6 +1213,8 @@ successor preservation and `N = -1000 × raw_delta / Tfs`. Both kern builders
 share this helper. The page fingerprint already includes every content-stream
 byte, including the `Tz` operand, so no token-preimage field was added and
 `Th == 100` candidates retain identical bytes, tokens, and bboxes.
+`kern_for_displacement` is the serialization defense-in-depth chokepoint and
+raises for non-finite displacement, font size, or kern result.
 
 ## 11. Character-Level Text Selection (Browse Mode)
 
