@@ -279,8 +279,22 @@ def kern_for_displacement(show: ShowOp, displacement: float) -> float:
         )
     # Keep the pre-admission operation shape at Th == 100 bit-for-bit: the
     # fixed 100.0 denominator expresses the cancelled scale without changing
-    # existing float rounding or serialized kern tokens.
-    kern = -100_000.0 * displacement / (show.font_size * 100.0)
+    # existing float rounding or serialized kern tokens.  Both intermediates
+    # are proven finite BEFORE the division: a finite quotient is not proof
+    # of a correct one -- an overflowing denominator (``font_size=1e307``)
+    # silently returns ``-0.0`` where the algebraic value is ``-1e-4``.
+    numerator = -100_000.0 * displacement
+    denominator = show.font_size * 100.0
+    if not math.isfinite(numerator) or not math.isfinite(denominator):
+        # The QUOTIENT may well be representable here (fs=1e307, d=1e300
+        # algebraically gives -1e-4); it is the intermediate that is not, and
+        # rescuing it would mean restructuring arithmetic whose exact shape is
+        # load-bearing for bit-identical kern tokens.  Reject, and say why.
+        raise ValueError(
+            "cannot compensate advance: the kern computation overflows before "
+            "the division"
+        )
+    kern = numerator / denominator
     if not math.isfinite(kern):
         raise ValueError("cannot serialize a non-finite kern adjustment")
     return kern

@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 314 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 315 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -319,3 +319,4 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2731 | Growth background-majority sampling must ignore glyph-height flags | `model/text_commit/plan.py`, `model/text_commit/verify.py` (Tier 1 growth proof) |
 | 2738 | Horizontal scale is geometry, but cancels from raw TJ compensation | `model/text_commit/plan.py`, `model/text_commit/patch.py` |
 | 2745 | Raw finite horizontal scale does not imply finite effective geometry | `model/text_commit/plan.py`, `model/text_commit/patch.py` |
+| 2752 | A finite quotient is not proof of a correct quotient | `model/text_commit/patch.py` (`kern_for_displacement`) |

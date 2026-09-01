@@ -68,6 +68,15 @@ logger = logging.getLogger(__name__)
 _ADVANCE_TOL_PER_PT = 1e-3  # face-derived: absorbs the face's own float error
 _ADVANCE_TOL_PER_PT_EXACT = 1e-9  # /Widths: exact arithmetic, noise only
 _GROWTH_OUTSIDE_PAGE_REASON = RejectReason.GROWTH_OUTSIDE_PAGE
+# Finiteness is NOT the raster sampler's real precondition: ``verify.py``'s
+# ``_bbox_pixels`` does ``int(x * 96 / 72)``, which raises ``OverflowError``
+# for finite coordinates above ~1.348e308.  The bound below is that
+# precondition with headroom, deliberately NOT a tighter policy cut: a
+# smaller limit would reject geometry the sampler handles correctly today
+# (a probe at 1.5e305 reaches it and returns an ordinary rejection), and
+# rejecting what still renders is an admission regression, not a safety
+# gain.
+_RENDERABLE_COORD_LIMIT = 1.0e308
 _PAGE_CONTAINMENT_TOL_PT = 1e-3
 
 
@@ -207,62 +216,241 @@ def _strict_overlap_depths(
     )
 
 
-def _duplicate_source_painter_detail(
+def _painter_semantics(capability: FontCapability) -> tuple:
+    """The rendering-relevant evidence of a font, minus its identity.
+
+    A producer that clones a font dictionary — new xref, new ``/BaseFont``
+    subset tag, same descriptor/program/width evidence — paints the SAME
+    glyphs.  Comparing xrefs or evidence digests alone calls those two
+    fonts different and admits the ghost.  Equality here is deliberately
+    the conservative direction: over-matching only ever costs a
+    fail-closed rejection.
+    """
+    cid = capability.cid
+    return (
+        capability.subtype,
+        capability.encoding,
+        capability.embedded,
+        capability.advance_source,
+        capability.supports_simple_encoding,
+        capability.first_char,
+        capability.widths,
+        None
+        if cid is None
+        else (cid.cidtogid_table, cid.w_records, cid.default_width),
+    )
+
+
+def _same_font_object(
+    first: FontCapability | None, second: FontCapability
+) -> bool | None:
+    """Whether two resolved capabilities paint the SAME glyphs.
+
+    ``None`` means "not provable" — the resource did not resolve at all, so
+    neither identity nor difference is established.  Resource NAMES are
+    aliases (two keys may point at one font dictionary), so identity is the
+    font object: its xref, an equal same-document evidence digest, or — for
+    a cloned dictionary differing only in its subset tag — equal rendering
+    semantics (:func:`_painter_semantics`).  Difference is only ever
+    RETURNED when both sides were fully built; a degraded capability is
+    unprovable.
+    """
+    if first is None:
+        return None
+    if (
+        first.font_xref == second.font_xref
+        or first.evidence_digest == second.evidence_digest
+        or _painter_semantics(first) == _painter_semantics(second)
+    ):
+        return True
+    if first.advance_source == "none" or second.advance_source == "none":
+        # A capability the registry could not finish building proves nothing
+        # about WHICH glyphs it paints — a clone whose only defect is an
+        # unreadable /ToUnicode still renders the same face.  Difference is
+        # not established, so this is unprovable, not different.
+        return None
+    return False
+
+
+def _painter_advance(
+    capability: FontCapability, show: ShowOp, text: str
+) -> float | None:
+    """One show's own raw (Tz-free) advance for ``text``, or ``None`` when
+    the document does not prove it.
+
+    Mirrors the two advance branches ``_classify_common`` uses for the
+    target — the Identity-H codec's ``/W``-driven arithmetic (where Tw never
+    applies, PDF 32000-1 §9.3.3) and the simple-font ``_advance`` — so a
+    twin is measured exactly the way the target is, under its OWN
+    ``font_size``/``Tc``/``Tw``.
+    """
+    if capability.cid is not None:
+        raw = show.decoded_bytes
+        if not raw or len(raw) % 2:
+            return None
+        cids = tuple(
+            int.from_bytes(raw[index : index + 2], "big")
+            for index in range(0, len(raw), 2)
+        )
+        return capability.cid.advance_points(cids, show.font_size, show.char_spacing)
+    try:
+        return _advance(
+            capability, text, show.font_size, show.char_spacing, show.word_spacing
+        )
+    except ValueError:
+        return None
+
+
+def _painter_core_quad(
+    show: ShowOp, advance: float
+) -> tuple[float, float, float, float] | None:
+    """The show's own baseline→x-height core rectangle in ITS text space.
+
+    ``None`` when the show cannot be placed at all.  ``Ts`` is deliberately
+    NOT applied: ``_classify_common`` refuses any target whose ``rise`` is
+    non-zero, so the target core is always pinned to the baseline, and
+    translating only the CANDIDATE core by its own rise would open a
+    false-admit band — a twin raised past ``0.6·Tfs`` would stop
+    overlapping and be admitted while still painting over the edit.  Both
+    cores are taken at the baseline, which keeps the comparison
+    fail-closed.
+    """
+    if (
+        not show.origin_reliable
+        or not math.isfinite(show.font_size)
+        or show.font_size <= 0.0
+        or not math.isfinite(show.hscale)
+        or show.hscale <= 0.0
+        or not math.isfinite(advance)
+    ):
+        return None
+    width = advance * (show.hscale / 100.0)
+    if not math.isfinite(width):
+        return None
+    return (0.0, 0.0, width, 0.6 * show.font_size)
+
+
+def _painter_reach(page: fitz.Page, show: ShowOp) -> float | None:
+    """Text-space extent beyond which a show's ink cannot mark this page.
+
+    Used when the exact advance is unavailable (unresolvable font resource)
+    or when the recorded origin cannot be trusted to be where the ink
+    starts (``TJ`` may carry a leading kern that :class:`ShowOp` does not
+    preserve).  Any point of the ink that lands inside the page is within
+    ``half-diagonal + |origin − centre|`` of the origin, so dividing that
+    by the mapped length of one text-space unit bounds the only extent that
+    can ever be visible; ink past it is off-page and cannot survive as a
+    ghost.  ``None`` when even that bound is not derivable.
+    """
+    origin = map_text_quad_to_visual(page, show.tm, show.ctm, (0.0, 0.0, 0.0, 0.0))
+    unit = map_text_quad_to_visual(page, show.tm, show.ctm, (1.0, 0.0, 1.0, 0.0))
+    if not all(math.isfinite(value) for value in (*origin, *unit)):
+        return None
+    scale = math.hypot(unit[0] - origin[0], unit[1] - origin[1])
+    if not math.isfinite(scale) or scale <= 0.0:
+        return None
+    rect = page.rect
+    span = math.hypot(rect.x1 - rect.x0, rect.y1 - rect.y0) / 2.0 + math.hypot(
+        origin[0] - (rect.x0 + rect.x1) / 2.0,
+        origin[1] - (rect.y0 + rect.y1) / 2.0,
+    )
+    reach = span / scale
+    return reach if math.isfinite(reach) else None
+
+
+def duplicate_source_painter_detail(
     page: fitz.Page,
     target: ShowOp,
     *,
+    target_text: str,
+    target_capability: FontCapability,
     source_advance: float,
+    registry: DocumentFontRegistry,
     shows: tuple[ShowOp, ...],
+    capabilities: dict[str, FontCapability] | None = None,
 ) -> str | None:
-    """Describe an indistinguishable overlapping source painter, if any."""
-    candidates = tuple(
+    """Describe an indistinguishable overlapping source painter, if any.
+
+    Candidacy is SEMANTIC: the same encoding bytes shown from a font that
+    paints the same glyphs, whatever resource name each show reached it
+    through.  A candidate whose identity AND placement are both provable is
+    measured from its OWN text state — its capability's width for
+    ``target_text`` at its own size, its own ``Tc``/``Tw``/``Tz`` — never
+    from the target's advance scaled by a ratio.  Anything less than proven
+    is not rejected outright: its ink is bounded by :func:`_painter_reach`,
+    so a twin that provably cannot reach the target core (a different line,
+    the far side of the page) stays admissible and only a twin that could
+    overlap fails closed.
+    """
+    twins = tuple(
         candidate
         for candidate in shows
         if candidate.seq != target.seq
         and candidate.decoded_bytes == target.decoded_bytes
-        and candidate.font_resource == target.font_resource
     )
-    if not candidates:
+    if not twins:
         return None
-    if (
-        not target.origin_reliable
-        or not math.isfinite(target.font_size)
-        or target.font_size <= 0.0
-    ):
+    target_quad = _painter_core_quad(target, source_advance)
+    if target_quad is None:
         return "identical source painter cannot prove target placement"
-    target_th = target.hscale / 100.0
-    target_core = map_text_quad_to_visual(
-        page,
-        target.tm,
-        target.ctm,
-        (0.0, 0.0, source_advance * target_th, 0.6 * target.font_size),
-    )
+    target_core = map_text_quad_to_visual(page, target.tm, target.ctm, target_quad)
     if not all(math.isfinite(value) for value in target_core):
         return "identical source painter cannot prove target placement"
-    for candidate in candidates:
-        if (
-            not candidate.origin_reliable
-            or not math.isfinite(candidate.font_size)
-            or candidate.font_size <= 0.0
-            or not math.isfinite(candidate.hscale)
-            or candidate.hscale <= 0.0
-        ):
-            return "identical source painter cannot prove disjoint placement"
-        candidate_width = (
-            source_advance
-            * (candidate.font_size / target.font_size)
-            * (candidate.hscale / 100.0)
-        )
+    # One resolve per DISTINCT candidate resource, not one per candidate:
+    # ``registry.capability`` re-digests the whole font entry on every call
+    # (~0.9 ms warm), which a dense same-string bucket would otherwise turn
+    # into a quarter-second per prepare.  A caller that already holds the
+    # page's capabilities (the census, which runs this per show) passes them
+    # in and pays nothing here at all.
+    resolved: dict[str, FontCapability | None] = {}
+    for candidate in twins:
+        resource = candidate.font_resource or ""
+        if capabilities is not None:
+            capability = capabilities.get(resource)
+        elif resource in resolved:
+            capability = resolved[resource]
+        else:
+            capability = registry.capability(page, resource) if resource else None
+            resolved[resource] = capability
+        same_font = _same_font_object(capability, target_capability)
+        if same_font is False:
+            # A different font object paints different glyphs from the same
+            # bytes: not a twin, and its geometry is nobody's business here.
+            continue
+        candidate_quad: tuple[float, float, float, float] | None = None
+        unproven = ""
+        if same_font and candidate.operator == "Tj":
+            assert capability is not None
+            candidate_advance = _painter_advance(capability, candidate, target_text)
+            if candidate_advance is not None:
+                candidate_quad = _painter_core_quad(candidate, candidate_advance)
+        if candidate_quad is None:
+            unproven = "font identity" if same_font is None else "exact extent"
+            reach = _painter_reach(page, candidate)
+            baseline = _painter_core_quad(candidate, 0.0)
+            if reach is None or baseline is None:
+                return "identical source painter cannot prove disjoint placement"
+            # ``TJ`` is bounded in BOTH directions: replay drops the array's
+            # numeric items, so a leading kern may have displaced the ink
+            # either way from the recorded origin.
+            candidate_quad = (
+                0.0 if candidate.operator == "Tj" else -reach,
+                baseline[1],
+                reach,
+                baseline[3],
+            )
         candidate_core = map_text_quad_to_visual(
-            page,
-            candidate.tm,
-            candidate.ctm,
-            (0.0, 0.0, candidate_width, 0.6 * candidate.font_size),
+            page, candidate.tm, candidate.ctm, candidate_quad
         )
         if not all(math.isfinite(value) for value in candidate_core):
             return "identical source painter cannot prove disjoint placement"
         overlap_x, overlap_y = _strict_overlap_depths(target_core, candidate_core)
         if overlap_x > 0.05 and overlap_y > 0.05:
+            if unproven:
+                return (
+                    f"identical source painter cannot prove {unproven}, and "
+                    "its bounded ink can reach the target core"
+                )
             return (
                 "identical source painter overlaps target core by "
                 f"{overlap_x:.3f}pt x {overlap_y:.3f}pt"
@@ -643,10 +831,21 @@ def _classify_common(
             "effective horizontal scale or scaled advance is non-finite",
         )
 
-    duplicate_detail = _duplicate_source_painter_detail(
+    if not all(
+        math.isfinite(float(value)) for value in (*show.tm, *show.ctm)
+    ):
+        return PlanRejection(
+            RejectReason.UNSUPPORTED_TEXT_STATE,
+            "text matrix or CTM holds a non-finite value",
+        )
+
+    duplicate_detail = duplicate_source_painter_detail(
         page,
         show,
+        target_text=target_text,
+        target_capability=capability,
         source_advance=old_advance,
+        registry=registry,
         shows=resolved.replay.shows,
     )
     if duplicate_detail is not None:
@@ -876,14 +1075,35 @@ def _build_tier1(
             show.font_size,
         ),
     )
+    # Derived geometry gets its own proof: ``_classify_common`` cleared the
+    # TARGET bbox (possibly caller-supplied) and the show's matrices, but a
+    # widened or metric box is a fresh computation.  Verification must never
+    # be the thing that discovers an unrenderable extent, by exception or by
+    # clamping — so the bound is the SAMPLER's (``_RENDERABLE_COORD_LIMIT``),
+    # not merely ``isfinite``.
+    if not all(
+        math.isfinite(value) and abs(value) <= _RENDERABLE_COORD_LIMIT
+        for value in (*verify_bbox_page, *background_bbox_page)
+    ):
+        return PlanRejection(
+            RejectReason.UNSUPPORTED_TEXT_STATE,
+            "derived verify or background bbox escapes renderable coordinates",
+        )
     if not _bbox_within_page(page, verify_bbox_page):
         return PlanRejection(
             _GROWTH_OUTSIDE_PAGE_REASON,
             "widened verify bbox escapes page bounds",
         )
-    kern = kern_for_displacement(
-        show, classified.source_advance - classified.replacement_advance
-    )
+    try:
+        kern = kern_for_displacement(
+            show, classified.source_advance - classified.replacement_advance
+        )
+    except ValueError as exc:
+        # ``kern_for_displacement`` is a serialization chokepoint that raises
+        # rather than emit a wrong token.  Reaching it from the planner means
+        # the numeric boundary is a PLAN outcome, so it becomes a stable
+        # reason code here instead of an exception escaping ``prepare``.
+        return PlanRejection(RejectReason.UNSUPPORTED_TEXT_STATE, str(exc))
     replacement = build_kern_compensated_transplant(
         classified.stream_bytes,
         show,

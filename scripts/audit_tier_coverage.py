@@ -48,7 +48,17 @@ LEGACY_ONLY = "legacy_only"
 def _classify_show(
     show: ShowOp, capability: FontCapability | None
 ) -> tuple[str, str | None]:
-    """Structural-only classification (no replacement text is known here)."""
+    """Structural-only classification (no replacement text is known here).
+
+    Per-show by construction, so the plan-time duplicate-source-painter gate
+    (which compares a show against every OTHER show on the page) is
+    DELIBERATELY not run: the caller does hold the page, replay and
+    registry, so this is a scope choice rather than an impossibility --
+    parity with production belongs to
+    ``scripts/measure_type0_funnel.py``, which owns that vector.
+    Eligibility counts here are an upper bound on production admission,
+    never a claim of parity with it.
+    """
     unsupported_state = (
         show.render_mode != 0
         or show.rise != 0.0

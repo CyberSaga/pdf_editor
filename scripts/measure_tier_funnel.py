@@ -309,6 +309,12 @@ def _identity_plan_survival(
     is never empty or multiline), and ``NO_CHANGE`` (an identity replacement
     always trips this first, which would fail every sample identically and
     measure nothing -- the entire point of driving identity here).
+    ``DUPLICATE_SOURCE_PAINTER`` is a seventh, DIFFERENT kind of omission and
+    is called out rather than folded in: it is a real production gate this
+    vector does not run, because it needs the whole page replay and the font
+    registry, neither of which reaches here.  Survival counts from this
+    script are therefore an UPPER bound on production admission — see
+    ``scripts/measure_type0_funnel.py``, whose vector does run that gate.
     ``ADVANCE_MISMATCH`` is skipped from the other side: replacement text
     identical to target text has identical advance by construction (same
     codes, same size/Tc/Tw), so the comparison in ``plan.py:217-226`` can

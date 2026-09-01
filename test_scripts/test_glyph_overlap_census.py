@@ -95,8 +95,27 @@ def test_report_has_closed_slug_keyed_integer_axes() -> None:
         "tj_array_only",
         "hscale_only",
         "tj_array_and_hscale_only",
+        "duplicate_painter_only",
         "other",
     }
+
+
+def test_sole_loss_classifies_duplicate_painter_only() -> None:
+    """The census vector must run the planner's duplicate-painter gate: a
+    show with an overlapping identical twin is NOT ``all_gates_pass``."""
+    fixture = build_identity_h_fixture()
+    append_page_content(
+        fixture,
+        (
+            f"BT /{fixture.resource_name} 12 Tf 1 0 0 1 73 700 Tm "
+            f"<{fixture.encoded.hex().upper()}> Tj ET"
+        ),
+    )
+    sole = funnel_document(fixture.doc, run_e2e=False)["glyph_overlap_census"][
+        "sole_loss"
+    ]
+    assert sole["duplicate_painter_only"] == 2
+    assert sole["all_gates_pass"] == 0
 
 
 def test_sole_loss_classifies_tj_array_only() -> None:

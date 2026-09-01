@@ -1009,12 +1009,29 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   independently pinned; malformed/refused replay fails closed. Fix B and
   positive-hscale admission landed on subsequent stacked branches.
 
-- [x] **Close duplicate-painter twin admission for V0c (2026-09-01).**
-  Planning now rejects identical decoded/font painters whose mapped core quads
-  overlap on both axes, while abutting shows and a genuinely disjoint 1 pt gap
-  remain admissible. The former +1.0 pt fixture was itself an ~11 pt-overlap
-  twin, not a legitimate neighbor. XObject-hosted twins remain the documented
-  replay blind spot bounded by V0d.
+- [x] **Close duplicate-painter twin admission for V0c (2026-09-01, hardened
+  the same day after a second Pro review).** Planning rejects identical
+  painters whose mapped core quads overlap on both axes, while abutting shows
+  and a genuinely disjoint 1 pt gap remain admissible. The former +1.0 pt
+  fixture was itself an ~11 pt-overlap twin, not a legitimate neighbor. The
+  first cut of the gate was still defeatable and was corrected: candidacy now
+  compares FONT OBJECTS resolved through the registry (a second resource name
+  aliasing one font dictionary was admitted before — resource names are not
+  identity), extended to cloned dictionaries that differ only by subset tag
+  and to capabilities the registry could not finish building, and every proven
+  candidate's core is measured from its own text state (its capability's width
+  at its own size, its own Tc/Tw through the same codec branch the target
+  uses, its own Tz) instead of the target's advance scaled by a font-size
+  ratio. `Ts` is NOT applied to the candidate core — a first attempt did, and
+  because the planner pins the target core to the baseline that opened a
+  false-admit band at `rise >= 0.6*Tfs` which committed with the ghost intact.
+  Unprovable candidates (unresolvable font, unproven width, any `TJ` — replay
+  drops the array's numeric items, so a leading kern moves the ink off the
+  recorded origin) are BOUNDED by `_painter_reach` rather than refused
+  outright, so a twin on another baseline stays editable. Cost: ~15 ms for a
+  275-way same-string bucket, with one registry resolve per distinct candidate
+  resource. XObject-hosted twins remain the documented replay blind spot
+  bounded by V0d.
 
 - [x] **Remove the large-stream preview cost of V0c target-operator replay (2026-09-01).**
   A synthetic direct stream with repeated `Tj` operators measured 3.20 s cold
@@ -1040,6 +1057,14 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   planner. The sealed-corpus rerun reattributed all 877 former hscale-only
   doc_0 shows to source-bindable (5,934 → 6,811), moved 88 TJ+hscale shows to
   TJ-only (42 → 130), and left unrelated/page-eligibility counters unchanged.
+  **Reconciled 2026-09-01 after the duplicate-source-painter gate landed**
+  (same sealed corpus, `--json --no-e2e`): `source_bindable` is unchanged at
+  6,811, so the 877-show hscale figure stands. What changed is downstream —
+  the new `duplicate_painter_only` bucket takes 187 doc_0 shows, so
+  `all_gates_pass` is **6,624**, not 6,811, and `tj_array_only` drops 130 →
+  112 (18 TJ shows now lose on duplicate as well and fall to `other`).
+  `hscale_only` remains 0. The census output was privacy-scanned: no document
+  text, basefonts, resource names, file basenames, or non-ASCII values.
   Augmentation Safety remains NO-GO; no font mutation or `store_shrink(100)`
   path was added.
 
@@ -1071,7 +1096,11 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   corpus numbers make augmentation the pick. The 1,642 bindable shows on
   unproven fonts remain a candidate-list item for P4-B.
   Separately, hscale leads Unit A at 877 newly bindable shows versus whole-`TJ`
-  42. Relaxing the unchanged 4 MiB replay budget exposes a **16,549**-show
+  42. (2026-09-01 note: "bindable" is the binding funnel, which the
+  duplicate-source-painter gate sits downstream of. It is unchanged at 6,811;
+  end-to-end admission on the same corpus is 6,624 — see the reconciliation
+  in the duplicate-painter entry above. The 877/42 comparison between the two
+  candidate units is unaffected, since both are measured at the same stage.) Relaxing the unchanged 4 MiB replay budget exposes a **16,549**-show
   stage-loss upper bound, but those shows can still fail downstream gates, so
   the bound belongs to neither Unit A nor Unit B. Budget relaxation stays the
   §9 item (`TODOS.md:473`): its latency half remains open. Record:

@@ -231,6 +231,110 @@ def test_kern_for_displacement_rejects_nonfinite_input_or_result(
     show = replay_page(fixture.doc, fixture.page).shows[0]
     if displacement == 1e308:
         show = dataclasses.replace(show, font_size=1e-308)
-    with pytest.raises(ValueError, match="finite"):
+    with pytest.raises(ValueError, match="cannot compensate advance"):
         kern_for_displacement(show, displacement)
+    fixture.doc.close()
+
+
+def test_kern_for_displacement_rejects_an_overflowing_intermediate() -> None:
+    """A finite RESULT is not proof of a correct result: ``font_size * 100``
+    overflows to ``inf`` here and the division silently returns ``-0.0``
+    where the algebraic value is ``-1e-4``."""
+    fixture = _scaled_fixture(80.0)
+    show = replay_page(fixture.doc, fixture.page).shows[0]
+    show = dataclasses.replace(show, font_size=1e307)
+    with pytest.raises(ValueError, match="overflows before the division"):
+        kern_for_displacement(show, 1e300)
+    fixture.doc.close()
+
+
+def test_nonfinite_translation_is_rejected_under_a_finite_caller_bbox() -> None:
+    """TRM shape admission inspects only the linear coefficients, so a
+    non-finite ``Tm`` TRANSLATION must be refused at the planner rather than
+    reaching derived Tier-1 geometry through a finite caller bbox."""
+    fixture = build_identity_h_fixture(text=CJK_TEXT)
+    stream = fixture.content_bytes()
+    overflow = b"9" * 400
+    patched = stream.replace(b" 72 700 Tm", b" " + overflow + b" 700 Tm", 1)
+    assert patched != stream
+    fixture.doc.update_stream(fixture.content_xref, patched)
+    engine = TieredCommitEngine(fixture.doc, max_tier=1)
+    result = engine.prepare(
+        fixture.page,
+        target_text=CJK_TEXT,
+        replacement_text=REPLACEMENT_EQUAL_ADVANCE,
+        expected_origin=None,
+        target_bbox=(70.0, 125.0, 130.0, 150.0),
+    )
+    assert isinstance(result, PlanRejection), result
+    assert result.reason == RejectReason.UNSUPPORTED_TEXT_STATE
+    assert result.detail == "text matrix or CTM holds a non-finite value"
+    fixture.doc.close()
+
+
+def test_tier1_derived_geometry_overflow_is_rejected_before_verification() -> None:
+    """Every INPUT is finite here — a finite caller bbox, a finite uniform
+    ``Tm`` scale, finite advances — but the Tier-1 background/verify boxes
+    derived from them overflow.  The planner must refuse with a stable reason
+    instead of handing a non-finite extent to the raster sampler."""
+    fixture = build_identity_h_fixture(text=CJK_TEXT)
+    stream = fixture.content_bytes()
+    huge = b"1" + b"0" * 307
+    patched = stream.replace(
+        b"1 0 0 1 72 700 Tm", huge + b" 0 0 " + huge + b" 72 700 Tm", 1
+    )
+    assert patched != stream
+    fixture.doc.update_stream(fixture.content_xref, patched)
+    engine = TieredCommitEngine(fixture.doc, max_tier=1)
+    result = engine.prepare(
+        fixture.page,
+        target_text=CJK_TEXT,
+        replacement_text=REPLACEMENT_LONGER,
+        expected_origin=None,
+        target_bbox=(70.0, 125.0, 130.0, 150.0),
+    )
+    assert isinstance(result, PlanRejection), result
+    assert result.reason == RejectReason.UNSUPPORTED_TEXT_STATE
+    # Pinned exactly: this case must reach the DERIVED-geometry check in
+    # ``_build_tier1``, not the earlier matrix or caller-bbox gates.
+    assert result.detail == (
+        "derived verify or background bbox escapes renderable coordinates"
+    )
+    fixture.doc.close()
+
+
+def test_tier1_finite_but_unrenderable_geometry_is_rejected() -> None:
+    """Finiteness is not the sampler's precondition.
+
+    ``verify.py``'s ``_bbox_pixels`` does ``int(x * 96 / 72)``, which raises
+    ``OverflowError`` for finite coordinates above ~1.348e308.  A tiny
+    ``Tz`` decouples the growth strip (which stays a small in-page box) from
+    the background quad (whose cross extent is ``font_size`` un-multiplied
+    by ``Th``), so every derived coordinate can be finite and still
+    unrenderable.  The planner must refuse with a ``RejectReason`` rather
+    than let an exception escape ``prepare``.
+    """
+    fixture = build_identity_h_fixture(text=CJK_TEXT)
+    stream = fixture.content_bytes()
+    size = b"1" + b"0" * 303  # 1e303
+    tiny = b"0." + b"0" * 304 + b"1"  # 1e-305, as a plain PDF real
+    patched = re.sub(rb"/F0 [0-9.]+ Tf", b"/F0 " + size + b" Tf", stream, count=1)
+    patched = patched.replace(
+        b"1 0 0 1 72 700 Tm", b"150000 0 0 150000 72 700 Tm " + tiny + b" Tz", 1
+    )
+    assert patched != stream
+    fixture.doc.update_stream(fixture.content_xref, patched)
+    engine = TieredCommitEngine(fixture.doc, max_tier=1)
+    result = engine.prepare(
+        fixture.page,
+        target_text=CJK_TEXT,
+        replacement_text=REPLACEMENT_LONGER,
+        expected_origin=None,
+        target_bbox=(70.0, 125.0, 130.0, 150.0),
+    )
+    assert isinstance(result, PlanRejection), result
+    assert result.reason == RejectReason.UNSUPPORTED_TEXT_STATE
+    assert result.detail == (
+        "derived verify or background bbox escapes renderable coordinates"
+    )
     fixture.doc.close()

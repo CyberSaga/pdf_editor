@@ -83,7 +83,10 @@ from model.text_commit.marked_content import (  # noqa: E402
     admit_show_wrappers,
     splice_range_within_wrapper,
 )
-from model.text_commit.plan import PlanRejection  # noqa: E402
+from model.text_commit.plan import (  # noqa: E402
+    PlanRejection,
+    duplicate_source_painter_detail,
+)
 from model.text_commit.transforms import admission_verdict  # noqa: E402
 from model.text_commit.replay import (  # noqa: E402
     DEFAULT_MAX_REPLAY_BYTES,
@@ -157,6 +160,7 @@ GLYPH_OVERLAP_SOLE_LOSS_CLASSES = (
     "tj_array_only",
     "hscale_only",
     "tj_array_and_hscale_only",
+    "duplicate_painter_only",
     "other",
 )
 TOUNICODE_UNPARSEABLE_DETAILS = (
@@ -336,8 +340,27 @@ def _sole_loss_class(
     within_budget: bool,
     replay_ok: bool,
     stream_unshared: bool,
+    registry: DocumentFontRegistry,
+    twins_by_bytes: dict[bytes, tuple[object, ...]],
+    page_capabilities: dict[str, object],
 ) -> str:
-    """Classify one Type0 show by an independent full production gate vector."""
+    """Classify one Type0 show by an independent full production gate vector.
+
+    The duplicate-source-painter leg calls the planner's OWN helper rather
+    than mirroring it: that gate's geometry is candidate-local and its
+    identity rule is font-object-level, so a hand-copy would drift the first
+    time either changes.  ``twins_by_bytes`` is only a pre-index of the same
+    page replay the planner would scan (the helper filters on equal
+    ``decoded_bytes`` anyway): it removes the cross-bucket comparisons, so a
+    page of N distinct strings costs sum-of-squared-bucket-sizes instead of
+    N^2.  It does NOT thin a dense same-string bucket, and it changes no
+    verdict.
+
+    KNOWN OMISSION: the Tier-1 derived verify/background bbox bound
+    (``_RENDERABLE_COORD_LIMIT``) is not modelled — it depends on the
+    replacement text, which a census has no candidate for.  Every other
+    planner gate this function claims is reproduced here.
+    """
     operator = getattr(show, "operator", "")
     op_single_hex = operator == "Tj" and getattr(show, "string_kind", "") == "hex"
     op_tj_array = operator == "TJ"
@@ -373,6 +396,14 @@ def _sole_loss_class(
     trm_ok = bool(getattr(show, "trm_uniform_scaled", False))
     if not trm_ok:
         trm_ok = admission_verdict(page, show.tm, show.ctm).reject_reason is None
+
+    # ``_classify_common``'s matrix chokepoint: TRM shape admission inspects
+    # only the linear coefficients, so a non-finite TRANSLATION would pass
+    # ``trm_ok`` and be counted as admissible here while production rejects
+    # it with ``unsupported_text_state``.
+    matrix_ok = all(
+        math.isfinite(float(value)) for value in (*show.tm, *show.ctm)
+    )
 
     hscale = getattr(show, "hscale", 0.0)
     th = hscale / 100.0
@@ -414,13 +445,36 @@ def _sole_loss_class(
             )
             glyph_ok = glyph_failure is None
 
-    downstream_ok = all(
+    duplicate_ok = True
+    if cid is not None and decode_ok and isinstance(decoded, str):
+        source_cids = tuple(
+            int.from_bytes(show.decoded_bytes[index : index + 2], "big")
+            for index in range(0, len(show.decoded_bytes), 2)
+        )
+        duplicate_ok = (
+            duplicate_source_painter_detail(
+                page,
+                show,
+                target_text=decoded,
+                target_capability=capability,
+                source_advance=cid.advance_points(
+                    source_cids, show.font_size, show.char_spacing
+                ),
+                registry=registry,
+                shows=twins_by_bytes.get(show.decoded_bytes, ()),
+                capabilities=page_capabilities,
+            )
+            is None
+        )
+
+    downstream_core_ok = all(
         (
             replay_ok,
             stream_unshared,
             within_budget,
             mc_ok,
             trm_ok,
+            matrix_ok,
             other_state_ok,
             cid_ok,
             decode_ok,
@@ -428,6 +482,9 @@ def _sole_loss_class(
             glyph_ok,
         )
     )
+    downstream_ok = downstream_core_ok and duplicate_ok
+    if downstream_core_ok and op_single_hex and hscale_ok and not duplicate_ok:
+        return "duplicate_painter_only"
     if downstream_ok and op_single_hex and hscale_ok:
         return "all_gates_pass"
     if downstream_ok and op_tj_array and hscale_ok:
@@ -989,6 +1046,19 @@ def funnel_document(
         within_budget = total_bytes <= DEFAULT_MAX_REPLAY_BYTES
         page_bindable: list[tuple[object, str]] = []
         wrapper_classes = classify_wrappers(doc, page, replay)
+        # Pre-index the page replay by operand bytes for the duplicate-painter
+        # leg: the planner's helper filters on exactly this equality, so the
+        # index is a cost optimisation with no effect on any verdict.
+        twins_by_bytes: dict[bytes, list[object]] = {}
+        for replayed in replay.shows:
+            twins_by_bytes.setdefault(replayed.decoded_bytes, []).append(replayed)
+        twins_index = {
+            data: tuple(group) for data, group in twins_by_bytes.items()
+        }
+        # Resolved ONCE per page and handed to every show's duplicate leg:
+        # the planner resolves per prepare, and re-digesting every font on
+        # the page per show is what made this census infeasible.
+        page_caps = registry.page_capabilities(page)
         page_counted_wrappers: set[int] = set()
         malformed_page_counted = False
         shared_page_counted = False
@@ -1015,6 +1085,9 @@ def funnel_document(
                 within_budget=within_budget,
                 replay_ok=not replay.malformed,
                 stream_unshared=show.stream_xref not in shared_stream_xrefs,
+                registry=registry,
+                twins_by_bytes=twins_index,
+                page_capabilities=page_caps,
             )
             glyph_sole_loss[sole_loss] += 1
             if sole_loss == "tj_array_only":

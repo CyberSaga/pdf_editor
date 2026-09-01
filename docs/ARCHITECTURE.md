@@ -1174,13 +1174,57 @@ neighboring show; V0a proves all other bytes unchanged and V0c's existing
 span-origin comparison still proves disjoint neighbors did not move.
 
 Because origin extraction cannot pin a near-overlapping twin, planning scans
-the already-bounded page replay before constructing a candidate. Another show
-with identical decoded bytes and font resource is rejected as
-`duplicate_source_painter` when their mapped baseline-to-0.6-em core quads
-overlap by more than 0.05 pt on both axes. Abutting and genuinely disjoint
-neighbors remain eligible; unplaceable candidates fail closed. Form-XObject
-twins remain a pre-existing replay blind spot, with damage still bounded by
-V0d's raster halo.
+the already-bounded page replay before constructing a candidate
+(`plan.duplicate_source_painter_detail`). Candidacy is semantic, not
+lexical: another show with identical decoded bytes counts as a twin when its
+resource resolves, through `DocumentFontRegistry`, to the SAME font object —
+equal xref, or an equal same-document evidence digest. Resource names are
+aliases, so a second key pointing at one font dictionary is one painter;
+equal bytes under a genuinely different font object paint different glyphs
+and are not a twin at all.
+
+Identity survives producer cloning: a font dictionary duplicated with a new
+xref and a new `/BaseFont` subset tag has an unequal digest but equal
+rendering evidence (subtype, encoding, embeddedness, advance source, widths,
+and the Identity-H `/W`/`CIDToGIDMap`/`DW` triple), and equal evidence counts
+as the same painter. Difference is only ever *concluded* when both
+capabilities were fully built; a degraded capability (`advance_source ==
+"none"`, e.g. an unreadable `/ToUnicode`) proves nothing about which glyphs
+it paints and is treated as unprovable.
+
+A twin whose identity AND extent are both proven is measured from its own
+text state — its capability's width for the text at its own `Tfs`, its own
+`Tc`/`Tw` through the same codec branch the target's advance uses (Identity-H
+ignores `Tw` by §9.3.3), and its own `Tz` — never the target's advance scaled
+by a font-size ratio. `Ts` is deliberately **not** applied to either core:
+`_classify_common` refuses any target whose own rise is non-zero, so the
+target core is always pinned to the baseline, and translating only the
+candidate core by its own rise would admit a raised twin that still paints
+over the edit.
+
+Anything less than proven is bounded rather than refused outright.
+`_painter_reach` computes the only text-space extent whose image can still
+land on the page (half the page diagonal plus the origin's distance from the
+page centre, divided by the mapped length of one text-space unit); ink past
+it is off-page and cannot survive as a ghost. `TJ` candidates always take
+this route, in *both* directions, because `ShowOp` drops a `TJ` array's
+numeric items and a leading kern may have displaced the ink either way from
+the recorded origin. A twin is rejected as `duplicate_source_painter` when
+the mapped baseline-to-0.6-em core quads (exact or bounded) overlap by more
+than 0.05 pt on both axes. Abutting and disjoint neighbors remain eligible,
+and so does an unprovable twin on another baseline — the reach bound is
+horizontal, so unprovable identity blocks only where it could matter.
+A show whose origin is itself unusable (`origin_reliable` false) fails
+closed. Form-XObject twins remain a pre-existing replay blind spot, with
+damage still bounded by V0d's raster halo.
+
+`scripts/measure_type0_funnel.py` calls this same helper rather than
+mirroring it, and carries a `duplicate_painter_only` loss bucket; the
+per-show vectors in `audit_tier_coverage.py` and `measure_tier_funnel.py`
+deliberately do not run a page-wide gate and now say so — their counts are
+upper bounds on production admission, not parity claims. The funnel's own
+one stated omission is the Tier-1 derived-geometry bound, which needs a
+replacement text a census has no candidate for.
 
 #### 10.1.5 Tier 1 growth background sampling box (2026-08-31)
 
@@ -1200,7 +1244,24 @@ legacy candidates and direct proof callers.
 
 The planner admits finite `Tz > 0` only when derived `Th`, both effective
 advances, and their effective delta remain finite and `Th > 0`; it also rejects
-non-finite target geometry before patch construction. `source_advance` and `replacement_advance`
+non-finite target geometry and any non-finite `Tm`/`CTM` component before patch
+construction — TRM shape admission inspects only the linear coefficients, so a
+non-finite translation would otherwise ride a finite caller bbox into derived
+Tier 1 geometry. `_build_tier1` re-proves its own derived
+`verify_bbox_page`/`background_bbox_page` immediately after deriving them,
+against the RASTER SAMPLER's precondition rather than mere finiteness:
+`verify._bbox_pixels` does `int(x * 96 / 72)` and raises `OverflowError` for
+finite coordinates above ~1.348e308, and a tiny `Tz` decouples the in-page
+growth strip from a background quad whose cross extent is `font_size`
+un-multiplied by `Th`. `_RENDERABLE_COORD_LIMIT` (1e308) is that
+precondition with headroom, deliberately not a tighter policy cut — a
+background box at 1.5e305 reaches the sampler and returns an ordinary
+rejection, and refusing what still renders would be an admission regression.
+Verification therefore never discovers an unrenderable extent by exception or
+by clamping. The Tier-1 `kern_for_displacement` call is wrapped separately:
+that chokepoint keeps RAISING (it must never emit a wrong token), and the
+planner converts the raise into `unsupported_text_state` so `prepare` still
+returns a reason code. `source_advance` and `replacement_advance`
 remain raw, Tz-free text-space quantities and stay unchanged in plan tokens.
 Geometry consumes effective displacement: `raw_advance × Th`, with
 `th = show.hscale / 100.0` computed first. This governs fallback target boxes,
@@ -1214,7 +1275,12 @@ share this helper. The page fingerprint already includes every content-stream
 byte, including the `Tz` operand, so no token-preimage field was added and
 `Th == 100` candidates retain identical bytes, tokens, and bboxes.
 `kern_for_displacement` is the serialization defense-in-depth chokepoint and
-raises for non-finite displacement, font size, or kern result.
+raises for non-finite displacement, font size, or kern result — and for a
+non-finite INTERMEDIATE before dividing, because a finite quotient is not
+proof of a correct one: an overflowing `Tfs × 100` would otherwise yield a
+plausible `-0.0`. The boundary is rejected, not rescued: the exact
+`-100_000.0 * d / (fs * 100.0)` shape is load-bearing for bit-identical kern
+tokens at `Th == 100`.
 
 ## 11. Character-Level Text Selection (Browse Mode)
 
