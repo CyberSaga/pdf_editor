@@ -360,6 +360,10 @@ def _sole_loss_class(
     (``_RENDERABLE_COORD_LIMIT``) is not modelled — it depends on the
     replacement text, which a census has no candidate for.  Every other
     planner gate this function claims is reproduced here.
+
+    The census replacement is the source itself, so its Tier-0/Tier-1
+    effective-advance proxy has equal old/new products and a zero delta.  The
+    one load-bearing product is therefore ``source_advance * Th``.
     """
     operator = getattr(show, "operator", "")
     op_single_hex = operator == "Tj" and getattr(show, "string_kind", "") == "hex"
@@ -419,8 +423,16 @@ def _sole_loss_class(
     cid = getattr(capability, "cid", None)
     cid_ok = cid is not None
     decode_ok = reproduce_ok = glyph_ok = False
+    source_advance = None
     if cid is not None:
         data = getattr(show, "decoded_bytes", b"")
+        source_cids = tuple(
+            int.from_bytes(data[index : index + 2], "big")
+            for index in range(0, len(data), 2)
+        )
+        source_advance = cid.advance_points(
+            source_cids, show.font_size, show.char_spacing
+        )
         evidence_key = (capability.font_xref, data)
         cached = source_evidence.get(evidence_key)
         if cached is None:
@@ -447,19 +459,14 @@ def _sole_loss_class(
 
     duplicate_ok = True
     if cid is not None and decode_ok and isinstance(decoded, str):
-        source_cids = tuple(
-            int.from_bytes(show.decoded_bytes[index : index + 2], "big")
-            for index in range(0, len(show.decoded_bytes), 2)
-        )
+        assert source_advance is not None
         duplicate_ok = (
             duplicate_source_painter_detail(
                 page,
                 show,
                 target_text=decoded,
                 target_capability=capability,
-                source_advance=cid.advance_points(
-                    source_cids, show.font_size, show.char_spacing
-                ),
+                source_advance=source_advance,
                 registry=registry,
                 shows=twins_by_bytes.get(show.decoded_bytes, ()),
                 capabilities=page_capabilities,
@@ -467,6 +474,11 @@ def _sole_loss_class(
             is None
         )
 
+    # Match production ordering: a raw hscale rejection owns the attribution;
+    # only an otherwise-admitted scale reaches the effective-product proof.
+    advance_ok = source_advance is not None and (
+        not hscale_ok or math.isfinite(source_advance * th)
+    )
     downstream_core_ok = all(
         (
             replay_ok,
@@ -480,6 +492,7 @@ def _sole_loss_class(
             decode_ok,
             reproduce_ok,
             glyph_ok,
+            advance_ok,
         )
     )
     downstream_ok = downstream_core_ok and duplicate_ok

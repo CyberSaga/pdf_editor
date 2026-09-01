@@ -135,6 +135,26 @@ def test_positive_hscale_reattributes_to_all_gates_pass() -> None:
     assert sole["hscale_only"] == 0
 
 
+def test_effective_advance_overflow_is_not_all_gates_pass() -> None:
+    font_size = "1" + "0" * 200
+    hscale = "1" + "0" * 150
+    fixture = build_identity_h_fixture(text="你好", subset=True)
+    append_page_content(
+        fixture,
+        (
+            f"BT /{fixture.resource_name} {font_size} Tf "
+            f"1 0 0 1 72 650 Tm {hscale} Tz <{cid_for('你'):04X}> Tj ET"
+        ),
+    )
+
+    sole = funnel_document(fixture.doc, run_e2e=False)[
+        "glyph_overlap_census"
+    ]["sole_loss"]
+
+    assert sole["all_gates_pass"] == 1
+    assert sole["other"] >= 1
+
+
 def test_nonpositive_hscale_stays_hscale_only() -> None:
     fixture = _existing_show("0 Tz <{cid:04X}> Tj")
     sole = funnel_document(fixture.doc, run_e2e=False)[

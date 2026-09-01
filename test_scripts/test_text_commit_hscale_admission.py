@@ -223,6 +223,34 @@ def test_nonfinite_target_bbox_is_rejected(target_bbox) -> None:
     fixture.doc.close()
 
 
+@pytest.mark.parametrize(
+    "target_bbox",
+    [
+        (70.0, 125.0, 1.4e308, 150.0),
+        (70.0, 125.0, 10**400, 150.0),
+        (70.0, 125.0, 150.0),
+    ],
+)
+def test_unrenderable_target_bbox_is_a_stable_rejection(target_bbox) -> None:
+    fixture = _scaled_fixture(80.0)
+    before = fixture.content_bytes()
+    engine = TieredCommitEngine(fixture.doc, max_tier=1)
+
+    result = engine.prepare(
+        fixture.page,
+        target_text=CJK_TEXT,
+        replacement_text=REPLACEMENT_EQUAL_ADVANCE,
+        expected_origin=None,
+        target_bbox=target_bbox,
+    )
+
+    assert isinstance(result, PlanRejection), result
+    assert result.reason == RejectReason.UNSUPPORTED_TEXT_STATE
+    assert result.detail == "target_bbox escapes renderable coordinates"
+    assert fixture.content_bytes() == before
+    fixture.doc.close()
+
+
 @pytest.mark.parametrize("displacement", [float("nan"), float("inf"), 1e308])
 def test_kern_for_displacement_rejects_nonfinite_input_or_result(
     displacement: float,

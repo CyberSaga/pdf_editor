@@ -22,7 +22,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import fitz
 
@@ -78,6 +80,25 @@ _GROWTH_OUTSIDE_PAGE_REASON = RejectReason.GROWTH_OUTSIDE_PAGE
 # gain.
 _RENDERABLE_COORD_LIMIT = 1.0e308
 _PAGE_CONTAINMENT_TOL_PT = 1e-3
+
+
+def _renderable_bbox(
+    values: Sequence[float | int | str] | None,
+) -> tuple[float, float, float, float] | None:
+    """Return one sampler-safe four-coordinate bbox, else ``None``."""
+    if values is None or len(values) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(value) for value in values)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    bbox = (x0, y0, x1, y1)
+    if not all(
+        math.isfinite(value) and abs(value) <= _RENDERABLE_COORD_LIMIT
+        for value in bbox
+    ):
+        return None
+    return bbox
 
 
 @dataclass(frozen=True)
@@ -216,60 +237,47 @@ def _strict_overlap_depths(
     )
 
 
-def _painter_semantics(capability: FontCapability) -> tuple:
-    """The rendering-relevant evidence of a font, minus its identity.
+def _glyph_identity(capability: FontCapability) -> tuple:
+    """Conservative glyph-program identity, excluding layout metrics.
 
     A producer that clones a font dictionary — new xref, new ``/BaseFont``
-    subset tag, same descriptor/program/width evidence — paints the SAME
-    glyphs.  Comparing xrefs or evidence digests alone calls those two
-    fonts different and admits the ghost.  Equality here is deliberately
-    the conservative direction: over-matching only ever costs a
-    fail-closed rejection.
+    subset tag, same glyph program — paints the same outlines even if its
+    width tables differ.  Widths, defaults, first-char offsets, and advance
+    provenance affect placement only and must never prove different glyphs.
     """
     cid = capability.cid
     return (
         capability.subtype,
         capability.encoding,
         capability.embedded,
-        capability.advance_source,
         capability.supports_simple_encoding,
-        capability.first_char,
-        capability.widths,
-        None
-        if cid is None
-        else (cid.cidtogid_table, cid.w_records, cid.default_width),
+        cid.cidtogid_table if cid is not None else None,
     )
 
 
 def _same_font_object(
     first: FontCapability | None, second: FontCapability
-) -> bool | None:
+) -> Literal[True] | None:
     """Whether two resolved capabilities paint the SAME glyphs.
 
-    ``None`` means "not provable" — the resource did not resolve at all, so
-    neither identity nor difference is established.  Resource NAMES are
-    aliases (two keys may point at one font dictionary), so identity is the
-    font object: its xref, an equal same-document evidence digest, or — for
-    a cloned dictionary differing only in its subset tag — equal rendering
-    semantics (:func:`_painter_semantics`).  Difference is only ever
-    RETURNED when both sides were fully built; a degraded capability is
-    unprovable.
+    ``None`` means "not provable"; this helper never claims two fonts paint
+    different glyphs.  Resource names are aliases. Identity is established
+    by xref, equal same-document evidence, or equal conservative glyph
+    identity (:func:`_glyph_identity`). A degraded capability proves nothing.
     """
-    if first is None:
+    if (
+        first is None
+        or first.advance_source == "none"
+        or second.advance_source == "none"
+    ):
         return None
     if (
         first.font_xref == second.font_xref
         or first.evidence_digest == second.evidence_digest
-        or _painter_semantics(first) == _painter_semantics(second)
+        or _glyph_identity(first) == _glyph_identity(second)
     ):
         return True
-    if first.advance_source == "none" or second.advance_source == "none":
-        # A capability the registry could not finish building proves nothing
-        # about WHICH glyphs it paints — a clone whose only defect is an
-        # unreadable /ToUnicode still renders the same face.  Difference is
-        # not established, so this is unprovable, not different.
-        return None
-    return False
+    return None
 
 
 def _painter_advance(
@@ -304,16 +312,12 @@ def _painter_advance(
 def _painter_core_quad(
     show: ShowOp, advance: float
 ) -> tuple[float, float, float, float] | None:
-    """The show's own baseline→x-height core rectangle in ITS text space.
+    """The baseline/rise core envelope in the show's own text space.
 
-    ``None`` when the show cannot be placed at all.  ``Ts`` is deliberately
-    NOT applied: ``_classify_common`` refuses any target whose ``rise`` is
-    non-zero, so the target core is always pinned to the baseline, and
-    translating only the CANDIDATE core by its own rise would open a
-    false-admit band — a twin raised past ``0.6·Tfs`` would stop
-    overlapping and be admitted while still painting over the edit.  Both
-    cores are taken at the baseline, which keeps the comparison
-    fail-closed.
+    ``_classify_common`` refuses non-zero rise on the target, but a candidate
+    may have either sign.  Enveloping both its baseline core and its
+    rise-shifted core is monotone fail-closed: it detects a rise that cancels
+    a baseline offset without reopening the old high-rise false-admit band.
     """
     if (
         not show.origin_reliable
@@ -321,16 +325,19 @@ def _painter_core_quad(
         or show.font_size <= 0.0
         or not math.isfinite(show.hscale)
         or show.hscale <= 0.0
+        or not math.isfinite(show.rise)
         or not math.isfinite(advance)
     ):
         return None
     width = advance * (show.hscale / 100.0)
     if not math.isfinite(width):
         return None
-    return (0.0, 0.0, width, 0.6 * show.font_size)
+    y0 = min(0.0, show.rise)
+    y1 = max(0.0, show.rise) + 0.6 * show.font_size
+    return (0.0, y0, width, y1)
 
 
-def _painter_reach(page: fitz.Page, show: ShowOp) -> float | None:
+def _painter_reach(page: fitz.Page, show: ShowOp) -> tuple[float, float] | None:
     """Text-space extent beyond which a show's ink cannot mark this page.
 
     Used when the exact advance is unavailable (unresolvable font resource)
@@ -340,14 +347,26 @@ def _painter_reach(page: fitz.Page, show: ShowOp) -> float | None:
     ``half-diagonal + |origin − centre|`` of the origin, so dividing that
     by the mapped length of one text-space unit bounds the only extent that
     can ever be visible; ink past it is off-page and cannot survive as a
-    ghost.  ``None`` when even that bound is not derivable.
+    ghost.  Returns that reach plus ``|v| / |u|``, the mapped y/x unit ratio
+    needed to cover the cross-term under shear.  ``None`` when even that
+    bound is not derivable.
     """
     origin = map_text_quad_to_visual(page, show.tm, show.ctm, (0.0, 0.0, 0.0, 0.0))
     unit = map_text_quad_to_visual(page, show.tm, show.ctm, (1.0, 0.0, 1.0, 0.0))
-    if not all(math.isfinite(value) for value in (*origin, *unit)):
+    vertical = map_text_quad_to_visual(
+        page, show.tm, show.ctm, (0.0, 1.0, 0.0, 1.0)
+    )
+    if not all(math.isfinite(value) for value in (*origin, *unit, *vertical)):
         return None
     scale = math.hypot(unit[0] - origin[0], unit[1] - origin[1])
-    if not math.isfinite(scale) or scale <= 0.0:
+    vertical_scale = math.hypot(
+        vertical[0] - origin[0], vertical[1] - origin[1]
+    )
+    if (
+        not math.isfinite(scale)
+        or scale <= 0.0
+        or not math.isfinite(vertical_scale)
+    ):
         return None
     rect = page.rect
     span = math.hypot(rect.x1 - rect.x0, rect.y1 - rect.y0) / 2.0 + math.hypot(
@@ -355,7 +374,10 @@ def _painter_reach(page: fitz.Page, show: ShowOp) -> float | None:
         origin[1] - (rect.y0 + rect.y1) / 2.0,
     )
     reach = span / scale
-    return reach if math.isfinite(reach) else None
+    y_cross_ratio = vertical_scale / scale
+    if not math.isfinite(reach) or not math.isfinite(y_cross_ratio):
+        return None
+    return reach, y_cross_ratio
 
 
 def duplicate_source_painter_detail(
@@ -413,30 +435,46 @@ def duplicate_source_painter_detail(
             capability = registry.capability(page, resource) if resource else None
             resolved[resource] = capability
         same_font = _same_font_object(capability, target_capability)
-        if same_font is False:
-            # A different font object paints different glyphs from the same
-            # bytes: not a twin, and its geometry is nobody's business here.
-            continue
         candidate_quad: tuple[float, float, float, float] | None = None
-        unproven = ""
-        if same_font and candidate.operator == "Tj":
+        unproven = "" if same_font is True else "font identity"
+        simple_round_trip = (
+            capability is not None
+            and capability.cid is None
+            and capability.advance_source == "widths"
+            and capability.encode_simple(target_text) == candidate.decoded_bytes
+        )
+        exact_extent = (
+            capability is not None
+            and candidate.operator == "Tj"
+            and (
+                same_font is True
+                or capability.cid is not None
+                or simple_round_trip
+            )
+        )
+        if exact_extent:
             assert capability is not None
             candidate_advance = _painter_advance(capability, candidate, target_text)
             if candidate_advance is not None:
                 candidate_quad = _painter_core_quad(candidate, candidate_advance)
         if candidate_quad is None:
-            unproven = "font identity" if same_font is None else "exact extent"
-            reach = _painter_reach(page, candidate)
+            if same_font is True:
+                unproven = "exact extent"
+            reach_proof = _painter_reach(page, candidate)
             baseline = _painter_core_quad(candidate, 0.0)
-            if reach is None or baseline is None:
+            if reach_proof is None or baseline is None:
+                return "identical source painter cannot prove disjoint placement"
+            reach, y_cross_ratio = reach_proof
+            x_pad = max(abs(baseline[1]), abs(baseline[3])) * y_cross_ratio
+            if not math.isfinite(x_pad):
                 return "identical source painter cannot prove disjoint placement"
             # ``TJ`` is bounded in BOTH directions: replay drops the array's
             # numeric items, so a leading kern may have displaced the ink
             # either way from the recorded origin.
             candidate_quad = (
-                0.0 if candidate.operator == "Tj" else -reach,
+                (0.0 if candidate.operator == "Tj" else -reach) - x_pad,
                 baseline[1],
-                reach,
+                reach + x_pad,
                 baseline[3],
             )
         candidate_core = map_text_quad_to_visual(
@@ -884,10 +922,11 @@ def _classify_common(
                 show.font_size,
             ),
         )
-    if not all(math.isfinite(float(value)) for value in target_bbox):
+    renderable_target_bbox = _renderable_bbox(target_bbox)
+    if renderable_target_bbox is None:
         return PlanRejection(
             RejectReason.UNSUPPORTED_TEXT_STATE,
-            "target_bbox contains a non-finite coordinate",
+            "target_bbox escapes renderable coordinates",
         )
 
     return _ClassifiedTarget(
@@ -902,7 +941,7 @@ def _classify_common(
         source_advance=old_advance,
         replacement_advance=new_advance,
         advance_tolerance=tolerance,
-        target_bbox_page=tuple(float(v) for v in target_bbox),  # type: ignore[arg-type]
+        target_bbox_page=renderable_target_bbox,
         fingerprint=fingerprint,
         style_overrides=style_overrides,
         geometry_intent=(
@@ -1081,9 +1120,9 @@ def _build_tier1(
     # be the thing that discovers an unrenderable extent, by exception or by
     # clamping — so the bound is the SAMPLER's (``_RENDERABLE_COORD_LIMIT``),
     # not merely ``isfinite``.
-    if not all(
-        math.isfinite(value) and abs(value) <= _RENDERABLE_COORD_LIMIT
-        for value in (*verify_bbox_page, *background_bbox_page)
+    if (
+        _renderable_bbox(verify_bbox_page) is None
+        or _renderable_bbox(background_bbox_page) is None
     ):
         return PlanRejection(
             RejectReason.UNSUPPORTED_TEXT_STATE,

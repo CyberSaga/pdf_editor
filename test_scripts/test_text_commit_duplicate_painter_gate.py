@@ -5,6 +5,7 @@ import hashlib
 import sys
 from pathlib import Path
 
+import fitz
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,7 +18,9 @@ from model.text_commit.plan import PlanRejection, PreparedEdit, prepare_plan  # 
 from model.text_commit.fonts import DocumentFontRegistry  # noqa: E402
 from test_scripts.type0_fixture_builder import (  # noqa: E402
     build_identity_h_fixture,
+    cid_for,
     encode_cids,
+    identity_cidtogid_bytes,
 )
 
 # Two full-width CJK chars (1.0 em each in the builder font) so
@@ -41,6 +44,7 @@ def _build_second_show_doc(
     second_font_size: float = FONTSIZE,
     second_resource: str | None = None,
     second_alias_font_xref: bool = True,
+    second_font_encoding: str | None = None,
     second_char_spacing: float = 0.0,
     second_word_spacing: float = 0.0,
     second_rise: float = 0.0,
@@ -49,6 +53,8 @@ def _build_second_show_doc(
     second_leading_kern: float = 0.0,
     second_clone_font: bool = False,
     second_clone_degraded: bool = False,
+    second_clone_width: int | None = None,
+    second_clone_distinct_cidtogid: bool = False,
     second_matrix: str | None = None,
     second_dangling: bool = False,
 ):
@@ -68,12 +74,39 @@ def _build_second_show_doc(
     elif second_clone_font:
         # A cloned font DICTIONARY: new xref, new /BaseFont subset tag, the
         # same descendant/program/width evidence — it paints identically.
+        clone_descendant: int | None = None
+        if second_clone_width is not None or second_clone_distinct_cidtogid:
+            clone_descendant = fixture.doc.get_new_xref()
+            fixture.doc.update_object(
+                clone_descendant,
+                fixture.doc.xref_object(fixture.descendant_xref),
+            )
+            if second_clone_width is not None:
+                widths = "[ " + " ".join(
+                    f"{cid_for(char)} [ {second_clone_width} ]" for char in SOURCE
+                ) + " ]"
+                fixture.doc.xref_set_key(clone_descendant, "W", widths)
+                fixture.doc.xref_set_key(clone_descendant, "DW", "900")
+            if second_clone_distinct_cidtogid:
+                count = max(cid_for(char) for char in SOURCE) + 2
+                table = bytearray(identity_cidtogid_bytes(count))
+                for char in SOURCE:
+                    cid = cid_for(char)
+                    table[2 * cid : 2 * cid + 2] = (cid + 1).to_bytes(2, "big")
+                map_xref = fixture.doc.get_new_xref()
+                fixture.doc.update_object(map_xref, "<<>>")
+                fixture.doc.update_stream(map_xref, bytes(table))
+                fixture.doc.xref_set_key(
+                    clone_descendant, "CIDToGIDMap", f"{map_xref} 0 R"
+                )
         clone = fixture.doc.get_new_xref()
         fixture.doc.update_object(clone, "<<>>")
         for key in fixture.doc.xref_get_keys(fixture.font_xref):
             _, value = fixture.doc.xref_get_key(fixture.font_xref, key)
             if key == "BaseFont":
                 value = "/ZZZZZZ+CloneFace"
+            elif key == "DescendantFonts" and clone_descendant is not None:
+                value = f"[ {clone_descendant} 0 R ]"
             fixture.doc.xref_set_key(clone, key, value)
         if second_clone_degraded:
             # The registry cannot finish building this capability, so it can
@@ -93,6 +126,10 @@ def _build_second_show_doc(
             # A genuinely different font object (different program and
             # evidence), reached under its own resource name.
             target_xref = fixture.page.insert_font(fontname="helv")
+            if second_font_encoding is not None:
+                fixture.doc.xref_set_key(
+                    target_xref, "Encoding", f"/{second_font_encoding}"
+                )
         _, resources_value = fixture.doc.xref_get_key(fixture.page.xref, "Resources")
         resources_xref = int(resources_value.split()[0])
         fixture.doc.xref_set_key(
@@ -140,6 +177,48 @@ def _plan_with_second_show(**kwargs) -> PreparedEdit | PlanRejection:
     return result
 
 
+def _simple_metric_clone_plan() -> PreparedEdit | PlanRejection:
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    content_xref = doc.get_new_xref()
+    doc.update_object(content_xref, "<<>>")
+    doc.update_stream(
+        content_xref,
+        b"BT /F1 12 Tf 1 0 0 1 72 700 Tm (HI) Tj "
+        b"/F2 12 Tf 1 0 0 1 73.2 700 Tm (HI) Tj ET",
+    )
+    doc.xref_set_key(page.xref, "Contents", f"{content_xref} 0 R")
+    widths_600 = "[" + " ".join("600" for _ in range(95)) + "]"
+    widths_800 = "[" + " ".join("800" for _ in range(95)) + "]"
+    font_xrefs = []
+    for widths in (widths_600, widths_800):
+        font_xref = doc.get_new_xref()
+        doc.update_object(
+            font_xref,
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+            "/Encoding /WinAnsiEncoding /FirstChar 32 /LastChar 126 "
+            f"/Widths {widths} >>",
+        )
+        font_xrefs.append(font_xref)
+    doc.xref_set_key(
+        page.xref,
+        "Resources",
+        f"<< /Font << /F1 {font_xrefs[0]} 0 R /F2 {font_xrefs[1]} 0 R >> >>",
+    )
+    result = prepare_plan(
+        doc,
+        page,
+        target_text="HI",
+        replacement_text="BY",
+        expected_origin=(72.0, 142.0),
+        target_bbox=None,
+        registry=DocumentFontRegistry(doc),
+        max_tier=1,
+    )
+    doc.close()
+    return result
+
+
 @pytest.mark.parametrize("offset", [1.0, 1.2])
 def test_overlapping_identical_source_painter_is_rejected(offset: float) -> None:
     result = _plan_with_second_show(offset=offset)
@@ -178,13 +257,35 @@ def test_overlapping_alias_resource_for_the_same_font_is_rejected() -> None:
     assert result.reason == RejectReason.DUPLICATE_SOURCE_PAINTER
 
 
-def test_overlapping_distinct_font_object_is_admissible() -> None:
-    """Equal encoding bytes under a DIFFERENT font object paint different
-    glyphs; identity is the font object, not the byte string."""
+def test_overlapping_distinct_font_object_fails_closed() -> None:
     result = _plan_with_second_show(
         offset=1.2, second_resource="F_OTHER", second_alias_font_xref=False
     )
+    assert isinstance(result, PlanRejection), result
+    assert result.reason == RejectReason.DUPLICATE_SOURCE_PAINTER
+    assert "font identity" in result.detail
+
+
+def test_distinct_font_object_on_another_baseline_is_admissible() -> None:
+    result = _plan_with_second_show(
+        offset=1.2,
+        second_dy=-40.0,
+        second_resource="F_OTHER",
+        second_alias_font_xref=False,
+    )
     assert isinstance(result, PreparedEdit), result
+
+
+def test_simple_font_declaring_identity_h_cannot_use_encoding_name_as_proof() -> None:
+    result = _plan_with_second_show(
+        offset=1.2,
+        second_resource="F_OTHER",
+        second_alias_font_xref=False,
+        second_font_encoding="Identity-H",
+    )
+    assert isinstance(result, PlanRejection), result
+    assert result.reason == RejectReason.DUPLICATE_SOURCE_PAINTER
+    assert "font identity" in result.detail
 
 
 def test_unplaceable_identical_candidate_fails_closed() -> None:
@@ -249,6 +350,25 @@ def test_overlapping_duplicate_raised_by_its_own_rise_still_fails_closed() -> No
     assert result.reason == RejectReason.DUPLICATE_SOURCE_PAINTER
 
 
+@pytest.mark.parametrize(
+    ("second_dy", "second_rise"),
+    [(-7.2, 7.2), (7.2, -7.2)],
+)
+def test_candidate_rise_that_cancels_its_baseline_offset_is_rejected(
+    second_dy: float, second_rise: float
+) -> None:
+    result = _plan_with_second_show(
+        offset=1.2, second_dy=second_dy, second_rise=second_rise
+    )
+    assert isinstance(result, PlanRejection), result
+    assert result.reason == RejectReason.DUPLICATE_SOURCE_PAINTER
+
+
+def test_candidate_rise_does_not_block_a_provably_disjoint_line() -> None:
+    result = _plan_with_second_show(offset=1.2, second_dy=-100.0, second_rise=7.2)
+    assert isinstance(result, PreparedEdit), result
+
+
 # ---------------------------------------------------------------------------
 # Identity that survives a producer's cloning, and extents that survive a
 # ``TJ`` array whose numeric items replay does not preserve.
@@ -262,6 +382,55 @@ def test_overlapping_subset_tag_clone_of_the_same_font_is_rejected() -> None:
     )
     assert isinstance(result, PlanRejection), result
     assert result.reason == RejectReason.DUPLICATE_SOURCE_PAINTER
+
+
+def test_overlapping_type0_metric_clone_is_rejected() -> None:
+    result = _plan_with_second_show(
+        offset=1.2,
+        second_resource="F_CLONE",
+        second_clone_font=True,
+        second_clone_width=1500,
+    )
+    assert isinstance(result, PlanRejection), result
+    assert result.reason == RejectReason.DUPLICATE_SOURCE_PAINTER
+
+
+def test_disjoint_type0_metric_clone_uses_its_own_widths() -> None:
+    result = _plan_with_second_show(
+        offset=SOURCE_WIDTH + 20.0,
+        second_resource="F_CLONE",
+        second_clone_font=True,
+        second_clone_width=1500,
+    )
+    assert isinstance(result, PreparedEdit), result
+
+
+def test_overlapping_simple_metric_clone_is_rejected() -> None:
+    result = _simple_metric_clone_plan()
+    assert isinstance(result, PlanRejection), result
+    assert result.reason == RejectReason.DUPLICATE_SOURCE_PAINTER
+
+
+def test_distinct_cid_font_is_exactly_measured_when_disjoint() -> None:
+    result = _plan_with_second_show(
+        offset=-(SOURCE_WIDTH + 1.0),
+        second_resource="F_CLONE",
+        second_clone_font=True,
+        second_clone_distinct_cidtogid=True,
+    )
+    assert isinstance(result, PreparedEdit), result
+
+
+def test_overlapping_distinct_cid_font_fails_closed() -> None:
+    result = _plan_with_second_show(
+        offset=1.2,
+        second_resource="F_CLONE",
+        second_clone_font=True,
+        second_clone_distinct_cidtogid=True,
+    )
+    assert isinstance(result, PlanRejection), result
+    assert result.reason == RejectReason.DUPLICATE_SOURCE_PAINTER
+    assert "font identity" in result.detail
 
 
 def test_overlapping_clone_the_registry_cannot_build_fails_closed() -> None:
@@ -331,7 +500,16 @@ def test_unresolvable_twin_resource_on_another_baseline_is_admissible() -> None:
     [
         ({"second_resource": "F_ALT"}, "alias resource"),
         ({"second_resource": "F_CLONE", "second_clone_font": True}, "cloned dict"),
+        (
+            {
+                "second_resource": "F_CLONE",
+                "second_clone_font": True,
+                "second_clone_width": 1500,
+            },
+            "metric clone",
+        ),
         ({"second_rise": 2.0 * FONTSIZE}, "raised twin"),
+        ({"second_dy": -7.2, "second_rise": 7.2}, "rise-cancelled baseline"),
     ],
 )
 def test_commit_pipeline_never_leaves_a_twin_visible(kwargs, label) -> None:
@@ -380,6 +558,32 @@ def test_reach_bound_holds_under_exotic_matrices(matrix: str, label: str) -> Non
         offset=0.0, second_dangling=True, second_matrix=matrix
     )
     assert isinstance(result, PlanRejection), (label, result)
+    assert result.reason == RejectReason.DUPLICATE_SOURCE_PAINTER
+
+
+@pytest.mark.parametrize(
+    ("second_rise", "second_matrix"),
+    [
+        (100.0, "1 0 1 1 200 700"),
+        (100.0, "1 0 3 1 400 700"),
+        (50.0, "1 0 5 1 300 700"),
+    ],
+)
+def test_sheared_large_rise_pads_the_unproven_reach_on_both_x_ends(
+    second_rise: float, second_matrix: str
+) -> None:
+    """The unknown x extent and the rise envelope interact through shear.
+
+    Without the ``|y| * |v| / |u|`` cross-term, the positive-x-only Tj reach
+    begins at x=0 and this candidate appears horizontally disjoint.
+    """
+    result = _plan_with_second_show(
+        offset=0.0,
+        second_dangling=True,
+        second_rise=second_rise,
+        second_matrix=second_matrix,
+    )
+    assert isinstance(result, PlanRejection), result
     assert result.reason == RejectReason.DUPLICATE_SOURCE_PAINTER
 
 
