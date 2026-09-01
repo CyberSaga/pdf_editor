@@ -58,6 +58,7 @@ class RejectReason:
     # gate.
     UNSUPPORTED_SHOW_OPERATOR = "unsupported_show_operator"
     SHARED_CONTENT_STREAM = "shared_content_stream"
+    DUPLICATE_SOURCE_PAINTER = "duplicate_source_painter"
     GROWTH_REGION_NOT_BLANK = "growth_region_not_blank"
     GROWTH_OUTSIDE_PAGE = "growth_outside_page"
     FONT_RESOURCE_NOT_PROVEN = "font_resource_not_proven"

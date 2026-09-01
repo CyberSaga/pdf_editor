@@ -197,6 +197,79 @@ def _page_visual_matrix(page: fitz.Page) -> fitz.Matrix:
     return page.transformation_matrix * page.rotation_matrix
 
 
+def _strict_overlap_depths(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> tuple[float, float]:
+    return (
+        min(first[2], second[2]) - max(first[0], second[0]),
+        min(first[3], second[3]) - max(first[1], second[1]),
+    )
+
+
+def _duplicate_source_painter_detail(
+    page: fitz.Page,
+    target: ShowOp,
+    *,
+    source_advance: float,
+    shows: tuple[ShowOp, ...],
+) -> str | None:
+    """Describe an indistinguishable overlapping source painter, if any."""
+    candidates = tuple(
+        candidate
+        for candidate in shows
+        if candidate.seq != target.seq
+        and candidate.decoded_bytes == target.decoded_bytes
+        and candidate.font_resource == target.font_resource
+    )
+    if not candidates:
+        return None
+    if (
+        not target.origin_reliable
+        or not math.isfinite(target.font_size)
+        or target.font_size <= 0.0
+    ):
+        return "identical source painter cannot prove target placement"
+    target_th = target.hscale / 100.0
+    target_core = map_text_quad_to_visual(
+        page,
+        target.tm,
+        target.ctm,
+        (0.0, 0.0, source_advance * target_th, 0.6 * target.font_size),
+    )
+    if not all(math.isfinite(value) for value in target_core):
+        return "identical source painter cannot prove target placement"
+    for candidate in candidates:
+        if (
+            not candidate.origin_reliable
+            or not math.isfinite(candidate.font_size)
+            or candidate.font_size <= 0.0
+            or not math.isfinite(candidate.hscale)
+            or candidate.hscale <= 0.0
+        ):
+            return "identical source painter cannot prove disjoint placement"
+        candidate_width = (
+            source_advance
+            * (candidate.font_size / target.font_size)
+            * (candidate.hscale / 100.0)
+        )
+        candidate_core = map_text_quad_to_visual(
+            page,
+            candidate.tm,
+            candidate.ctm,
+            (0.0, 0.0, candidate_width, 0.6 * candidate.font_size),
+        )
+        if not all(math.isfinite(value) for value in candidate_core):
+            return "identical source painter cannot prove disjoint placement"
+        overlap_x, overlap_y = _strict_overlap_depths(target_core, candidate_core)
+        if overlap_x > 0.05 and overlap_y > 0.05:
+            return (
+                "identical source painter overlaps target core by "
+                f"{overlap_x:.3f}pt x {overlap_y:.3f}pt"
+            )
+    return None
+
+
 def _content_token(
     fingerprint: str,
     replacement: StreamReplacement,
@@ -557,6 +630,15 @@ def _classify_common(
             tolerance = max(_ADVANCE_TOL_PER_PT * show.font_size, 1e-4)
         operand_kind = "literal"
 
+    duplicate_detail = _duplicate_source_painter_detail(
+        page,
+        show,
+        source_advance=old_advance,
+        shows=resolved.replay.shows,
+    )
+    if duplicate_detail is not None:
+        return PlanRejection(RejectReason.DUPLICATE_SOURCE_PAINTER, duplicate_detail)
+
     streams = dict(snapshot.streams)
     stream_bytes = streams[show.stream_xref]
 
@@ -591,7 +673,6 @@ def _classify_common(
                 show.font_size,
             ),
         )
-
     return _ClassifiedTarget(
         binding=binding,
         show=show,
