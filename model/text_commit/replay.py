@@ -381,9 +381,9 @@ def replay_page_streams(
     them).  Over budget, the replay refuses before any tokenization and
     returns a ``PageReplay`` whose ``refusal_reason`` is
     ``RejectReason.CONTENT_STREAM_TOO_LARGE``.  ``None`` disables the guard
-    (diagnostic use only).  ``read_page_streams`` and the commit verifier
-    stay deliberately unguarded: verification must still hash oversized
-    streams, or a perf limit becomes a correctness failure.
+    (diagnostic use only). ``read_page_streams`` and V0a's byte proof stay
+    deliberately unguarded: verification must still hash oversized streams,
+    while V0c lexes or replays only the isolated replacement token/operator.
     """
     if max_decoded_bytes is not None:
         total = sum(len(data) for _, data in streams)

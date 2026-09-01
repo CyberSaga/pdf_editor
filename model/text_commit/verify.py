@@ -21,7 +21,12 @@ from model.text_commit.cid_fonts import resolve_descendant as cid_resolve_descen
 from model.text_commit.dto import CommitTier, RejectReason
 from model.text_commit.inspect import page_fingerprint, read_page_streams
 from model.text_commit.interpretation import PageInterpretation, interpret_page
-from model.text_commit.pdf_lexer import decode_hex_string, decode_literal_string
+from model.text_commit.pdf_lexer import (
+    TokenKind,
+    decode_hex_string,
+    decode_literal_string,
+    lex_content_stream,
+)
 from model.text_commit.replay import DEFAULT_MAX_REPLAY_BYTES, replay_page_streams
 
 if TYPE_CHECKING:
@@ -402,9 +407,8 @@ def _target_operator_failure(
 ) -> VerificationFailure | None:
     """Re-prove the patched show at the exact declared splice identity.
 
-    Replay is deliberately stream-local: show recording resets operands at
-    each stream boundary, and this proof consults only lexical show fields.
-    Refusal, malformed syntax, or a non-unique identity fails closed.
+    Tier 0 proves one isolated string token lexically. Tier 1 replays only
+    the isolated replacement operator under the normal resource guard.
     """
     replacement = prepared.replacement
     post_bytes = post_streams.get(replacement.stream_xref)
@@ -413,72 +417,51 @@ def _target_operator_failure(
             RejectReason.VERIFICATION_FAILED,
             "target operator stream disappeared",
         )
-    replay = replay_page_streams(
-        [(replacement.stream_xref, post_bytes)],
-        max_decoded_bytes=None,
-    )
-    if replay.refusal_reason is not None or replay.malformed:
-        return VerificationFailure(
-            RejectReason.VERIFICATION_FAILED,
-            "target operator replay was malformed or refused",
-        )
-
-    splice_end = replacement.start + len(replacement.replacement_bytes)
+    raw = replacement.replacement_bytes
     if prepared.tier is CommitTier.TIER0_LOSSLESS_STREAM_PATCH:
-        matches = [
-            show
-            for show in replay.shows
-            if show.operator == "Tj"
-            and show.string_start == replacement.start
-            and show.string_end == splice_end
+        tokens = [
+            token
+            for token in lex_content_stream(raw)
+            if token.kind not in (TokenKind.WHITESPACE, TokenKind.COMMENT)
         ]
+        if (
+            len(tokens) != 1
+            or tokens[0].kind not in (TokenKind.STRING, TokenKind.HEXSTRING)
+            or tokens[0].start != 0
+            or tokens[0].end != len(raw)
+        ):
+            return VerificationFailure(
+                RejectReason.VERIFICATION_FAILED,
+                "target operator replacement is not exactly one string token",
+            )
         try:
-            raw = replacement.replacement_bytes
-            if raw.startswith(b"("):
-                expected = decode_literal_string(raw)
-            elif raw.startswith(b"<"):
-                expected = decode_hex_string(raw)
+            if tokens[0].kind is TokenKind.STRING:
+                decode_literal_string(raw)
             else:
-                raise ValueError("replacement is not a string operand")
+                decode_hex_string(raw)
         except ValueError:
             return VerificationFailure(
                 RejectReason.VERIFICATION_FAILED,
                 "target operator replacement is not one valid string operand",
             )
     else:
-        matches = [
-            show
-            for show in replay.shows
-            if show.operator == "TJ"
-            and show.op_start == replacement.start
-            and show.op_end == splice_end
-            and show.array_item_count == 1
-        ]
         isolated = replay_page_streams(
-            [(replacement.stream_xref, replacement.replacement_bytes)],
+            [(replacement.stream_xref, raw)],
             max_decoded_bytes=DEFAULT_MAX_REPLAY_BYTES,
         )
         if (
             isolated.refusal_reason is not None
             or isolated.malformed
             or len(isolated.shows) != 1
+            or isolated.shows[0].operator != "TJ"
+            or isolated.shows[0].array_item_count != 1
+            or isolated.shows[0].op_start != 0
+            or isolated.shows[0].op_end != len(raw)
         ):
             return VerificationFailure(
                 RejectReason.VERIFICATION_FAILED,
                 "target operator replacement did not replay as one show",
             )
-        expected = isolated.shows[0].decoded_bytes
-
-    if len(matches) != 1:
-        return VerificationFailure(
-            RejectReason.VERIFICATION_FAILED,
-            f"target operator identity matched {len(matches)} shows",
-        )
-    if matches[0].decoded_bytes != expected:
-        return VerificationFailure(
-            RejectReason.VERIFICATION_FAILED,
-            "target operator decoded bytes differ from the replacement operand",
-        )
     return None
 
 

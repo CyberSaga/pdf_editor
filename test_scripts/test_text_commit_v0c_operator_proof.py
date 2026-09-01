@@ -23,6 +23,7 @@ from model.text_commit.verify import (  # noqa: E402
     verify_tier0_commit,
     verify_tier1_commit,
 )
+from model.text_commit.replay import DEFAULT_MAX_REPLAY_BYTES  # noqa: E402
 from test_scripts.type0_fixture_builder import (  # noqa: E402
     build_identity_h_fixture,
 )
@@ -49,9 +50,10 @@ def _prepare_cjk(source: str, replacement: str) -> tuple[object, TieredCommitEng
     stream = fixture.content_bytes()
     separator = b"> Tj <"
     assert stream.count(separator) == 1
-    # Keep the independent, reliably-positioned neighbor inside the target
-    # halo so the old halo-wide substring test sees it.
-    neighbor_x = fixture.origin[0] + 1.0
+    # Keep the independent neighbor disjoint from the target by a 1pt gap,
+    # but still inside V0c's 2pt halo.  An overlapping identical painter is
+    # not a legitimate neighbor; plan-time admission rejects it separately.
+    neighbor_x = fixture.origin[0] + len(source) * fixture.fontsize + 1.0
     stream = stream.replace(
         separator,
         f"> Tj 1 0 0 1 {neighbor_x:g} {fixture.origin[1]:g} Tm <".encode(),
@@ -182,11 +184,12 @@ def test_tier1_rejects_more_than_one_string_array_item() -> None:
     doc.close()
 
 
-def test_replay_refusal_fails_closed(monkeypatch) -> None:
+def test_isolated_tier1_replay_refusal_fails_closed(monkeypatch) -> None:
     import model.text_commit.verify as verify_module
 
-    doc = _latin_doc()
-    prepared = _latin_plan(doc)
+    doc = _latin_doc(b"MM")
+    prepared = _latin_plan(doc, source="MM", replacement="i")
+    assert prepared.tier is CommitTier.TIER1_REBUILD_WITH_VALIDATED_FACE
     pre_state = capture_page_state(doc, doc[0], prepared)
     apply_patchset(
         doc,
@@ -201,14 +204,55 @@ def test_replay_refusal_fails_closed(monkeypatch) -> None:
     refused = dataclasses.replace(replay, shows=(), refusal_reason="forced")
 
     def _refuse_replay(*args, **kwargs):
-        assert kwargs["max_decoded_bytes"] is None
+        assert args[0] == [
+            (prepared.replacement.stream_xref, prepared.replacement.replacement_bytes)
+        ]
+        assert kwargs["max_decoded_bytes"] == DEFAULT_MAX_REPLAY_BYTES
         return refused
 
     monkeypatch.setattr(
         verify_module, "replay_page_streams", _refuse_replay, raising=False
     )
-    result = verify_tier0_commit(doc, doc[0], prepared, pre_state)
+    result = verify_tier1_commit(doc, doc[0], prepared, pre_state)
     assert isinstance(result, VerificationFailure), result
     assert result.reason == RejectReason.VERIFICATION_FAILED
     assert "target operator" in result.detail
+    doc.close()
+
+
+def test_operator_proof_never_replays_the_full_patched_stream(monkeypatch) -> None:
+    import model.text_commit.verify as verify_module
+
+    doc = _latin_doc(b"MM")
+    prepared = _latin_plan(doc, source="MM", replacement="i")
+    assert prepared.tier is CommitTier.TIER1_REBUILD_WITH_VALIDATED_FACE
+    pre_state = capture_page_state(doc, doc[0], prepared)
+    apply_patchset(
+        doc,
+        doc[0],
+        PatchSet(
+            page_xref=prepared.page_xref,
+            replacements=(prepared.replacement,),
+            expected_page_fingerprint=prepared.page_fingerprint,
+        ),
+    )
+    real_replay = verify_module.replay_page_streams
+    calls: list[tuple[list[tuple[int, bytes]], int | None]] = []
+
+    def _record_replay(streams, *, max_decoded_bytes=DEFAULT_MAX_REPLAY_BYTES):
+        calls.append((streams, max_decoded_bytes))
+        assert streams == [
+            (prepared.replacement.stream_xref, prepared.replacement.replacement_bytes)
+        ]
+        return real_replay(streams, max_decoded_bytes=max_decoded_bytes)
+
+    monkeypatch.setattr(verify_module, "replay_page_streams", _record_replay)
+    result = verify_tier1_commit(doc, doc[0], prepared, pre_state)
+    assert not isinstance(result, VerificationFailure), result
+    assert calls == [
+        (
+            [(prepared.replacement.stream_xref, prepared.replacement.replacement_bytes)],
+            DEFAULT_MAX_REPLAY_BYTES,
+        )
+    ]
     doc.close()
