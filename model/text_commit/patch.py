@@ -235,11 +235,12 @@ def build_advance_preserving_erase(
     _require_spliceable_show(show)
     if (
         show.font_size == 0.0
+        or not math.isfinite(show.font_size)
         or show.hscale <= 0.0
         or not math.isfinite(show.hscale)
     ):
         raise ValueError(
-            "cannot compensate advance under zero font size or horizontal scale"
+            "cannot compensate advance with non-finite input or zero font size"
         )
     kern = kern_for_displacement(show, consumed_advance)
     replacement_bytes = f"[{kern:.6f}] TJ".encode("ascii")
@@ -268,16 +269,21 @@ def kern_for_displacement(show: ShowOp, displacement: float) -> float:
     """
     if (
         show.font_size == 0.0
+        or not math.isfinite(show.font_size)
         or show.hscale <= 0.0
         or not math.isfinite(show.hscale)
+        or not math.isfinite(displacement)
     ):
         raise ValueError(
-            "cannot compensate advance under zero font size or horizontal scale"
+            "cannot compensate advance with non-finite input or zero font size"
         )
     # Keep the pre-admission operation shape at Th == 100 bit-for-bit: the
     # fixed 100.0 denominator expresses the cancelled scale without changing
     # existing float rounding or serialized kern tokens.
-    return -100_000.0 * displacement / (show.font_size * 100.0)
+    kern = -100_000.0 * displacement / (show.font_size * 100.0)
+    if not math.isfinite(kern):
+        raise ValueError("cannot serialize a non-finite kern adjustment")
+    return kern
 
 
 def build_transplant_replacement(

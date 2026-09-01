@@ -310,7 +310,13 @@ def _residual_state_losses(show: object) -> tuple[str, ...]:
     if getattr(show, "rise", 1.0) != 0.0:
         losses.append("state:rise")
     hscale = getattr(show, "hscale", 0.0)
-    if not math.isfinite(hscale) or hscale <= 0.0:
+    th = hscale / 100.0
+    if (
+        not math.isfinite(hscale)
+        or hscale <= 0.0
+        or not math.isfinite(th)
+        or th <= 0.0
+    ):
         losses.append("state:hscale")
     if not getattr(show, "in_bt", False):
         losses.append("state:not_in_bt")
@@ -369,7 +375,13 @@ def _sole_loss_class(
         trm_ok = admission_verdict(page, show.tm, show.ctm).reject_reason is None
 
     hscale = getattr(show, "hscale", 0.0)
-    hscale_ok = math.isfinite(hscale) and hscale > 0.0
+    th = hscale / 100.0
+    hscale_ok = (
+        math.isfinite(hscale)
+        and hscale > 0.0
+        and math.isfinite(th)
+        and th > 0.0
+    )
     other_state_ok = not (
         set(_residual_state_losses(show)) - {"state:hscale"}
     )

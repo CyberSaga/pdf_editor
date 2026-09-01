@@ -630,6 +630,19 @@ def _classify_common(
             tolerance = max(_ADVANCE_TOL_PER_PT * show.font_size, 1e-4)
         operand_kind = "literal"
 
+    th = show.hscale / 100.0
+    derived_scale_values = (
+        th,
+        old_advance * th,
+        new_advance * th,
+        (new_advance - old_advance) * th,
+    )
+    if th <= 0.0 or not all(math.isfinite(value) for value in derived_scale_values):
+        return PlanRejection(
+            RejectReason.UNSUPPORTED_TEXT_STATE,
+            "effective horizontal scale or scaled advance is non-finite",
+        )
+
     duplicate_detail = _duplicate_source_painter_detail(
         page,
         show,
@@ -661,7 +674,6 @@ def _classify_common(
         # 90/270 page keeps a horizontal halo while pixmap ink runs
         # vertically (V0d false-reject / false-accept risk).  For the
         # axis-aligned idiom this reproduces the historical halo exactly.
-        th = show.hscale / 100.0
         target_bbox = map_text_quad_to_visual(
             page,
             show.tm,
@@ -673,6 +685,12 @@ def _classify_common(
                 show.font_size,
             ),
         )
+    if not all(math.isfinite(float(value)) for value in target_bbox):
+        return PlanRejection(
+            RejectReason.UNSUPPORTED_TEXT_STATE,
+            "target_bbox contains a non-finite coordinate",
+        )
+
     return _ClassifiedTarget(
         binding=binding,
         show=show,

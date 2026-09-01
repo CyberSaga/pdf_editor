@@ -54,6 +54,8 @@ def _classify_show(
         or show.rise != 0.0
         or not math.isfinite(show.hscale)
         or show.hscale <= 0.0
+        or not math.isfinite(show.hscale / 100.0)
+        or show.hscale / 100.0 <= 0.0
         or show.mc_depth != 0
         or not show.in_bt
         or not show.trm_uniform_scaled

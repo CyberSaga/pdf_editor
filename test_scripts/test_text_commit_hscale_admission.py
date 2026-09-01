@@ -1,6 +1,7 @@
 """Red-light matrix for positive finite horizontal-scale admission."""
 from __future__ import annotations
 
+import dataclasses
 import re
 import sys
 from pathlib import Path
@@ -12,7 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from model.text_commit.dto import CommitStatus, CommitTier  # noqa: E402
+from model.text_commit.dto import CommitStatus, CommitTier, RejectReason  # noqa: E402
+from model.text_commit.inspect import replay_page  # noqa: E402
+from model.text_commit.patch import kern_for_displacement  # noqa: E402
+from model.text_commit.plan import PlanRejection  # noqa: E402
 from model.text_commit.engine import TieredCommitEngine  # noqa: E402
 from model.text_commit.plan import PreparedEdit  # noqa: E402
 from test_scripts.type0_fixture_builder import (  # noqa: E402
@@ -161,4 +165,72 @@ def test_caller_bbox_is_preserved_without_double_scaling() -> None:
         fixture, REPLACEMENT_EQUAL_ADVANCE, target_bbox=caller_bbox
     )
     assert prepared.target_bbox_page == caller_bbox
+    fixture.doc.close()
+
+
+@pytest.mark.parametrize(
+    ("hscale_token", "fontsize_token"),
+    [
+        ("0." + "0" * 323 + "5", "12"),  # finite Tz, Th underflows to zero
+        ("1" + "0" * 110, "1" + "0" * 200),  # effective advance overflows
+    ],
+)
+def test_derived_horizontal_scale_values_must_remain_finite(
+    hscale_token: str, fontsize_token: str
+) -> None:
+    fixture = build_identity_h_fixture(text=CJK_TEXT)
+    stream = fixture.content_bytes()
+    marker = b" Tm <"
+    stream = stream.replace(b" 12 Tf", f" {fontsize_token} Tf".encode(), 1)
+    fixture.doc.update_stream(
+        fixture.content_xref,
+        stream.replace(marker, f" Tm {hscale_token} Tz <".encode(), 1),
+    )
+    engine = TieredCommitEngine(fixture.doc, max_tier=1)
+    result = engine.prepare(
+        fixture.page,
+        target_text=CJK_TEXT,
+        replacement_text=REPLACEMENT_EQUAL_ADVANCE,
+        expected_origin=None,
+        target_bbox=None,
+    )
+    assert isinstance(result, PlanRejection), result
+    assert result.reason == RejectReason.UNSUPPORTED_TEXT_STATE
+    assert "effective horizontal scale" in result.detail
+    fixture.doc.close()
+
+
+@pytest.mark.parametrize(
+    "target_bbox",
+    [
+        (float("nan"), 0.0, 10.0, 10.0),
+        (0.0, 0.0, float("inf"), 10.0),
+    ],
+)
+def test_nonfinite_target_bbox_is_rejected(target_bbox) -> None:
+    fixture = _scaled_fixture(80.0)
+    engine = TieredCommitEngine(fixture.doc, max_tier=1)
+    result = engine.prepare(
+        fixture.page,
+        target_text=CJK_TEXT,
+        replacement_text=REPLACEMENT_EQUAL_ADVANCE,
+        expected_origin=None,
+        target_bbox=target_bbox,
+    )
+    assert isinstance(result, PlanRejection), result
+    assert result.reason == RejectReason.UNSUPPORTED_TEXT_STATE
+    assert "target_bbox" in result.detail
+    fixture.doc.close()
+
+
+@pytest.mark.parametrize("displacement", [float("nan"), float("inf"), 1e308])
+def test_kern_for_displacement_rejects_nonfinite_input_or_result(
+    displacement: float,
+) -> None:
+    fixture = _scaled_fixture(80.0)
+    show = replay_page(fixture.doc, fixture.page).shows[0]
+    if displacement == 1e308:
+        show = dataclasses.replace(show, font_size=1e-308)
+    with pytest.raises(ValueError, match="finite"):
+        kern_for_displacement(show, displacement)
     fixture.doc.close()
