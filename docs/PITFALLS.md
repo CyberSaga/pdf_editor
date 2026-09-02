@@ -2769,3 +2769,80 @@ the real KEEP-encrypted serialize/reopen probe.
 **Cause:** Guards covered the inputs and the result but not the intermediates. `font_size * 100.0` overflowed to `inf`, and a finite numerator over an infinite denominator is a perfectly finite `-0.0`.
 **Fix:** Prove both intermediates finite BEFORE dividing (a zero denominator is unreachable — `font_size` is already proven finite and non-zero, and `x * 100` cannot underflow to zero — so do not add a check that reads as live). Say what actually failed: on this boundary the QUOTIENT is representable and the intermediate is not, so "the kern computation overflows before the division" is true where "the quotient is not finitely representable" would not be. Do not restructure the arithmetic to dodge the overflow: the `-100_000.0 * d / (fs * 100.0)` shape is load-bearing for bit-identical serialized kern tokens at `Th == 100`, so the boundary is rejected rather than rescued.
 **File:** `model/text_commit/patch.py`; `test_scripts/test_text_commit_hscale_admission.py`
+
+## Texttrace character bboxes are metrics boxes, never ink
+**Area:** `scripts/painter_evidence.py` (P4-B2 spike), PyMuPDF `Page.get_texttrace()`
+**Symptom:** Using a trace char's `bbox` as an ink bound admits twins whose glyph overhangs its advance and rejects nothing an advance-based quad would not.
+**Cause:** `jm_trace_text_span` builds each char bbox as `x0 + fz_advance_glyph(...)` by `ascender/descender` — the FreeType hmtx advance and the font-wide vertical metrics, unrelated to the outline.
+**Fix:** Consume the trace only for `gid`, `origin`, `type`, `seqno`, `wmode`. Take per-glyph ink from `fz_bound_glyph(span.font(), gid, trm)` inside a custom `FzDevice2` hook (O1) and cross-check with fontTools bounds (O2); `get_bboxlog()` entries are the true `fz_bound_text` union plus exactly 1.0 pt applied AFTER the CTM (page/device space).
+**File:** `scripts/painter_evidence.py`; `test_scripts/test_p4b2_oracles.py`
+
+## MuPDF merges every show inside a BT into one fz_text
+**Area:** `scripts/painter_evidence.py`, `get_bboxlog()` / texttrace `seqno`
+**Symptom:** Two `Tj` operators separated only by a `Tm` yield ONE bboxlog entry and ONE trace span; per-show extents exist at neither level.
+**Cause:** The PDF interpreter accumulates text into a single `fz_text` until something flushes it: a colour or graphics-state change, a new `BT`, or a visible `/OC BDC` layer boundary (`begin_layer`). `Tr 2` emits the same `fz_text` twice (fill, then stroke, adjacent seqnos).
+**Fix:** Join per character on `(gid, origin)` with a window search forward from the previous match; treat `seqno` as an index into the bboxlog for union-level checks only; pair `Tr 2` emissions by seqno adjacency.
+**File:** `scripts/painter_evidence.py`; `test_scripts/test_p4b2_painter_join.py`
+
+## `fitz.Font(fontbuffer=...)` returns the head bbox for every glyph
+**Area:** PyMuPDF font wrappers, glyph geometry
+**Symptom:** `fz_bound_glyph` on a `fitz.Font` built from a font buffer returns the same font-wide box for every gid.
+**Cause:** `Font.__init__` passes `use_glyph_bbox=0` to `fz_new_font_from_buffer`, so MuPDF answers with the `head` table bbox.
+**Fix:** Use the PDF-loaded font from inside a device hook (`span.font()`), or `mupdf.fz_new_font_from_buffer(None, buf, 0, 1)`. MuPDF's per-glyph bound is a FreeType CONTROL box: on curved glyphs it equals fontTools' `ControlBoundsPen`, not `BoundsPen` (a superset of ink by at most one control-point overshoot).
+**File:** `scripts/painter_geometry.py`; `scripts/painter_evidence.py`
+
+## `Page.transformation_matrix` drops the CropBox origin and UserUnit on rotated pages
+**Area:** PyMuPDF page geometry; `model/text_commit/transforms.py:map_text_quad_to_visual` (audit pending)
+**Symptom:** With `/Rotate 90`, an offset `/CropBox` and `/UserUnit 2`, `page.transformation_matrix` returns `(1,0,0,-1,0,H)` while at rotation 0 the same page returns `(2,0,0,-2,-100,1484)`.
+**Cause:** PyMuPDF's rotated-page branch rebuilds the matrix from the page size alone.
+**Fix:** Capture the base matrix INSIDE the rotation-0 window (`set_rotation(0)` … `set_rotation(old)`), as `interpretation.py` already does for its derotated display list; treat production's rotated-page `map_text_quad_to_visual` as a TODO to audit against offset-CropBox / UserUnit documents.
+**File:** `scripts/painter_evidence.py:derotated_page`; `test_scripts/test_p4b2_oracles.py`
+
+## Trace items with `gid = -1` are ToUnicode continuation items
+**Area:** texttrace / `fz_text_span` items
+**Symptom:** A CID whose ToUnicode maps to two codepoints produces an extra span item with `gid = -1` and `ucs` set; counting items per show over-counts glyphs.
+**Cause:** MuPDF appends one item per Unicode codepoint; only the first carries the glyph.
+**Fix:** Drop items with `gid < 0` before any per-glyph geometry or join.
+**File:** `scripts/painter_evidence.py:_GlyphBoundsDevice`
+
+## `get_bboxlog(layers=True)` and `span['font']` carry document identity
+**Area:** census privacy (§10 data policy)
+**Symptom:** The bboxlog layer name is the OCG label; the trace span's `font` is the basefont name; fontTools exception messages contain glyph names (`uni518D`).
+**Cause:** Convenience fields the wrappers add for debugging.
+**Fix:** Run the bbox device with `inc_layers=False`, never read `span['font']`, and map every fontTools failure to a closed slug at the oracle chokepoint (`GeometryUnavailable(slug)` whose `str()` is the slug alone).
+**File:** `scripts/painter_geometry.py`; `scripts/painter_evidence.py`; `scripts/measure_p4b2_shadow_census.py`
+
+## A hidden optional-content show can steal a later identical show's trace window
+**Area:** `scripts/painter_evidence.py` join
+**Symptom:** A twin under an OFF OCG (absent from every device) matched the glyphs of a later visible show at the same origin, leaving that show windowless and mis-attributing the ink.
+**Cause:** The forward window search only knows the trace; without wrapper classes it cannot tell an absent show from a not-yet-reached one.
+**Fix:** Classify wrappers (`classify_wrappers`) and skip the search for shows under `CLASS_OC_LAYER_HIDDEN` / `CLASS_OC_OCMD` wrappers (ambiguous, `ocg_or_absent`). A stolen window is real ink and the loser becomes ambiguous, so this was never a false safe, only mis-attribution.
+**File:** `scripts/painter_evidence.py:build_page_painter_evidence`; `test_scripts/test_p4b2_painter_join.py`
+
+## The display list culls text wholly outside its clip
+**Area:** `scripts/painter_evidence.py`, falsification matrix
+**Symptom:** A twin under `q 0 0 1 1 re W n … Q` never reaches any device (no fill_text, no bboxlog entry), so the join reports `ambiguous / unknown` rather than an overlap.
+**Cause:** MuPDF's display-list device drops drawing commands whose bounds do not intersect the current clip.
+**Fix:** Accept `ambiguous` (it falls to the reach arm and fails closed); never infer "paints nothing" from an absent window — only from a matched `Tr 3` window plus an `ignore-text` bboxlog entry.
+**File:** `test_scripts/test_p4b2_falsification_matrix.py`
+
+## Declared advance is not an ink bound — on the target side either
+**Area:** `model/text_commit/plan.py:415` (`_painter_core_quad(target, source_advance)`)
+**Symptom:** A `/W 0` clone used AS THE TARGET has a zero-width core, so even the collapse-to-reach control admits its overlapping twin (shadow census synthetic corpus: one reach-safe row that exact geometry turns into a same-baseline overlap).
+**Cause:** The target quad is built from the same declared-advance arithmetic the review showed unsound for candidates (verdict doc F4, target side).
+**Fix:** Any production replacement must bound the TARGET's old ink from outlines too (the spike uses the target's own per-glyph O1 quads); there is no reach fallback for the target.
+**File:** `scripts/measure_p4b2_shadow_census.py`; `test_scripts/test_p4b2_shadow_census.py`
+
+## A stroked glyph with a degenerate control box paints ink no outline oracle bounds
+**Area:** `scripts/painter_evidence.py` stroke ladder (P4-B2 spike); MuPDF `fz_bound_text`
+**Symptom:** A `Tr 1`/`Tr 2` twin under a rank-1 text matrix (`1 0 0 0 x y Tm`) or with zero-height contour glyphs paints an 8 pt pen bar across the target (measured 1,948 overlapping px at 576 dpi) while O1, O2 and the bboxlog entry all report an EMPTY box, so the exact arm answered `exact_safe`.
+**Cause:** `fz_union_rect` drops empty rects, and `fz_bound_text` adds the stroke expansion and the +1 margin only to a non-empty union; the pen still strokes the collapsed outline with the CTM-scaled width. A filled collapsed outline paints nothing, so the fill ladder is unaffected.
+**Fix:** On the stroke ladder any glyph with `bounds is None` or an empty bboxlog rect ⇒ `ambiguous / degenerate_stroke`; the verdict never treats a painting event with no live ink rect as safe (`no_ink_rect`). Found by the 2026-09-02 adversarial review; pinned by the `collapsed-tm-stroke-*` and `degenerate-contour-*` matrix rows.
+**File:** `scripts/painter_evidence.py`; `test_scripts/test_p4b2_falsification_matrix.py`
+
+## PyMuPDF's bbox device is a Python callback per drawing op
+**Area:** `scripts/painter_evidence.py:run_bboxlog` (P4-B2 spike), `fitz.JM_new_bbox_device`
+**Symptom:** The O1-only evidence build took 32 s on the densest sealed CAD page; 14.7 s of it was `get_bboxlog`-style collection — 1,103,625 entries, one Python-level hook call per `fill_path`/`stroke_path`, while the page's text is 19,776 glyphs.
+**Cause:** PyMuPDF 1.27 implements the bbox device in Python (`jm_bbox_*` hooks on an `FzDevice2`), so its cost scales with EVERY drawing operation on the page, not with text.
+**Fix:** A production slice must not run the bbox device over whole pages: the glyph device (C-side `fz_bound_glyph` per glyph, 3.7 s on the same page) carries the fill-mode geometry, and the stroke-mode expansion can be computed from the glyph union plus `linewidth × miterlimit` (or the show treated as ambiguous) without O3. Keep the bboxlog as a census-time cross-check only. Cache evidence per page; the typical page costs 0.3 s cold / 0.02 s warm.
+**File:** `scripts/painter_evidence.py`; `scripts/benchmark_p4b2_painter_evidence.py`

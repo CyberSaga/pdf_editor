@@ -584,3 +584,54 @@ built once per page ✓; the median page is interactive; the tail is
 dominated by O3, which a production slice does not run (§10, answers 2–3),
 and by MuPDF's own display-list interpretation, which P3-D already caches
 per page.
+
+## 10. Gate evaluation and GO/NO-GO (2026-09-02)
+
+| Gate (§7) | Result | Verdict |
+| --- | --- | --- |
+| Safety — zero exact false-safe on the matrix | 62 shapes, 0 exact false-safes (20 baseline, 2 reach false admits); the review's stroke-ladder false safe reproduced and closed fail-closed | **PASS** |
+| Safety — declared advance never an ink bound in the exact arm | outlines only (O1/O2), advance moves the cursor only; target side bounded from its own glyphs | PASS |
+| Safety — disagreement ⇒ unresolved; ambiguous joins never safe | by construction; 564 disagreeing glyphs on the corpus all landed in ambiguous cells | PASS |
+| Safety — the 8 `/W` + core-band counterexamples rejected | all `exact_overlap_same_baseline` | PASS |
+| Value — floor 4,478 / GO 5,962 / decidability ≥ 0.90 / `d_error = 0` / ambiguous+unavailable ≤ 10 % | 6,618 / 6,618 / 0.997 / 0 / 0.28 % | **PASS** |
+| Performance — evidence once per page; percentiles; O1-only cost | builds == pages; typical page 0.3 s cold, 0.02 s warm; the densest CAD page is tens of seconds, dominated by the Python-level bbox device (1.1 M drawing ops) and MuPDF's display list, not by the join — numbers in the commit-7 entry | PASS with a design constraint (no O3 in production; per-page cache) |
+| Privacy — closed keys, ASCII, exception/OCG/glyph-name channels | test-enforced; sealed JSON contains no text, names or non-ASCII | PASS |
+
+**Decision: GO for a production slice** on
+`task15/p4-b2-exact-painter-geometry-admission`, replacing (not layering
+on) the declared-advance quad in `plan.py`'s duplicate-painter gate.
+
+Answers to the four closing questions:
+
+1. **Outline source.** Production reads per-glyph control boxes from the
+   embedded program's `glyf` headers (`xMin/yMin/xMax/yMax`), which equal
+   MuPDF's FreeType control box on 2,998 of 3,001 probed glyphs and differ
+   by exactly one font unit on the other three (curved glyphs; carry a
+   1-unit tolerance or compute the box from the point array). Composite
+   glyphs need the component walk; CFF/OTTO stays `unavailable`. This is
+   the O2 route without fontTools and it is what `model/` may use. The O1
+   device stays a census/test oracle.
+2. **Trace-free feasibility.** 95.8 % of twin rows on the corpus decide
+   without the trace (`trace_load_bearing 945 / 22,708`): cursor replay +
+   glyf boxes give the same quads the join validated. The trace is needed
+   only where the replay cannot place a show (missing/multiple windows,
+   OCG-hidden wrappers, unattributed XObject glyphs) — in production those
+   rows are `ambiguous` and fall to reach, exactly as the spike scores
+   them. So the slice is trace-free by default and never runs the bbox
+   device.
+3. **Per-prepare cost.** A document-level `(font_xref, gid) → box` cache
+   makes the per-show cost a handful of rect transforms; the first touch of
+   a font pays one `glyf`/`loca` parse (milliseconds, no fontTools). The
+   per-page display-list route is not needed at all on the trace-free
+   path, so the dense-page cost above does not apply.
+4. **Ordering.** Evidence (or its cache) is built before
+   `page_fingerprint` is taken so that any later mutation invalidates it
+   with the page; the cache key is `(doc identity, font_xref, gid)` plus the
+   page fingerprint for the placed quads.
+
+Residuals carried into the slice's review: reach's own core-band false
+admit (`second_dy = ±7.3`) until the exact arm also covers rows the trace
+cannot join; ε = 0.05 pt sub-pixel overlaps admitted by design; same-bytes
+candidacy (split shows, alias CIDs) inherited from production; the two
+review passes (join soundness, harness/privacy) that died on the session
+limit were not re-run.

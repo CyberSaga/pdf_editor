@@ -1076,6 +1076,44 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   Augmentation Safety remains NO-GO; no font mutation or `store_shrink(100)`
   path was added.
 
+- [x] **P4-B2 exact-painter-geometry read-only spike (2026-09-02,
+  `task15/p4-b2-exact-painter-geometry-spike`, no merge).** The P4-B1
+  duplicate-painter gate stays frozen at `49c98ee` (heuristic ceiling, verdict
+  doc `plans/2026-09-01-p4b1-final-review-verdict.md`, no interim hardening
+  by user ruling). The spike (`scripts/painter_geometry.py`,
+  `scripts/painter_evidence.py`, `scripts/measure_p4b2_shadow_census.py`,
+  `scripts/benchmark_p4b2_painter_evidence.py`, five `test_p4b2_*` suites)
+  bounds ink per glyph from MuPDF's own `fz_bound_glyph` inside a device hook,
+  cross-checked by fontTools and the bboxlog, joined to shows by a
+  `(gid, origin)` window search. Sealed corpus: 2,140 of the 2,146
+  exact-quad-dependent admissions re-proven per glyph, 0 overlaps in the
+  reach-safe set, 28 real overlaps among the 187 refused rows,
+  `composed_all_gates_pass = 6,618` (GO thresholds 4,478 / 5,962 met,
+  decidability 0.997). Matrix: 62 shapes, 0 exact false-safes; the
+  adversarial review's stroke-ladder counterexample (degenerate control box
+  + `Tr 1/2` pen bar) was reproduced and fixed fail-closed. Full numbers and
+  the GO/NO-GO in `plans/task15-p4b2-exact-painter-geometry-spike.md`.
+- [ ] **P4-B2 production slice (`task15/p4-b2-exact-painter-geometry-admission`),
+  gated on the spike's GO.** Requirements bound by the spike: per-glyph
+  control boxes from the embedded program (glyf header bbox = FreeType control
+  box on 2,998/3,001 probed glyphs, ±1 unit on the rest — carry a 1-unit
+  tolerance or parse the points) placed by the cursor replay, with the O1
+  device only for `trace_load_bearing` rows (4.2 %); the TARGET's old ink and
+  the replacement ink both bounded from outlines (declared advance never an
+  ink bound on either side); any unattributed painted glyph over the target
+  ⇒ ambiguous (7 rows on the corpus); stroke modes conservative from the
+  bboxlog rect and fail-closed on any empty glyph box; ambiguous/unavailable
+  fall to reach; document-level `(font_xref, gid)` bound cache; evidence built
+  before `page_fingerprint` so a later mutation invalidates it; `model/` may
+  not import fontTools. Reach's own core-band false admit (`second_dy=±7.3`)
+  stays a known residual until the exact arm covers it.
+- [ ] **Audit `Page.transformation_matrix` on rotated pages** at
+  `model/text_commit/transforms.py:203` (`map_text_quad_to_visual`): PyMuPDF
+  drops the CropBox origin and UserUnit when `/Rotate ≠ 0` (measured:
+  `(2,0,0,-2,-100,1484)` at rotation 0 vs `(1,0,0,-1,0,H)` at 90). Capture
+  the base matrix inside the rotation-0 window as `interpretation.py` and the
+  spike do; add an offset-CropBox + UserUnit rotated fixture.
+
 - [x] **Close P4-B Pro-review round 4 direct-path findings (2026-09-01).**
   Candidate rise uses a baseline/rise envelope plus the sheared reach y-cross
   term; glyph identity is separated from width/layout metrics; caller and

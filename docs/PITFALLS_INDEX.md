@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 317 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 328 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -322,3 +322,14 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2752 | Raw finite horizontal scale does not imply finite effective geometry | `model/text_commit/plan.py`, `model/text_commit/patch.py` |
 | 2759 | Huge integers can overflow during float conversion or formatting | `model/text_commit/plan.py` target-bbox admission and request digests |
 | 2766 | A finite quotient is not proof of a correct quotient | `model/text_commit/patch.py` (`kern_for_displacement`) |
+| 2773 | Texttrace character bboxes are metrics boxes, never ink | `scripts/painter_evidence.py` (P4-B2 spike), PyMuPDF `Page.get_texttrace()` |
+| 2780 | MuPDF merges every show inside a BT into one fz_text | `scripts/painter_evidence.py`, `get_bboxlog()` / texttrace `seqno` |
+| 2787 | `fitz.Font(fontbuffer=...)` returns the head bbox for every glyph | PyMuPDF font wrappers, glyph geometry |
+| 2794 | `Page.transformation_matrix` drops the CropBox origin and UserUnit on rotated pages | PyMuPDF page geometry; `model/text_commit/transforms.py:map_text_quad_to_visual` (audit pending) |
+| 2801 | Trace items with `gid = -1` are ToUnicode continuation items | texttrace / `fz_text_span` items |
+| 2808 | `get_bboxlog(layers=True)` and `span['font']` carry document identity | census privacy (§10 data policy) |
+| 2815 | A hidden optional-content show can steal a later identical show's trace window | `scripts/painter_evidence.py` join |
+| 2822 | The display list culls text wholly outside its clip | `scripts/painter_evidence.py`, falsification matrix |
+| 2829 | Declared advance is not an ink bound — on the target side either | `model/text_commit/plan.py:415` (`_painter_core_quad(target, source_advance)`) |
+| 2836 | A stroked glyph with a degenerate control box paints ink no outline oracle bounds | `scripts/painter_evidence.py` stroke ladder (P4-B2 spike); MuPDF `fz_bound_text` |
+| 2843 | PyMuPDF's bbox device is a Python callback per drawing op | `scripts/painter_evidence.py:run_bboxlog` (P4-B2 spike), `fitz.JM_new_bbox_device` |

@@ -1309,6 +1309,62 @@ plausible `-0.0`. The boundary is rejected, not rescued: the exact
 `-100_000.0 * d / (fs * 100.0)` shape is load-bearing for bit-identical kern
 tokens at `Th == 100`.
 
+#### 10.1.7 Task 15 P4-B2 read-only exact-painter-geometry spike (2026-09-02)
+
+The P4-B1 final review declared the duplicate-painter gate's heuristic
+ceiling: its "exact extent" quad treats a declared advance as an ink bound,
+which it never is (`/W 0`, `/W 1`, negative `Tc`, core-band twins all admit
+while their rasters overlap), and the collapse-to-reach control costs 2,146
+of 6,624 sealed admissions. P4-B2 measures the replacement without changing
+production. Everything lives in `scripts/` + `test_scripts/`; `model/` is
+untouched and the frozen branch does not merge.
+
+- `scripts/painter_geometry.py` — pure geometry (rect/matrix helpers, the
+  text-space placement chain `[Tfs·Th,0,0,Tfs] → (cursor, Ts) → Tm×CTM →
+  base`, the render-mode ladder) plus the fontTools per-glyph outline oracle
+  (O2: exact extrema as lower bound, control box as upper bound). Every
+  failure is a closed slug (`GeometryUnavailable`); fontTools messages never
+  escape.
+- `scripts/painter_evidence.py` — one derotated `DisplayList` per page with
+  the base matrix captured inside the rotation-0 window (PyMuPDF's
+  `transformation_matrix` drops the CropBox origin and UserUnit on rotated
+  pages); a custom `FzDevice2` recording `fz_bound_glyph(span.font(), gid,
+  trm)` per painted glyph (O1) with texttrace-compatible `seqno`s; the
+  bbox device (O3) over the same list; a per-item `TJ` re-lex from the
+  show's own byte range; the Identity-H cursor replay; a window-search join
+  on `(gid, origin)` forward from the previous match (never text equality;
+  hidden-wrapper shows skip the search); `PainterEvent`s with per-glyph
+  O1/O2 bounds and `proof_quality ∈ exact/conservative/ambiguous/unavailable`;
+  and `exact_duplicate_painter_verdict` (overlap > ambiguous > unavailable >
+  safe over the target's own per-glyph old-ink quads, same/cross-baseline
+  split).
+- `scripts/measure_p4b2_shadow_census.py` — wraps the sealed census without
+  editing it: `funnel_document` pass-through (harness-owned document copy),
+  the duplicate-painter multiplexer (baseline returned unchanged; reach via
+  `_painter_advance → None`; exact on lazily built per-page evidence), and a
+  `_sole_loss_class` recorder. Refuses to report unless the baseline
+  reproduces the sealed constants; emits closed-key integer counters with
+  asserted partition identities.
+- `scripts/benchmark_p4b2_painter_evidence.py` — cold / warm / O1-only cost
+  of the per-page evidence build (nearest-rank percentiles).
+
+Measured facts that bind any production slice: MuPDF's per-glyph bound is a
+control box (superset of ink); `get_bboxlog()` is the O1 union + 1.0 pt
+applied after the CTM; every show inside a `BT` merges into one `fz_text`
+until a flush (colour, new `BT`, visible `/OC BDC`); a fully clipped show
+is culled from the display list; the raster lies within O1 ⊕ 0.25 pt at
+576 dpi (also on a hinted "tricky" CJK face at 48/12/9 pt); a stroked
+glyph whose control box is degenerate (rank-1 `Tm`, zero-height contour)
+paints a pen bar that no outline oracle bounds, so the stroke ladder fails
+closed on any empty glyph box (`degenerate_stroke`, found by the
+adversarial review). The falsification matrix (62 shapes) records zero
+exact false-safes against 20 baseline and 2 reach false admits, and names
+its raster-blind rows explicitly. On the sealed corpus the exact arm
+re-proves 2,140 of the 2,146 exact-quad-dependent admissions
+(`composed_all_gates_pass = 6,618`, no overlap in the reach-safe set, 28
+real overlaps among the 187 refused rows). Results, the perf numbers and
+the GO/NO-GO are in `plans/task15-p4b2-exact-painter-geometry-spike.md`.
+
 ## 11. Character-Level Text Selection (Browse Mode)
 
 **Module:** `model/pdf_model.py:get_chars_in_run()`, `get_text_selection_lines()`
