@@ -669,8 +669,13 @@ def test_hidden_ocg_painter_is_absent_from_the_devices(on: bool) -> None:
 
 
 @pytest.mark.skipif(not tricky_font_available(), reason="mingliu.ttc absent")
-def test_tricky_hinted_font_oracles_agree() -> None:
-    fixture = build_face_fixture(TRICKY_FONT_PATH, TEXT, fontsize=SIZE, origin=ORIGIN)
+@pytest.mark.parametrize("fontsize", [SIZE, 12.0, 9.0], ids=["48pt", "12pt", "9pt"])
+def test_tricky_hinted_font_oracles_agree(fontsize: float) -> None:
+    """Review (2026-09-02): FreeType forces the bytecode hinter on
+    FT_IS_TRICKY faces, and ``fz_bound_glyph`` loads at a different ppem
+    than rendering, so O1 need not contain the ink at small sizes.  Measured
+    at 48, 12 and 9 pt: raster within O1 + 0.25 pt, O2 lower/upper hold."""
+    fixture = build_face_fixture(TRICKY_FONT_PATH, TEXT, fontsize=fontsize, origin=ORIGIN)
     try:
         program = embedded_program(fixture.doc, fixture.font_xref)
         assert program is not None

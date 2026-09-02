@@ -16,12 +16,15 @@ exact arm's kind; the rest pin raster consistency only.
 """
 from __future__ import annotations
 
+import io
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 import pytest
+from fontTools.pens.ttGlyphPen import TTGlyphPen
+from fontTools.ttLib import TTFont
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -38,8 +41,8 @@ from scripts.painter_evidence import (  # noqa: E402
 from test_scripts.painter_matrix_fixtures import (  # noqa: E402
     hide_second_painter_in_ocg,
     install_text_form_xobject,
-    painters_overlap_pixels,
     replay_shows,
+    single_painter_masks,
 )
 from test_scripts.test_text_commit_duplicate_painter_gate import (  # noqa: E402
     FONTSIZE,
@@ -48,7 +51,7 @@ from test_scripts.test_text_commit_duplicate_painter_gate import (  # noqa: E402
     SOURCE_WIDTH,
     _build_second_show_doc,
 )
-from test_scripts.type0_fixture_builder import Type0Fixture  # noqa: E402
+from test_scripts.type0_fixture_builder import Type0Fixture, cid_for  # noqa: E402
 
 OVERLAP_KINDS = {"exact_overlap_same_baseline", "exact_overlap_cross_baseline"}
 
@@ -185,6 +188,65 @@ def _clone_gid_beyond_count(fixture: Type0Fixture) -> None:
     fixture.doc.update_stream(map_xref, bytes(table))
 
 
+def _degenerate_twin_glyphs(fixture: Type0Fixture, chars: str) -> None:
+    """Give the twin's clone font its OWN program in which each of ``chars``
+    is a zero-height two-point contour ``(0,0)-(600,0)``.
+
+    Review finding (2026-09-02): a stroke paints a pen-width line along that
+    contour while every outline oracle (O1 ``fz_bound_glyph``, O2 pens,
+    ``fz_bound_text``) reports an EMPTY box — MuPDF's union drops empty
+    rects, so the bboxlog entry carries no stroke expansion either.  The
+    target keeps the pristine program (own descriptor, own FontFile2).
+    """
+    clone = _twin_font_xref(fixture, "F_CLONE")
+    _, descendant = fixture.doc.xref_get_key(clone, "DescendantFonts")
+    descendant_xref = int(descendant.strip()[1:].split()[0])
+    assert descendant_xref != fixture.descendant_xref, "clone the descendant first"
+    _, map_ref = fixture.doc.xref_get_key(descendant_xref, "CIDToGIDMap")
+    table = fixture.doc.xref_stream(int(map_ref.split()[0]))
+    _, descriptor_ref = fixture.doc.xref_get_key(descendant_xref, "FontDescriptor")
+    descriptor_xref = int(descriptor_ref.split()[0])
+    _, program_ref = fixture.doc.xref_get_key(descriptor_xref, "FontFile2")
+    program_xref = int(program_ref.split()[0])
+    font = TTFont(io.BytesIO(fixture.doc.xref_stream(program_xref)))
+    order = font.getGlyphOrder()
+    for char in chars:
+        cid = cid_for(char)
+        gid = int.from_bytes(table[2 * cid : 2 * cid + 2], "big")
+        pen = TTGlyphPen(font.getGlyphSet())
+        pen.moveTo((0, 0))
+        pen.lineTo((600, 0))
+        pen.closePath()
+        font["glyf"][order[gid]] = pen.glyph()
+    out = io.BytesIO()
+    font.save(out)
+    new_program = fixture.doc.get_new_xref()
+    fixture.doc.update_object(new_program, "<<>>")
+    fixture.doc.update_stream(new_program, out.getvalue())
+    new_descriptor = fixture.doc.get_new_xref()
+    fixture.doc.update_object(new_descriptor, fixture.doc.xref_object(descriptor_xref))
+    fixture.doc.xref_set_key(new_descriptor, "FontFile2", f"{new_program} 0 R")
+    fixture.doc.xref_set_key(descendant_xref, "FontDescriptor", f"{new_descriptor} 0 R")
+
+
+def _degenerate_clone(*, offset: float, chars: str, raw: str | None):
+    """A two-painter page whose twin uses the degenerate-glyph clone."""
+
+    def _run():
+        fixture, origin = _build_second_show_doc(
+            offset=offset,
+            second_resource="F_CLONE",
+            second_clone_font=True,
+            second_clone_distinct_cidtogid=True,
+        )
+        _degenerate_twin_glyphs(fixture, chars)
+        if raw is not None:
+            _insert_between_painters(fixture, raw)
+        return fixture, origin
+
+    return _run
+
+
 CASES: list[Case] = []
 
 for width in (0, 1):
@@ -289,6 +351,32 @@ CASES += [
     Case("bigger-twin", _two(offset=-(SOURCE_WIDTH + 0.5), second_font_size=24.0),
          "exact_overlap_same_baseline", "its own size widens it onto the target"),
     Case("dangling-resource", _two(offset=1.0, second_dangling=True), "unavailable", "unresolvable font"),
+    # Adversarial review (2026-09-02): degenerate control boxes on the
+    # stroke ladder.  A rank-1 Tm collapses every outline onto the baseline;
+    # Tr 1/2 strokes the collapsed path with the CTM-scaled pen (an 8 pt
+    # bar over the target) while every outline oracle reports "empty" and
+    # fz_bound_text drops empty rects (no stroke expansion, no +1).
+    Case("collapsed-tm-stroke-tr1",
+         _post(_two(offset=1.0, second_matrix="1 0 0 0 73 700"), lambda f: _insert_between_painters(f, "1 Tr 8 w")),
+         "ambiguous", "review: rank-1 Tm + Tr 1 paints a pen bar"),
+    Case("collapsed-tm-stroke-tr2",
+         _post(_two(offset=1.0, second_matrix="1 0 0 0 73 700"), lambda f: _insert_between_painters(f, "2 Tr 8 w")),
+         "ambiguous", "review: rank-1 Tm + Tr 2 paints a pen bar"),
+    Case("collapsed-tm-fill-control", _two(offset=1.0, second_matrix="1 0 0 0 73 700"),
+         "exact_safe", "review control: a filled collapsed outline paints nothing"),
+    Case("degenerate-contour-stroke", _degenerate_clone(offset=1.0, chars=SOURCE, raw="1 Tr 6 w"),
+         "ambiguous", "review: zero-height contour glyphs, identity Tm, stroked"),
+    Case("degenerate-contour-fill-control", _degenerate_clone(offset=1.0, chars=SOURCE, raw=None),
+         "exact_safe", "review control: zero-height contours filled paint nothing"),
+    Case("degenerate-contour-mixed-stroke", _degenerate_clone(offset=1.0, chars=SOURCE[:1], raw="1 Tr 6 w"),
+         "ambiguous", "review: one degenerate + one normal glyph, stroked"),
+    # Raster-oracle blind spots named by the review: luminance >= 50% and
+    # hairline strokes give an empty < 128 mask.  The exact arm is colour
+    # blind, so these pin the arm's verdict while the raster stays silent.
+    Case("grey-twin", _post(_two(offset=1.0), lambda f: _insert_between_painters(f, "0.6 g")),
+         "exact_overlap_same_baseline", "review: raster mask blind to grey 153"),
+    Case("hairline-stroke-twin", _post(_two(offset=1.0), lambda f: _insert_between_painters(f, "1 Tr 0.1 w")),
+         "ambiguous", "review: hairline stroke, conservative overlap"),
 ]
 
 # Replace the two placeholder Tz cases with real text-state edits.
@@ -318,6 +406,8 @@ class Row:
     exact_reason: str | None
     baseline_admits: bool
     reach_admits: bool
+    target_ink_pixels: int = -1
+    twin_ink_pixels: int = -1
 
 
 def _production(fixture, expected_origin, *, reach: bool) -> bool:
@@ -358,13 +448,23 @@ def _exact(fixture):
 def _run_case(case: Case) -> Row:
     fixture, expected_origin = case.build()
     try:
-        overlap = painters_overlap_pixels(fixture)
+        first, second = single_painter_masks(fixture)
+        overlap = first.overlap_pixels(second)
         verdict = _exact(fixture)
         baseline = _production(fixture, expected_origin, reach=False)
         reach = _production(fixture, expected_origin, reach=True)
     finally:
         fixture.doc.close()
-    return Row(case.id, overlap, verdict.kind, verdict.reason, baseline, reach)
+    return Row(
+        case.id,
+        overlap,
+        verdict.kind,
+        verdict.reason,
+        baseline,
+        reach,
+        first.ink_pixels,
+        second.ink_pixels,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -421,3 +521,57 @@ def test_value_wins_where_exact_is_safe_and_production_refuses(matrix) -> None:
         if r.exact_kind in OVERLAP_KINDS and r.baseline_admits
     )
     assert set(losses) >= {"neg-tc-walkback", "core-band-+7.3", "core-band--7.3"}
+
+
+# Rows whose TWIN leaves an empty < 128 ink mask, each for a stated reason:
+# the raster oracle is blind there, so the two raster assertions above pass
+# vacuously and only the pre-registered ``expect`` pins the exact arm.
+TWIN_RASTER_BLIND = {
+    "tz-zero": "Tz 0 collapses every glyph to a line; a fill paints nothing",
+    "tfs-zero": "Tfs 0 paints nothing",
+    "singular-tm": "zero Tm paints nothing",
+    "collapsed-tm-fill-control": "rank-1 Tm, filled: zero-area path",
+    "degenerate-contour-fill-control": "zero-height contours, filled",
+    "clipped-away-twin": "clipped to a 1x1 pt corner",
+    "alpha-zero-twin": "ca 0",
+    "hidden-ocg-twin": "OFF optional content",
+    "grey-twin": "grey 153 is above the 128 threshold",
+    "custom-cmap-clone": "unresolvable CMap: MuPDF decodes no glyph",
+    "gid-beyond-count": "gid >= numGlyphs renders nothing",
+    "far-line": "twin sits 40 pt below the target-centred raster clip",
+    # NOT blind (measured): a 0.1 pt stroke still darkens 1,293 px at 576
+    # dpi (MuPDF widens hairlines to a device pixel), overlap 394 px.
+}
+
+
+def test_raster_oracle_blind_spots_are_exactly_the_pre_registered_rows(matrix) -> None:
+    """Review finding: an empty mask lets both raster assertions pass
+    vacuously.  Every such row must be named with its reason, and the
+    target must always be visible."""
+    blind = sorted(r.id for r in matrix.values() if r.twin_ink_pixels == 0)
+    assert blind == sorted(TWIN_RASTER_BLIND), blind
+    assert all(r.target_ink_pixels > 0 for r in matrix.values()), [
+        r.id for r in matrix.values() if r.target_ink_pixels <= 0
+    ]
+
+
+def test_review_counterexamples_paint_over_the_target_and_are_never_safe(matrix) -> None:
+    """The 2026-09-02 review's stroke-ladder counterexamples: the twin's
+    stroked degenerate outline is real ink crossing the target."""
+    for case_id in (
+        "collapsed-tm-stroke-tr1",
+        "collapsed-tm-stroke-tr2",
+        "degenerate-contour-stroke",
+        "degenerate-contour-mixed-stroke",
+    ):
+        row = matrix[case_id]
+        assert row.twin_ink_pixels > 0, row
+        assert row.overlap_pixels > 0, row
+        assert row.exact_kind == "ambiguous", row
+        assert row.exact_reason in {"degenerate_stroke", "conservative_overlap"}, row
+    for case_id in ("collapsed-tm-fill-control", "degenerate-contour-fill-control"):
+        row = matrix[case_id]
+        assert row.twin_ink_pixels == 0, row
+        assert row.exact_kind == "exact_safe", row
+    assert matrix["degenerate-contour-stroke"].exact_reason == "degenerate_stroke"
+    assert matrix["collapsed-tm-stroke-tr1"].exact_reason == "degenerate_stroke"

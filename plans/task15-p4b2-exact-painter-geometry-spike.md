@@ -489,3 +489,64 @@ trace-free route could not reproduce; `tier0_bbox_would_reject 0`;
 `render_mode.0 27,963`, `render_mode.2 9` (the stroke ladder is exercised
 on the corpus), every other mode 0; `form_xobject_pages 49` (all of
 them).
+
+### Adversarial review round (2026-09-02) — stroke-ladder false safe
+
+Three serial read-only refutation passes were launched over the spike
+(safety of the exact verdict, join soundness, harness/privacy); the join
+and harness agents died on the session limit and were not re-run — their
+questions remain open items for the production slice's review. The safety
+agent's verdicts on the four pre-registered claims: (1) "no `exact_safe`
+when the twin paints on the target" **refuted**; (2) "O1 ⊇ rendered ink"
+partial (fill modes only, by design); (3) aggregate-AABB prefilter never
+hides a per-glyph overlap **confirmed** (monotone under containment, same
+ε and axis semantics); (4) `Tr 3` paints nothing **confirmed** (replay
+mode + `ignore` window + `ignore-text` entry; q/Q restore matches MuPDF).
+
+**Finding (major, real).** A `Tr 1`/`Tr 2` twin whose glyph control boxes
+are degenerate — a rank-1 `1 0 0 0 x y Tm`, or zero-height two-point
+contour glyphs in the twin's own program — paints a pen-width bar across
+the target while O1 (`fz_bound_glyph` → empty → `bounds=None`), O2 (empty
+placement rule) and the bboxlog entry (MuPDF's `fz_union_rect` drops empty
+rects, so `fz_bound_text` adds neither the stroke expansion nor the +1)
+all report "empty"; the stroke branch skipped its containment check on an
+empty union and emitted `conservative` with an empty rect, and the verdict
+found no overlap.
+
+Red (pre-fix, `_run_case` rows): `collapsed-tm-stroke-tr1` and `-tr2`
+twin ink 11,200 px, overlap 1,948 px, exact arm `exact_safe`;
+`degenerate-contour-stroke` (clone font with both glyphs rewritten to a
+`(0,0)-(600,0)` contour via fontTools, own descriptor and FontFile2,
+identity `Tm`, `1 Tr 6 w`) twin ink 15,504 px, overlap 1,602 px,
+`exact_safe`; `degenerate-contour-mixed-stroke` already `ambiguous /
+conservative_overlap` (the miter dilation of the normal glyph covered the
+target). Controls: the same shapes filled paint 0 px and are correctly
+`exact_safe`.
+
+Fix (scripts only): on the stroke ladder any glyph with `bounds is None`
+or an empty bboxlog rect ⇒ `ambiguous / degenerate_stroke`; the verdict
+never treats a painting event with no live ink rect as safe
+(`no_ink_rect`). Post-fix the four stroke rows are `ambiguous /
+degenerate_stroke`.
+
+Does the fix move the census? Only stroke-ladder events can change. A
+scan of every page holding a `Tr 1`/`Tr 2` show (2 pages in doc_0, 13 in
+doc_1; 9 + 141 shows) found every such show `unavailable /
+no_cid_capability` (non-CID fonts) — none reached the conservative
+branch, so the commit-6 numbers stand unchanged.
+
+Also from the review: the raster oracle's blind spots are now explicit —
+`TWIN_RASTER_BLIND` names every row whose twin leaves an empty < 128 mask
+(luminance ≥ 50 % such as `0.6 g`, `ca 0`, hidden OCG, fully clipped,
+degenerate fills) and the matrix asserts the set is exactly that list and
+that the target is always visible; a 0.1 pt hairline stroke is NOT blind
+(1,293 px, overlap 394 px). The "tricky" hinted CJK cell now runs at 48,
+12 and 9 pt and the raster stays within O1 + 0.25 pt at all three (the
+review's "probably fails at small ppem" was not borne out on this face;
+the O2 disagreement rule remains the net for other faces). Recorded as
+design bounds, not defects: `exact_safe` tolerates control-box overlap up
+to ε = 0.05 pt per axis (the production ε); candidacy stays "same decoded
+bytes", so a same-glyph painter that is not a byte twin (split shows, a
+different CID to the same gid, a Form XObject) is outside the exact arm —
+`unattributed_glyphs_overlap_target` covers only the XObject case (7 rows)
+and the production slice must treat it as ambiguity.

@@ -450,6 +450,11 @@ EVENT_REASONS = (
         "target_unproven",
         "conservative_overlap",
         "no_event",
+        # 2026-09-02 review: a stroked glyph whose control box is degenerate
+        # (rank-1 Tm, zero-height contour) still paints a pen-width line,
+        # but fz_bound_text drops empty rects, so no oracle bounds that ink.
+        "degenerate_stroke",
+        "no_ink_rect",
     )
 )
 
@@ -688,6 +693,9 @@ def build_page_painter_evidence(
         wrapper_classes = classify_wrappers(doc, page, replay)
     interp = derotated_page(page)
     glyphs = run_glyph_device(interp)
+    # Glyphs per fz_text, counted once: a per-show scan is quadratic on a
+    # dense page (3,293 shows x 19,776 glyphs cost 5.6 s in the profile).
+    glyphs_per_seqno: Counter[int] = Counter(glyph.seqno for glyph in glyphs)
     bboxlog = run_bboxlog(interp)
     base = interp.base_matrix
     if replay.has_xobject_invocation:
@@ -878,7 +886,7 @@ def build_page_painter_evidence(
         entry_codes = [
             bboxlog[seqno][0] if 0 <= seqno < len(bboxlog) else None for seqno in seqnos
         ]
-        fz_text_glyphs = sum(1 for glyph in glyphs if glyph.seqno == seqnos[0])
+        fz_text_glyphs = glyphs_per_seqno.get(seqnos[0], 0)
         shared = fz_text_glyphs != n
         if ladder == "exact":
             if glyph_quality == "ambiguous":
@@ -905,8 +913,14 @@ def build_page_painter_evidence(
                 _fail("ambiguous", "fz_text_shared", tuple(seqnos))
                 continue
             rect = rect_union([bboxlog[seqno][1] for seqno in seqnos])
+            if any(glyph.bounds is None for glyph in paints) or rect_is_empty(rect):
+                # A degenerate control box is dropped from MuPDF's
+                # fz_bound_text union while the pen still strokes the
+                # collapsed outline: no rect here bounds that ink.
+                _fail("ambiguous", "degenerate_stroke", tuple(seqnos))
+                continue
             union = rect_union([glyph.bounds for glyph in paints if glyph.bounds is not None])
-            if not rect_is_empty(union) and not rect_within(union, rect, 0.0):
+            if not rect_within(union, rect, 0.0):
                 _fail("ambiguous", "oracle_disagreement", tuple(seqnos))
                 continue
             _emit(
@@ -1062,7 +1076,12 @@ def exact_duplicate_painter_verdict(
         if not event.paints:
             decided.append(("exact_safe", None, twin.seq))
             continue
-        overlaps = _pairwise_overlap(target_rects, event.ink_rects())
+        twin_rects = event.ink_rects()
+        if not any(not rect_is_empty(rect) for rect in twin_rects):
+            # Paints, yet nothing bounds the ink: never "safe" by absence.
+            decided.append(("ambiguous", "no_ink_rect", twin.seq))
+            continue
+        overlaps = _pairwise_overlap(target_rects, twin_rects)
         if event.proof_quality == "conservative":
             decided.append(
                 ("ambiguous", "conservative_overlap", twin.seq)
