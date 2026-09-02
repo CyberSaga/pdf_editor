@@ -343,3 +343,65 @@ Red log: `ImportError: cannot import name 'EVIDENCE_COUNTER_KEYS' from
   tr_clip` (4–6 still consume their glyphs so later shows stay aligned).
 - Degenerate placements (Tz 0, Tfs 0, singular Tm) are empty on both
   oracles and paint nothing (raster confirms).
+
+### Commit 4 (2026-09-02) — falsification matrix (Stage C): safety gate
+
+`test_scripts/test_p4b2_falsification_matrix.py`: 54 two-painter shapes,
+each measured three ways on the same page — raster ground truth
+(single-painter masks at 576 dpi), the exact arm, production at the frozen
+tip (`baseline`), and production with `_painter_advance → None` (`reach`).
+
+Red log: first run 153/154 green; the one mismatch was my expectation for
+`clipped-away-twin` (`exact_overlap` expected, `ambiguous/unknown`
+measured): the display list **culls text that lies wholly outside the clip**,
+so a fully clipped twin never reaches any device. Expectation corrected
+(ambiguous ⇒ reach ⇒ reject: safe).
+
+**Safety gate: PASS.** Exact false-safes = **0** of 54. Baseline false
+admits = **20** (the 16 `/W` cases, both core-band cases, `neg-tc-walkback`
+F4, `neg-tc-same-origin`). Reach false admits = **2** (both core-band
+cases, R5). Every case with overlapping rasters is rejected by the exact
+arm; every `exact_safe` has 0 overlap pixels.
+
+Value wins on the matrix (exact safe, production refuses):
+`pos-tc-gap-aggregate` (aggregate boxes overlap, per-glyph ink disjoint),
+`tj-intra-kern-disjoint` (TJ twin provably apart), `raised-twin`
+(rise-translated twin with disjoint ink), `tz-100-at-0.5` (mirrored twin).
+
+| case | overlap px | exact | baseline | reach |
+| --- | --- | --- | --- | --- |
+| `w0/w1 × same/distinct × ±1/±2` (16) | 1065–1310 | exact_overlap_same_baseline | admit | reject |
+| `core-band-−7.3` / `+7.3` | 375 / 524 | exact_overlap_cross_baseline | admit | admit |
+| `neg-tc-walkback` | 93 | exact_overlap_same_baseline | admit | reject |
+| `neg-tc-same-origin` | 1116 | exact_overlap_same_baseline | admit | reject |
+| `neg-tw-ignored` | 0 | exact_safe | admit | reject |
+| `pos-tc-gap-aggregate` | 0 | exact_safe | reject | reject |
+| `metric-clone-1500-overlap` | 763 | exact_overlap_same_baseline | reject | reject |
+| `metric-clone-1500-disjoint` | 0 | exact_safe | admit | admit |
+| `distinct-cidtogid-overlap` | 1139 | exact_overlap_same_baseline | reject | reject |
+| `rotated-45-crossing` | 1258 | exact_overlap_cross_baseline | reject | reject |
+| `sheared` | 1475 | exact_overlap_same_baseline | reject | reject |
+| `anisotropic-2x` | 1206 | exact_overlap_same_baseline | reject | reject |
+| `tj-intra-kern-overlap` | 539 | exact_overlap_same_baseline | reject | reject |
+| `tj-intra-kern-disjoint` | 0 | exact_safe | reject | reject |
+| `identity-v-clone` / `custom-cmap-clone` / `type3-twin` | 0 | unavailable (no_cid_capability) | reject | reject |
+| `tz-zero` / `tfs-zero` | 0 | exact_safe (paints nothing) | reject | reject |
+| `singular-tm` | 0 | exact_safe (paints nothing) | admit | reject |
+| `gid-beyond-count` | 0 | unavailable (oracle_unavailable) | reject | reject |
+| `clipped-away-twin` | 0 | ambiguous (unknown: culled) | reject | reject |
+| `alpha-zero-twin` | 0 | exact_overlap_same_baseline (conservative) | reject | reject |
+| `inline-image-between` / `xobject-twice` / `colour-flush` | 1575 / 1575 / 1531 | exact_overlap_same_baseline | reject | reject |
+| `hidden-ocg-twin` | 0 | ambiguous (ocg_or_absent) | reject | reject |
+| `abutting` | 0 | exact_safe | admit | reject |
+| `far-line` | 0 | exact_safe | admit | admit |
+| `raised-twin` | 0 | exact_safe | reject | reject |
+| `rise-cancelled` | 1411 | exact_overlap_same_baseline | reject | reject |
+| `bigger-twin` | 1866 | exact_overlap_same_baseline | reject | reject |
+| `dangling-resource` | 392 | unavailable (no_cid_capability) | reject | reject |
+| `tz+80/+120 at +24.5`, `tz+120 at −30` | 0 | exact_safe | admit | reject |
+| `tz−100 at −0.5` | 0 | exact_safe | reject | reject |
+| `tz+50 at +1.0` | 874 | exact_overlap_same_baseline | reject | reject |
+
+Note on `alpha-zero-twin`: ink with `ca 0` is invisible to the raster but
+the exact arm still counts it as overlap — conservative by construction
+(no ExtGState hooks), never a false safe.
