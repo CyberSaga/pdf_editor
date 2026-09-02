@@ -248,3 +248,24 @@ inherited by all arms, bounded by `tier0_bbox_would_reject`.
 Branch created from `49c98ee`. Verdict document stamped
 `HEURISTIC_CEILING_REACHED` / `NO_MERGE`; open questions replaced by the two
 user rulings. This document written before any measurement code.
+
+### Commit 1 (2026-09-02) — production pins
+
+`test_scripts/test_p4b2_production_pins.py` + raster oracle in
+`test_scripts/painter_matrix_fixtures.py` (single-painter masks at 576 dpi,
+the other painter switched to `3 Tr`).  All 18 pinned shapes ADMIT at
+`49c98ee` while their single-painter rasters overlap; the 18 strict-xfail
+twins (must reject with `duplicate_source_painter`) xfail.  Controls: a
+28 pt-offset twin has 0 overlap pixels; a coincident twin overlaps fully.
+
+| Case | target ink px | twin ink px | overlap px |
+| --- | --- | --- | --- |
+| `/W 0`, same CIDToGIDMap, offsets ±1/±2 | 4978 | 4078 | 1065–1310 |
+| `/W 0`, distinct CIDToGIDMap, offsets ±1/±2 | 4978 | 4335 | 1152–1267 |
+| `/W 1`, same, offsets ±1/±2 | 4978 | 4078 | 1065–1310 |
+| `/W 1`, distinct, offsets ±1/±2 | 4978 | 4335 | 1152–1267 |
+| core band `second_dy = −7.3` | 4978 | 4978 | 375 |
+| core band `second_dy = +7.3` | 4978 | 4978 | 524 |
+
+`/W 0` and `/W 1` are pixel-identical: the declared width moves nothing
+the renderer paints, only the cursor after the last glyph.
