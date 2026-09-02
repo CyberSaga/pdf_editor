@@ -314,3 +314,32 @@ Measured facts (all now pinned by `test_scripts/test_p4b2_oracles.py`):
   A hidden OCG painter is absent from every device; a **visible `/OC BDC`
   boundary flushes the fz_text**, so the two painters of one BT become two
   bboxlog entries.
+
+### Commit 3 (2026-09-02) — painter events, join, exact verdict (Stages B/D)
+
+Red log: `ImportError: cannot import name 'EVIDENCE_COUNTER_KEYS' from
+'scripts.painter_evidence'` (27 tests). Green: 27 passed.
+
+- **Window search works as pre-registered**: forward from the previous
+  match on `(gid, origin)` within `1e-3·Tfs`, same fz_text, unconsumed.
+  Two-show pages give two exact events keyed by `(stream_xref, op_start)`;
+  a leading-kern TJ twin is placed 72 pt left of its recorded origin; Form
+  XObject glyphs between shows stay unattributed and never decide.
+- **Hidden shows can steal a later identical show's window** (measured):
+  a hidden-OCG twin at x = 73 matched the visible show at x = 73 that came
+  later, leaving that show windowless. Fix: shows under a
+  `CLASS_OC_LAYER_HIDDEN` / `CLASS_OC_OCMD` wrapper (`classify_wrappers`)
+  skip the search and are `ambiguous / ocg_or_absent`. Even before the fix
+  no false safe was possible (a stolen window is real ink; the loser
+  becomes ambiguous), only mis-attribution.
+- **Coincident twins**: the first show sees two candidate windows and is
+  `ambiguous / multiple_windows` (+ `verdict_invariant_ambiguity`); the
+  second show's remaining candidate is unique. A coincident target is
+  therefore `target_unproven` — the same fail-closed outcome production
+  reaches through `AMBIGUOUS_MATCH`.
+- **Tr 2** pairs the fill and stroke emissions (adjacent seqnos) into one
+  `conservative` event bounded by the union of both bboxlog rects; **Tr 3**
+  is an exact event that paints nothing; **Tr 4–7** are `ambiguous /
+  tr_clip` (4–6 still consume their glyphs so later shows stay aligned).
+- Degenerate placements (Tz 0, Tfs 0, singular Tm) are empty on both
+  oracles and paint nothing (raster confirms).

@@ -133,30 +133,41 @@ def two_painter_clip(
     return (x0, max(0.0, y_page - 3 * fixture.fontsize), x1, min(height, y_page + 2 * fixture.fontsize))
 
 
+def _hide_all_but(
+    fixture: Type0Fixture, shows: tuple[ShowOp, ...], keep: int
+) -> bytes:
+    """The fixture content with every show except ``shows[keep]`` wrapped in
+    ``3 Tr ... <its own mode> Tr`` (invisible, still advancing)."""
+    stream = fixture.content_bytes()
+    edits: list[tuple[int, bytes]] = []
+    for index, show in enumerate(shows):
+        if index == keep or show.stream_xref != fixture.content_xref:
+            continue
+        edits.append((show.op_start, b"3 Tr "))
+        edits.append((show.op_end, f" {show.render_mode:d} Tr ".encode("ascii")))
+    for offset, insert in sorted(edits, key=lambda edit: edit[0], reverse=True):
+        stream = stream[:offset] + insert + stream[offset:]
+    return stream
+
+
 def single_painter_masks(
     fixture: Type0Fixture,
     *,
     clip: tuple[float, float, float, float] | None = None,
+    painters: tuple[int, int] = (0, 1),
 ) -> tuple[InkMask, InkMask]:
-    """Ink of painter 1 alone and painter 2 alone on a two-painter page.
+    """Ink of painter ``painters[0]`` alone and painter ``painters[1]`` alone.
 
-    The page must have the ``_build_second_show_doc`` shape: one ``BT``,
-    the first ``Tj`` followed by ``/<resource>`` for the second painter.
-    The hidden painter is wrapped in ``3 Tr`` so its text state (and any
-    cursor advance) still executes exactly as in the two-painter page.
+    Painters are ShowOp indices of the fixture's own content stream (replay
+    order).  Every OTHER show is wrapped in ``3 Tr`` so its text state and
+    cursor advance still execute exactly as on the full page.
     """
-    stream = fixture.content_bytes()
-    marker = b"> Tj /"
-    assert stream.count(marker) == 1, "not a two-painter page"
-    assert stream.count(b"BT ") == 1, "expected a single BT"
+    shows = replay_shows(fixture)
+    assert len(shows) > max(painters), "fewer shows than painters requested"
     clip = clip or two_painter_clip(fixture)
-    first_only = stream.replace(marker, b"> Tj 3 Tr /", 1)
-    second_only = stream.replace(b"BT ", b"BT 3 Tr ", 1).replace(
-        marker, b"> Tj 0 Tr /", 1
-    )
-    return _with_stream(fixture, first_only, clip), _with_stream(
-        fixture, second_only, clip
-    )
+    first = _with_stream(fixture, _hide_all_but(fixture, shows, painters[0]), clip)
+    second = _with_stream(fixture, _hide_all_but(fixture, shows, painters[1]), clip)
+    return first, second
 
 
 def painters_overlap_pixels(fixture: Type0Fixture) -> int:
