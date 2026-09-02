@@ -405,3 +405,33 @@ Value wins on the matrix (exact safe, production refuses):
 Note on `alpha-zero-twin`: ink with `ca 0` is invisible to the raster but
 the exact arm still counts it as overlap — conservative by construction
 (no ExtGState hooks), never a false safe.
+
+### Commit 5 (2026-09-02) — shadow-census harness (Stage E)
+
+`scripts/measure_p4b2_shadow_census.py`: zero edits to
+`measure_type0_funnel.py`. Wraps `funnel_document` (pass-through; captures
+the report and the document ordinal, opens the harness's OWN copy of the
+document), `duplicate_source_painter_detail` (multiplexer: baseline
+returned unchanged; reach under a try/finally `_painter_advance → None`;
+exact on lazily built per-page evidence, any failure → `exact_error`) and
+`_sole_loss_class` (recorder). Sealed constants are parameters (defaults =
+sealed values); a mismatch raises before anything is emitted (`main` exits
+3 with an empty stdout, key name only on stderr).
+
+Red log: collection `ImportError` for `scripts.measure_p4b2_shadow_census`
+(7 tests). Green: 7 passed (72 s: each census run on the builder's 3.5 MB
+face costs ~5 s; corpus/baseline/report are shared per module).
+
+Synthetic two-document corpus (a `/W 0` clone twin at +1 pt; an abutting
+twin): baseline `all_gates_pass = 4`; `delta_rows = 3`, `d_exact_safe = 2`,
+`d_exact_overlap_same_baseline = 1`, `reach_safe_twin_rows = 1`,
+`r_exact_overlap_same_baseline = 1`, `composed_all_gates_pass = 2`; all
+five identities hold. The reach-safe row is the `/W 0` clone **as a
+target**: its declared-advance core is zero-width, so even the reach arm
+admits its twin (the verdict doc's F4 target-side hazard, measured) — the
+exact arm turns it into an overlap.
+
+Privacy test: a `/SECRET7Q+Face` basefont, a secret OCG label and an
+injected evidence-builder exception carrying a glyph name never reach the
+JSON; keys ⊆ the closed set; ASCII only; `exact_error ≥ 1`,
+`twin_oc_hidden ≥ 1`.
