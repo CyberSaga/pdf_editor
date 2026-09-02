@@ -550,3 +550,37 @@ bytes", so a same-glyph painter that is not a byte twin (split shows, a
 different CID to the same gid, a Form XObject) is outside the exact arm —
 `unattributed_glyphs_overlap_target` covers only the XObject case (7 rows)
 and the production slice must treat it as ambiguity.
+
+### Commit 7 (2026-09-02) — evidence-build cost (measurement-only)
+
+`scripts/benchmark_p4b2_painter_evidence.py` (nearest-rank percentiles,
+`ceil`; test pins the shape: builds == pages × repeat, closed ASCII
+counters, warm/O1-only never above cold). One run, `--repeat 1`, both
+sealed documents, raw JSON gitignored. The replay of each page is outside
+the timed region (production already pays it; on doc_0 it is 792 s for
+50 pages under `max_decoded_bytes=None`, the multi-megabyte CAD streams).
+
+| doc | pages | shows (TJ) | cold p50 / p95 / p99 / max | warm p50 / p95 | O1-only p50 / p95 | builds == pages |
+| --- | ---: | ---: | --- | --- | --- | --- |
+| doc_0 (CAD) | 50 | 28,043 (793) | 1.00 s / 21.4 s / 23.7 s / 23.7 s | 0.95 s / 17.8 s | 0.40 s / 18.6 s | ✓ |
+| doc_1 | 23 | 2,237 (2,237) | 10 ms / 35 ms / 47 ms / 47 ms | 8 ms / 36 ms | 8 ms / 37 ms | ✓ |
+
+Scaling on doc_0 by shows per page: 50–199 shows (25 pages) p50 0.72 s,
+max 1.34 s; 200–499 (9) p50 1.08 s, max 2.0 s; ≥ 500 (16) p50 1.87 s,
+max 23.7 s. Joined 171,748 of 172,474 traced glyphs (99.6 %); events
+27,353 exact / 375 ambiguous / 315 unavailable. doc_1's shows are all
+`unavailable` (non-CID fonts), so its numbers are the device + join floor.
+
+Where the time goes (cProfile, densest page, 3,293 shows, 19,776 glyphs,
+1,103,625 bboxlog entries; before the Counter fix, O1-only 32.2 s): the
+bbox device 14.7 s — PyMuPDF implements it in Python, one hook call per
+drawing op, so it scales with the CAD linework, not the text; MuPDF's
+display-list runs 5.9 s; the per-show `fz_text` glyph count 5.6 s
+(quadratic; now a per-page `Counter`, which took the page to ≈ 23 s);
+`_find_windows` 3.9 s; the glyph device 3.7 s; the display list 2.5 s.
+fontTools (O2) costs ≈ 0.6 s at the median page (cold 1.00 s vs O1-only
+0.40 s) and is negligible on the dense pages. Perf gate: evidence is
+built once per page ✓; the median page is interactive; the tail is
+dominated by O3, which a production slice does not run (§10, answers 2–3),
+and by MuPDF's own display-list interpretation, which P3-D already caches
+per page.
