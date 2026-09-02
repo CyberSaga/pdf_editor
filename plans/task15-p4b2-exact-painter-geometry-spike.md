@@ -435,3 +435,57 @@ Privacy test: a `/SECRET7Q+Face` basefont, a secret OCG label and an
 injected evidence-builder exception carrying a glyph name never reach the
 JSON; keys ⊆ the closed set; ASCII only; `exact_error ≥ 1`,
 `twin_oc_hidden ≥ 1`.
+
+### Commit 6 (2026-09-02) — sealed shadow census (measurement-only)
+
+One run over the two sealed documents (paths CLI-only; raw JSON in the
+gitignored `benchmarks/p4b2_shadow_census_2026-09-02.json`), 73 pages,
+started 13:33, finished 14:47 (spike code at `30e4994`; see the review
+entry below for why the numbers stand unchanged after the stroke-ladder
+fix). `status: ok`; the baseline reproduced the sealed constants exactly
+(`6811 / 6624 / 187 / 112 / 0`); all five partition identities hold;
+`exact_error = 0`; `evidence_builds = evidence_pages = 49` (the 24 pages
+without an admitted twin-bearing row never build evidence).
+
+| Population | rows | exact_safe | overlap same | overlap cross | ambiguous | unavailable | error |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| D — exact-quad-dependent admits | 2,146 | 2,140 | 0 | 0 | 6 | 0 | 0 |
+| R — reach-safe rows (reach admits) | 2,056 | 2,008 | 0 | 0 | 48 | 0 | 0 |
+| P — `duplicate_painter_only` | 187 | 6 | 12 | 16 | 153 | 0 | 0 |
+
+Composition: `composed_all_gates_pass = 4,478 + 2,140 − 0 − 0 = 6,618`
+under both hazard readings (no cross-baseline overlap in R), and 6,624 when
+the six recoverable P rows are added (`composed_with_p_exact_safe`) — the
+same 6,624 the frozen tip admits, now proven per glyph instead of assumed
+from declared advance.
+
+Value gate (§7.3): hard floor 6,618 ≥ 4,478 ✓; provisional GO 6,618 ≥
+5,962 ✓; decidability `2,140 / 2,146 = 0.997 ≥ 0.90` ✓; `d_error = 0` ✓;
+`d_ambiguous + d_unavailable = 6 / 2,146 = 0.28% ≤ 10%` ✓; no `exact_safe`
+row carries an oracle disagreement (a disagreeing glyph makes its event
+ambiguous before any verdict; matrix-pinned) ✓. **Value: GO on the sealed
+corpus.** Of the 187 rows the frozen tip refuses, 28 are real overlaps
+(12 same-baseline, 16 cross-baseline — the refusal was right), 6 are
+provably safe (the value on P), 153 stay ambiguous (57 of them because the
+TARGET's own placement is unproven, `p_target_placement_unproven`).
+
+Diagnostics (page-level totals over the 49 evidence pages unless stated):
+`twin_rows 22,708`, `no_twins 5,007`; `tj_twin_rows 331` of which
+`tj_twin_decided 326` (TJ twins are now decidable: the Stage D re-lex
+works on the corpus); `t_join_available 68 / t_join_ambiguous 0` on the
+112 `tj_array_only` targets; `target_join_ambiguous 319`,
+`twin_join_ambiguous 567`; `missing_window.ocg_or_absent 22`, every other
+missing-window reason 0; `multiple_windows 306`,
+`verdict_invariant_ambiguity 251` (coincident same-bytes shows — the CAD
+drawing repeats labels at one origin); `oracle_disagreement 564` glyphs,
+`oracle_unavailable 2`; `identity_refuted_by_outline 2`;
+`twin_ink_in_target_bbox 99`; `twin_oc_hidden 16`;
+`unattributed_glyphs_total 569`, `unattributed_glyphs_overlap_target 7`
+(the Form-XObject blind spot touches 7 rows — a production slice must
+treat an unattributed glyph over the target as ambiguity, see commit 8);
+`trace_load_bearing 945` of 22,708 twin rows (4.2 %) — the rows a
+trace-free route could not reproduce; `tier0_bbox_would_reject 0`;
+`font_has_fpgm_prep 260` (per-page oracle builds of hinted programs);
+`render_mode.0 27,963`, `render_mode.2 9` (the stroke ladder is exercised
+on the corpus), every other mode 0; `form_xobject_pages 49` (all of
+them).
