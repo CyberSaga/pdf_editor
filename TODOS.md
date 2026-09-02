@@ -1114,6 +1114,28 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   the base matrix inside the rotation-0 window as `interpretation.py` and the
   spike do; add an offset-CropBox + UserUnit rotated fixture.
 
+- [ ] **Exact transactional rollback for `AppliedPatch.revert` (Codex
+  adversarial review, 2026-09-02; pre-existing since P3-C `4adc34f`/`97993c4`,
+  not P4-B2).** `AppliedPatch.prior_streams` holds decoded bytes only and
+  `revert` rewrites with `compress=True` (`model/text_commit/patch.py:78-99`), so a
+  FAILED live verification (`model/text_commit/engine.py:274`) leaves an
+  originally-uncompressed or multi-filter content stream as a single
+  `/FlateDecode` object with different raw bytes; `/DecodeParms` survival is
+  size-dependent (MuPDF skips Flate on tiny streams and drops the key).
+  Measured (PyMuPDF 1.27.1): single-Flate streams round-trip byte-identically;
+  `doc.is_dirty` flips on ANY `update_stream` (even a byte-perfect no-op) and
+  nothing in the app reads it; the same rewrite already happens on successful
+  tier-0 commits and on undo/redo (`model/edit_commands.py:394,460`). Severity
+  low. Fix: capture `xref_stream_raw` + `/Filter` + `/DecodeParms` in
+  `AppliedPatch`; revert via `update_stream(xref, raw, new=False, compress=False)`
+  and `xref_set_key` only for keys originally present (setting an absent key to
+  `null` leaves a literal entry); keep the `compress=False` preview scratch path
+  as is. Add a failure-injection test over uncompressed / FlateDecode /
+  Flate+DecodeParms / `[/ASCIIHexDecode /FlateDecode]` streams asserting raw
+  bytes, the `xref_object` dict and decoded bytes are unchanged after a rejected
+  commit. Related: WS-B/F4 live-commit revert atomicity; PITFALLS
+  "update_stream(compress=False) never restores the original storage encoding".
+
 - [x] **Close P4-B Pro-review round 4 direct-path findings (2026-09-01).**
   Candidate rise uses a baseline/rise envelope plus the sheared reach y-cross
   term; glyph identity is separated from width/layout metrics; caller and

@@ -1,6 +1,6 @@
 # PITFALLS index (generated — do not edit)
 
-Regenerate: `python scripts/build_pitfalls_index.py` · 328 entries.
+Regenerate: `python scripts/build_pitfalls_index.py` · 329 entries.
 Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15)`.
 
 | Line | Title | Area |
@@ -333,3 +333,4 @@ Read matched entries from `docs/PITFALLS.md` with `Read(offset=<line>, limit=~15
 | 2829 | Declared advance is not an ink bound — on the target side either | `model/text_commit/plan.py:415` (`_painter_core_quad(target, source_advance)`) |
 | 2836 | A stroked glyph with a degenerate control box paints ink no outline oracle bounds | `scripts/painter_evidence.py` stroke ladder (P4-B2 spike); MuPDF `fz_bound_text` |
 | 2843 | PyMuPDF's bbox device is a Python callback per drawing op | `scripts/painter_evidence.py:run_bboxlog` (P4-B2 spike), `fitz.JM_new_bbox_device` |
+| 2850 | MuPDF's stroke-text bbox expansion uses max|ctm element|, not the pen's true stretch | `scripts/painter_evidence.py` stroke ladder (O3 `stroke-text` rect), `scripts/painter_geometry.py::stroke_expansion` |

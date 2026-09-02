@@ -193,6 +193,99 @@ def place_text_rect(
     return transform_rect(translated, matrix_concat(matrix_concat(tm, ctm), base))
 
 
+# -------------------------------------------------------- stroke expansion
+
+# PDF /LineJoin values reachable from a content stream's ``j`` operator
+# (ISO 32000-1 8.5.2, Table 55). MuPDF's internal ``FZ_LINEJOIN_MITER_XPS``
+# (3) has no PDF operator and is out of scope: it is never produced by any
+# content stream this codebase writes or a spec-compliant PDF parses to.
+LINEJOIN_MITER = 0
+LINEJOIN_ROUND = 1
+LINEJOIN_BEVEL = 2
+
+
+def stroke_expansion(
+    linewidth: float,
+    ctm: Matrix,
+    miterlimit: float = 10.0,
+    linejoin: int = LINEJOIN_MITER,
+) -> float:
+    """The scalar MuPDF adds on every side of a bbox to bound a stroke.
+
+    Pins ``fz_adjust_rect_for_stroke()`` (MuPDF, called from PyMuPDF
+    1.27.1's ``jm_bbox_stroke_text`` -> ``fz_bound_text(text, stroke,
+    ctm)``, see ``.venv/Lib/site-packages/pymupdf/__init__.py``). MuPDF
+    ships no Python source for the C routine itself, so this formula is
+    reverse-measured directly against the compiled ``_mupdf`` extension
+    (``mupdf.FzRect.fz_adjust_rect_for_stroke`` /
+    ``mupdf.FzMatrix.fz_matrix_max_expansion``) rather than read from a
+    header, and MUST be re-measured (not assumed) after any MuPDF/PyMuPDF
+    upgrade:
+
+        effective_width = abs(linewidth) or 1.0   # PDF default width is 1
+        scale = max(abs(a), abs(b), abs(c), abs(d))   # ctm's linear part;
+                                                       # NOT sqrt(det) or a
+                                                       # singular value --
+                                                       # measured, see below
+        factor = max(miterlimit, 0.5) if linejoin == FZ_LINEJOIN_MITER
+                 else 0.5
+        expand = effective_width * factor * scale
+
+    ``fz_bound_text`` then adds its own fixed 1.0 pt margin on top of this
+    (``BBOXLOG_MARGIN`` in test_scripts/test_p4b2_oracles.py) in device
+    space, same as the unstroked fill-text case; that margin is NOT part
+    of this function.
+
+    Measured facts this formula rests on (float32 MuPDF arithmetic; expect
+    ~1e-4 relative noise, well under the pinning test's 0.02 pt tolerance):
+
+    - ``fz_matrix_max_expansion`` is exactly ``max(|a|, |b|, |c|, |d|)``,
+      not ``sqrt(|det|)`` or the matrix's largest singular value: for
+      ``(a=3, b=4, c=0, d=1)`` it measures ``4.0`` (== max(3,4,0,1)),
+      not ``sqrt(3) ~ 1.73`` (sqrt|det|) or ``~5.06`` (largest singular
+      value). Pure shear leaves it at ``1.0`` (``c=0.5`` alongside unit
+      ``a``/``d``), and translation (``e``/``f``) never affects it.
+      Consequence: ``max|elem|`` can undershoot the true stretch of the
+      pen (the largest singular value) by up to ``sqrt(2)`` -- a 45-degree
+      rotation has every element at ``0.707`` while the pen is stretched
+      by ``1.0``. Miter joins hide this under the ``miterlimit`` factor
+      (10x by default); round/bevel joins (factor ``0.5``) do not, so for
+      them the bboxlog rect bounds the stroked ink only up to the fixed
+      1.0 pt margin: ``0.5 * w * (sigma_max - max|elem|) > 1.0`` is an
+      under-bound (``6 w`` rotated 45 degrees at any ctm scale above
+      ~1.14). The spike's stroke ladder is exposed to this; a production
+      slice must treat every non-fill render mode as ambiguous by rule.
+    - Miter join (0): the multiplier is ``miterlimit`` itself (not
+      ``miterlimit`` scaled by any extra 0.5), floored at ``0.5`` for any
+      ``miterlimit`` at or below that floor -- including 0 and negative
+      values a malformed stream could carry (a compliant ``M`` operand is
+      always >= 1, per ISO 32000-1 8.5.2, so this floor is a hard-clamp
+      documented but not independently exercised by the pinning test).
+      There is no clamp at 1.0: ``miterlimit`` values strictly between 0.5
+      and 1.0 measure ``linewidth * miterlimit * scale`` exactly, same
+      formula as values above 1.0.
+    - Round (1) and bevel (2) joins ignore ``miterlimit`` entirely and
+      always use the ``0.5`` floor (a plain half-linewidth expansion).
+    - A linewidth of exactly ``0`` measures as if it were ``1.0`` (PDF's
+      default stroke width), consistent with ``fz_bound_text``'s "a
+      stroke is never truly invisible" hairline behaviour; the pinning
+      test exercises this at identity ctm (id ``w0-identity``).
+
+    Not covered (and not needed): dashing, line caps, and negative
+    linewidths -- ``fz_adjust_rect_for_stroke`` reads ``fabsf(linewidth)``
+    for the effective width, but no ``w`` operator this codebase writes
+    ever emits a negative operand, so the pinning test does not exercise
+    that leg beyond documenting it here.
+    """
+    effective_width = abs(linewidth) if linewidth != 0.0 else 1.0
+    scale = max(abs(ctm[0]), abs(ctm[1]), abs(ctm[2]), abs(ctm[3]))
+    if linejoin == LINEJOIN_MITER:
+        factor = max(miterlimit, 0.5)
+    else:
+        factor = 0.5
+    return effective_width * factor * scale
+
+
 # ------------------------------------------------------------ render modes
 
 

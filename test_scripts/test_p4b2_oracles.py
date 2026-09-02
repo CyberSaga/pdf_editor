@@ -39,6 +39,7 @@ from scripts.painter_geometry import (  # noqa: E402
     GEOMETRY_SLUGS,
     GeometryUnavailable,
     OutlineOracle,
+    matrix_concat,
     place_text_rect,
     rect_is_empty,
     rect_pad,
@@ -46,6 +47,7 @@ from scripts.painter_geometry import (  # noqa: E402
     rect_within,
     render_mode_ladder,
     scale_units_to_text,
+    stroke_expansion,
     transform_point,
 )
 from test_scripts.painter_matrix_fixtures import (  # noqa: E402
@@ -374,6 +376,56 @@ def test_bboxlog_index_equals_device_seqno_with_interleaved_path() -> None:
         assert {g.seqno for g in glyphs} == {1}
         union = rect_union([g.bounds for g in glyphs if g.bounds is not None])
         assert rect_within(union, log[1][1], 0.0)
+    finally:
+        fixture.doc.close()
+
+
+# Pin for the P4-B2 stroke ladder's safety margin: MuPDF's
+# fz_adjust_rect_for_stroke expansion, isolated by ``stroke_expansion`` in
+# scripts/painter_geometry.py.  A MuPDF/PyMuPDF upgrade that changes this
+# formula must fail here loudly, not silently shrink the conservative rect
+# scripts/painter_evidence.py's stroke ladder (see "degenerate_stroke" /
+# render_mode_ladder "stroke") leans on.
+@pytest.mark.parametrize(
+    ("linewidth", "linejoin", "miterlimit", "cm_prefix"),
+    [
+        pytest.param(0.0, 0, 10.0, None, id="w0-identity"),
+        pytest.param(6.0, 0, 10.0, None, id="w6-identity"),
+        pytest.param(6.0, 0, 10.0, (2.0, 0.0, 0.0, 2.0, 0.0, 0.0), id="w6-scale2x"),
+        pytest.param(6.0, 0, 1.0, None, id="w6-miterlimit1"),
+        pytest.param(6.0, 1, 10.0, None, id="w6-roundjoin"),
+        pytest.param(6.0, 0, 10.0, (1.0, 0.0, 0.5, 1.0, 0.0, 0.0), id="w6-sheared"),
+    ],
+)
+def test_bboxlog_stroke_text_rect_is_o1_union_plus_stroke_expansion(
+    linewidth: float, linejoin: int, miterlimit: float, cm_prefix
+) -> None:
+    fixture = _fixture()
+    try:
+        set_text_state(fixture, render_mode=1)  # stroke-only text
+        stream = fixture.content_bytes()
+        stroke_ops = f"{linewidth:g} w {linejoin:d} j {miterlimit:g} M ".encode("ascii")
+        new_stream = stroke_ops + stream
+        if cm_prefix is not None:
+            cm_text = " ".join(f"{v:g}" for v in cm_prefix)
+            new_stream = f"q {cm_text} cm ".encode("ascii") + new_stream + b" Q"
+        fixture.doc.update_stream(fixture.content_xref, new_stream)
+        interp, glyphs = _glyphs(fixture)
+        try:
+            log = run_bboxlog(interp)
+        finally:
+            interp.release()
+        assert [code for code, _ in log] == ["stroke-text"]
+        union = rect_union([g.bounds for g in glyphs if g.bounds is not None])
+        device_ctm = (
+            interp.base_matrix
+            if cm_prefix is None
+            else matrix_concat(cm_prefix, interp.base_matrix)
+        )
+        expand = stroke_expansion(linewidth, device_ctm, miterlimit, linejoin)
+        expected = rect_pad(union, expand + BBOXLOG_MARGIN)
+        assert rect_within(expected, log[0][1], BBOXLOG_MARGIN_TOL)
+        assert rect_within(log[0][1], expected, BBOXLOG_MARGIN_TOL)
     finally:
         fixture.doc.close()
 
