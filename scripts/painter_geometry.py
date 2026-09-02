@@ -246,9 +246,10 @@ def stroke_expansion(
       value). Pure shear leaves it at ``1.0`` (``c=0.5`` alongside unit
       ``a``/``d``), and translation (``e``/``f``) never affects it.
       Consequence: ``max|elem|`` can undershoot the true stretch of the
-      pen (the largest singular value) by up to ``sqrt(2)`` -- a 45-degree
-      rotation has every element at ``0.707`` while the pen is stretched
-      by ``1.0``. Miter joins hide this under the ``miterlimit`` factor
+      pen (the largest singular value) -- by ``sqrt(2)`` for a rotation
+      (45 degrees: every element ``0.707``, pen stretched by ``1.0``) and
+      by up to ``2`` for a shear (measured ``(1, 1, 1, 1.01)``: max|elem|
+      ``1.01`` vs sigma_max ``2.005``). Miter joins hide this under the ``miterlimit`` factor
       (10x by default); round/bevel joins (factor ``0.5``) do not, so for
       them the bboxlog rect bounds the stroked ink only up to the fixed
       1.0 pt margin: ``0.5 * w * (sigma_max - max|elem|) > 1.0`` is an

@@ -1369,8 +1369,8 @@ Post-GO reconciliation (plan §11): `stroke_expansion()` in
 `scripts/painter_geometry.py` pins MuPDF's `fz_adjust_rect_for_stroke`
 as measured on PyMuPDF 1.27.1 (`(|w| or 1) × max(miterlimit, 0.5)` for
 miter joins or `0.5` for round/bevel, `× max|a|,|b|,|c|,|d|`, plus the
-fixed 1 pt margin). Because `max|elem|` can undershoot a rotated pen's
-true stretch by up to √2, a production slice — which runs no bbox device
+fixed 1 pt margin). Because `max|elem|` undershoots a rotated pen's
+true stretch by √2 and a sheared one by up to 2, a production slice — which runs no bbox device
 — treats every non-fill render mode as ambiguous by rule. The shadow
 census now also emits row-level `device_load_bearing`,
 `trace_or_device_load_bearing` and `row_reason.<slug>` counters (sealed

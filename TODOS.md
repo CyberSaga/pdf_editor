@@ -1105,7 +1105,7 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   bboxlog rect and fail-closed on any empty glyph box in the *spike*; in
   production, which runs no bbox device, every non-fill render mode is
   ambiguous by rule (MuPDF's stroke expansion uses max|ctm element|, which
-  undershoots a rotated pen by up to √2 — PITFALLS "MuPDF's stroke-text bbox
+  undershoots a rotated pen by √2 and a sheared one by up to 2 — PITFALLS "MuPDF's stroke-text bbox
   expansion"); ambiguous/unavailable fall to reach; document-level
   `(font_xref, gid)` bound cache; evidence built before `page_fingerprint` so a
   later mutation invalidates it; `model/` may not import fontTools. The slice

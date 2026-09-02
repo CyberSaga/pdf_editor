@@ -688,9 +688,12 @@ glyf-box slice is a different gate (answer 2 above, revised).
    plus the fixed 1 pt margin — and
    `test_bboxlog_stroke_text_rect_is_o1_union_plus_stroke_expansion` holds
    it on six shapes (red: ImportError; green: 65 passed). The measurement
-   exposed a residual: `max|elem|` undershoots the pen's true stretch by up
-   to √2, so a round/bevel stroke under a rotated CTM can leave ink outside
-   the O3 rect beyond the margin (`6 w 1 j` at 45° above ctm scale ~1.14).
+   exposed a residual: `max|elem|` undershoots the pen's true stretch (by
+   √2 for a rotation, up to 2 for a shear), so a round/bevel stroke under a
+   rotated or sheared CTM can leave ink outside the O3 rect beyond the
+   margin (`6 w 1 j` at 45° above ctm scale ~1.14; formula-vs-rect verified
+   on rotated round/bevel/miter shapes, the ink-vs-rect gap itself derived,
+   not raster-measured).
    Not fixable from the oracle side; PITFALLS entry; production rule above.
 2. The shadow census gained row-level load-bearing counters
    (`device_load_bearing`, `trace_or_device_load_bearing`,
