@@ -591,7 +591,7 @@ per page.
 | --- | --- | --- |
 | Safety — zero exact false-safe on the matrix | 62 shapes, 0 exact false-safes (20 baseline, 2 reach false admits); the review's stroke-ladder false safe reproduced and closed fail-closed | **PASS** |
 | Safety — declared advance never an ink bound in the exact arm | outlines only (O1/O2), advance moves the cursor only; target side bounded from its own glyphs | PASS |
-| Safety — disagreement ⇒ unresolved; ambiguous joins never safe | by construction; 564 disagreeing glyphs on the corpus all landed in ambiguous cells | PASS |
+| Safety — disagreement ⇒ unresolved; ambiguous joins never safe | by construction; the 564 disagreeing glyphs on the corpus sit on shows that no twin row decides (`row_reason.oracle_disagreement 0`, §11 re-run) | PASS |
 | Safety — the 8 `/W` + core-band counterexamples rejected | all `exact_overlap_same_baseline` | PASS |
 | Value — floor 4,478 / GO 5,962 / decidability ≥ 0.90 / `d_error = 0` / ambiguous+unavailable ≤ 10 % | 6,618 / 6,618 / 0.997 / 0 / 0.28 % | **PASS** |
 | Performance — evidence once per page; percentiles; O1-only cost | builds == pages; typical page 0.3 s cold, 0.02 s warm; the densest CAD page is tens of seconds, dominated by the Python-level bbox device (1.1 M drawing ops) and MuPDF's display list, not by the join — numbers in the commit-7 entry | PASS with a design constraint (no O3 in production; per-page cache) |
@@ -612,13 +612,24 @@ Answers to the four closing questions:
    the O2 route without fontTools and it is what `model/` may use. The O1
    device stays a census/test oracle.
 2. **Trace-free feasibility.** 95.8 % of twin rows on the corpus decide
-   without the trace (`trace_load_bearing 945 / 22,708`): cursor replay +
-   glyf boxes give the same quads the join validated. The trace is needed
-   only where the replay cannot place a show (missing/multiple windows,
-   OCG-hidden wrappers, unattributed XObject glyphs) — in production those
-   rows are `ambiguous` and fall to reach, exactly as the spike scores
-   them. So the slice is trace-free by default and never runs the bbox
-   device.
+   without the trace or the devices (`trace_or_device_load_bearing 947 /
+   22,708`, §11 re-run: 945 trace-load-bearing rows plus 2
+   `oracle_unavailable` rows that only the O1 device could report; no row
+   carries `oracle_disagreement`, `fz_text_shared`, `degenerate_stroke`,
+   `no_ink_rect`, `conservative_overlap` or `vertical_writing` as a
+   reason): cursor replay + glyf boxes give the same quads the join
+   validated. The trace is needed only where the replay cannot place a
+   show (missing/multiple windows, OCG-hidden wrappers, unattributed
+   XObject glyphs) — in production those rows are `ambiguous` and fall to
+   reach, exactly as the spike scores them. So the slice is trace-free by
+   default and never runs the bbox device. Two consequences §11 makes
+   explicit: the slice's boxes are glyf control boxes, not O1 device
+   boxes, so it is a *different* gate from the one measured and must
+   re-validate box ⊇ rendered bound on the rows it decides (answer 1's
+   2,998/3,001 probe with the 1-unit tolerance); and without the bbox
+   device there is no stroke ladder, so every non-fill render mode is
+   `ambiguous` by rule (9 `render_mode.2` shows on the corpus, all already
+   `unavailable`).
 3. **Per-prepare cost.** A document-level `(font_xref, gid) → box` cache
    makes the per-show cost a handful of rect transforms; the first touch of
    a font pays one `glyf`/`loca` parse (milliseconds, no fontTools). The
@@ -635,3 +646,65 @@ cannot join; ε = 0.05 pt sub-pixel overlaps admitted by design; same-bytes
 candidacy (split shows, alias CIDs) inherited from production; the two
 review passes (join soundness, harness/privacy) that died on the session
 limit were not re-run.
+
+## 11. Reconciliation round (2026-09-02, after the GO)
+
+Two adversarial reviews were run over the spike branch after commit 8: the
+in-session refutation pass (§9, commit 6 area) and a Codex adversarial
+review of the whole `main...HEAD` diff. A serial two-agent workflow then
+tried to refute each review's load-bearing claims; a second serial workflow
+applied the three surviving recommendations. Nothing in `model/` changed.
+
+**Codex finding — `AppliedPatch.revert` rewrites the storage encoding
+(`model/text_commit/patch.py:78-99`).** Verified real and reachable
+(`engine.py:274`, the FAILED path of the live commit) but pre-existing
+since P3-C (`4adc34f`/`97993c4`, already in PITFALLS and the docstring) and
+outside the spike, which touched no `model/` file. Failure-injection probe
+on PyMuPDF 1.27.1: single-Flate streams round-trip byte-identically;
+originally-uncompressed and multi-filter streams come back as a single
+`/FlateDecode` object; `/DecodeParms` survival is size-dependent;
+`doc.is_dirty` flips on any `update_stream` (even a no-op) and nothing in
+the app reads it; the same rewrite already happens on successful tier-0
+commits and undo/redo. Severity low; filed in TODOS with the exact-restore
+fix (`xref_stream_raw` + `/Filter` + `/DecodeParms` captured, restored with
+`compress=False` and `xref_set_key` for keys originally present).
+
+**Refutation of the spike's own claims.** C1 (stroke ladder fails closed):
+confirmed — 50 further stroke shapes (1-unit-tall boxes, zero-width
+contours, miter/cap reach, CTM scale/shear/rotation, hairline) produced no
+new exact false-safe. C2 (62 shapes, 0 false-safes): confirmed against the
+< 128 raster mask. C3 (census unchanged by the fix): logic confirmed —
+`unavailable` exits precede the ladder and the fix touches only the stroke
+branch; the corpus scan itself is not reproducible outside the sealed run.
+C4 (trace-free production ≈ measured gate): partial — mode-0 verdicts never
+read O3, but `trace_load_bearing` excluded the device-only reasons, and a
+glyf-box slice is a different gate (answer 2 above, revised).
+
+**Applied.**
+
+1. `stroke_expansion()` (`scripts/painter_geometry.py`) pins MuPDF's
+   `fz_adjust_rect_for_stroke` as measured on 1.27.1 — `(|w| or 1) ×
+   max(miterlimit, 0.5) [miter] or 0.5 [round/bevel] × max|a|,|b|,|c|,|d|`,
+   plus the fixed 1 pt margin — and
+   `test_bboxlog_stroke_text_rect_is_o1_union_plus_stroke_expansion` holds
+   it on six shapes (red: ImportError; green: 65 passed). The measurement
+   exposed a residual: `max|elem|` undershoots the pen's true stretch by up
+   to √2, so a round/bevel stroke under a rotated CTM can leave ink outside
+   the O3 rect beyond the margin (`6 w 1 j` at 45° above ctm scale ~1.14).
+   Not fixable from the oracle side; PITFALLS entry; production rule above.
+2. The shadow census gained row-level load-bearing counters
+   (`device_load_bearing`, `trace_or_device_load_bearing`,
+   `row_reason.<slug>` over the closed `EVENT_REASONS`; red: 4 failed /
+   green: 12 passed in `test_p4b2_shadow_census.py`). Sealed re-run
+   (`status ok`, every sealed constant and identity reproduced, no
+   previously-emitted counter moved): `device_load_bearing 2`,
+   `trace_or_device_load_bearing 947` of 22,708 (4.17 %),
+   `row_reason.multiple_windows 922`, `row_reason.ocg_or_absent 16`,
+   `row_reason.oracle_unavailable 2`, every other `row_reason.*` 0 —
+   including `oracle_disagreement`, which corrects the gate-table wording
+   in §10 (the 564 glyph disagreements never decide a row).
+3. TODOS: the rollback item; the production-slice item carries the
+   non-fill-ambiguous rule and the widened 4.17 % figure.
+
+Commits: `0d567d0` (pin + PITFALLS + rollback TODOS) and the census-counter
+commit that follows. Still no merge, PR or push.

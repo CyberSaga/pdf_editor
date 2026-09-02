@@ -27,9 +27,13 @@ from scripts.measure_p4b2_shadow_census import (  # noqa: E402
     SHADOW_COUNTER_KEYS,
     SealedConstants,
     SealedMismatch,
+    ShadowCensus,
+    _DEVICE_LOAD_BEARING_REASONS,
+    _RowRecord,
     main,
     run_shadow_census,
 )
+from scripts.painter_evidence import EVENT_REASONS  # noqa: E402
 from test_scripts.painter_matrix_fixtures import (  # noqa: E402
     hide_second_painter_in_ocg,
 )
@@ -319,6 +323,129 @@ def test_privacy_no_identity_reaches_the_report(monkeypatch) -> None:
         "unavailable",
         "error",
     }
+
+
+def _minimal_twin_row(
+    twin_reasons: tuple[str | None, ...], exact_reason: str | None = None
+) -> _RowRecord:
+    """A twin row with no other load-bearing signal set, so only the given
+    twin_reasons / exact_reason drive trace/device accounting."""
+    return _RowRecord(
+        has_twins=True,
+        baseline_admits=True,
+        reach_admits=True,
+        exact_kind="exact_safe",
+        exact_reason=exact_reason,
+        target_unproven=False,
+        twin_ink_in_target_bbox=False,
+        twin_kinds=(),
+        twin_reasons=twin_reasons,
+        tj_twin=False,
+        unattributed_overlap=0,
+        identity_refuted=0,
+        tier0_bbox_would_reject=False,
+    )
+
+
+def test_load_bearing_counter_keys_are_closed_and_present() -> None:
+    """Widened accounting: device-only load-bearing rows, the trace/device
+    union, and one row_reason.<slug> key per closed EVENT_REASONS slug."""
+    assert "device_load_bearing" in SHADOW_COUNTER_KEYS
+    assert "trace_or_device_load_bearing" in SHADOW_COUNTER_KEYS
+    assert len(EVENT_REASONS) > 0
+    for slug in EVENT_REASONS:
+        assert f"row_reason.{slug}" in SHADOW_COUNTER_KEYS
+    # No duplicate keys: SHADOW_COUNTER_KEYS is now assembled from several
+    # generated families, and a collision would be invisible to both the
+    # set(...) == set(...) closed-key check and the report()'s dict
+    # comprehension (a later value would silently clobber an earlier one).
+    assert len(set(SHADOW_COUNTER_KEYS)) == len(SHADOW_COUNTER_KEYS)
+
+
+def test_device_load_bearing_reasons_are_the_requested_seven() -> None:
+    """Requirement (a): all 7 requested device/oracle-only slugs exist in
+    the closed EVENT_REASONS set, so none were silently dropped by the
+    EVENT_REASONS intersection."""
+    assert _DEVICE_LOAD_BEARING_REASONS == {
+        "oracle_disagreement",
+        "oracle_unavailable",
+        "fz_text_shared",
+        "degenerate_stroke",
+        "no_ink_rect",
+        "conservative_overlap",
+        "vertical_writing",
+    }
+    assert _DEVICE_LOAD_BEARING_REASONS <= set(EVENT_REASONS)
+
+
+def test_device_load_bearing_counts_oracle_only_rows_without_double_counting() -> None:
+    """A row whose only load-bearing signal is a device/oracle-only reason
+    (oracle_disagreement) must count toward device_load_bearing but not
+    trace_load_bearing; the union counter must not double count a row that
+    is load-bearing under both rules; and row_reason.<slug> must count
+    rows by BOTH twin_reasons and exact_reason, and nothing else."""
+    sealed = SealedConstants(
+        source_bindable=0,
+        all_gates_pass=0,
+        duplicate_painter_only=0,
+        tj_array_only=0,
+        hscale_only=0,
+    )
+    census = ShadowCensus(sealed)
+    # Row A: device-only via a twin reason (oracle_disagreement is not a
+    # trace reason).
+    census.rows[(0, 0, 0)] = _minimal_twin_row(("oracle_disagreement",))
+    # Row B: trace-only via a twin reason (tr_clip is a trace reason, not
+    # a device reason).
+    census.rows[(0, 0, 1)] = _minimal_twin_row(("tr_clip",))
+    # Row C: both a trace and a device reason on the same row (twin
+    # reasons).
+    census.rows[(0, 0, 2)] = _minimal_twin_row(("oracle_disagreement", "tr_clip"))
+    # Row D: device-only, but carried by the EXACT VERDICT's reason, not
+    # any twin_reasons entry -- exercises the "or the exact verdict" half
+    # of the reasons union.
+    census.rows[(0, 0, 3)] = _minimal_twin_row((), exact_reason="oracle_unavailable")
+    counters, _ = census.counters()
+    assert counters["device_load_bearing"] == 3  # rows A, C, D
+    assert counters["trace_load_bearing"] == 2  # rows B, C
+    overlap = 1  # row C counted by both rules
+    assert counters["trace_or_device_load_bearing"] == 4  # rows A, B, C, D once each
+    assert counters["trace_or_device_load_bearing"] == (
+        counters["trace_load_bearing"] + counters["device_load_bearing"] - overlap
+    )
+    # row_reason.* must reflect exactly which rows carried which slug, via
+    # either twin_reasons or exact_reason, and no other slug fires.
+    assert counters["row_reason.oracle_disagreement"] == 2  # rows A, C
+    assert counters["row_reason.tr_clip"] == 2  # rows B, C
+    assert counters["row_reason.oracle_unavailable"] == 1  # row D only
+    loud_slugs = {"oracle_disagreement", "tr_clip", "oracle_unavailable"}
+    for slug in EVENT_REASONS:
+        if slug not in loud_slugs:
+            assert counters[f"row_reason.{slug}"] == 0, slug
+
+
+def test_trace_or_device_load_bearing_identity_on_the_synthetic_corpus() -> None:
+    """Whatever the actual mix on the synthetic corpus, the union counter
+    stays between max(trace, device) and their sum (no double counting,
+    no undercounting)."""
+    report = _shared_report()
+    counters = report["counters"]
+    trace = counters["trace_load_bearing"]
+    device = counters["device_load_bearing"]
+    union = counters["trace_or_device_load_bearing"]
+    assert max(trace, device) <= union <= trace + device
+
+
+def test_row_reason_counters_are_bounded_by_twin_rows() -> None:
+    """Every row_reason.<slug> key is present and each counts at most the
+    total number of twin rows the census saw."""
+    report = _shared_report()
+    counters = report["counters"]
+    twin_rows = counters["twin_rows"]
+    for slug in EVENT_REASONS:
+        key = f"row_reason.{slug}"
+        assert key in counters
+        assert 0 <= counters[key] <= twin_rows
 
 
 def test_census_module_is_not_edited_by_the_harness() -> None:

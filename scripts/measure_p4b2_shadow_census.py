@@ -16,6 +16,16 @@ anything is emitted; a mismatch exits non-zero with an empty stdout.  Every
 value emitted is an integer under a closed key (plan §7.1); document
 identity, text, font names, layer labels and exception text stay in memory.
 
+Load-bearing accounting (twin ROW counts, not glyph counts): a row is
+``trace_load_bearing`` when a twin/verdict reason falls in
+``_TRACE_LOAD_BEARING_REASONS`` or the row has unattributed overlap; a row
+is ``device_load_bearing`` when a twin/verdict reason falls in
+``_DEVICE_LOAD_BEARING_REASONS`` (device/oracle-only failure slugs: the
+production gate has no oracle, so these never fire there); a row is
+``trace_or_device_load_bearing`` when either rule fires (union, counted
+once).  ``row_reason.<slug>`` counts rows carrying that slug for every
+slug in the closed ``EVENT_REASONS`` set (``scripts/painter_evidence``).
+
 Usage::
 
     python scripts/measure_p4b2_shadow_census.py <pdf> [more...] [--json]
@@ -48,6 +58,7 @@ from model.text_commit.replay import ShowOp  # noqa: E402
 from model.text_commit.transforms import map_text_quad_to_visual  # noqa: E402
 from scripts import measure_type0_funnel  # noqa: E402
 from scripts.painter_evidence import (  # noqa: E402
+    EVENT_REASONS,
     MISSING_WINDOW_REASONS,
     RENDER_MODE_KEYS,
     PagePainterEvidence,
@@ -83,6 +94,29 @@ EXACT_CELLS = (
 _TRACE_LOAD_BEARING_REASONS = frozenset(
     {"ocg_or_absent", "multiple_windows", "unknown", "tr_clip"}
 )
+
+# Device/oracle-only failure slugs: reasons the exact arm's outline oracle
+# can hit that a trace-free, device-free production slice could never see
+# (there is no oracle in production).  Intersected with EVENT_REASONS so a
+# renamed or retired slug drops out here instead of drifting the closed key
+# set; nothing in the requested list below is missing from EVENT_REASONS as
+# of this writing.
+_DEVICE_LOAD_BEARING_REASONS = frozenset(
+    {
+        "oracle_disagreement",
+        "oracle_unavailable",
+        "fz_text_shared",
+        "degenerate_stroke",
+        "no_ink_rect",
+        "conservative_overlap",
+        "vertical_writing",
+    }
+) & frozenset(EVENT_REASONS)
+
+# row_reason.<slug> counter keys, one per slug in the closed EVENT_REASONS
+# set (event reasons + the verdict reasons emitted by
+# exact_duplicate_painter_verdict, which are a subset of EVENT_REASONS).
+ROW_REASON_KEYS: tuple[str, ...] = tuple(f"row_reason.{slug}" for slug in EVENT_REASONS)
 
 SHADOW_COUNTER_KEYS: tuple[str, ...] = (
     (
@@ -124,9 +158,12 @@ SHADOW_COUNTER_KEYS: tuple[str, ...] = (
         "unattributed_glyphs_total",
         "unattributed_glyphs_overlap_target",
         "trace_load_bearing",
+        "device_load_bearing",
+        "trace_or_device_load_bearing",
         "tier0_bbox_would_reject",
         "font_has_fpgm_prep",
     )
+    + ROW_REASON_KEYS
     + RENDER_MODE_KEYS
     + (
         "form_xobject_pages",
@@ -531,8 +568,19 @@ class ShadowCensus:
             if record.tier0_bbox_would_reject:
                 c["tier0_bbox_would_reject"] += 1
             reasons = set(record.twin_reasons) | {record.exact_reason}
-            if reasons & _TRACE_LOAD_BEARING_REASONS or record.unattributed_overlap:
+            trace_hit = bool(reasons & _TRACE_LOAD_BEARING_REASONS) or bool(
+                record.unattributed_overlap
+            )
+            device_hit = bool(reasons & _DEVICE_LOAD_BEARING_REASONS)
+            if trace_hit:
                 c["trace_load_bearing"] += 1
+            if device_hit:
+                c["device_load_bearing"] += 1
+            if trace_hit or device_hit:
+                c["trace_or_device_load_bearing"] += 1
+            for slug in EVENT_REASONS:
+                if slug in reasons:
+                    c[f"row_reason.{slug}"] += 1
         c["composed_all_gates_pass"] = (
             c["reach_all_gates_pass"]
             + c["d_exact_safe"]

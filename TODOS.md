@@ -1102,11 +1102,19 @@ Registered 2026-08-03 (WS-D). Each needs a red fixture before work starts:
   the replacement ink both bounded from outlines (declared advance never an
   ink bound on either side); any unattributed painted glyph over the target
   ⇒ ambiguous (7 rows on the corpus); stroke modes conservative from the
-  bboxlog rect and fail-closed on any empty glyph box; ambiguous/unavailable
-  fall to reach; document-level `(font_xref, gid)` bound cache; evidence built
-  before `page_fingerprint` so a later mutation invalidates it; `model/` may
-  not import fontTools. Reach's own core-band false admit (`second_dy=±7.3`)
-  stays a known residual until the exact arm covers it.
+  bboxlog rect and fail-closed on any empty glyph box in the *spike*; in
+  production, which runs no bbox device, every non-fill render mode is
+  ambiguous by rule (MuPDF's stroke expansion uses max|ctm element|, which
+  undershoots a rotated pen by up to √2 — PITFALLS "MuPDF's stroke-text bbox
+  expansion"); ambiguous/unavailable fall to reach; document-level
+  `(font_xref, gid)` bound cache; evidence built before `page_fingerprint` so a
+  later mutation invalidates it; `model/` may not import fontTools. The slice
+  is a different gate from the measured one (glyf boxes, no O1 device): the
+  re-run census puts the rows it cannot reproduce at
+  `trace_or_device_load_bearing 947 / 22,708` (4.17 %; 2 device-only rows,
+  0 rows carrying `oracle_disagreement`), so re-validate box ⊇ rendered bound
+  on the rows it decides. Reach's own core-band false admit
+  (`second_dy=±7.3`) stays a known residual until the exact arm covers it.
 - [ ] **Audit `Page.transformation_matrix` on rotated pages** at
   `model/text_commit/transforms.py:203` (`map_text_quad_to_visual`): PyMuPDF
   drops the CropBox origin and UserUnit when `/Rotate ≠ 0` (measured:

@@ -1365,6 +1365,18 @@ re-proves 2,140 of the 2,146 exact-quad-dependent admissions
 real overlaps among the 187 refused rows). Results, the perf numbers and
 the GO/NO-GO are in `plans/task15-p4b2-exact-painter-geometry-spike.md`.
 
+Post-GO reconciliation (plan §11): `stroke_expansion()` in
+`scripts/painter_geometry.py` pins MuPDF's `fz_adjust_rect_for_stroke`
+as measured on PyMuPDF 1.27.1 (`(|w| or 1) × max(miterlimit, 0.5)` for
+miter joins or `0.5` for round/bevel, `× max|a|,|b|,|c|,|d|`, plus the
+fixed 1 pt margin). Because `max|elem|` can undershoot a rotated pen's
+true stretch by up to √2, a production slice — which runs no bbox device
+— treats every non-fill render mode as ambiguous by rule. The shadow
+census now also emits row-level `device_load_bearing`,
+`trace_or_device_load_bearing` and `row_reason.<slug>` counters (sealed
+re-run: 947 of 22,708 twin rows, 4.17 %, need the trace or a device; no
+row is decided by an `oracle_disagreement`).
+
 ## 11. Character-Level Text Selection (Browse Mode)
 
 **Module:** `model/pdf_model.py:get_chars_in_run()`, `get_text_selection_lines()`
