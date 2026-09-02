@@ -43,7 +43,7 @@ The spike is read-only: it never changes production admission.
 | # | Fact | Consequence |
 | --- | --- | --- |
 | R1 | The texttrace and bbox devices run over a derotated `DisplayList` via `fz_run_display_list` with output identical to `get_texttrace()` / `get_bboxlog()`; only the convenience wrappers call `fz_run_page`. | One interpretation per page; no per-call `set_rotation` writes. |
-| R2 | Texttrace char bboxes are metrics boxes (advance × ascender/descender), never ink. `get_bboxlog()` entries are `fz_bound_text` = union of per-glyph outline bounds **+1.0 pt** in page space at identity ctm. | bboxlog is an ink oracle; texttrace supplies only `gid`, `origin`, `type`, `seqno`, `wmode`. |
+| R2 | Texttrace char bboxes are metrics boxes (advance × ascender/descender), never ink. `get_bboxlog()` entries are `fz_bound_text` = union of per-glyph outline bounds **+1.0 pt in page (device) space**, applied after the CTM (commit 2: still exactly 1.0 pt under `2 0 0 2 cm`). | bboxlog is an ink oracle; texttrace supplies only `gid`, `origin`, `type`, `seqno`, `wmode`. |
 | R3 | One `fz_text` = one bboxlog entry = one seqno; MuPDF merges every show inside a BT until a flush (colour change, new BT). `Tr 2` emits the same `fz_text` twice. | Per-show extents exist at neither level; join per char via origin+gid. |
 | R4 | `fitz.Font(fontbuffer=…)` uses `use_glyph_bbox=0` and returns the head bbox for every gid. `fz_bound_glyph(span.font(), gid, trm)` inside a device hook, or `fz_new_font_from_buffer(None, buf, 0, 1)`, returns per-gid outline bounds equal to fontTools. | Dual per-glyph oracle: MuPDF (production-viable) vs fontTools. |
 | R5 | `_painter_reach` keeps a 0.6-em core band on both sides; `second_dy=±7.3` at 12 pt is disjoint in bands but overlaps in ink. | Reach is fail-closed in x only; pinned in commit 1. |
@@ -269,3 +269,48 @@ twins (must reject with `duplicate_source_painter`) xfail.  Controls: a
 
 `/W 0` and `/W 1` are pixel-identical: the declared width moves nothing
 the renderer paints, only the cursor after the last glyph.
+
+### Commit 2 (2026-09-02) — oracle characterization (Stage A)
+
+Red log: `ModuleNotFoundError: No module named 'scripts.painter_evidence'`
+(57 tests collected against the two new modules before they existed).
+Green: 57 passed, including the tricky-font cell (mingliu.ttc present on this
+machine; hinted program, `fpgm` + `prep`, upem 1024).
+
+Measured facts (all now pinned by `test_scripts/test_p4b2_oracles.py`):
+
+- **O1 is a control box.** On the curved glyph (gid 1166 of the builder
+  face) MuPDF's `fz_bound_glyph` equals fontTools' `ControlBoundsPen`
+  (upper), not the exact extrema (lower): O1 x0 = 103.9375 vs exact
+  104.0982 at 48 pt. The two-sided relation `lower ⊆ O1 ⊆ upper ⊕ 0.02`
+  holds on every glyph tried (plain, curved, composite, hinted MingLiU).
+  Consequence: O1 is a superset of ink (safe), at most one control-point
+  overshoot loose.
+- **bboxlog margin is post-CTM.** Exactly 1.0 pt on every side in page space
+  at identity device matrix, unchanged under `2 0 0 2 cm` (R2 corrected: it
+  is a device-space pixel, not a text-space quantity). For an empty-outline
+  glyph (space, .notdef) `fz_bound_glyph` is the degenerate origin point; it
+  is unioned in and the +1.0 is NOT applied to a wholly degenerate union.
+- **Raster ⊆ O1 ⊕ 0.25 pt** at 48 pt and 12 pt; O1 ⊆ raster ⊕ 1.0 pt at
+  48 pt (tightness).
+- **Base matrix.** At rotation 0, `transformation_matrix` carries the CropBox
+  origin AND `/UserUnit` (`(2,0,0,-2,-100,1484)` for UserUnit 2 with an
+  offset CropBox) and trace origins equal `origin_user × B` to 1e-6 on all
+  eight (rotate × boxes × UserUnit) shapes. At rotation 90 the property
+  returns `(1,0,0,-1,0,722)`: CropBox origin and UserUnit both dropped
+  (production TODO for `transforms.py:203`).
+- **Cursor replay == trace origins** (1e-3·Tfs) on Tj under Tz 80/120/−100,
+  Tc ±2, Tw 40 (ignored for 2-byte codes), Ts ±3, combined, and on TJ with
+  leading, intra and mixed kerns. Negative Tz mirrors glyphs left of the
+  origin; the replay follows because `Th` multiplies the advance. STOP rule
+  not triggered.
+- **Render modes.** 0 fill; 1 stroke; 2 fill+stroke as two adjacent seqnos
+  with equal glyph lists; 3 ignore-text; 4/5/6 look exactly like 0/1/2 to
+  every device; 7 emits nothing to any device (no clip hooks are counted).
+- **Trace shape.** A 2-codepoint `bfchar` yields a `gid = −1` continuation
+  item (dropped by the O1 device). Space-only / .notdef / space-then-glyph
+  shows keep their item count on every route (no display-list culling).
+  Form XObject text reaches the devices as its own fz_text with no ShowOp.
+  A hidden OCG painter is absent from every device; a **visible `/OC BDC`
+  boundary flushes the fz_text**, so the two painters of one BT become two
+  bboxlog entries.
